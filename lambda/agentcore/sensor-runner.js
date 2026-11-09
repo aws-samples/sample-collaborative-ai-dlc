@@ -23,6 +23,8 @@
 // not be executed at all. `run-stage` decides what to do with a held verdict.
 
 import { spawn } from 'node:child_process';
+import { captureChild } from './cli/spawn.js';
+import { currentSandbox } from './sandbox/launcher.js';
 import {
   sensitiveEnvironmentValues,
   redactCredentialText,
@@ -340,8 +342,20 @@ const sensorChildEnv = (source = {}) => {
 // Spawn a child and collect stdout/stderr + exit, enforcing a hard timeout.
 // Never rejects on a non-zero exit (a failing sensor is data, not an error).
 // `spawnFn` injectable for tests.
-const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
-  new Promise((resolve) => {
+const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) => {
+  if (currentSandbox().enabled) {
+    return captureChild({
+      command: file,
+      args,
+      timeoutMs,
+      cwd,
+      env: sensorChildEnv(env),
+      spawnFn,
+      captureStderr: true,
+      inheritCredentialEnvironment: false,
+    });
+  }
+  return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -376,6 +390,7 @@ const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
     });
     child.on('close', (code) => finish(code));
   });
+};
 
 const STDERR_BUDGET = 500;
 const DETAIL_BUDGET_BYTES = 120_000;
@@ -526,6 +541,7 @@ const resultFromScript = ({
   exitCode,
   stdout,
   stderr = '',
+  sandboxError,
   verdictMode = 'exit-code',
   sensitiveValues = [],
   dispatcherExitCodes = false,
@@ -544,6 +560,7 @@ const resultFromScript = ({
       sensitiveValues,
     ),
   });
+  if (sandboxError) return inconclusive('sandbox-start-failed');
 
   if (exitCode === 0 && verdictMode === 'stdout-json') {
     if (!stdoutText) return inconclusive('missing-verdict', { stdout: null });

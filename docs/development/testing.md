@@ -425,59 +425,45 @@ npx vitest run --project=agentcore
 
 ### SRT image integration tests
 
-With Node 22/24 and Docker running, execute from the repository root:
+Requires Node 22/24 and Docker with ARM64 support (native or emulated).
+Run from the repository root; no AWS or model credentials are needed:
 
 ```bash
 ./scripts/agent-e2e-testing.sh --sandbox
 ```
 
-This mode of the existing Docker E2E runner builds the production ARM64 image and
-mounts a test workload read-only in disposable containers. It requires native
-ARM64 or working emulation. The workload is excluded from the production image
-and is not called by the application. No AWS or model credentials are required.
-As with the lifecycle E2E, `AGENTCORE_IMAGE` can select an existing local image,
-and `KEEP_E2E=1` retains containers and logs on failure.
+The runner builds the AgentCore image and tests the actual starter configuration,
+restrictive settings and sandboxing disabled, through both process launch helpers.
+The test fixture is mounted only for testing and is excluded from the production image.
 
-Both cases use the same workload and the real `runChild` and `captureChild` helpers:
+| Operation                                 | Disabled | Starter  | Restrictive settings                            |
+| ----------------------------------------- | -------- | -------- | ----------------------------------------------- |
+| Workspace write/read                      | Succeeds | Succeeds | Succeeds                                        |
+| Claude session write on a fresh workspace | Succeeds | Succeeds | Succeeds                                        |
+| Credential-file read                      | Succeeds | Blocked  | Succeeds                                        |
+| Original credential-file modification     | Succeeds | Blocked  | Blocked                                         |
+| Protected test-file read/write            | Succeeds | Succeeds | Blocked; original file remains unchanged        |
+| Write allowed beneath a denied directory  | Succeeds | Succeeds | Blocked; parent deny takes precedence           |
+| Create nested user/mount namespaces       | Succeeds | Blocked  | Blocked                                         |
+| Direct connection to the test server      | Succeeds | Blocked  | Blocked                                         |
+| HTTP request to the test server           | Succeeds | Succeeds | Proxy returns 403; destination receives nothing |
+| SRT denial event                          | None     | None     | Destination and port logged                     |
+| Round trip through the runtime MCP bridge | Succeeds | Succeeds | Succeeds when Unix sockets are allowed          |
 
-| Operation                                | Sandbox disabled | Sandbox enabled with restrictive test settings  |
-| ---------------------------------------- | ---------------- | ----------------------------------------------- |
-| Workspace write/read                     | Succeeds         | Succeeds                                        |
-| Protected test-file read/write           | Succeeds         | Blocked; original file remains unchanged        |
-| Write allowed beneath a denied directory | Succeeds         | Blocked; parent deny takes precedence           |
-| Create nested user/mount namespaces      | Succeeds         | Blocked with `EPERM`                            |
-| Direct connection to the test server     | Succeeds         | Blocked                                         |
-| HTTP request to the test server          | Succeeds         | Proxy returns 403; destination receives nothing |
-| SRT denial event                         | None             | Destination and port logged                     |
+The restrictive policy also runs with Unix sockets disabled, verifying that the
+MCP bridge is then blocked. Credential checks use dummy files at the four paths
+listed in the starter. The restrictive test policy denies reads elsewhere.
 
-The tests also check stdin delivery, process exit, scratch cleanup and SRT's
-version (`0.0.81`) in the image. Timeout and credential-cancellation cases verify
-that SRT removes its temporary filesystem mount points before returning.
-The local container uses `seccomp=unconfined` and
-`systempaths=unconfined` to permit namespaces; SRT's own weaker-isolation option
-remains disabled. These are local test-host options, not deployment settings.
-These tests do not qualify full agent conversations, Gateway tools or pause/resume.
+The tests also check stdin delivery, exit status, temporary-file cleanup and the
+installed SRT version. Set `AGENTCORE_IMAGE` to reuse a local image or `KEEP_E2E=1`
+to retain containers and logs on failure. The runner supplies
+`seccomp=unconfined` and `systempaths=unconfined` for local Docker testing only.
+Timeout and credential-cancellation cases also verify that SRT removes its
+temporary filesystem mount points before returning.
 
-SRT 0.0.81 includes Linux fixes from 0.0.80: write denies take precedence over
-nested write allows, and nested user/mount namespaces are blocked by default.
-The runtime rejects `allowNestedUserNamespaces: true`; tools that need nested
-namespaces (such as rootless containers or Chromium's namespace sandbox) will
-need a separate execution environment. Avoid denying writes to all of `/tmp`,
-which also makes SRT's own scratch directory read-only.
-
-The runtime switch is `DEFAULT_SANDBOX_CONFIG.enabled` in
-`lambda/agentcore/sandbox/launcher.js`, currently `false`. Both spawn helpers
-explicitly check this boolean. Trusted code can supply an invocation's
-`{ enabled, settings }` through `withSandbox`; platform-admin configuration is
-not connected yet. If enabled with the default settings, file access and Unix
-sockets are unrestricted and unlisted proxy destinations are approved. Direct
-networking remains isolated by SRT. The integration tests supply restrictive
-settings to exercise blocking. Runtime verification and environment metadata do
-not run or store these tests.
-
-Cleanup errors are logged as `sandbox.cleanup_failed` without replacing the
-harness's exit status. A harness killed by a signal returns exit code `1`
-through the sandbox wrapper, rather than the direct launch's `null`.
+These checks do not exercise live harness/model calls or full intent execution.
+See [Agent sandboxing](../using-the-platform/agent-sandboxing.md) for configuring
+policies in the application.
 
 ### Harness tool logs
 

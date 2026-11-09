@@ -41,6 +41,7 @@ import {
   executionCredentialBinding,
 } from '../shared/agent-credential-service.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../shared/sandbox-settings.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
@@ -467,7 +468,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         credentialBinding,
         runtimeCapabilities: meta.environment,
       },
-      { issueGrant: deps.issueAgentCredentialGrant },
+      {
+        issueGrant: deps.issueAgentCredentialGrant,
+        readSandbox: async () => meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG,
+      },
     );
     return rawInvokeRuntime(
       {

@@ -347,6 +347,7 @@ export const captureChild = ({
   prompt,
   promptViaStdin = false,
   captureStderr = false,
+  inheritCredentialEnvironment = true,
   logContext = {},
   timeoutMs = 0,
   spawnFn = spawn,
@@ -370,7 +371,11 @@ export const captureChild = ({
       return;
     }
     const detached = Boolean(session || sandboxEnabled) && process.platform !== 'win32';
-    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
+    const mergedEnv = childEnvironment(
+      env,
+      process.env,
+      inheritCredentialEnvironment ? session?.credentialEnvironment : {},
+    );
     const invocationId = randomUUID();
     const toolLogs = toolLogsFor({
       command,

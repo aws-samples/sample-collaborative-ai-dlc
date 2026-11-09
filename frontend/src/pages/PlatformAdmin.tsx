@@ -15,13 +15,14 @@
 // is what the OAuth callback URLs on two of them are built from.
 
 import { useSearchParams } from 'react-router';
-import { Bot, Boxes, ClipboardList, GitBranch, Milestone, Users } from 'lucide-react';
+import { Bot, Boxes, ClipboardList, GitBranch, Milestone, Shield, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { DeploymentInfoCard } from '@/components/admin/DeploymentInfoCard';
 import { UserManagementCard } from '@/components/admin/UserManagementCard';
 import { AgentCredentialsCard } from '@/components/admin/AgentCredentialsCard';
 import { AgentClisCard } from '@/components/admin/AgentClisCard';
+import { AgentSandboxingCard } from '@/components/admin/AgentSandboxingCard';
 import { DefaultModelsCard } from '@/components/admin/DefaultModelsCard';
 import { GlobalMcpServersCard } from '@/components/admin/GlobalMcpServersCard';
 import { GraphEnrichmentCard } from '@/components/admin/GraphEnrichmentCard';
@@ -104,14 +105,29 @@ export default function PlatformAdmin() {
             <UserManagementCard />
           </TabsContent>
 
-          <TabsContent value="agents" className="mt-5 space-y-6">
-            <AgentCredentialsCard />
-            <AgentClisCard />
-            <DefaultModelsCard />
-            <GlobalMcpServersCard />
-            <GraphEnrichmentCard />
-            <StageSkippingCard />
-            <ComposerCard />
+          <TabsContent value="agents" className="mt-5">
+            <Tabs defaultValue="general">
+              <TabsList className="mb-5">
+                <TabsTrigger value="general" className="gap-1.5">
+                  <Bot className="h-3.5 w-3.5" /> General
+                </TabsTrigger>
+                <TabsTrigger value="sandboxing" className="gap-1.5">
+                  <Shield className="h-3.5 w-3.5" /> Sandboxing
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="general" className="space-y-6">
+                <AgentCredentialsCard />
+                <AgentClisCard />
+                <DefaultModelsCard />
+                <GlobalMcpServersCard />
+                <GraphEnrichmentCard />
+                <StageSkippingCard />
+                <ComposerCard />
+              </TabsContent>
+              <TabsContent value="sandboxing" forceMount className="data-[state=inactive]:hidden">
+                <AgentSandboxingCard />
+              </TabsContent>
+            </Tabs>
           </TabsContent>
 
           <TabsContent value="environments" className="mt-5">

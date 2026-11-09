@@ -6,9 +6,13 @@ import {
   assertRuntimeSupportsBinding,
 } from './agent-auth-contracts.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from './agent-credential-metadata.js';
-import { qualifyAgentAuthRuntime } from './agent-auth-runtime-capabilities.js';
+import {
+  assertSandboxRuntime,
+  qualifyAgentAuthRuntime,
+} from './agent-auth-runtime-capabilities.js';
 import { issueAgentCredentialGrant } from './agent-credential-grants.js';
 import { agentCliDisabledError, readDisabledClis } from './agent-cli-availability.js';
+import { resolveInvocationSandbox } from './sandbox-settings.js';
 
 // Callers authorize their operation and supply trusted project/user/execution
 // context. This service owns selection and issuance for every command purpose.
@@ -99,6 +103,7 @@ export const prepareAgentInvocation = async (
     ssm,
     issueGrant = (claims) => issueAgentCredentialGrant(ssm, claims),
     qualifyRuntime = qualifyAgentAuthRuntime,
+    readSandbox = resolveInvocationSandbox,
   } = {},
 ) => {
   const selected = credentialBindings
@@ -107,13 +112,17 @@ export const prepareAgentInvocation = async (
         Boolean,
       );
   const bindings = selected.map(normalizeCredentialBinding);
-  const qualified = bindings.some((binding) => binding.version === 2)
-    ? await qualifyRuntime(runtimeCapabilities, {
-        requiredModes: bindings
-          .filter((binding) => binding.version === 2)
-          .map((binding) => (binding.mode === 'kiro' ? 'keys' : binding.mode)),
-      })
-    : runtimeCapabilities;
+  const sandbox = await readSandbox({ payload: { executionId, projectId } });
+  const qualified =
+    sandbox.enabled || bindings.some((binding) => binding.version === 2)
+      ? await qualifyRuntime(runtimeCapabilities, {
+          ...(sandbox.enabled ? { requireSandbox: true } : {}),
+          requiredModes: bindings
+            .filter((binding) => binding.version === 2)
+            .map((binding) => (binding.mode === 'kiro' ? 'keys' : binding.mode)),
+        })
+      : runtimeCapabilities;
+  if (sandbox.enabled) assertSandboxRuntime(qualified);
   for (const binding of bindings) {
     if (binding.source === 'space' && binding.version === 2 && binding.projectId !== projectId) {
       throw authError('AGENT_AUTH_CONTEXT_MISMATCH', 'Credential does not belong to this space');

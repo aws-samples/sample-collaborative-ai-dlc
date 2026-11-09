@@ -316,25 +316,27 @@ print_summary() {
 }
 
 run_sandbox_tests() {
-  local enabled helper name rc
+  local test_case enabled policy helper name rc
   local fixture="/opt/agentcore/test/fixtures/sandbox-integration.mjs"
   mkdir -p "$LOG_DIR"
-  for enabled in false true; do
+  for test_case in false:starter true:starter true:restricted-unix true:restrictive; do
+    enabled="${test_case%%:*}"
+    policy="${test_case#*:}"
     for helper in capture stream; do
-      name="aidlc-e2e-sandbox-${enabled}-${helper}-${RUN_ID}"
-      log "Sandbox enabled=$enabled, $helper helper"
+      name="aidlc-e2e-sandbox-${enabled}-${policy}-${helper}-${RUN_ID}"
+      log "Sandbox enabled=$enabled, $policy policy, $helper helper"
       # These local Docker options allow SRT to create its Linux namespaces.
       docker run --platform linux/arm64 --name "$name" --label "$LABEL" \
         --security-opt seccomp=unconfined --security-opt systempaths=unconfined \
         --volume "$ROOT/lambda/agentcore/test/fixtures/sandbox-integration.mjs:$fixture:ro" \
-        --entrypoint node "$IMAGE" "$fixture" "$enabled" "$helper"
+        --entrypoint node "$IMAGE" "$fixture" "$enabled" "$helper" "$policy"
       rc=$?
-      docker logs "$name" >"$LOG_DIR/sandbox-${enabled}-${helper}.log" 2>&1 || true
+      docker logs "$name" >"$LOG_DIR/sandbox-${enabled}-${policy}-${helper}.log" 2>&1 || true
       if [ "$rc" -eq 0 ]; then
-        printf 'PASS: sandbox enabled=%s, %s helper\n' "$enabled" "$helper"
+        printf 'PASS: sandbox enabled=%s, %s policy, %s helper\n' "$enabled" "$policy" "$helper"
         docker rm "$name" >/dev/null 2>&1 || true
       else
-        printf 'FAIL: sandbox enabled=%s, %s helper\n' "$enabled" "$helper" >&2
+        printf 'FAIL: sandbox enabled=%s, %s policy, %s helper\n' "$enabled" "$policy" "$helper" >&2
         OVERALL_FAIL=1
       fi
     done

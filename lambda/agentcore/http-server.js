@@ -80,6 +80,9 @@ import { installProcessGroupShutdown } from './cli/spawn.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
 import { runWithGatewayGrant } from './mcp/gateway-context.js';
+import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
+import { readSandboxSettings } from '../shared/sandbox-settings.js';
+import { validateSandboxConfig } from '../shared/sandbox-config.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -112,6 +115,7 @@ export const dispatchInvocation = async ({
   handlers,
   busy,
   prepareInvocation = null,
+  prepareSandbox = null,
   now = () => new Date().toISOString(),
 }) => {
   const command = payload?.command;
@@ -137,11 +141,19 @@ export const dispatchInvocation = async ({
     delete handlerPayload.agentCredentialGrant;
     delete handlerPayload.gatewayGrant;
     credentialSession = context.credentialSession ?? null;
-    const runHandler = () =>
-      credentialSession
-        ? credentialSession.run(() => handler(handlerPayload, context))
-        : handler(handlerPayload, context);
-    const result = await runWithGatewayGrant(payload.gatewayGrant ?? null, runHandler);
+    delete handlerPayload.sandbox;
+    delete handlerPayload.agentSandbox;
+    const operation = () =>
+      runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
+        credentialSession
+          ? credentialSession.run(() => handler(handlerPayload, context))
+          : handler(handlerPayload, context),
+      );
+    const sandbox =
+      prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
+        ? await prepareSandbox(payload)
+        : null;
+    const result = sandbox ? await withSandbox(sandbox, operation) : await operation();
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -192,6 +204,7 @@ export const createServer = ({
   handlers,
   busy = createBusyTracker(),
   prepareInvocation = null,
+  prepareSandbox = null,
   now = () => new Date().toISOString(),
 }) => {
   return http.createServer(async (req, res) => {
@@ -218,6 +231,7 @@ export const createServer = ({
         handlers,
         busy,
         prepareInvocation,
+        prepareSandbox,
         now,
       });
       return send(statusCode, body);
@@ -482,6 +496,21 @@ const main = async () => {
     handlers,
     busy,
     prepareInvocation: invocationContext,
+    prepareSandbox: async (payload) => {
+      const sandbox = await resolveInvocationSandbox({
+        payload,
+        store,
+        readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+      });
+      if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
+      logger.info('invocation sandbox configuration', {
+        command: payload.command,
+        executionId: payload.executionId || payload.intentId,
+        sandboxEnabled: sandbox.enabled,
+        sandboxVersion: sandbox.version ?? null,
+      });
+      return sandbox;
+    },
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
 };

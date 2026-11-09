@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
+import { currentSandbox, DEFAULT_SANDBOX_CONFIG } from '../sandbox/launcher.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -18,6 +19,45 @@ describe('createBusyTracker', () => {
 });
 
 describe('dispatchInvocation', () => {
+  it('passes trusted sandbox settings to detached agent work without leaking into engine calls', async () => {
+    let background;
+    const sandbox = { ...DEFAULT_SANDBOX_CONFIG, enabled: true, version: 3 };
+    const prepareSandbox = vi.fn().mockResolvedValue(sandbox);
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage-start', sandbox: { enabled: false } },
+      handlers: {
+        runStageStart: async (payload) => {
+          expect(payload.sandbox).toBeUndefined();
+          background = new Promise((resolve) => setImmediate(() => resolve(currentSandbox())));
+          return { ok: true };
+        },
+      },
+      prepareSandbox,
+    });
+    expect(result.body.ok).toBe(true);
+    expect(await background).toMatchObject({ enabled: true, version: 3 });
+    expect(currentSandbox().enabled).toBe(false);
+    prepareSandbox.mockClear();
+    await dispatchInvocation({
+      payload: { command: 'init-ws' },
+      handlers: { initWs: async () => ({ enabled: currentSandbox().enabled }) },
+      prepareSandbox,
+    });
+    expect(prepareSandbox).not.toHaveBeenCalled();
+  });
+
+  it('refuses the invocation when sandbox settings cannot be loaded', async () => {
+    const runStage = vi.fn();
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage' },
+      handlers: { runStage },
+      prepareSandbox: async () => {
+        throw new Error('Settings unavailable');
+      },
+    });
+    expect(result.statusCode).toBe(500);
+    expect(runStage).not.toHaveBeenCalled();
+  });
   const handlers = {
     initWs: async (p) => ({ ok: true, intentId: p.intentId }),
     runStage: async (p) => ({ ok: true, stageId: p.stageId, state: 'SUCCEEDED' }),
