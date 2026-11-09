@@ -4,8 +4,14 @@
 // The first test is the byte-identity guarantee: an intent with no grant opens
 // exactly the gates it opened before the mode existed.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withDurableExecution } from '@aws/durable-execution-sdk-js';
+import {
+  LocalDurableTestRunner,
+  WaitingOperationStatus,
+} from '@aws/durable-execution-sdk-js-testing';
 import { __durableHandler } from './fixtures/completion-handler.js';
+import { loadMetaBeforeAutonomousLoopBack } from './fixtures/load-meta-before-autonomous-loop-back.js';
 
 const makeCtx = (over = {}) => {
   const stageCallbacks = new Map();
@@ -1574,5 +1580,131 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     expect(target.countsAgainstCap ?? true).toBe(true);
     expect(deps.store.resetStageRow).toHaveBeenCalledTimes(2);
     expect(Number(execution.loopBackCount ?? 0)).toBe(1);
+  });
+
+  // Durable replay matches each operation to the history by position and name.
+  // An execution checkpointed before the jump existed has build-and-test's
+  // human gate in its history, so after a deployment it has to replay that same
+  // gate, not the jump.
+  describe('on the durable runner, across a deployment', () => {
+    beforeAll(async () => {
+      await LocalDurableTestRunner.setupTestEnvironment();
+    });
+    afterAll(async () => {
+      await LocalDurableTestRunner.teardownTestEnvironment();
+    });
+
+    const FIRST_PASS_GATE = /^eg-validation-si-build-and-test-0-/;
+
+    // Stage verdicts and gate answers are delivered out of band, against the
+    // callback id, as the container and the answer endpoint deliver them.
+    const runDurably = async ({ loadMeta = null, parkOnFirstPass = false } = {}) => {
+      const callbackNames = new Map();
+      let parkedGate = null;
+      let runner;
+      const deliver = (callbackId, body) =>
+        runner
+          .getOperation(callbackNames.get(callbackId))
+          .waitForData(WaitingOperationStatus.STARTED)
+          .then((operation) => operation.sendCallbackSuccess(JSON.stringify(body)));
+      ctx = {
+        stageCallbackResolvers: { get: (callbackId) => (body) => deliver(callbackId, body) },
+      };
+      if (parkOnFirstPass) {
+        const answerOthers = deps.store.getHumanTask;
+        deps.store.getHumanTask = vi.fn(async (executionId, humanTaskId, options) =>
+          FIRST_PASS_GATE.test(humanTaskId)
+            ? (storedGates.get(humanTaskId) ?? null)
+            : answerOthers(executionId, humanTaskId, options),
+        );
+        deps.store.setGateCallbackId = vi.fn(async ({ humanTaskId, callbackId }) => {
+          if (FIRST_PASS_GATE.test(humanTaskId)) {
+            parkedGate = { humanTaskId, callbackId };
+          }
+          return {};
+        });
+      }
+      // The human answers once the invocation has suspended on the gate, so
+      // everything after it runs in a replaying invocation.
+      const answerParkedGate = () => {
+        const { humanTaskId, callbackId } = parkedGate;
+        parkedGate = null;
+        const answer = { decision: 'loop-back' };
+        storedGates.set(humanTaskId, {
+          ...storedGates.get(humanTaskId),
+          status: 'rejected',
+          answer,
+        });
+        return deliver(callbackId, answer);
+      };
+      const handler = withDurableExecution((event, durableCtx) => {
+        const wrapped = new Proxy(durableCtx, {
+          get: (target, key) => {
+            if (key === 'createCallback') {
+              return async (name, options) => {
+                const created = await target.createCallback(name, options);
+                callbackNames.set(created[1], name);
+                return created;
+              };
+            }
+            if (key === 'step' && loadMeta) {
+              return (name, fn, options) =>
+                target.step(
+                  name,
+                  name === 'load-meta' ? () => loadMeta(deps.store, event.executionId) : fn,
+                  options,
+                );
+            }
+            return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
+          },
+        });
+        return __durableHandler(event, wrapped, deps);
+      });
+      runner = new LocalDurableTestRunner({
+        handlerFunction: async (...input) => {
+          const invocation = await handler(...input);
+          if (invocation.Status === 'PENDING' && parkedGate) void answerParkedGate();
+          return invocation;
+        },
+      });
+      const result = await runner.run({
+        payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+      });
+      return { result, names: result.getOperations().map((operation) => operation.getName()) };
+    };
+
+    it('replays a history parked on the offered loop-back gate before the jump existed', async () => {
+      const { result, names } = await runDurably({
+        loadMeta: loadMetaBeforeAutonomousLoopBack,
+        parkOnFirstPass: true,
+      });
+
+      const offer = names.indexOf('loop-back-offer-si-build-and-test-0');
+      expect(names.slice(offer + 1, offer + 3)).toEqual([
+        'gate-pre-validation-si-build-and-test-0',
+        'gate-open-validation-si-build-and-test-0',
+      ]);
+      expect(names).not.toContain('auto-loop-back-si-build-and-test-0');
+      expect(result.getResult()).toMatchObject({ ok: true });
+      expect(result.getInvocations().length).toBeGreaterThan(1);
+      const [first] = openedGates().filter((gate) => gate.stageInstanceId === 'si-build-and-test');
+      expect(first.options).toContain('loop-back');
+      expect(storedGates.get(first.humanTaskId).answer).toEqual({ decision: 'loop-back' });
+      expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+      expect(execution.loopBackCount).toBe(1);
+    });
+
+    it('takes the jump on an execution started by this release', async () => {
+      const { result, names } = await runDurably();
+
+      expect(result.getResult()).toMatchObject({ ok: true });
+      const offer = names.indexOf('loop-back-offer-si-build-and-test-0');
+      expect(names[offer + 1]).toBe('auto-loop-back-si-build-and-test-0');
+      expect(names).not.toContain('gate-pre-validation-si-build-and-test-0');
+      expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
+        'Autonomous loop-back 1 per construction protocol module',
+      );
+      expect(execution.loopBackCount).toBe(1);
+    });
   });
 });

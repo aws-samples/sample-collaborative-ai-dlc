@@ -463,7 +463,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // marker and retain their operation sequence; repair creates a new history.
     // laneWaitPolicyVersion 1: lanes read their integration turn in durable
     // steps (section.js waitForIntegrationTurn).
-    return loaded ? { ...loaded, completionPolicyVersion: 1, laneWaitPolicyVersion: 1 } : null;
+    return loaded
+      ? {
+          ...loaded,
+          completionPolicyVersion: 1,
+          laneWaitPolicyVersion: 1,
+          autonomousLoopBackVersion: 1,
+        }
+      : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
@@ -1738,7 +1745,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             // the human gate (see `autoApprove` below): the jump writes the gate
             // row itself, already answered, so the recommendation is still on the
             // record.
-            autoLoopBack = autonomyWaivable && loopBack.offered && !blocked;
+            //
+            // An execution whose first checkpoint predates the jump has the
+            // human gate's operations in its history at this point, so it keeps
+            // opening the gate.
+            autoLoopBack =
+              meta.autonomousLoopBackVersion >= 1 &&
+              autonomyWaivable &&
+              loopBack.offered &&
+              !blocked;
             // "No finding" only means clean when the outputs were OBSERVED: the
             // evaluator deliberately skips the required-output check for an
             // unobserved set, so an unobserved set halts here instead.

@@ -571,6 +571,10 @@ bounded by the same three per intent.
   waives a gate that carries Plan Approval, and the reset leaves no earlier
   approval in force. The jump replaces the human's loop-back answer at
   build-and-test, not those two stops.
+- An execution started before this release keeps opening the human gate for
+  an offered loop-back, so an execution already parked on that gate replays
+  the same operations after the deployment. A relaunch starts a new execution,
+  which takes the jump.
 - Residual: the jump, like upstream's, depends on the agent's recommendation. A
   build-and-test stage that succeeds with failing tests but records no
   recommendation and raises no finding has clean evidence, so an autonomous
