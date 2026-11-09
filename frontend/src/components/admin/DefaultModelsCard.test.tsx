@@ -329,4 +329,50 @@ describe('DefaultModelsCard', () => {
     const trigger = await screen.findByTestId('default-model-select-codex');
     expect(trigger).toHaveTextContent('openai.gpt-6.1-sol (custom)');
   });
+
+  it('says so when the regional Codex catalogue could not be read (#674)', async () => {
+    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-5.5' } }));
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [],
+          opencode: [],
+          codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
+          codexSource: 'error',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('codex-catalog-unavailable')).toBeInTheDocument();
+    });
+    // The saved selection is still the value in the field: the fallback list is
+    // what the picker offers, not a reset of the configured model.
+    expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent('GPT-5.5');
+  });
+
+  it('shows no catalogue warning when the regional list was read', async () => {
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [],
+          opencode: [],
+          codex: [{ id: 'openai.gpt-6.1-sol', name: 'openai.gpt-6.1-sol' }],
+          codexSource: 'catalog',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('codex-catalog-unavailable')).not.toBeInTheDocument();
+  });
 });

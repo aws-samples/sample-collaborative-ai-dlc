@@ -129,21 +129,28 @@ export const prepareBedrockIamSession = async (
   return session;
 };
 
+// The invocation's IAM session, as an AWS credential provider. Shared by every
+// discovery path that must sign for the inference role (Bedrock profiles,
+// bedrock-mantle's Models API) so both see the same account and region.
+export const iamCredentialProvider = () => {
+  const credentialEnvironment = currentCredentialSession()?.credentialEnvironment;
+  if (!credentialEnvironment?.AWS_CONTAINER_CREDENTIALS_FULL_URI)
+    throw new Error('IAM session is required');
+  return fromHttp({
+    awsContainerCredentialsFullUri: credentialEnvironment.AWS_CONTAINER_CREDENTIALS_FULL_URI,
+    awsContainerAuthorizationToken: credentialEnvironment.AWS_CONTAINER_AUTHORIZATION_TOKEN,
+    awsContainerCredentialsRelativeUri: '',
+    awsContainerAuthorizationTokenFile: '',
+  });
+};
+
 export const listIamBedrockModels = async (
   env,
   { createClient = (config) => new BedrockClient(config) } = {},
 ) => {
-  const credentialEnvironment = currentCredentialSession()?.credentialEnvironment;
-  if (!credentialEnvironment?.AWS_CONTAINER_CREDENTIALS_FULL_URI)
-    throw new Error('IAM session is required');
   const client = createClient({
     region: env.BEDROCK_REGION,
-    credentials: fromHttp({
-      awsContainerCredentialsFullUri: credentialEnvironment.AWS_CONTAINER_CREDENTIALS_FULL_URI,
-      awsContainerAuthorizationToken: credentialEnvironment.AWS_CONTAINER_AUTHORIZATION_TOKEN,
-      awsContainerCredentialsRelativeUri: '',
-      awsContainerAuthorizationTokenFile: '',
-    }),
+    credentials: iamCredentialProvider(),
   });
   const summaries = [];
   try {

@@ -492,6 +492,12 @@ const authChangeResponse = (response, error) =>
 
 // --- Handler ---
 
+// Codex models come from the runtime's regional Mantle catalogue when it has one
+// (#674) and from the curated list otherwise, so a lookup that fails inside the
+// runtime falls back instead of emptying the picker.
+const codexModelsFrom = (runtimeCaps) =>
+  runtimeCaps?.codexModels?.models?.length ? runtimeCaps.codexModels.models : CODEX_BEDROCK_MODELS;
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
@@ -713,7 +719,8 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: CODEX_BEDROCK_MODELS,
+          codex: codexModelsFrom(runtimeCaps),
+          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
     }
@@ -1352,9 +1359,10 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: kiroModels,
-          // Codex on Bedrock: curated static list — the OpenAI models are not
-          // surfaced by ListInferenceProfiles (see shared/bedrock-models.js).
-          codex: CODEX_BEDROCK_MODELS,
+          // Codex on Bedrock: the runtime's regional Mantle catalogue, falling
+          // back to the curated list (see shared/bedrock-models.js).
+          codex: codexModelsFrom(runtimeCaps),
+          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
     }
