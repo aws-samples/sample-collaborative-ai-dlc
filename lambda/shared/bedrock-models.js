@@ -134,11 +134,28 @@ const listCodexModels = async ({ listModels, region, savedIds = [] }) => {
   return { models: withSaved(models), source: 'catalog' };
 };
 
+// What the picker offers for Codex. The regional catalogue decides, even when it
+// is empty: a region that serves no compatible model is an answer, and swapping
+// in the curated ids would offer models that region cannot run (#674). The
+// curated list stays the fallback for a lookup that failed (`source: 'error'`)
+// or a runtime with no discovery path at all, so `source` is what tells the two
+// apart. A saved id survives either way — it is prepended by listCodexModels.
+const codexModelsFor = (codex) =>
+  codex?.source === 'catalog' ? (codex.models ?? []) : CODEX_BEDROCK_MODELS;
+
 const __test = { isUsable, toModel, toCodexModel };
-export { listClaudeModels, listCodexModels, regionPrefix, CODEX_BEDROCK_MODELS, __test };
+export {
+  listClaudeModels,
+  listCodexModels,
+  codexModelsFor,
+  regionPrefix,
+  CODEX_BEDROCK_MODELS,
+  __test,
+};
 export default {
   listClaudeModels,
   listCodexModels,
+  codexModelsFor,
   regionPrefix,
   CODEX_BEDROCK_MODELS,
   __test,

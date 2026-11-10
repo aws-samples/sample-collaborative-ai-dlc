@@ -43,7 +43,7 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole, getVal } from '../shared/trackers.js';
-import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
+import { listClaudeModels, codexModelsFor } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 import {
   isEnvironmentResolutionError,
@@ -492,12 +492,9 @@ const authChangeResponse = (response, error) =>
 
 // --- Handler ---
 
-// Codex models come from the runtime's regional Mantle catalogue when it has one
-// (#674) and from the curated list otherwise, so a lookup that fails inside the
-// runtime falls back instead of emptying the picker.
-const codexModelsFrom = (runtimeCaps) =>
-  runtimeCaps?.codexModels?.models?.length ? runtimeCaps.codexModels.models : CODEX_BEDROCK_MODELS;
-
+// Codex models come from the runtime's regional Mantle catalogue (#674);
+// codexModelsFor in shared/bedrock-models.js decides when the curated list
+// stands in for it.
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
@@ -719,7 +716,7 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: codexModelsFrom(runtimeCaps),
+          codex: codexModelsFor(runtimeCaps?.codexModels),
           codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
@@ -1361,7 +1358,7 @@ export const handler = async (event, context) => {
           kiro: kiroModels,
           // Codex on Bedrock: the runtime's regional Mantle catalogue, falling
           // back to the curated list (see shared/bedrock-models.js).
-          codex: codexModelsFrom(runtimeCaps),
+          codex: codexModelsFor(runtimeCaps?.codexModels),
           codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });

@@ -56,8 +56,10 @@ export function DefaultModelsCard() {
     {},
   );
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  // Why the Codex list is what it is (#674): a failed regional Mantle lookup
-  // falls back to the built-in list and says so, instead of looking current.
+  // Why the Codex list is what it is (#674): the picker only calls a list
+  // regional when the runtime read it (`catalog`); anything else — a failed
+  // lookup or a runtime that answered without a catalogue — is the built-in
+  // fallback, and it says so instead of looking current.
   const [codexSource, setCodexSource] = useState<'catalog' | 'error' | 'static'>();
   // CLI whose field is in free-text mode while a catalog exists: the caller is
   // typing a model ID the catalog does not list.
@@ -228,7 +230,7 @@ export function DefaultModelsCard() {
                       )}
                     </>
                   )}
-                  {cli === 'codex' && codexSource === 'error' && (
+                  {cli === 'codex' && codexSource !== 'catalog' && options.length > 0 && (
                     <p
                       data-testid="codex-catalog-unavailable"
                       className="text-[11px] text-muted-foreground"
