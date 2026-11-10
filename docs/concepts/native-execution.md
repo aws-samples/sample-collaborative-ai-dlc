@@ -4054,8 +4054,10 @@ publication. The 159 known package helpers include 150 associated with changed
 archives. These are source-derived deployment surfaces, not a claim that an AWS
 plan with those counts has been executed. Gateway resources remain absent.
 
-The fresh handoff is
+The original handoff was
 `.native-evidence/ne09-2026-11-06-inputs-settings-tools/handoff/deploy-ne09.sh`.
+The failed operator attempt and its replacement are recorded in the
+2026-11-10 correction below; this original command must not be repeated.
 Its `--check-only` path validates the committed branch/head, source/configuration,
 prepared packages, built frontend, qualified image/fixtures and evidence before
 credentials, Docker or Terraform. The operator path is pinned to `solution`,
@@ -4083,6 +4085,54 @@ after review of that candidate, is the guarded deployment command. Independent
 deployed package/alias/IAM/route/runtime/frontend verification and any live
 acceptance remain separate. No accessible local qualification is handed back to
 the operator.
+
+## NE-09 deployment handoff — Docker context correction, 2026-11-10
+
+The original operator attempt began on **2026-11-06 at 13:32:49 UTC** for
+`fc54ad2147174383b664f4373a38306e3cd2b244`. Its receipt records
+`COMMANDS_FAILED`, phase `image-plan`, exit code `1`, at **13:33:26 UTC**.
+Terraform reported `Error loading Docker context 'default': context 'default' not found`.
+Neither image publication nor either apply step was reached. A later invocation
+passed the local checks and correctly stopped at the existing-attempt guard.
+That refusal does not change the original attempt's outcome.
+
+The handoff had exported `DOCKER_CONTEXT=default` after verifying that the
+Docker CLI's default endpoint reaches the qualified Desktop daemon. The installed
+Docker provider **3.9.0** reproduced the same error in a fresh, local-only
+Terraform fixture containing one image data source and no managed resources.
+With `DOCKER_CONTEXT` absent and `DOCKER_HOST=unix:///var/run/docker.sock`,
+the same installed provider successfully read the exact qualified image:
+`sha256:a6ff70060e15d3942e8722e952cfe7ad0eaeafac02cf01c07d7b80c52fef20f7`.
+Read-only Buildx inspection also reached the running `default` builder.
+The probe used no cloud providers or credentials, performed no apply, and
+neither built nor published an image.
+
+The replacement handoff uses that explicit socket after checking the Docker
+context endpoint, socket target and qualified image identity. It leaves
+`DOCKER_CONTEXT` absent throughout Terraform and the Public ECR wrapper, rejects
+context overrides, and preserves the user's global Docker configuration.
+The same image-first, full-untargeted-plan, saved-plan and publication checks
+remain in force. Its **162 inert handoff tests** pass, including environment
+propagation, conflicting context refusal, saved-plan and image substitution,
+source drift, failures, drained-log receipts and repeat-attempt refusal.
+The existing Public ECR helper's focused regressions also pass.
+
+Fresh correction evidence and the single-use replacement command are under
+`.native-evidence/ne09-2026-11-10-docker-context-handoff/`, with entry point
+`handoff/deploy-ne09.sh`. The new candidate pins its final documentation HEAD,
+the corrected handoff and the preserved original qualification. All **2,990**
+original sealed evidence files and all **nine** files from the failed NE-09
+attempt retain their hashes. The old attempt directory is never removed,
+renamed, overwritten or resumed.
+
+Runtime, Lambda, frontend, Terraform source and deployment configuration are
+unchanged by this correction. The accepted local and installed qualification
+therefore retains its recorded scope and is not repeated by deployment.
+The replacement candidate's credential-free `--check-only` verifies the final
+source, configuration, packages, frontend, correction and evidence pins.
+**The replacement operator deployment and independent deployed verification
+remain pending.** No new cloud plan/apply, runtime/model call or live acceptance
+is claimed by this local correction; NE-10 remains unstarted.
 
 ## Integration and simplification checklist
 
