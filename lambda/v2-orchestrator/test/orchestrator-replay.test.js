@@ -362,7 +362,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
         });
         return __durableHandler(event, wrapped, world.deps);
       });
-      const runner = new LocalDurableTestRunner({
+      const runner = trackedRunner({
         handlerFunction: async (...input) => {
           const result = await handler(...input);
           if (result.Status === 'PENDING') {

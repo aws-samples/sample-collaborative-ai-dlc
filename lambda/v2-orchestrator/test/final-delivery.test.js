@@ -24,6 +24,11 @@ const remoteProvider = {
   getBranchHead: async (_ctx, _repo, branch) => (branch === 'develop' ? 'base1' : 'head1'),
 };
 const loadPlan = async () => ({ valid: true, plan: workflowPlan });
+// The accepted init-ws-start job completes the workspace-init callback.
+const createCallback = async (name) => {
+  if (name !== 'init-ws-cb') throw new Error(`unexpected callback ${name}`);
+  return [Promise.resolve(JSON.stringify({ ok: true })), `cb-${name}`];
+};
 beforeAll(async () => {
   db = makeDdb();
   await createV2Table(db.client, tableName);
@@ -172,7 +177,7 @@ describe('final delivery with real DynamoDB ownership', () => {
           runId: meta.orchestratorRunId,
           attemptId,
         },
-        { step: (_name, fn) => fn() },
+        { step: (_name, fn) => fn(), createCallback },
         {
           store,
           loadPlan,
@@ -239,7 +244,7 @@ describe('final delivery with real DynamoDB ownership', () => {
           runId: meta.orchestratorRunId,
           attemptId: claimed.attemptId,
         },
-        { step: (_name, fn) => fn() },
+        { step: (_name, fn) => fn(), createCallback },
         {
           store: checkedStore,
           publishDelivery: (args) => publishFinalDelivery({ ...args, operation, loadPlan }),
@@ -794,7 +799,7 @@ describe('final delivery with real DynamoDB ownership', () => {
         runId: meta.orchestratorRunId,
         attemptId: claimed.attemptId,
       },
-      { step: (_name, fn) => fn() },
+      { step: (_name, fn) => fn(), createCallback },
       {
         store,
         publishDelivery: (args) => publishFinalDelivery({ ...args, operation, loadPlan }),
@@ -832,7 +837,7 @@ describe('final delivery with real DynamoDB ownership', () => {
           runId: meta.orchestratorRunId,
           attemptId,
         },
-        { step: (_name, fn) => fn() },
+        { step: (_name, fn) => fn(), createCallback },
         {
           store,
           loadPlan,
@@ -870,6 +875,7 @@ describe('final delivery with real DynamoDB ownership', () => {
       const result = await __durableHandler(
         { action: 'start', executionId: meta.executionId, intentId: meta.intentId },
         {
+          createCallback,
           step: async (name, fn) => {
             if (name === 'open-pr') {
               publishing = true;
@@ -938,7 +944,7 @@ describe('final delivery with real DynamoDB ownership', () => {
           executionId: meta.executionId,
           intentId: meta.intentId,
         },
-        { step: (_name, fn) => fn() },
+        { step: (_name, fn) => fn(), createCallback },
         {
           store,
           loadPlan: async () => ({ valid: true, plan: { stages: [] } }),
