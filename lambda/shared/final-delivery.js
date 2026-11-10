@@ -373,6 +373,7 @@ export const publishFinalDelivery = async ({
   meta,
   operation,
   applicationUrl,
+  prTitleTrackerKey = false,
   claimed = null,
   loadPlan,
 }) => {
@@ -482,6 +483,7 @@ export const publishFinalDelivery = async ({
           executionId: meta.executionId,
           runId: meta.orchestratorRunId,
           applicationUrl,
+          prTitleTrackerKey,
           comparePrBranches: async () => cmp,
           openPr: async ({ branch, baseBranch, title, body, attemptKey }) => {
             // Record the create request and its delivery marker, and fence

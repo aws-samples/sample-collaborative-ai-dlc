@@ -489,6 +489,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta: retryMeta,
         applicationUrl,
+        prTitleTrackerKey,
         claimed: { attemptId: event.attemptId },
       }),
     );
@@ -2776,6 +2777,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             store,
             meta: { ...meta, orchestratorRunId: runId },
             applicationUrl,
+            prTitleTrackerKey,
           });
         } catch {
           // Store/provider uncertainty is delivery uncertainty, never a stage failure.

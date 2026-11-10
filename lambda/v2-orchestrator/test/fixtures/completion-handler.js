@@ -11,11 +11,12 @@ export const __durableHandler = (event, ctx, deps) =>
     ...deps,
     publishDelivery:
       deps.publishDelivery ??
-      (({ store, meta, applicationUrl }) =>
+      (({ store, meta, applicationUrl, prTitleTrackerKey }) =>
         openIntentPrs({
           store,
           meta,
           applicationUrl,
+          prTitleTrackerKey,
           executionId: meta.executionId,
           runId: meta.orchestratorRunId,
           openPr: deps.openPr,

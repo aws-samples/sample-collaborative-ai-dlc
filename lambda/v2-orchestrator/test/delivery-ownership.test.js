@@ -100,6 +100,29 @@ const setup = async (name, hostOptions) => {
 const shownPrs = (view) =>
   view.repositories.map((r) => (r.pr?.prNumber == null ? null : Number(r.pr.prNumber)));
 
+// Final delivery titles the pull request like the publication it replaced.
+describe('final delivery pull request title', () => {
+  it.each([
+    [true, '[ABC-12] Bookstore API'],
+    [false, 'Bookstore API'],
+  ])('with prTitleTrackerKey %s, titles the PR %s', async (prTitleTrackerKey, title) => {
+    const t = await setup('github');
+    await publishFinalDelivery({
+      store: t.store,
+      meta: {
+        ...t.meta,
+        title: 'Bookstore API',
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      operation: hostOperation(t.host, inspectDelivery),
+      loadPlan: async () => ({ valid: true, plan: { stages: [] } }),
+      applicationUrl: 'https://aidlc.example',
+      prTitleTrackerKey,
+    });
+    expect(t.host.prs.map((pr) => pr.title)).toEqual([title]);
+  });
+});
+
 describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
   it.each(
     [0, 30_000, 4 * MINUTE, 6 * MINUTE, 3 * 60 * MINUTE].flatMap((age) =>
