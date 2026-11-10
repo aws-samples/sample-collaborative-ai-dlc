@@ -4,12 +4,13 @@
 import { ProviderError } from './git-providers/errors.js';
 import { deliveryMarkers } from './delivery-marker.js';
 
-// Every pull request from the intent branch, from every page. Final delivery
+// Every relevant pull request from the intent branch, from every page. Final delivery
 // decides ownership over the complete set (selectDeliveryPr in
 // final-delivery.js); nothing here picks or rejects a first match.
 // `includeTerminal: false` (no create request recorded for this run, so closed
 // and merged pull requests cannot matter) lets a provider that cannot filter by
-// branch skip them; the default lists every state.
+// branch skip them. It may also skip terminal history after completing an open
+// candidate set: selectDeliveryPr always decides from open candidates first.
 export const inspectDelivery = async (
   provider,
   ctx,

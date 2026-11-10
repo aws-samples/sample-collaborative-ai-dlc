@@ -272,9 +272,15 @@ describe('strict delivery provider reads', () => {
       expect(filters()).toEqual([['OPEN', undefined]]);
 
       mock.resetHistory();
+      const recovered = await inspectWith({ includeTerminal: true });
+      expect(recovered.pullRequests.map((p) => [p.number, p.state])).toEqual([['10', 'open']]);
+      expect(filters()).toEqual([['OPEN', undefined]]);
+
+      // Without an open candidate, terminal ownership evidence is necessary.
+      mock.on(GetPullRequestCommand, { pullRequestId: '10' }).resolves(raw('10', 'OPEN', 'other'));
+      mock.resetHistory();
       const result = await inspectWith({ includeTerminal: true });
       expect(result.pullRequests.map((p) => [p.number, p.state, p.markers.length])).toEqual([
-        ['10', 'open', 0],
         ['7', 'merged', 0],
         ['9', 'closed', 1],
       ]);

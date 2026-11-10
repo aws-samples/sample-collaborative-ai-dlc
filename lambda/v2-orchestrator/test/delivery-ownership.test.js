@@ -123,6 +123,84 @@ describe('final delivery pull request title', () => {
   });
 });
 
+describe('GitHub create refusal over HTTP', () => {
+  const rejectCreate = (host, response) => {
+    const fetch = host.ctx.fetchImpl;
+    host.ctx.fetchImpl = (url, options = {}) =>
+      options.method === 'POST' && new URL(url).pathname.endsWith('/pulls')
+        ? response()
+        : fetch(url, options);
+    return () => (host.ctx.fetchImpl = fetch);
+  };
+  const validationFailure = () =>
+    new Response(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [{ resource: 'PullRequest', field: 'title', code: 'invalid' }],
+      }),
+      { status: 422 },
+    );
+
+  it('publishes on the corrected same-run retry despite an older unmarked closed PR', async () => {
+    const t = await setup('github');
+    t.host.add({ state: 'closed', body: 'Opened by an older release' });
+    const restore = rejectCreate(t.host, validationFailure);
+    await t.publish();
+    const refused = await t.repository();
+    expect(refused).toMatchObject({ status: 'failed', retryable: true });
+    expect(refused.createRequestedAt).toBeUndefined();
+    expect(refused.deliveryMarker).toBeUndefined();
+    expect(t.host.creates).toBe(0);
+
+    restore();
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending', retryable: true });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.creates).toBe(1);
+    expect(t.host.prs).toHaveLength(2);
+    expect(shownPrs(await t.view())).toEqual([2]);
+  });
+
+  it('preserves an earlier uncertain request when a later HTTP create is definitively refused', async () => {
+    const t = await setup('github');
+    t.host.failCreates = 1;
+    await t.publish();
+    const uncertain = await t.repository();
+    expect(uncertain.deliveryMarker).toMatch(/^aidlc-delivery-/);
+    rejectCreate(t.host, validationFailure);
+    await t.retry();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: uncertain.createRequestedAt,
+      deliveryMarker: uncertain.deliveryMarker,
+    });
+  });
+
+  it.each([
+    ['an HTTP server failure', () => new Response('Validation Failed', { status: 503 })],
+    [
+      'an arbitrary exception with a refusal-like status and message',
+      () => {
+        throw Object.assign(new Error('422 Validation Failed'), { status: 422 });
+      },
+    ],
+  ])('retains the marker after %s', async (_name, response) => {
+    const t = await setup('github');
+    t.host.add({ state: 'closed', body: 'Opened by an older release' });
+    const restore = rejectCreate(t.host, response);
+    await t.publish();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: expect.any(String),
+      deliveryMarker: expect.stringMatching(/^aidlc-delivery-/),
+    });
+    restore();
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(t.host.creates).toBe(0);
+  });
+});
+
 describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
   it.each(
     [0, 30_000, 4 * MINUTE, 6 * MINUTE, 3 * 60 * MINUTE].flatMap((age) =>
@@ -427,6 +505,101 @@ describe('codecommit final delivery on a repository with a long pull-request his
       t.host.add({ state: 'closed', source: `feature/${i}`, author: HAND });
     return t;
   };
+  const platformHistory = async () => {
+    const t = await setup('codecommit', { pageSize: 100 });
+    for (let i = 0; i < 1100; i++) t.host.add({ state: 'closed', source: `feature/${i}` });
+    return t;
+  };
+
+  it('reconciles a lost create response without reading 1100 unrelated platform-authored closed PRs', async () => {
+    const t = await platformHistory();
+    t.host.loseResponses = 1;
+    await t.publish();
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'succeeded', retryable: false });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.creates).toBe(1);
+    expect(shownPrs(await t.view())).toEqual([1101]);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it('reads the complete open set before selecting the captured target', async () => {
+    const t = await setup('codecommit', { pageSize: 1, order: 'oldest' });
+    t.host.failCreates = 1;
+    await t.publish();
+    t.host.add({ state: 'open', target: 'main' });
+    t.host.add({ state: 'open', target: 'develop' });
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({
+      status: 'succeeded',
+      pr: { prNumber: '2' },
+    });
+    expect(t.host.gets).toBe(2);
+    expect(t.host.listCalls.map((input) => input.pullRequestStatus)).toEqual(['OPEN', 'OPEN']);
+  });
+
+  it.each(['retargeted', 'changed head'])(
+    'keeps the %s refusal without terminal reads',
+    async (cause) => {
+      const t = await platformHistory();
+      t.host.loseResponses = 1;
+      await t.publish();
+      const own = t.host.prs.at(-1);
+      if (cause === 'retargeted') own.target = 'main';
+      else own.headSha = 'different-head';
+      t.host.listCalls.length = 0;
+      const p = await t.preview();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+      expect(p.delivery.repositories[0].reason).toMatch(
+        cause === 'retargeted' ? /different branch or target/ : /branch.*changed/i,
+      );
+      expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+      expect(t.host.creates).toBe(1);
+    },
+  );
+
+  it('refuses an incomplete open set even if its first page contains a matching PR', async () => {
+    const t = await setup('codecommit', { pageSize: 1, order: 'oldest' });
+    t.host.failCreates = 1;
+    await t.publish();
+    t.host.add({ state: 'open' });
+    for (let i = 0; i < 10; i++) t.host.add({ state: 'open', source: `feature/${i}` });
+    t.host.listCalls.length = 0;
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+    expect(p.delivery.repositories[0].reason).toMatch(/inspection limit/);
+    expect(t.host.listCalls).toHaveLength(10);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+  });
+
+  it('bounds terminal-only inspection and explains why no new PR can be created', async () => {
+    const t = await platformHistory();
+    t.host.failCreates = 1;
+    await t.publish();
+    const uncertain = await t.repository();
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({
+      status: 'failed',
+      retryable: false,
+      deliveryMarker: uncertain.deliveryMarker,
+    });
+    expect(p.delivery.repositories[0].reason).toMatch(/history exceeds.*inspection limit/);
+    // Preview and the claimed publisher each independently inspect, bounded to
+    // ten pages apiece; neither may create on this incomplete evidence.
+    expect(t.host.listCalls.filter((input) => input.pullRequestStatus === 'CLOSED')).toHaveLength(
+      20,
+    );
+    expect(t.host.gets).toBe(2000);
+    expect(t.host.creates).toBe(1);
+    expect(shownPrs(await t.view())).toEqual([null]);
+  });
 
   it('publishes by listing only open pull requests when no create was requested', async () => {
     const t = await busy();

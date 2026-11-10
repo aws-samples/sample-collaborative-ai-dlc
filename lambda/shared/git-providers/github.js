@@ -907,6 +907,14 @@ const createPullRequest = async (
         }
       }
     }
+    // This direct POST response is GitHub's validation refusal: no PR was
+    // created. Preserve that fact across source-control's error-code boundary.
+    // Transport errors, failed response reads and server failures remain
+    // unknown outcomes; callers must retain their recorded create request.
+    if (res.status === 422)
+      throw new ProviderError(422, 'GitHub refused pull-request creation', {
+        code: 'PR_CREATE_REJECTED',
+      });
     throw new Error(`Failed to create PR: ${res.status} ${errorText}`); // nosemgrep: tainted-sql-string
   }
 

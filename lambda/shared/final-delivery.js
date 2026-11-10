@@ -15,6 +15,8 @@ const done = (repo) => ['succeeded', 'no_change'].includes(repo.status);
 const fail = (code, message) => Object.assign(new Error(message), { code, statusCode: 409 });
 const safeError = (error) => {
   const code = error?.code;
+  if (code === 'PR_LOOKUP_TRUNCATED')
+    return 'Pull-request history exceeds the provider inspection limit. Delivery could not be verified safely; no new pull request will be created.';
   return [
     'UNBOUND',
     'BINDING_INVALID',
@@ -326,7 +328,12 @@ const inspect = async (meta, repo, operation) => {
       reason: 'Ready to publish the captured intent branch. Existing integrated code is preserved.',
     };
   } catch (error) {
-    return { ...unproven, status: 'failed', retryable: true, reason: safeError(error) };
+    return {
+      ...unproven,
+      status: 'failed',
+      retryable: error?.code !== 'PR_LOOKUP_TRUNCATED',
+      reason: safeError(error),
+    };
   }
 };
 
@@ -540,14 +547,18 @@ export const publishFinalDelivery = async ({
                 allowRetarget: false,
               });
             } catch (error) {
-              return { failed: true, reason: 'provider_unavailable', error: safeError(error) };
+              // Only an explicit adapter classification proves no creation.
+              // Neither an arbitrary HTTP status nor error text is sufficient.
+              if (error?.code !== 'PR_CREATE_REJECTED')
+                return { failed: true, reason: 'provider_unavailable', error: safeError(error) };
+              providerResult = { failed: true, reason: 'provider_rejected' };
             }
             if (providerResult?.prUrl && providerResult.prNumber != null) return providerResult;
             // A returned refusal (unmerged task branches, a changed or missing
             // branch, no changes, a classified rejection) proves the provider
             // created nothing, so this attempt's request is withdrawn: the row
             // returns to what it was before the attempt. Only an unknown
-            // outcome (the call threw or timed out, above) keeps the request;
+            // outcome (an unclassified error or timeout, above) keeps the request;
             // otherwise a later check would hold an unrelated unmarked closed
             // pull request against a request that never created anything. A
             // request recorded by an earlier attempt of this run stays.

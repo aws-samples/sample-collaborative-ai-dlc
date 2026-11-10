@@ -278,7 +278,7 @@ Retry invokes a separate durable `retry-delivery` history through the configured
 orchestrator target. It only uses the shared publication logic and the existing
 source-control service. It never invokes AgentCore, stages, Git integration or
 models. A failed or incomplete provider lookup blocks creation. Strict lookup
-lists every PR from the intent branch in every state on every page, reduced to
+lists the complete relevant PR set from the intent branch on every page, reduced to
 number, state, branches, head SHA and the delivery markers its description
 carries; descriptions do not leave the source-control service. Ownership is
 decided over the whole list by exact identity, never by timestamps or list
@@ -286,6 +286,21 @@ order. Before `create-pr`, the fenced write that records the create request
 stores `createRequestedAt` and a random `deliveryMarker` on the repository
 entry; the PR description carries the same marker, and retries in the run reuse
 it. CodeCommit additionally keeps its per-run idempotency token.
+
+CodeCommit completes its bounded open-PR scan first. If any open PR uses the
+intent branch, the selection rules below decide the result without reading
+terminal history. Otherwise, a recorded create request requires a bounded scan
+of the platform session's closed PRs. A truncated scan refuses publication and
+reports the inspection limit; it does not suggest that fixing credentials will
+resolve the missing evidence.
+
+A definitive refusal that created nothing withdraws only this attempt's newly
+recorded request. GitHub's direct HTTP 422 create refusal is carried through
+source-control as `PR_CREATE_REJECTED`; existing classified no-change and branch
+refusals keep their result contract on all providers. Timeouts, lost responses,
+server failures and unclassified exceptions remain unknown outcomes. A request
+from an earlier uncertain attempt is always retained, even if a later attempt
+is definitively refused.
 
 | PR on the intent branch (any target unless stated)     | No create request recorded | Create request recorded         |
 | ------------------------------------------------------ | -------------------------- | ------------------------------- |
@@ -310,7 +325,8 @@ uncertain. The delivery view links only a published or reconciled PR, or one
 proven by this run's marker. A changed source SHA, missing branch, retargeted PR
 or this run's closed work requires review instead of implicit replacement.
 
-Deploy source-control first (strict lookup and branch preconditions), then the
+Deploy source-control first (strict lookup, branch preconditions and refusal
+classification), then the
 orchestrator and intents API with the delivery route, then the frontend. Install
 all parts from the same release before offering retry. New orchestrator histories
 capture `deliveryPolicyVersion: 1` in the existing `load-meta` step. Frozen
@@ -318,6 +334,9 @@ pre-change results retain the previous `open-pr` sequence, including #534's
 completion marker. Changing an alias does not upgrade their durable checkpoints.
 The new API can assess a completed old history without changing its execution
 pins; publication retry creates its own history on the configured fixed target.
+An older source-control service does not preserve the new refusal code, so the
+publisher conservatively retains the request as unknown. Updating the service
+does not retroactively clear an existing uncertain request.
 This release requires no status migration, production recovery or model E2E as
 part of deployment. The existing tracker handoff is scheduled after complete
 publication, including a successful retry; while only some repositories are

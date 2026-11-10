@@ -550,7 +550,9 @@ const findPullRequest = async (
 //   - closed and merged ones are listed only with `includeTerminal` (this run
 //     recorded a create request), and then only those the platform session
 //     authored: it is the only author of a pull request carrying a delivery
-//     marker. Without a session identity the walk is unfiltered.
+//     marker. Without a session identity the walk is unfiltered. Skip this pass
+//     if the complete open set contains a candidate: selectDeliveryPr decides
+//     from open candidates before considering any terminal ownership evidence.
 // Strict: a truncated listing throws instead of reporting fewer pull requests.
 const listPullRequests = async (ctx, repoId, { sourceBranch, includeTerminal = true }) => {
   const { region, repositoryName } = parseRepo(repoId);
@@ -611,6 +613,7 @@ const listPullRequests = async (ctx, repoId, { sourceBranch, includeTerminal = t
       }
       nextToken = res.nextToken;
     } while (nextToken);
+    if (filter.pullRequestStatus === 'OPEN' && prs.some((pr) => pr.state === 'open')) return prs;
   }
   return prs;
 };
