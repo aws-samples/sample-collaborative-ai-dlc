@@ -100,7 +100,7 @@ import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
-import { getRelease, registerRelease } from '../shared/release-registry.js';
+import { getRelease, isAccessDenied, registerRelease } from '../shared/release-registry.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   buildReleaseBundle,
@@ -410,12 +410,21 @@ const alreadyPublished = async (event) => {
   }
   const profile = typeof event.profile === 'string' ? profileFor(event.profile) : null;
   if (!profile || profile.id !== event.profile) return null;
-  const manifest = await readReleaseManifest({
-    s3,
-    bucket: artifactsBucket(),
-    sha: profile.upstreamRef,
-    importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-  });
+  // This role holds no s3:ListBucket, so S3 answers a GET for an absent key
+  // with 403 AccessDenied instead of 404: either way the manifest is not there
+  // and the release is built. The build itself still fails on a real denial.
+  let manifest;
+  try {
+    manifest = await readReleaseManifest({
+      s3,
+      bucket: artifactsBucket(),
+      sha: profile.upstreamRef,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
+  } catch (error) {
+    if (!isAccessDenied(error)) throw error;
+    return null;
+  }
   if (!manifest) return null;
   await loadReleaseInspectionClosure({
     s3,

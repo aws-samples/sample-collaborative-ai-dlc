@@ -32,7 +32,8 @@ const REF = 'a'.repeat(40);
 vi.mock('../../shared/repo-fetch.js', () => ({
   fetchCoreFiles: vi.fn(async () => CORE_FILES),
 }));
-vi.mock('../../shared/release-registry.js', () => ({
+vi.mock('../../shared/release-registry.js', async (importOriginal) => ({
+  isAccessDenied: (await importOriginal()).isAccessDenied,
   registerRelease: registerReleaseMock,
   getRelease: getReleaseMock,
 }));
@@ -536,6 +537,27 @@ describe('seed-blocks prepareRelease mode', () => {
       importerRevision: first.importerRevision,
       closureDigest: first.closureDigest,
     });
+  });
+
+  // The seed role holds no s3:ListBucket, so S3 answers a GET for an absent
+  // manifest with 403 AccessDenied rather than 404. That is "not published yet"
+  // for this probe, and the release is built.
+  it('builds a release whose manifest read is denied as absent', async () => {
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!s3Store.has(input.Key)) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+    });
+    fetchCoreFiles.mockClear();
+
+    const result = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(result.registration).toBe('registered');
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
   });
 
   it('builds a release again when its published manifest is missing', async () => {
