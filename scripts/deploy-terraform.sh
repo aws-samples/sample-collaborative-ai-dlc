@@ -113,6 +113,7 @@ inspect_plan() {
     local plan_json="${plan_file}.json"
     terraform show -json "$plan_file" > "$plan_json"
     node "$SCRIPT_DIR/inspect-terraform-plan.mjs" "$plan_json"
+    node "$SCRIPT_DIR/check-active-executions.mjs" "$plan_json"
     rm -f "$plan_json"
 }
 

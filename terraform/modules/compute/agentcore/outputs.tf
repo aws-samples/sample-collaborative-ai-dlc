@@ -14,8 +14,8 @@ output "ecr_repository_arn" {
 }
 
 output "image_uri" {
-  description = "Full image URI (with content-hash tag) built for the runtime"
-  value       = module.agentcore_docker_build.image_uri
+  description = "Full image URI (with content-hash or pre-built tag) for the runtime"
+  value       = local.build_image ? module.agentcore_docker_build[0].image_uri : "${aws_ecr_repository.agentcore.repository_url}:${local.agentcore_image_tag}"
 }
 
 output "image_digest" {
@@ -29,7 +29,7 @@ output "image_size_bytes" {
 }
 
 output "image_tag" {
-  description = "Content-hash image tag"
+  description = "Image tag: the content hash, or var.image_tag when pre-built"
   value       = local.agentcore_image_tag
 }
 
@@ -106,4 +106,14 @@ output "managed_environment_repository_arn" {
 output "image_digest_amd64" {
   description = "Digest of the amd64 core image build (empty when build_amd64_image is disabled)"
   value       = var.build_amd64_image ? data.aws_ecr_image.agentcore_amd64[0].image_digest : ""
+}
+
+output "gateway_grant_key_arn" {
+  description = "KMS key that signs MCP Gateway grants (null when the Gateway is disabled)"
+  value       = local.mcp_gateway_enabled ? aws_kms_key.gateway_grant[0].arn : null
+}
+
+output "mcp_gateway_url" {
+  description = "AgentCore Gateway MCP endpoint for the built-in tools (null when disabled)"
+  value       = local.mcp_gateway_enabled ? aws_bedrockagentcore_gateway.mcp[0].gateway_url : null
 }

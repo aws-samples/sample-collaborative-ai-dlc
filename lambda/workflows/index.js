@@ -1,7 +1,8 @@
 // Composition over the block library: a workflow references and arranges
 // library blocks (a grouping tree + skill placements + scope/guardrail refs).
 // Workflows share the blocks table (WF#… partitions); one Query loads the
-// whole composition. No block bodies here, so no S3.
+// whole composition. S3 is read only for AI-DLC release closures (and, for the
+// release contents routes, the bodies those closures list).
 //
 // Routes (all behind the Cognito authorizer):
 //   GET    /workflows                              list (GSI1)
@@ -17,6 +18,10 @@
 //   GET    /workflows/{workflowId}/compiled[?version=N]    derived views (live or snapshot)
 //   GET    /workflows/{workflowId}/execution-preview?scope=<scope>[&version=N][&skip=a,b]
 //
+// The compiled, execution-preview and validate-grid reads also take
+// `?release=<id>` (a pinned intent's own closure) or `?libraryRelease=<id>`
+// (the live workflow previewed over a release's library, for authoring).
+//
 // The AI-DLC release registry rides this lambda because
 // it lives in the same blocks table and shares the platform-admin guard:
 //   GET    /aidlc-releases                     list (admin sees every record)
@@ -24,6 +29,10 @@
 //                                              ({profileId} or {custom:{…}})
 //   PATCH  /aidlc-releases/{releaseId}         support-state decision, or a closure
 //                                              upgrade with {importerRevision} (CAS)
+//   GET    /aidlc-releases/{releaseId}/blocks[?type=agent,stage]
+//                                              the release's catalog, read-only
+//   GET    /aidlc-releases/{releaseId}/blocks/{type}/{blockId}
+//                                              one catalog block with its body
 //   GET    /aidlc-release-channels             stable/candidate/preview pointers
 //   PUT    /aidlc-release-channels/{channel}   move a pointer (CAS)
 //   DELETE /aidlc-release-channels/{channel}   clear a pointer (CAS)
@@ -35,7 +44,7 @@
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
-import { S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -58,21 +67,20 @@ import {
   registerCustomRelease,
   registerRelease,
   releasePinFromRecord,
-  releaseToApi,
-  releaseToSelectionApi,
   ReleaseRegistryError,
+  releaseToSelectionApi,
   setChannel,
   updateRelease,
   upgradeReleaseClosure,
 } from '../shared/release-registry.js';
 import {
+  inspectReleaseClosure,
   loadReleaseClosure,
-  loadReleaseInspectionClosure,
-  readReleaseObject,
   ReleaseResolverError,
   resolveMethodologyLibrary,
 } from '../shared/release-resolver.js';
-import { AIDLC_RELEASE_IMPORTER_REVISION, AidlcReleaseError } from '../shared/aidlc-release.js';
+import { bodyToString, isNotFound } from '../shared/methodology-catalog.js';
+import { AIDLC_RELEASE_IMPORTER_REVISION } from '../shared/aidlc-release.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
@@ -98,6 +106,7 @@ import {
   normalizeType,
   RELEASE_LIBRARY_TYPES,
   RULE_LAYERS,
+  sha256,
   versionSk,
 } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
@@ -736,21 +745,30 @@ const releaseReadError = (res, error) => {
 // for that one rather than the record's current pointer. Only closures the
 // record has actually pointed at — the current one or an `importerHistory`
 // entry — are addressable; anything else is the same `release_not_found`.
+const releaseNotFound = (releaseId) =>
+  new ReleaseRegistryError(
+    'release_not_found',
+    `workflows: release ${String(releaseId)} is not registered`,
+    { details: { releaseId: String(releaseId ?? '') } },
+  );
+
+// The registry record a caller may read: any registered one for an admin, only
+// a selectable one for anybody else (the same "not found" either way).
+const readableReleaseRecord = async (releaseId, { isAdmin = false } = {}) => {
+  const record = await getRelease({ ...registryArgs(), releaseId });
+  if (!record || (!isAdmin && !isSelectableRecord(record))) throw releaseNotFound(releaseId);
+  return record;
+};
+
 const releasePinFor = async (releaseId, { isAdmin = false, importerRevision = null } = {}) => {
-  const notFound = () =>
-    new ReleaseRegistryError(
-      'release_not_found',
-      `workflows: release ${String(releaseId)} is not registered`,
-      { details: { releaseId: String(releaseId ?? '') } },
-    );
+  const notFound = () => releaseNotFound(releaseId);
   if (importerRevision !== null && (!Number.isInteger(importerRevision) || importerRevision < 1)) {
     throw new ReleaseRegistryError(
       'release_importer_revision_invalid',
       'workflows: releaseImporterRevision must be a positive integer',
     );
   }
-  const record = await getRelease({ ...registryArgs(), releaseId });
-  if (!record || (!isAdmin && !isSelectableRecord(record))) throw notFound();
+  const record = await readableReleaseRecord(releaseId, { isAdmin });
   if (importerRevision === null || importerRevision === Number(record.importerRevision)) {
     return releasePinFromRecord(record);
   }
@@ -884,20 +902,27 @@ const releasePlanInputs = async ({
   return { workflow, library, compiled, phases: workflow.phases ?? [] };
 };
 
-// Authoring previews edit the mutable workflow but need to resolve its blocks
-// against the release a new intent would use. The release closure supplies the
-// SYSTEM baseline; the tenant's current library overlays it. User placements
-// still resolve from the live user library while SYSTEM placements resolve from
-// the immutable release closure.
+// ── Authoring previews against a release (issue #607) ──
+//
+// The composer edits the MUTABLE workflow. `?release=` cannot preview it: that
+// path reads the workflow's immutable snapshot and refuses user stages without
+// a pinned version, which a live draft does not have. `?libraryRelease=<id>`
+// previews the live workflow the way an intent created now, pinned to that
+// release, would resolve it (intents snapshotUserMethodologyPins + the release
+// resolver):
+//   - the release closure is the base library; the SYSTEM rows are never read;
+//   - the caller's own blocks (the `default` library, V#latest) overlay it,
+//     as the pins an intent snapshots at create time do;
+//   - SYSTEM placements resolve from the closure, user placements from the
+//     user library (their pinned version, else V#latest).
+// So a custom stage naming an agent that only the release ships resolves here
+// exactly as it will when the pinned intent runs. The id is gated the same way
+// as `?release=`: any registered release for an admin, only a selectable one
+// for anybody else.
 const requestedLibraryRelease = (event) => {
   const raw = event?.queryStringParameters?.libraryRelease;
   return typeof raw === 'string' && raw ? decodePathParam(raw) : null;
 };
-
-const conflictingReleaseParams = (event) =>
-  requestedRelease(event) && requestedLibraryRelease(event)
-    ? { status: 400, body: { error: 'release and libraryRelease cannot be combined' } }
-    : null;
 
 const queryTenantCatalog = async (tenant, type) => {
   const items = [];
@@ -918,7 +943,7 @@ const queryTenantCatalog = async (tenant, type) => {
   return items;
 };
 
-const keyByBlockId = (items) =>
+const byBlockId = (items) =>
   Object.fromEntries((items ?? []).map((item) => [item.blockId ?? item.id, item]));
 
 const libraryReleaseLibrary = async ({ releaseId, isAdmin, tenant, placements }) => {
@@ -943,12 +968,11 @@ const libraryReleaseLibrary = async ({ releaseId, isAdmin, tenant, placements })
   const library = {};
   overlayTypes.forEach((type, index) => {
     library[RELEASE_LIBRARY_TYPES[type]] = {
-      ...keyByBlockId(closure.blocksByType?.[type]),
-      ...keyByBlockId(overlays[index]),
+      ...byBlockId(closure.blocksByType?.[type]),
+      ...byBlockId(overlays[index]),
     };
   });
-
-  const releaseStages = keyByBlockId(closure.blocksByType?.STAGE);
+  const releaseStages = byBlockId(closure.blocksByType?.STAGE);
   const stagesById = {};
   for (const placement of placements) {
     const stage =
@@ -958,10 +982,17 @@ const libraryReleaseLibrary = async ({ releaseId, isAdmin, tenant, placements })
     if (stage) stagesById[placement.stageId] = stage;
   }
   library.stagesById = stagesById;
+  // Same provenance flags the release branch sets, so release-authored scope
+  // policy and runtime-file capabilities preview as they will run.
   library.fromRelease = true;
   library.runtimeFilePaths = [...(closure.runtimeFiles?.keys() ?? [])].toSorted();
   return library;
 };
+
+const conflictingReleaseParams = (event) =>
+  requestedRelease(event) && requestedLibraryRelease(event)
+    ? { status: 400, body: { error: 'release and libraryRelease cannot be combined' } }
+    : null;
 
 // ── Compiled views ── derive scope-grid + autonomy-profile + stage-graph from
 // the placements, scope refs, and the library Stage blocks they reference.
@@ -1157,11 +1188,11 @@ const getExecutionPreview = async (event, res, tenant, workflowId) => {
     compiled: inputs.compiled,
     ...(skipStageIds ? { skipStageIds } : {}),
   });
-  return res(200, withLibraryRelease(preview, inputs.libraryRelease));
+  return res(
+    200,
+    inputs.libraryRelease ? { ...preview, libraryRelease: inputs.libraryRelease } : preview,
+  );
 };
-
-const withLibraryRelease = (result, libraryRelease) =>
-  libraryRelease ? { ...result, libraryRelease } : result;
 
 // POST /workflows/{id}/validate-grid — dry-run a composed EXECUTE/SKIP grid
 // against the pinned workflow (upstream's validate-grid). Body:
@@ -1220,7 +1251,10 @@ const validateGrid = async (event, res, tenant, workflowId) => {
     ...(skipStageIds ? { skipStageIds } : {}),
     strict: data.strict === true,
   });
-  return res(200, withLibraryRelease(result, inputs.libraryRelease));
+  return res(
+    200,
+    inputs.libraryRelease ? { ...result, libraryRelease: inputs.libraryRelease } : result,
+  );
 };
 
 const loadCatalogByType = async (owner, type) => {
@@ -1686,6 +1720,18 @@ const listReleaseProfilesRoute = async (_event, res) => {
   return res(200, { profiles });
 };
 
+// ─── AI-DLC release contents (issue #607) ───
+//
+// Read-only browsing of one registered release's catalog, so the authoring UI
+// can show what a pinned intent will actually resolve: the release's blocks by
+// type, its workflow, and any one block's body. Everything comes from the
+// digest-verified closure (loadReleaseClosure); nothing falls back to the
+// mutable SYSTEM rows. Readable by the same rule as `?release=`: an admin may
+// read any registered release, anybody else only a selectable one, and the two
+// "no" answers are the same 404.
+
+// The fields a catalog entry carries for the resolver, not for the UI. Bodies
+// and scripts are served by the single-block route.
 const RELEASE_BLOCK_INTERNAL_KEYS = new Set([
   'pk',
   'sk',
@@ -1698,6 +1744,9 @@ const RELEASE_BLOCK_INTERNAL_KEYS = new Set([
   'type',
 ]);
 
+// The same shape GET /blocks/{type} returns (building-blocks toApi), so the UI
+// can render a release block wherever it renders a library block, plus where
+// it came from.
 const releaseBlockToApi = (block, type, releaseId) => {
   const out = {};
   for (const [key, value] of Object.entries(block)) {
@@ -1707,7 +1756,7 @@ const releaseBlockToApi = (block, type, releaseId) => {
     ...out,
     id: block.id ?? block.blockId,
     blockId: block.blockId ?? block.id,
-    blockType: type.toLowerCase(),
+    blockType: type,
     tenantId: SYSTEM_TENANT,
     version: Number(block.version ?? 1),
     readOnly: true,
@@ -1746,6 +1795,8 @@ const releaseWorkflowToApi = (workflow, releaseId) =>
       }
     : null;
 
+// `?type=agent,sensor` narrows the listing (the stage editor needs four
+// types, not nine); absent lists every block type.
 const requestedReleaseBlockTypes = (event) => {
   const raw = event?.queryStringParameters?.type;
   if (raw == null || raw === '') return { types: BLOCK_TYPES };
@@ -1759,138 +1810,119 @@ const requestedReleaseBlockTypes = (event) => {
   ];
   const types = requested.map(normalizeType);
   const unknown = requested.filter((_, index) => !types[index]);
-  if (unknown.length > 0) {
+  if (unknown.length) {
     return { error: `Unknown block type: ${unknown.join(', ')}` };
   }
   return { types };
 };
 
-const readableReleaseForContents = async (event, releaseId) => {
-  const admin = isPlatformAdmin(event);
-  const record = await getRelease({ ...registryArgs(), releaseId });
-  if (!record || (!admin && !isSelectableRecord(record))) {
-    throw new ReleaseRegistryError(
-      'release_not_found',
-      `workflows: release ${String(releaseId)} is not registered`,
-      { details: { releaseId: String(releaseId ?? '') } },
-    );
-  }
-  return { record, admin };
-};
-
-const releaseContentsError = (res, error) => {
-  if (isAccessDenied(error)) {
-    return res(409, {
-      error: 'The release object could not be read or is missing from its published closure.',
-      code: 'release_object_missing',
-    });
-  }
-  if (error instanceof ReleaseResolverError) {
-    const status = error.code === 'release_not_found' ? 404 : 409;
-    return res(status, { error: error.message, code: error.code });
-  }
-  if (error instanceof AidlcReleaseError) {
-    return res(409, {
-      error: error.message,
-      code: error.code,
-      ...(error.diagnostics ? { details: error.diagnostics } : {}),
-    });
-  }
-  return registryError(res, error);
-};
-
-const loadInspectableRelease = async (record) =>
-  loadReleaseInspectionClosure({
+// Inspection, not execution: an admin may look inside a fork that is still
+// import-only (that is what promotion is decided on), and a non-admin only
+// ever reaches a selectable, runnable record.
+const readableReleaseClosure = async (event, releaseId) => {
+  const record = await readableReleaseRecord(releaseId, { isAdmin: isPlatformAdmin(event) });
+  const closure = await inspectReleaseClosure({
     s3,
     bucket: artifactsBucket(),
     methodologyRelease: releasePinFromRecord(record),
-    ddb,
-    tableName: blocksTable(),
   });
+  return { record, closure };
+};
 
-const listReleaseContentsRoute = async (event, res, releaseId) => {
-  const requested = requestedReleaseBlockTypes(event);
-  if (requested.error) return res(400, { error: requested.error });
+// One body or script object of the closure. The key must be one the manifest
+// lists with that digest, and the bytes must hash to it: a release read never
+// serves content the closure does not vouch for.
+const readReleaseObject = async (closure, ref, { releaseId, blockId }) => {
+  if (!ref) return '';
+  if (closure.objectDigests?.get(ref.s3Key) !== ref.sha256) {
+    throw new ReleaseResolverError(
+      'release_closure_mismatch',
+      `workflows: ${ref.s3Key} for ${blockId} is not part of release ${releaseId}`,
+      { details: { key: ref.s3Key } },
+    );
+  }
+  let content;
   try {
-    const { record, admin } = await readableReleaseForContents(event, releaseId);
-    const closure = await loadInspectableRelease(record);
+    const result = await s3.send(
+      new GetObjectCommand({ Bucket: artifactsBucket(), Key: ref.s3Key }),
+    );
+    content = await bodyToString(result.Body);
+  } catch (error) {
+    // No s3:ListBucket here, so a missing object reads as AccessDenied.
+    if (!isNotFound(error) && !isAccessDenied(error)) throw error;
+    throw new ReleaseResolverError(
+      'release_object_missing',
+      `workflows: ${ref.s3Key} for ${blockId} in release ${releaseId} is unavailable`,
+      { cause: error, details: { key: ref.s3Key } },
+    );
+  }
+  if (sha256(content) !== ref.sha256) {
+    throw new ReleaseResolverError(
+      'release_closure_mismatch',
+      `workflows: ${ref.s3Key} for ${blockId} does not match its recorded digest`,
+      { details: { key: ref.s3Key } },
+    );
+  }
+  return content;
+};
+
+const getReleaseContentsRoute = async (event, res, releaseId) => {
+  if (!releaseId) return res(400, { error: 'releaseId is required' });
+  const { types, error: typeError } = requestedReleaseBlockTypes(event);
+  if (typeError) return res(400, { error: typeError, code: 'release_block_type_invalid' });
+  try {
+    const { record, closure } = await readableReleaseClosure(event, releaseId);
     const blocks = Object.fromEntries(
-      requested.types.map((type) => [
+      types.map((type) => [
         type.toLowerCase(),
-        (closure.blocksByType[type] ?? []).map((block) =>
-          releaseBlockToApi(block, type, releaseId),
+        (closure.blocksByType?.[type] ?? []).map((block) =>
+          releaseBlockToApi(block, type, record.releaseId),
         ),
       ]),
     );
     return res(200, {
-      release: admin ? releaseToApi(record) : releaseToSelectionApi(record),
-      workflow: releaseWorkflowToApi(closure.catalog.workflow, releaseId),
+      release: releaseToSelectionApi(record),
+      workflow: releaseWorkflowToApi(closure.catalog?.workflow, record.releaseId),
       blocks,
     });
   } catch (error) {
-    return releaseContentsError(res, error);
+    return releaseReadError(res, error);
   }
 };
 
 const getReleaseBlockRoute = async (event, res, releaseId, rawType, blockId) => {
+  if (!releaseId) return res(400, { error: 'releaseId is required' });
   const type = normalizeType(rawType);
-  if (!type || !BLOCK_TYPES.includes(type)) {
-    return res(400, { error: `Unknown block type: ${String(rawType)}` });
+  if (!type) {
+    return res(400, {
+      error: `Unknown block type: ${String(rawType)}`,
+      code: 'release_block_type_invalid',
+    });
   }
   try {
-    const { record } = await readableReleaseForContents(event, releaseId);
-    const closure = await loadInspectableRelease(record);
-    const block = (closure.blocksByType[type] ?? []).find(
-      (candidate) => (candidate.blockId ?? candidate.id) === blockId,
+    const { record, closure } = await readableReleaseClosure(event, releaseId);
+    const block = (closure.blocksByType?.[type] ?? []).find(
+      (entry) => (entry.id ?? entry.blockId) === blockId,
     );
     if (!block) {
       return res(404, {
-        error: `workflows: release ${releaseId} has no ${type} block ${blockId}`,
-        code: 'release_object_missing',
+        error: `${type} ${String(blockId)} is not part of release ${record.releaseId}`,
+        code: 'release_block_not_found',
       });
     }
-    const body = block.bodyRef?.s3Key
-      ? await readReleaseObject({
-          s3,
-          bucket: artifactsBucket(),
-          closure,
-          key: block.bodyRef.s3Key,
-        })
-      : '';
-    const script = block.scriptRef?.s3Key
-      ? await readReleaseObject({
-          s3,
-          bucket: artifactsBucket(),
-          closure,
-          key: block.scriptRef.s3Key,
-        })
-      : '';
+    const where = { releaseId: record.releaseId, blockId };
+    const [body, script] = await Promise.all([
+      readReleaseObject(closure, block.bodyRef, where),
+      readReleaseObject(closure, block.scriptRef, where),
+    ]);
     return res(200, {
-      block: releaseBlockToApi(block, type, releaseId),
+      block: releaseBlockToApi(block, type, record.releaseId),
       body,
       script,
     });
   } catch (error) {
-    return releaseContentsError(res, error);
+    return releaseReadError(res, error);
   }
-};
-
-const routeReleaseContents = async (event, res, method, path, releaseId) => {
-  if (path.endsWith('/aidlc-releases/{releaseId}/blocks/{type}/{blockId}')) {
-    if (method !== 'GET') return res(405, { error: 'Method not allowed' });
-    return getReleaseBlockRoute(
-      event,
-      res,
-      decodePathParam(releaseId),
-      decodePathParam(event.pathParameters?.type),
-      decodePathParam(event.pathParameters?.blockId),
-    );
-  }
-  if (path.endsWith('/aidlc-releases/{releaseId}/blocks')) {
-    if (method !== 'GET') return res(405, { error: 'Method not allowed' });
-    return listReleaseContentsRoute(event, res, decodePathParam(releaseId));
-  }
-  return null;
 };
 
 // ─── Router ───
@@ -1916,7 +1948,7 @@ export const handler = async (event, context) => {
       if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
     }
 
-    const { workflowId, stageId, scopeId, layer, ruleId, releaseId, channel } =
+    const { workflowId, stageId, scopeId, layer, ruleId, releaseId, channel, type, blockId } =
       event.pathParameters || {};
     if (workflowId) logger.appendKeys({ workflowId });
     const tenant = resolveTenant(getClaims(event));
@@ -1940,8 +1972,24 @@ export const handler = async (event, context) => {
         if (method === 'GET') return await listChannelsRoute(event, res);
         return res(405, { error: 'Method not allowed' });
       }
-      const contentsResponse = await routeReleaseContents(event, res, method, path, releaseId);
-      if (contentsResponse) return await contentsResponse;
+      if (path.endsWith('/aidlc-releases/{releaseId}/blocks/{type}/{blockId}')) {
+        if (method === 'GET') {
+          return await getReleaseBlockRoute(
+            event,
+            res,
+            decodePathParam(releaseId),
+            type,
+            decodePathParam(blockId),
+          );
+        }
+        return res(405, { error: 'Method not allowed' });
+      }
+      if (path.endsWith('/aidlc-releases/{releaseId}/blocks')) {
+        if (method === 'GET') {
+          return await getReleaseContentsRoute(event, res, decodePathParam(releaseId));
+        }
+        return res(405, { error: 'Method not allowed' });
+      }
       if (path.endsWith('/aidlc-releases/{releaseId}')) {
         if (method === 'PATCH')
           return await updateReleaseRoute(event, res, actor, decodePathParam(releaseId));

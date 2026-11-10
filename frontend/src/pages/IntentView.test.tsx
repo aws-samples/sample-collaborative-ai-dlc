@@ -347,6 +347,55 @@ describe('IntentView', () => {
     expect(rewind).not.toHaveBeenCalled();
   });
 
+  it('does not call a claimed run stalled while its workspace is still initializing', async () => {
+    // An orchestrator claimed the run 10 minutes ago and is still cloning a
+    // large repository: CREATED is expected, and a restart would race the clone.
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: tenMinutesAgo,
+        orchestratorStartedAt: tenMinutesAgo,
+      }),
+    );
+
+    renderAt();
+
+    expect((await screen.findAllByText('My intent')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Run stalled — never started')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
+  });
+
+  it('calls an unclaimed CREATED hand-off stalled after two minutes', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        orchestratorStartedAt: null,
+      }),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeTruthy();
+  });
+
+  it('calls a claimed run stalled once the init callback window has passed', async () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: threeHoursAgo,
+        orchestratorStartedAt: threeHoursAgo,
+      }),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
+  });
+
   it('renders one QuestionEditor for the active gate (exclusive expansion)', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
@@ -1003,6 +1052,53 @@ describe('IntentView', () => {
     expect(await screen.findByText('Repair parallel execution')).toBeInTheDocument();
     await userEvent.click(screen.getAllByRole('button', { name: 'Repair execution' }).at(-1)!);
     expect(repair).toHaveBeenCalledWith('p1', 'i1');
+  });
+
+  const laneDetail = (lanes: { slug: string; laneResuming?: boolean }[]) => ({
+    ...baseDetail({ status: 'RUNNING' }),
+    stages: lanes.map(({ slug, laneResuming = false }) => ({
+      stageInstanceId: `si-${slug}`,
+      stageId: 'functional-design',
+      unitSlug: slug,
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      phase: 'construction',
+      pendingHumanTaskId: `q-${slug}`,
+      parkedAt: '2026-01-01T00:01:00Z',
+      laneResuming,
+    })),
+    gates: lanes.map(({ slug }) => ({
+      humanTaskId: `q-${slug}`,
+      stageInstanceId: `si-${slug}`,
+      unitSlug: slug,
+      sectionIndex: 1,
+      status: 'answered',
+      kind: 'question',
+      questions: '[{"text":"Already answered"}]',
+    })),
+    events: [{ eventId: 'fanout', type: 'v2.units.section_started' }],
+  });
+
+  it('does not offer repair for a lane that is resuming after its answer', async () => {
+    get.mockResolvedValue(laneDetail([{ slug: 'asset-containment', laneResuming: true }]));
+
+    renderAt();
+
+    expect(await screen.findByText('Past questions & corrections')).toBeInTheDocument();
+    expect(screen.queryByText('Parallel execution needs recovery')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Repair execution' })).not.toBeInTheDocument();
+  });
+
+  it('holds lane repair while a sibling lane is resuming', async () => {
+    get.mockResolvedValue(
+      laneDetail([{ slug: 'asset-containment' }, { slug: 'live-data', laneResuming: true }]),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Parallel execution needs recovery')).toBeInTheDocument();
+    expect(screen.getByText(/Another lane is resuming after an answer/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Repair execution' })).toBeDisabled();
   });
 
   it('renders a review-verdict gate with its options and answers through the gate endpoint', async () => {

@@ -1,13 +1,26 @@
-// `?libraryRelease=` authoring previews over the live workflow, checked against
-// the immutable release closure and the current user-library overlay.
+// Release contents for the authoring UI (issue #607):
+//   GET /aidlc-releases/{releaseId}/blocks[?type=…]
+//   GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}
+// and the `?libraryRelease=` authoring preview on the compiled and
+// execution-preview reads.
+//
+// The properties under test: the listing is the digest-verified closure (never
+// the SYSTEM rows), a non-admin cannot use it to probe the registry, a body is
+// served only when the closure vouches for its bytes, and a custom stage that
+// names an agent only the release ships previews the way the pinned intent
+// will run it.
 import { readFileSync } from 'node:fs';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { customProfile, filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
-import { __test as releaseResolverTest } from '../../shared/release-resolver.js';
+import {
+  loadReleaseClosure,
+  __test as releaseResolverTest,
+} from '../../shared/release-resolver.js';
+import { releasePinFromRecord } from '../../shared/release-registry.js';
 import { installReleaseStoreFakes, keyOf } from '../../shared/test/fixtures/release-store-fakes.js';
 
 const BLOCKS_TABLE = 'blocks-test';
@@ -20,9 +33,8 @@ const s3 = new S3Client({});
 const objects = new Map();
 const rows = new Map();
 
-const bundle = buildReleaseBundle({
-  profileId: PROFILE,
-  files: filesFromCompatibilityFixture({
+const fixtureFiles = () =>
+  filesFromCompatibilityFixture({
     profileId: PROFILE,
     fixture: JSON.parse(
       readFileSync(
@@ -30,8 +42,8 @@ const bundle = buildReleaseBundle({
         'utf8',
       ),
     ),
-  }),
-});
+  });
+const bundle = buildReleaseBundle({ profileId: PROFILE, files: fixtureFiles() });
 const RELEASE_ID = bundle.manifest.releaseId;
 const catalogBlocks = (type) => bundle.catalog.blocks[type] ?? [];
 const releaseAgent = catalogBlocks('AGENT').find((block) => block.bodyRef);
@@ -53,6 +65,29 @@ const event = ({ method = 'GET', resource, pathParameters = {}, query = {}, clai
 
 let handler;
 const parse = (res) => ({ status: res.statusCode, body: res.body ? JSON.parse(res.body) : null });
+
+const contents = async (releaseId, { query = {}, claims } = {}) =>
+  parse(
+    await handler(
+      event({
+        resource: '/aidlc-releases/{releaseId}/blocks',
+        pathParameters: { releaseId: encodeURIComponent(releaseId) },
+        query,
+        claims,
+      }),
+    ),
+  );
+
+const releaseBlock = async (releaseId, type, blockId, { claims } = {}) =>
+  parse(
+    await handler(
+      event({
+        resource: '/aidlc-releases/{releaseId}/blocks/{type}/{blockId}',
+        pathParameters: { releaseId: encodeURIComponent(releaseId), type, blockId },
+        claims,
+      }),
+    ),
+  );
 
 const register = async () => {
   const res = parse(
@@ -80,8 +115,295 @@ beforeAll(async () => {
 beforeEach(async () => {
   installReleaseStoreFakes({ s3Mock, ddbMock, objects, rows });
   releaseResolverTest.releaseClosureCache.clear();
+  releaseResolverTest.releaseInspectionCache.clear();
   await publishReleaseBundle({ s3, bucket: ARTIFACTS_BUCKET, bundle });
   await register();
+});
+
+describe('GET /aidlc-releases/{releaseId}/blocks', () => {
+  it('lists the closure by type, read-only and labelled with the release', async () => {
+    const res = await contents(RELEASE_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.release).toMatchObject({ releaseId: RELEASE_ID, upstreamVersion: '2.9.0' });
+    expect(Object.keys(res.body.blocks)).toEqual(expect.arrayContaining(['stage', 'agent']));
+    expect(res.body.blocks.agent.map((block) => block.id)).toEqual(
+      catalogBlocks('AGENT').map((block) => block.id),
+    );
+    const agent = res.body.blocks.agent.find((block) => block.id === releaseAgent.id);
+    expect(agent).toMatchObject({
+      id: releaseAgent.id,
+      blockId: releaseAgent.id,
+      blockType: 'AGENT',
+      tenantId: 'SYSTEM',
+      readOnly: true,
+      hasBody: true,
+      bodyBytes: releaseAgent.bodyRef.bytes,
+      source: 'release',
+      releaseId: RELEASE_ID,
+    });
+    // Storage pointers stay server-side.
+    expect(agent).not.toHaveProperty('bodyRef');
+    expect(agent).not.toHaveProperty('type');
+  });
+
+  it('includes the release workflow', async () => {
+    const res = await contents(RELEASE_ID);
+    const { workflow } = bundle.catalog;
+
+    expect(res.body.workflow).toMatchObject({
+      id: workflow.id,
+      readOnly: true,
+      source: 'release',
+      releaseId: RELEASE_ID,
+    });
+    expect(res.body.workflow.placements).toHaveLength(workflow.placements.length);
+    expect(res.body.workflow.scopeRefs.length).toBeGreaterThan(0);
+  });
+
+  it('never reads the mutable SYSTEM library', async () => {
+    // A SYSTEM row with an id the release lacks must not appear: the listing is
+    // what a pinned intent resolves, not what the seed job last wrote.
+    rows.set(keyOf('BLOCK#SYSTEM#AGENT#seeded-only', 'V#latest'), {
+      pk: 'BLOCK#SYSTEM#AGENT#seeded-only',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#SYSTEM#AGENT',
+      blockId: 'seeded-only',
+      tenantId: 'SYSTEM',
+      name: 'Seeded only',
+    });
+
+    const res = await contents(RELEASE_ID, { query: { type: 'agent' } });
+
+    expect(res.body.blocks.agent.map((block) => block.id)).not.toContain('seeded-only');
+  });
+
+  it('narrows to the requested types', async () => {
+    const res = await contents(RELEASE_ID, { query: { type: 'agent,SENSOR' } });
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body.blocks).toSorted()).toEqual(['agent', 'sensor']);
+  });
+
+  it('400s an unknown type', async () => {
+    const res = await contents(RELEASE_ID, { query: { type: 'agent,widget' } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('release_block_type_invalid');
+  });
+
+  it('gives a non-admin the same 404 for a hidden release as for an unknown one', async () => {
+    const hidden = await contents(RELEASE_ID, { claims: memberClaims });
+    const unknown = await contents('aidlc:not-registered', { claims: memberClaims });
+
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.code).toBe('release_not_found');
+    expect(hidden).toEqual({
+      ...unknown,
+      body: { ...unknown.body, error: hidden.body.error },
+    });
+  });
+
+  it('serves a selectable release to a non-admin in the selection projection', async () => {
+    makeSelectable();
+
+    const res = await contents(RELEASE_ID, { claims: memberClaims });
+
+    expect(res.status).toBe(200);
+    expect(res.body.release).not.toHaveProperty('sourceSha');
+    expect(res.body.release).not.toHaveProperty('manifestKey');
+    expect(res.body.blocks.agent.length).toBeGreaterThan(0);
+  });
+
+  it('409s a tampered closure', async () => {
+    objects.set(bundle.manifest.catalog.key, JSON.stringify({ tampered: true }));
+
+    const res = await contents(RELEASE_ID);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_closure_mismatch');
+  });
+
+  it('only answers GET', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          resource: '/aidlc-releases/{releaseId}/blocks',
+          pathParameters: { releaseId: RELEASE_ID },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(405);
+  });
+});
+
+describe('GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}', () => {
+  it('returns the block with its digest-verified body', async () => {
+    const res = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id);
+
+    expect(res.status).toBe(200);
+    expect(res.body.block).toMatchObject({ id: releaseAgent.id, source: 'release' });
+    expect(res.body.body).toBe(objects.get(releaseAgent.bodyRef.s3Key));
+    expect(res.body.body.length).toBeGreaterThan(0);
+    expect(res.body.script).toBe('');
+  });
+
+  it('returns a sensor script', async () => {
+    const sensor = catalogBlocks('SENSOR').find((block) => block.scriptRef);
+    if (!sensor) return;
+
+    const res = await releaseBlock(RELEASE_ID, 'sensor', sensor.id);
+
+    expect(res.status).toBe(200);
+    expect(res.body.script).toBe(objects.get(sensor.scriptRef.s3Key));
+  });
+
+  it('404s a block the release does not ship', async () => {
+    const res = await releaseBlock(RELEASE_ID, 'agent', 'not-in-release');
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('release_block_not_found');
+  });
+
+  it('409s a body whose bytes no longer match the closure', async () => {
+    objects.set(releaseAgent.bodyRef.s3Key, 'rewritten');
+
+    const res = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_closure_mismatch');
+  });
+
+  it('409s a body that is missing', async () => {
+    objects.delete(releaseAgent.bodyRef.s3Key);
+
+    const res = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_object_missing');
+  });
+
+  it('409s a body S3 refuses as AccessDenied, as it answers for a missing object', async () => {
+    // The role has no s3:ListBucket, so a missing object comes back 403, not 404.
+    const denied = Object.assign(new Error('Access Denied'), {
+      name: 'AccessDenied',
+      $metadata: { httpStatusCode: 403 },
+    });
+    s3Mock.on(GetObjectCommand, { Key: releaseAgent.bodyRef.s3Key }).rejects(denied);
+
+    const res = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_object_missing');
+  });
+
+  it('applies the same non-admin gate as the listing', async () => {
+    const hidden = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id, {
+      claims: memberClaims,
+    });
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.code).toBe('release_not_found');
+
+    makeSelectable();
+    const visible = await releaseBlock(RELEASE_ID, 'agent', releaseAgent.id, {
+      claims: memberClaims,
+    });
+    expect(visible.status).toBe(200);
+  });
+
+  it('400s an unknown type', async () => {
+    const res = await releaseBlock(RELEASE_ID, 'widget', releaseAgent.id);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('release_block_type_invalid');
+  });
+});
+
+// An admin decides whether to promote a fork by reading what it ships, so its
+// contents must be readable while it is still import-only, without that read
+// making it runnable anywhere.
+describe('contents of an import-only custom fork', () => {
+  const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
+  const forkBundle = buildReleaseBundle({
+    profile: customProfile({
+      repository: 'acme/aidlc-fork',
+      sha: FORK_SHA,
+      baseProfileId: PROFILE,
+    }),
+    files: fixtureFiles(),
+  });
+  const FORK_ID = forkBundle.manifest.releaseId;
+  const forkAgent = (forkBundle.catalog.blocks.AGENT ?? []).find((block) => block.bodyRef);
+
+  beforeEach(async () => {
+    await publishReleaseBundle({ s3, bucket: ARTIFACTS_BUCKET, bundle: forkBundle });
+    const res = parse(
+      await handler({
+        ...event({ method: 'POST', resource: '/aidlc-releases' }),
+        body: JSON.stringify({
+          custom: { repository: 'acme/aidlc-fork', sha: FORK_SHA, baseProfile: PROFILE },
+        }),
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.release).toMatchObject({ custom: true, runnable: false });
+  });
+
+  it('lists the fork and serves its bodies to an admin', async () => {
+    const listing = await contents(FORK_ID);
+    const block = await releaseBlock(FORK_ID, 'agent', forkAgent.id);
+
+    expect(listing.status).toBe(200);
+    expect(listing.body.release).toMatchObject({ releaseId: FORK_ID });
+    expect(listing.body.blocks.agent.map((entry) => entry.id)).toContain(forkAgent.id);
+    expect(block.status).toBe(200);
+    expect(block.body.body).toBe(objects.get(forkAgent.bodyRef.s3Key));
+  });
+
+  it('still verifies the fork closure digests', async () => {
+    objects.set(forkBundle.manifest.catalog.key, JSON.stringify({ tampered: true }));
+
+    const res = await contents(FORK_ID);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_closure_mismatch');
+  });
+
+  it('gives a non-admin the unknown-release 404', async () => {
+    const listing = await contents(FORK_ID, { claims: memberClaims });
+    const block = await releaseBlock(FORK_ID, 'agent', forkAgent.id, { claims: memberClaims });
+
+    expect(listing.status).toBe(404);
+    expect(listing.body.code).toBe('release_not_found');
+    expect(block.status).toBe(404);
+  });
+
+  it('keeps an inspected fork unrunnable', async () => {
+    expect((await contents(FORK_ID)).status).toBe(200);
+
+    const record = rows.get(keyOf(`AIDLC_RELEASE#${FORK_ID}`, 'META'));
+    await expect(
+      loadReleaseClosure({
+        s3,
+        bucket: ARTIFACTS_BUCKET,
+        methodologyRelease: releasePinFromRecord(record),
+        ddb: ddbMock,
+        tableName: BLOCKS_TABLE,
+      }),
+    ).rejects.toMatchObject({ code: 'release_not_runnable' });
+    expect(releaseResolverTest.releaseClosureCache.size).toBe(0);
+  });
+
+  it('still refuses to compile against the fork', async () => {
+    seedCustomWorkflow();
+    expect((await contents(FORK_ID)).status).toBe(200);
+
+    const res = await preview({ libraryRelease: FORK_ID });
+
+    expect(res.body.code).toBe('release_not_runnable');
+  });
 });
 
 // ── `?libraryRelease=` authoring preview ──
@@ -171,20 +493,6 @@ const compiled = async (query, claims) =>
     ),
   );
 
-const validateGrid = async (query, claims) =>
-  parse(
-    await handler({
-      ...event({
-        method: 'POST',
-        resource: '/workflows/{workflowId}/validate-grid',
-        pathParameters: { workflowId: WORKFLOW_ID },
-        query,
-        claims,
-      }),
-      body: JSON.stringify({ composedGrid: { [CUSTOM_STAGE]: 'EXECUTE' }, scope: SCOPE }),
-    }),
-  );
-
 const unresolvedRefs = (body) =>
   [...(body.errors ?? []), ...(body.warnings ?? [])]
     .filter((issue) => issue.stageId === CUSTOM_STAGE && /unresolved|unknown/.test(issue.code))
@@ -269,16 +577,6 @@ describe('?libraryRelease= authoring preview', () => {
     makeSelectable();
     const visible = await preview({ libraryRelease: RELEASE_ID }, memberClaims);
     expect(visible.status).toBe(200);
-  });
-
-  it('uses the release closure for validate-grid too', async () => {
-    seedCustomWorkflow();
-
-    const result = await validateGrid({ libraryRelease: RELEASE_ID });
-
-    expect(result.status).toBe(200);
-    expect(result.body.libraryRelease).toBe(RELEASE_ID);
-    expect(unresolvedRefs(result.body)).toEqual([]);
   });
 
   it('refuses release and libraryRelease together', async () => {

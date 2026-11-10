@@ -46,6 +46,7 @@ export interface IntentEnvironmentSnapshot {
   runtimeArn: string | null;
   runtimeEndpoint: string | null;
   compatibilityVersion: string;
+  sandboxEnforcement?: boolean;
   verification: Record<string, unknown> | null;
 }
 
@@ -168,6 +169,9 @@ export interface Intent {
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  // When an orchestrator run claimed this execution; null until claimed and
+  // after a relaunch resets it. Absent from older API responses.
+  orchestratorStartedAt?: string | null;
 }
 
 export interface IntentAttachment {
@@ -333,6 +337,9 @@ export interface IntentStage {
   waitMs?: number;
   parkedAt?: string | null;
   pendingHumanTaskId?: string | null;
+  // A lane whose answer reached the run and is waiting for its runtime to
+  // resume (judged by the server, with the rule /repair uses).
+  laneResuming?: boolean;
 }
 
 // One gate-precondition finding. `overridable` is what puts

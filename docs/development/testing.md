@@ -164,7 +164,7 @@ A bare `terraform destroy` remains blocked by those protections.
 
 ## WAF origin verification
 
-Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, and WAF-disabled configuration. These tests inspect planned configuration; they do not execute the AWS WAF engine.
+Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, WAF-disabled configuration, and the building-block exemption (the counted body-content rules, the labelling and blocking rules, and which methods and paths the exemption matches). These tests inspect planned configuration; they do not execute the AWS WAF engine.
 
 For a deployed non-production environment, verify both `enable_waf` settings after Terraform apply and WAF propagation. Use a current Cognito JWT and an authenticated REST route such as `/api/projects`:
 
@@ -178,7 +178,11 @@ For a deployed non-production environment, verify both `enable_waf` settings aft
 | CloudFront OPTIONS preflight and configured OAuth callback             | Existing flow works        | Existing flow works                                |
 | Cognito local login and configured SSO login                           | Existing flow works        | Existing flow works                                |
 
-Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header. Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
+Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header.
+
+Also check that saving a building block whose body contains `../templates/foo.md` and an HTML comment succeeds, and that the same body sent to another write route (for example `POST /api/projects`) is still blocked with a WAF 403.
+
+Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
 
 ## Enterprise SSO integration test
 
@@ -422,6 +426,72 @@ npm run format:check
 npm run secretlint
 npx vitest run --project=agentcore
 ```
+
+### SRT image integration tests
+
+Requires Node 22/24 and Docker with ARM64 support (native or emulated).
+Run from the repository root; no AWS or model credentials are needed:
+
+```bash
+./scripts/agent-e2e-testing.sh --sandbox
+```
+
+The runner builds the AgentCore image and tests the actual starter configuration,
+restrictive settings and sandboxing disabled, through both process launch helpers.
+The test fixture is mounted only for testing and is excluded from the production image.
+
+| Operation                                 | Disabled | Starter  | Restrictive settings                            |
+| ----------------------------------------- | -------- | -------- | ----------------------------------------------- |
+| Workspace write/read                      | Succeeds | Succeeds | Succeeds                                        |
+| Claude session write on a fresh workspace | Succeeds | Succeeds | Succeeds                                        |
+| Credential-file read                      | Succeeds | Blocked  | Succeeds                                        |
+| Original credential-file modification     | Succeeds | Blocked  | Blocked                                         |
+| Protected test-file read/write            | Succeeds | Succeeds | Blocked; original file remains unchanged        |
+| Write allowed beneath a denied directory  | Succeeds | Succeeds | Blocked; parent deny takes precedence           |
+| Create nested user/mount namespaces       | Succeeds | Blocked  | Blocked                                         |
+| Direct connection to the test server      | Succeeds | Blocked  | Blocked                                         |
+| HTTP request to the test server           | Succeeds | Succeeds | Proxy returns 403; destination receives nothing |
+| SRT denial event                          | None     | None     | Destination and port logged                     |
+| Round trip through the runtime MCP bridge | Succeeds | Succeeds | Succeeds when Unix sockets are allowed          |
+
+The restrictive policy also runs with Unix sockets disabled, verifying that the
+MCP bridge is then blocked. Credential checks use dummy files at the four paths
+listed in the starter. The restrictive test policy denies reads elsewhere.
+
+The tests also check stdin delivery, exit status, temporary-file cleanup and the
+installed SRT version. Set `AGENTCORE_IMAGE` to reuse a local image or `KEEP_E2E=1`
+to retain containers and logs on failure. The runner supplies
+`seccomp=unconfined` and `systempaths=unconfined` for local Docker testing only.
+Timeout and credential-cancellation cases also verify that SRT removes its
+temporary filesystem mount points before returning.
+
+These checks do not exercise live harness/model calls or full intent execution.
+See [Agent sandboxing](../using-the-platform/agent-sandboxing.md) for configuring
+policies in the application.
+
+### Harness tool logs
+
+Both launch helpers log `cli.tool` events from Claude, Kiro, Codex and OpenCode's
+JSON output, with or without SRT. Each reported tool result includes its name,
+call ID when available, status, paths or command, and bounded, redacted failure
+details. Failures use `WARN`, successes use `INFO`, even when the harness exits
+zero. `cli.error` records recognized harness error events at `WARN`. Stage harness
+exits use `INFO` for zero and `ERROR` for nonzero.
+
+SRT denials, cleanup failures, dropped observations (`sandbox.log_gap`) and
+unclassified violations use `WARN`; sandbox setup failures use `ERROR`.
+Startup and optional file-write observations use `INFO` (a file observation alone
+does not confirm a denial). Set the existing Terraform `powertools_log_level`
+to `"WARN"` (`POWERTOOLS_LOG_LEVEL` in the runtime) to hide successful tool calls
+and other `INFO` logs while keeping warnings and errors. Raw stderr and plain
+console output bypass this setting.
+
+The `invocationId` links these records to SRT events; stage and persona launches
+also supply execution context. A tool failure alone is not proof of an SRT
+denial. Conversation events, write contents and successful tool output are
+excluded from these logs. Full stdout still reaches existing UI/capture callers;
+JSON conversation output is no longer duplicated into runtime logs. Stderr
+logging is unchanged. Tools that never report a result are not covered.
 
 ### Local multi-CLI E2E
 

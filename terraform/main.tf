@@ -517,6 +517,7 @@ module "lambda" {
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
   aidlc_release_pinning       = var.aidlc_release_pinning
+  pr_title_tracker_key        = var.pr_title_tracker_key
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
@@ -539,6 +540,8 @@ module "lambda" {
   yjs_documents_table_name                 = module.dynamodb.yjs_documents_table_name
   yjs_documents_table_arn                  = module.dynamodb.yjs_documents_table_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
+  enable_mcp_gateway                       = var.enable_mcp_gateway
+  gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
   core_image_digest                        = module.agentcore.image_digest
@@ -715,6 +718,7 @@ module "yjs_server" {
   powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
+  image_tag                     = var.yjs_image_tag
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.private_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
@@ -749,6 +753,7 @@ module "agentcore" {
   powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
+  image_tag                   = var.agentcore_image_tag
   build_amd64_image           = var.enable_instances_compute
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
@@ -772,6 +777,7 @@ module "agentcore" {
   disabled_clis       = var.disabled_clis
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
+  enable_mcp_gateway  = var.enable_mcp_gateway
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

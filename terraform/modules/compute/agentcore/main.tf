@@ -68,7 +68,9 @@ locals {
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
   agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
-  agentcore_image_tag     = substr(local.agentcore_files_sha, 0, 16)
+  # A pre-built image (var.image_tag) replaces the build below.
+  build_image         = var.image_tag == null
+  agentcore_image_tag = local.build_image ? substr(local.agentcore_files_sha, 0, 16) : var.image_tag
 
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
@@ -136,9 +138,12 @@ module "dynamodb_kms_runtime_access" {
 
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
-  role_names = {
+  role_names = merge({
     agentcore = aws_iam_role.agentcore.name
-  }
+    }, local.mcp_gateway_enabled ? {
+    mcp_tools       = aws_iam_role.mcp_tools[0].name
+    mcp_interceptor = aws_iam_role.mcp_interceptor[0].name
+  } : {})
 }
 
 # ---------------------------------------------------------------------------
@@ -204,7 +209,14 @@ resource "aws_ecr_lifecycle_policy" "managed_environments" {
   })
 }
 
+moved {
+  from = module.agentcore_docker_build
+  to   = module.agentcore_docker_build[0]
+}
+
 module "agentcore_docker_build" {
+  count = local.build_image ? 1 : 0
+
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
@@ -239,7 +251,7 @@ data "aws_ecr_image" "agentcore" {
 # environments targeting x86_64 instances need an amd64 core to build FROM.
 # Gated behind var.build_amd64_image so default installs pay no extra build.
 module "agentcore_docker_build_amd64" {
-  count = var.build_amd64_image ? 1 : 0
+  count = var.build_amd64_image && local.build_image ? 1 : 0
 
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
@@ -757,7 +769,7 @@ resource "aws_security_group" "agentcore" {
 # ---------------------------------------------------------------------------
 
 locals {
-  runtime_environment_variables = {
+  runtime_environment_variables = merge({
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
@@ -776,11 +788,14 @@ locals {
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
-  }
+    }, local.mcp_gateway_enabled ? {
+    AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
+    AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+  } : {})
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
-  depends_on = [aws_iam_role_policy.agentcore]
+  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway]
 
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn

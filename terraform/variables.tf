@@ -134,11 +134,29 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
+  type        = bool
+  default     = false
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)
   default     = {}
   sensitive   = true
+}
+
+variable "agentcore_image_tag" {
+  description = "Tag of a pre-built AgentCore image in its ECR repository (plus <tag>-amd64 when enable_instances_compute is true), built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
+}
+
+variable "yjs_image_tag" {
+  description = "Tag of a pre-built yjs-server image in its ECR repository, built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
 }
 
 # ---------------------------------------------------------------------------
@@ -362,4 +380,10 @@ variable "iam_permissions_boundary_arn" {
   description = "Permissions boundary for every IAM role this deployment creates, for accounts that require one. Empty sets none."
   type        = string
   default     = ""
+}
+
+variable "enable_mcp_gateway" {
+  description = "Serve the built-in aidlc MCP tools through AgentCore Gateway (grant-verified per call) instead of the in-runtime MCP server. Requires network_mode = VPC."
+  type        = bool
+  default     = false
 }

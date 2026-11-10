@@ -413,6 +413,17 @@ const REQ_DOC_NO_BLOCK = [
 ].join('\n');
 
 describe('checkRewriteStructure', () => {
+  it('refuses a rewrite that turns a text artifact into HTML', () => {
+    const check = checkRewriteStructure({
+      artifactType: 'scope-document',
+      artifactId: 'scope-document',
+      before: '## In scope\n\n## Out of scope\n',
+      after: '<!doctype html><html><body><h2>In scope</h2></body></html>',
+    });
+    expect(check.ok).toBe(false);
+    expect(check.problems.join(' ')).toContain('must be markdown');
+  });
+
   it('refuses a rewrite that drops the machine-parsed YAML block (the incident)', () => {
     const check = checkRewriteStructure({
       artifactType: 'requirements',

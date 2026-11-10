@@ -705,14 +705,13 @@ describe('POST /aidlc-releases with a custom fork', () => {
     expect(res.status).toBe(200);
     expect(res.body.release).toMatchObject({
       releaseId: FORK_RELEASE_ID,
-      custom: true,
       runnable: false,
       visible: false,
     });
     expect(res.body.blocks.agent.length).toBeGreaterThan(0);
     expect(Object.keys(res.body.blocks).every((type) => type === type.toLowerCase())).toBe(true);
     expect(res.body.blocks.agent[0]).toMatchObject({
-      blockType: 'agent',
+      blockType: 'AGENT',
       source: 'release',
       releaseId: FORK_RELEASE_ID,
       readOnly: true,
@@ -746,7 +745,7 @@ describe('POST /aidlc-releases with a custom fork', () => {
     expect(res.body).toMatchObject({
       block: {
         id: block.blockId,
-        blockType: 'agent',
+        blockType: 'AGENT',
         source: 'release',
         releaseId: FORK_RELEASE_ID,
       },

@@ -194,6 +194,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "image_tag" {
+  description = "Tag of a pre-built image in the AgentCore ECR repository (plus <tag>-amd64 when build_amd64_image is true). When set, the image is not built here."
+  type        = string
+  default     = null
+}
+
 variable "build_amd64_image" {
   description = "Also build an amd64 variant of the core image (required for x86_64 managed environments on the Instances compute type)"
   type        = bool
@@ -210,4 +216,10 @@ variable "iam_permissions_boundary_arn" {
   description = "Permissions boundary for the IAM roles this module creates; empty sets none"
   type        = string
   default     = ""
+}
+
+variable "enable_mcp_gateway" {
+  description = "Serve the built-in aidlc MCP tools through AgentCore Gateway and a grant-verifying Lambda instead of the in-runtime MCP server"
+  type        = bool
+  default     = false
 }

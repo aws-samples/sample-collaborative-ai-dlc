@@ -1133,9 +1133,9 @@ resource "aws_lambda_permission" "workflows" {
 #
 #   /aidlc-releases                      GET (list), POST (register)
 #   /aidlc-releases/{releaseId}          PATCH (support-state decision, CAS)
-#   /aidlc-releases/{releaseId}/blocks   GET (release catalog, read-only)
+#   /aidlc-releases/{releaseId}/blocks   GET (the release's catalog, read-only)
 #   /aidlc-releases/{releaseId}/blocks/{type}/{blockId}
-#                                        GET (one release block with its body)
+#                                        GET (one catalog block + its body)
 #   /aidlc-release-channels              GET (stable/candidate/preview)
 #   /aidlc-release-channels/{channel}    PUT (move a pointer, CAS),
 #                                        DELETE (clear a pointer, CAS)

@@ -38,12 +38,6 @@ const slashCommand = (text: string): { command: AssistCommand; instructions: str
   return { command: match[1].toLowerCase() as AssistCommand, instructions: match[2]?.trim() || '' };
 };
 
-const quorumMention = (text: string): string | null => {
-  const match = /^@quorum(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  if (!match) return null;
-  return match[1]?.trim() || '';
-};
-
 export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled }: Props) {
   const [value, setValue] = useState('');
   const [mentioned, setMentioned] = useState<Map<string, string>>(new Map()); // userId → label
@@ -114,16 +108,6 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
     const assist = slashCommand(trimmed);
     if (assist && onAssist) {
       onAssist(assist.command, assist.instructions);
-      onTyping(false);
-      setValue('');
-      setMentioned(new Map());
-      setMentionQuery(null);
-      requestAnimationFrame(autoGrow);
-      return;
-    }
-    const quorumAsk = onAssist ? quorumMention(trimmed) : null;
-    if (quorumAsk !== null && onAssist) {
-      onAssist('ask', quorumAsk);
       onTyping(false);
       setValue('');
       setMentioned(new Map());

@@ -40,12 +40,12 @@ output "task_role_arn" {
 }
 
 output "yjs_image_uri" {
-  description = "Full image URI with tag for the deployed yjs-server image"
-  value       = module.yjs_docker_build.image_uri
+  description = "Full image URI (tag, or digest when pre-built) for the deployed yjs-server image"
+  value       = local.yjs_image_uri
 }
 
 output "yjs_image_tag" {
-  description = "Image tag (hash) for the deployed yjs-server image"
+  description = "Image tag (content hash, or var.image_tag when pre-built) for the deployed yjs-server image"
   value       = local.yjs_image_tag
 }
 

@@ -38,6 +38,12 @@ variable "application_url" {
   type        = string
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix intent pull request titles with the intent's Jira issue key"
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string
@@ -414,4 +420,16 @@ variable "iam_permissions_boundary_arn" {
   description = "Permissions boundary for the IAM roles this module creates; empty sets none"
   type        = string
   default     = ""
+}
+
+variable "enable_mcp_gateway" {
+  description = "Whether the built-in MCP is served through AgentCore Gateway (static, so IAM resources can be counted at plan time)"
+  type        = bool
+  default     = false
+}
+
+variable "gateway_grant_key_arn" {
+  description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
 }

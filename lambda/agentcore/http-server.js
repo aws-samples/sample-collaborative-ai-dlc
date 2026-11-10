@@ -17,6 +17,10 @@ import {
 //
 // Invocation payloads:
 //   { "command": "init-ws",  ...initWs args }
+//   { "command": "init-ws-start", ...initWs args, callbackId }
+//     → accepts in ms, runs init-ws as a background job (clone + branch
+//       publish can outlive the orchestrator Lambda), completes the
+//       orchestrator's durable callback with init-ws's {ok, reason, detail}.
 //   { "command": "run-stage", ...runStage args }
 //   { "command": "run-stage-start", ...runStage args, stageCallbackId }
 //     → accepts in ms, runs the stage as a background job, completes the
@@ -79,6 +83,10 @@ import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
+import { runWithGatewayGrant } from './mcp/gateway-context.js';
+import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
+import { readSandboxSettings } from '../shared/sandbox-settings.js';
+import { validateSandboxConfig } from '../shared/sandbox-config.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -111,6 +119,7 @@ export const dispatchInvocation = async ({
   handlers,
   busy,
   prepareInvocation = null,
+  prepareSandbox = null,
   now = () => new Date().toISOString(),
 }) => {
   const command = payload?.command;
@@ -134,10 +143,21 @@ export const dispatchInvocation = async ({
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
+    delete handlerPayload.gatewayGrant;
     credentialSession = context.credentialSession ?? null;
-    const result = credentialSession
-      ? await credentialSession.run(() => handler(handlerPayload, context))
-      : await handler(handlerPayload, context);
+    delete handlerPayload.sandbox;
+    delete handlerPayload.agentSandbox;
+    const operation = () =>
+      runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
+        credentialSession
+          ? credentialSession.run(() => handler(handlerPayload, context))
+          : handler(handlerPayload, context),
+      );
+    const sandbox =
+      prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
+        ? await prepareSandbox(payload)
+        : null;
+    const result = sandbox ? await withSandbox(sandbox, operation) : await operation();
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -188,6 +208,7 @@ export const createServer = ({
   handlers,
   busy = createBusyTracker(),
   prepareInvocation = null,
+  prepareSandbox = null,
   now = () => new Date().toISOString(),
 }) => {
   return http.createServer(async (req, res) => {
@@ -214,6 +235,7 @@ export const createServer = ({
         handlers,
         busy,
         prepareInvocation,
+        prepareSandbox,
         now,
       });
       return send(statusCode, body);
@@ -235,6 +257,7 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
+  const { createInitWsStart } = await import('./commands/init-ws-start.js');
   const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
   const { createComposePlanStart } = await import('./commands/compose-plan-start.js');
   const { createQuorumEditPlanStart } = await import('./commands/quorum-edit-plan-start.js');
@@ -399,6 +422,21 @@ const main = async () => {
       busy,
       activeJobs: stageJobs,
     })(p);
+  // Async workspace initialization: init-ws as a background job so a large
+  // clone is not bounded by the orchestrator Lambda's function timeout. The
+  // job maps live for the container, not the request, so a dispatch retry
+  // sees the running or finished job.
+  const initJobs = new Map();
+  const initCompletedJobs = new Map();
+  handlers.initWsStart = (p) =>
+    createInitWsStart({
+      initWs: (q) => handlers.initWs(q),
+      sendCallbackSuccess: sendStageCallbackSuccess,
+      sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+      busy,
+      activeJobs: initJobs,
+      completedJobs: initCompletedJobs,
+    })(p);
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({
@@ -478,6 +516,21 @@ const main = async () => {
     handlers,
     busy,
     prepareInvocation: invocationContext,
+    prepareSandbox: async (payload) => {
+      const sandbox = await resolveInvocationSandbox({
+        payload,
+        store,
+        readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+      });
+      if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
+      logger.info('invocation sandbox configuration', {
+        command: payload.command,
+        executionId: payload.executionId || payload.intentId,
+        sandboxEnabled: sandbox.enabled,
+        sandboxVersion: sandbox.version ?? null,
+      });
+      return sandbox;
+    },
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
 };

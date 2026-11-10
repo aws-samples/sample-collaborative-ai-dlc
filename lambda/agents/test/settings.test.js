@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   DeleteParameterCommand,
@@ -45,6 +45,24 @@ beforeEach(() => {
     return {
       Payload: Buffer.from(JSON.stringify(credentialMetadataHandler(request))),
     };
+  });
+});
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('Bedrock inference region', () => {
+  it.each([
+    ['us-west-2', 'eu-central-1', 'us-west-2'],
+    [undefined, 'eu-central-1', 'eu-central-1'],
+    ['', 'eu-central-1', 'eu-central-1'],
+    [undefined, undefined, 'us-east-1'],
+  ])('reports the effective region for %s / %s', async (bedrockRegion, awsRegion, expected) => {
+    vi.stubEnv('BEDROCK_REGION', bedrockRegion);
+    vi.stubEnv('AWS_REGION', awsRegion);
+    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+    const response = await handler(event('GET'));
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).bedrockRegion).toBe(expected);
   });
 });
 

@@ -22,6 +22,7 @@ import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/envi
 import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import { currentCredentialSession } from './credential-session.js';
 import { createRuntimeMcpBridge } from './mcp/runtime-bridge.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -244,6 +245,20 @@ const renderWorkspaceDetectionContract = (stageId, policy = null) => {
   ].join('\n');
 };
 
+// The engine commits this stage's work with the agent's Conventional Commits
+// description, which release tooling reads for the version and changelog.
+const CHANGE_DESCRIPTION_CONTRACT = [
+  '## Commit description contract',
+  '',
+  'The engine commits your work when you finish, and repositories release from those',
+  'commit messages. Before `send_output`, call `describe_changes` once with the',
+  'Conventional Commits type that matches what you changed in the repository: `feat`',
+  'for new behaviour, `fix` for a bug fix, `docs` when you only wrote documentation or',
+  'AI-DLC artifacts, and so on. Mark it breaking only when existing users must change',
+  'something, and say what breaks and how to migrate. Leave issue keys out of the',
+  "summary: the engine adds the intent's own. If you change nothing, skip it.",
+].join('\n');
+
 // Render the resolved input artifacts as a prompt section. An `expectedAbsent`
 // input (its producer exists in the workflow but is out of the selected scope —
 // the plan resolver's scope-shortcut classification) is called out explicitly:
@@ -424,6 +439,8 @@ export const buildStagePrompt = ({
   conductor = '',
   compiledContext = '',
   attachments = [],
+  // This session owns the stage and has describe_changes.
+  describeChanges = false,
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -456,6 +473,7 @@ export const buildStagePrompt = ({
   if (unitScope) sections.push('', unitScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
+  if (describeChanges) sections.push('', CHANGE_DESCRIPTION_CONTRACT);
   const scopePolicy = renderScopePolicy(stage.policy);
   if (scopePolicy) sections.push('', scopePolicy);
   sections.push(
@@ -604,6 +622,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
             // everywhere else — independent of the policy, because the absence of an
             // answer path does not depend on what the release enables.
             ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),
+            // Written ONLY for the session that owns a stage, so it gets
+            // describe_changes. Absent everywhere else.
+            ...(scope.describeChanges === true && scope.checkpointOwner !== false
+              ? { V2_DESCRIBE_CHANGES: '1' }
+              : {}),
             // The validation revision the checkpoint receipts are scoped to. Absent
             // for the first run and for every run without a policy.
             ...(scope.policy && scope.validationRound
@@ -636,11 +659,39 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
   },
 });
 
+const GATEWAY_PROXY_ENTRY = new URL('./mcp/gateway-proxy.js', import.meta.url).pathname;
+
+// With the Gateway enabled the runtime bridge runs the proxy instead of the
+// local server. A missing grant fails closed: falling back to the local server
+// would silently restore direct data access the deployment opted out of.
+export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
+  if (!env.AIDLC_MCP_GATEWAY_URL) return { entry: mcpEntry, trustedEnv };
+  if (!grant) {
+    throw Object.assign(new Error('Gateway MCP requires a control-plane grant'), {
+      code: 'GATEWAY_GRANT_MISSING',
+    });
+  }
+  return {
+    entry: GATEWAY_PROXY_ENTRY,
+    trustedEnv: {
+      ...trustedEnv,
+      AIDLC_MCP_GATEWAY_URL: env.AIDLC_MCP_GATEWAY_URL,
+      AIDLC_MCP_GATEWAY_TARGET: env.AIDLC_MCP_GATEWAY_TARGET ?? 'aidlc',
+      AIDLC_MCP_GATEWAY_GRANT: grant,
+    },
+  };
+};
+
 const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
   const session = currentCredentialSession();
   if (!session) return env; // Pure/local harness callers own their process lifetime.
-  const trustedEnv = buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env;
-  const bridge = await createRuntimeMcpBridge({ entry: mcpEntry, trustedEnv });
+  const launch = mcpServerLaunch({
+    mcpEntry,
+    trustedEnv: buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env,
+    env,
+    grant: currentGatewayGrant(),
+  });
+  const bridge = await createRuntimeMcpBridge(launch);
   try {
     session.own(() => bridge.dispose());
   } catch (error) {
@@ -823,7 +874,8 @@ export const materializeOpenCodeConfig = async ({
 // appended rollout JSONL never touches AgentCore's managed-session mount. The
 // stage runner copies only the selected rollout to/from durable storage around
 // resumable author runs (cli/codex-store.js). Config, global guidance, reviewer
-// sessions, and SQLite state always remain local.
+// sessions, and SQLite state always remain local. SQLite defaults to CODEX_HOME:
+// a shared index would retain rollout paths from invocation homes we deleted.
 
 // TOML value emitters — config values here are flat strings/arrays/maps, so a
 // tiny local emitter beats a dependency. Strings are emitted as TOML basic
@@ -950,10 +1002,6 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
   return sections.join('\n\n');
 };
 
-// Ephemeral-local SQLite home for codex state (see header comment). Overridable
-// for tests/local runs via env.
-const codexSqliteHome = (env) => env.V2_CODEX_SQLITE_HOME || '/home/node/.codex-state';
-
 export const buildCodexConfigToml = ({
   mcpEntry,
   scope,
@@ -980,7 +1028,6 @@ export const buildCodexConfigToml = ({
     // AGENTS.md. When it HAS one, the global $CODEX_HOME/AGENTS.md (written by
     // materializeCodexHome) still points codex at the runtime rules.
     'project_doc_fallback_filenames = [".aidlc/rules.md"]',
-    `sqlite_home = ${tomlString(codexSqliteHome(env))}`,
     '',
     '[history]',
     'persistence = "save-all"',
@@ -1214,6 +1261,7 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
     attachments,
+    describeChanges: scope?.describeChanges === true && scope?.checkpointOwner !== false,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

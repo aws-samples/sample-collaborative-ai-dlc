@@ -36,7 +36,6 @@ const releaseClosureCache = new Map();
 // we can validate anything about it. Cap it so a corrupted or hostile object
 // cannot OOM the container: a real closure catalog is tens of KB.
 const RELEASE_JSON_MAX_BYTES = 20 * 1024 * 1024;
-const RELEASE_OBJECT_MAX_BYTES = 5 * 1024 * 1024;
 
 class ReleaseResolverError extends Error {
   constructor(code, message, { cause, details = null } = {}) {
@@ -183,70 +182,7 @@ const readClosureCatalog = async ({ s3, bucket, manifest }) => {
   return catalog;
 };
 
-const assertForkPinAllowed = async ({
-  forkPin,
-  methodologyRelease,
-  ddb,
-  tableName,
-  requireRunnable,
-}) => {
-  if (!forkPin) return;
-  const record =
-    ddb && tableName
-      ? await getRelease({ ddb, tableName, releaseId: methodologyRelease.releaseId })
-      : null;
-  if (record && (!requireRunnable || record.runnable === true)) return;
-
-  const refusedExecution = requireRunnable;
-  throw new ReleaseResolverError(
-    refusedExecution ? 'release_not_runnable' : 'release_not_found',
-    refusedExecution
-      ? `release-resolver: fork ${String(methodologyRelease.releaseId)} has not been promoted and must not execute`
-      : `release-resolver: fork ${String(methodologyRelease.releaseId)} is not registered`,
-    {
-      details: {
-        releaseId: methodologyRelease.releaseId ?? null,
-        sourceRepository: methodologyRelease.sourceRepository ?? null,
-        custom: true,
-      },
-    },
-  );
-};
-
-const assertManifestRunnable = (manifest, forkPin, requireRunnable) => {
-  // Under an official pin, copied fork/T0 bytes remain import-only.
-  if (!requireRunnable || forkPin || (manifest.trustTier !== 'T0' && manifest.custom !== true)) {
-    return;
-  }
-  throw new ReleaseResolverError(
-    'release_not_runnable',
-    `release-resolver: release ${manifest.releaseId} is import-only (trustTier ${String(manifest.trustTier)}) and must never execute`,
-    {
-      details: {
-        releaseId: manifest.releaseId,
-        sourceSha: manifest.sourceSha,
-        sourceRepository: manifest.sourceRepository ?? null,
-        trustTier: manifest.trustTier ?? null,
-        custom: manifest.custom === true,
-      },
-    },
-  );
-};
-
-/**
- * Resolves and verifies the immutable closure a `methodologyRelease` pin names.
- * Throws `release_not_found` when the release was never published and
- * `release_closure_mismatch` on any drift between pin, manifest, and catalog.
- */
-const loadVerifiedReleaseClosure = async ({
-  s3,
-  bucket,
-  methodologyRelease,
-  ddb = null,
-  tableName = null,
-  cache = null,
-  requireRunnable = true,
-}) => {
+const assertResolvablePin = ({ s3, bucket, methodologyRelease }) => {
   if (!methodologyRelease?.sourceSha || !methodologyRelease?.closureDigest) {
     throw new ReleaseResolverError(
       'release_pin_invalid',
@@ -259,24 +195,60 @@ const loadVerifiedReleaseClosure = async ({
       'release-resolver: an S3 client and bucket are required to resolve a release',
     );
   }
+};
+
+/**
+ * Resolves and verifies the immutable closure a `methodologyRelease` pin names.
+ * Throws `release_not_found` when the release was never published and
+ * `release_closure_mismatch` on any drift between pin, manifest, and catalog.
+ */
+const loadReleaseClosure = async ({
+  s3,
+  bucket,
+  methodologyRelease,
+  ddb = null,
+  tableName = null,
+  cache = releaseClosureCache,
+}) => {
+  assertResolvablePin({ s3, bucket, methodologyRelease });
   const cacheKey = closureCacheKey(methodologyRelease);
   const cached = readCachedClosure(cache, cacheKey);
   if (cached) return cached;
 
-  // A fork's pin names it as one, so its manifest is read from the fork's own
-  // custom prefix; the reader asserts that the bytes there describe that fork.
   const forkPin = methodologyRelease.custom === true;
   // A fork becomes runnable only through an admin promotion, which the registry
   // records. A fork pin is honoured only while that record says so; without a
   // registry to ask, it is refused. Promotion is never revoked, so a closure
   // cached after this check stays valid.
-  await assertForkPinAllowed({
-    forkPin,
-    methodologyRelease,
-    ddb,
-    tableName,
-    requireRunnable,
-  });
+  if (forkPin) {
+    const record =
+      ddb && tableName
+        ? await getRelease({ ddb, tableName, releaseId: methodologyRelease.releaseId })
+        : null;
+    if (record?.runnable !== true) {
+      throw new ReleaseResolverError(
+        'release_not_runnable',
+        `release-resolver: fork ${String(methodologyRelease.releaseId)} has not been promoted and must not execute`,
+        {
+          details: {
+            releaseId: methodologyRelease.releaseId ?? null,
+            sourceRepository: methodologyRelease.sourceRepository ?? null,
+            custom: true,
+          },
+        },
+      );
+    }
+  }
+  const closure = await verifyReleaseClosure({ s3, bucket, methodologyRelease });
+  return cache ? rememberClosure(cache, cacheKey, closure) : closure;
+};
+
+// Reads and digest-verifies the closure a pin names: manifest, provenance and
+// catalog. It decides nothing about whether the release may run; the callers do.
+const verifyReleaseClosure = async ({ s3, bucket, methodologyRelease }) => {
+  // A fork's pin names it as one, so its manifest is read from the fork's own
+  // custom prefix; the reader asserts that the bytes there describe that fork.
+  const forkPin = methodologyRelease.custom === true;
   const manifest = await readReleaseManifest({
     s3,
     bucket,
@@ -293,9 +265,28 @@ const loadVerifiedReleaseClosure = async ({
       { details: { sourceSha: methodologyRelease.sourceSha } },
     );
   }
-  // Defense in depth: selection and execution are separate surfaces, so a
-  // forged or restored official pin cannot execute copied custom/T0 bytes.
-  assertManifestRunnable(manifest, forkPin, requireRunnable);
+  // Defense in depth. The registry stamps a fork pin only for a fork an admin
+  // promoted through the fidelity guard, but selection and execution are
+  // separate surfaces: a pin can also arrive from a hand-edited META row, a
+  // restored backup, or a future code path. So a custom or T0 manifest executes
+  // only through a pin that names it as a fork and was read from that fork's
+  // own prefix; under an official pin (even with the bytes copied onto the
+  // official key) it is refused.
+  if (!forkPin && (manifest.trustTier === 'T0' || manifest.custom === true)) {
+    throw new ReleaseResolverError(
+      'release_not_runnable',
+      `release-resolver: release ${manifest.releaseId} is import-only (trustTier ${String(manifest.trustTier)}) and must never execute`,
+      {
+        details: {
+          releaseId: manifest.releaseId,
+          sourceSha: manifest.sourceSha,
+          sourceRepository: manifest.sourceRepository ?? null,
+          trustTier: manifest.trustTier ?? null,
+          custom: manifest.custom === true,
+        },
+      },
+    );
+  }
   assertPinMatchesManifest({ pin: methodologyRelease, manifest });
 
   const catalog = await readClosureCatalog({ s3, bucket, manifest });
@@ -318,89 +309,34 @@ const loadVerifiedReleaseClosure = async ({
       ]),
     ),
   });
-  return cache ? rememberClosure(cache, cacheKey, closure) : closure;
+  return closure;
 };
 
-/**
- * Resolves a registered release for the execution path. Custom releases must
- * have passed the promotion guard before they can reach runtime.
- */
-const loadReleaseClosure = async (options) =>
-  loadVerifiedReleaseClosure({
-    ...options,
-    cache: options.cache ?? releaseClosureCache,
-    requireRunnable: true,
-  });
+// Separate from releaseClosureCache on purpose: loadReleaseClosure answers from
+// its cache before the runnable check, so an inspected, unpromoted fork must
+// never be in it.
+const releaseInspectionCache = new Map();
 
 /**
- * Reads a registered release for an administrator's inspection UI. This still
- * verifies the manifest and catalog digests, but does not grant permission to
- * execute an import-only closure.
+ * Reads a registered release's closure to SHOW it, never to run it: the admin
+ * contents view of a fork that is still import-only. Every digest, provenance
+ * and official-pin check of loadReleaseClosure applies; only the
+ * fork-must-be-promoted gate is not asked, because nothing executes. The
+ * caller decides who may read which record. Execution paths must keep using
+ * loadReleaseClosure.
  */
-const loadReleaseInspectionClosure = async (options) =>
-  loadVerifiedReleaseClosure({
-    ...options,
-    cache: null,
-    requireRunnable: false,
-  });
-
-/**
- * Reads one content-addressed release object only when the verified closure
- * manifest lists the key and digest. Used by the read-only release contents
- * view; runtime consumers keep using the execution resolver.
- */
-const readReleaseObject = async ({ s3, bucket, closure, key }) => {
-  const expectedDigest = closure?.objectDigests?.get(key);
-  if (!expectedDigest) {
-    throw new ReleaseResolverError(
-      'release_closure_mismatch',
-      `release-resolver: object ${String(key)} is not listed in the release manifest`,
-      { details: { key: String(key ?? '') } },
-    );
-  }
-  let result;
-  let body;
-  try {
-    result = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-    if (Number(result.ContentLength ?? 0) > RELEASE_OBJECT_MAX_BYTES) {
-      throw new ReleaseResolverError(
-        'release_object_too_large',
-        `release-resolver: object ${key} is ${result.ContentLength} bytes, over the ${RELEASE_OBJECT_MAX_BYTES}-byte release object cap`,
-        {
-          details: {
-            key,
-            bytes: Number(result.ContentLength),
-            limit: RELEASE_OBJECT_MAX_BYTES,
-          },
-        },
-      );
-    }
-    body = await bodyToStringWithin(result.Body, RELEASE_OBJECT_MAX_BYTES, (bytes) => {
-      if (Number(bytes) > RELEASE_OBJECT_MAX_BYTES) {
-        throw new ReleaseResolverError(
-          'release_object_too_large',
-          `release-resolver: object ${key} is over the ${RELEASE_OBJECT_MAX_BYTES}-byte release object cap`,
-          { details: { key, bytes: Number(bytes), limit: RELEASE_OBJECT_MAX_BYTES } },
-        );
-      }
-    });
-  } catch (error) {
-    if (error instanceof ReleaseResolverError) throw error;
-    if (!isNotFound(error)) throw error;
-    throw new ReleaseResolverError(
-      'release_object_missing',
-      `release-resolver: object ${key} is missing from the published release`,
-      { cause: error, details: { key } },
-    );
-  }
-  if (sha256(body) !== expectedDigest) {
-    throw new ReleaseResolverError(
-      'release_closure_mismatch',
-      `release-resolver: object ${key} does not match the manifest digest`,
-      { details: { key } },
-    );
-  }
-  return body;
+const inspectReleaseClosure = async ({
+  s3,
+  bucket,
+  methodologyRelease,
+  cache = releaseInspectionCache,
+}) => {
+  assertResolvablePin({ s3, bucket, methodologyRelease });
+  const cacheKey = closureCacheKey(methodologyRelease);
+  const cached = readCachedClosure(cache, cacheKey);
+  if (cached) return cached;
+  const closure = await verifyReleaseClosure({ s3, bucket, methodologyRelease });
+  return cache ? rememberClosure(cache, cacheKey, closure) : closure;
 };
 
 const getUserBlock = async ({ ddb, tableName, tenantId, type, blockId, version }) => {
@@ -684,30 +620,28 @@ const resolveRuntimeFile = async ({ s3, bucket, closure, repoPath }) => {
 
 const __test = {
   releaseClosureCache,
+  releaseInspectionCache,
   RELEASE_CLOSURE_CACHE_LIMIT,
   RELEASE_JSON_MAX_BYTES,
-  RELEASE_OBJECT_MAX_BYTES,
   closureCacheKey,
 };
 
 export {
   __test,
+  inspectReleaseClosure,
   loadReleaseClosure,
-  loadReleaseInspectionClosure,
   methodologyReleasePinFromManifest,
   ReleaseResolverError,
-  readReleaseObject,
   resolveMethodologyLibrary,
   resolveReleaseWorkflow,
   resolveRuntimeFile,
 };
 
 export default {
+  inspectReleaseClosure,
   loadReleaseClosure,
-  loadReleaseInspectionClosure,
   methodologyReleasePinFromManifest,
   ReleaseResolverError,
-  readReleaseObject,
   resolveMethodologyLibrary,
   resolveReleaseWorkflow,
   resolveRuntimeFile,

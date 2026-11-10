@@ -27,18 +27,25 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  LambdaClient,
+  InvokeCommand,
+  SendDurableExecutionCallbackSuccessCommand,
+} from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
 import {
   prepareAgentInvocation,
   executionCredentialBinding,
 } from '../shared/agent-credential-service.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../shared/sandbox-settings.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
@@ -93,9 +100,15 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
+import {
+  bindGateCallback,
+  ownsAnsweredGate,
+  releaseUnusedGateCallback,
+  unparkGate,
+} from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
+import { withTrackerKeyPrefix } from '../shared/tracker-key.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -112,6 +125,7 @@ const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
+const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
 
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
@@ -147,6 +161,8 @@ const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
+// Prefix intent pull request titles with the intent's Jira issue key.
+const PR_TITLE_TRACKER_KEY = () => process.env.PR_TITLE_TRACKER_KEY === 'true';
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -282,8 +298,18 @@ const defaultDeps = () => ({
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
+  issueGatewayGrant: gatewayGrantIssuer,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
+  // Completes this execution's own callback for a gate answered before its
+  // wait began (gate-callback.js releaseUnusedGateCallback).
+  releaseCallback: (callbackId, result) =>
+    lambda.send(
+      new SendDurableExecutionCallbackSuccessCommand({
+        CallbackId: callbackId,
+        Result: Buffer.from(JSON.stringify(result ?? null)),
+      }),
+    ),
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
     defaultSourceControlOperation({
       projectId,
@@ -304,6 +330,7 @@ const defaultDeps = () => ({
       args: { base, head },
     }),
   applicationUrl: APPLICATION_URL(),
+  prTitleTrackerKey: PR_TITLE_TRACKER_KEY(),
   unitPrProvider: {
     compare: ({ projectId, gitProvider, repoId, base, head }) =>
       defaultSourceControlOperation({
@@ -400,10 +427,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     invokeRuntime: rawInvokeRuntime,
     stopSession,
     broadcast,
+    releaseCallback = null,
     openPr,
     comparePrBranches,
     unitPrProvider,
     applicationUrl,
+    prTitleTrackerKey = false,
   } = deps;
   const { intentId, executionId } = event;
   logger.resetKeys();
@@ -430,7 +459,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
     // Version behavior in the existing first checkpoint. Old histories have no
     // marker and retain their operation sequence; repair creates a new history.
-    return loaded ? { ...loaded, completionPolicyVersion: 1 } : null;
+    // laneWaitPolicyVersion 1: lanes read their integration turn in durable
+    // steps (section.js waitForIntegrationTurn).
+    return loaded ? { ...loaded, completionPolicyVersion: 1, laneWaitPolicyVersion: 1 } : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
@@ -438,7 +469,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const credentialBinding = executionCredentialBinding(meta);
-  const invokeIntentRuntime = async (payload, runtimeSessionId) => {
+  const invokeIntentRuntime = async (rawPayload, runtimeSessionId, { policy = null } = {}) => {
+    const gatewayScope =
+      typeof deps.issueGatewayGrant === 'function'
+        ? gatewayScopeForCommand(rawPayload, {
+            projectId,
+            intentId: meta.intentId,
+            executionId,
+            policy,
+          })
+        : null;
+    const payload = gatewayScope
+      ? { ...rawPayload, gatewayGrant: await deps.issueGatewayGrant(gatewayScope) }
+      : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
       return rawInvokeRuntime(payload, runtimeSessionId, runtimeTarget);
@@ -451,7 +494,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         credentialBinding,
         runtimeCapabilities: meta.environment,
       },
-      { issueGrant: deps.issueAgentCredentialGrant },
+      {
+        issueGrant: deps.issueAgentCredentialGrant,
+        readSandbox: async () => meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG,
+      },
     );
     return rawInvokeRuntime(
       {
@@ -573,6 +619,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return {
         runId: updated?.orchestratorRunId ?? token,
         orchestratorExpiresAt: updated?.orchestratorExpiresAt ?? expiresAt,
+        // Replay gate for the workspace initialization shape (see
+        // initWorkspace). Memoized with the claim, so a run that checkpointed
+        // before this field existed replays the legacy `init-ws` step.
+        initWsMode: INIT_WS_MODE_CALLBACK,
       };
     });
     runId = claim.runId;
@@ -624,31 +674,31 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       'v2.workspace.initializing',
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
     );
-    const initResult = await ctx.step('init-ws', () =>
-      invokeIntentRuntime(
-        {
-          command: 'init-ws',
-          projectId,
-          intentId,
-          executionId,
-          repos: meta.repos ?? [],
-          branch: meta.branch,
-          baseBranch: meta.baseBranch,
-          baseBranches: meta.baseBranches,
-          gitProvider,
-          repoProviders: meta.repoProviders ?? null,
-          ...(gitAuthor ? { gitAuthor } : {}),
-          title: meta.title,
-          prompt: meta.prompt,
-          workflowId,
-          workflowVersion,
-          scope,
-          startedBy: meta.startedBy,
-          attachments: meta.attachments ?? [],
-        },
-        sessionId,
-      ),
-    );
+    const initResult = await initWorkspace(ctx, invokeIntentRuntime, {
+      mode: claim.initWsMode ?? null,
+      sessionId,
+      orchestratorRunId: runId,
+      stopIntentSession,
+      initPayload: {
+        projectId,
+        intentId,
+        executionId,
+        repos: meta.repos ?? [],
+        branch: meta.branch,
+        baseBranch: meta.baseBranch,
+        baseBranches: meta.baseBranches,
+        gitProvider,
+        repoProviders: meta.repoProviders ?? null,
+        ...(gitAuthor ? { gitAuthor } : {}),
+        title: meta.title,
+        prompt: meta.prompt,
+        workflowId,
+        workflowVersion,
+        scope,
+        startedBy: meta.startedBy,
+        attachments: meta.attachments ?? [],
+      },
+    });
     // The runtime returns {ok:false, reason} on checkout / vertex / seed failure;
     // it does NOT throw. Detect it here or the run would march on into stages
     // against an un-initialized workspace.
@@ -1094,9 +1144,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Retired while parked? Cancel/rewind supersedes the pending gate and
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
-        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-        );
+        // An early answer's unused callback is released in this same step, so
+        // the operation sequence of runs in progress is unchanged.
+        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, async () => {
+          const gate = await store.getHumanTask(executionId, humanTaskId, {
+            consistentRead: true,
+          });
+          if (answeredEarly) {
+            await releaseUnusedGateCallback(releaseCallback, {
+              gate,
+              callbackId,
+              humanTaskId,
+              logger,
+            });
+          }
+          return gate;
+        });
         if (gateAfter?.status === 'superseded') {
           logger.info('run retired while parked', { humanTaskId });
           return {
@@ -1169,6 +1232,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       invokeRuntime: invokeIntentRuntime,
       stopSession: stopIntentSession,
       broadcast,
+      releaseCallback,
       emitEvent,
       fail,
       executeStage,
@@ -1176,6 +1240,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ids: { projectId, intentId, executionId },
       runId: null, // stamped below once minted
       completionPolicyVersion: meta.completionPolicyVersion ?? 0,
+      laneWaitPolicyVersion: meta.laneWaitPolicyVersion ?? 0,
       intentBranch: meta.branch,
       cloneBase: {
         repos: meta.repos ?? [],
@@ -2523,6 +2588,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         executionId,
         runId,
         applicationUrl,
+        prTitleTrackerKey,
         log: (m) => logger.info(m),
       });
     });
@@ -2617,6 +2683,111 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 // that dies mid-stage surfaces here in minutes instead of hours.
 const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
 const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// Workspace initialization (clone, intent-branch publish, Intent anchor, state
+// seed). The synchronous `init-ws` step holds the whole clone inside one
+// orchestrator Lambda invocation, so a large repository outlives the 900 s
+// function timeout and the durable retry lands on a half-written checkout.
+// Runs whose claim carries INIT_WS_MODE_CALLBACK instead dispatch
+// `init-ws-start` and suspend on a durable callback, mirroring runStage.
+//
+// Replay compatibility: the mode rides the memoized `mint-run-id` result, so a
+// run that checkpointed under the old code replays exactly `init-ws`; only new
+// runs use the probe/callback operation names.
+//
+// Older environment images: a published environment revision pins the
+// AgentCore container it was built from, and one built before init-ws-start
+// answers `unknown command`. The side-effect-free probe (no callbackId, so a
+// current container refuses with missing_callback_id) detects that BEFORE a
+// callback exists, and such runs keep the synchronous step.
+//
+// Every outcome is returned in init-ws's own {ok, reason, detail} shape so the
+// caller's single decode path is unchanged.
+export const INIT_WS_MODE_CALLBACK = 'callback';
+// Bounds a clone that is still heartbeating but never finishes; generous
+// because a repository's size is not known up front.
+const INIT_WS_CALLBACK_TIMEOUT = { hours: 2 };
+const INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// The container answers an unregistered command with HTTP 400, which AgentCore
+// raises as RuntimeClientError ("Received error (400) from runtime") rather
+// than returning the body. The probe sends a command and valid JSON, so a 400
+// from the runtime can only mean the command is unknown. A body-shaped
+// `unknown command` error is accepted too (direct/local transports).
+const isUnknownCommandResponse = (res) =>
+  typeof res?.error === 'string' && res.error.startsWith('unknown command');
+const isUnknownCommandError = (err) =>
+  err?.name === 'RuntimeClientError' && /\(400\)/.test(err?.message ?? '');
+
+const initWorkspace = async (
+  ctx,
+  invokeRuntime,
+  { mode, sessionId, orchestratorRunId, initPayload, stopIntentSession },
+) => {
+  const runSynchronously = () =>
+    ctx.step('init-ws', () => invokeRuntime({ command: 'init-ws', ...initPayload }, sessionId));
+  if (mode !== INIT_WS_MODE_CALLBACK) return runSynchronously();
+
+  const support = await ctx.step('init-ws-probe', async () => {
+    try {
+      const res = await invokeRuntime(
+        { command: 'init-ws-start', executionId: initPayload.executionId },
+        sessionId,
+      );
+      return { callback: !isUnknownCommandResponse(res) };
+    } catch (err) {
+      if (isUnknownCommandError(err)) return { callback: false };
+      // Transport failures (cold-start timeout, throttling) keep the durable
+      // step's retry behavior, exactly as the synchronous init-ws step does.
+      throw err;
+    }
+  });
+  if (!support?.callback) return runSynchronously();
+
+  const [initDone, callbackId] = await ctx.createCallback('init-ws-cb', {
+    timeout: INIT_WS_CALLBACK_TIMEOUT,
+    heartbeatTimeout: INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT,
+  });
+  const dispatch = await ctx.step('init-ws-dispatch', () =>
+    invokeRuntime(
+      { command: 'init-ws-start', ...initPayload, orchestratorRunId, callbackId },
+      sessionId,
+    ),
+  );
+  // The accept only says "job started"; a refusal (a concurrent init job,
+  // heartbeat channel unavailable) fails initialization here.
+  if (!dispatch || dispatch.ok === false || dispatch.error) {
+    return {
+      ok: false,
+      reason: dispatch?.reason ?? 'init_ws_dispatch_failed',
+      detail: dispatch?.detail ?? dispatch?.error ?? null,
+    };
+  }
+  try {
+    // Callback serdes is pass-through: the container's body arrives as the raw
+    // JSON string (see runStage).
+    const raw = await initDone;
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!result || typeof result !== 'object') {
+      return { ok: false, reason: 'init_ws_bad_callback_result' };
+    }
+    return result;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return { ok: false, reason: 'init_ws_bad_callback_result', detail: err.message };
+    }
+    // Callback timeout / heartbeat expiry (dead container) / explicit failure.
+    // The container job has no deadline of its own, so a clone that outlived
+    // the callback would keep the session busy and its activeJobs reservation
+    // would refuse a retry. Stop the session before the run is marked FAILED.
+    await ctx.step('init-ws-stop', () => stopIntentSession(sessionId));
+    return {
+      ok: false,
+      reason: 'init_ws_callback_failed',
+      detail: err?.message ?? String(err),
+    };
+  }
+};
 
 const runStage = async (
   ctx,
@@ -2748,6 +2919,7 @@ const runStage = async (
         stageCallbackId,
       },
       sessionId,
+      { policy: stage.policy ?? null },
     ),
   );
   // The accept response only says "job started" — a refusal (unknown command on
@@ -2968,6 +3140,7 @@ const openIntentPrs = async ({
   executionId,
   runId = null,
   applicationUrl,
+  prTitleTrackerKey = false,
   log,
 }) => {
   const repos = meta.repos ?? [];
@@ -3025,7 +3198,8 @@ const openIntentPrs = async ({
     /* transparency section is best-effort */
   }
 
-  const title = meta.title || `AI-DLC: ${branch}`;
+  const baseTitle = meta.title || `AI-DLC: ${branch}`;
+  const title = prTitleTrackerKey ? withTrackerKeyPrefix(baseTitle, meta.source) : baseTitle;
   const aidlcAttribution = buildIntentAttribution({
     applicationUrl,
     projectId: meta.projectId,

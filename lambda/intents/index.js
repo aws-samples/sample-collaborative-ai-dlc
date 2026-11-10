@@ -54,7 +54,11 @@ import {
 } from '../shared/runtime-session-ids.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { createProcessStore, isTransactionConflict } from '../shared/v2-process-store.js';
-import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import {
+  CONSTRUCTION_AUTONOMY_MODES,
+  isHumanTaskAnswerStatus,
+  isLaneResumeInFlight,
+} from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -86,6 +90,7 @@ import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-gri
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
+import { qualifyAgentAuthRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import {
   applyArtifactEdit,
@@ -102,6 +107,7 @@ import {
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { htmlArtifactRefusal } from '../shared/html-artifact.js';
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
@@ -136,6 +142,7 @@ import {
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
 import { credentialBindingDisplay } from '../shared/agent-auth-contracts.js';
+import { captureSandboxSettings, readSandboxSettings } from '../shared/sandbox-settings.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -1446,6 +1453,10 @@ const mapIntent = (meta) => ({
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
+  // Set when an orchestrator run claims the execution (cleared on relaunch).
+  // Lets the client tell a long workspace initialization from a hand-off that
+  // never reached an orchestrator.
+  orchestratorStartedAt: meta.orchestratorStartedAt ?? null,
 });
 
 const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
@@ -2377,6 +2388,8 @@ const handleArtifactContentUpdate = async ({
       code: 'artifact_replaced',
     });
   }
+  const htmlRefusal = htmlArtifactRefusal(artifact.artifactType, data.content);
+  if (htmlRefusal) return response(400, { error: htmlRefusal, code: 'html_not_allowed' });
   if (
     !Object.hasOwn(data, 'ifEditRevision') ||
     (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
@@ -3296,6 +3309,19 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   if (sourceControlBlocked) return sourceControlBlocked;
   const mcpLaunch = await prepareMcpLaunch(g, meta);
   if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  const agentSandbox =
+    meta.status === 'DRAFT'
+      ? captureSandboxSettings(
+          await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+        )
+      : meta.agentSandbox;
+  if (agentSandbox?.enabled) {
+    try {
+      await qualifyAgentAuthRuntime(meta.environment, { requireSandbox: true });
+    } catch (error) {
+      return response(409, { error: error.message, code: error.code });
+    }
+  }
   // Flip <current> → CREATED (CAS on the observed status) so a double-start
   // can't launch two runs, then hand off to the orchestrator (init-ws + run the
   // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -3327,6 +3353,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: selectedAgentCli,
             credentialBinding: selectedCredentialBinding,
+            agentSandbox,
           }
         : {}),
       // Launch-time skip override (validated above; undefined = untouched).
@@ -3363,6 +3390,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: meta.agentCli ?? null,
             credentialBinding: meta.credentialBinding ?? null,
+            agentSandbox: meta.agentSandbox ?? null,
           }
         : {}),
     });
@@ -4418,7 +4446,7 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
   if (auth.role !== 'owner' && auth.role !== 'admin') {
     return response(403, { error: 'Only project owners and admins can repair intents' });
   }
-  const meta = await store.getExecution(intentId);
+  const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
@@ -4428,12 +4456,21 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
   }
 
-  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  // Consistent: an answer committed just before this read must be seen.
+  const records = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
   const pendingByStage = new Map(
     (records.humanTasks ?? [])
       .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
       .map((gate) => [gate.stageInstanceId, gate]),
   );
+  // A lane whose answer is reaching the run is still WAITING_FOR_HUMAN until
+  // its runtime resumes. Repair would stop that run and discard the answer, so
+  // refuse while any lane is mid-resume and the run is alive.
+  const resumeBlocked = await laneResumeBlocksRepair(meta, records);
+  if (resumeBlocked) return response(409, resumeBlocked);
   const orphaned = (records.stages ?? []).filter(
     (stage) =>
       stage.state === 'WAITING_FOR_HUMAN' &&
@@ -4602,6 +4639,15 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     );
     priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
   }
+  // The provider calls above leave time for a lane gate to be answered after
+  // the first read. Check again, consistently, immediately before stopping the
+  // run, so that answer isn't discarded.
+  const latest = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
+  const resumeBlockedLate = await laneResumeBlocksRepair(latest.meta ?? meta, latest);
+  if (resumeBlockedLate) return response(409, resumeBlockedLate);
 
   await store.updateExecution({
     executionId: intentId,
@@ -5535,7 +5581,16 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
   const priceFor = await getPriceResolver();
   return response(200, {
     intent: mapIntent(records.meta),
-    stages: records.stages.map(mapStage),
+    stages: records.stages.map((stage) => ({
+      ...mapStage(stage),
+      // Judged here, on the server's clock, with the rule /repair uses.
+      laneResuming: isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: records.meta.status,
+        resumeRequired: records.meta.resumeRequired ?? null,
+      }),
+    })),
     // Activity feed: lifecycle events (workspace init, failures, completion)
     // newest-last in emit order, so the UI can show what's happening — init-ws
     // is otherwise invisible (it creates no stage row).
@@ -6853,6 +6908,41 @@ const lookupDurableExecutionStatus = async (meta) => {
 };
 
 const DURABLE_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'STOPPED']);
+// The 409 body when repair must wait for a lane that is resuming after its
+// answer, or null. Fails closed: a durable status that can't be read counts as
+// live, and the grace window in isLaneResumeInFlight bounds how long that holds.
+const laneResumeBlocksRepair = async (meta, records) => {
+  const pendingStages = new Set(
+    (records.humanTasks ?? [])
+      .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
+      .map((gate) => gate.stageInstanceId),
+  );
+  const resuming = (records.stages ?? []).filter(
+    (stage) =>
+      !pendingStages.has(stage.stageInstanceId) &&
+      isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: meta.status,
+        resumeRequired: meta.resumeRequired ?? null,
+      }),
+  );
+  if (resuming.length === 0) return null;
+  const durableStatus = await lookupDurableExecutionStatus(meta).catch((error) =>
+    error?.name === 'ResourceNotFoundException' ? 'NOT_FOUND' : 'UNKNOWN',
+  );
+  if (!durableStatus || durableStatus === 'NOT_FOUND') return null;
+  if (DURABLE_TERMINAL_STATUSES.has(durableStatus)) return null;
+  return {
+    error: 'A lane is resuming after an answer. Wait for it to restart before repairing the run.',
+    code: 'lane_resuming',
+    lanes: resuming.map((stage) => ({
+      stageInstanceId: stage.stageInstanceId,
+      unitSlug: stage.unitSlug,
+      sectionIndex: stage.sectionIndex ?? null,
+    })),
+  };
+};
 
 const repairExpiredDurableExecution = async ({
   executionId,

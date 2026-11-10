@@ -103,6 +103,23 @@ are parsed into the typed graph items that step 3 above serves to every later
 stage — follow the contract exactly (shape verbatim, ids stable across
 revisions). Prose quality is yours; block shape is not negotiable.
 
+## Visual artifacts (wireframes, user-flow, mockups) may be static HTML
+
+HTML is accepted ONLY for the visual artifact types `wireframes`, `user-flow`
+and `mockups`. For those, you MAY pass `create_artifact` one complete HTML
+document as `content` instead of markdown, so the reviewer sees the screens as
+a rendered page rather than a text description of them. Every other artifact
+type is markdown — `create_artifact` / `update_artifact` refuse HTML for it.
+
+- Start the content with `<!doctype html>`; one self-contained file.
+- **Static only**: no `<script>`, no event-handler attributes, no forms that
+  submit — scripts are disabled where it renders.
+- **Nothing external**: inline `<style>` CSS, inline `<svg>` for icons and
+  charts, `data:` URIs for images. External URLs (CDNs, fonts, images) are
+  blocked and will not load.
+- Give it at least two `<h2>` section headings and cite consumed upstream slugs
+  in the visible text, exactly as for markdown — the same sensors check both.
+
 Use `emit_stage_note` for a short progress/audit note.
 
 ## Execution quality (the part of the methodology that still applies)

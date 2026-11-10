@@ -478,6 +478,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     starterEmail,
     agentCli,
     credentialBinding,
+    agentSandbox,
     mcpServersByTier,
     constructionAutonomyMode,
     constructionGateAutonomy,
@@ -628,6 +629,22 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       }
       sets.push('credentialBinding = :acb');
       values[':acb'] = credentialBinding;
+    }
+    if (agentSandbox !== undefined) {
+      if (
+        !(
+          (status === 'CREATED' && fromStatus === 'DRAFT') ||
+          (status === 'DRAFT' && fromStatus === 'CREATED')
+        ) ||
+        (agentSandbox !== null &&
+          (typeof agentSandbox !== 'object' || typeof agentSandbox.enabled !== 'boolean'))
+      ) {
+        throw new Error(
+          'Sandbox settings can only be captured during the first conditional launch',
+        );
+      }
+      sets.push('agentSandbox = :sandbox');
+      values[':sandbox'] = agentSandbox;
     }
     if (mcpServersByTier !== undefined) {
       if (status !== 'CREATED' || !fromStatus) {
@@ -1925,6 +1942,61 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         ...(reason ? { ExpressionAttributeValues: { ':reason': reason } } : {}),
       }),
     );
+  };
+
+  // The agent's description of the stage's changes (describe_changes), read by
+  // the engine for its commit messages. Each commit records the repositories it
+  // used it in. With ownership, a retired attempt's delayed call cannot
+  // overwrite it.
+  const setCommitDescription = async ({
+    executionId,
+    stageInstanceId,
+    description,
+    ownership = null,
+  }) => {
+    const input = {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      UpdateExpression: 'SET commitDescription = :description',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':description': description },
+    };
+    if (ownership) {
+      await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+      return;
+    }
+    await ddb.send(new UpdateCommand(input));
+  };
+
+  // Records the repositories a commit used the description in, only while it
+  // is still that description, so a newer one written meanwhile starts unused.
+  // Returns whether it was recorded.
+  const recordCommitDescriptionUse = async ({
+    executionId,
+    stageInstanceId,
+    descriptionId,
+    repos,
+  }) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          UpdateExpression:
+            'SET commitDescription.committedRepos = list_append(if_not_exists(commitDescription.committedRepos, :none), :repos)',
+          ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
+          ExpressionAttributeValues: {
+            ':descriptionId': descriptionId,
+            ':repos': repos,
+            ':none': [],
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   const recordMetric = async ({
@@ -3511,6 +3583,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     resetStageRow,
     markLoopBackArchived,
     setLoopBackRecommendation,
+    setCommitDescription,
+    recordCommitDescriptionUse,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

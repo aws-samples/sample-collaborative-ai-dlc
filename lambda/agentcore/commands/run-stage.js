@@ -94,6 +94,12 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
+import {
+  consumeCommitDescription,
+  createEngineCommitMessages,
+  readCommitDescription,
+  stageCommitMessages,
+} from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
@@ -1858,6 +1864,7 @@ const runStageAttempt = async (
     processUptimeMs = () => process.uptime() * 1000,
   } = deps;
   let store = processStore;
+  const engineCommitMessage = createEngineCommitMessages({ store: processStore, executionId });
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
@@ -2672,6 +2679,8 @@ const runStageAttempt = async (
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
     ...(stage.policy && stage.agentRef ? { agentRef: stage.agentRef } : {}),
+    // The stage's owner describes its changes for the engine's commit message.
+    describeChanges: true,
   };
 
   let codexHome = null;
@@ -3704,6 +3713,7 @@ const runStageAttempt = async (
       // still tees stderr to the container log; the captured value is never
       // persisted verbatim.
       captureStderrTail: 16_384,
+      logContext: { executionId, stageInstanceId, intentId, projectId },
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
@@ -3816,8 +3826,12 @@ const runStageAttempt = async (
     );
   }
 
-  const exitCode = result?.exitCode ?? 0;
-  logger.error('cli exit', {
+  const exitCode = result?.exitCode;
+  if (exitCode == null) {
+    logger.error('cli_error', { cli, stage: stageId, code: 'cli_no_exit_code' });
+    return fail(stageInstanceId, 'cli_error', 'The agent process ended without an exit code');
+  }
+  logger[exitCode === 0 ? 'info' : 'error']('cli exit', {
     cli,
     stage: stageId,
     exitCode,
@@ -3947,6 +3961,13 @@ const runStageAttempt = async (
       // event as a repair turn; the engine commit below then captures whatever
       // the personas added.
       await warnIfDiskLow('before the lead-draft commit');
+      // The lead described its changes, which this commit holds; the final
+      // commit uses the description instead in each repository this one didn't
+      // commit to (a clean tree or a failed commit).
+      const leadDescription =
+        repos.length > 0
+          ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+          : null;
       leadDraftGit = await commitAndPushAll({
         repos,
         workspaceDir,
@@ -3958,14 +3979,26 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: unitSlug
-          ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (lead draft)`
-          : `aidlc(${stageId}): ${executionId} (lead draft)`,
+        ...(await stageCommitMessages({
+          messageFor: engineCommitMessage,
+          stageId,
+          phase: stage.phase,
+          unitSlug,
+          label: 'lead draft',
+          description: leadDescription,
+        })),
       }).catch((error) => ({
         ok: false,
         committed: false,
         results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
       }));
+      await consumeCommitDescription({
+        store: processStore,
+        executionId,
+        stageInstanceId,
+        description: leadDescription,
+        gitResult: leadDraftGit,
+      });
       const leadDraftRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit);
       if (leadDraftRefs.length > 0) retainedCodeCommitRefs = leadDraftRefs;
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
@@ -4289,6 +4322,11 @@ const runStageAttempt = async (
         .catch(() => {});
     }
   }
+  // No repository, no commit to describe.
+  const commitDescription =
+    repos.length > 0
+      ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+      : null;
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -4302,9 +4340,20 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: unitSlug
-      ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
-      : `aidlc(${stageId}): ${executionId}`,
+    ...(await stageCommitMessages({
+      messageFor: engineCommitMessage,
+      stageId,
+      phase: stage.phase,
+      unitSlug,
+      description: commitDescription,
+    })),
+  });
+  await consumeCommitDescription({
+    store: processStore,
+    executionId,
+    stageInstanceId,
+    description: commitDescription,
+    gitResult,
   });
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
@@ -4578,6 +4627,10 @@ const runStageAttempt = async (
           commitRefs: stageCodeCommitRefs,
           repos,
           workspaceDir,
+          projectId,
+          executionId,
+          gitProvider,
+          repoProviders,
         });
         completedGitError = null;
       } catch (error) {
@@ -4630,6 +4683,7 @@ const runStageAttempt = async (
             prompt: repair.prompt,
             promptViaStdin: repair.promptViaStdin,
             captureStderrTail: 16_384,
+            logContext: { executionId, stageInstanceId, intentId, projectId },
             onStdout: (chunk) => repairSink.write(chunk),
             spawnFn,
           });
@@ -4664,9 +4718,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
-            : `aidlc(${stageId}): ${executionId} (${label})`,
+          message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,
           committed: false,

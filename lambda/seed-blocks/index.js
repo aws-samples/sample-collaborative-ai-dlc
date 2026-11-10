@@ -110,7 +110,7 @@ import {
   releaseManifestKey,
   verifyPublishedRelease,
 } from '../shared/aidlc-release.js';
-import { loadReleaseInspectionClosure } from '../shared/release-resolver.js';
+import { inspectReleaseClosure } from '../shared/release-resolver.js';
 import {
   buildMethodologyCatalog,
   methodologyCatalogKey,
@@ -427,9 +427,10 @@ const alreadyPublished = async (event) => {
     return null;
   }
   if (!manifest) return null;
-  await loadReleaseInspectionClosure({
+  await inspectReleaseClosure({
     s3,
     bucket: artifactsBucket(),
+    cache: null,
     methodologyRelease: {
       releaseId: manifest.releaseId,
       sourceSha: manifest.sourceSha,

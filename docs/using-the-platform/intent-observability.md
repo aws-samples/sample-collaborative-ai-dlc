@@ -27,6 +27,12 @@ The default intent view is the **workbench** — the working surface for humans:
 - **Gates** — pending questions and approvals render inline (see [Human gates](#human-gates) below).
 - **Course corrections** — the steering history of the run.
 
+### HTML artifacts
+
+The visual artifacts `wireframes`, `user-flow`, and `mockups` can be a complete HTML page instead of markdown. They render as a page wherever an artifact is shown (work products, stage review, artifact history), with a **Rendered / Source** toggle. Other artifact types stay markdown: the agent tools, Quorum rewrites, and manual edits refuse HTML for them.
+
+The page renders in a fixed-height, scrollable sandboxed frame with scripts and links disabled and all network requests blocked, so only inline CSS, inline SVG, and `data:` images display. To get HTML mockups from a stage, request changes at its review gate and ask for the visual outputs as static HTML.
+
 ## The observability page
 
 The **Observability** button opens the intent's execution dashboard:
