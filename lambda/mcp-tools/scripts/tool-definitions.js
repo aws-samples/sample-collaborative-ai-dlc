@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   AUTHOR_TOOLS,
   CHECKPOINT_TOOLS,
+  DESCRIBE_CHANGES_TOOLS,
   REVIEWER_TOOLS,
   WORKSPACE_DETECTION_TOOLS,
   toolSchemas,
@@ -13,6 +14,7 @@ export const GATEWAY_TOOL_NAMES = Object.freeze([
     ...REVIEWER_TOOLS,
     ...WORKSPACE_DETECTION_TOOLS,
     ...CHECKPOINT_TOOLS,
+    ...DESCRIBE_CHANGES_TOOLS,
   ]),
 ]);
 

@@ -10,15 +10,24 @@ describe('Gateway tool definitions', () => {
     expect(committed).toEqual(gatewayToolDefinitions());
   });
 
-  it('cover every tool any role or policy can register', () => {
+  it('cover every tool any role, policy or session option can register', () => {
     const policy = { summaryConfirmation: 'required', planApproval: 'required' };
+    const sessionOptions = [{}, { checkpointOwner: true, canAsk: true, describeChanges: true }];
     for (const role of ['author', 'reviewer', 'reader']) {
       for (const stageId of [null, 'workspace-detection']) {
-        for (const name of toolsForRole(role, stageId, policy)) {
-          expect(GATEWAY_TOOL_NAMES).toContain(name);
+        for (const options of sessionOptions) {
+          for (const name of toolsForRole(role, stageId, policy, options)) {
+            expect(GATEWAY_TOOL_NAMES).toContain(name);
+          }
         }
       }
     }
+  });
+
+  it('register describe_changes on the target for stage owner sessions', () => {
+    const owner = toolsForRole('author', null, null, { describeChanges: true });
+    expect(owner).toContain('describe_changes');
+    expect(committed.map((tool) => tool.name)).toContain('describe_changes');
   });
 
   it('use only the schema keywords Gateway accepts and fit its inline limit', () => {

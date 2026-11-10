@@ -96,6 +96,15 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
+#### Building-block bodies
+
+Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
+
+- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`), with `{type}` matched in any case as the API accepts it. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
+- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
+
+The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.

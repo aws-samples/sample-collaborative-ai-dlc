@@ -19,6 +19,7 @@ import { scopeStageAttempt } from '../stage-attempt.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import { eventTypeOf } from '../v2-process-keys.js';
+import { normaliseChangeDescription } from '../commit-description.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -801,6 +802,33 @@ export const createProcessBridge = ({
     return { projectType };
   };
 
+  // describe_changes: the agent's Conventional Commits description of what this
+  // stage changed, kept on the stage row for the engine's next commit message.
+  // The latest call wins.
+  const describeChanges = async (args) => {
+    if (!stageInstanceId) throw new Error('describe_changes is available only in a stage');
+    const description = {
+      ...normaliseChangeDescription(args),
+      descriptionId: ids(),
+      ...(unitSlug ? { unitSlug } : {}),
+    };
+    await store.setCommitDescription({ executionId, stageInstanceId, description });
+    const header = `${description.type}${description.scope ? `(${description.scope})` : ''}${
+      description.breaking ? '!' : ''
+    }: ${description.summary}`;
+    await store.appendEvent({
+      executionId,
+      type: 'v2.commit.described',
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      actor: stageInstanceId,
+      summary: `Changes described as ${header}`,
+    });
+    const { descriptionId: _id, ...recorded } = description;
+    return recorded;
+  };
+
   // Append a process/audit note and broadcast it live (progress feed).
   //
   // `loopBackRecommended` is the ONE structured field on this tool: a
@@ -926,6 +954,7 @@ export const createProcessBridge = ({
     activeAuthorizationId: () => activeAuthorizationId,
     sendOutput,
     recordProjectType,
+    describeChanges,
     emitStageNote,
     recordGraphRead,
     submitReview,

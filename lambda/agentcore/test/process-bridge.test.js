@@ -45,6 +45,10 @@ const fakeStore = () => {
       outputs.push(row);
       return row;
     },
+    descriptions: [],
+    async setCommitDescription(args) {
+      this.descriptions.push(args);
+    },
   };
 };
 
@@ -117,6 +121,74 @@ describe('recordProjectType', () => {
     await expect(bridge.recordProjectType({ projectType: 'greenfield' })).rejects.toThrow(
       /workspace-detection/,
     );
+  });
+});
+
+describe('describeChanges', () => {
+  it('stores the normalised description on the stage row and audits it', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, unitSlug: 'billing' },
+      ids: () => 'd1',
+    });
+    await expect(
+      bridge.describeChanges({
+        type: 'feat',
+        scope: 'API',
+        summary: 'Add retry to the payment client.',
+        breaking: true,
+        breakingChange: 'retries are on by default; set retries to 0 to opt out',
+      }),
+    ).resolves.toEqual({
+      type: 'feat',
+      scope: 'api',
+      summary: 'add retry to the payment client',
+      breaking: true,
+      breakingChange: 'retries are on by default; set retries to 0 to opt out',
+      unitSlug: 'billing',
+    });
+    expect(store.descriptions).toEqual([
+      {
+        executionId: 'exec-1',
+        stageInstanceId: 'si-1',
+        description: expect.objectContaining({ type: 'feat', descriptionId: 'd1' }),
+      },
+    ]);
+    expect(store.events.at(-1)).toMatchObject({
+      type: 'v2.commit.described',
+      stageInstanceId: 'si-1',
+      summary: 'Changes described as feat(api)!: add retry to the payment client',
+    });
+  });
+
+  it('writes the description under the attempt ownership, so a retired callback cannot overwrite it', async () => {
+    const store = fakeStore();
+    const ownership = { orchestratorRunId: 'run-1', stageCallbackId: 'cb-old' };
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, ...ownership },
+      ids: () => 'd1',
+    });
+    await bridge.describeChanges({ type: 'fix', summary: 'round totals' });
+    expect(store.descriptions).toEqual([
+      expect.objectContaining({
+        stageInstanceId: 'si-1',
+        ownership: expect.objectContaining({ ...ownership, stageInstanceId: 'si-1' }),
+      }),
+    ]);
+  });
+
+  it.each([
+    [{ type: 'feature', summary: 'x' }, /type must be one of/],
+    [{ type: 'fix', summary: '  ' }, /summary must/],
+    [{ type: 'fix', summary: 'x', breaking: true }, /breakingChange/],
+    [{ type: 'fix', scope: 'two words', summary: 'x' }, /scope/],
+  ])('rejects %j without storing it', async (args, error) => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({ store, scope: SCOPE });
+    await expect(bridge.describeChanges(args)).rejects.toThrow(error);
+    expect(store.descriptions).toEqual([]);
   });
 });
 

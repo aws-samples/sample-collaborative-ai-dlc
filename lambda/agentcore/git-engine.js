@@ -4,7 +4,7 @@
 // code precisely where agents owned commits). Instead, THIS module:
 //
 //   - commits the whole working tree after every stage exit (success, park,
-//     fail) with a deterministic `aidlc(<stage>): …` message,
+//     fail) with a deterministic message (commit-message.js),
 //   - pushes with v1 pushBranchWithRetry semantics ported from the (since
 //     removed) v1 pool worker: retry + linear backoff + remote-HEAD
 //     verification, `'empty'` as a neutral no-commit sentinel,
@@ -1434,6 +1434,7 @@ export const commitAndPushAll = async ({
   projectId,
   executionId,
   message,
+  messages = null, // { [repoUrl]: message } — overrides `message` for those repos
   author = null,
   urlsFor = null, // (repoUrl) => { clean, auth } — test seam for file:// remotes
   git = runGit,
@@ -1465,7 +1466,7 @@ export const commitAndPushAll = async ({
       }).catch(() => null);
       const commit = await commitAll({
         dir,
-        message,
+        message: messages?.[url] ?? message,
         author,
         committer,
         git,

@@ -17,12 +17,12 @@ const scope = {
   canAsk: true,
 };
 
-const connect = async (gatewayClient, role) => {
+const connect = async (gatewayClient, role, sessionScope = scope) => {
   const { server } = createGatewayProxyServer({
     client: gatewayClient,
     target: 'aidlc',
     role,
-    scope,
+    scope: sessionScope,
     env: { V2_MCP_TRACE: 'off' },
   });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -59,6 +59,18 @@ describe('gateway MCP proxy', () => {
       expect(gateway.listTools).not.toHaveBeenCalled();
     },
   );
+
+  it('offers describe_changes to the stage owner, as the local server does', async () => {
+    const cli = await connect({ listTools: vi.fn() }, 'author', {
+      ...scope,
+      describeChanges: true,
+    });
+    const { tools } = await cli.listTools();
+    expect(tools.map((t) => t.name)).toEqual(
+      toolsForRole('author', scope.stageId, null, { describeChanges: true }),
+    );
+    expect(tools.map((t) => t.name)).toContain('describe_changes');
+  });
 
   it('forwards calls with the target prefix and unwraps the Lambda envelope', async () => {
     const envelope = { content: [{ type: 'text', text: '{"id":"a-1"}' }] };

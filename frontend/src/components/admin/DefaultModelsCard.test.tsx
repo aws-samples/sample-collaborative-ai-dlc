@@ -42,6 +42,16 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// jsdom implements no pointer capture, and Radix Select calls it the moment the
+// trigger is pressed: without the shim the dropdown never opens in a test.
+function shimPointerCapture() {
+  const proto = Element.prototype as unknown as Record<string, () => unknown>;
+  proto.hasPointerCapture = () => false;
+  proto.releasePointerCapture = () => {};
+  proto.setPointerCapture = () => {};
+  proto.scrollIntoView = () => {};
+}
+
 describe('DefaultModelsCard', () => {
   it('renders skeletons while loading settings', () => {
     getSettings.mockReturnValue(new Promise(() => {}));
@@ -266,5 +276,57 @@ describe('DefaultModelsCard', () => {
         tierModels: { quorum: { claude: 'us.anthropic.claude-sonnet-4-6' } },
       }),
     );
+  });
+
+  it('lets a model ID the catalogue does not list be typed in (#674)', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+    updateSettings.mockResolvedValue({});
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByText('Custom model ID…'));
+
+    const input = await screen.findByTestId('default-model-input-codex');
+    expect(input).not.toBeDisabled();
+    await user.type(input, 'openai.gpt-6.1-sol');
+
+    await user.click(screen.getByRole('button', { name: /Save Models/ }));
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cliModels: expect.objectContaining({ codex: 'openai.gpt-6.1-sol' }),
+      }),
+    );
+  });
+
+  it('goes back to the dropdown with the typed ID kept as a custom choice', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByText('Custom model ID…'));
+    await user.type(await screen.findByTestId('default-model-input-codex'), 'openai.gpt-6.1-sol');
+
+    await user.click(screen.getByTestId('default-model-list-codex'));
+
+    const trigger = await screen.findByTestId('default-model-select-codex');
+    expect(trigger).toHaveTextContent('openai.gpt-6.1-sol (custom)');
   });
 });
