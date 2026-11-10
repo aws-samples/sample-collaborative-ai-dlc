@@ -37,6 +37,7 @@ import {
   VERSIONED_RELATIONSHIP_EDGES,
 } from '../artifact-versioning.js';
 import { validateStructuredBlock } from '../artifact-extractors.js';
+import { htmlArtifactRefusal } from '../html-artifact.js';
 import { contributionArtifactId } from '../ensemble-contribution.js';
 
 const __ = gremlin.process.statics;
@@ -575,6 +576,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     assertId(id);
     for (const l of links) assertEdge(l.edge);
 
+    const htmlRefusal = htmlArtifactRefusal(artifactType, content);
+    if (htmlRefusal) throw new GraphWriteError(htmlRefusal);
     // Reject a malformed structured block before writing — a bad block parses
     // to zero items downstream. The parse error goes back to the agent to fix.
     const structure = validateStructuredBlock({ artifactType, content });
@@ -864,6 +867,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     const clean = sanitizeProps(
       head.artifact_type === 'contribution' ? contributionPropsFor({ id, props, head }) : props,
     );
+    if (Object.hasOwn(clean, 'content')) {
+      const htmlRefusal = htmlArtifactRefusal(head.artifact_type, clean.content);
+      if (htmlRefusal) throw new GraphWriteError(htmlRefusal);
+    }
     const rehabilitating = Boolean(head.superseded_at);
     const generation = Math.max(1, Number(head.generation) || 1) + (rehabilitating ? 1 : 0);
     if (rehabilitating) {

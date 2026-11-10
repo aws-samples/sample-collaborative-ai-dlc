@@ -8330,6 +8330,27 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
     expect(detail.events.some((e) => e.type === 'v2.artifact.edited')).toBe(true);
   });
 
+  it('refuses an edit that turns a text artifact into HTML', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await putContent(
+      sub,
+      projectId,
+      intent.id,
+      'mr',
+      '<!doctype html><html><body><h2>A</h2></body></html>',
+    );
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('html_not_allowed');
+    const content = await g
+      .V()
+      .has('Artifact', 'id', 'mr')
+      .has('intent_id', intent.id)
+      .values('content')
+      .next();
+    expect(String(content.value)).not.toMatch(/<!doctype html>/i);
+  });
+
   it('409s while a stage is genuinely executing (block-while-running policy)', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);

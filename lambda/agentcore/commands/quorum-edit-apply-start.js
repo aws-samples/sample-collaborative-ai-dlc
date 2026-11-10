@@ -28,6 +28,7 @@ import {
   markArtifactsStale,
   fetchDownstreamClosure,
 } from '../../shared/artifact-edit.js';
+import { isHtmlDocument, keepsHtml } from '../../shared/html-artifact.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { quorumCliModels } from '../model-resolver.js';
 import {
@@ -47,6 +48,23 @@ const logger = new Logger({
 
 const REWRITE_ONE_SHOT_TIMEOUT_MS = 300_000;
 
+// The answer must come back in the format the document's TYPE allows: an HTML
+// visual artifact rewritten to markdown would replace the rendered page with
+// prose, so it is asked for as a document of its own kind. A legacy HTML
+// document of a non-visual type holds a format its type refuses, so it is asked
+// for as markdown and told to convert.
+const completeDocumentInstruction = (artifactType, content) => {
+  if (keepsHtml(artifactType, content))
+    return 'Respond with ONLY the complete updated HTML document — no commentary, no code fences around the whole document. It must stay one static, self-contained HTML page: no scripts, nothing external.';
+  if (isHtmlDocument(content)) {
+    return (
+      'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document. ' +
+      'This document is currently HTML but this type must be markdown, so convert it and keep each `<h2>` section as a `##` heading.'
+    );
+  }
+  return 'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.';
+};
+
 const jobKey = (p) => `${p.executionId}:qedit-apply:${p.editId}`;
 
 // Rewrite the TARGET document per the human's requested change.
@@ -56,14 +74,14 @@ export const buildTargetRewritePrompt = ({ artifact, changeDescription, structur
   [
     'You are Quorum, applying a human-requested change to a project document.',
     'Rewrite the document below applying the requested change. Preserve the document structure, headings, tone and everything not affected by the change.',
-    structurePreservationRules(artifact.artifact_type),
+    structurePreservationRules(artifact.artifact_type, artifact.content),
     ...(structureFeedback
       ? [
           '',
           `YOUR PREVIOUS ATTEMPT WAS REJECTED because ${structureFeedback}. Produce the FULL document again with that fixed.`,
         ]
       : []),
-    'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.',
+    completeDocumentInstruction(artifact.artifact_type, artifact.content),
     '',
     `Document: "${artifact.title || artifact.id}" (${artifact.artifact_type ?? 'document'})`,
     `Requested change: ${changeDescription}`,
@@ -87,14 +105,14 @@ export const buildDownstreamRewritePrompt = ({
     `The upstream document "${upstream.title || upstream.id}" was just changed as follows: ${changeDescription}`,
     `The approved update plan says this document needs: ${item.proposedChange || item.rationale || 'consistency updates for the upstream change'}`,
     'Rewrite the dependent document below so it is consistent with the updated upstream. Change ONLY what the upstream change requires; preserve structure, headings, tone and unaffected content.',
-    structurePreservationRules(artifact.artifact_type),
+    structurePreservationRules(artifact.artifact_type, artifact.content),
     ...(structureFeedback
       ? [
           '',
           `YOUR PREVIOUS ATTEMPT WAS REJECTED because ${structureFeedback}. Produce the FULL document again with that fixed.`,
         ]
       : []),
-    'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.',
+    completeDocumentInstruction(artifact.artifact_type, artifact.content),
     '',
     '--- UPDATED UPSTREAM DOCUMENT (bounded) ---',
     bounded(upstream.content, PLAN_TARGET_DOC_LIMIT),
