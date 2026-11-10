@@ -183,7 +183,11 @@ export interface AgentCapabilities {
   disabledClis?: AgentCli[];
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
-  models?: Partial<Record<AgentCli, AgentModel[]>>;
+  models?: Partial<Record<AgentCli, AgentModel[]>> & {
+    /** How the Codex catalogue resolved: the runtime's regional Mantle list, the
+     *  curated fallback after a failed lookup, or no runtime catalogue at all. */
+    codexSource?: 'catalog' | 'error' | 'static';
+  };
 }
 
 export interface AgentSettings {
