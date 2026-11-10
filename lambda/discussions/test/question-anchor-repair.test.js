@@ -7,6 +7,7 @@ import { beforeAll, afterAll, beforeEach, describe, it, expect, vi } from 'vites
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { makeDdb, createV2Table, deleteV2Table } from '../../agentcore/test/helpers/v2-table.js';
 
@@ -19,6 +20,7 @@ const QUESTIONS = JSON.stringify([
 ]);
 
 let handler;
+let handlerDdb;
 let close;
 let conn;
 let g;
@@ -36,6 +38,7 @@ beforeAll(async () => {
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
   vi.stubEnv('V2_PROCESS_TABLE', PROCESS_TABLE);
   ({ handler, close } = await import('../index.js'));
+  ({ ddb: handlerDdb } = await import('../clients.js'));
   conn = new gremlin.driver.DriverRemoteConnection(
     `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`,
   );
@@ -136,6 +139,54 @@ const containsEdges = async (questionId) =>
 
 // guards: contract Discuss question anchor repair
 describe('Discuss rebuilds a missing Question vertex from its gate', () => {
+  // guards: data-safety answer committed during Discuss repair
+  it('copies an answer committed while repairing the Question vertex', async () => {
+    const gateId = 'chk-concurrent-answer';
+    await openGate(intentId, gateId);
+    const answer = { perQuestion: [{ answer: 'Looks correct' }] };
+    let answered;
+    const send = handlerDdb.send.bind(handlerDdb);
+    const spy = vi.spyOn(handlerDdb, 'send').mockImplementation(async (command, ...rest) => {
+      const result = await send(command, ...rest);
+      if (
+        command instanceof GetCommand &&
+        command.input.Key?.sk === `HUMAN#${gateId}` &&
+        !answered
+      ) {
+        answered = await store.answerHumanTask({
+          executionId: intentId,
+          humanTaskId: gateId,
+          status: 'answered',
+          answer,
+          answeredBy: 'alice',
+          answeredByName: 'Alice',
+        });
+      }
+      return result;
+    });
+
+    let res;
+    try {
+      res = await discuss(gateId);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(200);
+    expect(answered).toBeDefined();
+    const questions = await questionsOf(intentId);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]).toMatchObject({
+      id: gateId,
+      structured_answer: JSON.stringify(answer),
+      answered_by: 'alice',
+      answered_by_name: 'Alice',
+      answered_at: answered.answeredAt,
+    });
+    expect(await store.getHumanTask(intentId, gateId, { consistentRead: true })).toEqual(answered);
+    expect((await store.getExecution(intentId)).status).toBe('CREATED');
+  });
+
   // guards: security cross-intent question repair
   it('keeps another intent’s answered question separate when repairing a shared id', async () => {
     const otherIntent = await seedIntent();

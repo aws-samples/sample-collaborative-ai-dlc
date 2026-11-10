@@ -14,7 +14,11 @@ import {
   executionCredentialBinding,
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
-import { executionMetaKey, humanTaskKey } from '../shared/v2-process-keys.js';
+import {
+  executionMetaKey,
+  humanTaskKey,
+  isHumanTaskAnswerStatus,
+} from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
@@ -201,6 +205,16 @@ const repairQuestionAnchor = async (scope, entityId) => {
   const gate = await fetchGateRow(scope.rootId, entityId);
   if (gate?.kind !== 'question') return false;
   await query((g) => ensureQuestionFromGate(g, scope.rootId, gate));
+  // Earlier answers need copying; later answers see the vertex and sync themselves.
+  const freshGate = await fetchGateRow(scope.rootId, entityId);
+  if (
+    isHumanTaskAnswerStatus(freshGate?.status) &&
+    (!isHumanTaskAnswerStatus(gate.status) ||
+      freshGate.status !== gate.status ||
+      freshGate.answeredAt !== gate.answeredAt)
+  ) {
+    await query((g) => ensureQuestionFromGate(g, scope.rootId, freshGate));
+  }
   return true;
 };
 
