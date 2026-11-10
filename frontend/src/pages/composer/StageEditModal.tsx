@@ -10,12 +10,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, Lock, Library } from 'lucide-react';
-import { blocksService, type Block } from '@/services/blocks';
+import { blocksService } from '@/services/blocks';
 import {
   StageEditor,
   type StageForm,
   type StageReferenceOptions,
 } from '@/components/blocks/StageEditor';
+import { loadStageReferenceOptions } from '@/components/blocks/stageReferenceOptions';
 
 interface StageEditModalProps {
   stageId: string | null;
@@ -65,26 +66,8 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
 
   useEffect(() => {
     if (!stageId) return;
-    const toOptions = (blocks: Block[]) =>
-      blocks.map((block) => ({
-        id: block.id,
-        label: block.name,
-        description: typeof block.description === 'string' ? block.description : undefined,
-      }));
-    Promise.all([
-      blocksService.list('agent'),
-      blocksService.list('artifact'),
-      blocksService.list('sensor'),
-      blocksService.list('stage'),
-    ])
-      .then(([agents, artifacts, sensors, stages]) =>
-        setReferenceOptions({
-          agents: toOptions(agents.blocks),
-          artifacts: toOptions(artifacts.blocks),
-          sensors: toOptions(sensors.blocks),
-          stages: toOptions(stages.blocks).filter((stage) => stage.id !== stageId),
-        }),
-      )
+    loadStageReferenceOptions(stageId)
+      .then(({ options }) => setReferenceOptions(options))
       .catch(() => setReferenceOptions({}));
   }, [stageId]);
 
