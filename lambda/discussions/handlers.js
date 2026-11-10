@@ -28,7 +28,6 @@ import {
   CREATION_GUARD_SECONDS,
   MESSAGE_GUARD_PENDING_SECONDS,
   MESSAGE_GUARD_COMPLETE_SECONDS,
-  RESOLUTION_GUARD_SECONDS,
   POLL_ATTEMPTS,
   POLL_INTERVAL_MS,
 } from './constants.js';
@@ -925,36 +924,19 @@ export const updateDiscussion = async (event, res) => {
   // Resolve sets the audit fields; reopen clears them — `resolved_by*` is
   // shown in the UI (member-level resolve is audited).
   const resolved = status === 'resolved';
-  // The previous status is read in the same mutation that writes the new one,
-  // so a repeated resolve, or one of an already-resolved thread, is not
-  // reported as a transition.
-  const previous = await query((g) =>
+  await query((g) =>
     g
       .V()
       .has('Discussion', 'id', discussionId)
       .has(scope.idProp, scope.rootId)
-      .as('d')
-      .map(__.values('status').fold())
-      .as('previous')
-      .select('d')
       .property(cardinality.single, 'status', status)
       .property(cardinality.single, 'resolved_by', resolved ? caller.sub : '')
       .property(cardinality.single, 'resolved_by_name', resolved ? caller.displayName : '')
       .property(cardinality.single, 'resolved_at', resolved ? now : '')
       .property(cardinality.single, 'resolution_summary', resolved ? resolutionSummary : '')
       .property(cardinality.single, 'outcome_message_id', resolved ? outcomeMessageId : '')
-      .select('previous')
       .next(),
   );
-  const wasResolved = (previous?.value ?? []).includes('resolved');
-  const resolutionGuardKey = `resolution:${discussionId}`;
-  const notifies = scope.kind === 'intent' && Boolean(process.env.NOTIFICATION_EVENT_BUS);
-  // Reopening releases the guard, so the next resolve is a new occurrence.
-  if (!resolved && notifies) {
-    await ddb
-      .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: resolutionGuardKey } }))
-      .catch((err) => logger.warn('Failed to release the resolution guard', { discussionId, err }));
-  }
 
   if (resolved && scope.timeline) {
     await query((g) =>
@@ -980,32 +962,10 @@ export const updateDiscussion = async (event, res) => {
     );
   }
 
-  // Notification event for integrations (best-effort, never throws). Only for
-  // the request that made the open-to-resolved transition: the guard is a
-  // conditional write, so of overlapping resolves exactly one publishes.
-  const claimsTransition = async () => {
-    try {
-      await ddb.send(
-        new PutCommand({
-          TableName: locksTable(),
-          Item: {
-            lockId: resolutionGuardKey,
-            kind: 'resolution',
-            expiresAt: nowSeconds() + RESOLUTION_GUARD_SECONDS,
-          },
-          ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
-          ExpressionAttributeValues: { ':now': nowSeconds() },
-        }),
-      );
-      return true;
-    } catch (err) {
-      if (!isConditionalCheckFailed(err)) {
-        logger.warn('Failed to take the resolution guard', { discussionId, err });
-      }
-      return false;
-    }
-  };
-  if (resolved && !wasResolved && notifies && (await claimsTransition())) {
+  // Notification event for integrations (best-effort, never throws). Only on
+  // the transition, so a repeated resolve publishes nothing.
+  const wasResolved = getVal(discussion, 'status') === 'resolved';
+  if (resolved && !wasResolved && scope.kind === 'intent') {
     await publishNotificationEvent('discussion.resolved', {
       eventId: `${discussionId}:${now}`,
       projectId: auth.projectId,

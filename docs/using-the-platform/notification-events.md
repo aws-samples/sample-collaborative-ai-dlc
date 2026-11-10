@@ -78,7 +78,7 @@ A message was posted to an intent discussion. `eventId` is `<discussionId>:<mess
 
 ### `discussion.resolved`
 
-An open intent discussion was resolved. Resolving one that is already resolved publishes nothing, and of overlapping resolves of the same open discussion only one publishes; reopening and resolving it again publishes a new event. `eventId` is `<discussionId>:<resolvedAt>`.
+An open intent discussion was resolved. Resolving one that is already resolved publishes nothing; reopening and resolving it again publishes a new event. `eventId` is `<discussionId>:<resolvedAt>`.
 
 | Field                                   | Description                        |
 | --------------------------------------- | ---------------------------------- |
