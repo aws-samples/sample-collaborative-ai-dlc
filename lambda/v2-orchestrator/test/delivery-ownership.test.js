@@ -267,6 +267,50 @@ describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
     expect(shownPrs(await t.view())).toEqual([2]);
   });
 
+  // A create the service refuses without creating anything must not leave a
+  // recorded request behind: an unrelated unmarked closed PR would otherwise
+  // turn the repository "ownership unconfirmed" for good.
+  it.each([
+    ['unmerged task branches', { conflict: true, error: 'unmerged', unmergedBranches: ['t1'] }],
+    ['a changed intent branch', { failed: true, reason: 'branch_changed' }],
+    ['a missing base branch', { failed: true, reason: 'missing_base' }],
+    ['a classified provider rejection', { failed: true, reason: 'head_missing' }],
+  ])(
+    'publishes on retry after a create refused for %s, despite an unmarked closed PR',
+    async (_cause, refusal) => {
+      const t = await setup(name);
+      t.host.add({ state: 'closed', body: 'Opened by hand or by an older release' });
+      t.host.refusals.push(refusal);
+      await t.publish();
+      const refused = await t.repository();
+      expect(refused).toMatchObject({ status: 'failed', retryable: true });
+      expect(refused.createRequestedAt).toBeUndefined();
+      expect(refused.deliveryMarker).toBeUndefined();
+      expect(t.host.creates).toBe(0);
+      // The cause is fixed; the next check is not held up by the closed PR.
+      const p = await t.retry();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending', retryable: true });
+      expect(t.host.prs).toHaveLength(2);
+      expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+      expect(shownPrs(await t.view())).toEqual([2]);
+    },
+  );
+
+  it('keeps an earlier unknown create request when a later create is refused', async () => {
+    const t = await setup(name);
+    t.host.failCreates = 1;
+    await t.publish();
+    const lost = await t.repository();
+    expect(lost.deliveryMarker).toMatch(/^aidlc-delivery-/);
+    t.host.refusals.push({ failed: true, reason: 'branch_changed' });
+    await t.retry();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: lost.createRequestedAt,
+      deliveryMarker: lost.deliveryMarker,
+    });
+  });
+
   it('does not adopt its own PR once its description lost the delivery marker', async () => {
     const t = await setup(name);
     t.host.loseResponses = 1;

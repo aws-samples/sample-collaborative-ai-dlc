@@ -19,6 +19,8 @@ const json = (data, status = 200) => ({
   headers: { get: () => null },
 });
 
+const PLATFORM_SESSION = 'arn:aws:sts::123456789012:assumed-role/platform/session';
+
 export const createFakeHost = (name, { order = 'newest', pageSize } = {}) => {
   const host = {
     name,
@@ -37,15 +39,30 @@ export const createFakeHost = (name, { order = 'newest', pageSize } = {}) => {
     failCreates: 0,
     loseResponses: 0,
     creates: 0,
+    // create-pr results returned, in order, instead of reaching the provider.
+    refusals: [],
+    // CodeCommit only: ListPullRequests inputs and GetPullRequest count.
+    listCalls: [],
+    gets: 0,
   };
   let next = 1;
-  host.add = ({ state = 'closed', body = '', ageMs = 0, source = 'intent/feature', target }) => {
+  // CodeCommit only: who opened the pull request. The platform session by
+  // default (an earlier run or release); pass another ARN for one opened by hand.
+  host.add = ({
+    state = 'closed',
+    body = '',
+    ageMs = 0,
+    source = 'intent/feature',
+    target,
+    author = PLATFORM_SESSION,
+  }) => {
     const pr = {
       number: next++,
       state,
       source,
       target: target ?? 'develop',
       body,
+      author,
       title: 'AI-DLC',
       headSha: 'head1',
       createdAt: Date.now() + host.clockOffsetMs - ageMs,
@@ -324,7 +341,7 @@ export const createFakeHost = (name, { order = 'newest', pageSize } = {}) => {
       });
     host.ctx = {
       token: {
-        assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/platform/session',
+        assumedRoleArn: PLATFORM_SESSION,
         credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
       },
       client: {
@@ -351,8 +368,13 @@ export const createFakeHost = (name, { order = 'newest', pageSize } = {}) => {
               return { evaluation: { approved: false, overridden: false } };
             case 'ListPullRequestsCommand': {
               const wanted = input.pullRequestStatus;
+              host.listCalls.push(input);
               const ids = listed(
-                host.prs.filter((pr) => !wanted || raw(pr).pullRequestStatus === wanted),
+                host.prs.filter(
+                  (pr) =>
+                    (!wanted || raw(pr).pullRequestStatus === wanted) &&
+                    (!input.authorArn || pr.author === input.authorArn),
+                ),
               ).map((pr) => String(pr.number));
               const size = pageSize ?? 100;
               const index = Number(input.nextToken ?? 1);
@@ -362,6 +384,7 @@ export const createFakeHost = (name, { order = 'newest', pageSize } = {}) => {
               };
             }
             case 'GetPullRequestCommand': {
+              host.gets += 1;
               const pr = host.get(input.pullRequestId);
               if (!pr) throw notFound('PullRequestDoesNotExistException');
               return { pullRequest: raw(pr) };
@@ -404,6 +427,8 @@ export const hostOperation =
       return inspectDelivery(host.provider, host.ctx, repo, args);
     if (operation === 'compare') return { status: 'ahead', base: args.base };
     if (operation === 'create-pr') {
+      // A refusal the service returns without creating anything.
+      if (host.refusals.length) return host.refusals.shift();
       if (args.expectedHeadSha) {
         const head = await host.provider.getBranchHead(host.ctx, repo, args.branch);
         if (head !== args.expectedHeadSha) return { failed: true, reason: 'branch_changed' };

@@ -492,6 +492,7 @@ export const publishFinalDelivery = async ({
             // marker; a later check accepts a closed or merged PR as this run's
             // only by that marker (selectDeliveryPr). Retries in this run reuse
             // the persisted marker.
+            const before = repo;
             const requested = {
               ...repo,
               createRequestedAt: repo.createRequestedAt ?? new Date().toISOString(),
@@ -501,7 +502,7 @@ export const publishFinalDelivery = async ({
             try {
               await store.saveDelivery({ delivery, ifUnitPlan: records.unitPlan });
             } catch (error) {
-              delivery.repositories[i] = repo;
+              delivery.repositories[i] = before;
               withheld = withheldReason(error);
               return withheld
                 ? { failed: true, reason: 'withheld', error: withheld }
@@ -528,6 +529,19 @@ export const publishFinalDelivery = async ({
               return { failed: true, reason: 'provider_unavailable', error: safeError(error) };
             }
             if (providerResult?.prUrl && providerResult.prNumber != null) return providerResult;
+            // A returned refusal (unmerged task branches, a changed or missing
+            // branch, no changes, a classified rejection) proves the provider
+            // created nothing, so this attempt's request is withdrawn: the row
+            // returns to what it was before the attempt. Only an unknown
+            // outcome (the call threw or timed out, above) keeps the request;
+            // otherwise a later check would hold an unrelated unmarked closed
+            // pull request against a request that never created anything. A
+            // request recorded by an earlier attempt of this run stays.
+            if (
+              !providerResult?.prUrl &&
+              (providerResult?.skipped || providerResult?.conflict || providerResult?.failed)
+            )
+              repo = before;
             if (providerResult?.skipped) return { skipped: true, reason: 'no_changes' };
             return {
               failed: true,
