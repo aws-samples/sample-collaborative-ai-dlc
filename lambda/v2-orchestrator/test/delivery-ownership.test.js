@@ -414,3 +414,53 @@ describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
     expect(shownPrs(await t.view())).toEqual([2]);
   });
 });
+
+// CodeCommit cannot filter pull requests by branch. Delivery must not walk a
+// long-lived repository's whole pull-request history, nor fail for good once
+// that history outgrows the page cap.
+describe('codecommit final delivery on a repository with a long pull-request history', () => {
+  const HAND = 'arn:aws:sts::123456789012:assumed-role/developer/alice';
+  // 12 pages of other people's closed pull requests: more than the 10-page cap.
+  const busy = async () => {
+    const t = await setup('codecommit', { pageSize: 5 });
+    for (let i = 0; i < 60; i++)
+      t.host.add({ state: 'closed', source: `feature/${i}`, author: HAND });
+    return t;
+  };
+
+  it('publishes by listing only open pull requests when no create was requested', async () => {
+    const t = await busy();
+    await t.publish();
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.prs).toHaveLength(61);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it("after a lost create request, walks only the platform session's closed pull requests", async () => {
+    const t = await busy();
+    t.host.failCreates = 1;
+    await t.publish();
+    expect(await t.repository()).toMatchObject({ status: 'failed', retryable: true });
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending' });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    const closed = t.host.listCalls.filter((input) => input.pullRequestStatus === 'CLOSED');
+    expect(closed.length).toBeGreaterThan(0);
+    expect(closed.every((input) => input.authorArn === t.host.ctx.token.assumedRoleArn)).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it('names the CodeCommit case when ownership is unconfirmed: a closed PR cannot be reopened', async () => {
+    const t = await setup('codecommit');
+    t.host.add({ state: 'closed', body: 'Description edited' });
+    t.host.failCreates = 1;
+    await t.publish();
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(p.delivery.repositories[0].reason).toMatch(/CodeCommit cannot reopen/);
+    expect(p.delivery.repositories[0].reason).not.toMatch(/reopen the pull request if/);
+  });
+});

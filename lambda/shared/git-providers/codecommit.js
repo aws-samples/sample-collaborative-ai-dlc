@@ -540,54 +540,79 @@ const findPullRequest = async (
   });
 };
 
-// Every pull request from `sourceBranch` in any state, across all pages, for
-// final-delivery ownership checks. Strict: unlike findPullRequest it does not
-// filter on the session's author (delivery must also see work created before a
-// binding changed), and a truncated listing throws instead of reporting none.
-const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+// Pull requests from `sourceBranch` for final-delivery ownership checks.
+// ListPullRequests cannot filter by branch, so each listed id costs one
+// GetPullRequest. Listing every pull request of a long-lived repository would
+// be unbounded and, past the page cap, would fail on every attempt. So:
+//   - open pull requests are always listed, from every author (delivery reuses
+//     an open pull request whoever opened it); CodeCommit caps how many can be
+//     open;
+//   - closed and merged ones are listed only with `includeTerminal` (this run
+//     recorded a create request), and then only those the platform session
+//     authored: it is the only author of a pull request carrying a delivery
+//     marker. Without a session identity the walk is unfiltered.
+// Strict: a truncated listing throws instead of reporting fewer pull requests.
+const listPullRequests = async (ctx, repoId, { sourceBranch, includeTerminal = true }) => {
   const { region, repositoryName } = parseRepo(repoId);
   const client = clientFor(ctx, repoId);
+  const authorArn = ctx?.token?.assumedRoleArn;
+  const passes = [
+    { pullRequestStatus: 'OPEN' },
+    ...(includeTerminal
+      ? [{ pullRequestStatus: 'CLOSED', ...(authorArn ? { authorArn } : {}) }]
+      : []),
+  ];
   const prs = [];
-  let nextToken;
-  for (let page = 0; page < LIST_PR_PAGES; page += 1) {
-    const res = await call(
-      client,
-      new ListPullRequestsCommand({ repositoryName, nextToken }),
-      'ListPullRequests',
-    );
-    const ids = res.pullRequestIds ?? [];
-    for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
-      const batch = await Promise.all(
-        ids
-          .slice(i, i + PR_LOOKUP_CONCURRENCY)
-          .map((pullRequestId) => getPullRequestRaw(ctx, repoId, pullRequestId)),
-      );
-      for (const pr of batch) {
-        const target = prTarget(pr);
-        if (!pr || !sameRef(target.sourceReference, sourceBranch)) continue;
-        prs.push({
-          number: pr.pullRequestId,
-          url: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
-          sourceBranch: shortRef(target.sourceReference),
-          targetBranch: shortRef(target.destinationReference) || null,
-          headSha: target.sourceCommit ?? null,
-          state:
-            pr.pullRequestStatus === 'OPEN'
-              ? 'open'
-              : target.mergeMetadata?.isMerged
-                ? 'merged'
-                : 'closed',
-          body: pr.description ?? '',
+  for (const filter of passes) {
+    let nextToken;
+    let page = 0;
+    do {
+      if (page === LIST_PR_PAGES) {
+        logger.warn('CodeCommit pull-request listing truncated', {
+          repositoryName,
+          pullRequestStatus: filter.pullRequestStatus,
+        });
+        throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
+          action: 'ListPullRequests',
+          code: 'PR_LOOKUP_TRUNCATED',
         });
       }
-    }
-    nextToken = res.nextToken;
-    if (!nextToken) return prs;
+      page += 1;
+      const res = await call(
+        client,
+        new ListPullRequestsCommand({ repositoryName, ...filter, nextToken }),
+        'ListPullRequests',
+      );
+      const ids = res.pullRequestIds ?? [];
+      for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
+        const batch = await Promise.all(
+          ids
+            .slice(i, i + PR_LOOKUP_CONCURRENCY)
+            .map((pullRequestId) => getPullRequestRaw(ctx, repoId, pullRequestId)),
+        );
+        for (const pr of batch) {
+          const target = prTarget(pr);
+          if (!pr || !sameRef(target.sourceReference, sourceBranch)) continue;
+          prs.push({
+            number: pr.pullRequestId,
+            url: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
+            sourceBranch: shortRef(target.sourceReference),
+            targetBranch: shortRef(target.destinationReference) || null,
+            headSha: target.sourceCommit ?? null,
+            state:
+              pr.pullRequestStatus === 'OPEN'
+                ? 'open'
+                : target.mergeMetadata?.isMerged
+                  ? 'merged'
+                  : 'closed',
+            body: pr.description ?? '',
+          });
+        }
+      }
+      nextToken = res.nextToken;
+    } while (nextToken);
   }
-  throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
-    action: 'ListPullRequests',
-    code: 'PR_LOOKUP_TRUNCATED',
-  });
+  return prs;
 };
 
 // Merge options for a ref pair. Errors are thrown as ProviderError;

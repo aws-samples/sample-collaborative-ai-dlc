@@ -209,7 +209,20 @@ create response was lost and a closed or merged PR on the branch has no marker
 **Pull request ownership unconfirmed**. Delivery neither adopts that PR nor
 opens a duplicate. Check the branch's PRs at the provider: reopen the PR if it
 holds this run's work (the next check reconciles the open PR), or start a new
-run, which publishes a new PR.
+run, which publishes a new PR. On CodeCommit a closed PR cannot be reopened, so
+there the only option is a new run.
+
+This state needs a create request whose outcome is unknown: the request threw
+or timed out. A create that the provider or the platform refused without
+creating anything (unintegrated task branches, a changed intent branch, a
+missing base branch, no changes) leaves no request behind, so after the cause is
+fixed **Retry delivery** publishes even when the branch has older closed PRs
+without a marker.
+
+CodeCommit cannot filter PRs by branch, so delivery reads open PRs only, from
+any author. It reads closed and merged PRs only after an unknown create
+outcome, and then only those opened by the platform role, the only author of
+PRs with a delivery marker.
 
 PR-per-unit workflows keep their existing unit review process; this action
 covers their final intent-to-base publication only.

@@ -212,14 +212,17 @@ describe('strict delivery provider reads', () => {
       ),
     ).rejects.toThrow(/truncated/);
   });
-  it('CodeCommit lists every status on every page without an author filter', async () => {
+  it('CodeCommit lists open PRs from every author and closed PRs only from the platform session', async () => {
     const mock = mockClient(CodeCommitClient);
+    const assumedRoleArn = 'arn:aws:sts::123456789012:assumed-role/test/session';
     try {
       mock.on(GetBranchCommand).resolves({ branch: { commitId: 'sha' } });
       mock
-        .on(ListPullRequestsCommand, { nextToken: undefined })
-        .resolves({ pullRequestIds: ['7', '8'], nextToken: 'page-2' })
-        .on(ListPullRequestsCommand, { nextToken: 'page-2' })
+        .on(ListPullRequestsCommand, { pullRequestStatus: 'OPEN' })
+        .resolves({ pullRequestIds: ['8', '10'] })
+        .on(ListPullRequestsCommand, { pullRequestStatus: 'CLOSED', nextToken: undefined })
+        .resolves({ pullRequestIds: ['7'], nextToken: 'page-2' })
+        .on(ListPullRequestsCommand, { pullRequestStatus: 'CLOSED', nextToken: 'page-2' })
         .resolves({ pullRequestIds: ['9'] });
       const raw = (id, status, source, description = '') => ({
         pullRequest: {
@@ -243,26 +246,43 @@ describe('strict delivery provider reads', () => {
         .on(GetPullRequestCommand, { pullRequestId: '8' })
         .resolves(raw('8', 'OPEN', 'other'))
         .on(GetPullRequestCommand, { pullRequestId: '9' })
-        .resolves(raw('9', 'CLOSED', 'intent', 'aidlc-delivery-' + 'd'.repeat(32)));
-      const result = await inspectDelivery(
-        getProvider('codecommit'),
-        {
-          token: {
-            assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/test/session',
-            credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+        .resolves(raw('9', 'CLOSED', 'intent', 'aidlc-delivery-' + 'd'.repeat(32)))
+        .on(GetPullRequestCommand, { pullRequestId: '10' })
+        .resolves(raw('10', 'OPEN', 'intent'));
+      const inspectWith = (args) =>
+        inspectDelivery(
+          getProvider('codecommit'),
+          {
+            token: {
+              assumedRoleArn,
+              credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+            },
           },
-        },
-        'arn:aws:codecommit:eu-west-1:123456789012:repo',
-        { branch: 'intent', baseBranch: 'develop' },
-      );
+          'arn:aws:codecommit:eu-west-1:123456789012:repo',
+          { branch: 'intent', baseBranch: 'develop', ...args },
+        );
+      const filters = () =>
+        mock
+          .commandCalls(ListPullRequestsCommand)
+          .map((call) => [call.args[0].input.pullRequestStatus, call.args[0].input.authorArn]);
+
+      // No create request recorded: closed pull requests are never listed.
+      const openOnly = await inspectWith({ includeTerminal: false });
+      expect(openOnly.pullRequests.map((p) => [p.number, p.state])).toEqual([['10', 'open']]);
+      expect(filters()).toEqual([['OPEN', undefined]]);
+
+      mock.resetHistory();
+      const result = await inspectWith({ includeTerminal: true });
       expect(result.pullRequests.map((p) => [p.number, p.state, p.markers.length])).toEqual([
+        ['10', 'open', 0],
         ['7', 'merged', 0],
         ['9', 'closed', 1],
       ]);
-      for (const call of mock.commandCalls(ListPullRequestsCommand)) {
-        expect(call.args[0].input.pullRequestStatus).toBeUndefined();
-        expect(call.args[0].input.authorArn).toBeUndefined();
-      }
+      expect(filters()).toEqual([
+        ['OPEN', undefined],
+        ['CLOSED', assumedRoleArn],
+        ['CLOSED', assumedRoleArn],
+      ]);
     } finally {
       mock.restore();
     }

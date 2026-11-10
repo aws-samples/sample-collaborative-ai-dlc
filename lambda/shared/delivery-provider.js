@@ -4,14 +4,24 @@
 import { ProviderError } from './git-providers/errors.js';
 import { deliveryMarkers } from './delivery-marker.js';
 
-// Every pull request from the intent branch, in every state and from every
-// page. Final delivery decides ownership over the complete set
-// (selectDeliveryPr in final-delivery.js); nothing here picks or rejects a
-// first match.
-export const inspectDelivery = async (provider, ctx, repo, { branch, baseBranch }) => {
+// Every pull request from the intent branch, from every page. Final delivery
+// decides ownership over the complete set (selectDeliveryPr in
+// final-delivery.js); nothing here picks or rejects a first match.
+// `includeTerminal: false` (no create request recorded for this run, so closed
+// and merged pull requests cannot matter) lets a provider that cannot filter by
+// branch skip them; the default lists every state.
+export const inspectDelivery = async (
+  provider,
+  ctx,
+  repo,
+  { branch, baseBranch, includeTerminal = true },
+) => {
   const base = baseBranch || (await provider.getDefaultBranch(ctx, repo));
   if (!base) throw new ProviderError(409, 'The delivery base branch is unknown');
-  const listed = await provider.listPullRequests(ctx, repo, { sourceBranch: branch });
+  const listed = await provider.listPullRequests(ctx, repo, {
+    sourceBranch: branch,
+    includeTerminal,
+  });
   const pullRequests = listed.map(({ body, ...pr }) => ({
     ...pr,
     markers: deliveryMarkers(body),

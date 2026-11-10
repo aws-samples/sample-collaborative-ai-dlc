@@ -214,6 +214,11 @@ export const selectDeliveryPr = (pullRequests, { branch, baseBranch, marker, req
 
 const UNCERTAIN_REASON =
   "A closed or merged pull request from this branch has no matching delivery marker, so it could not be confirmed whether this run's earlier create request opened it. Check the branch's pull requests at the provider: reopen the pull request if it holds this run's work, or start a new run to publish a new one.";
+// CodeCommit cannot reopen a closed pull request (closed is terminal there).
+const UNCERTAIN_REASON_NO_REOPEN =
+  "A closed or merged pull request from this branch has no matching delivery marker, so it could not be confirmed whether this run's earlier create request opened it. CodeCommit cannot reopen a closed pull request: check the branch's pull requests at the provider, then start a new run to publish a new one.";
+const uncertainReason = (provider) =>
+  provider === 'codecommit' ? UNCERTAIN_REASON_NO_REOPEN : UNCERTAIN_REASON;
 const BRANCH_CHANGED_REASON =
   'The intent branch changed after the delivery attempt. Review the new commits before starting a new execution.';
 
@@ -230,9 +235,13 @@ const inspect = async (meta, repo, operation) => {
         retryable: false,
         reason: 'The captured intent branch is missing. Review the execution before publishing.',
       };
+    // Closed and merged pull requests matter only once this run recorded a
+    // create request (selectDeliveryPr); without one, only open ones are read.
+    const requested = Boolean(repo.createRequestedAt || repo.deliveryMarker);
     const snapshot = await callFor(operation, meta, repo, 'delivery-inspect', {
       branch: repo.branch,
       baseBranch: repo.baseBranch,
+      includeTerminal: requested,
     });
     const next = {
       ...unproven,
@@ -254,7 +263,12 @@ const inspect = async (meta, repo, operation) => {
           'The existing pull request has a different branch or target. Review it with the repository owner; retry will not retarget it.',
       };
     if (selected.kind === 'uncertain')
-      return { ...next, status: 'uncertain', retryable: false, reason: UNCERTAIN_REASON };
+      return {
+        ...next,
+        status: 'uncertain',
+        retryable: false,
+        reason: uncertainReason(repo.provider),
+      };
     const { pr } = selected;
     if (pr) {
       const proven = {
