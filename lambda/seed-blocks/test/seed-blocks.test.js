@@ -560,6 +560,43 @@ describe('seed-blocks prepareRelease mode', () => {
     expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
   });
 
+  // The shortcut trusts a published release only when every object its manifest
+  // names is present with its recorded bytes. A missing object is restored by
+  // building the release again; an object holding different bytes cannot be
+  // overwritten, so preparation fails instead of reporting the release ready.
+  const publishedObject = (manifestKey, role) => {
+    const manifest = JSON.parse(s3Store.get(manifestKey));
+    const object = manifest.objects.find((entry) => entry.role === role);
+    expect(object, role).toBeDefined();
+    return object.key;
+  };
+
+  it.each(['body', 'runtime'])(
+    'restores a missing %s object before reporting the release prepared',
+    async (role) => {
+      const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+      const key = publishedObject(first.manifestKey, role);
+      const original = s3Store.get(key);
+      s3Store.delete(key);
+      fetchCoreFiles.mockClear();
+
+      await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+      expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+      expect(s3Store.get(key)).toBe(original);
+    },
+  );
+
+  it('fails instead of reporting prepared a release whose object holds other bytes', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    const key = publishedObject(first.manifestKey, 'body');
+    s3Store.set(key, 'replaced');
+
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      /verification/,
+    );
+  });
+
   it('builds a release again when its published manifest is missing', async () => {
     const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
     s3Store.delete(first.manifestKey);

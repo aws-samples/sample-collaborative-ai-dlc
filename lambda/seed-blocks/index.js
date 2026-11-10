@@ -108,6 +108,7 @@ import {
   readReleaseManifest,
   releaseKeyArgs,
   releaseManifestKey,
+  verifyPublishedRelease,
 } from '../shared/aidlc-release.js';
 import { loadReleaseInspectionClosure } from '../shared/release-resolver.js';
 import {
@@ -436,6 +437,19 @@ const alreadyPublished = async (event) => {
       closureDigest: manifest.closureDigest,
     },
   });
+  // Every object the manifest names must still hold its recorded bytes. A
+  // missing one is restored by building the release again; an object holding
+  // other bytes cannot be overwritten, so that build fails the deployment.
+  try {
+    await verifyPublishedRelease({ s3, bucket: artifactsBucket(), manifest });
+  } catch (error) {
+    if (error?.code !== 'release_verification_failed') throw error;
+    logger.warn('published release failed verification; building it again', {
+      profile: profile.id,
+      keys: error.keys,
+    });
+    return null;
+  }
   return {
     mode: 'importRelease',
     dryRun: false,
