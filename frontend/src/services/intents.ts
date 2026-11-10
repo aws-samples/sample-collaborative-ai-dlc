@@ -1121,6 +1121,7 @@ export interface IntentAuditPromptContext {
 }
 
 export interface IntentAudit {
+  completion?: IntentDetail['unitCompletion'];
   environment: IntentEnvironmentSnapshot | null;
   summary: {
     stageCount: number;
