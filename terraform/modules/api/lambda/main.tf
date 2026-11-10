@@ -3381,6 +3381,13 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Resource = local.v2_orchestrator_function_arns
       },
       {
+        # Complete this execution's own callback for a gate answered before its
+        # wait began, so no callback stays pending for the rest of the run.
+        Effect   = "Allow"
+        Action   = ["lambda:SendDurableExecutionCallbackSuccess"]
+        Resource = local.v2_orchestrator_function_arns
+      },
+      {
         # Invoke the AgentCore stage-executor runtime (init-ws / run-stage) and
         # release a parked session's warm compute (D1 release-on-park).
         Effect = "Allow"

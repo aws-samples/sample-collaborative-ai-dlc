@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { StepError } from '@aws/durable-execution-sdk-js';
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { promoteUnits } from '../../agentcore/commands/promote-units.js';
 import dependentSkeletonPlan from './fixtures/dependent-skeleton-plan.json';
@@ -2546,6 +2547,139 @@ describe('PR per unit delivery', () => {
     expect(
       unitPrStates.some((row) => row.repository === 'owner/api' && row.state === 'UNCHANGED'),
     ).toBe(false);
+  });
+  // Three independent units. auth is the walking skeleton and finishes first;
+  // billing and cart then run together, and cart integrates after billing in
+  // authored order, so it reads billing's unit row before integrating.
+  const configureTwoUnits = ({ getUnit }) => {
+    const calls = new Map();
+    configure({
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: `aidlc/i1--s1-unit-${{ 7: 'auth', 8: 'billing', 9: 'cart' }[number]}`,
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          state: call >= 3 ? 'merged' : 'open',
+          draft: call < 3,
+          mergeable: true,
+        };
+      },
+    });
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [
+          { slug: 'auth', dependsOn: [] },
+          { slug: 'billing', dependsOn: [] },
+          { slug: 'cart', dependsOn: [] },
+        ],
+        batches: [['auth', 'billing', 'cart']],
+      }),
+    );
+    // One PR row per unit and repository.
+    const rows = new Map();
+    const key = (slug, repository) => `${slug}:${repository}`;
+    deps.store.getUnitPr = vi.fn(async (_executionId, _sectionIndex, slug, repository) =>
+      rows.get(key(slug, repository)),
+    );
+    deps.store.createUnitPr = vi.fn(async (args) => {
+      const row = { ...args, unitSlug: args.slug };
+      rows.set(key(args.slug, args.repository), row);
+      return row;
+    });
+    deps.store.updateUnitPr = vi.fn(async (args) => {
+      unitPrStates.push(args);
+      const row = {
+        ...rows.get(key(args.slug, args.repository)),
+        ...args,
+        unitSlug: args.slug,
+        ...args.fields,
+      };
+      rows.set(key(args.slug, args.repository), row);
+      return row;
+    });
+    deps.store.listUnitPrs = vi.fn(async (_executionId, { slug } = {}) =>
+      [...rows.values()].filter((row) => !slug || row.unitSlug === slug),
+    );
+    deps.store.getUnit = vi.fn(getUnit);
+  };
+  // `legacy` replays a load-meta checkpoint written before the lane-wait
+  // marker existed.
+  const recordSteps = ({ legacy = false } = {}) => {
+    const active = new Set();
+    const names = [];
+    const step = ctx.step;
+    ctx.step = async (name, fn) => {
+      names.push(name);
+      active.add(name);
+      try {
+        const result = await step(name, fn);
+        if (legacy && name === 'load-meta' && result) {
+          const { laneWaitPolicyVersion: _marker, ...before } = result;
+          return before;
+        }
+        return result;
+      } finally {
+        active.delete(name);
+      }
+    };
+    return { names, active };
+  };
+  it('reads the integration turn inside a durable step', async () => {
+    const outsideStep = [];
+    let steps;
+    configureTwoUnits({
+      getUnit: async (_executionId, _sectionIndex, slug) => {
+        if (steps.active.size === 0) outsideStep.push(slug);
+        return null;
+      },
+    });
+    steps = recordSteps();
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(steps.names.filter((name) => name.startsWith('integration-turn-'))).toEqual([
+      'integration-turn-s1-cart-billing',
+    ]);
+    expect(outsideStep).toEqual([]);
+  });
+  it('keeps the original integration-turn read for a run without the lane-wait marker', async () => {
+    const reads = [];
+    configureTwoUnits({
+      getUnit: async (_executionId, _sectionIndex, slug) => {
+        reads.push(slug);
+        return null;
+      },
+    });
+    const steps = recordSteps({ legacy: true });
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(reads).toContain('billing');
+    expect(steps.names.some((name) => name.startsWith('integration-turn-'))).toBe(false);
+  });
+  it('treats a predecessor row that still fails to read as not queued', async () => {
+    configureTwoUnits({
+      getUnit: async () => {
+        throw new Error('ProvisionedThroughputExceededException');
+      },
+    });
+    // The fake ctx surfaces a failed step the way the SDK does once its
+    // retries are spent.
+    const step = ctx.step;
+    ctx.step = async (name, fn) => {
+      try {
+        return await step(name, fn);
+      } catch (error) {
+        if (!name.startsWith('integration-turn-')) throw error;
+        throw new StepError(error.message, error);
+      }
+    };
+    const result = await start();
+    expect(result.ok).toBe(true);
   });
 });
 
