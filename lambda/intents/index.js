@@ -3163,15 +3163,23 @@ const handleGateRevise = async ({ event, body, projectId, intentId, humanTaskId,
 // when the run's snapshotted stageSkipping is 'enabled', and the plan must
 // resolve with the overlay applied. FAILED/CREATED restarts never touch
 // the overlay (the prior run's plan holds).
+// A validation intent runs a release nobody else can select yet, so every route
+// that launches or relaunches its orchestrator (start, rewind, recompose,
+// repair) is a platform-admin action. Checked right after the intent is loaded,
+// before any side effect.
+const validationIntentDenied = (event, meta, response) => {
+  if (!meta?.methodologyReleaseTest) return null;
+  const denied = requirePlatformAdmin(event);
+  return denied ? response(denied.statusCode, { error: denied.error, code: denied.code }) : null;
+};
+
 const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
-  if (meta.methodologyReleaseTest) {
-    const denied = requirePlatformAdmin(event);
-    if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
-  }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
   // a CREATED run whose hand-off never reached a live orchestrator (stranded —
   // see the rollback below). init-ws is idempotent in the runtime, so a restart
@@ -4414,6 +4422,8 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   if (!['RUNNING', 'WAITING', 'FAILED'].includes(meta.status)) {
     return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
   }
@@ -4851,6 +4861,8 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   const REWINDABLE = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
   if (!REWINDABLE.has(meta.status)) {
     return response(409, {
@@ -5191,6 +5203,8 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   const RECOMPOSABLE = new Set(['WAITING', 'FAILED']);
   if (!RECOMPOSABLE.has(meta.status)) {
     return response(409, {

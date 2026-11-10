@@ -9224,6 +9224,53 @@ describe('AI-DLC per-intent release selection', () => {
     expect(JSON.stringify([...procStore])).toBe(beforeStart);
   });
 
+  // A validation intent runs a release nobody else can select yet. Every route
+  // that relaunches its orchestrator is therefore a platform-admin action, not
+  // only the start endpoint: a project owner must not reach the hidden release
+  // through a recovery route.
+  it.each([
+    { route: 'rewind', body: { fromStageId: 'build' } },
+    { route: 'recompose', body: { composedGrid: { build: 'EXECUTE' } } },
+    { route: 'repair', body: {} },
+  ])(
+    'refuses a project owner relaunching a validation intent through $route',
+    async ({ route, body }) => {
+      const sub = 'u-' + randomUUID();
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1();
+      seedRegistryRecord(bundleB, 'v2.9.0', { visible: false });
+      const create = {
+        httpMethod: 'POST',
+        path: '/projects/' + projectId + '/intents',
+        pathParameters: { projectId },
+        body: JSON.stringify({
+          title: 'Version validation',
+          scope: SCOPE_ONLY_IN_B,
+          methodologyReleaseId: pinB.releaseId,
+          methodologyReleaseTest: true,
+        }),
+        ...claims(sub),
+      };
+      create.requestContext.authorizer.claims['cognito:groups'] = '[platform-admin]';
+      const intent = JSON.parse((await handler(create)).body);
+      const metaKey = keyOf('EXEC#' + intent.id, 'META');
+      procStore.set(metaKey, { ...procStore.get(metaKey), status: 'FAILED' });
+      const before = JSON.stringify([...procStore]);
+
+      const res = await handler({
+        httpMethod: 'POST',
+        path: '/projects/' + projectId + '/intents/' + intent.id + '/' + route,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify(body),
+        ...claims(sub),
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+      expect(JSON.stringify([...procStore])).toBe(before);
+    },
+  );
+
   it('refuses hidden-version test privilege to an ordinary project owner before creating an intent', async () => {
     const sub = 'u-' + randomUUID();
     const projectId = await seedV2Project(sub);
