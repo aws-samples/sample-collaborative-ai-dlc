@@ -509,11 +509,62 @@ describe('seed-blocks prepareRelease mode', () => {
     expect(ddbMock.calls()).toHaveLength(0);
   });
 
+  // A redeploy must not depend on the upstream archive for a catalog it has
+  // already published: the closure in object storage is read and verified
+  // instead. A catalog that is missing or no longer verifies is still built.
+  it('prepares an already-published release without fetching upstream', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    expect(first.registration).toBe('registered');
+    getReleaseMock.mockResolvedValue({
+      releaseId: first.releaseId,
+      sourceSha: first.sourceSha,
+      profileId: first.profile,
+      importerRevision: first.importerRevision,
+      closureDigest: first.closureDigest,
+    });
+    fetchCoreFiles.mockClear();
+    fetchCoreFiles.mockRejectedValue(new Error('upstream unavailable'));
+
+    const again = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+    expect(again).toMatchObject({
+      mode: 'prepareRelease',
+      registration: 'already-registered',
+      releaseId: first.releaseId,
+      sourceSha: first.sourceSha,
+      importerRevision: first.importerRevision,
+      closureDigest: first.closureDigest,
+    });
+  });
+
+  it('builds a release again when its published manifest is missing', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    s3Store.delete(first.manifestKey);
+    fetchCoreFiles.mockClear();
+
+    await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails instead of trusting a published catalog that no longer verifies', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    s3Store.set(first.catalogKey, '{"tampered":true}');
+    fetchCoreFiles.mockClear();
+
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow();
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+  });
+
   it('does not swallow registration or upstream failures', async () => {
     registerReleaseMock.mockRejectedValueOnce(new Error('registry unavailable'));
     await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
       'registry unavailable',
     );
+    // The first call published the closure before registration failed; an
+    // upstream failure only matters for a release that is not published yet.
+    s3Store.clear();
     fetchCoreFiles.mockRejectedValueOnce(new Error('upstream unavailable'));
     await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
       'upstream unavailable',

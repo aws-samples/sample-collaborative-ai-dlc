@@ -105,9 +105,11 @@ import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   buildReleaseBundle,
   publishReleaseBundle,
+  readReleaseManifest,
   releaseKeyArgs,
   releaseManifestKey,
 } from '../shared/aidlc-release.js';
+import { loadReleaseInspectionClosure } from '../shared/release-resolver.js';
 import {
   buildMethodologyCatalog,
   methodologyCatalogKey,
@@ -394,6 +396,58 @@ const importRelease = async ({ event, dryRun, reseed }) => {
   return { ...summary, status: published.status };
 };
 
+// The current importer's closure for an official profile, when a previous
+// deployment already published it. It is read and verified from object storage
+// rather than rebuilt, so a redeploy does not depend on the upstream archive. A
+// missing manifest returns null and the release is built; a manifest whose
+// catalog no longer verifies throws instead of being trusted.
+const alreadyPublished = async (event) => {
+  if (
+    event.importerRevision != null &&
+    event.importerRevision !== AIDLC_RELEASE_IMPORTER_REVISION
+  ) {
+    return null;
+  }
+  const profile = typeof event.profile === 'string' ? profileFor(event.profile) : null;
+  if (!profile || profile.id !== event.profile) return null;
+  const manifest = await readReleaseManifest({
+    s3,
+    bucket: artifactsBucket(),
+    sha: profile.upstreamRef,
+    importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+  });
+  if (!manifest) return null;
+  await loadReleaseInspectionClosure({
+    s3,
+    bucket: artifactsBucket(),
+    methodologyRelease: {
+      releaseId: manifest.releaseId,
+      sourceSha: manifest.sourceSha,
+      importerRevision: manifest.importerRevision,
+      closureDigest: manifest.closureDigest,
+    },
+  });
+  return {
+    mode: 'importRelease',
+    dryRun: false,
+    profile: profile.id,
+    custom: manifest.custom === true,
+    sourceRepository: manifest.sourceRepository,
+    trustTier: manifest.trustTier,
+    releaseId: manifest.releaseId,
+    sourceSha: manifest.sourceSha,
+    importerRevision: manifest.importerRevision,
+    mapperFingerprint: manifest.mapperFingerprint ?? null,
+    manifestKey: releaseManifestKey(releaseKeyArgs(manifest)),
+    catalogKey: manifest.catalog.key,
+    closureDigest: manifest.closureDigest,
+    objectCount: (manifest.objects ?? []).length,
+    runtimeFileCount: (manifest.runtimeFiles ?? []).length,
+    compatibility: manifest.compatibility,
+    status: 'already-published',
+  };
+};
+
 // Deployment invokes this once per official profile. Importing stays separate
 // from approval, and an existing record keeps its current pin and admin state.
 const prepareRelease = async ({ event, dryRun }) => {
@@ -407,7 +461,9 @@ const prepareRelease = async ({ event, dryRun }) => {
       'seed-blocks: prepareRelease cannot be combined with reseed, importRelease, ref or custom',
     );
   }
-  const published = await importRelease({ event, dryRun, reseed: false });
+  const published =
+    (dryRun ? null : await alreadyPublished(event)) ??
+    (await importRelease({ event, dryRun, reseed: false }));
   if (dryRun) return { ...published, mode: 'prepareRelease', registration: 'not-attempted' };
   const existing = await getRelease({
     ddb,
