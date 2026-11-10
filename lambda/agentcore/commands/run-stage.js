@@ -1446,6 +1446,19 @@ const formatResumeAnswer = (gate, stageId, { reviewFindings = null } = {}) => {
     const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
     return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
   }
+  // The gate UI answers a single-choice question with an option index into the
+  // row's questions. Decode it with the same parser checkpoints use, so the agent
+  // reads the chosen label and any note rather than the raw answer JSON.
+  if (Array.isArray(a?.answers)) {
+    const label = chosenLabel(gate);
+    const note = answerFreeText(a);
+    if (label) {
+      return (
+        `The human answered your question: "${label}".` +
+        `${note ? `\nThey added: ${note}` : ''}\n\nContinue the stage with this answer.`
+      );
+    }
+  }
   const text = typeof a === 'string' ? a : (a?.freeText ?? JSON.stringify(a ?? {}));
   return `The human answered your question(s): ${text}\n\nContinue the stage with this answer.`;
 };
