@@ -74,15 +74,28 @@ function WorkflowReleaseStatus({
   compiled,
   preview,
   previewSettled,
+  previewFailed,
   activeScope,
 }: {
   release: { releaseId: string; label: string; explicit: boolean } | null;
   compiled: CompiledWorkflow | null;
   preview: ExecutionPreview | null;
   previewSettled: boolean;
+  // No preview could be read at all, so there was no plan check to report.
+  previewFailed: boolean;
   activeScope: string | null;
 }) {
   if (!release) return null;
+  if (activeScope && previewSettled && previewFailed)
+    return (
+      <span
+        className="text-xs text-amber-600 dark:text-amber-400"
+        data-testid="composer-plan-check-unavailable"
+        title={release.releaseId}
+      >
+        Plan check unavailable: the execution preview couldn&apos;t be loaded
+      </span>
+    );
   const checked =
     compiled?.libraryRelease === release.releaseId &&
     previewSettled &&
@@ -125,6 +138,7 @@ export default function WorkflowComposer() {
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [preview, setPreview] = useState<ExecutionPreview | null>(null);
   const [previewSettled, setPreviewSettled] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'validate'>('compose');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -685,11 +699,13 @@ export default function WorkflowComposer() {
   useEffect(() => {
     if (!workflowId || !activeScope || !contextReady) {
       setPreview(null);
+      setPreviewFailed(false);
       setPreviewSettled(true);
       return;
     }
     let cancelled = false;
     setPreviewSettled(false);
+    setPreviewFailed(false);
     workflowsService
       .executionPreview(
         workflowId,
@@ -713,6 +729,7 @@ export default function WorkflowComposer() {
       .catch(() => {
         if (!cancelled) {
           setPreview(null);
+          setPreviewFailed(true);
           if (libraryRelease?.explicit) {
             setError(
               `${libraryRelease.label} could not be checked for this scope. The selected version was not substituted.`,
@@ -937,6 +954,7 @@ export default function WorkflowComposer() {
             compiled={compiled}
             preview={preview}
             previewSettled={previewSettled}
+            previewFailed={previewFailed}
             activeScope={activeScope}
           />
 
