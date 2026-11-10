@@ -333,6 +333,9 @@ export interface IntentStage {
   waitMs?: number;
   parkedAt?: string | null;
   pendingHumanTaskId?: string | null;
+  // A lane whose answer reached the run and is waiting for its runtime to
+  // resume (judged by the server, with the rule /repair uses).
+  laneResuming?: boolean;
 }
 
 // One gate-precondition finding. `overridable` is what puts

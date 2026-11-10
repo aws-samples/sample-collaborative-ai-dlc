@@ -1005,6 +1005,53 @@ describe('IntentView', () => {
     expect(repair).toHaveBeenCalledWith('p1', 'i1');
   });
 
+  const laneDetail = (lanes: { slug: string; laneResuming?: boolean }[]) => ({
+    ...baseDetail({ status: 'RUNNING' }),
+    stages: lanes.map(({ slug, laneResuming = false }) => ({
+      stageInstanceId: `si-${slug}`,
+      stageId: 'functional-design',
+      unitSlug: slug,
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      phase: 'construction',
+      pendingHumanTaskId: `q-${slug}`,
+      parkedAt: '2026-01-01T00:01:00Z',
+      laneResuming,
+    })),
+    gates: lanes.map(({ slug }) => ({
+      humanTaskId: `q-${slug}`,
+      stageInstanceId: `si-${slug}`,
+      unitSlug: slug,
+      sectionIndex: 1,
+      status: 'answered',
+      kind: 'question',
+      questions: '[{"text":"Already answered"}]',
+    })),
+    events: [{ eventId: 'fanout', type: 'v2.units.section_started' }],
+  });
+
+  it('does not offer repair for a lane that is resuming after its answer', async () => {
+    get.mockResolvedValue(laneDetail([{ slug: 'asset-containment', laneResuming: true }]));
+
+    renderAt();
+
+    expect(await screen.findByText('Past questions & corrections')).toBeInTheDocument();
+    expect(screen.queryByText('Parallel execution needs recovery')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Repair execution' })).not.toBeInTheDocument();
+  });
+
+  it('holds lane repair while a sibling lane is resuming', async () => {
+    get.mockResolvedValue(
+      laneDetail([{ slug: 'asset-containment' }, { slug: 'live-data', laneResuming: true }]),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Parallel execution needs recovery')).toBeInTheDocument();
+    expect(screen.getByText(/Another lane is resuming after an answer/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Repair execution' })).toBeDisabled();
+  });
+
   it('renders a review-verdict gate with its options and answers through the gate endpoint', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING' }),

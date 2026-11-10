@@ -346,6 +346,9 @@ export default function IntentView() {
   const terminalCompletion = intent.status === 'SUCCEEDED' ? completion?.state : null;
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
+  // Repair stops the run, which would also cancel a sibling lane's resume, so
+  // the server refuses it until every resuming lane has restarted.
+  const lanesResuming = Object.values(laneWaits).some((wait) => wait.kind === 'resuming');
   const needsLaneRepair =
     recoveryWaits.length > 0 && ['RUNNING', 'WAITING', 'FAILED'].includes(intent.status);
   const error = actionError ?? loadError;
@@ -635,6 +638,8 @@ export default function IntentView() {
                 {recoveryWaits.length} lane{recoveryWaits.length === 1 ? ' is' : 's are'} parked
                 without an answerable question. Merged units are safe; active lanes must be replayed
                 from the section boundary.
+                {lanesResuming &&
+                  ' Another lane is resuming after an answer; repair is available once it restarts.'}
               </p>
             </div>
             {canRepair && (
@@ -643,7 +648,7 @@ export default function IntentView() {
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"
-                disabled={repairing}
+                disabled={repairing || lanesResuming}
                 onClick={() => setConfirmRepair(true)}
               >
                 {repairing ? (

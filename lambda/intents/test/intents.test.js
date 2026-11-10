@@ -7634,6 +7634,247 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(JSON.parse(adminResult.body)).toMatchObject({ code: 'repair_not_needed' });
   });
 
+  const seedResumingLane = (intentId, callbackConsumedAt) => {
+    seedStageRow(intentId, 'cg', 'auth', 'WAITING_FOR_HUMAN', 1);
+    procStore.get(keyOf(`EXEC#${intentId}`, `STAGE#${siOf('cg', 'auth', 1)}`)).pendingHumanTaskId =
+      'delivered-gate';
+    seedGate(intentId, 'delivered-gate', {
+      status: 'answered',
+      callbackId: 'cb-auth',
+      stageInstanceId: siOf('cg', 'auth', 1),
+    });
+    Object.assign(procStore.get(keyOf(`EXEC#${intentId}`, 'HUMAN#delivered-gate')), {
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      answeredAt: callbackConsumedAt,
+      callbackConsumedAt,
+    });
+    procStore.set(keyOf(`EXEC#${intentId}`, 'UNIT#S1#auth'), {
+      pk: `EXEC#${intentId}`,
+      sk: 'UNIT#S1#auth',
+      type: 'Unit',
+      executionId: intentId,
+      sectionIndex: 1,
+      slug: 'auth',
+      state: 'RUNNING',
+    });
+  };
+
+  it('refuses to repair while a lane is resuming after its answer was delivered', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'lane_resuming',
+      lanes: [{ stageInstanceId: siOf('cg', 'auth', 1), unitSlug: 'auth', sectionIndex: 1 }],
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#auth')).state).toBe('RUNNING');
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it('treats a delivered answer that never resumed as orphaned once the grace window passes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 11 * 60_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body).code).not.toBe('lane_resuming');
+  });
+
+  it('allows repair at once when the run a delivered answer woke has ended', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:dead',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'FAILED' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body).code).not.toBe('lane_resuming');
+  });
+
+  it('reports a lane as resuming in the intent detail only while its run is live', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, { status: 'RUNNING' });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    const detail = async () =>
+      JSON.parse(
+        (
+          await handler({
+            httpMethod: 'GET',
+            path: `/projects/${projectId}/intents/${intent.id}`,
+            pathParameters: { projectId, intentId: intent.id },
+            ...claims(sub),
+          })
+        ).body,
+      );
+
+    const live = await detail();
+    expect(live.stages.find((s) => s.unitSlug === 'auth')).toMatchObject({ laneResuming: true });
+
+    setStatus(intent.id, { status: 'FAILED' });
+    const failed = await detail();
+    expect(failed.stages.find((s) => s.unitSlug === 'auth')).toMatchObject({ laneResuming: false });
+  });
+
+  // The answer commits before its callback is sent, and the consumption marker
+  // is written afterwards (best-effort), so a recent answer counts as
+  // resuming on its own.
+  const answeredNoMarker = (intentId, answeredAt) => {
+    seedResumingLane(intentId, answeredAt);
+    const gate = procStore.get(keyOf(`EXEC#${intentId}`, 'HUMAN#delivered-gate'));
+    delete gate.callbackConsumedAt;
+  };
+
+  it('refuses to repair while an answer is committed but its delivery marker is missing', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    answeredNoMarker(intent.id, new Date(Date.now() - 5_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'lane_resuming' });
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+  });
+
+  it('reads the records it judges consistently', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    answeredNoMarker(intent.id, new Date(Date.now() - 5_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+    const before = ddbMock.commandCalls(QueryCommand).length;
+
+    await repair(sub, projectId, intent.id);
+
+    const reads = ddbMock
+      .commandCalls(QueryCommand)
+      .slice(before)
+      .map((call) => call.args[0].input)
+      .filter((input) => input.ExpressionAttributeValues?.[':pk'] === `EXEC#${intent.id}`);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((input) => input.ConsistentRead === true)).toBe(true);
+  });
+
+  it('leaves an answer whose delivery is recorded as failed to Resume', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+      resumeRequired: { humanTaskId: 'delivered-gate', callbackId: 'cb-auth' },
+    });
+    answeredNoMarker(intent.id, new Date(Date.now() - 5_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body).code).not.toBe('lane_resuming');
+  });
+
+  it('checks again before stopping the run, so an answer that lands mid-repair is kept', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'RUNNING', durableExecutionName: 'intent-run' });
+    // auth: genuinely orphaned (its answer is long past the grace window).
+    seedResumingLane(intent.id, new Date(Date.now() - 20 * 60_000).toISOString());
+    // billing: parked on a pending question that is answered while repair runs.
+    seedStageRow(intent.id, 'cg', 'billing', 'WAITING_FOR_HUMAN', 1);
+    procStore.get(
+      keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'billing', 1)}`),
+    ).pendingHumanTaskId = 'billing-gate';
+    seedGate(intent.id, 'billing-gate', {
+      callbackId: 'cb-billing',
+      stageInstanceId: siOf('cg', 'billing', 1),
+    });
+    Object.assign(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#billing-gate')), {
+      unitSlug: 'billing',
+      sectionIndex: 1,
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#billing'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#S1#billing',
+      type: 'Unit',
+      executionId: intent.id,
+      sectionIndex: 1,
+      slug: 'billing',
+      state: 'RUNNING',
+    });
+    // Repair looks up the run to stop after its first read; the human
+    // answers billing's question in that window.
+    lambdaMock.on(ListDurableExecutionsByFunctionCommand).callsFake(() => {
+      Object.assign(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#billing-gate')), {
+        status: 'answered',
+        answer: { ok: 1 },
+        answeredAt: new Date().toISOString(),
+      });
+      return {
+        DurableExecutions: [
+          {
+            DurableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+            Status: 'RUNNING',
+          },
+        ],
+      };
+    });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'lane_resuming',
+      lanes: [{ unitSlug: 'billing', sectionIndex: 1 }],
+    });
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('RUNNING');
+  });
+
   it('does not treat a legacy wait with no section index as section zero', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
