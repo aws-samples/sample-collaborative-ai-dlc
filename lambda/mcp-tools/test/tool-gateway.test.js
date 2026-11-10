@@ -383,6 +383,37 @@ describe('MCP tools gateway target', () => {
     );
   });
 
+  it('allows describe_changes for the owning session that was offered it', async () => {
+    const { handler, audit, bridge } = setup();
+    bridge.describeChanges = vi.fn(async (input) => ({ recorded: input }));
+    const args = { type: 'fix', scope: 'billing', summary: 'round totals' };
+    const result = await call(handler, {
+      tool: 'describe_changes',
+      args,
+      headers: contextHeaders(stage, { ...authorSession, describeChanges: true }),
+    });
+    expect(result.isError).toBeUndefined();
+    expect(bridge.describeChanges).toHaveBeenCalledWith(expect.objectContaining(args));
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: 'allow', tool: 'describe_changes', outcome: 'ok' }),
+    );
+  });
+
+  it('denies describe_changes for a session that was not offered it', async () => {
+    const { handler, audit, createProcessBridge } = setup();
+    denied(
+      await call(handler, {
+        tool: 'describe_changes',
+        args: { type: 'fix', summary: 'round totals' },
+        headers: contextHeaders(stage, authorSession),
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: 'deny', reason: 'tool_not_allowed_for_role' }),
+    );
+    expect(createProcessBridge).not.toHaveBeenCalled();
+  });
+
   it('records the injected scope on denials after the context is accepted', async () => {
     const { handler, audit } = setup();
     await call(handler, {

@@ -5465,7 +5465,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       gitProvider: 'github',
       projectId: 'p1',
       executionId: 'e1',
-      message: 'aidlc(requirements-analysis): e1',
+      message: expect.stringMatching(/^docs\(aidlc\): checkpoint requirements-analysis stage\n/),
     });
     // No gitAuthor in the payload → engine-only identity (author: null).
     expect(calls[0].author).toBeNull();
@@ -6055,9 +6055,16 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
-  it('carries the unit dimension in the engine commit message', async () => {
+  it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {
     const messages = [];
     const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        execution: {
+          title: 'Stagger renovate runs',
+          source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+        },
+      }),
       ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
       commitAndPushAll: async ({ message }) => {
         messages.push(message);
@@ -6068,7 +6075,67 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
       deps,
     );
-    expect(messages).toEqual(['aidlc(code-generation): billing — e1']);
+    expect(messages).toEqual([
+      [
+        'chore(aidlc): checkpoint code-generation stage for billing [ABC-12]',
+        '',
+        'Intent: Stagger renovate runs',
+        '',
+        'AIDLC-Stage: code-generation',
+        'AIDLC-Unit: billing',
+        'AIDLC-Execution: e1',
+      ].join('\n'),
+    ]);
+  });
+
+  it('commits with the change description the agent recorded, then records its use', async () => {
+    const messages = [];
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      execution: {
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      stage: {
+        commitDescription: {
+          type: 'fix',
+          scope: 'billing',
+          summary: 'round totals',
+          descriptionId: 'd1',
+        },
+      },
+    });
+    const recorded = [];
+    store.recordCommitDescriptionUse = async (args) => recorded.push(args);
+    let mcpScope = null;
+    const deps = unitDeps({
+      store,
+      materializeStage: async ({ scope }) => {
+        mcpScope = scope;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async ({ message }) => {
+        messages.push(message);
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'https://x/r.git', committed: true, pushed: true }],
+        };
+      },
+    });
+    await runStage(
+      { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
+      deps,
+    );
+    expect(mcpScope).toMatchObject({ describeChanges: true });
+    expect(messages[0].split('\n')[0]).toBe('fix(billing): round totals [ABC-12]');
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        executionId: 'e1',
+        descriptionId: 'd1',
+        repos: ['https://x/r.git'],
+      }),
+    ]);
   });
 
   it('retains committed code refs when a unit stage parks before projection', async () => {

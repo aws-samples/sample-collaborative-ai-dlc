@@ -78,6 +78,7 @@ export const toolAllowedForContext = ({ scope, role }, target, tool) =>
   toolsForRole(role, scope.stageId, scope.policy, {
     checkpointOwner: scope.checkpointOwner,
     canAsk: scope.canAsk,
+    describeChanges: scope.describeChanges,
   }).includes(tool);
 
 const readHeader = (headers, name) => {
