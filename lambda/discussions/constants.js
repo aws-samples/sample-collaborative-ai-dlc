@@ -38,6 +38,9 @@ export const MENTION_EXCERPT_LENGTH = 140;
 export const CREATION_GUARD_SECONDS = 30;
 export const MESSAGE_GUARD_PENDING_SECONDS = 120;
 export const MESSAGE_GUARD_COMPLETE_SECONDS = 3600;
+// How long a resolve's notification guard deduplicates repeated or
+// overlapping resolves of the same open thread.
+export const RESOLUTION_GUARD_SECONDS = 3600;
 export const POLL_ATTEMPTS = 3;
 export const POLL_INTERVAL_MS = 300;
 

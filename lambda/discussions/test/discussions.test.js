@@ -1737,6 +1737,38 @@ describe('intent-scoped discussions', () => {
     }
   });
 
+  it('publishes one discussion.resolved for overlapping resolves of an open thread', async () => {
+    const { EventBridgeClient, PutEventsCommand } = await import('@aws-sdk/client-eventbridge');
+    const ebMock = mockClient(EventBridgeClient);
+    ebMock.on(PutEventsCommand).resolves({ FailedEntryCount: 0 });
+    vi.stubEnv('NOTIFICATION_EVENT_BUS', 'bus-test');
+    try {
+      const { projectId, intentId } = await seedIntent();
+      const path = { projectId, intentId };
+      const created = json(
+        await call('POST', intentPath('/discussions'), {
+          pathParameters: path,
+          body: { entityType: 'review', entityId: 'ht-overlap-1', entityTitle: 'ht-overlap-1' },
+        }),
+      );
+      const resolve = () =>
+        call('PUT', intentPath('/discussions/{discussionId}'), {
+          pathParameters: { ...path, discussionId: created.id },
+          body: { status: 'resolved', resolutionSummary: 'done' },
+        });
+      const results = await Promise.all([resolve(), resolve()]);
+      expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+
+      const resolves = ebMock
+        .commandCalls(PutEventsCommand)
+        .map((c) => c.args[0].input.Entries[0])
+        .filter((e) => e.DetailType === 'discussion.resolved');
+      expect(resolves).toHaveLength(1);
+    } finally {
+      ebMock.restore();
+    }
+  });
+
   it('starts Quorum assist on an intent thread and invokes AgentCore with the discussion session', async () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
