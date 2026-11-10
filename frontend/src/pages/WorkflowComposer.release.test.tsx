@@ -495,3 +495,44 @@ it('reuses a scope block created under a selected version when it is added back'
     'default',
   );
 });
+
+// Under a selected version, a pinned intent resolves stages from the release
+// and the library only. A stage only the SYSTEM rows have is not offered to add.
+it('offers only stages the selected version can resolve', async () => {
+  const selected = 'aidlc:2.9.0';
+  const stage = (id: string, tenantId: string) => ({
+    id,
+    blockId: id,
+    blockType: 'stage',
+    tenantId,
+    name: `Stage ${id}`,
+    readOnly: tenantId === 'SYSTEM',
+    phase: 'inception',
+  });
+  list.mockImplementation(async (type: string) => ({
+    blocks: type === 'stage' ? [stage('system-only', 'SYSTEM'), stage('mine', 'default')] : [],
+  }));
+  catalog.mockResolvedValue({
+    releaseId: selected,
+    release: { releaseId: selected, upstreamVersion: '2.9.0' },
+    contents: {
+      release: { releaseId: selected, upstreamVersion: '2.9.0' },
+      workflow: null,
+      blocks: {
+        stage: [{ ...stage('from-release', 'SYSTEM'), source: 'release', releaseId: selected }],
+        scope: [],
+      },
+    },
+  });
+  compiled.mockResolvedValue(compiledView({ libraryRelease: selected }));
+  executionPreview.mockResolvedValue(previewOf({ libraryRelease: selected }));
+  const user = userEvent.setup();
+
+  renderComposer(`/workflows/my-flow?libraryRelease=${encodeURIComponent(selected)}`);
+  await screen.findByTestId('composer-library-release');
+  await user.click(screen.getByRole('button', { name: /add existing stage/i }));
+
+  expect(await screen.findByText('Stage from-release')).toBeInTheDocument();
+  expect(screen.getByText('Stage mine')).toBeInTheDocument();
+  expect(screen.queryByText('Stage system-only')).toBeNull();
+});

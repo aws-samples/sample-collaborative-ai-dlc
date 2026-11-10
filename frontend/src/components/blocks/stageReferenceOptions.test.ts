@@ -78,8 +78,8 @@ describe('mergeReferenceBlocks', () => {
       // …the release replaces the SYSTEM baseline…
       { id: 'both', label: 'Release both', source: 'AI-DLC 2.11.0' },
       { id: 'security-reviewer', label: 'security-reviewer', source: 'AI-DLC 2.11.0' },
-      // …and a SYSTEM-only block is still offered, labelled as such.
-      { id: 'system-only', label: 'system-only', source: 'SYSTEM' },
+      // …and a SYSTEM-only block is not offered: a pinned intent resolves the
+      // release and the library, never the SYSTEM rows, so it could not run.
     ]);
   });
 });
@@ -102,6 +102,10 @@ describe('mergeReleaseLibraryBlocks', () => {
       { id: 'release-only', name: 'release-only', tenantId: 'SYSTEM' },
       { id: 'system-only', name: 'system-only', tenantId: 'SYSTEM' },
     ]);
+    // Kept so a workflow that already places it still shows it, but marked:
+    // the selected release cannot resolve it, so it is not offered to add.
+    expect(blocks.find(({ id }) => id === 'system-only')).toMatchObject({ notInRelease: true });
+    expect(blocks.find(({ id }) => id === 'shared')).not.toHaveProperty('notInRelease');
     expect(blocks.find(({ id }) => id === 'release-only')).toMatchObject({
       readOnly: true,
       source: 'release',

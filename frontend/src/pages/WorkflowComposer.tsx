@@ -658,7 +658,8 @@ export default function WorkflowComposer() {
   );
 
   const visibleStageLib = useMemo(
-    () => stageLib.filter((stage) => stage.phase !== 'initialization'),
+    // Offered to add: not initialization, and resolvable on the selected release.
+    () => stageLib.filter((stage) => stage.phase !== 'initialization' && !stage.notInRelease),
     [stageLib],
   );
 
