@@ -107,7 +107,12 @@ describe('StageEditModal stage provenance', () => {
   it('loads a release-only stage from the release', async () => {
     get.mockRejectedValue(new Error('Not found'));
     releaseBlock.mockResolvedValue({
-      block: stageBlock({ tenantId: 'SYSTEM', readOnly: true, source: 'release', releaseId: RELEASE }),
+      block: stageBlock({
+        tenantId: 'SYSTEM',
+        readOnly: true,
+        source: 'release',
+        releaseId: RELEASE,
+      }),
       body: '',
       script: '',
     });
@@ -133,6 +138,36 @@ describe('StageEditModal stage provenance', () => {
       'stage',
       'requirements',
       expect.objectContaining({ phase: 'mine' }),
+    );
+  });
+});
+
+// A failed save is recoverable: the member keeps what they typed and can retry.
+// Only a stage or reference catalog that could not be loaded blocks editing.
+describe('StageEditModal save failure', () => {
+  it('keeps the form editable and retries after a failed save', async () => {
+    get.mockResolvedValue(stageBlock({ phase: 'mine' }));
+    update.mockRejectedValueOnce(new Error('Conflict')).mockResolvedValueOnce({});
+    const user = userEvent.setup();
+    const { onSaved } = renderModal({ stageReleaseId: null });
+
+    const phase = await screen.findByPlaceholderText('ideation');
+    await waitFor(() => expect(phase).toBeEnabled());
+    await user.clear(phase);
+    await user.type(phase, 'edited');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Conflict')).toBeInTheDocument();
+    expect(phase).toHaveValue('edited');
+    expect(phase).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(update).toHaveBeenLastCalledWith(
+      'stage',
+      'requirements',
+      expect.objectContaining({ phase: 'edited' }),
     );
   });
 });

@@ -50,12 +50,16 @@ export function StageEditModal({
   const [referenceOptionsLoading, setReferenceOptionsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // A stage or reference catalog that could not be loaded blocks editing; a
+  // failed save does not, so the member can correct the form and retry.
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!stageId) return;
     setLoading(true);
     setError(null);
+    setSaveError(null);
     loadStage(stageId, stageReleaseId)
       .then((block) => {
         setReadOnly(Boolean(stageReleaseId) || block.readOnly);
@@ -103,13 +107,13 @@ export function StageEditModal({
   const handleSave = async () => {
     if (!stageId || readOnly || referenceOptionsLoading || error) return;
     setSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
       await blocksService.update('stage', stageId, { name: stageName, ...form });
       onSaved();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Save failed');
+      setSaveError(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSaving(false);
     }
@@ -173,7 +177,7 @@ export function StageEditModal({
           </div>
         )}
 
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {(error ?? saveError) && <p className="text-xs text-destructive">{error ?? saveError}</p>}
 
         {!loading && (
           <div className="flex-1 overflow-y-auto pr-1">
