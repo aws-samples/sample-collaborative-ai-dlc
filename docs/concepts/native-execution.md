@@ -4130,9 +4130,57 @@ unchanged by this correction. The accepted local and installed qualification
 therefore retains its recorded scope and is not repeated by deployment.
 The replacement candidate's credential-free `--check-only` verifies the final
 source, configuration, packages, frontend, correction and evidence pins.
-**The replacement operator deployment and independent deployed verification
-remain pending.** No new cloud plan/apply, runtime/model call or live acceptance
-is claimed by this local correction; NE-10 remains unstarted.
+**At this correction's handoff, the replacement operator deployment and
+independent deployed verification remained pending.** No new cloud plan/apply,
+runtime/model call or live acceptance was claimed by the local correction.
+The subsequent interrupted publication is recorded below.
+
+## NE-09 deployment handoff — Interrupted image push, 2026-11-10
+
+The operator attempted the Docker-context correction at
+`854f85df45d43c7f20a5e267461e5d01e0bd3490` on **2026-11-10 at 15:21:37 UTC**.
+Image preparation built the candidate and entered publication, which was
+interrupted and timed out while uploading a layer. Terraform reported an error
+restoring a nonexistent deposed object. The attempt ended at **15:45:51 UTC**
+with `COMMANDS_FAILED` in phase `image-publish`; it never reached registry
+verification, the full deployment plan/apply or frontend publication.
+The original receipt incorrectly recorded exit code `0`. Its failed status,
+unfinished phase and preserved log remain authoritative; the receipt is not
+rewritten.
+
+Read-only reconciliation at **15:53 UTC** found no completed ECR tag
+`defb9ff1846f009e`, no state lock and no active Terraform or Buildx process.
+Remote state serial **1466** retained one healthy `docker_image` instance and
+no `docker_registry_image` instance. The retained local image,
+`sha256:e40ec1650cc49af325c37716a6c11978d9bb8ae467cb12ea6e1e9e8a2a4f26db`,
+has the same ARM64 filesystem layers and runtime configuration as the qualified
+image. Its outer index differs; authenticated registry platform/configuration
+verification remains required before the full deployment.
+
+Fresh recovery evidence and the replacement entry point are under
+`.native-evidence/ne09-2026-11-10-interrupted-image-push/`, at
+`handoff/deploy-ne09.sh`. The replacement creates a fresh image plan from current
+state. It permits creation of the missing registry resource only when that plan
+leaves the inspected local image unchanged and retains its exact image ID.
+All existing source, package, configuration, image, full-plan and saved-plan
+checks remain in force. It never resumes an old saved plan or clears an attempt
+guard. Earlier evidence seals and both attempted handoffs retain their hashes.
+
+The wrapper now records nonzero failure for any unfinished phase even if its
+child reports exit code `0`, preserves that raw code separately, and records
+interruption signals as failures. **All 170 inert handoff tests pass**, including
+the observed retained-image/registry-create state, rejection of image
+substitution or rebuild during that recovery, interruption receipts, drained
+logs, source drift and repeat-attempt refusal. These local tests do not represent
+another registry upload or deployed acceptance.
+
+Runtime, Lambda, frontend, Terraform source and deployment configuration remain
+unchanged. The final candidate pins the documentation commit, recovery evidence
+and original local/installed qualification. **The fresh operator retry and
+independent deployed verification are pending; NE-10 remains unstarted.**
+Recovery preparation performed read-only AWS/state inspection and local checks;
+it did not run a cloud plan/apply, push an image, modify state, unlock the backend
+or exercise a live native workflow.
 
 ## Integration and simplification checklist
 
