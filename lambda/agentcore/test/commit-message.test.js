@@ -241,19 +241,45 @@ describe('engineCommitMessage with a change description', () => {
   it('wraps a long breaking-change note to 100 columns without losing any of it', () => {
     const breakingChange =
       'the billing API now returns totals in minor units; clients must divide by 100 before ' +
-      'display and migrate stored totals with scripts/migrate-totals.js during the release window ' +
-      `see https://example.com/${'migrations/'.repeat(10)}minor-units`;
+      'display and migrate stored totals with scripts/migrate-totals.js during the release window';
     const text = message({}, { type: 'feat', summary: 'x', breaking: true, breakingChange });
     const lines = text.split('\n');
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(100);
     const start = lines.findIndex((line) => line.startsWith('BREAKING CHANGE: '));
     const end = lines.indexOf('', start);
     expect(end - start).toBeGreaterThan(1);
-    const note = lines.slice(start, end).join(' ');
-    const words = `BREAKING CHANGE: ${breakingChange}`.split(' ');
-    // Every word survives in order; only the URL longer than a line is split.
-    expect(note.replace(/\s+/g, '')).toBe(words.join(''));
-    for (const word of words.filter((w) => w.length <= 100)) expect(note).toContain(word);
+    // Every word survives, whole and in order.
+    expect(lines.slice(start, end).join(' ').split(' ')).toEqual(
+      `BREAKING CHANGE: ${breakingChange}`.split(' '),
+    );
+  });
+
+  it('keeps a URL longer than a line whole, on its own line', () => {
+    const url = `https://example.com/${'migrations/'.repeat(11)}minor-units`;
+    expect(url.length).toBeGreaterThan(100);
+    const breakingChange = `totals are now in minor units; migrate stored totals as described in ${url} before upgrading`;
+    const text = message({}, { type: 'feat', summary: 'x', breaking: true, breakingChange });
+    const lines = text.split('\n');
+    expect(lines).toContain(url);
+    // commitlint exempts lines containing a URL from its length rule.
+    for (const line of lines) {
+      if (!/\bhttps?:\/\/\S+/.test(line)) expect(line.length).toBeLessThanOrEqual(100);
+    }
+    const start = lines.findIndex((line) => line.startsWith('BREAKING CHANGE: '));
+    const end = lines.indexOf('', start);
+    expect(lines.slice(start, end).join(' ').split(' ')).toEqual(
+      `BREAKING CHANGE: ${breakingChange}`.split(' '),
+    );
+  });
+
+  it('splits a non-URL word longer than a line rather than dropping it', () => {
+    const token = 'x'.repeat(150);
+    const text = message({}, { type: 'feat', summary: 'x', breaking: true, breakingChange: token });
+    const lines = text.split('\n');
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(100);
+    const start = lines.indexOf('BREAKING CHANGE:');
+    const end = lines.indexOf('', start);
+    expect(lines.slice(start, end).join('')).toBe(`BREAKING CHANGE:${token}`);
   });
 
   it('uses the description for a labelled commit that holds the work, such as a lead draft', () => {

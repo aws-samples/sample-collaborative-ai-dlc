@@ -24,16 +24,19 @@ export { COMMIT_TYPES, normaliseChangeDescription, trackerKey };
 
 const HEADER_MAX = 100;
 const TITLE_MAX = 92;
-// Body and footer line limit of the default commitlint configuration.
+// Body and footer line limit of the default commitlint configuration, which
+// exempts any line containing a URL.
 const LINE_MAX = 100;
+const URL_RE = /\bhttps?:\/\/\S+/;
 
-// Word-wraps one line to `width` columns; a word longer than a line is split
+// Word-wraps one line to `width` columns. A URL is never split: it goes on its
+// own line when it doesn't fit. Any other word longer than a line is split
 // rather than dropped.
 const wrap = (text, width) => {
   const lines = [];
   let line = '';
   for (let word of text.split(' ')) {
-    while (word.length > width) {
+    while (word.length > width && !URL_RE.test(word)) {
       if (line) lines.push(line);
       lines.push(word.slice(0, width));
       word = word.slice(width);
