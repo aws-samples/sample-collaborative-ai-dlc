@@ -34,6 +34,7 @@ import { ScopeBuilder } from './composer/ScopeBuilder';
 import { displayPhasePathForPlacement, visibleWorkflowPhases } from './composer/phaseDisplay';
 import { mergeReleaseLibraryBlocks } from '@/components/blocks/stageReferenceOptions';
 import { loadWorkflowLibraryRelease } from './composer/workflowLibraryRelease';
+import type { ReleaseBlock } from '@/services/aidlcReleases';
 
 // The compiled view over a release's library when one is in force. A release
 // that cannot be read falls back to the live library rather than failing the
@@ -143,6 +144,10 @@ export default function WorkflowComposer() {
     explicit: boolean;
   } | null>(null);
 
+  // The release's scope blocks from the last load, merged under the library's
+  // own scopes on every refresh.
+  const releaseScopesRef = useRef<ReleaseBlock[] | null>(null);
+
   const readOnly = workflow?.readOnly ?? false;
 
   // The workflow and release the loaded state belongs to. Until the current
@@ -164,6 +169,7 @@ export default function WorkflowComposer() {
     setLibraryRelease(null);
     setStageLib([]);
     setScopeLib([]);
+    releaseScopesRef.current = null;
     if (!workflowId) return;
     setLoading(true);
     setError(null);
@@ -174,6 +180,7 @@ export default function WorkflowComposer() {
       setLibraryRelease(release);
       setWorkflow(result.workflow);
       setStageLib(mergeReleaseLibraryBlocks(result.stages, release?.stages ?? null));
+      releaseScopesRef.current = release?.scopes ?? null;
       setScopeLib(mergeReleaseLibraryBlocks(result.scopes, release?.scopes ?? null));
       setCompiled(result.compiled);
       loadedKeyRef.current = requestKey;
@@ -200,7 +207,10 @@ export default function WorkflowComposer() {
       if (generation !== loadGeneration.current || loadedKeyRef.current !== requestKey) return;
       setWorkflow(wf);
       setCompiled(comp);
-      if (!libraryRelease?.explicit) setScopeLib(scopes.blocks);
+      // Same precedence as the load: the member's library scopes over the
+      // release's. A scope created since the load is in the library now, so a
+      // later add reuses it instead of creating it again.
+      setScopeLib(mergeReleaseLibraryBlocks(scopes.blocks, releaseScopesRef.current));
     } catch {
       // silent — the optimistic state is good enough for now
     }

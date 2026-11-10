@@ -13,6 +13,9 @@ const list = vi.fn();
 const stableCatalog = vi.fn();
 const catalog = vi.fn();
 const getBlock = vi.fn();
+const createBlock = vi.fn();
+const putScopeMembership = vi.fn();
+const removeScopeRef = vi.fn();
 const releaseBlock = vi.fn();
 
 vi.mock('@/services/workflows', async (importOriginal) => {
@@ -24,6 +27,8 @@ vi.mock('@/services/workflows', async (importOriginal) => {
       compiled: (...a: unknown[]) => compiled(...a),
       executionPreview: (...a: unknown[]) => executionPreview(...a),
       update: (...a: unknown[]) => update(...a),
+      putScopeMembership: (...a: unknown[]) => putScopeMembership(...a),
+      removeScopeRef: (...a: unknown[]) => removeScopeRef(...a),
     },
   };
 });
@@ -34,6 +39,7 @@ vi.mock('@/services/blocks', async (importOriginal) => {
     blocksService: {
       list: (...a: unknown[]) => list(...a),
       get: (...a: unknown[]) => getBlock(...a),
+      create: (...a: unknown[]) => createBlock(...a),
     },
   };
 });
@@ -142,6 +148,9 @@ beforeEach(() => {
   });
   catalog.mockReset();
   getBlock.mockReset();
+  createBlock.mockReset();
+  putScopeMembership.mockReset();
+  removeScopeRef.mockReset();
   releaseBlock.mockReset();
   compiled.mockReset();
   executionPreview.mockReset();
@@ -392,4 +401,97 @@ it('opens a release-origin stage from the release it was resolved from', async (
   expect(await screen.findByRole('dialog')).toHaveTextContent('Release requirements');
   expect(releaseBlock).toHaveBeenCalledWith(STABLE, 'stage', 'requirements');
   expect(getBlock).not.toHaveBeenCalled();
+});
+
+// A scope created while a version is selected is a library block. Detaching it
+// from the workflow keeps the block, so adding it back must reuse it rather
+// than try to create it a second time.
+it('reuses a scope block created under a selected version when it is added back', async () => {
+  const selected = 'aidlc:2.9.0';
+  let current = {
+    ...(await get.getMockImplementation()?.()),
+    phases: [
+      {
+        phaseId: 'inception',
+        name: 'Inception',
+        kind: 'phase',
+        path: '01',
+        parentPath: null,
+        order: 1,
+      },
+    ],
+    placements: [
+      {
+        stageId: 'requirements',
+        stageTenant: 'SYSTEM',
+        pinnedVersion: null,
+        phasePath: '01',
+        order: 0,
+        scopeMembership: {},
+      },
+    ],
+    scopeRefs: [] as { scopeId: string; scopeTenant: string }[],
+  };
+  get.mockImplementation(async () => current);
+  const leanScope = {
+    id: 'lean',
+    blockId: 'lean',
+    blockType: 'scope',
+    tenantId: 'default',
+    name: 'Lean',
+  };
+  let scopes: unknown[] = [];
+  list.mockImplementation(async (type: string) => ({ blocks: type === 'scope' ? scopes : [] }));
+  createBlock.mockImplementation(async () => {
+    scopes = [leanScope];
+    return leanScope;
+  });
+  putScopeMembership.mockImplementation(
+    async (_w: string, scopeId: string, _s: string[], scopeTenant: string) => {
+      current = { ...current, scopeRefs: [{ scopeId, scopeTenant }] };
+      return current;
+    },
+  );
+  removeScopeRef.mockImplementation(async () => {
+    current = { ...current, scopeRefs: [] };
+  });
+  catalog.mockResolvedValue({
+    releaseId: selected,
+    release: { releaseId: selected, upstreamVersion: '2.9.0' },
+    contents: {
+      release: { releaseId: selected, upstreamVersion: '2.9.0' },
+      workflow: null,
+      blocks: { stage: [], scope: [] },
+    },
+  });
+  compiled.mockResolvedValue(compiledView({ libraryRelease: selected }));
+  executionPreview.mockResolvedValue(previewOf({ libraryRelease: selected }));
+  const user = userEvent.setup();
+
+  renderComposer(`/workflows/my-flow?libraryRelease=${encodeURIComponent(selected)}`);
+  await screen.findByTestId('composer-library-release');
+  await user.click(screen.getByRole('tab', { name: 'Scopes' }));
+
+  const addLean = async () => {
+    await user.click(screen.getByRole('button', { name: /new/i }));
+    await user.type(screen.getByLabelText(/scope name/i), 'Lean');
+    await user.click(screen.getByLabelText(/inception/i));
+    await user.click(screen.getByRole('button', { name: /create scope/i }));
+  };
+
+  await addLean();
+  const leanButton = await screen.findByRole('button', { name: /^lean$/i });
+  await user.click(leanButton.nextElementSibling as HTMLElement);
+  await waitFor(() => expect(removeScopeRef).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.queryByRole('button', { name: /^lean$/i })).toBeNull());
+
+  await addLean();
+  await waitFor(() => expect(putScopeMembership).toHaveBeenCalledTimes(2));
+  expect(createBlock).toHaveBeenCalledTimes(1);
+  expect(putScopeMembership).toHaveBeenLastCalledWith(
+    'my-flow',
+    'lean',
+    ['requirements'],
+    'default',
+  );
 });
