@@ -302,8 +302,10 @@ difference:
 ### AI-DLC 2.11.3
 
 2.11.3 imports from the pinned commit
-`63fd2901947ece8c5ad0cd831cdf5934a9666d47`. It keeps the 2.11 frontmatter
-dialect, scope settings, sensor contracts and the eleven compilable scope plans.
+`63fd2901947ece8c5ad0cd831cdf5934a9666d47`, the preview commit the `v2.11.3`
+tag was promoted from; the promotion commit changes only release metadata. It
+keeps the 2.11 frontmatter dialect, scope settings, sensor declarations and the
+eleven compilable scope plans.
 Its Requirements Analysis `outputs` description has an unquoted colon that
 makes the upstream YAML invalid; importer revision 4 quotes that known scalar
 without changing its value.
@@ -316,6 +318,21 @@ human plan review. Administrators can inspect these differences before approval:
 | `engine intent add-repo`     | refused     | Repository membership and credentials are fixed on the intent snapshot. Ask a human to add the repository to the project and start a new intent.                                                                                           |
 | `engine intent add-checkout` | refused     | The agent cannot add an arbitrary local checkout to the reviewed source manifest. Only repositories already bound to the intent are in scope.                                                                                              |
 | `engine plan first`          | adapted     | Use `request_plan_approval` when available, otherwise a recorded `ask_question` containing the plan and test instructions. The lead waits for the answer. This does not change the configured policy or reproduce the native one-off flag. |
+
+Two sensor behaviours change upstream in 2.11.3 and are not reproduced:
+
+- **`engine sensor-traceability --stage <stage> --output-path <path> --write-upstream`.**
+  Eight stages run it to write the stage's required upstream ids and an initial
+  `GAP` row for each into its traceability record. It is handled like any
+  sensor run on request: refused. The agent writes the record itself from the
+  artifacts it can read, labels it agent-derived rather than sensor-verified,
+  and records every id it cannot confirm as uncovered, so it surfaces at the
+  gate. The record is not initialized by the upstream tool.
+- **Dispatcher outcomes.** Upstream's sensor dispatcher now reports a script
+  error or unreadable output as `could-not-run` rather than a noted pass, and
+  can dispatch over a set of paths. The platform runs a stage's declared
+  sensors through its own runner, one matching file at a time, and maps their
+  exit codes itself, so these dispatcher outcomes do not apply.
 
 The 2.11.3 release is structurally valid and can be promoted after these
 limitations are reviewed. A workflow that requires any of the refused

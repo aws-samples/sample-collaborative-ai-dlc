@@ -112,9 +112,10 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     currentPlatformBaseline: false,
   }),
   // 2.11.3 rolls up the 2.11.2 patch line. Its authored methodology keeps
-  // 2.11.1's frontmatter dialect, scope settings and sensor contracts; the
-  // compatibility matrix verifies its full imported catalog and command
-  // fidelity before administrators can promote it.
+  // 2.11.1's frontmatter dialect, scope settings and sensor declarations; its
+  // sensor-on-request and dispatcher changes are not reproduced (see the
+  // compatibility guide). The compatibility matrix verifies its full imported
+  // catalog and command fidelity before administrators can promote it.
   'v2.11.3': Object.freeze({
     id: 'v2.11.3',
     releaseId: 'aidlc:63fd2901947ece8c5ad0cd831cdf5934a9666d47',
