@@ -12,6 +12,8 @@ const update = vi.fn();
 const list = vi.fn();
 const stableCatalog = vi.fn();
 const catalog = vi.fn();
+const getBlock = vi.fn();
+const releaseBlock = vi.fn();
 
 vi.mock('@/services/workflows', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/workflows')>();
@@ -27,7 +29,13 @@ vi.mock('@/services/workflows', async (importOriginal) => {
 });
 vi.mock('@/services/blocks', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/blocks')>();
-  return { ...original, blocksService: { list: (...a: unknown[]) => list(...a) } };
+  return {
+    ...original,
+    blocksService: {
+      list: (...a: unknown[]) => list(...a),
+      get: (...a: unknown[]) => getBlock(...a),
+    },
+  };
 });
 vi.mock('@/services/aidlcReleases', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/aidlcReleases')>();
@@ -36,6 +44,7 @@ vi.mock('@/services/aidlcReleases', async (importOriginal) => {
     aidlcReleasesService: {
       stableCatalog: (...a: unknown[]) => stableCatalog(...a),
       catalog: (...a: unknown[]) => catalog(...a),
+      block: (...a: unknown[]) => releaseBlock(...a),
     },
   };
 });
@@ -132,6 +141,8 @@ beforeEach(() => {
     contents: { release: { releaseId: STABLE }, workflow: null, blocks: {} },
   });
   catalog.mockReset();
+  getBlock.mockReset();
+  releaseBlock.mockReset();
   compiled.mockReset();
   executionPreview.mockReset();
 });
@@ -326,4 +337,59 @@ describe('WorkflowComposer release plan check', () => {
     expect(screen.queryByDisplayValue('My flow')).not.toBeInTheDocument();
     expect(compiled.mock.calls.slice(compiledCallsBefore)).toEqual([]);
   });
+});
+
+it('opens a release-origin stage from the release it was resolved from', async () => {
+  const workflow = await get.getMockImplementation()?.();
+  get.mockResolvedValue({
+    ...workflow,
+    phases: [
+      {
+        phaseId: 'inception',
+        name: 'Inception',
+        kind: 'phase',
+        path: '01',
+        parentPath: null,
+        order: 1,
+      },
+    ],
+    placements: [
+      {
+        stageId: 'requirements',
+        stageTenant: 'SYSTEM',
+        pinnedVersion: null,
+        phasePath: '01',
+        order: 0,
+        scopeMembership: { mvp: 'EXECUTE' },
+      },
+    ],
+  });
+  const releaseStage = {
+    id: 'requirements',
+    blockId: 'requirements',
+    blockType: 'stage',
+    tenantId: 'SYSTEM',
+    name: 'Release requirements',
+    readOnly: true,
+    phase: 'inception',
+    source: 'release',
+    releaseId: STABLE,
+  };
+  stableCatalog.mockResolvedValue({
+    releaseId: STABLE,
+    release: { releaseId: STABLE, upstreamVersion: '2.11.0' },
+    contents: { release: { releaseId: STABLE }, workflow: null, blocks: { stage: [releaseStage] } },
+  });
+  releaseBlock.mockResolvedValue({ block: releaseStage, body: '', script: '' });
+  getBlock.mockRejectedValue(new Error('Not found'));
+  compiled.mockResolvedValue(compiledView({ libraryRelease: STABLE }));
+  executionPreview.mockResolvedValue(previewOf({ libraryRelease: STABLE }));
+  const user = userEvent.setup();
+
+  renderComposer();
+
+  await user.click(await screen.findByTitle('Open stage'));
+  expect(await screen.findByRole('dialog')).toHaveTextContent('Release requirements');
+  expect(releaseBlock).toHaveBeenCalledWith(STABLE, 'stage', 'requirements');
+  expect(getBlock).not.toHaveBeenCalled();
 });

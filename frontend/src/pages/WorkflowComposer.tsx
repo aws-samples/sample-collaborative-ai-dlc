@@ -53,6 +53,10 @@ const compiledOver = (workflowId: string, libraryRelease: string | null, allowFa
       })()
     : workflowsService.compiled(workflowId);
 
+// The release a merged library entry came from, or null for a library block.
+const releaseOrigin = (block: Block | undefined): string | null =>
+  block?.source === 'release' && typeof block.releaseId === 'string' ? block.releaseId : null;
+
 async function loadComposerState(workflowId: string, requestedLibraryRelease: string | null) {
   const [workflow, stages, scopes] = await Promise.all([
     workflowsService.get(workflowId),
@@ -1014,6 +1018,7 @@ export default function WorkflowComposer() {
 
         <StageEditModal
           stageId={editingStageId}
+          stageReleaseId={releaseOrigin(editingStageId ? stagesById[editingStageId] : undefined)}
           libraryReleaseId={libraryRelease?.explicit ? libraryRelease.releaseId : null}
           onClose={() => setEditingStageId(null)}
           onSaved={refresh}
