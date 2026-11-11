@@ -4440,6 +4440,56 @@ and in-memory AWS ports. It did not exercise live models, AWS EFS, a browser or 
 cloud deployment. NE-11 verified workflow completion, NE-12 Git delivery and
 NE-18 Kiro qualification remain separate and unstarted by this item.
 
+## NE-10 full-plan recovery — reviewed handoff, 2026-11-11
+
+**The operator published the qualified NE-10 image, then the handoff stopped at
+full-plan review before applying the application changes or publishing the
+frontend.** The original attempt at
+`.native-evidence/ne10-2026-11-11-public-files/handoff/deployment/` is preserved
+and must not be repeated. Its **21** files, the original **6,035** sealed evidence
+files and **four** recorded links retain their identities.
+
+The stopped full plan contains **19** refresh differences. Fourteen are API
+Gateway empty/default readbacks for the NE-09 input and attachment-import
+routes. Three are IAM role inline-policy readbacks that match the permissions
+already independently verified after NE-09. One records runtime version
+**146** and its last-update time, also confirmed by NE-09 verification. One
+records Docker's null-to-default build options after the completed image apply.
+The API, IAM and Docker resources require no planned change. The runtime's
+configured properties remain unchanged apart from NE-10's qualified image.
+
+Fresh evidence and the recovery handoff are under
+`.native-evidence/ne10-2026-11-11-full-plan-handoff/`. The guard accepts only
+these exact recorded refresh entries and the existing computed EFS usage
+rule. It permits entries to disappear after Terraform records a refresh.
+Unknown or changed drift still requires another review; IAM, route and API
+deployment mutations remain outside NE-10. The unmodified stopped full plan
+passes the remaining source-derived scope: **205** managed changes comprising
+**55** AWS resources and **150** local package helpers, with all **50** package
+recipes verified.
+
+The published image digest is
+`sha256:2d1cff4da168f1dfed0565ce77b843e63532f98daf37c634475f0becab203855`,
+with tag `3d95c00a6c6e3c8c` and size **848,119,686 bytes**. Its ARM64 platform,
+configuration and all **23** runtime layers match the installed qualification
+above. The recovery handoff requires both image resources to remain unchanged,
+rechecks the exact published image, and refuses another build or push.
+Production source, Lambda packages and frontend bytes are unchanged, so the
+complete local and installed qualification is reused.
+
+All **421** handoff plan and workflow tests pass, including the preserved real
+plan, unexpected drift, image substitution, failed phases, runtime readback,
+saved-plan identity and refusal to replay. These tests intercept production
+commands; they do not deploy. Run the fresh guarded handoff once:
+
+```bash
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne10-2026-11-11-full-plan-handoff/handoff/deploy-ne10.sh'
+```
+
+The command prepares new plans and preserves a new attempt. Independent deployed
+package, alias, IAM/route-preservation, runtime and frontend-byte verification
+follows a completed rollout. Live acceptance remains separate.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
