@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The per-user CodeCommit connect flow: the `GET /codecommit/connect-info` and `POST /codecommit/repos` routes (replaced by admin configuration and a `GET /codecommit/repos` list), the per-user connection record, and the IAM role/external-ID form in project creation and settings. Old per-user connection rows are left in place, unused; no data migration runs ([#531](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/531)).
 
+### Security
+
+- HTML artifact detection no longer backtracks on leading comments. An artifact body made only of comment delimiters could keep the artifact edit route, the MCP artifact write, and the browser tab that opened the artifact busy for minutes; comments are now read in a single pass ([#727](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/727)).
+- Updated `node-forge` to `1.4.3`, `glob` to `14.0.3` and Vitest to `4.1.12` to address security advisories ([#727](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/727)).
+
 ### Notes
 
 - **Upgrade from v2.2.0.** Spaces bound under the previous per-user CodeCommit role keep working: a binding keeps the role it was verified with, so nothing stops at upgrade and there is nothing to rebind. To move a space onto the shared platform connection, a platform admin first sets the connection (**Admin → Source Control → AWS CodeCommit**), then a space owner runs the existing **Rebind and verify** on its repositories. The per-user role form is gone, so an **invalidated** old binding can only recover by moving to the platform connection, which requires that connection to be set first. Any later save of a space's source control (a rebind, a new repository, another provider's auth type) verifies every CodeCommit repository against the platform connection: set the connection first, and make sure its role reaches the space's existing repositories, or the save returns 409.
