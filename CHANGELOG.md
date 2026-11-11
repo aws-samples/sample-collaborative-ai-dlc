@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Address feedback** is now offered on a unit's card with the `pr-per-unit` strategy. It appeared only once a unit PR's stored comment count was above zero, but that count is written only when the review drawer loads, so the drawer could never be opened. It now shows whenever the unit is in active review with an open review PR, and the drawer has **Refresh** for comments posted after it opens ([#728](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/728)).
+
 - One `terraform apply` now leaves the intents and managed-environment Lambdas on the AgentCore runtime version that apply produced. Previously `CORE_RUNTIME_VERSION` kept the version from before an in-place runtime update, so new intents and the staged Standard environment revision recorded the previous version until a second apply, and the plan after a deployment was not empty ([#710](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/710)).
 
 ### Removed
