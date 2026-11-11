@@ -299,6 +299,18 @@ describe('BlockEditor', () => {
     );
   });
 
+  it('keeps a stage editable when its reference lists fail without a selected version', async () => {
+    get.mockResolvedValue(block('my-stage', 'default', { blockType: 'STAGE', name: 'My stage' }));
+    stableCatalog.mockRejectedValue(new Error('Network error'));
+    const user = userEvent.setup();
+
+    renderAt('/blocks/stage/my-stage');
+    await user.click(await screen.findByRole('tab', { name: 'Configuration' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    expect(screen.queryByText(/before saving this stage/)).toBeNull();
+  });
+
   it('keeps stage references on the newly selected version when the old catalog arrives late', async () => {
     let resolveOld!: (value: unknown) => void;
     const oldResponse = new Promise((resolve) => {

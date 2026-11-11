@@ -205,6 +205,9 @@ export default function BlockEditor() {
         if (cancelled) return;
         setReferenceOptions({});
         setPickerRelease(null);
+        // Without a selected version the pickers only offer suggestions; they
+        // stay empty and typed ids still save.
+        if (!requestedPickerRelease) return;
         setPickerReleaseError(
           err instanceof Error ? err.message : 'The selected AI-DLC version could not be loaded.',
         );

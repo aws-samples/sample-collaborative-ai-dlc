@@ -55,7 +55,13 @@ const stageBlock = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const renderModal = (props: { stageReleaseId?: string | null; onSaved?: () => void } = {}) => {
+const renderModal = (
+  props: {
+    stageReleaseId?: string | null;
+    libraryReleaseId?: string | null;
+    onSaved?: () => void;
+  } = {},
+) => {
   const onClose = vi.fn();
   const onSaved = props.onSaved ?? vi.fn();
   render(
@@ -63,7 +69,7 @@ const renderModal = (props: { stageReleaseId?: string | null; onSaved?: () => vo
       <StageEditModal
         stageId="requirements"
         stageReleaseId={props.stageReleaseId ?? null}
-        libraryReleaseId={RELEASE}
+        libraryReleaseId={props.libraryReleaseId === undefined ? RELEASE : props.libraryReleaseId}
         onClose={onClose}
         onSaved={onSaved}
       />
@@ -169,5 +175,34 @@ describe('StageEditModal save failure', () => {
       'requirements',
       expect.objectContaining({ phase: 'edited' }),
     );
+  });
+});
+
+// Without a selected version the pickers are a convenience: a failed load
+// leaves them empty and typed ids still save, as before versions existed.
+describe('StageEditModal reference lists', () => {
+  it('keeps editing and saving open when the lists fail without a selected version', async () => {
+    get.mockResolvedValue(stageBlock({ phase: 'mine' }));
+    update.mockResolvedValue({});
+    loadOptions.mockRejectedValue(new Error('Network error'));
+    const user = userEvent.setup();
+    const { onSaved } = renderModal({ stageReleaseId: null, libraryReleaseId: null });
+
+    const phase = await screen.findByPlaceholderText('ideation');
+    await waitFor(() => expect(phase).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it('still blocks saving when the selected version cannot be loaded', async () => {
+    get.mockResolvedValue(stageBlock({ phase: 'mine' }));
+    loadOptions.mockRejectedValue(new Error('Network error'));
+    renderModal({ stageReleaseId: null });
+
+    expect(
+      await screen.findByText(/The selected AI-DLC version could not be loaded/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 });

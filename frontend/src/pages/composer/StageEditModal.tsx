@@ -95,10 +95,13 @@ export function StageEditModal({
       .then(({ options }) => setReferenceOptions(options))
       .catch((e) => {
         setReferenceOptions({});
+        // Without a selected version the pickers only offer suggestions; they
+        // stay empty and typed ids still save.
+        if (!libraryReleaseId) return;
         setError(
           e instanceof Error
-            ? `${libraryReleaseId ? 'The selected AI-DLC version' : 'Stage references'} could not be loaded: ${e.message}`
-            : `${libraryReleaseId ? 'The selected AI-DLC version' : 'Stage references'} could not be loaded.`,
+            ? `The selected AI-DLC version could not be loaded: ${e.message}`
+            : 'The selected AI-DLC version could not be loaded.',
         );
       })
       .finally(() => setReferenceOptionsLoading(false));
