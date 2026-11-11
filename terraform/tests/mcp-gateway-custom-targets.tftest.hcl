@@ -446,6 +446,149 @@ run "rejects_qualified_tool_name" {
   expect_failures = [var.mcp_gateway_custom_targets]
 }
 
+# Auth0 needs `audience`, Entra ID v1 and AD FS `resource` on the token request.
+run "oauth_custom_parameters_reach_the_target" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          scopes                  = ["kb.read"]
+          custom_parameters       = { audience = "https://api.example.com" }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      aws_bedrockagentcore_gateway_target.custom["wiki"].credential_provider_configuration[0].oauth[0].custom_parameters == tomap({ audience = "https://api.example.com" }) &&
+      jsondecode(local.mcp_gateway_custom_targets_registry) == { wiki = { projectIds = ["p-1"], stageIds = null, tools = null } }
+    )
+    error_message = "OAuth custom parameters are passed to the target's credential provider configuration and never to the interceptor."
+  }
+}
+
+run "rejects_custom_parameters_on_api_key" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "api_key"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/apikeycredentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          custom_parameters       = { audience = "https://api.example.com" }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_more_than_ten_custom_parameters" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          custom_parameters       = { for i in range(11) : "p${i}" => "v" }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_a_scope_over_64_characters" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          scopes                  = [join("", [for i in range(65) : "s"])]
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_more_than_100_scopes" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          scopes                  = [for i in range(101) : "scope-${i}"]
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+# IAM only matches the bedrock-agentcore form, so an acps ARN would yield a
+# Gateway role grant that never applies.
+run "rejects_an_acps_provider_arn" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:acps:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          scopes                  = ["kb.read"]
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
 run "gateway_only_keeps_custom_mcp_credentials_out_of_the_runtime" {
   command = apply
   module {

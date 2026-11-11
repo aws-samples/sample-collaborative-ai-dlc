@@ -467,6 +467,7 @@ variable "mcp_gateway_custom_targets" {
       credential_provider_arn = string
       secret_arn              = string
       scopes                  = optional(list(string), [])
+      custom_parameters       = optional(map(string))
       credential_location     = optional(string)
       parameter_name          = optional(string)
       prefix                  = optional(string)

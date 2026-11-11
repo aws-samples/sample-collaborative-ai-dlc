@@ -131,9 +131,10 @@ resource "aws_bedrockagentcore_gateway_target" "custom" {
     dynamic "oauth" {
       for_each = each.value.auth.type == "oauth" ? [each.value.auth] : []
       content {
-        provider_arn = oauth.value.credential_provider_arn
-        scopes       = oauth.value.scopes
-        grant_type   = "CLIENT_CREDENTIALS"
+        provider_arn      = oauth.value.credential_provider_arn
+        scopes            = oauth.value.scopes
+        custom_parameters = oauth.value.custom_parameters
+        grant_type        = "CLIENT_CREDENTIALS"
       }
     }
     dynamic "api_key" {
