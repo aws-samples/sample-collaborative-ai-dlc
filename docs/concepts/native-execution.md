@@ -4176,11 +4176,50 @@ another registry upload or deployed acceptance.
 
 Runtime, Lambda, frontend, Terraform source and deployment configuration remain
 unchanged. The final candidate pins the documentation commit, recovery evidence
-and original local/installed qualification. **The fresh operator retry and
-independent deployed verification are pending; NE-10 remains unstarted.**
+and original local/installed qualification. **At this handoff, the fresh operator
+retry and independent deployed verification remained pending.**
 Recovery preparation performed read-only AWS/state inspection and local checks;
 it did not run a cloud plan/apply, push an image, modify state, unlock the backend
 or exercise a live native workflow.
+
+## NE-09 deployment handoff — Reviewed Docker build defaults, 2026-11-11
+
+The operator attempted the interrupted-push recovery at
+`a18cd91f1c22be0ed7eebfcdd01282bc344afdb4` on **2026-11-11 at 08:38:36 UTC**.
+The attempt stopped at **08:39:20 UTC**, with `COMMANDS_FAILED`, exit code `1`
+and phase `image-plan-review`. No image apply, push, full deployment or frontend
+publication was reached. All **11** attempt files, including the saved plan and
+its JSON, retain their hashes.
+
+The saved plan reports one drift row for the retained `docker_image`: **13**
+unused build fields changed from `null` to `0`, `false` or empty maps during
+refresh. Image identity, source arguments, Dockerfile, build context and
+filesystem/configuration pins are unchanged. The planned image action is
+`no-op`; the only planned managed change creates the missing
+`docker_registry_image`. The blanket drift guard rejected this metadata refresh.
+
+The replacement handoff under
+`.native-evidence/ne09-2026-11-11-image-defaults-handoff/` records that exact
+reviewed drift and accepts it only during image planning. The complete drift row
+must match the preserved observation, retain the inspected image ID and agree
+with an unchanged planned image. Additional drift, changed build settings,
+image replacement, unresolved fields and drift in the full deployment still
+stop the attempt. The plan-review receipt records the accepted drift explicitly.
+Every operator attempt still creates and reviews a fresh plan.
+
+**All 187 inert handoff tests pass.** The new cases validate the actual saved
+operator plan, then reject image/build substitutions, extra drift, missing
+review evidence and use of the exception during the full deployment.
+The prior failure/signal, drained-log, source, package, full-scope and
+repeat-attempt checks remain covered. Earlier evidence seals and attempted
+handoffs are preserved.
+
+This correction changes the local handoff and canonical documentation only.
+Production sources, configuration and original local/installed qualification
+remain unchanged. The candidate pins its final documentation HEAD and
+preserved evidence; `handoff/deploy-ne09.sh --check-only` verifies those inputs
+without credentials, Docker or Terraform. **The new operator retry, independent
+deployed verification and live acceptance remain pending; NE-10 has not started.**
 
 ## Integration and simplification checklist
 
