@@ -230,29 +230,30 @@ describe('broker accounting begin authority', () => {
     for (let i = 1; i < MAX_INVOCATIONS_PER_GRANT; i += 1)
       await h.resolve({ ...request, invocationNonce: randomUUID() });
     // Both begins read no row, then commit one after the other: the second finds the
-    // slot taken and its invocation row already written by the first.
+    // slot taken and its invocation row already written by the first. Each call gates
+    // its own begin, as either may finish its preceding reads first.
     const secondBegin = Promise.withResolvers();
-    const firstResolved = Promise.withResolvers();
     let begins = 0;
-    h.ddbClient.send.mockImplementation(async (command) => {
-      if (
-        command instanceof TransactWriteCommand &&
-        command.input.TransactItems.some((item) => item.Put?.Item.type === 'AgentInvocation')
-      ) {
-        begins += 1;
-        if (begins === 1) await secondBegin.promise;
-        else {
-          secondBegin.resolve();
-          await firstResolved.promise;
+    const holdBegin = (until) => ({
+      send: async (command) => {
+        if (
+          command instanceof TransactWriteCommand &&
+          command.input.TransactItems.some((item) => item.Put?.Item.type === 'AgentInvocation')
+        ) {
+          begins += 1;
+          await until();
         }
-      }
-      return ddb.send(command);
+        return ddb.send(command);
+      },
     });
-    const first = h.resolve(request);
-    const second = h.resolve(request);
-    const one = await first;
-    firstResolved.resolve();
-    const two = await second;
+    const first = h.resolve(request, { ddbClient: holdBegin(() => secondBegin.promise) });
+    const second = h.resolve(request, {
+      ddbClient: holdBegin(() => {
+        secondBegin.resolve();
+        return first;
+      }),
+    });
+    const [one, two] = await Promise.all([first, second]);
     expect(begins).toBe(2);
     expect(two.accounting).toEqual(one.accounting);
     expect(h.ssmClient.send).toHaveBeenCalledTimes(MAX_INVOCATIONS_PER_GRANT + 1);
