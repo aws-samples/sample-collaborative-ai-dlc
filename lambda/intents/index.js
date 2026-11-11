@@ -35,6 +35,7 @@ import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
+import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -4436,6 +4437,86 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
   }
 };
 
+// POST /projects/{projectId}/intents/{intentId}/delivery
+// Publication recovery is independent of stage recovery and always scoped
+// to the current run. Preview performs reads only, including old executions.
+const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, response }) => {
+  if (auth.role !== 'owner' && auth.role !== 'admin')
+    return response(403, { error: 'Only project owners and admins can retry delivery' });
+  const records = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
+  const meta = records.meta;
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  const input = body ? JSON.parse(body) : {};
+  try {
+    const resolved = await intentMethodology.loadPlan(meta);
+    if (!resolved.valid || !resolved.plan)
+      return response(409, { error: 'The pinned workflow cannot be verified for delivery' });
+    const preview = await previewDelivery({
+      meta,
+      records,
+      plan: resolved.plan,
+      operation: sourceControlOperation,
+    });
+    if (input.preview)
+      return response(200, { ...preview, delivery: deliveryView(meta, preview.delivery) });
+    if (!input.previewToken || input.previewToken !== preview.previewToken)
+      return response(409, {
+        error: 'Delivery state changed. Check delivery again before retrying.',
+        code: 'delivery_preview_changed',
+      });
+    const claimed = await store.claimDelivery({
+      meta,
+      delivery: { ...preview.delivery, requestedBy: sub },
+      attemptId: randomUUID(),
+      ifUnitPlan: records.unitPlan,
+    });
+    try {
+      await lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: ORCHESTRATOR_FN(),
+          InvocationType: 'Event',
+          DurableExecutionName: `delivery-${randomBytes(16).toString('hex')}`,
+          Payload: Buffer.from(
+            JSON.stringify({
+              action: 'retry-delivery',
+              projectId,
+              intentId,
+              executionId: intentId,
+              runId: meta.orchestratorRunId,
+              attemptId: claimed.attemptId,
+            }),
+          ),
+        }),
+      );
+    } catch {
+      // An invocation timeout can mean accepted. Keep the bounded lease:
+      // immediately releasing it could overlap an already running publisher.
+      return response(202, {
+        delivery: deliveryView(meta, claimed),
+        message:
+          'Delivery launch is uncertain. Refresh status; the attempt lease expires automatically.',
+      });
+    }
+    return response(202, { delivery: deliveryView(meta, claimed) });
+  } catch (error) {
+    if (
+      error.statusCode === 409 ||
+      ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error.name)
+    )
+      return response(409, {
+        error:
+          error.statusCode === 409
+            ? error.message
+            : 'Delivery or execution changed. Refresh before retrying.',
+        code: error.code ?? 'delivery_changed',
+      });
+    throw error;
+  }
+};
+
 // POST /projects/{projectId}/intents/{intentId}/repair
 // Recover a parallel section whose stage callbacks became orphaned. This is
 // intentionally narrower than rewind: merged units remain merged, pending
@@ -5520,7 +5601,35 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
 //   stageInstanceId — that stage's chunks; the literal "intent" selects
 //     the stage-less workspace/init bucket; absent = ALL chunks.
 //   afterSeq — only chunks with seq > afterSeq (incremental catch-up
-//     after a websocket-live pane is seeded).
+//     after a websocket-live pane is seeded). The response then also carries
+//     `cursor`: the next afterSeq to send, which may be past the pane's own
+//     last chunk.
+
+// A writer allocates a sequence (ADD on META) before it puts the row, so a
+// read can see seq N+1 while N is still in flight. The cursor therefore only
+// advances over a contiguous run of sequences, and skips a gap only once a
+// later chunk is older than this grace period (its writer died between the
+// two writes, so that sequence will never be written).
+// The put normally lands milliseconds after the ADD; under throttling the SDK's
+// retries and backoff can delay it by tens of seconds, and writer and reader
+// clocks can differ by seconds. Five minutes is well beyond both, so a slow
+// put is not skipped. Do not shorten it to that range: a chunk whose put
+// lands after the grace period is missed by catch-up until a reload. A longer
+// period only means more re-reads behind a gap that will never fill.
+const OUTPUT_GAP_GRACE_MS = 5 * 60 * 1000;
+const outputsCursor = (rows, afterSeq, nowMs) => {
+  let cursor = Math.max(0, Math.floor(afterSeq));
+  for (const row of rows) {
+    const seq = Number(row.seq);
+    if (seq <= cursor) continue;
+    const written = Date.parse(row.timestamp);
+    const gapAbandoned = Number.isFinite(written) && nowMs - written > OUTPUT_GAP_GRACE_MS;
+    if (seq !== cursor + 1 && !gapAbandoned) break;
+    cursor = seq;
+  }
+  return cursor;
+};
+
 const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -5532,14 +5641,28 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
   if (afterSeq != null && !Number.isFinite(afterSeq)) {
     return response(400, { error: 'afterSeq must be a number' });
   }
-  const rows = await store.getOutputs(intentId, {
-    // "intent" is the UI's bucket key for stage-less (init-ws) output.
-    ...(rawStage !== undefined
+  // "intent" is the UI's bucket key for stage-less (init-ws) output.
+  const stageFilter =
+    rawStage !== undefined
       ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
-      : {}),
-    afterSeq,
-  });
+      : {};
+  let rows;
+  let cursor;
+  if (afterSeq == null) {
+    rows = await store.getOutputs(intentId, { ...stageFilter, afterSeq });
+  } else {
+    // Catch-up reads every chunk after the cursor (the stage filter is applied
+    // here, not in DynamoDB) so the response can carry a `cursor` covering
+    // other stages' chunks too. Without it a pane for a finished stage would
+    // re-read every later chunk of the run on each poll.
+    const all = await store.getOutputs(intentId, { afterSeq });
+    cursor = outputsCursor(all, afterSeq, Date.now());
+    rows = stageFilter.filterByStage
+      ? all.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
+      : all;
+  }
   return response(200, {
+    ...(cursor !== undefined ? { cursor } : {}),
     outputs: rows.map((o) => ({
       seq: o.seq,
       stageInstanceId: o.stageInstanceId ?? null,
@@ -5646,6 +5769,7 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
     // attribute per-unit stage instances. Both null/empty pre-promotion.
     unitCompletion: completion,
     unitPlan: mapUnitPlan(records.unitPlan),
+    delivery: deliveryView(records.meta, currentDelivery(records)),
     units: (records.units ?? []).map(mapUnit),
     unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
     feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
@@ -6538,6 +6662,19 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+    if (
+      intentId &&
+      (httpMethod === 'DELETE' ||
+        (httpMethod === 'POST' && /\/(rewind|recompose|cancel|repair)$/.test(path ?? '')))
+    ) {
+      const current = await store.getExecution(intentId, { consistentRead: true });
+      if (current?.projectId === projectId && Date.parse(current.deliveryLeaseUntil) > Date.now()) {
+        return response(409, {
+          error: 'Delivery is in progress. Wait for it to finish before changing this execution.',
+          code: 'delivery_in_progress',
+        });
+      }
+    }
 
     // Await each route so failures reach catch and finally closes the graph
     // connection only after the route has finished using it.
@@ -6700,6 +6837,10 @@ export const handler = async (event, context) => {
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/derive')) {
       return await handleDeriveIntent({ event, projectId, intentId, response });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/delivery')) {
+      return await handleRetryDelivery({ body, projectId, intentId, sub, auth, response });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/repair')) {

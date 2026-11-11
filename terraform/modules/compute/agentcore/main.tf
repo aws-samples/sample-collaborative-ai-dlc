@@ -843,3 +843,14 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
 
   tags = var.tags
 }
+
+# The version this apply leaves the runtime on. The resource's own
+# agent_runtime_version keeps its pre-update value through an in-place update
+# (the provider plans it from state) and only catches up on the next refresh,
+# so consumers reading it stay one version behind until a second apply.
+# depends_on defers this read until the update has completed; without it the
+# read happens at plan time and returns the same stale version.
+data "awscc_bedrockagentcore_runtime" "stage_executor" {
+  id         = awscc_bedrockagentcore_runtime.stage_executor.id
+  depends_on = [awscc_bedrockagentcore_runtime.stage_executor]
+}

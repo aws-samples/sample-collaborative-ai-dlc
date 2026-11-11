@@ -98,9 +98,11 @@ describe('assertGithubOwner / assertGithubRepo', () => {
 describe('parseRepositorySlug', () => {
   it('splits and normalizes a valid owner/name slug', () => {
     expect(parseRepositorySlug('  acme/fork  ')).toEqual({
+      provider: 'github',
       owner: 'acme',
       repo: 'fork',
       repository: 'acme/fork',
+      keySegments: ['acme', 'fork'],
     });
   });
 
@@ -117,5 +119,50 @@ describe('parseRepositorySlug', () => {
     expect(() => parseRepositorySlug('../etc')).toThrow(CustomSourceError);
     expect(() => parseRepositorySlug('acme/..')).toThrow(CustomSourceError);
     expect(() => parseRepositorySlug('acme/a..b')).toThrow(CustomSourceError);
+  });
+});
+
+// GitLab custom sources: `gitlab:<namespace>/<project>`, nested groups allowed.
+// The project path is percent-encoded into ONE key segment, so it can neither
+// traverse nor collide with a GitHub `owner/name` prefix.
+describe('parseRepositorySlug for GitLab sources', () => {
+  it('parses a nested GitLab project path', () => {
+    expect(parseRepositorySlug('  gitlab:acme/platform/aidlc-fork ')).toEqual({
+      provider: 'gitlab',
+      path: 'acme/platform/aidlc-fork',
+      repository: 'gitlab:acme/platform/aidlc-fork',
+      keySegments: ['gitlab', 'acme%2Fplatform%2Faidlc-fork'],
+    });
+  });
+  it('accepts GitLab path characters', () => {
+    expect(parseRepositorySlug('gitlab:my_group/my.project-1').path).toBe('my_group/my.project-1');
+  });
+  it('rejects paths GitLab would not accept or that could escape', () => {
+    for (const value of [
+      'gitlab:',
+      'gitlab:acme',
+      'gitlab:acme/',
+      'gitlab:/fork',
+      'gitlab:acme//fork',
+      'gitlab:acme/../fork',
+      'gitlab:acme/a..b',
+      'gitlab:acme/.',
+      'gitlab:acme/-fork',
+      'gitlab:acme/fork.',
+      'gitlab:acme/fork.git',
+      'gitlab:acme/fork.atom',
+      'gitlab:acme/fo%2Frk',
+      'gitlab:acme/fo rk',
+      `gitlab:${Array.from({ length: 23 }, () => 'g').join('/')}`,
+      `gitlab:acme/${'a'.repeat(260)}`,
+    ]) {
+      expect(() => parseRepositorySlug(value), value).toThrow(CustomSourceError);
+      expect(codeOf(() => parseRepositorySlug(value))).toBe('custom_source_repository_invalid');
+    }
+  });
+  it('never yields a key segment a GitHub repository could also produce', () => {
+    const { keySegments } = parseRepositorySlug('gitlab:acme/fork');
+    expect(keySegments[1]).toContain('%');
+    expect(() => parseRepositorySlug(`gitlab/${keySegments[1]}`)).toThrow(CustomSourceError);
   });
 });

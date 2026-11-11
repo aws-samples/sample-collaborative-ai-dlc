@@ -762,6 +762,44 @@ const findPullRequest = async (
     : null;
 };
 
+// Every merge request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const project = encodeProject(repoId);
+  const mrs = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=all&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
+    // The project's list includes merge requests from forks; delivery publishes
+    // only from this project.
+    const fromHere = (row) =>
+      row.source_project_id == null || row.source_project_id === row.target_project_id;
+    for (const mr of rows.filter((row) => row.source_branch === sourceBranch && fromHere(row)))
+      mrs.push({
+        number: mr.iid,
+        url: mr.web_url,
+        sourceBranch: mr.source_branch,
+        targetBranch: mr.target_branch ?? null,
+        headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+        // `locked` is an open merge request while GitLab merges it.
+        state: ['opened', 'locked'].includes(mr.state)
+          ? 'open'
+          : mr.state === 'merged'
+            ? 'merged'
+            : 'closed',
+        body: mr.description ?? '',
+      });
+    if (rows.length < 100) return mrs;
+  }
+  throw new ProviderError(409, 'Merge-request lookup truncated');
+};
+
 // Create a merge request. Enforces the unmerged-construction-task-branch guard
 // for parity with GitHub. Returns { prUrl, prNumber } on success,
 // { skipped, reason } for a no-change repo, { conflict, unmergedBranches } when
@@ -769,7 +807,7 @@ const findPullRequest = async (
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false },
+  { branch, baseBranch, title, body, draft = false, allowRetarget = true },
 ) => {
   const project = encodeProject(repoId);
 
@@ -868,7 +906,7 @@ const createPullRequest = async (
       // it is a reasonable merge target.
       if (text.includes('target branch')) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
-        if (defaultBranch && defaultBranch !== resolvedBase) {
+        if (allowRetarget && defaultBranch && defaultBranch !== resolvedBase) {
           res = await postMr(defaultBranch);
           if (res.ok) {
             await cleanupConstructionTaskBranches(ctx, repoId, branch);
@@ -916,6 +954,18 @@ const createPullRequest = async (
 // `from` lacks; an empty list means identical-or-behind — either way there is
 // nothing to merge, which is all the caller needs to know.
 // Returns { status: 'ahead'|'identical'|'missing_head'|'missing_base'|'unknown', aheadBy?, base }.
+const getBranchHead = async (ctx, repoId, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${encodeProject(repoId)}/repository/branches/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.commit?.id) throw new ProviderError(502, 'Invalid branch response');
+  return data.commit.id;
+};
+
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const project = encodeProject(repoId);
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -1107,7 +1157,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1147,7 +1199,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

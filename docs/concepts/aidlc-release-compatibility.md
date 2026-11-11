@@ -37,6 +37,31 @@ becomes runnable only through the explicit admin promotion described under
 [Registry, promotion, and channels](#registry-promotion-and-channels), which
 applies the same fidelity guard as an official release.
 
+### Fork sources
+
+A fork is read from one of two places, always at an exact 40-hex commit SHA:
+
+- **GitHub**, written `owner/name`. It is fetched from codeload without
+  credentials, so the repository must be public.
+- **GitLab**, written `gitlab:<namespace>/<project>`, for example
+  `gitlab:acme/platform/aidlc-fork`. Nested groups are allowed. It is fetched
+  through the project archive API of the instance in
+  `aidlc_custom_source_gitlab_url` (default `https://gitlab.com`). For a private
+  project, store a token with the `read_api` scope in a Secrets Manager secret,
+  either as its plain value or as the `token` field of a JSON object (the shape
+  a rotation function keeps alongside the token's id), and set `aidlc_custom_source_gitlab_token_secret_arn`
+  to its ARN. A project or group access token with at least the Reporter role
+  works. Only the seed-blocks function may read the secret, and the token is
+  sent only to that instance, in the `Authorization` header. GitLab rate-limits
+  archive downloads per project and commit, so a repeated import of the same
+  commit can briefly answer 429.
+
+The repository string is the fork's identity: it is part of the release id
+(`aidlc-custom:gitlab:acme/platform/aidlc-fork@<sha>`) and of its storage prefix
+(`custom/gitlab/<url-encoded project path>/`), so a GitLab fork can never share
+bytes with a GitHub fork or an official release. Either way, only the `core/`
+tree is imported.
+
 ## Immutable storage and import
 
 The seed-blocks import mode fetches the profile's declared source closure,
@@ -468,6 +493,8 @@ SEED_BLOCKS_FUNCTION="<seed_blocks_lambda_name output>" \
 ```
 
 Custom forks still use the explicit `importRelease` mode and admin registration.
+A fork in a private GitLab project needs the token secret described under
+[Fork sources](#fork-sources).
 Older registered closure revisions remain available; **Maintenance → Import
 details and advanced state → Upgrade closure** adopts a newly published revision
 without changing existing intent pins.

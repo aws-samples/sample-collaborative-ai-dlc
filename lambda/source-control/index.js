@@ -1,4 +1,5 @@
 import gremlin from 'gremlin';
+import { inspectDelivery } from '../shared/delivery-provider.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -42,6 +43,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   compare: 'read',
   'find-pr': 'read',
   'create-pr': 'write',
+  'delivery-inspect': 'read',
   'pr-status': 'read',
   'set-pr-draft': 'write',
   'reopen-pr': 'write',
@@ -317,7 +319,15 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
         targetBranch: args.targetBranch,
         state: args.state,
       });
+    case 'delivery-inspect':
+      return inspectDelivery(provider, ctx, repo, args);
     case 'create-pr':
+      if (args.expectedHeadSha) {
+        const head = await provider.getBranchHead(ctx, repo, args.branch);
+        if (head !== args.expectedHeadSha) return { failed: true, reason: 'branch_changed' };
+        if (!args.baseBranch || !(await provider.getBranchHead(ctx, repo, args.baseBranch)))
+          return { failed: true, reason: 'missing_base' };
+      }
       return provider.createPullRequest(ctx, repo, args);
     case 'pr-status':
       return provider.getPullRequestStatus(ctx, repo, args.number);
