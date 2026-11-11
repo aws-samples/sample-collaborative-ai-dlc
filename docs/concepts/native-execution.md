@@ -39,7 +39,9 @@ Uniform availability across spaces was independently verified as deployed on
 2026-11-06. NE-09 attachment, tracker, source and effective-setting integration is
 complete locally and in the installed runtime image, with deployed artifacts
 independently verified on 2026-11-11. The dated acceptance records below
-distinguish these scopes. A fresh live creation journey remains unrun.
+distinguish these scopes. NE-10's repository-file policy and result downloads
+are locally and installed-image qualified; their deployment remains pending.
+A fresh live creation journey remains unrun.
 
 The release implementation uses platform-wide native admission controls and
 normal project membership. Existing and newly created spaces require no native
@@ -148,9 +150,10 @@ graph extraction and downloads use that same publication inventory. Graph
 extraction still depends on supported content and file roles; unsupported formats
 remain readable or downloadable without invented graph structure.
 
-Platform-injected credential bytes, private runtime and harness files, Git
-internals and generated `node_modules` dependencies remain outside the public
-inventory. Publication verifies exact file bytes and rejects filesystem escapes,
+Platform-injected credential bytes, private runtime and harness files and Git
+internals remain outside the public inventory. Generated `node_modules`
+dependencies follow the revision's recorded filesystem policy. Publication
+verifies exact file bytes and rejects filesystem escapes,
 links, concurrent mutations and configured size-limit violations. These checks
 do not introduce a repository-secret classifier. Both newly published files and
 retained repository files follow the selected member-visibility rule.
@@ -4344,6 +4347,99 @@ is reused through exact artifact identity. **A fresh native creation/Start
 journey with uploads and tracker imports remains separate live acceptance;
 NE-10 is the next implementation item.**
 
+## NE-10 public files and usable results — local and installed acceptance, 2026-11-11
+
+**NE-10 is implemented and locally qualified, including the installed production
+image. Deployment, independent deployed-byte verification and live acceptance
+remain pending.** The selected policy is that authorized space members can view
+repository content as checked out. Native does not classify `.env`, `.npmrc`,
+`.aws`, `.ssh`, templates or other repository filenames as private merely because
+they can contain credentials. Known platform-injected credential bytes and
+platform-private runtime paths retain their separate protections.
+
+Commit `05912f31f776253a1fbae5bb26c7b4f8b2556e26` implements the common public-file
+policy in capture, source baselines, publication admission, ordinary and historical
+file reads, comparison, graph extraction and result archives. Supported graph
+roles and content types still determine what can be extracted; unsupported files
+remain viewable or downloadable. Retained revisions use their recorded dependency
+policy. Missing historical baselines are not reconstructed from later checkouts.
+
+The result UI identifies an individual file and its revision or the complete
+published revision represented by a ZIP. An empty text file has an explicit empty
+state. ZIPs preserve original case, Unicode spelling, colon and reserved-looking
+names, binary bytes, BOMs and line endings; exact duplicate entries, traversal and
+file/directory collisions still fail. The archive manifest declares
+`inventory: native-public-files` and `completeWorkspace: false`, with exact file
+hashes and source identity. This is the admitted publication inventory, not a
+complete Git tree or an export of unpublished workspace edits.
+
+The composed public-file journey captures a real local workspace, admits the
+production publication codec and immutable object versions, then checks source,
+current and historical reads, graph inputs and download bytes. After cancellation
+it removes the entire disposable runtime workspace and still obtains the retained
+files and ZIP through the normal member API. Revoked membership denies access.
+Filename preservation does not weaken exact version, content hash, byte count,
+size, filesystem-link, mutation or private-path checks.
+
+Validation passes:
+
+- Full backend: **11,903 passed, eight host-dependent skips**.
+- Full frontend: **2,367 passed**, with the production build passing.
+- Release-script suite on the final test-tooling source: **514 passed**.
+- Lint, formatting, secret checks, dependency and architecture checks pass.
+  The canonical documentation links and site build pass.
+- All **50** Lambda package recipes prepare and build or reuse an exact
+  previously qualified archive. Package identities were refreshed after the
+  test-tooling corrections; the older package evidence is preserved.
+- The installed ARM64 image passes **174 Linux tests across seven files**,
+  including the composed public-file and source-baseline cases.
+- Claude Code **2.1.296**, Codex **0.162.1** and OpenCode **1.19.0** each pass
+  the finite installed workflow/resume journey, read all three admitted input
+  files, and pass failure, incomplete-output and cancellation cases.
+- Production dependency/import checks and installed MarkItDown **0.1.8**
+  extraction for finite PDF, DOCX and XLSX fixtures pass.
+
+The image has **301** production inputs, runtime source SHA-1
+`47ac8752eb742514328bedb4fb6f399023fc0c0f`, tag `3d95c00a6c6e3c8c` and local
+image ID
+`sha256:3e4652b5b75a02cef59bb06b4833031f99e9d8b0cc59fac8a97007c558cfafd3`.
+It was built from the actual production context with the default builder,
+`linux/arm64` and the native interaction probe enabled. The qualified platform
+manifest is
+`sha256:65201aac3c4db79326761dc86cf58f00bf41b274c23e11fa0ff29a3f65c0a3cd`;
+its configuration is
+`sha256:e6573eb150d12074dc29543db9017bdb503a6b47292bc3bfd1a721732f9ff315`.
+All **23** runtime layers are recorded. A future registry push must preserve the
+qualified platform and configuration even if outer provenance metadata changes.
+
+The first installed attempt exposed a test transport using SDK instance identity
+across separately installed SDKs. The correction retains local prototype identity
+after bundling and operation names across SDK copies. The actual bundled
+authoritative Start is now a regression test. Qualification tooling commit
+`5148977bbe670d609ad4739746ab1c602a44bb02` changes only test fixtures and their
+regression after the production commit; all runtime inputs remain identical.
+The related **588** host tests and **five** bundled-adapter tests pass. The initial
+failed attempts retain their logs; the final complete installed run passes against
+the same production image.
+
+Fresh evidence and the deployment-only handoff are under
+`.native-evidence/ne10-2026-11-11-public-files/`. The handoff derives its baseline
+from the independently verified NE-09 deployment, preserves all original attempts,
+and checks the final source, configuration, generated package inputs, ZIPs,
+runtime and frontend bytes. The reviewed scope has **47** changed package
+recipes representing **46** distinct archives and **48** changed functions,
+**six** aliases, **12** runtime-setting consumers and the shared runtime. No IAM,
+route or API deployment changes belong to this item. Finite tests exercise the
+fresh scope, retained deployment guards, stopped attempts, refusal to replay,
+source/package substitution, runtime readback and complete log preservation.
+The operator must run the new guarded command once; a stop retains its attempt
+for review instead of enabling a retry.
+
+Qualification used finite offline provider replies, local disposable filesystems
+and in-memory AWS ports. It did not exercise live models, AWS EFS, a browser or a
+cloud deployment. NE-11 verified workflow completion, NE-12 Git delivery and
+NE-18 Kiro qualification remain separate and unstarted by this item.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -4528,7 +4624,7 @@ the current contract for newly created executions.
       runtime/default endpoint and frontend bytes match the qualified candidate.
       Fresh live creation/Start acceptance remains separate; NE-10, NE-11,
       NE-12 and NE-18 are not advanced by this input integration.
-- [ ] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
+- [x] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
       for credential-shaped files such as `.env` and `.npmrc`. **Selected policy
       2026-11-11:** space members may view repository content as checked out,
       including these files and templates; do not add filename-based withholding
@@ -4537,7 +4633,12 @@ the current contract for newly created executions.
       admission, file views, comparisons, graph extraction and downloads. **Done
       when:** text/binary/empty files and exclusions behave consistently, public
       archives remain obtainable after runtime stop, and a download clearly states
-      which workspace content it contains.
+      which workspace content it contains. **Completed locally and in the installed
+      image 2026-11-11:** the shared policy, retained revision reads and exact ZIP
+      downloads pass the composed member journey, including after runtime workspace
+      removal. The full backend/frontend and release checks and all three enabled
+      installed CLI rows pass as recorded above. Deployment, independent deployed
+      verification and live acceptance remain pending.
 - [ ] **NE-11 — Implement verified workflow completion.** Connect evidence of the
       pinned effective plan, applied human decisions and required checks/reviews to
       the exact final result. Resolve the methodology/isolation dependency instead
