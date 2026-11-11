@@ -79,8 +79,19 @@ const makeWorld = () => {
       valid: true,
       plan: { stages: [{ stageId: 'a' }] },
     }),
-    invokeRuntime: async (payload) =>
-      payload.command === 'init-ws' ? { ok: true } : { ok: true, accepted: true },
+    invokeRuntime: async (payload) => {
+      if (payload.command !== 'init-ws-start') return { ok: true, accepted: true };
+      // Capability probe (no callbackId), then the accepted init job, which
+      // completes the init callback out-of-band.
+      if (!payload.callbackId) return { ok: false, reason: 'missing_callback_id' };
+      (async () => {
+        const op = await world.runner
+          .getOperation('init-ws-cb')
+          .waitForData(WaitingOperationStatus.STARTED);
+        await op.sendCallbackSuccess(JSON.stringify({ ok: true }));
+      })();
+      return { ok: true, accepted: true, callbackId: payload.callbackId };
+    },
     resolveToken: async () => 'tok',
     stopSession: async () => ({ stopped: true }),
     broadcast: async () => {},
@@ -98,32 +109,34 @@ const completeCallback = async (runner, name, body) => {
 // suspended on the gate callback, before the answer.
 const runThroughGate = async ({ atGate = () => {} } = {}) => {
   const world = makeWorld();
-  let suspended;
-  const nextSuspension = () =>
-    new Promise((resolve) => {
-      suspended = resolve;
-    });
-  let suspension = nextSuspension();
+  // Invocations in flight. The workspace-init callback adds a suspension whose
+  // timing is not fixed, so "suspended on the gate" is read from the gate
+  // callback itself rather than from a count of suspensions.
+  let invocations = 0;
   const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
   const runner = new LocalDurableTestRunner({
     handlerFunction: async (...input) => {
-      const result = await handler(...input);
-      if (result.Status === 'PENDING') suspended();
-      return result;
+      invocations += 1;
+      try {
+        return await handler(...input);
+      } finally {
+        invocations -= 1;
+      }
     },
   });
+  world.runner = runner;
   const completion = runner.run({
     payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
   });
-  await suspension;
-  suspension = nextSuspension();
   world.pendingHumanTaskId = 'h1';
   await completeCallback(runner, 'stage-cb-a', {
     ok: true,
     state: 'WAITING_FOR_HUMAN',
     humanTaskId: 'h1',
   });
-  await suspension;
+  // The gate callback is open and the invocation that opened it has returned.
+  await runner.getOperation('await-h1').waitForData(WaitingOperationStatus.STARTED);
+  await vi.waitFor(() => expect(invocations).toBe(0));
   atGate();
   world.gateStatus = 'answered';
   await completeCallback(runner, 'await-h1', { answer: 'Postgres' });
