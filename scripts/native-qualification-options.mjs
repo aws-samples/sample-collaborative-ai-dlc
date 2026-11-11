@@ -143,9 +143,11 @@ export function linuxDockerArgs({
     '--maxWorkers=2',
     'lambda/agentcore/test/native-command-runner.test.js',
     'lambda/agentcore/test/native-execution-files.test.js',
+    'lambda/agentcore/test/native-source-baseline.test.js',
     'lambda/agentcore/test/native-executor.test.js',
     'lambda/agentcore/test/native-input-materialization.test.js',
     'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
+    'lambda/native-runtime-control/test/public-files.test.js',
   ];
 }
 

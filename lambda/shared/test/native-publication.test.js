@@ -95,6 +95,21 @@ it('records the versioned dependency policy without reinterpreting legacy invent
   });
 });
 
+it.each([
+  'AGENTS.md',
+  '.agents/private.json',
+  '.aidlc/references/input.txt',
+  '.native-control/authority.json',
+  'aidlc/.aidlc-sessions/session.md',
+  'steering-token-key',
+])('rejects private runtime path %s before writing any publication bytes', async (path) => {
+  const { store, calls } = setup();
+  const data = input();
+  data.files.push({ path, role: 'code', content: Buffer.from('platform-private-test-data') });
+  await expect(store.write(data)).rejects.toMatchObject({ code: 'NATIVE_PUBLICATION_INVALID' });
+  expect(calls).toEqual([]);
+});
+
 it.each(['upload', 'verify'])(
   'bounds %s inventory work to four and drains failures',
   async (mode) => {

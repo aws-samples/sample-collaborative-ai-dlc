@@ -6,7 +6,6 @@
 // execution, approval or edit authority.
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { nativeRuntimeBindingKey } from './native-runtime-binding.js';
-import { nativeFileExclusion, nativeCredentialPath } from './native-project-files.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const FILE_ID = /^nf-[a-f0-9]{64}$/;
@@ -140,13 +139,6 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
   const source = async (execution, revision) => {
     const located = await publication(execution, revision);
     const baseline = await publications.source(located.found.identity, located.manifest);
-    if (
-      baseline &&
-      baseline.manifest.files.some(
-        (file) => nativeFileExclusion(file.path) || nativeCredentialPath(file.path),
-      )
-    )
-      throw unavailable();
     return { ...located, baseline };
   };
 

@@ -5,7 +5,7 @@ import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { nativeCredentialPath, nativeFileExclusion } from '../shared/native-project-files.js';
+import { nativeFileExclusion } from '../shared/native-project-files.js';
 import { nativePublicationPath } from '../shared/native-publication.js';
 import { resultFailure, RESULT_MAX_BYTES } from './result-store.js';
 
@@ -15,7 +15,7 @@ export const resultEligibleFiles = (manifest, request) => {
     ? manifest.files.filter((f) => f.id === request.fileId && f.sha256 === request.sha256)
     : manifest.files;
   if (request.fileId && files.length !== 1) throw resultFailure('INVALID');
-  if (files.some((f) => nativeFileExclusion(f.path) || nativeCredentialPath(f.path)))
+  if (files.some((f) => nativeFileExclusion(f.path, manifest.filesystemPolicy)))
     throw resultFailure('FILE_POLICY');
   return files;
 };
@@ -23,19 +23,10 @@ export const assertArchivePaths = (files) => {
   const names = new Set();
   for (const file of files) {
     nativePublicationPath(file.path);
-    const parts = file.path.split('/');
-    if (
-      parts.some(
-        (p) =>
-          /[<>:"|?*]/.test(p) ||
-          /[. ]$/.test(p) ||
-          /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(p),
-      )
-    )
-      throw resultFailure('ARCHIVE_PATH');
-    const name = file.path.normalize('NFC').toLowerCase();
-    if (names.has(name)) throw resultFailure('ARCHIVE_PATH');
-    names.add(name);
+    // Preserve repository spelling, case and Unicode bytes. The destination
+    // filesystem's naming rules do not change the admitted file inventory.
+    if (names.has(file.path)) throw resultFailure('ARCHIVE_PATH');
+    names.add(file.path);
   }
   for (const name of names) {
     const parts = name.split('/');

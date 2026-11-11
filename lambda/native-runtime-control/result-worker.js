@@ -14,6 +14,9 @@ import { nativeVerificationSummary } from '../shared/native-completion-evidence.
 
 export const nativeResultProvenance = (execution, manifest, request, files) => ({
   schemaVersion: 1,
+  inventory: 'native-public-files',
+  completeWorkspace: false,
+  ...(manifest.filesystemPolicy ? { filesystemPolicy: manifest.filesystemPolicy } : {}),
   projectId: execution.scope.projectId,
   executionId: execution.scope.executionId,
   publicationId: request.publicationId,

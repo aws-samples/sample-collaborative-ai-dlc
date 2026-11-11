@@ -37,9 +37,9 @@ not start agent work. The settings-page package link remains a convenience entry
 into the same form. The NE-08 entry point is independently verified as deployed.
 Uniform availability across spaces was independently verified as deployed on
 2026-11-06. NE-09 attachment, tracker, source and effective-setting integration is
-complete locally and in the installed runtime image; its deployment remains
-pending. The dated acceptance records below distinguish these scopes. A fresh
-live creation journey remains unrun.
+complete locally and in the installed runtime image, with deployed artifacts
+independently verified on 2026-11-11. The dated acceptance records below
+distinguish these scopes. A fresh live creation journey remains unrun.
 
 The release implementation uses platform-wide native admission controls and
 normal project membership. Existing and newly created spaces require no native
@@ -140,12 +140,32 @@ Another authorized member can reopen that revision independently of runtime
 availability. Files in published revisions are read-only; editing or applying
 changes through the platform is not currently supported.
 
+Repository content belongs to the space's authorized members. Native does not
+withhold or redact a repository file because its name or contents resemble
+credentials: `.env`, `.npmrc`, templates and other checked-out configuration
+follow the same rules as ordinary source files. Source comparisons, file views,
+graph extraction and downloads use that same publication inventory. Graph
+extraction still depends on supported content and file roles; unsupported formats
+remain readable or downloadable without invented graph structure.
+
+Platform-injected credential bytes, private runtime and harness files, Git
+internals and generated `node_modules` dependencies remain outside the public
+inventory. Publication verifies exact file bytes and rejects filesystem escapes,
+links, concurrent mutations and configured size-limit violations. These checks
+do not introduce a repository-secret classifier. Both newly published files and
+retained repository files follow the selected member-visibility rule.
+
 A publication or ZIP contains the admitted public file inventory. It is not a
 complete backup of the live workspace or necessarily a complete Git tree.
 Unpublished edits and generated dependencies can remain on EFS without appearing
-in a download. File modes, excluded entries, submodules and other repository
-features need an explicit delivery contract before native can publish code back
-to a Git provider.
+in a download. The download identifies the exact published revision; a ZIP
+contains its files under `files/` and a `result-manifest.json` with checksums,
+source identity and the declared public inventory. It preserves repository
+filenames, case, Unicode spelling, binary data, empty files, BOMs and line endings.
+Stored publications supply downloads independently of the runtime or live
+workspace. File modes, excluded entries, submodules and other repository features
+need an explicit delivery contract before native can publish code back to a Git
+provider.
 
 The graph derives sections, items and relationships from published content and
 links them to the exact source revision. It can be rebuilt from publications.
@@ -4509,8 +4529,11 @@ the current contract for newly created executions.
       Fresh live creation/Start acceptance remains separate; NE-10, NE-11,
       NE-12 and NE-18 are not advanced by this input integration.
 - [ ] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
-      for credential-shaped files such as `.env` and `.npmrc`, retaining safe templates
-      without exposing secrets. Use one explicit public-file policy across capture,
+      for credential-shaped files such as `.env` and `.npmrc`. **Selected policy
+      2026-11-11:** space members may view repository content as checked out,
+      including these files and templates; do not add filename-based withholding
+      or a repository-secret classifier. Preserve the separate protections for
+      platform-injected credentials and private runtime files. Use one explicit public-file policy across capture,
       admission, file views, comparisons, graph extraction and downloads. **Done
       when:** text/binary/empty files and exclusions behave consistently, public
       archives remain obtainable after runtime stop, and a download clearly states

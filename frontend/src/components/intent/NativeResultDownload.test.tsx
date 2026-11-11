@@ -40,6 +40,9 @@ it('prepares and polls an immutable archive without changing workflow state', as
   mocks.request.mockResolvedValue({ status: 'pending' });
   mocks.status.mockResolvedValue(ready);
   render(<NativeResultDownload {...props} />);
+  expect(
+    screen.getByText(/published files from revision 1, with a checksum manifest/),
+  ).toBeInTheDocument();
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Prepare result archive' }));
   });

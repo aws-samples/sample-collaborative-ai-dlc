@@ -54,7 +54,7 @@ describe('admitted native traceability', () => {
     expect(JSON.stringify(api)).not.toMatch(/versionId|credentialBinding|runtimeSessionId/);
   });
 
-  it('keeps unknown, malformed, binary and private legacy formats generic and readable', async () => {
+  it('uses supported content to extract repository files, including credential-shaped names', async () => {
     const files = [
       {
         path: `${ROOT}/notes.custom`,
@@ -73,19 +73,14 @@ describe('admitted native traceability', () => {
       },
       { path: `${ROOT}/binary.md`, role: 'artifact', content: Buffer.from([0xff, 0x00]) },
       {
-        path: 'aidlc/.aidlc-sessions/legacy.md',
-        role: 'artifact',
-        content: Buffer.from('## Private\nNever index'),
-      },
-      {
         path: `${ROOT}/.env.md`,
         role: 'artifact',
-        content: Buffer.from('## Credential\nNever index'),
+        content: Buffer.from('## Environment configuration\nRepository-owned content'),
       },
       {
         path: `${ROOT}/.aws/notes.md`,
         role: 'artifact',
-        content: Buffer.from('## Credential\nNever index'),
+        content: Buffer.from('## Cloud configuration\nRepository-owned content'),
       },
     ];
     const f = await nativeTraceFixture(memoryGraph().g, files);
@@ -96,7 +91,7 @@ describe('admitted native traceability', () => {
         .filter((node) => node.type === 'Section')
         .map((node) => node.label)
         .toSorted(),
-    ).toEqual(['Plain', 'Readable']);
+    ).toEqual(['Cloud configuration', 'Environment configuration', 'Plain', 'Readable']);
     expect(
       graph.nodes.some((node) => ['Requirement', 'NativePhase', 'NativeStage'].includes(node.type)),
     ).toBe(false);

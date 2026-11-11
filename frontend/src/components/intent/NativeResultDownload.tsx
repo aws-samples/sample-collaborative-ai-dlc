@@ -115,6 +115,19 @@ function Download({ projectId, executionId, target, file, onAccessFailure }: Pro
   };
   return (
     <div className="space-y-1 text-sm">
+      <p className="text-xs text-muted-foreground">
+        {file ? (
+          <>
+            Exact bytes of <code>{file.path}</code> from published revision{' '}
+            {target.publicationSequence}.
+          </>
+        ) : (
+          <>
+            ZIP of the published files from revision {target.publicationSequence}, with a checksum
+            manifest. Unpublished workspace changes and excluded files are not included.
+          </>
+        )}
+      </p>
       {result?.download ? (
         <>
           <Button

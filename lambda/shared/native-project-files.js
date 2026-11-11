@@ -1,5 +1,7 @@
-// Shared publication visibility policy. Private workspace and harness files
-// stay out of public results; generated dependencies remain on EFS.
+// Shared publication visibility policy. Repository content, including .env and
+// .npmrc, belongs to the space's members; filenames do not classify it as secret.
+// Platform workspace/harness files stay private; generated dependencies remain
+// on EFS. Capture separately rejects actual credentials injected by the platform.
 import { isAbsolute } from 'node:path';
 
 export const NATIVE_DEPENDENCY_POLICY = 'node-dependencies-v1';
@@ -14,21 +16,6 @@ export const canonicalNativePath = (value) =>
     (character) => character.codePointAt(0) < 32 || character.codePointAt(0) === 127,
   ) &&
   value.split('/').every((part) => part && part !== '.' && part !== '..');
-
-// Credential classification for public result and traceability consumers. Separate from
-// public admission: changing historical visibility is an independent policy
-// decision. Derived indexes also avoid copying these files' content.
-export const nativeCredentialPath = (path) => {
-  const parts = path.split('/');
-  return (
-    parts.some((part) => ['.aws', '.ssh'].includes(part)) ||
-    ['.git-credentials', '.netrc', '.npmrc', '.pypirc'].includes(parts.at(-1)) ||
-    (/^\.env(?:\.|$)/.test(parts.at(-1)) &&
-      !/\.env(?:\.[\w-]+)*\.(?:example|sample|template)$/.test(parts.at(-1))) ||
-    /^\.codex\/auth\.json$/.test(path) ||
-    /^\.claude\/(?:\.credentials\.json|credentials\.json)$/.test(path)
-  );
-};
 
 // Independent of .gitignore: normal workflow state, directives, questions,
 // audit, verification and unknown artifact formats remain public run content.

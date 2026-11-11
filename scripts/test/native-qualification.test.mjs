@@ -102,6 +102,11 @@ test('Linux checks use the same offline container boundary and an explicit locke
     configuration.test.include.includes(inputTest),
     'The selected input test must actually run',
   );
+  const sourceTest = 'lambda/agentcore/test/native-source-baseline.test.js';
+  assert.ok(args.includes(sourceTest));
+  assert.ok(configuration.test.include.includes(sourceTest), 'Source capture checks must run');
+  assert.ok(args.includes('lambda/native-runtime-control/test/public-files.test.js'));
+  assert.ok(configuration.test.include.includes('lambda/native-runtime-control/test/*.test.js'));
   assert.ok(args.includes('--maxWorkers=2'));
 });
 

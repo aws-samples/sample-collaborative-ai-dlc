@@ -7,7 +7,7 @@ import {
   nativeArtifactRevisionId,
 } from '../shared/native-artifact-revision.js';
 import { NATIVE_PUBLICATION_LIMITS } from '../shared/native-publication.js';
-import { nativeFileExclusion, nativeCredentialPath } from '../shared/native-project-files.js';
+import { nativeFileExclusion } from '../shared/native-project-files.js';
 import { nativeArtifactLocation } from '../shared/native-workspace-projector.js';
 
 export const NATIVE_TRACE_CONTRACT = 'native-trace-v1';
@@ -207,12 +207,11 @@ export const readNativePublicationTrace = async ({
   )) {
     const report = { fileId: file.id, status: 'generic' };
     files.push(report);
-    // Existing manifests stay readable under their original policy. Derivation
-    // does not widen visibility of legacy private/harness or credential files:
-    // only public Markdown/plain-text work products are indexed.
+    // Derivation uses the publication's visibility policy. Content type and
+    // role determine extraction support, never whether a filename resembles a
+    // credential file. Unsupported formats remain ordinary published files.
     if (
-      nativeFileExclusion(file.path) ||
-      nativeCredentialPath(file.path) ||
+      nativeFileExclusion(file.path, manifest.filesystemPolicy) ||
       !['artifact', 'question'].includes(file.role) ||
       !['text/markdown', 'text/plain'].includes(file.mediaType)
     )

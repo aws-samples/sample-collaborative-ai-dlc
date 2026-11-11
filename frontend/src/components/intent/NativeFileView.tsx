@@ -88,6 +88,8 @@ export function NativeFileView({
           {file.encoding === 'too_large' ? 'File exceeds the 3 MiB inline limit.' : 'Binary file.'}{' '}
           Preview is not available. This file is preserved in the committed revision.
         </p>
+      ) : file.bytes === 0 ? (
+        <p className="rounded-md border p-4 text-sm text-muted-foreground">Empty file (0 bytes).</p>
       ) : markdown ? (
         <ArtifactViewer
           readOnly

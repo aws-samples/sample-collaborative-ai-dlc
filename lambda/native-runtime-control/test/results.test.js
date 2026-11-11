@@ -91,6 +91,19 @@ describe('native obtainable results', () => {
       { path: 'empty', role: 'code', content: Buffer.alloc(0) },
       { path: 'bom.txt', role: 'code', content: Buffer.from('\ufeffhi\r\n') },
       { path: 'unknown.ext', role: 'code', content: Buffer.from('text\r\nend') },
+      { path: '.env', role: 'code', content: Buffer.from('PASSWORD=repository-owned-value\r\n') },
+      {
+        path: '.npmrc',
+        role: 'code',
+        content: Buffer.from('//registry.example/:_authToken=${NPM_TOKEN}\n'),
+      },
+      { path: '.env.example', role: 'code', content: Buffer.alloc(0) },
+      { path: '.ssh/config', role: 'code', content: Buffer.from('Host repository-example\n') },
+      ...['a:b', 'CON.txt', 'end.', 'case/A', 'case/a', 'é', 'e\u0301'].map((path) => ({
+        path,
+        role: 'code',
+        content: Buffer.from(`Exact repository filename: ${path}\n`),
+      })),
     ];
     const f = await fixture(files);
     await f.store.cancel(f.bindingIdentity);
@@ -104,6 +117,8 @@ describe('native obtainable results', () => {
     expect(manifest).toMatchObject({
       publicationId: f.request.publicationId,
       publicationSequence: 1,
+      inventory: 'native-public-files',
+      completeWorkspace: false,
       verification: { workflowCompletion: 'not_verified', requiredChecks: 'not_recorded' },
     });
     expect(JSON.stringify(manifest)).not.toMatch(
@@ -282,31 +297,37 @@ describe('native obtainable results', () => {
     });
   });
 
-  it.each(['.env', '.npmrc', '.agents/private.json'])(
-    'does not expand historical visibility for %s',
+  it.each(['.env', '.npmrc', '.pypirc', '.netrc', '.git-credentials'])(
+    'downloads the exact repository file %s after runtime cancellation',
     async (path) => {
-      const f = await fixture([{ path, role: 'code', content: Buffer.from('not-exported') }]);
-      await expect(f.api.requestResult(f.prepared, f.request, f.recheck)).rejects.toMatchObject({
-        code: 'NATIVE_RESULT_FILE_POLICY',
+      const content = Buffer.from('repository-owned-value\r\n');
+      const f = await fixture([{ path, role: 'code', content }]);
+      await f.store.cancel(f.bindingIdentity);
+      const filesApi = f.makeApi();
+      const publication = await filesApi.publication(f.prepared, f.recheck);
+      const file = publication.files[0];
+      expect((await filesApi.file(f.prepared, file.id, f.recheck)).content).toBe(
+        content.toString(),
+      );
+      const request = { ...f.request, fileId: file.id, sha256: file.sha256 };
+      await f.api.requestResult(f.prepared, request, f.recheck);
+      await f.worker({ ...f.row().scope, requestId: request.requestId });
+      const result = await f.api.result(f.prepared, request, f.recheck);
+      expect(result).toMatchObject({
+        status: 'ready',
+        download: { bytes: content.length, sha256: sha(content) },
       });
-      expect(f.enqueue).not.toHaveBeenCalled();
+      expect(f.artifacts[0].bytes).toEqual(content);
     },
   );
 });
 
-it.each([
-  ['../escape'],
-  ['/absolute'],
-  ['a\\b'],
-  ['a:b'],
-  ['CON.txt'],
-  ['end.'],
-  ['A', 'a'],
-  ['a', 'a/b'],
-  ['é', 'e\u0301'],
-])('rejects unsafe archive inventories %j', (...paths) => {
-  expect(() => assertArchivePaths(paths.map((path) => ({ path })))).toThrow();
-});
+it.each([['../escape'], ['/absolute'], ['a\\b'], ['a', 'a'], ['a', 'a/b']])(
+  'rejects unsafe archive inventories %j',
+  (...paths) => {
+    expect(() => assertArchivePaths(paths.map((path) => ({ path })))).toThrow();
+  },
+);
 
 it('checks immutable version, exact length and full SHA-256 before issuing a five-minute bearer URL', async () => {
   const f = await fixture();

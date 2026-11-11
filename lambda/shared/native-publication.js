@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { NATIVE_DEPENDENCY_POLICY } from './native-project-files.js';
-import { nativeFileExclusion } from './native-project-files.js';
+import { canonicalNativePath, nativeFileExclusion } from './native-project-files.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -69,30 +69,7 @@ export const nativePublicationScope = (input) => {
 };
 
 export const nativePublicationPath = (path) => {
-  if (
-    typeof path !== 'string' ||
-    Buffer.byteLength(path) > 1024 ||
-    !path ||
-    path.startsWith('/') ||
-    path.includes('\\') ||
-    [...path].some((c) => c.codePointAt(0) < 32 || c === '\x7f') ||
-    path.split('/').some((p) => !p || p === '.' || p === '..') ||
-    path
-      .split('/')
-      .some((p) =>
-        [
-          '.git',
-          '.native-control',
-          '.native-homes',
-          '.claude',
-          '.codex',
-          '.kiro',
-          '.opencode',
-        ].includes(p),
-      ) ||
-    path.endsWith('/steering-token-key') ||
-    (path.includes('/.aidlc-engine/') && /(?:lock|mutex|key)(?:\.|$)/.test(path.split('/').at(-1)))
-  )
+  if (!canonicalNativePath(path) || Buffer.byteLength(path) > 1024 || nativeFileExclusion(path))
     fail();
   return path;
 };
@@ -179,7 +156,7 @@ const validateManifest = (value, identity) => {
     if (
       !exact(file, ['id', 'path', 'bytes', 'sha256', 'role', 'mediaType', 'object']) ||
       paths.has(nativePublicationPath(file.path)) ||
-      (value.schemaVersion === 3 && nativeFileExclusion(file.path, value.filesystemPolicy)) ||
+      nativeFileExclusion(file.path, value.filesystemPolicy) ||
       file.id !== nativeFileId(scope, file.path) ||
       !Number.isSafeInteger(file.bytes) ||
       file.bytes < 0 ||
