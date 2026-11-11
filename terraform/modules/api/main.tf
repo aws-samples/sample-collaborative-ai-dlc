@@ -249,6 +249,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_intent_discussions_search,
     module.cors_intent_gate_answer,
     module.cors_intent_gate_revise,
+    module.cors_intent_artifacts,
     module.cors_intent_artifact_impact,
     module.cors_intent_artifact_content,
     module.cors_intent_artifact_verify,

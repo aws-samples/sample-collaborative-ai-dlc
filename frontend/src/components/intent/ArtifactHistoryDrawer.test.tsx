@@ -128,4 +128,28 @@ describe('ArtifactHistoryDrawer', () => {
     expect(artifactVersion).toHaveBeenCalledWith('p1', 'i1', 'design', 'design:v1');
     expect(screen.queryByRole('button', { name: /restore|edit/i })).not.toBeInTheDocument();
   });
+
+  it('shows the current body as loading until it arrives', async () => {
+    const user = userEvent.setup();
+    render(<ArtifactHistoryDrawer artifact={{ ...artifact, content: undefined }} />);
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    expect(await screen.findByText('Loading version')).toBeInTheDocument();
+    expect(screen.queryByText('No content recorded.')).not.toBeInTheDocument();
+  });
+
+  it('explains a current body that is too large instead of showing it as empty', async () => {
+    const user = userEvent.setup();
+    render(
+      <ArtifactHistoryDrawer
+        artifact={{ ...artifact, content: null, contentUnavailable: 'too_large' }}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    expect(
+      await screen.findByText('This version is too large to display here.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No content recorded.')).not.toBeInTheDocument();
+  });
 });
