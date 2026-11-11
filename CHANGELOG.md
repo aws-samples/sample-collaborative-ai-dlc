@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - CodeCommit setup moved from a per-user role handshake to a single platform connection. A platform admin sets one IAM role ARN and region in **Admin → Source Control → AWS CodeCommit** ("Test & save"), and every space uses it; space creators pick CodeCommit repositories from the same generic list as the other providers, with no ARN, region, external ID or IAM to supply. The external ID is now one value per deployment (`aidlc:<uuid>`, provisioned by Terraform) instead of one per user. Which repositories a space may use is controlled by tagging each repository `aidlc=true` (an explicit repository-ARN list is an equally supported, more locked-down variant); the setup guide adds a concrete deny that limits who may set the tag ([#531](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/531)).
 
+### Fixed
+
+- One `terraform apply` now leaves the intents and managed-environment Lambdas on the AgentCore runtime version that apply produced. Previously `CORE_RUNTIME_VERSION` kept the version from before an in-place runtime update, so new intents and the staged Standard environment revision recorded the previous version until a second apply, and the plan after a deployment was not empty ([#710](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/710)).
+
 ### Removed
 
 - The per-user CodeCommit connect flow: the `GET /codecommit/connect-info` and `POST /codecommit/repos` routes (replaced by admin configuration and a `GET /codecommit/repos` list), the per-user connection record, and the IAM role/external-ID form in project creation and settings. Old per-user connection rows are left in place, unused; no data migration runs ([#531](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/531)).
