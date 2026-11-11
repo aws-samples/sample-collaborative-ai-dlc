@@ -574,6 +574,18 @@ resource "aws_iam_role_policy" "status" {
         ]
       },
       {
+        # Qualification runs the image's CLIs under the platform sandbox policy,
+        # so the poller reads that one item and nothing else of the table.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.process_table_arn
+        Condition = {
+          "ForAllValues:StringEquals" = {
+            "dynamodb:LeadingKeys" = ["SETTINGS#SANDBOX"]
+          }
+        }
+      },
+      {
         Effect = "Allow"
         Action = [
           "ecr:DescribeImages",
@@ -666,6 +678,7 @@ module "status_lambda" {
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
+    V2_PROCESS_TABLE                = var.process_table_name
     ENVIRONMENT_ECR_REPOSITORY_NAME = var.environment_repository_name
     ENVIRONMENT_ECR_REPOSITORY_URI  = var.environment_repository_url
     MANAGED_RUNTIME_ROLE_ARN        = var.runtime_role_arn

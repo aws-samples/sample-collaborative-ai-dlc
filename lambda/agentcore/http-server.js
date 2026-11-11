@@ -318,18 +318,20 @@ export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
   return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
 };
 
-// The platform sandbox settings, read with the runtime role on the direct path
-// only: an engine-data runtime may hold no process-table access of its own.
+// The platform sandbox settings, read with the runtime role unless enforced
+// runtime grants stripped its process-table access (RUNTIME_DATA_ACCESS, set by
+// Terraform with that role). Until then an engine-data runtime still reads them,
+// so a payload from a dispatcher not yet sending `agentSandbox` keeps working.
 export const sandboxSettingsReaderFor = ({ env = process.env, ddb } = {}) =>
-  env.ENGINE_DATA_FUNCTION
+  env.RUNTIME_DATA_ACCESS === 'engine_data_only'
     ? null
     : () => readSandboxSettings({ ddb, tableName: env.V2_PROCESS_TABLE });
 
 // The invocation's SRT policy: the execution's captured policy (read through the
 // store, never from the payload), or the current settings for drafts and
 // standalone operations. Those take the policy the dispatching control plane
-// resolved (`agentSandbox`); only the direct path can read the settings itself,
-// so with `readSettings` null an invocation without one is refused.
+// resolved (`agentSandbox`), else the settings read with the runtime role; with
+// `readSettings` null (enforced grants) an invocation without one is refused.
 export const createSandboxPreparation =
   ({ store, readSettings }) =>
   async (payload) => {
