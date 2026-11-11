@@ -779,7 +779,7 @@ export const assistDiscussion = async (event, res) => {
         credentialBinding,
         runtimeCapabilities,
       } = await resolveCredentialContext();
-      const { agentCredentialGrant } = await prepareAgentInvocation(
+      const { agentCredentialGrant, agentSandbox } = await prepareAgentInvocation(
         {
           purpose: 'discussion',
           projectId: auth.projectId,
@@ -815,6 +815,7 @@ export const assistDiscussion = async (event, res) => {
           requestedBy: caller.sub,
           requestedByName: caller.displayName,
           dispatchedAt: new Date().toISOString(),
+          agentSandbox,
           ...(effectiveRequestedCli
             ? { requestedCli: effectiveRequestedCli, credentialBinding }
             : {}),

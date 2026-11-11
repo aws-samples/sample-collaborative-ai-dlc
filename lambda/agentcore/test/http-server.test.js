@@ -6,6 +6,7 @@ import {
   processStoreFor,
   graphAccessFor,
   createSandboxPreparation,
+  sandboxSettingsReaderFor,
 } from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
@@ -670,5 +671,146 @@ describe('dispatchInvocation with engine-data', () => {
     expect(result).toMatchObject({ statusCode: 500, body: { error: 'boom' } });
     expect(release).toHaveBeenCalledOnce();
     expect(currentGatewayGrant()).toBeNull();
+  });
+});
+
+// enforce_runtime_grants strips the runtime role of its process-table access.
+// Commands with no captured policy (no execution, or a DRAFT) then run on the
+// policy their dispatcher resolved; nothing reads the settings with the role.
+describe('dispatchInvocation on a runtime role without data access', () => {
+  const GRANT = 'gw-grant';
+  const ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+  const enabledPolicy = { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 7 };
+  const disabledPolicy = {
+    enabled: false,
+    version: null,
+    settings: DEFAULT_SANDBOX_CONFIG.settings,
+  };
+  const executions = {
+    draft: { executionId: 'draft', projectId: 'p1', status: 'DRAFT', agentSandbox: null },
+    pinned: {
+      executionId: 'pinned',
+      projectId: 'p1',
+      status: 'RUNNING',
+      agentSandbox: enabledPolicy,
+    },
+  };
+
+  const wiring = () => {
+    const denied = Object.assign(new Error('not authorized to perform: dynamodb:GetItem'), {
+      name: 'AccessDeniedException',
+    });
+    const ddb = { send: vi.fn(async () => Promise.reject(denied)) };
+    const invoke = vi.fn(async ({ op, args, grant }) => {
+      if (grant !== GRANT) {
+        return { error: { name: 'EngineDataError', code: 'ENGINE_DATA_GRANT_INVALID' } };
+      }
+      if (op === engineDataOp('getExecution')) return { ok: true, result: executions[args[0]] };
+      return { error: { name: 'EngineDataError', message: `unexpected ${op}` } };
+    });
+    const store = processStoreFor({
+      env: ENV,
+      ddb,
+      createRemote: (options) => createRemoteProcessStore({ ...options, invoke }),
+    });
+    const prepareSandbox = createSandboxPreparation({
+      store,
+      readSettings: sandboxSettingsReaderFor({ env: ENV, ddb }),
+    });
+    const handler = vi.fn(async () => ({ ok: true, sandbox: currentSandbox() }));
+    const dispatch = (payload) =>
+      dispatchInvocation({
+        payload,
+        handlers: new Proxy({}, { get: () => handler }),
+        prepareSandbox,
+      });
+    return { ddb, invoke, handler, dispatch };
+  };
+
+  // Every grant-free command, so a new one cannot quietly reach for the role.
+  const grantFree = Object.entries(COMMANDS)
+    .filter(([, definition]) => definition.grantScope === 'none')
+    .map(([name, definition]) => [name, Boolean(definition.agentAuth) || name === 'verify-mcp']);
+  it('covers the grant-free commands', () => {
+    expect(grantFree.map(([name]) => name).toSorted()).toEqual(
+      ['capabilities', 'managed-runtime-check', 'verify-connection', 'verify-mcp'].toSorted(),
+    );
+  });
+
+  it.each(grantFree)('runs %s without touching the process table', async (command, sandboxed) => {
+    for (const policy of [enabledPolicy, disabledPolicy]) {
+      for (const fields of [{}, { projectId: 'p1', credentialBindings: {} }]) {
+        const { ddb, invoke, dispatch } = wiring();
+        const result = await dispatch({ command, ...fields, agentSandbox: policy });
+        expect(result.statusCode).toBe(200);
+        expect(result.body.sandbox).toMatchObject(
+          sandboxed ? { enabled: policy.enabled, version: policy.version } : { enabled: false },
+        );
+        expect(ddb.send).not.toHaveBeenCalled();
+        expect(invoke).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it.each(['compose-plan-start', 'discussion-assist-start'])(
+    'runs %s for a DRAFT on the dispatched policy after reading META through engine-data',
+    async (command) => {
+      const { ddb, invoke, dispatch } = wiring();
+      const result = await dispatch({
+        command,
+        projectId: 'p1',
+        executionId: 'draft',
+        gatewayGrant: GRANT,
+        agentSandbox: enabledPolicy,
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.body.sandbox).toMatchObject({ enabled: true, version: 7 });
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(ddb.send).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a started execution on its captured policy whatever the payload says', async () => {
+    const { ddb, dispatch } = wiring();
+    const result = await dispatch({
+      command: 'run-stage-start',
+      projectId: 'p1',
+      executionId: 'pinned',
+      gatewayGrant: GRANT,
+      agentSandbox: disabledPolicy,
+    });
+    expect(result.body.sandbox).toMatchObject({ enabled: true, version: 7 });
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['without a dispatched policy', undefined],
+    ['with a malformed policy', { enabled: 'no' }],
+    ['with an enabled policy without settings', { enabled: true }],
+  ])('refuses capabilities %s instead of reading the settings', async (_case, agentSandbox) => {
+    const { ddb, handler, dispatch } = wiring();
+    const result = await dispatch({ command: 'capabilities', agentSandbox });
+    expect(result.statusCode).toBe(500);
+    expect(handler).not.toHaveBeenCalled();
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+
+  it('still reads the settings itself on the direct path when no policy is dispatched', async () => {
+    const send = vi.fn(async () => ({
+      Item: {
+        revision: 2,
+        enabled: true,
+        applied: { version: 2, settings: enabledPolicy.settings },
+      },
+    }));
+    const readSettings = sandboxSettingsReaderFor({
+      env: { V2_PROCESS_TABLE: 't' },
+      ddb: { send },
+    });
+    const sandbox = await createSandboxPreparation({ store: {}, readSettings })({
+      command: 'capabilities',
+    });
+    expect(sandbox).toMatchObject({ enabled: true, version: 2 });
+    expect(send).toHaveBeenCalledOnce();
   });
 });

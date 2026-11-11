@@ -426,7 +426,9 @@ const attemptValidation = async ({ runtimeClient, revision, session }) => {
       runtimeClient,
       revision,
       sessionId: session,
-      payload: { command: 'capabilities' },
+      // Qualification carries no project, execution or credential and runs no
+      // agent work; it states its policy because the runtime cannot read one.
+      payload: { command: 'capabilities', agentSandbox: { enabled: false } },
     });
     if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
       throw new Error('capability validation failed');

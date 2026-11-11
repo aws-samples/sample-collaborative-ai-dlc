@@ -84,7 +84,11 @@ import { installProcessGroupShutdown } from './cli/spawn.js';
 import { prepareCredentialInvocation } from './invocation-context.js';
 import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
 import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
-import { readSandboxSettings } from '../shared/sandbox-settings.js';
+import {
+  captureSandboxSettings,
+  dispatchedSandbox,
+  readSandboxSettings,
+} from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import {
   blobAccessFor,
@@ -314,12 +318,33 @@ export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
   return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
 };
 
-// The invocation's SRT policy: the execution's captured policy, or the current
-// settings for drafts and standalone operations.
+// The platform sandbox settings, read with the runtime role on the direct path
+// only: an engine-data runtime may hold no process-table access of its own.
+export const sandboxSettingsReaderFor = ({ env = process.env, ddb } = {}) =>
+  env.ENGINE_DATA_FUNCTION
+    ? null
+    : () => readSandboxSettings({ ddb, tableName: env.V2_PROCESS_TABLE });
+
+// The invocation's SRT policy: the execution's captured policy (read through the
+// store, never from the payload), or the current settings for drafts and
+// standalone operations. Those take the policy the dispatching control plane
+// resolved (`agentSandbox`); only the direct path can read the settings itself,
+// so with `readSettings` null an invocation without one is refused.
 export const createSandboxPreparation =
   ({ store, readSettings }) =>
   async (payload) => {
-    const sandbox = await resolveInvocationSandbox({ payload, store, readSettings });
+    const sandbox = await resolveInvocationSandbox({
+      payload,
+      store,
+      readCurrent: async () => {
+        const dispatched = dispatchedSandbox(payload.agentSandbox);
+        if (dispatched) return dispatched;
+        if (!readSettings) {
+          throw new Error('This invocation carries no sandbox configuration');
+        }
+        return captureSandboxSettings(await readSettings());
+      },
+    });
     if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
     logger.info('invocation sandbox configuration', {
       command: payload.command,
@@ -586,7 +611,7 @@ const main = async () => {
     prepareInvocation: invocationContext,
     prepareSandbox: createSandboxPreparation({
       store,
-      readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+      readSettings: sandboxSettingsReaderFor({ env: process.env, ddb }),
     }),
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
