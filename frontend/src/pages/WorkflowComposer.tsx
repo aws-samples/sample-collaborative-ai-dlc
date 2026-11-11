@@ -139,6 +139,9 @@ export default function WorkflowComposer() {
   const [preview, setPreview] = useState<ExecutionPreview | null>(null);
   const [previewSettled, setPreviewSettled] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
+  // The selected version's plan check failed. Kept apart from load and save
+  // errors so the next check, failed or not, replaces it.
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'validate'>('compose');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -700,12 +703,14 @@ export default function WorkflowComposer() {
     if (!workflowId || !activeScope || !contextReady) {
       setPreview(null);
       setPreviewFailed(false);
+      setPreviewError(null);
       setPreviewSettled(true);
       return;
     }
     let cancelled = false;
     setPreviewSettled(false);
     setPreviewFailed(false);
+    setPreviewError(null);
     workflowsService
       .executionPreview(
         workflowId,
@@ -731,7 +736,7 @@ export default function WorkflowComposer() {
           setPreview(null);
           setPreviewFailed(true);
           if (libraryRelease?.explicit) {
-            setError(
+            setPreviewError(
               `${libraryRelease.label} could not be checked for this scope. The selected version was not substituted.`,
             );
           }
@@ -905,6 +910,13 @@ export default function WorkflowComposer() {
             This is a shipped baseline workflow and cannot be edited. Fork it from the Workflows
             list to customize.
           </p>
+        )}
+
+        {previewError && (
+          <div className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md flex items-start gap-2 text-sm">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{previewError}</span>
+          </div>
         )}
 
         {error && (

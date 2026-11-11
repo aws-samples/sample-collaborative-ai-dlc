@@ -590,3 +590,42 @@ it('keeps the selected version when going back to the workflow list', async () =
     `?libraryRelease=${encodeURIComponent(selected)}`,
   );
 });
+
+// A failed check of the selected version is about that check. Once a later
+// check succeeds, its warning must not stay on the page next to the success.
+it('clears a selected-version check failure once a later check succeeds', async () => {
+  const selected = 'aidlc:2.9.0';
+  const workflow = await get.getMockImplementation()?.();
+  get.mockResolvedValue({
+    ...workflow,
+    scopeRefs: [
+      { scopeId: 'mvp', scopeTenant: 'SYSTEM' },
+      { scopeId: 'feature', scopeTenant: 'SYSTEM' },
+    ],
+  });
+  catalog.mockResolvedValue({
+    releaseId: selected,
+    release: { releaseId: selected, upstreamVersion: '2.9.0' },
+    contents: {
+      release: { releaseId: selected, upstreamVersion: '2.9.0' },
+      workflow: null,
+      blocks: { stage: [], scope: [] },
+    },
+  });
+  compiled.mockResolvedValue(compiledView({ libraryRelease: selected }));
+  executionPreview.mockImplementation((...args: unknown[]) =>
+    args[1] === 'mvp'
+      ? Promise.reject(new Error('preview failed'))
+      : Promise.resolve(previewOf({ libraryRelease: selected })),
+  );
+  const user = userEvent.setup();
+
+  renderComposer(`/workflows/my-flow?libraryRelease=${encodeURIComponent(selected)}`);
+  expect(await screen.findByText(/could not be checked for this scope/)).toBeInTheDocument();
+
+  await user.click(screen.getByRole('tab', { name: 'Scopes' }));
+  await user.click(screen.getByRole('button', { name: /^feature$/i }));
+
+  expect(await screen.findByTestId('composer-library-release')).toBeInTheDocument();
+  expect(screen.queryByText(/could not be checked for this scope/)).toBeNull();
+});
