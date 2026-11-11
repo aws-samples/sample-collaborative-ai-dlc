@@ -1,6 +1,6 @@
 # Customer MCP servers behind the Gateway
 
-Platform administrators can serve a customer's own MCP servers (for example a Confluence or Jira MCP server) to agents through the AgentCore Gateway the built-in tools already use. The agent runtime never holds the server's credential: the Gateway fetches it from AgentCore Identity on each call. The Gateway's interceptor decides who may call which tool from the control plane's signed grant, per space, stage and tool.
+Platform administrators can serve a customer's own MCP servers (for example a Confluence or Jira MCP server) to agents through the AgentCore Gateway the built-in tools already use. The agent runtime never holds the server's credential, under either [credential profile](#gateway-only-profile): the Gateway fetches it from AgentCore Identity on each call, and the runtime role has no permission to fetch it. The Gateway's interceptor decides who may call which tool from the control plane's signed grant, per space, stage and tool.
 
 This is a deployment-level setting in Terraform, not a space setting. Space and platform custom MCP servers (**Space Settings → Agent → MCP Servers**, **Admin → Agents**) keep working as before unless the deployment uses the [Gateway-only profile](#gateway-only-profile).
 
@@ -20,7 +20,13 @@ agent CLI ─stdio─▶ aidlc-gateway-tools (runtime proxy, SigV4 + grant)
 
 ## Add a target
 
-Prerequisites: `enable_mcp_gateway = true` (which requires `network_mode = "VPC"`). The MCP server must speak Streamable HTTP over HTTPS, publicly reachable or through a VPC Lattice private endpoint.
+Prerequisites:
+
+- `enable_mcp_gateway = true` (which requires `network_mode = "VPC"`).
+- The MCP server speaks Streamable HTTP over HTTPS, publicly reachable or through a VPC Lattice private endpoint.
+- Access to the deployment's AWS account and Region, where the credential provider must be created.
+- If the deployment sets `iam_permissions_boundary_arn`, the boundary must allow `bedrock-agentcore:GetWorkloadAccessToken`, `bedrock-agentcore:GetResourceOauth2Token` (or `GetResourceApiKey`) and `secretsmanager:GetSecretValue`; otherwise every call to the target fails.
+- The ids of the spaces that may use the server: the id in the space URL, `/space/<space id>`. Optionally the stage ids, which are the workflow's stage block ids (for example `requirements-analysis`). A stage id also covers every unit lane of that stage. Terraform does not check either kind of id; a mistyped id never matches.
 
 ### 1. Create the credential provider
 
@@ -59,7 +65,9 @@ aws bedrock-agentcore-control create-api-key-credential-provider \
 
 with `jira-api-key.json` containing `{ "apiKey": "<api key>" }`.
 
-Delete the input file afterwards. Note the `credentialProviderArn` and the secret ARN from the response (`clientSecretArn.secretArn` or `apiKeySecretArn.secretArn`). The provider ARN has the form `arn:aws:bedrock-agentcore:<region>:<account>:token-vault/default/oauth2credentialprovider/<name>` (or `.../apikeycredentialprovider/<name>`); Terraform also accepts the `acps` service prefix used in the API reference. If the provider secret is encrypted with a customer managed KMS key, also allow the Gateway role (`<project>-mcp-gateway-<environment>`) to decrypt with it.
+Delete the input file afterwards. Note the `credentialProviderArn` and the secret ARN from the response (`clientSecretArn.secretArn` or `apiKeySecretArn.secretArn`). Use the provider ARN exactly as returned: `arn:aws:bedrock-agentcore:<region>:<account>:token-vault/default/oauth2credentialprovider/<name>` (or `.../apikeycredentialprovider/<name>`). It is also the IAM resource the Gateway role is granted, so Terraform refuses the `acps` service prefix some API reference examples show. If the provider secret is encrypted with a customer managed KMS key, also allow the Gateway role (`<project>-mcp-gateway-<environment>`) to decrypt with it.
+
+Terraform requires the provider's secret ARN, so OAuth client authentication without a client secret (`PRIVATE_KEY_JWT`, `AWS_IAM_ID_TOKEN_JWT`) is not supported.
 
 ### 2. Declare the target
 
@@ -72,6 +80,7 @@ mcp_gateway_custom_targets = {
       credential_provider_arn = "<credentialProviderArn>"
       secret_arn              = "<clientSecretArn.secretArn>"
       scopes                  = ["read:confluence-content.all"]
+      custom_parameters       = { audience = "https://api.confluence.example.com" }
     }
     allow = {
       project_ids = ["<space id>"]
@@ -95,7 +104,9 @@ mcp_gateway_custom_targets = {
 }
 ```
 
-- The key (`confluence`, `jira`) is the Gateway target name: 1–32 lowercase letters, digits and single hyphens, never `aidlc`. Agents and allow rules refer to tools through it, so treat it as immutable; renaming creates a different target.
+- The key (`confluence`, `jira`) is the Gateway target name: up to 32 lowercase letters and digits, with single hyphens between them, never `aidlc`. Agents and allow rules refer to tools through it, so treat it as immutable; renaming creates a different target.
+- `auth.scopes` is optional in Terraform but required in practice: most authorization servers issue no token, or a token without the needed scope, when none is requested. At most 100 scopes of 1–64 characters each.
+- `auth.custom_parameters` (OAuth only, at most 10 entries) adds parameters to the token request, for example `audience` for Auth0 or `resource` for Microsoft Entra ID v1 and AD FS.
 - `allow.project_ids` is required. `stage_ids` and `tools` are optional; unset means every stage, or every tool of the target. Tool names are the server's own names, without the `<target>___` prefix.
 - `private_endpoint` takes the same `managed_vpc_resource` or `self_managed_lattice_resource` block as `aws_bedrockagentcore_gateway_target`.
 - The encoded allow rules must stay under 2 KB; Terraform refuses a larger set.
@@ -104,7 +115,24 @@ Terraform creates one Gateway target per entry, lets it receive only the `x-aidl
 
 ### 3. Deploy
 
+Have the MCP server and its authorization server ready before you apply. Creating a Gateway target lists the server's tools straight away, with a real token from the provider; if that fails, the target is `FAILED` and the apply fails. This tool synchronization runs as the identity applying Terraform, so the deployer also needs `bedrock-agentcore:GetResourceOauth2Token` (or `GetResourceApiKey`) on the provider.
+
 Apply with `deploy-terraform.sh` as usual. The `aidlc-gateway-tools` entry is written when a stage session starts on the updated runtime; sessions already running when the first target is added do not get it.
+
+The Gateway keeps the tool list it synchronized. When the server later adds or changes tools, synchronize the target again (and update `allow.tools` if you set it):
+
+```sh
+aws bedrock-agentcore-control synchronize-gateway-targets \
+  --gateway-identifier <gateway id> --target-id-list <target id>
+```
+
+### 4. Verify
+
+1. `aws bedrock-agentcore-control list-gateway-targets --gateway-identifier <gateway id> --query 'items[].[name,targetId,status]'` lists the target as `READY`. Otherwise, `get-gateway-target` shows `statusReasons`. The Gateway is named `<project>-mcp-<environment>`.
+2. Run an intent in an allowed space and stage. The agent lists `<target>___<tool>` under `aidlc-gateway-tools`, the interceptor logs `mcp gateway request` with `decision=allow` for the target, and your server receives a valid token and an `x-aidlc-caller` header.
+3. From a space that is not in `project_ids`, the tool is not listed and a call is denied.
+
+**Test** in the MCP server editors does not cover Gateway targets.
 
 ## Contract for the customer MCP server
 
@@ -127,8 +155,12 @@ Apply with `deploy-terraform.sh` as usual. The `aidlc-gateway-tools` entry is wr
 
   Every field comes from the control plane's signed grant; nothing in it is asserted by the agent runtime. Reject unknown versions. Use it to scope what a call may read or write (for example a Confluence space per AI-DLC space) and for audit.
 
+- **Treat a missing header like `{"v": 1, "none": true}`: no caller.** The Gateway's own tool synchronization (at target creation, update and `synchronize-gateway-targets`) does not pass through the interceptor and carries no header.
 - **Treat `{"v": 1, "none": true}` as no caller.** On every other request the interceptor allows (`initialize`, `ping`, `tools/list`, notifications, and calls to other targets), it sets the header to this fixed value, base64url `eyJ2IjoxLCJub25lIjp0cnVlfQ`, so a header supplied by the caller never reaches your server. It identifies no space, intent or stage: grant nothing scoped on it.
 - **Trust the header only on an authenticated Gateway request.** It is plain data, not a signature: a request that did not authenticate as the Gateway may carry any value. Do not rely on it for methods other than `tools/call`.
+- **Leave tool filtering to `allow`.** Agents see the tool list the Gateway synchronized, filtered by the interceptor; a per-caller tool list on your server has no effect.
+- **Do not log or forward `x-amz-bedrock-agentcore-identity-wat`.** The Gateway adds this header (its workload access token) to requests to the target.
+- **Answer within minutes.** The runtime proxy waits up to 14 minutes for a call (reset by progress notifications), and Codex stops waiting after 10 minutes. Return a handle for long jobs. An agent may report a timed-out call as denied.
 - Return ordinary MCP results; they reach the agent unchanged.
 
 ## Change, rotate, revoke
@@ -137,7 +169,8 @@ Target access is not pinned to an execution: the interceptor checks every call a
 
 - **Restricting** access (removing a space, stage or tool, or a whole target) is a revocation: the next call of a running stage is denied and the tools disappear from the next `tools/list`. Use it to cut off a compromised server.
 - **Widening** access (adding a space, stage or tool) or **rebinding** a target (a new endpoint or credential provider) applies to the next call of a running stage in the same way.
-- **Rotating** a credential happens in AgentCore Identity (update the provider's secret); no Terraform change is needed.
+- **Rotating** a credential happens in AgentCore Identity: run `update-oauth2-credential-provider` (or `update-api-key-credential-provider`) with the full configuration again, read from a file, then check with `get-oauth2-credential-provider` that `clientSecretArn.secretArn` is unchanged. If it changed, update `secret_arn` and apply. Otherwise no Terraform change is needed.
+- **Revoking at the authorization server** works independently of the platform: disable the OAuth client or revoke its tokens. AgentCore Identity may reuse a token it already holds until it expires, so keep the token lifetime short.
 - A stage's grant stops working when the stage attempt ends, when its execution is cancelled, rewound or deleted, and when it expires. Calls already admitted run to completion; the customer server is not told that a grant was retired.
 
 ## Gateway-only profile
