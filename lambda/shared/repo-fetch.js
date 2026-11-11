@@ -206,18 +206,33 @@ const responseToBuffer = async (res, maxBytes) => {
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// `%2f` and `%2F` are the same escape, so hex digits match in either case.
+const percentEscapePattern = (byte) =>
+  `%${[...byte.toString(16).padStart(2, '0')]
+    .map((digit) => (/[a-f]/.test(digit) ? `[${digit}${digit.toUpperCase()}]` : digit))
+    .join('')}`;
+
+// Matches the token with any of its characters written literally or
+// percent-encoded, in either hex case. Literal characters stay case-sensitive,
+// as the token is.
+const tokenPattern = (token) =>
+  new RegExp(
+    [...token]
+      .map((char) => {
+        const escaped = [...Buffer.from(char, 'utf8')].map(percentEscapePattern).join('');
+        return `(?:${escapeRegExp(char)}|${escaped})`;
+      })
+      .join(''),
+    'g',
+  );
+
 // Removes the request's credential from server-controlled text. A GitLab
 // instance or proxy may reflect the Authorization header in an error body, and
 // that body reaches the thrown error, the Lambda response and the logs. Runs
 // before any truncation, so a cut can never leave part of the token behind.
 const redactCredential = (text, token) => {
-  let out = text.replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]');
-  if (token) {
-    for (const form of new Set([token, encodeURIComponent(token)])) {
-      out = out.replace(new RegExp(escapeRegExp(form), 'g'), '[redacted]');
-    }
-  }
-  return out;
+  const out = text.replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]');
+  return token ? out.replace(tokenPattern(token), '[redacted]') : out;
 };
 
 // `: <message>` from a GitLab error body, bounded, single-line, and with the

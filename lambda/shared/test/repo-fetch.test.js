@@ -289,6 +289,17 @@ describe('GitLab custom sources', () => {
     ['in a plain-text body', (t) => `denied: Authorization: Bearer ${t}\n`],
     ['bare, without the Bearer prefix', (t) => JSON.stringify({ error: `bad token ${t}` })],
     ['URL-encoded', (t) => `denied: ?private_token=${encodeURIComponent(t)}`],
+    // Percent escapes are case-insensitive: %2f is the same byte as %2F.
+    [
+      'URL-encoded with lowercase escapes',
+      () => 'denied: ?private_token=glpat-review%2fsecret%2b1',
+    ],
+    ['URL-encoded with mixed-case escapes', () => 'denied: ?t=glpat-review%2Fsecret%2b1'],
+    [
+      'with every character percent-encoded',
+      (t) =>
+        `denied: ${[...Buffer.from(t)].map((b) => `%${b.toString(16).padStart(2, '0')}`).join('')}`,
+    ],
     ['across the truncation point', (t) => `${'x'.repeat(290)} ${t} ${'y'.repeat(50)}`],
   ])('redacts a token GitLab reflects %s', async (_label, body) => {
     const token = 'glpat-review/secret+1';
@@ -305,6 +316,22 @@ describe('GitLab custom sources', () => {
     for (const fragment of [token, encodeURIComponent(token), 'glpat-', 'secret+1']) {
       expect(error.message).not.toContain(fragment);
     }
+    expect(decodeURIComponent(error.message)).not.toContain(token);
+    expect(error.message.toLowerCase()).not.toMatch(/%67%6c%70%61%74/);
+  });
+  it('keeps ordinary token characters case-sensitive', async () => {
+    // Only the escape hex is case-insensitive: text that differs from the token
+    // in a letter's case is not the token, and GitLab's reason keeps it.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ message: 'project GLPAT-Review not found' }),
+    });
+
+    await expect(fetchCoreFiles(SHA, gitlab({ token: 'glpat-review' }))).rejects.toThrow(
+      /: project GLPAT-Review not found$/,
+    );
   });
   it('still reports the reason once the token is redacted', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
