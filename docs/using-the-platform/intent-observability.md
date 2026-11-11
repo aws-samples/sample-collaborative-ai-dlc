@@ -46,14 +46,8 @@ The **Observability** button opens the intent's execution dashboard:
   the corresponding cache rates, including one-hour writes when the CLI reports
   them. Codex reports cumulative thread totals, so resumed calls subtract the
   saved thread usage and record only the new usage. Codex input totals already
-  include cache reads and writes, and Codex costs use the Bedrock In-Region rates
-  for the OpenAI models in the pinned Codex catalog, GPT-5.4 and GPT-6.1 Terra. A
-  dated snapshot ID such as `openai.gpt-5.4-2026-03-05` uses the rates of its
-  model. Any other OpenAI model shows the cost as unavailable: the price table
-  is maintained by hand, so a model the regional catalogue starts to list has no
-  price until one is added. The model picker marks such a model "no price — cost
-  unavailable". A Codex run with no model selected uses
-  the pinned Codex default (`openai.gpt-6.1-sol`) and is priced under it. Kiro
+  include cache reads and writes. A Codex run with no model selected uses the
+  pinned Codex default (`openai.gpt-6.1-sol`) and is recorded under it. Kiro
   credits use the captured overage rate and remain an estimate.
 
   Usage is recorded when each invocation ends, including reported usage on failure
@@ -99,6 +93,45 @@ environment revision, image digest, runtime version, endpoint, compatibility
 version, and verification result used by the intent. It is the measurement
 surface for tuning context efficiency and confirming which immutable runtime
 executed a run.
+
+## Where prices come from
+
+Token prices are read from the AWS Price List API. The platform holds no price
+table of its own: a model without a usable published price shows **Cost:
+unavailable**, and a model picker shows "Cost estimate unavailable for this
+model" below such a model when it is selected. It can still be selected and
+its usage is still recorded.
+
+- **Refresh.** The price table is rebuilt every hour, and when a model picker is
+  opened if the last refresh is more than an hour old. Costs are computed when a
+  page is read, so a price that AWS publishes later also prices usage that was
+  recorded earlier, and a price change applies to earlier usage as well.
+- **After an upgrade or first deployment** costs show as unavailable until the
+  first refresh has run (at most one hour, or as soon as someone opens a model
+  picker in Admin or in Space Settings → Agent).
+- **If a refresh fails** (Price List unreachable or throttled) the last table is
+  kept. Nothing is priced from a partial answer.
+- **Region.** Prices are those of the platform's inference region
+  (`bedrock_region`); Bedrock publishes different rates per region. A space
+  whose IAM connection sends inference to another region is priced with the
+  same table.
+- **Tier.** A `global.` inference profile uses the Global cross-region rate;
+  every other ID uses the In-Region rate, which is also the Geo cross-region
+  rate. Codex sends bare `openai.*` IDs through the Mantle endpoint and uses the
+  In-Region rate; a geo-prefixed OpenAI ID is not priced. Usage samples carry no
+  prompt length, so the short-context rate is always used: a request that
+  Bedrock bills at a long-context rate is under-reported. Batch, flex, priority
+  and latency-optimized rates are not used.
+- **Cache tokens** use the published cache rates. When AWS publishes no rate for
+  a cache category that a sample contains, that sample's cost is unavailable.
+  This applies to cache writes on GPT-5.5 and GPT-5.4, for which the Price List
+  has no cache-write rate.
+- **Matching.** The Price List identifies a model by its display name, not its
+  ID. The platform matches the two by normalizing both (`Claude Sonnet 4.6` and
+  `us.anthropic.claude-sonnet-4-6`; `OpenAI GPT-5.5` and `openai.gpt-5.5`). A
+  dated ID such as `openai.gpt-5.4-2026-03-05` uses the price of its model. A
+  model whose name and ID do not match this way has no price.
+- **Kiro** is billed in credits and has no token price; see above.
 
 ## Space-level metrics
 
