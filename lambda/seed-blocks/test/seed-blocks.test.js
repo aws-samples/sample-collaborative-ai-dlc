@@ -633,6 +633,30 @@ describe('seed-blocks prepareRelease mode', () => {
     expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['NoSuchKey', 'AccessDenied'])(
+    'restores a missing catalog that S3 reports as %s',
+    async (name) => {
+      const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+      const original = s3Store.get(first.catalogKey);
+      s3Store.delete(first.catalogKey);
+      s3Mock.on(GetObjectCommand).callsFake((input) => {
+        if (!s3Store.has(input.Key)) {
+          const error = new Error(name);
+          error.name = name;
+          error.$metadata = { httpStatusCode: name === 'NoSuchKey' ? 404 : 403 };
+          throw error;
+        }
+        return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+      });
+      fetchCoreFiles.mockClear();
+
+      await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+      expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+      expect(s3Store.get(first.catalogKey)).toBe(original);
+    },
+  );
+
   it('fails instead of trusting a published catalog that no longer verifies', async () => {
     const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
     s3Store.set(first.catalogKey, '{"tampered":true}');

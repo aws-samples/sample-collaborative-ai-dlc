@@ -125,6 +125,7 @@ import {
 import { inspectReleaseClosure } from '../shared/release-resolver.js';
 import {
   buildMethodologyCatalog,
+  isNotFound,
   methodologyCatalogKey,
   writeMethodologyCatalog,
 } from '../shared/methodology-catalog.js';
@@ -505,17 +506,27 @@ const alreadyPublished = async (event) => {
     return null;
   }
   if (!manifest) return null;
-  await inspectReleaseClosure({
-    s3,
-    bucket: artifactsBucket(),
-    cache: null,
-    methodologyRelease: {
-      releaseId: manifest.releaseId,
-      sourceSha: manifest.sourceSha,
-      importerRevision: manifest.importerRevision,
-      closureDigest: manifest.closureDigest,
-    },
-  });
+  // A missing catalog is rebuilt like any other missing object; a catalog
+  // holding other bytes still fails the deployment.
+  try {
+    await inspectReleaseClosure({
+      s3,
+      bucket: artifactsBucket(),
+      cache: null,
+      methodologyRelease: {
+        releaseId: manifest.releaseId,
+        sourceSha: manifest.sourceSha,
+        importerRevision: manifest.importerRevision,
+        closureDigest: manifest.closureDigest,
+      },
+    });
+  } catch (error) {
+    if (!isAccessDenied(error) && !isNotFound(error?.cause)) throw error;
+    logger.warn('published release catalog is missing; building it again', {
+      profile: profile.id,
+    });
+    return null;
+  }
   // Every object the manifest names must still hold its recorded bytes. A
   // missing one is restored by building the release again; an object holding
   // other bytes cannot be overwritten, so that build fails the deployment.
