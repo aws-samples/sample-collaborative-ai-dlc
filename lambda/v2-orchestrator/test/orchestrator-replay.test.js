@@ -1457,7 +1457,7 @@ describe('an answered-early gate releases a callback nothing else completes', ()
       });
       return __durableHandler(event, wrapped, world.deps);
     });
-    runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    runner = trackedRunner({ handlerFunction: handler });
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
     });
