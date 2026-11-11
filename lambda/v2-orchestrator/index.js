@@ -79,6 +79,7 @@ import {
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
+import { notifyGatePending } from '../shared/notification-events.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
   activePlanUnits,
@@ -1107,7 +1108,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             const gate = await store.getHumanTask(executionId, humanTaskId, {
               consistentRead: true,
             });
-            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+            const answered = isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+            // Notification event: a human is needed. Inside this step, so the
+            // step sequence is unchanged and a replayed history doesn't publish.
+            // Never throws; does nothing without a bus.
+            if (!answered) {
+              await notifyGatePending(store, {
+                projectId,
+                intentId,
+                executionId,
+                humanTaskId,
+                stage: label,
+                gate,
+                meta: fresh ?? undefined,
+              });
+            }
+            return answered;
           });
         }
         if (!answeredEarly) {
@@ -1780,6 +1796,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             : await awaitEngineGate(ctx, sectionToolkit, {
                 name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                 kind: 'validation',
+                stageLabel: stage.stageId,
                 stageInstanceId: stage.stageInstanceId ?? null,
                 prompt: [
                   validationPrompt({
