@@ -222,6 +222,18 @@ const parsePart = (part) => {
   }
 };
 
+// When the grant stops being accepted (epoch ms), for a holder scheduling its
+// own work around it; null when unreadable. Unverified on purpose: it never
+// authorizes anything, and every call is still verified by its receiver.
+export const gatewayGrantExpiresAt = (token) => {
+  try {
+    const { exp } = parsePart(String(token).split('.')[1] ?? '');
+    return Number.isInteger(exp) ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+};
+
 // `publicKeyFor(kid) -> Promise<KeyObject | DER SPKI | PEM>`: the verifier's
 // trust anchor. An unknown kid must reject.
 export const verifyGatewayGrant = async (token, { publicKeyFor, now = Date.now }) => {

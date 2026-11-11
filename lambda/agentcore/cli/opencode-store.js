@@ -67,14 +67,32 @@ export const persistOpenCodeStore = async ({
   }
 };
 
+export const OPENCODE_STORE_WAIT_EXPIRED = 'OPENCODE_STORE_WAIT_EXPIRED';
+
+// Whether `previous` settles by `waitUntil` (epoch ms; null waits forever).
+const turnArrives = (previous, waitUntil, now) => {
+  const settled = previous.catch(() => {}).then(() => true);
+  if (waitUntil === null) return settled;
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, waitUntil - now()));
+  });
+  return Promise.race([settled, expired])
+    .then((arrived) => arrived && now() <= waitUntil)
+    .finally(() => clearTimeout(timer));
+};
+
 // Serialize the complete restore → execution → persist interval for a shared
 // durable store. `finally` persistence runs for success, non-zero exits, and
-// thrown spawn failures.
+// thrown spawn failures. A caller that must start by `waitUntil` gives up its
+// turn instead of running late, and rejects with OPENCODE_STORE_WAIT_EXPIRED.
 export const withOpenCodeStore = async ({
   env = process.env,
   operation,
   restore = restoreOpenCodeStore,
   persist = persistOpenCodeStore,
+  waitUntil = null,
+  now = Date.now,
 } = {}) => {
   const store = resolveOpenCodeStore(env);
   const key = store?.mountDir ?? '__unconfigured__';
@@ -85,7 +103,17 @@ export const withOpenCodeStore = async ({
   });
   const tail = previous.catch(() => {}).then(() => turn);
   locks.set(key, tail);
-  await previous.catch(() => {});
+  if (!(await turnArrives(previous, waitUntil, now))) {
+    // The chain still waits for `previous`, so later callers never overlap the
+    // current holder; the entry is dropped once that holder is done.
+    release();
+    void tail.then(() => {
+      if (locks.get(key) === tail) locks.delete(key);
+    });
+    throw Object.assign(new Error('OpenCode store was not free in time'), {
+      code: OPENCODE_STORE_WAIT_EXPIRED,
+    });
+  }
   try {
     await restore({ env }).catch(() => false);
     return await operation();

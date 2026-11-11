@@ -7,7 +7,9 @@ import { runCredentialJob } from '../credential-session.js';
 // message vertex, and broadcasts `discussion.message` on the intent channel.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { runOneShotPrompt } from '../cli/one-shot.js';
+import { DEFAULT_ONE_SHOT_TIMEOUT_MS, runOneShotPrompt } from '../cli/one-shot.js';
+import { gatewayGrantExpiresAt } from '../../shared/gateway-grant.js';
+import { currentGatewayGrant } from '../mcp/gateway-context.js';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { selectCli } from '../cli/drivers.js';
 import { materializeCliContext } from '../stage-materializer.js';
@@ -34,6 +36,23 @@ const COMMAND_INSTRUCTIONS = {
   brainstorm: 'Brainstorm options with tradeoffs, risks, and a recommended next experiment.',
   ask: 'Answer the requester instructions directly, using the discussion and intent context when relevant.',
 };
+
+// Each assist's discussion grant expires minutes after the request, and the
+// assists of one thread share the session's OpenCode store, so they queue. The
+// CLI must start early enough for its whole timeout and the final message write
+// to land inside the grant; an assist that cannot fails while it still can.
+const GRANT_WRITE_MARGIN_MS = 30_000;
+const inferenceStartBy = (grant) => {
+  const expiresAt = grant ? gatewayGrantExpiresAt(grant) : null;
+  return expiresAt === null
+    ? null
+    : expiresAt - GRANT_WRITE_MARGIN_MS - DEFAULT_ONE_SHOT_TIMEOUT_MS;
+};
+
+const failureContent = (assistCommand, reason) =>
+  reason === 'deadline_exceeded'
+    ? `Quorum is busy with other requests on this discussion and could not ${assistCommand} it in time. Retry in a moment.`
+    : `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`;
 
 const jobKey = (p) => `${p.intentId}:${p.discussionId}:${p.requestId}`;
 
@@ -201,6 +220,7 @@ export const createDiscussionAssistStart = ({
     }
     activeJobs.set(key, { startedAt: Date.now(), messageId });
     busy?.enter();
+    const startBy = inferenceStartBy(currentGatewayGrant());
 
     const job = runCredentialJob(async () => {
       let graph;
@@ -254,6 +274,8 @@ export const createDiscussionAssistStart = ({
           availableClis,
           env,
           cwd,
+          timeoutMs: DEFAULT_ONE_SHOT_TIMEOUT_MS,
+          startBy,
           ...cliContext,
         });
         if (out.metrics) {
@@ -279,10 +301,7 @@ export const createDiscussionAssistStart = ({
             })
             .catch(() => {});
         } else {
-          message = await complete(
-            `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`,
-            'failed',
-          );
+          message = await complete(failureContent(assistCommand, out.reason), 'failed');
           await store
             ?.appendEvent?.({
               executionId: intentId,

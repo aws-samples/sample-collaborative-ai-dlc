@@ -36,7 +36,10 @@ arrow in the thread header returns to the thread list.
   to the thread before Quorum replies, so teammates and later asks can read it.
   If saving the message or submitting the ask fails, use **retry** to finish
   the request. Reopening the thread offers a retry for your saved unconfirmed
-  asks; retries reuse the original message and assist request IDs.
+  asks; retries reuse the original message and assist request IDs. With
+  OpenCode, Quorum answers the asks of one thread one at a time. When the MCP
+  Gateway is enabled, an ask that cannot start within about two and a half
+  minutes of being submitted is marked failed as busy, and can be retried.
 - `@` opens a mention picker over the space members. Mentioned users who are
   **currently online** get an in-app notification with a jump-to-thread link.
   Offline users see the unread badge on their next visit — there is no email

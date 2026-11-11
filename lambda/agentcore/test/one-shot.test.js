@@ -285,6 +285,36 @@ describe('runOneShotPrompt', () => {
     expect(withOpenCodeStore).toHaveBeenCalledOnce();
   });
 
+  it('fails with deadline_exceeded instead of starting after startBy', async () => {
+    const spawnFn = vi.fn(() => fakeChild({ stdout: 'never' }));
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['claude'],
+      startBy: 1_000,
+      now: () => 1_001,
+      spawnFn,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'claude' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('reports an OpenCode store wait past startBy as deadline_exceeded', async () => {
+    const spawnFn = vi.fn();
+    const withOpenCodeStore = vi.fn(async ({ waitUntil }) => {
+      expect(waitUntil).toBe(1_000);
+      throw Object.assign(new Error('busy'), { code: 'OPENCODE_STORE_WAIT_EXPIRED' });
+    });
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      startBy: 1_000,
+      spawnFn,
+      withOpenCodeStore,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'opencode' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
   it('runs Codex with CODEX_HOME, Bedrock bearer auth, and turn usage', async () => {
     let argv;
     let childEnv;

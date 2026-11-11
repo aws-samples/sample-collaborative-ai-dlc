@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  OPENCODE_STORE_WAIT_EXPIRED,
+  __test,
   resolveOpenCodeStore,
   restoreOpenCodeStore,
   persistOpenCodeStore,
@@ -114,5 +116,62 @@ describe('OpenCode store sync', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(order).toEqual(['restore-1', 'run-1', 'persist-1', 'restore-2', 'run-2', 'persist-2']);
+  });
+
+  it('gives up a turn not reached by waitUntil without overlapping the holder', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const order = [];
+      let releaseFirst;
+      const firstGate = new Promise((resolve) => {
+        releaseFirst = resolve;
+      });
+      const env = { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-wait' };
+      const quiet = { restore: async () => {}, persist: async () => {} };
+      const first = withOpenCodeStore({
+        env,
+        ...quiet,
+        operation: async () => {
+          order.push('run-1');
+          await firstGate;
+          order.push('done-1');
+        },
+      });
+      const late = withOpenCodeStore({
+        env,
+        ...quiet,
+        waitUntil: 1_000,
+        operation: async () => order.push('run-late'),
+      });
+      const lateResult = late.catch((error) => error.code);
+      const third = withOpenCodeStore({
+        env,
+        ...quiet,
+        operation: async () => order.push('run-3'),
+      });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(await lateResult).toBe(OPENCODE_STORE_WAIT_EXPIRED);
+      expect(order).toEqual(['run-1']);
+      releaseFirst();
+      await Promise.all([first, third]);
+      expect(order).toEqual(['run-1', 'done-1', 'run-3']);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs a bounded turn that arrives in time', async () => {
+    const operation = vi.fn(async () => 'ran');
+    await expect(
+      withOpenCodeStore({
+        env: { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-free' },
+        restore: async () => {},
+        persist: async () => {},
+        waitUntil: Date.now() + 60_000,
+        operation,
+      }),
+    ).resolves.toBe('ran');
+    expect(operation).toHaveBeenCalledOnce();
   });
 });

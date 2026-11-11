@@ -4,6 +4,7 @@ import {
   DISCUSSION_GRANT_TTL_SECONDS,
   GATEWAY_GRANT_MAX_TTL_SECONDS,
   derToJose,
+  gatewayGrantExpiresAt,
   gatewayPolicyDigest,
   gatewayScopeForCommand,
   issueGatewayGrant,
@@ -381,6 +382,21 @@ describe('gateway grant', () => {
         mode: 'execution',
         ...identity,
       });
+    }
+  });
+});
+
+describe('gatewayGrantExpiresAt', () => {
+  it('reads the expiry a holder schedules around, and null for anything unreadable', async () => {
+    const token = await issueGatewayGrant(
+      { mode: 'discussion', projectId: 'p-1', intentId: 'i-1' },
+      { ...signer, ttlSeconds: DISCUSSION_GRANT_TTL_SECONDS },
+    );
+    expect(gatewayGrantExpiresAt(token)).toBe(
+      (Math.floor(NOW / 1000) + DISCUSSION_GRANT_TTL_SECONDS) * 1000,
+    );
+    for (const bad of [null, '', 'a.b.c', 'only-one-part', 'x.e30.y']) {
+      expect(gatewayGrantExpiresAt(bad)).toBeNull();
     }
   });
 });
