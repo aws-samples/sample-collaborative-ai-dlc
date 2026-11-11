@@ -873,7 +873,13 @@ export default function WorkflowComposer() {
             variant="ghost"
             size="sm"
             className="gap-1.5"
-            onClick={() => navigate('/workflows')}
+            onClick={() =>
+              navigate(
+                requestedLibraryRelease
+                  ? `/workflows?libraryRelease=${encodeURIComponent(requestedLibraryRelease)}`
+                  : '/workflows',
+              )
+            }
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back

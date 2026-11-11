@@ -3,7 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Link, MemoryRouter, Route, Routes } from 'react-router';
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router';
 
 const get = vi.fn();
 const compiled = vi.fn();
@@ -550,4 +550,43 @@ it('offers only stages the selected version can resolve', async () => {
   expect(await screen.findByText('Stage from-release')).toBeInTheDocument();
   expect(screen.getByText('Stage mine')).toBeInTheDocument();
   expect(screen.queryByText('Stage system-only')).toBeNull();
+});
+
+// The version an author chose on the workflow list travels into the composer;
+// going back must not silently drop it, or the next workflow opens on Stable.
+it('keeps the selected version when going back to the workflow list', async () => {
+  const selected = 'aidlc:2.9.0';
+  catalog.mockResolvedValue({
+    releaseId: selected,
+    release: { releaseId: selected, upstreamVersion: '2.9.0' },
+    contents: {
+      release: { releaseId: selected, upstreamVersion: '2.9.0' },
+      workflow: null,
+      blocks: { stage: [], scope: [] },
+    },
+  });
+  compiled.mockResolvedValue(compiledView({ libraryRelease: selected }));
+  executionPreview.mockResolvedValue(previewOf({ libraryRelease: selected }));
+  const user = userEvent.setup();
+  const ListLocation = () => {
+    const location = useLocation();
+    return <div data-testid="list-location">{location.search}</div>;
+  };
+  render(
+    <MemoryRouter
+      initialEntries={[`/workflows/my-flow?libraryRelease=${encodeURIComponent(selected)}`]}
+    >
+      <Routes>
+        <Route path="/workflows" element={<ListLocation />} />
+        <Route path="/workflows/:workflowId" element={<WorkflowComposer />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByTestId('composer-library-release');
+
+  await user.click(screen.getByRole('button', { name: /back/i }));
+
+  expect(await screen.findByTestId('list-location')).toHaveTextContent(
+    `?libraryRelease=${encodeURIComponent(selected)}`,
+  );
 });
