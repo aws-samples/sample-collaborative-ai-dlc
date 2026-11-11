@@ -349,14 +349,66 @@ describe('DefaultModelsCard', () => {
 
     render(<DefaultModelsCard />);
 
+    // A backend that predates `sources` reports the Codex source only.
     await waitFor(() => {
-      expect(screen.getByTestId('codex-catalog-unavailable')).toHaveTextContent(
+      expect(screen.getByTestId('default-model-source-codex')).toHaveTextContent(
         'showing the last list read',
       );
     });
     // The saved selection is still the value in the field: the cached list is
     // what the picker offers, not a reset of the configured model.
     expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent('GPT-5.5');
+    expect(screen.queryByTestId('codex-catalog-unavailable')).not.toBeInTheDocument();
+  });
+
+  it('says which lists are the last ones read, in the default and the per-tier pickers', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({ tierModels: { judgment: { codex: 'openai.gpt-5.5' } } }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          ...defaultCapabilities().models,
+          sources: { kiro: 'cached', claude: 'cached', opencode: 'catalog', codex: 'cached' },
+          codexSource: 'cached',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    for (const cli of ['kiro', 'claude', 'codex']) {
+      expect(await screen.findByTestId(`default-model-source-${cli}`)).toHaveTextContent(
+        'showing the last list read',
+      );
+      expect(screen.getByTestId(`admin-tier-model-source-${cli}`)).toHaveTextContent(
+        'last list read',
+      );
+    }
+    expect(screen.queryByTestId('default-model-source-opencode')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-tier-model-source-opencode')).not.toBeInTheDocument();
+  });
+
+  it('shows no cached-list note when every list was read now', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({ tierModels: { judgment: { codex: 'openai.gpt-5.5' } } }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          ...defaultCapabilities().models,
+          sources: { kiro: 'catalog', claude: 'catalog', opencode: 'catalog', codex: 'catalog' },
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await screen.findByTestId('default-model-select-codex');
+    for (const cli of ['kiro', 'claude', 'opencode', 'codex']) {
+      expect(screen.queryByTestId(`default-model-source-${cli}`)).not.toBeInTheDocument();
+      expect(screen.queryByTestId(`admin-tier-model-source-${cli}`)).not.toBeInTheDocument();
+    }
   });
 
   it.each(['error', 'unavailable'] as const)(

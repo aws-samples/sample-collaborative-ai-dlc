@@ -10,7 +10,8 @@ const modelOptions = {
   ],
 };
 
-const renderSection = (value: Parameters<typeof TierModelsSection>[0]['value']) =>
+type SectionProps = Parameters<typeof TierModelsSection>[0];
+const renderSection = (value: SectionProps['value'], extra: Partial<SectionProps> = {}) =>
   render(
     <TierModelsSection
       value={value}
@@ -18,6 +19,7 @@ const renderSection = (value: Parameters<typeof TierModelsSection>[0]['value']) 
       modelOptions={modelOptions}
       modelsLoaded
       idPrefix="admin"
+      {...extra}
     />,
   );
 
@@ -37,5 +39,20 @@ describe('TierModelsSection', () => {
     expect(screen.getByTestId('admin-tier-model-judgment-codex')).toHaveTextContent(
       /^openai\.gpt-7-nova$/,
     );
+  });
+
+  it('says once per CLI when its list is the last one read, not the current one', () => {
+    renderSection({}, { modelSources: { codex: 'cached', claude: 'catalog', kiro: 'error' } });
+
+    expect(screen.getByTestId('admin-tier-model-source-codex')).toHaveTextContent('last list read');
+    expect(screen.queryByTestId('admin-tier-model-source-claude')).toBeNull();
+    expect(screen.queryByTestId('admin-tier-model-source-kiro')).toBeNull();
+    expect(screen.queryByTestId('admin-tier-model-source-opencode')).toBeNull();
+  });
+
+  it('shows no note when no source is known', () => {
+    renderSection({});
+
+    expect(screen.queryByTestId('admin-tier-model-source-codex')).toBeNull();
   });
 });

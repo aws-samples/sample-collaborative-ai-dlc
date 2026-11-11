@@ -22,7 +22,12 @@ import {
   type CliModels,
   type TierModels,
 } from '@/services/projects';
-import { agentsService, type AgentModel, type RuntimeCliStatus } from '@/services/agents';
+import {
+  agentsService,
+  type AgentModel,
+  type ModelListSources,
+  type RuntimeCliStatus,
+} from '@/services/agents';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
@@ -31,9 +36,10 @@ import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersS
 import { CustomRulesSection } from '@/components/settings/CustomRulesSection';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
 import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
+import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
-import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
+import { AGENT_CLIS, AGENT_CLI_METADATA, modelListSources } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
@@ -55,6 +61,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     codex: true,
   });
   const [modelOptions, setModelOptions] = useState<Partial<Record<AgentCli, AgentModel[]>>>({});
+  // A list the backend could not read now and served from its cache says so.
+  const [modelSources, setModelSources] = useState<ModelListSources>({});
   const [runtimeClis, setRuntimeClis] = useState<RuntimeCliStatus[] | null>(null);
   // CLIs a platform admin disabled — they can't become the recommendation.
   const [disabledClis, setDisabledClis] = useState<AgentCli[]>([]);
@@ -106,6 +114,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         if (c.runtimeClis) setRuntimeClis(c.runtimeClis);
         setDisabledClis(c.disabledClis ?? []);
         if (c.models) setModelOptions(c.models);
+        setModelSources(modelListSources(c.models));
       })
       .catch(() => {
         /* non-fatal — keep empty runtime status and model options */
@@ -449,6 +458,10 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                     selected={current}
                     data-testid={`model-unpriced-${cli}`}
                   />
+                  <CachedModelListNote
+                    source={modelSources[cli]}
+                    data-testid={`model-source-${cli}`}
+                  />
                 </div>
               );
             })}
@@ -493,6 +506,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                     value={editTierModels}
                     onChange={setEditTierModels}
                     modelOptions={modelOptions}
+                    modelSources={modelSources}
                     modelsLoaded={runtimeClis !== null || Object.keys(modelOptions).length > 0}
                     disabled={!canEdit || savingModels}
                     idPrefix="project"

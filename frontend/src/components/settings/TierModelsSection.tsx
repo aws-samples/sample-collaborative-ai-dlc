@@ -20,10 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AgentModel } from '@/services/agents';
+import type { AgentModel, ModelListSources } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels, TierModelRow } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
+import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
 
 // Radix Select can't hold an empty-string value, so the "unset" choice carries
 // this sentinel; it maps back to '' (cleared) on change.
@@ -59,6 +60,8 @@ interface Props {
   onChange: (next: TierModels) => void;
   modelOptions: Partial<Record<RuntimeModelCli, AgentModel[]>>;
   modelsLoaded: boolean;
+  /** Where each CLI's list comes from; a cached list is marked in its column header. */
+  modelSources?: ModelListSources;
   disabled?: boolean;
   /** Distinguishes admin vs project instances in test ids + element ids. */
   idPrefix: string;
@@ -80,6 +83,7 @@ export function TierModelsSection({
   onChange,
   modelOptions,
   modelsLoaded,
+  modelSources = {},
   disabled = false,
   idPrefix,
   inheritedModels = {},
@@ -100,6 +104,11 @@ export function TierModelsSection({
                 className="pr-2 text-left text-[11px] font-medium text-muted-foreground"
               >
                 {AGENT_CLI_METADATA[cli].modelLabel}
+                <CachedModelListNote
+                  source={modelSources[cli]}
+                  short
+                  data-testid={`${idPrefix}-tier-model-source-${cli}`}
+                />
               </th>
             ))}
           </tr>

@@ -30,8 +30,8 @@ vi.mock('@/components/settings/CustomRulesSection', () => ({
 
 import { AgentTab } from './AgentTab';
 
-const project = (cliModels: Project['cliModels']) =>
-  ({ id: 'p-1', name: 'Space', agentCli: 'codex', cliModels }) as Project;
+const project = (cliModels: Project['cliModels'], tierModels?: Project['tierModels']) =>
+  ({ id: 'p-1', name: 'Space', agentCli: 'codex', cliModels, tierModels }) as Project;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -85,5 +85,65 @@ describe('AgentTab model overrides', () => {
     });
     expect(screen.queryByTestId('model-unpriced-codex')).toBeNull();
     expect(screen.queryByTestId('model-unpriced-claude')).toBeNull();
+  });
+
+  it('says which lists are the last ones read, in the space and the per-tier pickers', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['codex'],
+      models: {
+        kiro: [{ id: 'auto', name: 'Auto' }],
+        claude: [{ id: 'us.anthropic.claude-sonnet-4-6', name: 'us.anthropic.claude-sonnet-4-6' }],
+        opencode: [],
+        codex: [{ id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' }],
+        sources: { kiro: 'cached', claude: 'catalog', opencode: 'catalog', codex: 'cached' },
+        codexSource: 'cached',
+      },
+    });
+
+    render(
+      <AgentTab
+        project={project({}, { judgment: { codex: 'openai.gpt-6.1-terra' } })}
+        canEdit
+        onProjectUpdated={vi.fn()}
+      />,
+    );
+
+    for (const cli of ['kiro', 'codex']) {
+      expect(await screen.findByTestId(`model-source-${cli}`)).toHaveTextContent(
+        'showing the last list read',
+      );
+      expect(screen.getByTestId(`project-tier-model-source-${cli}`)).toHaveTextContent(
+        'last list read',
+      );
+    }
+    expect(screen.queryByTestId('model-source-claude')).toBeNull();
+    expect(screen.queryByTestId('project-tier-model-source-claude')).toBeNull();
+  });
+
+  it('reads the Codex source of a backend that predates per-CLI sources', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['codex'],
+      models: {
+        kiro: [],
+        claude: [],
+        opencode: [],
+        codex: [{ id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' }],
+        codexSource: 'cached',
+      },
+    });
+
+    render(<AgentTab project={project({})} canEdit onProjectUpdated={vi.fn()} />);
+
+    expect(await screen.findByTestId('model-source-codex')).toBeInTheDocument();
+    expect(screen.queryByTestId('model-source-kiro')).toBeNull();
+  });
+
+  it('shows no cached-list note when the lists were read now', async () => {
+    render(<AgentTab project={project({})} canEdit onProjectUpdated={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(document.getElementById('model-codex')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('model-source-codex')).toBeNull();
   });
 });

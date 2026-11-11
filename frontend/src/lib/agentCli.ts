@@ -1,4 +1,4 @@
-import type { AgentCredentialSource } from '@/services/agents';
+import type { AgentCapabilities, AgentCredentialSource, ModelListSources } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
 
 export type AgentCredentialProvider = 'bedrock' | 'kiro';
@@ -74,3 +74,10 @@ export const AGENT_CREDENTIAL_SOURCE_LABELS = {
   space: 'Space',
   platform: 'Platform',
 } as const satisfies Record<AgentCredentialSource, string>;
+
+/** Per-CLI list sources of a capabilities response. A backend that predates
+ *  `sources` reports the Codex source only. */
+export function modelListSources(models: AgentCapabilities['models']): ModelListSources {
+  if (models?.sources) return models.sources;
+  return models?.codexSource ? { codex: models.codexSource } : {};
+}

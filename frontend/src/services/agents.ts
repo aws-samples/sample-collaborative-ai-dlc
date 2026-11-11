@@ -176,7 +176,12 @@ export interface SpaceAgentCredentialStatus extends AgentCredentialStatus {
   platformFallback: AgentCredentialStatus;
 }
 
-export type CodexCatalogSource = 'catalog' | 'cached' | 'error' | 'unavailable';
+/** Where a CLI's model list comes from: read now (`catalog`), the last list
+ *  read after a failed lookup (`cached`, possibly empty), a failed lookup with
+ *  nothing read before (`error`), or no such source (`unavailable`). */
+export type ModelListSource = 'catalog' | 'cached' | 'error' | 'unavailable';
+export type CodexCatalogSource = ModelListSource;
+export type ModelListSources = Partial<Record<AgentCli, ModelListSource>>;
 
 export interface AgentCapabilities {
   available: AgentCli[];
@@ -194,6 +199,8 @@ export interface AgentCapabilities {
      *  failed lookup with nothing cached (`error`), or a runtime that reported
      *  no catalogue (`unavailable`). There is no built-in list. */
     codexSource?: CodexCatalogSource;
+    /** The same per CLI. Absent from older backends. */
+    sources?: ModelListSources;
   };
 }
 

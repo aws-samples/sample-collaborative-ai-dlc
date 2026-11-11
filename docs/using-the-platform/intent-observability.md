@@ -111,6 +111,11 @@ its usage is still recorded.
   picker in Admin or in Space Settings → Agent).
 - **If a refresh fails** (Price List unreachable or throttled) the last table is
   kept. Nothing is priced from a partial answer.
+- **If the stored table cannot be read** for a moment (a throttled or failed
+  read), costs keep using the table that was read last, and the read is tried
+  again a minute later. A read that succeeds decides: if the table was removed
+  or is not in the current format, costs show as unavailable until the next
+  refresh.
 - **Region.** Prices are those of the platform's inference region
   (`bedrock_region`); Bedrock publishes different rates per region. A space
   whose IAM connection sends inference to another region is priced with the
