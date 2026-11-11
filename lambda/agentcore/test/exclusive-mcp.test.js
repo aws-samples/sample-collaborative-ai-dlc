@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -452,6 +453,77 @@ describe('OpenCode: other layers disabled in the inline config', () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: ['opencode'], cwd, spawnFn });
     expect(out).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenCode: the durable data store under gateway_only', () => {
+  const WELLKNOWN = JSON.stringify({
+    'https://config.example': { type: 'wellknown', key: 'TOKEN', token: SENTINEL },
+  });
+
+  // A Git hook's GIT_DIR/GIT_INDEX_FILE would point these commands at this repository.
+  const gitEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+  );
+  // A single-repository workspace: the checkout holds the durable store dir.
+  const workspace = async ({ tracked }) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'aidlc-store-'));
+    const ws = path.join(root, 'ws');
+    await mkdir(path.join(ws, '.opencode-data', 'opencode'), { recursive: true });
+    await writeFile(path.join(ws, '.opencode-data', 'opencode', 'opencode.db'), 'sessions');
+    if (tracked)
+      await writeFile(path.join(ws, '.opencode-data', 'opencode', 'auth.json'), WELLKNOWN);
+    execFileSync('git', ['init', '-q'], { cwd: ws, env: gitEnv });
+    if (tracked) execFileSync('git', ['add', '.opencode-data'], { cwd: ws, env: gitEnv });
+    const env = {
+      ...process.env,
+      OPENCODE_XDG_DATA_HOME: path.join(root, 'local'),
+      V2_OPENCODE_STORE_DIR: path.join(ws, '.opencode-data'),
+    };
+    return { ws, env, local: path.join(root, 'local', 'opencode') };
+  };
+  const materialize = ({ ws, env }) =>
+    materializeOpenCodeConfig({ workspaceDir: ws, mcpEntry: MCP_ENTRY, scope: SCOPE, env });
+  const oneShot = ({ ws, env }, spawnFn) =>
+    runOneShotPrompt({ prompt: 'p', availableClis: ['opencode'], cwd: ws, env, spawnFn });
+
+  it('refuses a store the repository tracks, before restoring it', async () => {
+    gatewayOnly();
+    const setup = await workspace({ tracked: true });
+    await expect(materialize(setup)).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+    const spawnFn = vi.fn();
+    await expect(oneShot(setup, spawnFn)).resolves.toMatchObject({
+      ok: false,
+      reason: 'runtime_mcp_gateway_only',
+    });
+    expect(spawnFn).not.toHaveBeenCalled();
+    await expect(readdir(setup.local)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('restores the store the platform wrote', async () => {
+    gatewayOnly();
+    const setup = await workspace({ tracked: false });
+    await expect(materialize(setup)).resolves.toContain('"aidlc"');
+    let restored;
+    const out = await oneShot(setup, (command, args, options) => {
+      restored = readFile(path.join(setup.local, 'opencode.db'), 'utf8');
+      expect(options.env.XDG_DATA_HOME).toBe(path.dirname(setup.local));
+      return fakeChild('');
+    });
+    expect(out.cli).toBe('opencode');
+    await expect(restored).resolves.toBe('sessions');
+  });
+
+  it('accepts a store outside any repository (multi-repository workspace)', async () => {
+    gatewayOnly();
+    const setup = await workspace({ tracked: false });
+    await rm(path.join(setup.ws, '.git'), { recursive: true });
+    await expect(materialize(setup)).resolves.toContain('"aidlc"');
+  });
+
+  it('is unchanged under allow', async () => {
+    const setup = await workspace({ tracked: true });
+    await expect(materialize(setup)).resolves.toContain('"aidlc"');
   });
 });
 

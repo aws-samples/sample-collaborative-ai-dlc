@@ -30,6 +30,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseJsonc, visit as visitJsonc } from 'jsonc-parser';
 import { RuntimeMcpPolicyError } from '../../shared/runtime-mcp-policy.js';
+import { runGitCommand } from '../git-runner.js';
 
 const missing = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
 
@@ -215,10 +216,39 @@ const disabledOpenCodeServer = (server) => {
   return { ...fields, enabled: false };
 };
 
+const insideRepository = async (directory) => {
+  for (let current = path.resolve(directory); ; current = path.dirname(current)) {
+    if (await exists(path.join(current, '.git'))) return true;
+    if (path.dirname(current) === current) return false;
+  }
+};
+
+// OpenCode also takes configuration from its data directory: `auth.json`
+// (a `wellknown` entry fetches and merges a remote config, MCP servers
+// included) and the active account in its database (whose config is merged
+// after the inline one). cli/opencode-store.js restores that directory from
+// V2_OPENCODE_STORE_DIR, inside the workspace — which, for a single-repository
+// project, is the checkout. The platform never commits the store
+// (git-engine.js RUNTIME_EXCLUDES), so a store the repository tracks is the
+// repository's, and is refused rather than restored.
+export const assertOpenCodeStoreUntracked = async ({ env = process.env, git = runGitCommand }) => {
+  if (!env.V2_OPENCODE_STORE_DIR) return;
+  const store = path.resolve(env.V2_OPENCODE_STORE_DIR);
+  const parent = path.dirname(store);
+  if (!(await insideRepository(parent))) return;
+  const { exitCode, stdout } = await git('git', ['ls-files', '-z', '--', path.basename(store)], {
+    cwd: parent,
+    captureOutput: true,
+  });
+  if (exitCode !== 0) throw unreadable(store, 'cannot be checked against the repository');
+  if (stdout) throw unreadable(store, 'is tracked by the repository');
+};
+
 // `config` is the runtime's inline OpenCode config (object). Returns it with
 // every server another layer defines disabled; the runtime's own entries keep
 // their position after them, so they still win a name collision.
-export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home }) => {
+export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home, env = process.env }) => {
+  await assertOpenCodeStoreUntracked({ env });
   const own = config.mcp ?? {};
   const foreign = {};
   for (const file of await openCodeConfigFiles({ cwd, home })) {

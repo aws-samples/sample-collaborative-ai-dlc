@@ -109,7 +109,7 @@ const exclusiveContext = async ({ cli, cwd, env, context }) => {
     const config = context.opencodeConfigContent ? JSON.parse(context.opencodeConfigContent) : {};
     return {
       ...context,
-      opencodeConfigContent: JSON.stringify(await exclusiveOpenCodeConfig({ config, cwd })),
+      opencodeConfigContent: JSON.stringify(await exclusiveOpenCodeConfig({ config, cwd, env })),
     };
   }
   if (cli === 'kiro' && !context.agentName) {

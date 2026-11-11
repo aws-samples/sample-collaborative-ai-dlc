@@ -943,7 +943,7 @@ export const materializeOpenCodeConfig = async ({
   env = await prepareMcpEnvironment({ mcpEntry, scope, env });
   const config = buildOpenCodeConfig({ mcpEntry, scope, env, customServers, maxTurns });
   return JSON.stringify(
-    gatewayOnlyMcp() ? await exclusiveOpenCodeConfig({ config, cwd: workspaceDir }) : config,
+    gatewayOnlyMcp() ? await exclusiveOpenCodeConfig({ config, cwd: workspaceDir, env }) : config,
   );
 };
 
