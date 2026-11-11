@@ -6,7 +6,8 @@ import { SSMClient } from '@aws-sdk/client-ssm';
 import { runWithGatewayGrant } from '../mcp/gateway-context.js';
 import { authorizeMcpSecretRequest } from '../../credential-broker/mcp-secrets.js';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -23,7 +24,10 @@ import {
 import { repoCheckoutPath } from '../../shared/repo-validation.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { currentCredentialSession } from '../credential-session.js';
-import { renderRulesDoc } from '../stage-materializer.js';
+import {
+  materializeOpenCodeConfig as stageOpenCodeConfig,
+  renderRulesDoc,
+} from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { createRemoteProcessStore } from '../engine-data-client.js';
@@ -4035,6 +4039,74 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     const argv = seen.find((value) => value.args);
     expect(argv.args[argv.args.indexOf('--session') + 1]).toBe('ses_old');
     expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  describe('under gateway_only, with the durable store in a single-repository checkout', () => {
+    // A Git hook's GIT_DIR/GIT_INDEX_FILE would point these commands at this repository.
+    const gitEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+    );
+    afterEach(() => vi.unstubAllEnvs());
+    const resume = async ({ tracked }) => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-ocstore-'));
+      const ws = nodePath.join(root, 'ws');
+      const stored = nodePath.join(ws, '.opencode-data', 'opencode');
+      await mkdir(stored, { recursive: true });
+      await writeFile(nodePath.join(stored, 'opencode.db'), 'sessions');
+      if (tracked) {
+        await writeFile(
+          nodePath.join(stored, 'auth.json'),
+          JSON.stringify({ 'https://config.example': { type: 'wellknown', key: 'K', token: 't' } }),
+        );
+      }
+      execFileSync('git', ['init', '-q'], { cwd: ws, env: gitEnv });
+      if (tracked) execFileSync('git', ['add', '.opencode-data'], { cwd: ws, env: gitEnv });
+      const local = nodePath.join(root, 'local');
+      const seen = [];
+      const res = runStage(
+        { ...baseArgs, workspaceDir: ws, requestedCli: 'opencode', resumeFrom: 'q-open' },
+        baseDeps({
+          availableClis: ['opencode'],
+          env: {
+            BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+            OPENCODE_XDG_DATA_HOME: local,
+            V2_OPENCODE_STORE_DIR: nodePath.join(ws, '.opencode-data'),
+          },
+          store: spyStore({
+            humanTask: { humanTaskId: 'q-open', status: 'answered', answer: { freeText: 'Go' } },
+            stage: { cli: 'opencode', cliSessionId: 'ses_old' },
+          }),
+          materializeOpenCodeConfig: stageOpenCodeConfig,
+          spawnFn: openCodeSpawn({
+            emitSession: false,
+            capture: (value) =>
+              value.args &&
+              seen.push({
+                args: value.args,
+                restored: readFileSync(nodePath.join(local, 'opencode', 'opencode.db'), 'utf8'),
+                auth: existsSync(nodePath.join(local, 'opencode', 'auth.json')),
+              }),
+          }),
+          hasOpenCodeStore: async () => true,
+        }),
+      );
+      return { res, seen };
+    };
+
+    it('refuses to resume from a store the repository tracks', async () => {
+      const { res, seen } = await resume({ tracked: true });
+      await expect(res).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+      expect(seen).toEqual([]);
+    });
+
+    it('still resumes from the store the platform wrote', async () => {
+      const { res, seen } = await resume({ tracked: false });
+      await expect(res).resolves.toMatchObject({ ok: true, cli: 'opencode' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].args[seen[0].args.indexOf('--session') + 1]).toBe('ses_old');
+      expect(seen[0]).toMatchObject({ restored: 'sessions', auth: false });
+    });
   });
 
   it('persists the first observed Codex thread id before marking a parked stage waiting', async () => {
