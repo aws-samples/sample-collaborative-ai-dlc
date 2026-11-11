@@ -23,6 +23,7 @@ import {
 import type { AgentModel } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels, TierModelRow } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
+import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
 
 // Radix Select can't hold an empty-string value, so the "unset" choice carries
 // this sentinel; it maps back to '' (cleared) on change.
@@ -159,6 +160,11 @@ export function TierModelsSection({
                         disabled={disabled}
                       />
                     )}
+                    <UnpricedModelNote
+                      options={options}
+                      selected={current}
+                      data-testid={`${cellId}-unpriced`}
+                    />
                   </td>
                 );
               })}

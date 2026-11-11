@@ -342,7 +342,7 @@ describe('DefaultModelsCard', () => {
           claude: [],
           opencode: [],
           codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
-          codexSource: 'error',
+          codexSource: 'cached',
         },
       }),
     );
@@ -350,31 +350,101 @@ describe('DefaultModelsCard', () => {
     render(<DefaultModelsCard />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('codex-catalog-unavailable')).toBeInTheDocument();
+      expect(screen.getByTestId('codex-catalog-unavailable')).toHaveTextContent(
+        'showing the last list read',
+      );
     });
-    // The saved selection is still the value in the field: the fallback list is
+    // The saved selection is still the value in the field: the cached list is
     // what the picker offers, not a reset of the configured model.
     expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent('GPT-5.5');
   });
 
-  it('says so when the runtime answered without a catalogue (#674)', async () => {
-    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-5.5' } }));
+  it.each(['error', 'unavailable'] as const)(
+    'offers no built-in list and asks for a model ID when the catalogue is %s',
+    async (codexSource) => {
+      getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-5.5' } }));
+      getCapabilities.mockResolvedValue(
+        defaultCapabilities({
+          models: { kiro: [], claude: [], opencode: [], codex: [], codexSource },
+        }),
+      );
+
+      render(<DefaultModelsCard />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('codex-catalog-unavailable')).toHaveTextContent(
+          'enter a model ID',
+        );
+      });
+      // The saved id stays in the field and another one can be typed.
+      expect(screen.getByTestId('default-model-input-codex')).toHaveValue('openai.gpt-5.5');
+    },
+  );
+
+  it('shows the cost note below a selected model that has no price', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({
+        cliModels: { codex: 'openai.gpt-7-nova', claude: 'us.anthropic.claude-sonnet-4-6' },
+        tierModels: { judgment: { codex: 'openai.gpt-7-nova' } },
+      }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [{ id: 'us.anthropic.claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
+          opencode: [],
+          codex: [
+            { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' },
+            { id: 'openai.gpt-7-nova', name: 'openai.gpt-7-nova', priced: false },
+          ],
+          codexSource: 'catalog',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-unpriced-codex')).toHaveTextContent(
+        'Cost estimate unavailable for this model',
+      );
+    });
+    // The list is untouched: the option carries the name the catalogue gave it.
+    expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent(
+      /^openai\.gpt-7-nova$/,
+    );
+    expect(screen.queryByTestId('default-model-unpriced-claude')).not.toBeInTheDocument();
+    // The per-tier override of the same model carries the note too.
+    expect(screen.getByTestId('admin-tier-model-judgment-codex-unpriced')).toBeInTheDocument();
+  });
+
+  it('drops the cost note when a priced model is selected instead', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-7-nova' } }));
     getCapabilities.mockResolvedValue(
       defaultCapabilities({
         models: {
           kiro: [],
           claude: [],
           opencode: [],
-          codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
-          codexSource: 'static',
+          codex: [
+            { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' },
+            { id: 'openai.gpt-7-nova', name: 'openai.gpt-7-nova', priced: false },
+          ],
+          codexSource: 'catalog',
         },
       }),
     );
-
+    const user = userEvent.setup();
     render(<DefaultModelsCard />);
+    await screen.findByTestId('default-model-unpriced-codex');
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByRole('option', { name: 'openai.gpt-6.1-terra' }));
 
     await waitFor(() => {
-      expect(screen.getByTestId('codex-catalog-unavailable')).toBeInTheDocument();
+      expect(screen.queryByTestId('default-model-unpriced-codex')).not.toBeInTheDocument();
     });
   });
 

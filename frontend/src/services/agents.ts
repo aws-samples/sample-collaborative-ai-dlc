@@ -54,8 +54,8 @@ export interface AgentModel {
   id: string;
   name: string;
   description?: string | null;
-  /** `false` on a Codex model that has no price entry: it stays selectable, its
-   *  `name` already carries the note, and its usage shows the cost as unavailable. */
+  /** `false` when the AWS Price List table has no price for the model: it stays
+   *  selectable and its usage shows the cost as unavailable. Absent otherwise. */
   priced?: boolean;
 }
 
@@ -176,6 +176,8 @@ export interface SpaceAgentCredentialStatus extends AgentCredentialStatus {
   platformFallback: AgentCredentialStatus;
 }
 
+export type CodexCatalogSource = 'catalog' | 'cached' | 'error' | 'unavailable';
+
 export interface AgentCapabilities {
   available: AgentCli[];
   runtimeModelOverride?: Record<AgentCli, boolean>;
@@ -187,9 +189,11 @@ export interface AgentCapabilities {
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
   models?: Partial<Record<AgentCli, AgentModel[]>> & {
-    /** How the Codex catalogue resolved: the runtime's regional Mantle list, the
-     *  curated fallback after a failed lookup, or no runtime catalogue at all. */
-    codexSource?: 'catalog' | 'error' | 'static';
+    /** How the Codex catalogue resolved: read from the region's Mantle endpoint
+     *  now (`catalog`), the last list read after a failed lookup (`cached`), a
+     *  failed lookup with nothing cached (`error`), or a runtime that reported
+     *  no catalogue (`unavailable`). There is no built-in list. */
+    codexSource?: CodexCatalogSource;
   };
 }
 

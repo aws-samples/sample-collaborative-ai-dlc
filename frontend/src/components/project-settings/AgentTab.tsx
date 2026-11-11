@@ -30,6 +30,7 @@ import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveSta
 import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersSection';
 import { CustomRulesSection } from '@/components/settings/CustomRulesSection';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
+import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
@@ -443,6 +444,11 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       disabled={!isEditable || savingModels}
                     />
                   )}
+                  <UnpricedModelNote
+                    options={options}
+                    selected={current}
+                    data-testid={`model-unpriced-${cli}`}
+                  />
                 </div>
               );
             })}

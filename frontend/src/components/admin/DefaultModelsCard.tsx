@@ -15,11 +15,12 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronRight, Cpu, ExternalLink } from 'lucide-react';
-import { agentsService, type AgentModel } from '@/services/agents';
+import { agentsService, type AgentModel, type CodexCatalogSource } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
+import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
@@ -56,11 +57,10 @@ export function DefaultModelsCard() {
     {},
   );
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  // Why the Codex list is what it is (#674): the picker only calls a list
-  // regional when the runtime read it (`catalog`); anything else — a failed
-  // lookup or a runtime that answered without a catalogue — is the built-in
-  // fallback, and it says so instead of looking current.
-  const [codexSource, setCodexSource] = useState<'catalog' | 'error' | 'static'>();
+  // Why the Codex list is what it is (#674): only `catalog` was read from the
+  // region just now. A failed lookup shows the last list read (`cached`) or no
+  // list at all, and the field says so instead of looking current.
+  const [codexSource, setCodexSource] = useState<CodexCatalogSource>();
   // CLI whose field is in free-text mode while a catalog exists: the caller is
   // typing a model ID the catalog does not list.
   const [customEntry, setCustomEntry] = useState<Partial<Record<RuntimeModelCli, boolean>>>({});
@@ -230,12 +230,19 @@ export function DefaultModelsCard() {
                       )}
                     </>
                   )}
-                  {cli === 'codex' && codexSource !== 'catalog' && options.length > 0 && (
+                  <UnpricedModelNote
+                    options={options}
+                    selected={current}
+                    data-testid={`default-model-unpriced-${cli}`}
+                  />
+                  {cli === 'codex' && modelsLoaded && codexSource && codexSource !== 'catalog' && (
                     <p
                       data-testid="codex-catalog-unavailable"
                       className="text-[11px] text-muted-foreground"
                     >
-                      Could not read this region&apos;s Codex catalogue — showing the built-in list.
+                      {codexSource === 'cached'
+                        ? "Could not read this region's Codex catalogue — showing the last list read."
+                        : "Could not read this region's Codex catalogue — enter a model ID."}
                     </p>
                   )}
                 </div>
