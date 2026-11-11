@@ -45,6 +45,9 @@ describe('ArtifactHtmlFrame', () => {
     ['<!-- --!>\n<!doctype html><html></html>', true],
     ['<!-->\n<!doctype html><html></html>', true],
     ['<!--->\n<!doctype html><html></html>', true],
+    ['<!-- a --> <!-- b -->\n<html></html>', true],
+    ['<!-- a --> text --> <html></html>', false],
+    ['<!-- never closed <html></html>', false],
     ['# Requirements\n\n<details>inline HTML in markdown</details>', false],
     ['Text that mentions <html> later', false],
     ['<htmlish>', false],
@@ -52,7 +55,14 @@ describe('ArtifactHtmlFrame', () => {
     expect(isHtmlDocument(content)).toBe(expected);
   });
 
-  // guards: security artifact HTML preview script, same-origin and network isolation
+  // guards: security HTML document detection stays linear on comment delimiters
+  // A backtracking pattern needs longer than the test timeout for each of these.
+  it('reads a body made of comment delimiters in linear time', () => {
+    expect(isHtmlDocument(`<!--${'--><!--'.repeat(50_000)}`)).toBe(false);
+    expect(isHtmlDocument(`${'<!-->'.repeat(50_000)}x`)).toBe(false);
+    expect(isHtmlDocument(`${'<!-- a -->\n'.repeat(50_000)}<html></html>`)).toBe(true);
+  });
+
   it('renders HTML only through ArtifactContent, in an empty sandbox with the CSP; Markdown stays Markdown', () => {
     const { container, unmount } = render(<ArtifactMarkdown content={PAGE} />);
     expect(container.querySelector('iframe')).toBeNull();
