@@ -125,6 +125,13 @@ export default function WorkflowList() {
     };
   }, [selectedLibraryRelease]);
 
+  // A workflow created under a selected version is authored against it, so
+  // every way to create one waits until that version has been read.
+  const releaseReady = !selectedLibraryRelease || Boolean(selectedReleaseLabel);
+  const openCreate = () => {
+    if (releaseReady) setShowCreate(true);
+  };
+
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
     setDeleting(confirmDelete.id);
@@ -154,11 +161,7 @@ export default function WorkflowList() {
               </p>
             </div>
           </div>
-          <Button
-            onClick={() => setShowCreate(true)}
-            className="gap-2"
-            disabled={Boolean(selectedLibraryRelease && !selectedReleaseLabel)}
-          >
+          <Button onClick={openCreate} className="gap-2" disabled={!releaseReady}>
             <Plus className="h-4 w-4" />
             New Workflow
           </Button>
@@ -197,7 +200,7 @@ export default function WorkflowList() {
               <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
                 Create a workflow to arrange library blocks into your own phases and flow.
               </p>
-              <Button onClick={() => setShowCreate(true)} className="gap-2">
+              <Button onClick={openCreate} className="gap-2" disabled={!releaseReady}>
                 <Plus className="h-4 w-4" />
                 New Workflow
               </Button>
