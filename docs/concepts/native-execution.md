@@ -4219,7 +4219,66 @@ Production sources, configuration and original local/installed qualification
 remain unchanged. The candidate pins its final documentation HEAD and
 preserved evidence; `handoff/deploy-ne09.sh --check-only` verifies those inputs
 without credentials, Docker or Terraform. **The new operator retry, independent
-deployed verification and live acceptance remain pending; NE-10 has not started.**
+deployed verification and live acceptance were pending at this handoff.**
+
+## NE-09 deployment handoff — Full-plan review correction, 2026-11-11
+
+The operator attempted the Docker-defaults handoff at
+`29a913be14db887438d56c44ebb5418eb7929e2c` on **2026-11-11 at 09:01:18 UTC**.
+The image publication completed and authenticated manifest checks plus a
+digest-qualified pull verified its ARM64 platform, configuration and all **23**
+runtime layers against installed qualification. The published index is
+`sha256:e40ec1650cc49af325c37716a6c11978d9bb8ae467cb12ea6e1e9e8a2a4f26db`.
+The attempt stopped at **09:06:59 UTC**, with exit code `1` in
+`full-plan-review`, before full apply or frontend publication. All **21**
+attempt files, including both saved plans, logs and registry proof, are preserved.
+
+The full plan exposed assumptions in the handoff that its earlier fixtures did
+not cover. EFS reported changed `size_in_bytes` counters while its planned action
+and configuration remained unchanged. Package preparation recorded the repository
+as `path.cwd`, whereas the qualification fixture recorded `terraform/`; all **50**
+archive recipes and filenames still match. AWSCC retained the current managed
+runtime version in its planned value, while the existing dependent observation
+correctly left the new version unresolved. Two Lambda environment maps and eight
+Lambda logging blocks were deferred in full, the API deployment normalized an
+empty description to null, and managed `CORE_IMAGE_URI` correctly referred to
+the repository URL, with its digest supplied separately.
+
+The fresh handoff under
+`.native-evidence/ne09-2026-11-11-full-plan-handoff/` checks these actual forms.
+Only the computed EFS usage counters may vary; filesystem identity, encryption,
+key, tags, throughput and every other field must match the reviewed baseline,
+and the planned filesystem must remain `no-op`. Package invocation paths are
+pinned exactly. The runtime observation must depend on the update and supply
+the runtime-version output. Deferred Lambda settings require their reviewed
+owners, baseline hashes and unchanged source bindings; no unknown values are
+filled from old state. Other drift or configuration changes still stop the attempt.
+
+After full apply and before frontend publication, the handoff now reads the
+runtime and all **12** image-consuming Lambda configurations. It requires a
+ready runtime with a new version and the verified image, matching Lambda package
+hashes and runtime pins, preservation of unrelated environment values, and the
+reviewed logging destinations. Failed or incomplete readback stops publication
+and leaves a receipt. The production runtime-observation source already provided
+the necessary dependency; no runtime, Lambda, Terraform or frontend source
+change was needed.
+
+**All 224 inert handoff tests pass**, including the unmodified saved full plan,
+an already-published image with no planned image changes, and rejection of
+unreviewed drift, settings, package inputs, runtime bindings and readback results.
+The actual saved full plan passes scope review with **228** managed changes and
+**50** package records. Its bytes were neither changed nor applied during review.
+Read-only API checks matched the current runtime version `145` and all twelve
+Lambda baselines to the saved before-state. The prior evidence seals and all
+attempts remain intact.
+
+The final candidate pins this documentation, corrected handoff and original
+local/installed qualification. Its check-only command uses no credentials,
+Docker, Terraform or deployment commands. Preparation performed no cloud
+mutation. **The image is published; the full deployment, independent deployed
+verification and live acceptance remain pending. NE-10 has not started.**
+The operator's next attempt must create and review fresh plans in the new
+directory; previous attempts must not be rerun or their saved plans applied.
 
 ## Integration and simplification checklist
 
