@@ -133,8 +133,10 @@ Apply with `deploy-terraform.sh` as usual. The `aidlc-gateway-tools` entry is wr
 
 ## Change, rotate, revoke
 
-- **Restricting** access (removing a space, stage or tool, or a whole target) is a revocation: once the apply has updated the interceptor, the next call of a running stage is denied and the tools disappear from the next `tools/list`.
-- **Widening** access (adding a space, stage or tool) or **rebinding** a target (a new endpoint or credential provider) also applies to stages that are already running, against the deployment's rule that a running execution keeps the configuration it started with. Let running intents finish, or stop and restart them, before applying such a change.
+Target access is not pinned to an execution: the interceptor checks every call against the deployed targets, so a change also applies to stages that are already running. It takes effect once the apply has updated the interceptor and the Gateway targets; a call already admitted runs to completion.
+
+- **Restricting** access (removing a space, stage or tool, or a whole target) is a revocation: the next call of a running stage is denied and the tools disappear from the next `tools/list`. Use it to cut off a compromised server.
+- **Widening** access (adding a space, stage or tool) or **rebinding** a target (a new endpoint or credential provider) applies to the next call of a running stage in the same way.
 - **Rotating** a credential happens in AgentCore Identity (update the provider's secret); no Terraform change is needed.
 - A stage's grant stops working when the stage attempt ends, when its execution is cancelled, rewound or deleted, and when it expires. Calls already admitted run to completion; the customer server is not told that a grant was retired.
 
