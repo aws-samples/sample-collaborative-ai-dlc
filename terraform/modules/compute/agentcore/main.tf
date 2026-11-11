@@ -805,7 +805,11 @@ locals {
     CONNECTIONS_TABLE      = var.connections_table_name
     WEBSOCKET_ENDPOINT     = var.websocket_endpoint
     MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-    } : {}, local.mcp_gateway_enabled ? {
+    } : {
+    # The role holds no process-table access: invocations needing a sandbox
+    # policy must carry one instead of the runtime reading the settings.
+    RUNTIME_DATA_ACCESS = "engine_data_only"
+    }, local.mcp_gateway_enabled ? {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
     } : {}, var.runtime_mcp_credentials == "gateway_only" ? {

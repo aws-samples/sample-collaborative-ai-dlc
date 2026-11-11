@@ -128,6 +128,10 @@ run "transition_keeps_direct_access" {
     condition     = contains(keys(output.runtime_environment_variables), "ARTIFACTS_BUCKET")
     error_message = "The transition runtime keeps its direct-client configuration."
   }
+  assert {
+    condition     = !contains(keys(output.runtime_environment_variables), "RUNTIME_DATA_ACCESS")
+    error_message = "The transition runtime still reads the sandbox settings for payloads that carry none."
+  }
 }
 
 run "enforced_grants_strip_direct_access" {
@@ -191,6 +195,13 @@ run "enforced_grants_strip_direct_access" {
       "BLOCKS_TABLE", "ARTIFACTS_BUCKET", "NEPTUNE_ENDPOINT", "CONNECTIONS_TABLE", "WEBSOCKET_ENDPOINT", "MCP_SECRETS_SSM_PREFIX",
     ])) == 0
     error_message = "The enforced runtime gets no direct-client configuration."
+  }
+  assert {
+    condition = alltrue([
+      for env in [output.runtime_environment_variables, awscc_bedrockagentcore_runtime.stage_executor.environment_variables] :
+      lookup(env, "RUNTIME_DATA_ACCESS", null) == "engine_data_only"
+    ])
+    error_message = "The enforced runtime must know its role cannot read the sandbox settings."
   }
   assert {
     condition     = output.runtime_environment_variables.SOURCE_CONTROL_FUNCTION == "arn:aws:lambda:us-east-1:123456789012:function:test-source-control-test:runtime"

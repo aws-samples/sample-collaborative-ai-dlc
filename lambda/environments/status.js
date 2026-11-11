@@ -29,6 +29,7 @@ import { evaluateScanFindings } from './fixed-tool-recipe.js';
 import { runtimeBackendFor } from './runtime-backends/index.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { SessionReleaseHandoffError, retryQueuedReleases } from '../shared/runtime-session.js';
+import { resolveInvocationSandbox } from '../shared/sandbox-settings.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
@@ -422,13 +423,15 @@ const validationSessionFor = async ({ store, backend, environment, revision }) =
 // the caller decides retain vs release before anything else happens.
 const attemptValidation = async ({ runtimeClient, revision, session }) => {
   try {
+    // The platform's current policy, resolved like every standalone
+    // capabilities probe: the probe runs the image's CLIs (Kiro lists its
+    // models), and the runtime's role may hold no access to read it itself.
+    const agentSandbox = await resolveInvocationSandbox({ payload: {} });
     const capabilities = await invokeValidationCommand({
       runtimeClient,
       revision,
       sessionId: session,
-      // Qualification carries no project, execution or credential and runs no
-      // agent work; it states its policy because the runtime cannot read one.
-      payload: { command: 'capabilities', agentSandbox: { enabled: false } },
+      payload: { command: 'capabilities', agentSandbox },
     });
     if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
       throw new Error('capability validation failed');
