@@ -147,6 +147,20 @@ describe('AidlcReleasesTab', () => {
     expect(setChannel).not.toHaveBeenCalled();
   });
 
+  // A deprecated version stays deprecated: testing would have to qualify it
+  // again, which is a decision, not a side effect of opening the space picker.
+  it('does not offer a test of a deprecated version', async () => {
+    list.mockResolvedValue({
+      releases: [release({ supportState: 'existing-only', visible: false })],
+    });
+    channels.mockResolvedValue({ ...emptyChannels, pinningEnabled: true });
+    const user = userEvent.setup();
+    render(<AidlcReleasesTab />);
+    await user.click(await screen.findByRole('button', { name: 'Manage version 1.2.0' }));
+    expect(screen.getByRole('button', { name: 'Test version' })).toBeDisabled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('opens a space chooser that preserves the exact release without writing registry state', async () => {
     channels.mockResolvedValue({ ...emptyChannels, pinningEnabled: true });
     projects.mockResolvedValue([

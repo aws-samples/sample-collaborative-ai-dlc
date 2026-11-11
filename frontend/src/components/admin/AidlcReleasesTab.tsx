@@ -601,7 +601,11 @@ export function AidlcReleasesTab() {
               size="sm"
               variant="outline"
               disabled={
-                rowBusy || pinningEnabled !== true || promotionGaps.length > 0 || !!cannotUse
+                rowBusy ||
+                pinningEnabled !== true ||
+                promotionGaps.length > 0 ||
+                !!cannotUse ||
+                release.supportState === 'existing-only'
               }
               onClick={() => testVersion(release)}
             >
