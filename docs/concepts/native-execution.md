@@ -4276,9 +4276,53 @@ The final candidate pins this documentation, corrected handoff and original
 local/installed qualification. Its check-only command uses no credentials,
 Docker, Terraform or deployment commands. Preparation performed no cloud
 mutation. **The image is published; the full deployment, independent deployed
-verification and live acceptance remain pending. NE-10 has not started.**
+verification and live acceptance were pending at this handoff.**
 The operator's next attempt must create and review fresh plans in the new
 directory; previous attempts must not be rerun or their saved plans applied.
+
+## NE-09 deployed artifact acceptance — 2026-11-11
+
+The operator completed the full handoff for
+`59175e1f2d59c6f3e7c640e032ca2c1a5761873d`, from **09:44:46 to 09:57:50 UTC**
+on **2026-11-11**, with `COMMANDS_FINISHED`, phase `finished` and exit code `0`.
+The fresh image plan required no image changes; the full saved plan contained
+the reviewed **228** managed changes. Its runtime readback passed before frontend
+publication. Independent verification is recorded under
+`.native-evidence/ne09-2026-11-11-deployed-59175e1f/`.
+
+**Deployed artifact verification passes.** Fresh AWS reads used the
+`solution-read` profile and verified its `ReadOnly` role. All **51** current
+Lambda archives and both active published archives match the qualified package
+bytes, with their configurations checked against the reviewed source and plan.
+The five native authority aliases resolve without weighted routing to version
+**28**; the managed orchestrator's `live` alias resolves to version **118**.
+All **12** runtime consumers match the independently observed image and version.
+The shared runtime and its `DEFAULT` endpoint are both `READY` at version
+**146**. Fresh registry manifest reads confirm the qualified ARM64 platform,
+configuration and all **23** layers behind the published immutable image.
+
+All **four** changed IAM policies match, along with **16** selected inline
+policies and **12** role trust and policy-binding configurations. API deployment
+`n7mhg1` matches the original apply log. All **412** current and published methods
+pass authorization and integration checks: the **407** previously accepted
+methods remain unchanged, and the five new methods cover native inputs,
+managed attachment imports and their CORS responses. Both relevant Lambda invoke
+policies match the plan, with the stage and authorizers preserved and no canary.
+
+All **629** qualified frontend files match both S3 and public CDN responses.
+The root entry and its referenced files match, cache policies are correct and
+the deployment invalidation is complete. Three initial verifier assumptions were
+corrected locally: the image-phase review precedes registry verification,
+Lambda names its retention field `RetentionPeriodInDays`, and null/absent CORS
+response-model maps mean no configured models. The initial results are preserved,
+and bounded follow-up checks confirm the corresponding deployed state.
+
+The original handoff seal and all **27** completed-attempt files retain their
+hashes. This verification made no cloud mutations, repeated deployment,
+runtime invocation or browser interaction. The original installed qualification
+is reused through exact artifact identity. **A fresh native creation/Start
+journey with uploads and tracker imports remains separate live acceptance;
+NE-10 is the next implementation item.**
 
 ## Integration and simplification checklist
 
@@ -4459,9 +4503,11 @@ the current contract for newly created executions.
       and uncertain/repeated Start. The full backend/frontend checks, composed
       input contracts, 170 installed Linux tests and three finite installed CLI
       rows pass as recorded above. The final source/configuration/image/artifact
-      candidate has a tested deployment-only handoff. **Deployment and independent
-      deployed/live acceptance remain pending**; NE-10, NE-11, NE-12 and NE-18
-      are not advanced by this input integration.
+      candidate has a tested deployment-only handoff. **Deployed artifact acceptance
+      completed 2026-11-11** for `59175e1f`: packages, aliases, IAM, routes,
+      runtime/default endpoint and frontend bytes match the qualified candidate.
+      Fresh live creation/Start acceptance remains separate; NE-10, NE-11,
+      NE-12 and NE-18 are not advanced by this input integration.
 - [ ] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
       for credential-shaped files such as `.env` and `.npmrc`, retaining safe templates
       without exposing secrets. Use one explicit public-file policy across capture,
