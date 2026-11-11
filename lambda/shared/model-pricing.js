@@ -60,8 +60,10 @@ const FALLBACK_PRICES = {
   // card, November 2026. The long-context tier is not needed: the pinned Codex
   // (0.162.1) gives every model in its Bedrock catalog a 272K context window,
   // and the runtime does not raise it, so no request can exceed the threshold.
-  // GPT-5.5 has no cache-write fee; those tokens bill at the input rate.
-  // GPT-5.4 and GPT-6.1 Terra are absent from that catalog and stay unpriced.
+  // GPT-5.5 and GPT-5.4 have no cache-write fee; those tokens bill at the
+  // input rate. GPT-5.4 is absent from that catalog but stays selectable
+  // (CODEX_BEDROCK_MODELS); Codex gives it the same window through its fallback
+  // metadata. GPT-6.1 Terra is absent from both and stays unpriced.
   'openai.gpt-6.1-sol': { input: 2.2, output: 11, cacheRead: 0.11, cacheWrite: 2.75 },
   'openai.gpt-6-astra': { input: 11, output: 55, cacheRead: 1.1, cacheWrite: 13.75 },
   'openai.gpt-6-sol': { input: 2.2, output: 11, cacheRead: 0.22, cacheWrite: 2.75 },
@@ -70,6 +72,7 @@ const FALLBACK_PRICES = {
   'openai.gpt-5.6-terra': { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75 },
   'openai.gpt-5.6-luna': { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275 },
   'openai.gpt-5.5': { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 5.5 },
+  'openai.gpt-5.4': { input: 2.75, output: 16.5, cacheRead: 0.275, cacheWrite: 2.75 },
 };
 
 // Normalize a resolved model id to a canonical family key.
