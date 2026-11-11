@@ -449,6 +449,18 @@ export const STORE_OPS = Object.freeze({
     executionId: inputExecution,
     stageIds: stageOf,
   }),
+  recordCommitDescriptionUse: op({
+    args: [
+      z.object({
+        executionId: id,
+        stageInstanceId: id,
+        descriptionId: id,
+        repos: z.array(id).min(1),
+      }),
+    ],
+    executionId: inputExecution,
+    stageIds: stageOf,
+  }),
   getQuorumEdit: op({ args: [id, id], executionId: first }),
   updateQuorumEdit: op({
     args: [

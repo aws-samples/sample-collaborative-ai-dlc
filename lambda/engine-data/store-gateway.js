@@ -92,6 +92,7 @@ export const STAGE_WRITE_METHODS = Object.freeze([
   'markLoopBackArchived',
   'markSteeringConsumed',
   'raiseStageCounter',
+  'recordCommitDescriptionUse',
 ]);
 const STAGE_READS = new Set(STORE_READ_METHODS);
 const STAGE_WRITES = new Set(STAGE_WRITE_METHODS);

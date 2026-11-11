@@ -182,6 +182,9 @@ const CALLS = {
   recordGraphRead: [{ executionId: 'e-1', stageInstanceId: 'si-1', tool: 'get_artifact' }],
   setLoopBackRecommendation: [{ executionId: 'e-1', stageInstanceId: 'si-1', reason: 'r' }],
   getReceipt: ['e-1', { kind: 'summary-confirmation', stageInstanceId: 'si-1', attempt: 0 }],
+  recordCommitDescriptionUse: [
+    { executionId: 'e-1', stageInstanceId: 'si-1', descriptionId: 'd-1', repos: ['o/r'] },
+  ],
 };
 
 // The scope reads engine-data adds before running the op: META, then each
@@ -200,6 +203,7 @@ const scopeReads = (method) => {
     raiseStageCounter: 1,
     setLoopBackRecommendation: 1,
     getReceipt: 1,
+    recordCommitDescriptionUse: 1,
   };
   return 1 + (stageArgs[method] ?? 0);
 };
@@ -680,6 +684,10 @@ describe('stage grants act only as their own stage', () => {
         'markSteeringConsumed',
         [{ executionId: 'e-1', steerId: 'st', createdAt: 't', stageInstanceId: OWN }],
       ],
+      [
+        'recordCommitDescriptionUse',
+        [{ executionId: 'e-1', stageInstanceId: OWN, descriptionId: 'd-1', repos: ['o/r'] }],
+      ],
     ]) {
       const { response } = await call(STAGE_GRANT, method, args);
       expect(response.error?.name, method).not.toBe('EngineDataAccessDenied');
@@ -735,6 +743,10 @@ describe('stage grants act only as their own stage', () => {
     [
       'markSteeringConsumed',
       { executionId: 'e-1', steerId: 'st', createdAt: 't', stageInstanceId: OTHER },
+    ],
+    [
+      'recordCommitDescriptionUse',
+      { executionId: 'e-1', stageInstanceId: OTHER, descriptionId: 'd-1', repos: ['o/r'] },
     ],
     [
       'claimStageAttempt',

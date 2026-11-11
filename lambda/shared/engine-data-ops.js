@@ -42,6 +42,7 @@ export const ENGINE_DATA_STORE_METHODS = Object.freeze([
   'recordGraphRead',
   'setLoopBackRecommendation',
   'getReceipt',
+  'recordCommitDescriptionUse',
 ]);
 
 // The store methods that only read. A transport retry of one of these after an
