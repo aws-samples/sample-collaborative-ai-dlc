@@ -26,6 +26,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { RuntimeMcpPolicyError } from '../../shared/runtime-mcp-policy.js';
 
 const missing = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
@@ -68,28 +69,21 @@ export const projectDirectories = async (cwd) => {
   return [...new Set([...directories, ...resolved])];
 };
 
-// JSONC → JSON: drop comments and trailing commas outside strings.
-export const stripJsonc = (text) => {
-  let out = '';
-  let index = 0;
-  while (index < text.length) {
-    const char = text[index];
-    if (char === '"') {
-      let end = index + 1;
-      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
-      out += text.slice(index, end + 1);
-      index = end + 1;
-    } else if (char === '/' && text[index + 1] === '/') {
-      while (index < text.length && text[index] !== '\n') index += 1;
-    } else if (char === '/' && text[index + 1] === '*') {
-      const end = text.indexOf('*/', index + 2);
-      index = end === -1 ? text.length : end + 2;
-    } else {
-      out += char;
-      index += 1;
-    }
-  }
-  return out.replace(/,(\s*[}\]])/g, '$1');
+const unreadable = (file, reason) =>
+  new RuntimeMcpPolicyError(
+    `${file} ${reason}; this deployment serves custom MCP servers only through ` +
+      'the AgentCore Gateway (runtime_mcp_credentials = "gateway_only"), so a configuration ' +
+      'whose MCP servers cannot be read is not run.',
+  );
+
+// Parsed exactly as OpenCode parses it (jsonc-parser, trailing commas allowed,
+// any error fatal), so the server names read here are the names OpenCode reads.
+// OpenCode decodes the file with a BOM-stripping decoder; Node's does not.
+export const parseOpenCodeConfig = (text, file) => {
+  const errors = [];
+  const data = parseJsonc(text.replace(/^\uFEFF/, ''), errors, { allowTrailingComma: true });
+  if (errors.length) throw unreadable(file, 'is not valid JSONC');
+  return data;
 };
 
 // A configuration file that exists but cannot be read is refused: its servers
@@ -102,15 +96,34 @@ const readJsoncFile = async (file) => {
     if (missing(error) || error?.code === 'EISDIR') return null;
     throw error;
   }
-  try {
-    return JSON.parse(stripJsonc(text));
-  } catch {
-    throw new RuntimeMcpPolicyError(
-      `${file} is not valid JSON; this deployment serves custom MCP servers only through ` +
-        'the AgentCore Gateway (runtime_mcp_credentials = "gateway_only"), so a configuration ' +
-        'whose MCP servers cannot be read is not run.',
+  return parseOpenCodeConfig(text, file);
+};
+
+const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+// The server names OpenCode derives from one file's `mcp` object: its entries,
+// and the entries of an `mcp.servers` envelope (OpenCode's V2 form, flattened
+// into `mcp` when `servers` is not itself a server). OpenCode substitutes
+// `{env:…}` and `{file:…}` in the text before parsing, so such a name is not the
+// one read here and is refused.
+const openCodeServers = (mcp, file) => {
+  if (!isRecord(mcp)) return [];
+  const { servers } = mcp;
+  const envelope =
+    isRecord(servers) &&
+    !['type', 'enabled'].some(
+      (key) =>
+        Object.hasOwn(servers, key) &&
+        (servers[key] === null || typeof servers[key] !== 'object' || Array.isArray(servers[key])),
     );
+  const entries = [
+    ...Object.entries(mcp).filter(([name]) => !(envelope && name === 'servers')),
+    ...(envelope ? Object.entries(servers) : []),
+  ];
+  for (const [name] of entries) {
+    if (/\{(env|file):/.test(name)) throw unreadable(file, `names an MCP server ${name}`);
   }
+  return entries;
 };
 
 const OPENCODE_FILES = ['opencode.jsonc', 'opencode.json'];
@@ -160,9 +173,7 @@ export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home }) => {
   const foreign = {};
   for (const file of await openCodeConfigFiles({ cwd, home })) {
     const parsed = await readJsoncFile(file);
-    const servers = parsed?.mcp;
-    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) continue;
-    for (const [name, server] of Object.entries(servers)) {
+    for (const [name, server] of openCodeServers(parsed?.mcp, file)) {
       if (!Object.hasOwn(own, name)) foreign[name] = disabledOpenCodeServer(server);
     }
   }
