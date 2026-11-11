@@ -441,10 +441,12 @@ const alreadyPublished = async (event) => {
   // Every object the manifest names must still hold its recorded bytes. A
   // missing one is restored by building the release again; an object holding
   // other bytes cannot be overwritten, so that build fails the deployment.
+  // Without s3:ListBucket a missing object reads as AccessDenied, which is also
+  // a rebuild: publication's own writes and read-back then expose a real denial.
   try {
     await verifyPublishedRelease({ s3, bucket: artifactsBucket(), manifest });
   } catch (error) {
-    if (error?.code !== 'release_verification_failed') throw error;
+    if (error?.code !== 'release_verification_failed' && !isAccessDenied(error)) throw error;
     logger.warn('published release failed verification; building it again', {
       profile: profile.id,
       keys: error.keys,

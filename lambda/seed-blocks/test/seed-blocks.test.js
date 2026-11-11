@@ -587,6 +587,31 @@ describe('seed-blocks prepareRelease mode', () => {
     },
   );
 
+  // The seed role holds no s3:ListBucket, so a GET for a deleted object is
+  // answered with AccessDenied rather than NoSuchKey. That is still a missing
+  // object, and the release is built again.
+  it('restores an object S3 reports missing as AccessDenied', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    const key = publishedObject(first.manifestKey, 'body');
+    const original = s3Store.get(key);
+    s3Store.delete(key);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!s3Store.has(input.Key)) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+    });
+    fetchCoreFiles.mockClear();
+
+    await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+    expect(s3Store.get(key)).toBe(original);
+  });
+
   it('fails instead of reporting prepared a release whose object holds other bytes', async () => {
     const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
     const key = publishedObject(first.manifestKey, 'body');
