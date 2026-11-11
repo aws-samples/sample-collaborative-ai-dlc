@@ -238,7 +238,8 @@ variable "mcp_gateway_custom_targets" {
       auth.type                      "oauth" (client credentials) or "api_key".
       auth.credential_provider_arn   AgentCore Identity OAuth2 or API-key credential provider ARN.
       auth.secret_arn                The Secrets Manager secret ARN the provider returned (the Gateway role reads it).
-      auth.scopes                    OAuth scopes to request (oauth only).
+      auth.scopes                    OAuth scopes to request (oauth only; at most 100, each 1-64 characters).
+      auth.custom_parameters         Extra token request parameters, e.g. audience or resource (oauth only; at most 10).
       auth.credential_location       "HEADER" or "QUERY_PARAMETER" (api_key only).
       auth.parameter_name            Header or query parameter carrying the key (api_key only).
       auth.prefix                    Value prefix, e.g. "Bearer" (api_key only).
@@ -246,7 +247,7 @@ variable "mcp_gateway_custom_targets" {
       allow.project_ids              Spaces whose stage sessions may call the target (exact match, required).
       allow.stage_ids                Stages that may call it; null allows every stage.
       allow.tools                    Tool names (without the target prefix) that may be called; null allows every tool.
-    Only stage sessions are ever allowed; discussion and conflict sessions are denied. Widening access or rebinding a target's endpoint or provider applies to stages that are already running: drain or restart them first.
+    Only stage sessions are ever allowed; discussion and conflict sessions are denied. Changes to allow rules, endpoints and providers apply live, including to stages that are already running.
   EOT
   type = map(object({
     endpoint    = string
@@ -256,6 +257,7 @@ variable "mcp_gateway_custom_targets" {
       credential_provider_arn = string
       secret_arn              = string
       scopes                  = optional(list(string), [])
+      custom_parameters       = optional(map(string))
       credential_location     = optional(string)
       parameter_name          = optional(string)
       prefix                  = optional(string)
@@ -287,7 +289,7 @@ variable "mcp_gateway_custom_targets" {
       for name in keys(var.mcp_gateway_custom_targets) :
       can(regex("^[a-z0-9](-?[a-z0-9]){0,31}$", name)) && name != "aidlc"
     ])
-    error_message = "mcp_gateway_custom_targets names must be 1-32 lowercase letters, digits and single hyphens, and must not be \"aidlc\"."
+    error_message = "mcp_gateway_custom_targets names must be up to 32 lowercase letters and digits with single hyphens between them, and must not be \"aidlc\"."
   }
   validation {
     condition = alltrue([
@@ -296,15 +298,15 @@ variable "mcp_gateway_custom_targets" {
     error_message = "mcp_gateway_custom_targets endpoints must be https:// URLs."
   }
   validation {
-    # The Identity API reference documents the provider ARN under the `acps`
-    # service name, IAM under `bedrock-agentcore`; both are accepted and the ARN
-    # is used as returned by Create*CredentialProvider.
+    # The ARN as returned by Create*CredentialProvider (`bedrock-agentcore`). It
+    # is also the IAM resource of the Gateway role, so the `acps` form some API
+    # reference examples show is refused: IAM would never match it.
     condition = alltrue([
       for t in values(var.mcp_gateway_custom_targets) :
-      (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
-      (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
+      (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
+      (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
     ])
-    error_message = "mcp_gateway_custom_targets auth.type must be \"oauth\" or \"api_key\" with a matching AgentCore Identity credential provider ARN."
+    error_message = "mcp_gateway_custom_targets auth.type must be \"oauth\" or \"api_key\" with a matching AgentCore Identity credential provider ARN in the arn:<partition>:bedrock-agentcore:... form returned by create-oauth2-credential-provider or create-api-key-credential-provider (not acps)."
   }
   validation {
     condition = alltrue([
@@ -319,11 +321,25 @@ variable "mcp_gateway_custom_targets" {
       t.auth.type == "oauth" ? (
         t.auth.credential_location == null && t.auth.parameter_name == null && t.auth.prefix == null
         ) : (
-        length(t.auth.scopes) == 0 &&
+        length(t.auth.scopes) == 0 && t.auth.custom_parameters == null &&
         contains(["HEADER", "QUERY_PARAMETER", "-"], t.auth.credential_location == null ? "-" : t.auth.credential_location)
       )
     ])
-    error_message = "mcp_gateway_custom_targets: scopes apply to oauth only; credential_location (HEADER or QUERY_PARAMETER), parameter_name and prefix apply to api_key only."
+    error_message = "mcp_gateway_custom_targets: scopes and custom_parameters apply to oauth only; credential_location (HEADER or QUERY_PARAMETER), parameter_name and prefix apply to api_key only."
+  }
+  validation {
+    # AgentCore Gateway limits for an OAuth credential provider configuration.
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      length(t.auth.scopes) <= 100 &&
+      alltrue([for scope in t.auth.scopes : length(scope) >= 1 && length(scope) <= 64]) &&
+      (t.auth.custom_parameters == null || try(
+        length(t.auth.custom_parameters) <= 10 &&
+        alltrue([for k, v in t.auth.custom_parameters : trimspace(k) != "" && v != ""]),
+        false
+      ))
+    ])
+    error_message = "mcp_gateway_custom_targets auth.scopes holds at most 100 scopes of 1-64 characters each; auth.custom_parameters holds at most 10 non-empty entries."
   }
   validation {
     condition = alltrue([
