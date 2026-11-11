@@ -632,6 +632,39 @@ describe('IntentContext', () => {
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
   });
 
+  it('pages in a transcript too long for one response', async () => {
+    get.mockResolvedValue(detail());
+    const row = (seq: number, content: string) => ({
+      seq,
+      stageInstanceId: 'si-1',
+      kind: 'text',
+      content,
+    });
+    outputs
+      .mockResolvedValueOnce({ outputs: [row(1, 'a'), row(2, 'b')], cursor: 2, more: true })
+      .mockResolvedValueOnce({ outputs: [row(4, 'c')], cursor: 5, more: true })
+      // A cursor held at a gap ends the loop until the next poll.
+      .mockResolvedValueOnce({ outputs: [row(6, 'd')], cursor: 5, more: true });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+
+    expect(outputs).toHaveBeenCalledTimes(3);
+    expect(outputs).toHaveBeenNthCalledWith(1, 'p1', 'i1', { stageInstanceId: 'si-1' });
+    expect(outputs).toHaveBeenNthCalledWith(2, 'p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 2,
+    });
+    expect(outputs).toHaveBeenNthCalledWith(3, 'p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 5,
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=abcd');
+  });
+
   it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {
     // create_artifact broadcasts a v2.artifact.created note (agent.note); the
     // provider must refetch so the new artifact renders without waiting for
