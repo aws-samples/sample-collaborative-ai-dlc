@@ -40,7 +40,8 @@ Uniform availability across spaces was independently verified as deployed on
 complete locally and in the installed runtime image, with deployed artifacts
 independently verified on 2026-11-11. The dated acceptance records below
 distinguish these scopes. NE-10's repository-file policy and result downloads
-are locally and installed-image qualified; their deployment remains pending.
+are locally and installed-image qualified, with deployed artifacts independently
+verified on 2026-11-11.
 A fresh live creation journey remains unrun.
 
 The release implementation uses platform-wide native admission controls and
@@ -4350,8 +4351,9 @@ NE-10 is the next implementation item.**
 ## NE-10 public files and usable results — local and installed acceptance, 2026-11-11
 
 **NE-10 is implemented and locally qualified, including the installed production
-image. Deployment, independent deployed-byte verification and live acceptance
-remain pending.** The selected policy is that authorized space members can view
+image. The deployed-artifact acceptance record below covers the completed
+rollout; live acceptance remains separate.** The selected policy is that authorized
+space members can view
 repository content as checked out. Native does not classify `.env`, `.npmrc`,
 `.aws`, `.ssh`, templates or other repository filenames as private merely because
 they can contain credentials. Known platform-injected credential bytes and
@@ -4432,8 +4434,8 @@ recipes representing **46** distinct archives and **48** changed functions,
 route or API deployment changes belong to this item. Finite tests exercise the
 fresh scope, retained deployment guards, stopped attempts, refusal to replay,
 source/package substitution, runtime readback and complete log preservation.
-The operator must run the new guarded command once; a stop retains its attempt
-for review instead of enabling a retry.
+That initial handoff stopped at full-plan review, as recorded below. Its attempt
+is preserved.
 
 Qualification used finite offline provider replies, local disposable filesystems
 and in-memory AWS ports. It did not exercise live models, AWS EFS, a browser or a
@@ -4480,15 +4482,60 @@ complete local and installed qualification is reused.
 All **421** handoff plan and workflow tests pass, including the preserved real
 plan, unexpected drift, image substitution, failed phases, runtime readback,
 saved-plan identity and refusal to replay. These tests intercept production
-commands; they do not deploy. Run the fresh guarded handoff once:
+commands; they do not deploy. The operator subsequently completed this guarded
+command; its attempt is now preserved and must not be repeated:
 
 ```bash
 bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne10-2026-11-11-full-plan-handoff/handoff/deploy-ne10.sh'
 ```
 
-The command prepares new plans and preserves a new attempt. Independent deployed
-package, alias, IAM/route-preservation, runtime and frontend-byte verification
-follows a completed rollout. Live acceptance remains separate.
+The command prepared new plans and a new attempt. The following record covers
+independent deployed package, alias, IAM/route-preservation, runtime and
+frontend-byte verification. Live acceptance remains separate.
+
+## NE-10 deployed artifact acceptance — 2026-11-11
+
+**Deployment `dfe39f6fcce446f020ba3778646b1edd32a90999` is independently verified.
+No further deployment is required for this candidate.** The operator completed
+the fresh handoff; verification used the separate `solution-read` role and fresh
+evidence under `.native-evidence/ne10-2026-11-11-deployed-dfe39f6f/`.
+The completed attempt, saved plans and original qualification remain preserved.
+
+All **51** deployed Lambda ZIPs and their configurations match the qualified
+packages and source-bound plan. Both active published versions also match.
+The five native authority aliases resolve to version **29** and the managed
+orchestrator's `live` alias resolves to **119**. All six aliases are unweighted,
+resolve to the verified code and environment, and stayed stable during the
+checks. The removed project-pilot setting remains absent.
+
+The runtime and its `DEFAULT` endpoint are **READY at version 147**. Fresh
+registry bytes confirm tag `3d95c00a6c6e3c8c` at
+`sha256:2d1cff4da168f1dfed0565ce77b843e63532f98daf37c634475f0becab203855`.
+The ARM64 platform, configuration and all **23** layers match the sealed
+installed qualification. Runtime role, environment, network, protocol and
+lifecycle settings match the saved plan. All **38** captured runtime settings
+across **12** Lambda consumers match that independently observed version and
+image. The optional MCP Gateway remains disabled.
+
+All **16** selected inline IAM policies, **12** roles and the active native runtime
+permissions boundary match the plan and preserve NE-09's verified permissions.
+All **412** current and published API methods preserve their accepted
+configuration, authorization and integration hashes. Both relevant Lambda invoke
+policies match; authorizers and stage settings are preserved. API deployment
+`n7mhg1` is unchanged, with no canary.
+
+All **629** qualified frontend files match both S3 and public CDN responses.
+The root entry and referenced files match, cache policies are correct and the
+deployment invalidation is complete. The original **2,552** handoff evidence
+files and **27** completed-attempt files retain their hashes. The earlier
+**6,035** qualification files, **four** links and **21** stopped-attempt files
+are also preserved.
+
+Verification made no cloud mutations, deployment retries or runtime invocations.
+It reuses the complete local and installed qualification through exact deployed
+artifact identity. **A fresh browser/native creation and result-file journey
+remains separate live acceptance. NE-11 verified workflow completion is the
+next implementation item.**
 
 ## Integration and simplification checklist
 
@@ -4687,8 +4734,10 @@ the current contract for newly created executions.
       image 2026-11-11:** the shared policy, retained revision reads and exact ZIP
       downloads pass the composed member journey, including after runtime workspace
       removal. The full backend/frontend and release checks and all three enabled
-      installed CLI rows pass as recorded above. Deployment, independent deployed
-      verification and live acceptance remain pending.
+      installed CLI rows pass as recorded above. **Deployed artifacts independently
+      verified 2026-11-11** at `dfe39f6fcce446f020ba3778646b1edd32a90999`, including
+      packages, aliases, runtime settings, IAM/routes and frontend bytes. Live
+      acceptance remains separate.
 - [ ] **NE-11 — Implement verified workflow completion.** Connect evidence of the
       pinned effective plan, applied human decisions and required checks/reviews to
       the exact final result. Resolve the methodology/isolation dependency instead
