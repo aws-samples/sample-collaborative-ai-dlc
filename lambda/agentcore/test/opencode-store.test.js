@@ -174,4 +174,40 @@ describe('OpenCode store sync', () => {
     ).resolves.toBe('ran');
     expect(operation).toHaveBeenCalledOnce();
   });
+
+  it('returns by settleBy while a slow persist keeps the store locked', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const order = [];
+      const env = { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-settle' };
+      let deferred = null;
+      const first = withOpenCodeStore({
+        env,
+        restore: async () => {},
+        persist: () =>
+          new Promise((resolve) => setTimeout(resolve, 10_000)).then(() => order.push('persist-1')),
+        settleBy: 1_000,
+        defer: (pending) => {
+          deferred = pending;
+        },
+        operation: async () => 'answer',
+      });
+      const second = withOpenCodeStore({
+        env,
+        restore: async () => order.push('restore-2'),
+        persist: async () => {},
+        operation: async () => order.push('run-2'),
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(first).resolves.toBe('answer');
+      expect(deferred).toBeInstanceOf(Promise);
+      expect(order).toEqual([]);
+      await vi.advanceTimersByTimeAsync(9_000);
+      await Promise.all([deferred, second]);
+      expect(order).toEqual(['persist-1', 'restore-2', 'run-2']);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

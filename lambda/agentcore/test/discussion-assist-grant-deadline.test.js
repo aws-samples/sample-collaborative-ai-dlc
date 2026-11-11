@@ -22,6 +22,7 @@ import { currentGatewayGrant } from '../mcp/gateway-context.js';
 import { dispatchInvocation } from '../http-server.js';
 import { createDiscussionAssistStart } from '../commands/discussion-assist-start.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
+import { __test as storeLocks, withOpenCodeStore } from '../cli/opencode-store.js';
 
 const T0 = Date.parse('2026-11-11T09:00:00.000Z');
 const KID = 'kid-discussion';
@@ -41,7 +42,9 @@ const discussionGrant = () =>
     },
   );
 
-const slowOpenCode = () => {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const slowOpenCode = (inferenceMs = INFERENCE_MS) => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
@@ -52,11 +55,11 @@ const slowOpenCode = () => {
       Buffer.from(`${JSON.stringify({ type: 'text', part: { type: 'text', text: 'answer' } })}\n`),
     );
     child.emit('close', 0);
-  }, INFERENCE_MS);
+  }, inferenceMs);
   return child;
 };
 
-const harness = () => {
+const harness = ({ inferenceMs = INFERENCE_MS, restoreMs = 0, persistMs = 0 } = {}) => {
   const audit = [];
   const writes = [];
   const fakeG = {
@@ -92,6 +95,7 @@ const harness = () => {
     }),
     audit: (entry) => audit.push(entry),
   });
+  const spawned = [];
   const start = createDiscussionAssistStart({
     openEngineGraph: createRemoteGraphAccess({
       invoke: async (event) => gateway(JSON.parse(JSON.stringify(event))),
@@ -101,14 +105,44 @@ const harness = () => {
     availableClis: ['opencode'],
     materializeCliContextFn: async () => ({}),
     oneShot: (args) =>
-      runOneShotPrompt({ ...args, spawnFn: slowOpenCode, makeDirectory: async () => {} }),
+      runOneShotPrompt({
+        ...args,
+        spawnFn: () => {
+          spawned.push(Date.now() - T0);
+          return slowOpenCode(inferenceMs);
+        },
+        makeDirectory: async () => {},
+        withOpenCodeStore: (options) =>
+          withOpenCodeStore({
+            ...options,
+            restore: () => sleep(restoreMs),
+            persist: () => sleep(persistMs),
+          }),
+      }),
     // No durable store configured: the lock still serializes the thread's
     // assists, without filesystem work outside the fake clock.
     env: {},
     log: () => {},
   });
-  return { audit, writes, handlers: { discussionAssistStart: start } };
+  return { audit, writes, spawned, start, handlers: { discussionAssistStart: start } };
 };
+
+const requestAssist = async (handlers, n) =>
+  dispatchInvocation({
+    payload: {
+      command: 'discussion-assist-start',
+      projectId: P,
+      intentId: I,
+      discussionId: D,
+      messageId: `dm-${n}`,
+      requestId: `assist-${n}`,
+      assistCommand: 'summarize',
+      gatewayGrant: await discussionGrant(),
+    },
+    handlers,
+  });
+
+const GRANT_MS = DISCUSSION_GRANT_TTL_SECONDS * 1000;
 
 describe('queued discussion assists under short-lived grants', () => {
   beforeEach(() => {
@@ -157,5 +191,50 @@ describe('queued discussion assists under short-lived grants', () => {
       expect(terminal[id].status).toBe('failed');
       expect(terminal[id].content).toMatch(/busy/i);
     }
+  });
+
+  it('re-checks the start deadline after a slow restore instead of running past the grant', async () => {
+    const { audit, writes, spawned, handlers } = harness({
+      inferenceMs: 119_000,
+      restoreMs: 33_000,
+    });
+    // Another turn on the same store holds it until just before this assist's
+    // start deadline (exp 300 s - 30 s margin - 120 s timeout = 150 s).
+    const holder = withOpenCodeStore({
+      env: {},
+      restore: async () => {},
+      persist: async () => {},
+      operation: () => sleep(149_000),
+    });
+    expect(await requestAssist(handlers, 1)).toMatchObject({ statusCode: 200 });
+
+    await vi.advanceTimersByTimeAsync(GRANT_MS + 60_000);
+    await holder;
+
+    expect(audit.filter((entry) => entry.decision === 'deny')).toEqual([]);
+    expect(spawned).toEqual([]);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ messageId: 'dm-1', status: 'failed' });
+    expect(writes[0].content).toMatch(/busy/i);
+    expect(writes[0].at).toBeLessThan(GRANT_MS);
+  });
+
+  it('writes the answer before the grant expires while a slow persist keeps the store', async () => {
+    const { audit, writes, start, handlers } = harness({ persistMs: 200_000 });
+    expect(await requestAssist(handlers, 1)).toMatchObject({ statusCode: 200 });
+
+    await vi.advanceTimersByTimeAsync(GRANT_MS - 1_000);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ messageId: 'dm-1', status: 'completed', content: 'answer' });
+    expect(writes[0].at).toBeLessThan(GRANT_MS);
+    // The persist is still running: the store stays locked and the job stays
+    // active, so neither the next waiter nor a runtime reap overlaps it.
+    expect(storeLocks.locks.has('__unconfigured__')).toBe(true);
+    expect(start.activeJobs.size).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(storeLocks.locks.has('__unconfigured__')).toBe(false);
+    expect(start.activeJobs.size).toBe(0);
+    expect(audit.filter((entry) => entry.decision === 'deny')).toEqual([]);
   });
 });

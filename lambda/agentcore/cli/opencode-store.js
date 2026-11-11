@@ -69,16 +69,16 @@ export const persistOpenCodeStore = async ({
 
 export const OPENCODE_STORE_WAIT_EXPIRED = 'OPENCODE_STORE_WAIT_EXPIRED';
 
-// Whether `previous` settles by `waitUntil` (epoch ms; null waits forever).
-const turnArrives = (previous, waitUntil, now) => {
-  const settled = previous.catch(() => {}).then(() => true);
-  if (waitUntil === null) return settled;
+// Whether `work` settles by `until` (epoch ms; null waits forever).
+const settlesBy = (work, until, now) => {
+  const settled = work.catch(() => {}).then(() => true);
+  if (until === null) return settled;
   let timer;
   const expired = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(0, waitUntil - now()));
+    timer = setTimeout(() => resolve(false), Math.max(0, until - now()));
   });
   return Promise.race([settled, expired])
-    .then((arrived) => arrived && now() <= waitUntil)
+    .then((arrived) => arrived && now() <= until)
     .finally(() => clearTimeout(timer));
 };
 
@@ -86,12 +86,17 @@ const turnArrives = (previous, waitUntil, now) => {
 // durable store. `finally` persistence runs for success, non-zero exits, and
 // thrown spawn failures. A caller that must start by `waitUntil` gives up its
 // turn instead of running late, and rejects with OPENCODE_STORE_WAIT_EXPIRED.
+// A caller that needs its result by `settleBy` gets it then even while the
+// persist still runs: the store stays locked until the persist ends, and
+// `defer` receives that remaining work so the caller can wait for it later.
 export const withOpenCodeStore = async ({
   env = process.env,
   operation,
   restore = restoreOpenCodeStore,
   persist = persistOpenCodeStore,
   waitUntil = null,
+  settleBy = null,
+  defer = () => {},
   now = Date.now,
 } = {}) => {
   const store = resolveOpenCodeStore(env);
@@ -103,7 +108,7 @@ export const withOpenCodeStore = async ({
   });
   const tail = previous.catch(() => {}).then(() => turn);
   locks.set(key, tail);
-  if (!(await turnArrives(previous, waitUntil, now))) {
+  if (!(await settlesBy(previous, waitUntil, now))) {
     // The chain still waits for `previous`, so later callers never overlap the
     // current holder; the entry is dropped once that holder is done.
     release();
@@ -114,14 +119,22 @@ export const withOpenCodeStore = async ({
       code: OPENCODE_STORE_WAIT_EXPIRED,
     });
   }
+  let outcome;
   try {
     await restore({ env }).catch(() => false);
-    return await operation();
-  } finally {
+    outcome = { value: await operation() };
+  } catch (error) {
+    outcome = { error };
+  }
+  const persisted = (async () => {
     await persist({ env }).catch(() => false);
     release();
     if (locks.get(key) === tail) locks.delete(key);
-  }
+  })();
+  if (await settlesBy(persisted, settleBy, now)) await persisted;
+  else defer(persisted);
+  if ('error' in outcome) throw outcome.error;
+  return outcome.value;
 };
 
 export const __test = { OPENCODE_SUBDIR, locks };

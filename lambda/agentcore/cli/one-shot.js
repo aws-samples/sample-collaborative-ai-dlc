@@ -86,8 +86,11 @@ const sampleOf = (raw = '') => String(raw ?? '').slice(0, SAMPLE_BYTES);
 // workspace session run-stage resumes by cwd. `timeoutMs` bounds the call —
 // a hung CLI must never wedge the derive command. Failure results carry a
 // bounded raw `sample` for field diagnosis. `startBy` (epoch ms) is the latest
-// moment the CLI may start, including any wait for the OpenCode store; past it
-// the call fails with `deadline_exceeded` instead of running late.
+// moment the CLI may start, checked after any wait for and restore of the
+// OpenCode store; past it the call fails with `deadline_exceeded` instead of
+// running late. `finishBy` (epoch ms) is when the caller needs the result: it
+// caps the CLI timeout, and an OpenCode store persist still running then is
+// handed to `defer` for the caller to await instead of delaying the result.
 export const DEFAULT_ONE_SHOT_TIMEOUT_MS = 120_000;
 
 export const runOneShotPrompt = async ({
@@ -103,6 +106,8 @@ export const runOneShotPrompt = async ({
   codexHome = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
   startBy = null,
+  finishBy = null,
+  defer = () => {},
   now = Date.now,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
@@ -147,24 +152,35 @@ export const runOneShotPrompt = async ({
   // one-shot session itself rides along; its distinct cwd keeps it out of the
   // workspace session list run-stage checks before a resume.
   if (cli === 'kiro') await restoreKiroStore({ env }).catch(() => false);
-  const execute = () =>
-    captureChild({
+  // Null when the CLI can no longer start and finish inside the deadlines.
+  const execute = async () => {
+    const at = now();
+    const budgetMs = finishBy === null ? timeoutMs : Math.min(timeoutMs, finishBy - at);
+    if ((startBy !== null && at > startBy) || budgetMs <= 0) return null;
+    return captureChild({
       command: invocation.command,
       args: invocation.args,
       env: { ...invocation.env, ...driver.envForAuth(env) },
       cwd,
       prompt: invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      timeoutMs,
+      timeoutMs: budgetMs,
       ...(spawnFn ? { spawnFn } : {}),
     });
+  };
   let capture = null;
   try {
-    if (cli === 'opencode') {
-      capture = await withOpenCodeStore({ env, operation: execute, waitUntil: startBy, now });
-    } else if (startBy === null || now() <= startBy) {
-      capture = await execute();
-    }
+    capture =
+      cli === 'opencode'
+        ? await withOpenCodeStore({
+            env,
+            operation: execute,
+            waitUntil: startBy,
+            settleBy: finishBy,
+            defer,
+            now,
+          })
+        : await execute();
   } catch (error) {
     if (error?.code !== OPENCODE_STORE_WAIT_EXPIRED) throw error;
   } finally {

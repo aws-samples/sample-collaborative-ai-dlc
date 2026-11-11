@@ -39,14 +39,16 @@ const COMMAND_INSTRUCTIONS = {
 
 // Each assist's discussion grant expires minutes after the request, and the
 // assists of one thread share the session's OpenCode store, so they queue. The
-// CLI must start early enough for its whole timeout and the final message write
-// to land inside the grant; an assist that cannot fails while it still can.
+// final message write must land inside the grant: the CLI must start early
+// enough for its whole timeout, and its result is due `GRANT_WRITE_MARGIN_MS`
+// before exp even if the store persist is still running. An assist that
+// cannot start in time fails while it still can.
 const GRANT_WRITE_MARGIN_MS = 30_000;
-const inferenceStartBy = (grant) => {
+const inferenceDeadlines = (grant) => {
   const expiresAt = grant ? gatewayGrantExpiresAt(grant) : null;
-  return expiresAt === null
-    ? null
-    : expiresAt - GRANT_WRITE_MARGIN_MS - DEFAULT_ONE_SHOT_TIMEOUT_MS;
+  if (expiresAt === null) return { startBy: null, finishBy: null };
+  const finishBy = expiresAt - GRANT_WRITE_MARGIN_MS;
+  return { startBy: finishBy - DEFAULT_ONE_SHOT_TIMEOUT_MS, finishBy };
 };
 
 const failureContent = (assistCommand, reason) =>
@@ -220,10 +222,12 @@ export const createDiscussionAssistStart = ({
     }
     activeJobs.set(key, { startedAt: Date.now(), messageId });
     busy?.enter();
-    const startBy = inferenceStartBy(currentGatewayGrant());
+    const { startBy, finishBy } = inferenceDeadlines(currentGatewayGrant());
 
     const job = runCredentialJob(async () => {
       let graph;
+      // Store work the CLI handed back to finish after the message write.
+      let storeSettled = null;
       const complete = (content, status) =>
         graph.completeDiscussionAssist({ discussionId, messageId, requestId, content, status });
       try {
@@ -276,6 +280,10 @@ export const createDiscussionAssistStart = ({
           cwd,
           timeoutMs: DEFAULT_ONE_SHOT_TIMEOUT_MS,
           startBy,
+          finishBy,
+          defer: (pending) => {
+            storeSettled = pending;
+          },
           ...cliContext,
         });
         if (out.metrics) {
@@ -340,6 +348,7 @@ export const createDiscussionAssistStart = ({
           }
         }
       } finally {
+        await storeSettled;
         await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
