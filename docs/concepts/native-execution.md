@@ -190,6 +190,14 @@ final result. Completion is therefore shown as **not verified**. An agent stoppi
 a successful CLI exit, a published review document or an accepted approval answer
 is not sufficient evidence of workflow completion.
 
+The NE-11 dependency check against the pinned **AI-DLC 2.11.1** release confirms
+that its local engine records are not an independent completion authority. Its
+public command guards remain useful, but the coding process can write the state
+and human-presence records those guards consume. Verified completion needs both
+a protected methodology interface and isolation of its state and evidence
+producer from the coding process. Ownership of that integration remains open;
+no additional final approval is proposed.
+
 Native Git delivery is not implemented. Source checkout, file comparison and
 result download do not create commits, branches or pull requests. The remaining
 work must bind the deliverable bytes, required workflow evidence, authorized
@@ -4537,6 +4545,75 @@ artifact identity. **A fresh browser/native creation and result-file journey
 remains separate live acceptance. NE-11 verified workflow completion is the
 next implementation item.**
 
+### NE-11 completion dependency inspection — 2026-11-11
+
+NE-11 started from independently verified NE-10 and clean source commit
+`31680843605de1a25782bb54b9bd03cd662debe9`. Evidence is isolated in
+`.native-evidence/ne11-2026-11-11-completion-boundary/`; the NE-10 deployed
+verification, successful handoff and original qualification seals are unchanged.
+This inspection does not complete NE-11 or require a deployment.
+
+The inspection used the exact pinned AI-DLC **2.11.1** runtime archive
+`sha256:9f213c8254e646123b3f4bcefe347a61c95c72fee9fda4bf9afab42ccb20f44a`
+at methodology commit `895a35d86d20336d9b7bc4aedc9440e4a12c83ab`. The audit,
+state, orchestration, shared engine and human-turn hook modules have identical
+bytes across the Claude, Codex and OpenCode release layouts. The executable
+probe used the Codex layout and the already-qualified ARM64 image
+`sha256:3e4652b5b75a02cef59bb06b4833031f99e9d8b0cc59fac8a97007c558cfafd3`.
+It ran without network or cloud credentials, with a read-only image and mounted
+release copy, and modified only synthetic files in disposable container storage.
+
+**Fifteen assertions reproduce the boundary and preserve the current refusal:**
+the public audit CLI rejects a direct `HUMAN_TURN` claim, while an importable
+internal audit function and a raw append from a child launched by the production
+native command runner can satisfy the stock human-presence check. That child
+shares the collector's UID and can read its synthetic mode-0600 private file.
+It can also rewrite the workflow's terminal status and stage checkboxes, which
+the stock state reader accepts. Native still reports `not_verified`.
+
+This is not proof that every engine guard can be bypassed. The stock `next`
+probe returned a hook-trust instruction, not a completed workflow; no live
+approval, check, review or terminal transition was demonstrated. The first probe
+incorrectly expected the internal audit function to enforce the public CLI
+restriction, and the second incorrectly expected `next` to return `done`;
+both failed receipts are retained alongside the corrected observations.
+Separate source inspection shows that `done` also serves archived work and
+utility-command bookkeeping, so even an authentic `done` directive alone cannot
+establish workflow completion. No deployed EFS or process-containment
+qualification was performed.
+
+The required integration must provide:
+
+1. **Applied methodology requirements.** The pinned engine must attest to its
+   effective plan revision, amendments, executed or skipped stages and applicable
+   checks, reviews and human gates. A package-default preview is insufficient.
+2. **Applied member decisions.** The engine must consume authenticated platform
+   decisions bound to the original proposal and execution identity, with
+   idempotent application and readback after a lost acknowledgement. Accepted
+   selections and transport delivery remain distinct from application.
+3. **Observed check and review outcomes.** The evidence producer must identify
+   the actual check or reviewer invocation and inspected result revision.
+   Failed, unavailable, skipped and incomplete checks must remain distinct from
+   passing outcomes; agent-supplied verdicts cannot create independent approval.
+4. **An immutable terminal binding.** A completion or failure record must bind
+   the execution and writer identity, captured configuration and inputs,
+   methodology and effective plan, decision and check evidence, and exact
+   admitted result revision. Later file changes or stale callbacks must not
+   inherit verification. This does not establish NE-12's complete Git-tree or
+   delivery contract.
+5. **A protected producer.** Coding tools, project-supplied checks and reviewer
+   workloads must not be able to change the engine's authoritative state, code,
+   credentials or evidence. A signature over local claims, a same-UID collector
+   or filesystem modes alone do not establish that boundary.
+
+These are acceptance requirements, not an implemented API or a second platform
+workflow engine. The remaining ownership choice is whether to require upstream
+AI-DLC support or maintain a protected adapter and the necessary runtime
+isolation in this project. Neither choice adds a blanket final approval or
+permits changing the selected workflow's gates. Until that choice and its
+qualification are complete, retained and new results stay **not verified**;
+NE-11 remains open and NE-12 is not advanced.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -4744,7 +4821,11 @@ the current contract for newly created executions.
       of treating mutable harness files or prose as independent approval evidence.
       **Done when:** the UI can report complete, failed or not verified from actual
       outcomes; stopped turns and accepted selections cannot imply success. Follow
-      the workflow's own gates without adding blanket final approval.
+      the workflow's own gates without adding blanket final approval. **Dependency
+      inspected 2026-11-11:** the exact 2.11.1 package and qualified image reproduce
+      the local human-presence/state authority gap. The protected methodology
+      interface and producer isolation still need an ownership decision and
+      implementation; no verified terminal outcome is claimed.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
