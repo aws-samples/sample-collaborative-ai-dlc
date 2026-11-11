@@ -540,6 +540,84 @@ const findPullRequest = async (
   });
 };
 
+// Pull requests from `sourceBranch` for final-delivery ownership checks.
+// ListPullRequests cannot filter by branch, so each listed id costs one
+// GetPullRequest. Listing every pull request of a long-lived repository would
+// be unbounded and, past the page cap, would fail on every attempt. So:
+//   - open pull requests are always listed, from every author (delivery reuses
+//     an open pull request whoever opened it); CodeCommit caps how many can be
+//     open;
+//   - closed and merged ones are listed only with `includeTerminal` (this run
+//     recorded a create request), and then only those the platform session
+//     authored: it is the only author of a pull request carrying a delivery
+//     marker. Without a session identity the walk is unfiltered. Skip this pass
+//     if the complete open set contains a candidate: selectDeliveryPr decides
+//     from open candidates before considering any terminal ownership evidence.
+// Strict: a truncated listing throws instead of reporting fewer pull requests.
+const listPullRequests = async (ctx, repoId, { sourceBranch, includeTerminal = true }) => {
+  const { region, repositoryName } = parseRepo(repoId);
+  const client = clientFor(ctx, repoId);
+  const authorArn = ctx?.token?.assumedRoleArn;
+  const passes = [
+    { pullRequestStatus: 'OPEN' },
+    ...(includeTerminal
+      ? [{ pullRequestStatus: 'CLOSED', ...(authorArn ? { authorArn } : {}) }]
+      : []),
+  ];
+  const prs = [];
+  for (const filter of passes) {
+    let nextToken;
+    let page = 0;
+    do {
+      if (page === LIST_PR_PAGES) {
+        logger.warn('CodeCommit pull-request listing truncated', {
+          repositoryName,
+          pullRequestStatus: filter.pullRequestStatus,
+        });
+        throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
+          action: 'ListPullRequests',
+          code: 'PR_LOOKUP_TRUNCATED',
+        });
+      }
+      page += 1;
+      const res = await call(
+        client,
+        new ListPullRequestsCommand({ repositoryName, ...filter, nextToken }),
+        'ListPullRequests',
+      );
+      const ids = res.pullRequestIds ?? [];
+      for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
+        const batch = await Promise.all(
+          ids
+            .slice(i, i + PR_LOOKUP_CONCURRENCY)
+            .map((pullRequestId) => getPullRequestRaw(ctx, repoId, pullRequestId)),
+        );
+        for (const pr of batch) {
+          const target = prTarget(pr);
+          if (!pr || !sameRef(target.sourceReference, sourceBranch)) continue;
+          prs.push({
+            number: pr.pullRequestId,
+            url: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
+            sourceBranch: shortRef(target.sourceReference),
+            targetBranch: shortRef(target.destinationReference) || null,
+            headSha: target.sourceCommit ?? null,
+            state:
+              pr.pullRequestStatus === 'OPEN'
+                ? 'open'
+                : target.mergeMetadata?.isMerged
+                  ? 'merged'
+                  : 'closed',
+            body: pr.description ?? '',
+          });
+        }
+      }
+      nextToken = res.nextToken;
+    } while (nextToken);
+    if (filter.pullRequestStatus === 'OPEN' && prs.some((pr) => pr.state === 'open')) return prs;
+  }
+  return prs;
+};
+
 // Merge options for a ref pair. Errors are thrown as ProviderError;
 // compareBranches decides which of them mean "cannot compare".
 const mergeOptionsFor = async (ctx, repoId, { source, destination }) => {
@@ -582,6 +660,18 @@ const INCOMPARABLE_EXCEPTIONS = new Set([
   'MaximumItemsToCompareExceededException',
   'MaximumFileContentToLoadExceededException',
 ]);
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { repositoryName } = parseRepo(repoId);
+  const res = await callOr(
+    clientFor(ctx, repoId),
+    new GetBranchCommand({ repositoryName, branchName: shortRef(branch) }),
+    'GetBranch',
+    404,
+    null,
+  );
+  return res?.branch?.commitId ?? null;
+};
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -772,7 +862,7 @@ const draftFields = (pr) => {
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false, attemptKey = '' },
+  { branch, baseBranch, title, body, draft = false, attemptKey = '', allowRetarget = true },
 ) => {
   const { arn, region, repositoryName } = parseRepo(repoId);
   const coordinates = { region, repositoryName };
@@ -816,6 +906,7 @@ const createPullRequest = async (
     };
   }
   if (comparison.status === 'missing_base') {
+    if (!allowRetarget) return { failed: true, reason: 'missing_base' };
     const defaultBranch = await getDefaultBranch(ctx, repoId);
     if (!defaultBranch || defaultBranch === resolvedBase) {
       return {
@@ -861,6 +952,7 @@ const createPullRequest = async (
       throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
     }
     if (pr.pullRequestStatus !== 'CLOSED') break;
+    if (!allowRetarget) throw new ProviderError(409, 'The previous pull request is closed');
     key = `${attemptKey ?? ''}\nreplaces:${pr.pullRequestId}`;
   }
   if (pr.pullRequestStatus === 'CLOSED') {
@@ -1230,7 +1322,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1270,7 +1364,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

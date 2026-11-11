@@ -777,13 +777,47 @@ const findPullRequest = async (
   return null;
 };
 
+// Every pull request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const prs = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await ghFetch(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(sourceBranch)}&state=all&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid pull-request lookup');
+    // `head=owner:branch` also matches a fork the same owner holds; delivery
+    // publishes only from this repository.
+    const self = `${owner}/${repo}`.toLowerCase();
+    const fromHere = (row) =>
+      !row.head?.repo?.full_name || row.head.repo.full_name.toLowerCase() === self;
+    for (const pr of rows.filter((row) => row.head?.ref === sourceBranch && fromHere(row)))
+      prs.push({
+        number: pr.number,
+        url: pr.html_url,
+        sourceBranch: pr.head.ref,
+        targetBranch: pr.base?.ref ?? null,
+        headSha: pr.head.sha ?? null,
+        state: pr.state === 'open' ? 'open' : pr.merged_at ? 'merged' : 'closed',
+        body: pr.body ?? '',
+      });
+    if (rows.length < 100) return prs;
+  }
+  throw new ProviderError(409, 'Pull-request lookup truncated');
+};
+
 // Create a PR. Enforces the unmerged-construction-task-branch guard. Returns
 // { prUrl, prNumber } on success, { skipped, reason } for a no-change repo,
 // { unmergedBranches } (409-equivalent) when task branches remain unmerged.
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false },
+  { branch, baseBranch, title, body, draft = false, allowRetarget = true },
 ) => {
   const { owner, repo } = splitOwnerRepo(repoId);
 
@@ -848,7 +882,7 @@ const createPullRequest = async (
       // base was mistyped or deleted since). Resolve the repo's real default
       // branch and retry once against it — the intent branch was cut from
       // that HEAD at clone time, so it is a reasonable merge target.
-      if (isBaseInvalid422(errorText)) {
+      if (allowRetarget && isBaseInvalid422(errorText)) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
         if (defaultBranch && defaultBranch !== resolvedBase) {
           res = await postPr(defaultBranch);
@@ -873,6 +907,14 @@ const createPullRequest = async (
         }
       }
     }
+    // This direct POST response is GitHub's validation refusal: no PR was
+    // created. Preserve that fact across source-control's error-code boundary.
+    // Transport errors, failed response reads and server failures remain
+    // unknown outcomes; callers must retain their recorded create request.
+    if (res.status === 422)
+      throw new ProviderError(422, 'GitHub refused pull-request creation', {
+        code: 'PR_CREATE_REJECTED',
+      });
     throw new Error(`Failed to create PR: ${res.status} ${errorText}`); // nosemgrep: tainted-sql-string
   }
 
@@ -902,6 +944,19 @@ const createPullRequest = async (
 //   'missing_base'        — base branch does not exist
 //   'unknown'             — comparison unavailable (caller falls through to
 //                           the POST /pulls behavior; never blocks on this)
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.object?.sha) throw new ProviderError(502, 'Invalid branch response');
+  return data.object.sha;
+};
+
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -1066,7 +1121,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1106,7 +1163,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

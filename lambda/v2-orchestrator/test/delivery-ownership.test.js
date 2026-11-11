@@ -1,0 +1,639 @@
+// Final delivery must never adopt a closed or merged pull request it cannot
+// prove is its own. The intent branch is fixed at intent creation, so every run
+// of an intent (rewind, relaunch, iteration after a merge) shares one source
+// branch with all earlier runs' pull requests. These tests run the real
+// provider adapters, provider-side inspection, publisher, preview and view
+// against in-memory code hosts and the real DynamoDB process store.
+import { randomBytes, randomUUID } from 'node:crypto';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { beforeAll, afterAll, describe, it, expect } from 'vitest';
+import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/helpers/v2-table.js';
+import { createProcessStore } from '../../shared/v2-process-store.js';
+import { inspectDelivery } from '../../shared/delivery-provider.js';
+import {
+  previewDelivery,
+  publishFinalDelivery,
+  deliveryView,
+  currentDelivery,
+} from '../../shared/final-delivery.js';
+import { createFakeHost, hostOperation } from './fixtures/fake-pr-hosts.js';
+
+const PROVIDERS = ['github', 'gitlab', 'bitbucket', 'codecommit'];
+const MINUTE = 60_000;
+const tableName = `delivery-ownership-${randomUUID()}`;
+let db;
+beforeAll(async () => {
+  db = makeDdb();
+  await createV2Table(db.client, tableName);
+});
+afterAll(async () => {
+  await deleteV2Table(db.client, tableName);
+  db.client.destroy();
+});
+
+// A pull request another run (or a person copying its description) created.
+const otherMarker = () => `aidlc-delivery-${randomBytes(16).toString('hex')}`;
+const markedBody = (marker) =>
+  `Automated PR created by AI-DLC\n\n<!-- aidlc-delivery: ${marker} -->`;
+
+const setup = async (name, hostOptions) => {
+  const host = createFakeHost(name, hostOptions);
+  const store = createProcessStore({ ddb: db.doc, tableName });
+  const executionId = randomUUID();
+  await store.createExecution({
+    executionId,
+    intentId: executionId,
+    projectId: 'project',
+    repos: [host.repo],
+    gitProvider: name,
+    branch: 'intent/feature',
+    baseBranch: 'develop',
+    methodologyPins: { STAGE: {} },
+  });
+  const t = { host, store, executionId };
+  t.meta = await store.updateExecution({
+    executionId,
+    status: 'SUCCEEDED',
+    orchestratorRunId: 'run1',
+  });
+  const operation = hostOperation(host, inspectDelivery);
+  const loadPlan = async () => ({ valid: true, plan: { stages: [] } });
+  t.publish = (claimed = null) =>
+    publishFinalDelivery({
+      store,
+      meta: t.meta,
+      operation,
+      loadPlan,
+      applicationUrl: 'https://aidlc.example',
+      claimed,
+    });
+  t.preview = async () =>
+    previewDelivery({
+      meta: await store.getExecution(executionId, { consistentRead: true }),
+      records: await store.getExecutionRecords(executionId, { consistentRead: true }),
+      plan: { stages: [] },
+      operation,
+    });
+  // The intents API path: preview, confirm with the token's delivery, claim,
+  // then the orchestrator's retry-delivery publication.
+  t.retry = async () => {
+    const p = await t.preview();
+    const claimed = await store.claimDelivery({
+      meta: await store.getExecution(executionId, { consistentRead: true }),
+      delivery: p.delivery,
+      attemptId: randomUUID(),
+    });
+    await t.publish(claimed);
+    return p;
+  };
+  // Rewind or relaunch: same intent branch, new run.
+  t.relaunch = async (runId) => {
+    t.meta = await store.updateExecution({ executionId, orchestratorRunId: runId });
+  };
+  t.repository = async () =>
+    (await store.getDelivery(executionId, t.meta.orchestratorRunId)).repositories[0];
+  t.view = async () =>
+    deliveryView(t.meta, currentDelivery(await store.getExecutionRecords(executionId)));
+  return t;
+};
+// The PR numbers the current delivery view links as this run's.
+const shownPrs = (view) =>
+  view.repositories.map((r) => (r.pr?.prNumber == null ? null : Number(r.pr.prNumber)));
+
+// Final delivery titles the pull request like the publication it replaced.
+describe('final delivery pull request title', () => {
+  it.each([
+    [true, '[ABC-12] Bookstore API'],
+    [false, 'Bookstore API'],
+  ])('with prTitleTrackerKey %s, titles the PR %s', async (prTitleTrackerKey, title) => {
+    const t = await setup('github');
+    await publishFinalDelivery({
+      store: t.store,
+      meta: {
+        ...t.meta,
+        title: 'Bookstore API',
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      operation: hostOperation(t.host, inspectDelivery),
+      loadPlan: async () => ({ valid: true, plan: { stages: [] } }),
+      applicationUrl: 'https://aidlc.example',
+      prTitleTrackerKey,
+    });
+    expect(t.host.prs.map((pr) => pr.title)).toEqual([title]);
+  });
+});
+
+describe('GitHub create refusal over HTTP', () => {
+  const rejectCreate = (host, response) => {
+    const fetch = host.ctx.fetchImpl;
+    host.ctx.fetchImpl = (url, options = {}) =>
+      options.method === 'POST' && new URL(url).pathname.endsWith('/pulls')
+        ? response()
+        : fetch(url, options);
+    return () => (host.ctx.fetchImpl = fetch);
+  };
+  const validationFailure = () =>
+    new Response(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [{ resource: 'PullRequest', field: 'title', code: 'invalid' }],
+      }),
+      { status: 422 },
+    );
+
+  it('publishes on the corrected same-run retry despite an older unmarked closed PR', async () => {
+    const t = await setup('github');
+    t.host.add({ state: 'closed', body: 'Opened by an older release' });
+    const restore = rejectCreate(t.host, validationFailure);
+    await t.publish();
+    const refused = await t.repository();
+    expect(refused).toMatchObject({ status: 'failed', retryable: true });
+    expect(refused.createRequestedAt).toBeUndefined();
+    expect(refused.deliveryMarker).toBeUndefined();
+    expect(t.host.creates).toBe(0);
+
+    restore();
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending', retryable: true });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.creates).toBe(1);
+    expect(t.host.prs).toHaveLength(2);
+    expect(shownPrs(await t.view())).toEqual([2]);
+  });
+
+  it('preserves an earlier uncertain request when a later HTTP create is definitively refused', async () => {
+    const t = await setup('github');
+    t.host.failCreates = 1;
+    await t.publish();
+    const uncertain = await t.repository();
+    expect(uncertain.deliveryMarker).toMatch(/^aidlc-delivery-/);
+    rejectCreate(t.host, validationFailure);
+    await t.retry();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: uncertain.createRequestedAt,
+      deliveryMarker: uncertain.deliveryMarker,
+    });
+  });
+
+  it.each([
+    ['an HTTP server failure', () => new Response('Validation Failed', { status: 503 })],
+    [
+      'an arbitrary exception with a refusal-like status and message',
+      () => {
+        throw Object.assign(new Error('422 Validation Failed'), { status: 422 });
+      },
+    ],
+  ])('retains the marker after %s', async (_name, response) => {
+    const t = await setup('github');
+    t.host.add({ state: 'closed', body: 'Opened by an older release' });
+    const restore = rejectCreate(t.host, response);
+    await t.publish();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: expect.any(String),
+      deliveryMarker: expect.stringMatching(/^aidlc-delivery-/),
+    });
+    restore();
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(t.host.creates).toBe(0);
+  });
+});
+
+describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
+  it.each(
+    [0, 30_000, 4 * MINUTE, 6 * MINUTE, 3 * 60 * MINUTE].flatMap((age) =>
+      ['closed', 'merged'].map((state) => [state, age]),
+    ),
+  )(
+    "never adopts an earlier run's %s PR created %d ms before this run's create request",
+    async (state, age) => {
+      const t = await setup(name);
+      await t.publish();
+      const [earlier] = t.host.prs;
+      earlier.state = state;
+      earlier.createdAt = Date.now() - age;
+      await t.relaunch('run2');
+      // This run's first create request is lost before reaching the provider.
+      t.host.failCreates = 1;
+      await t.publish();
+      const p = await t.retry();
+      expect(p.delivery.repositories[0].pr).toBeUndefined();
+      expect(t.host.prs).toHaveLength(2);
+      const [, created] = t.host.prs;
+      expect(created.state).toBe('open');
+      expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+      expect(shownPrs(await t.view())).toEqual([created.number]);
+    },
+  );
+
+  it("never adopts another run's marked PR created after this run's create request", async () => {
+    const t = await setup(name);
+    t.host.failCreates = 1;
+    await t.publish();
+    t.host.add({ state: 'closed', body: markedBody(otherMarker()), ageMs: -MINUTE });
+    await t.retry();
+    expect(t.host.prs.filter((pr) => pr.state === 'open')).toHaveLength(1);
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(shownPrs(await t.view())).toEqual([t.host.prs.at(-1).number]);
+  });
+
+  it.each([-10 * MINUTE, 10 * MINUTE])(
+    "identifies this run's own closed PR whatever the provider clock skew (%d ms)",
+    async (skew) => {
+      const t = await setup(name);
+      t.host.clockOffsetMs = skew;
+      t.host.loseResponses = 1;
+      await t.publish();
+      const [own] = t.host.prs;
+      own.state = 'closed'; // a reviewer rejected it before the retry
+      const p = await t.retry();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+      expect(t.host.prs).toHaveLength(1);
+      expect(shownPrs(await t.view())).toEqual([own.number]);
+    },
+  );
+
+  it.each([-10 * MINUTE, 10 * MINUTE])(
+    "never adopts an earlier run's closed PR whatever the provider clock skew (%d ms)",
+    async (skew) => {
+      const t = await setup(name);
+      t.host.clockOffsetMs = skew;
+      await t.publish();
+      t.host.prs[0].state = 'closed';
+      await t.relaunch('run2');
+      t.host.failCreates = 1;
+      await t.publish();
+      await t.retry();
+      expect(t.host.prs).toHaveLength(2);
+      expect(shownPrs(await t.view())).toEqual([t.host.prs[1].number]);
+    },
+  );
+
+  it.each(
+    ['newest', 'oldest'].flatMap((order) => ['closed', 'merged'].map((state) => [state, order])),
+  )(
+    "finds this run's own %s PR among earlier closed and merged PRs listed %s first",
+    async (state, order) => {
+      const t = await setup(name, { order });
+      await t.publish();
+      t.host.prs[0].state = 'merged';
+      t.host.prs[0].createdAt -= 3 * 60 * MINUTE;
+      await t.relaunch('run2');
+      await t.publish();
+      t.host.prs[1].state = 'closed';
+      t.host.prs[1].createdAt -= 60 * MINUTE;
+      t.host.add({ state: 'closed', body: 'Opened by hand', ageMs: 30 * MINUTE });
+      await t.relaunch('run3');
+      t.host.loseResponses = 1;
+      await t.publish();
+      const own = t.host.prs.at(-1);
+      own.state = state;
+      await t.retry();
+      expect(t.host.prs).toHaveLength(4);
+      expect(await t.repository()).toMatchObject({ status: 'failed', retryable: false });
+      expect(shownPrs(await t.view())).toEqual([own.number]);
+    },
+  );
+
+  it.each(['own-closed', 'only-open'])(
+    'reads every page of PRs on the intent branch (%s PR after 101 earlier ones)',
+    async (kind) => {
+      const t = await setup(name, { order: 'oldest' });
+      for (let i = 0; i < 101; i++)
+        t.host.add({
+          state: i % 2 ? 'merged' : 'closed',
+          body: markedBody(otherMarker()),
+          ageMs: 3 * 60 * MINUTE,
+        });
+      t.host.loseResponses = 1;
+      await t.publish();
+      const own = t.host.prs.at(-1);
+      if (kind === 'own-closed') own.state = 'closed';
+      await t.retry();
+      expect(t.host.prs).toHaveLength(102);
+      expect(await t.repository()).toMatchObject(
+        kind === 'own-closed' ? { status: 'failed', retryable: false } : { status: 'succeeded' },
+      );
+      expect(shownPrs(await t.view())).toEqual([own.number]);
+    },
+  );
+
+  it('publishes a new PR on first publication despite unmarked closed and merged PRs', async () => {
+    const t = await setup(name);
+    t.host.add({ state: 'closed', body: 'Opened by hand' });
+    t.host.add({ state: 'merged', body: 'Automated PR created by an older release' });
+    await t.publish();
+    expect(t.host.prs).toHaveLength(3);
+    expect(shownPrs(await t.view())).toEqual([3]);
+  });
+
+  it('leaves an unprovable unmarked PR uncertain after a lost request, and a new run publishes', async () => {
+    const t = await setup(name);
+    t.host.add({ state: 'closed', body: 'Opened by hand', ageMs: 3 * 60 * MINUTE });
+    t.host.failCreates = 1;
+    await t.publish();
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(p.delivery.repositories[0].reason).toMatch(/could not be confirmed/);
+    expect(t.host.prs).toHaveLength(1);
+    expect(shownPrs(await t.view())).toEqual([null]);
+    await t.relaunch('run2');
+    await t.publish();
+    expect(t.host.prs).toHaveLength(2);
+    expect(shownPrs(await t.view())).toEqual([2]);
+  });
+
+  // A create the service refuses without creating anything must not leave a
+  // recorded request behind: an unrelated unmarked closed PR would otherwise
+  // turn the repository "ownership unconfirmed" for good.
+  it.each([
+    ['unmerged task branches', { conflict: true, error: 'unmerged', unmergedBranches: ['t1'] }],
+    ['a changed intent branch', { failed: true, reason: 'branch_changed' }],
+    ['a missing base branch', { failed: true, reason: 'missing_base' }],
+    ['a classified provider rejection', { failed: true, reason: 'head_missing' }],
+  ])(
+    'publishes on retry after a create refused for %s, despite an unmarked closed PR',
+    async (_cause, refusal) => {
+      const t = await setup(name);
+      t.host.add({ state: 'closed', body: 'Opened by hand or by an older release' });
+      t.host.refusals.push(refusal);
+      await t.publish();
+      const refused = await t.repository();
+      expect(refused).toMatchObject({ status: 'failed', retryable: true });
+      expect(refused.createRequestedAt).toBeUndefined();
+      expect(refused.deliveryMarker).toBeUndefined();
+      expect(t.host.creates).toBe(0);
+      // The cause is fixed; the next check is not held up by the closed PR.
+      const p = await t.retry();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending', retryable: true });
+      expect(t.host.prs).toHaveLength(2);
+      expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+      expect(shownPrs(await t.view())).toEqual([2]);
+    },
+  );
+
+  it('keeps an earlier unknown create request when a later create is refused', async () => {
+    const t = await setup(name);
+    t.host.failCreates = 1;
+    await t.publish();
+    const lost = await t.repository();
+    expect(lost.deliveryMarker).toMatch(/^aidlc-delivery-/);
+    t.host.refusals.push({ failed: true, reason: 'branch_changed' });
+    await t.retry();
+    expect(await t.repository()).toMatchObject({
+      status: 'failed',
+      createRequestedAt: lost.createRequestedAt,
+      deliveryMarker: lost.deliveryMarker,
+    });
+  });
+
+  it('does not adopt its own PR once its description lost the delivery marker', async () => {
+    const t = await setup(name);
+    t.host.loseResponses = 1;
+    await t.publish();
+    const [own] = t.host.prs;
+    own.body = 'Rewritten by a reviewer';
+    own.state = 'closed';
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(t.host.prs).toHaveLength(1);
+    expect(shownPrs(await t.view())).toEqual([null]);
+  });
+
+  it("reuses an earlier run's PR that is still open", async () => {
+    const t = await setup(name);
+    await t.publish();
+    await t.relaunch('run2');
+    await t.publish();
+    expect(t.host.prs).toHaveLength(1);
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(shownPrs(await t.view())).toEqual([1]);
+  });
+
+  it('degrades a row written by an earlier head to unproven instead of adopting its PR', async () => {
+    const t = await setup(name);
+    const [old] = [t.host.add({ state: 'closed', body: 'Automated PR', ageMs: 4 * MINUTE })];
+    // fb2999bb could record an earlier run's terminal PR within its window.
+    await db.doc.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          pk: `EXEC#${t.executionId}`,
+          sk: 'DELIVERY#run1',
+          type: 'FinalDelivery',
+          executionId: t.executionId,
+          orchestratorRunId: 'run1',
+          attemptId: 'old-attempt',
+          revision: 2,
+          status: 'failed',
+          updatedAt: new Date().toISOString(),
+          repositories: [
+            {
+              repoId: t.host.repo,
+              provider: name,
+              branch: 'intent/feature',
+              baseBranch: 'develop',
+              headSha: 'head1',
+              status: 'failed',
+              retryable: false,
+              createRequestedAt: new Date().toISOString(),
+              reason: "This run's pull request is closed.",
+              pr: {
+                repoId: t.host.repo,
+                provider: name,
+                prNumber: old.number,
+                prUrl: 'https://provider.example/pr/1',
+                branch: 'intent/feature',
+                baseBranch: 'develop',
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(p.delivery.repositories[0].pr).toBeUndefined();
+    await t.retry();
+    expect(t.host.prs).toHaveLength(1);
+    expect(shownPrs(await t.view())).toEqual([null]);
+  });
+
+  it.each(['closed', 'merged'])(
+    'refuses its own PR that was retargeted and then %s instead of creating another',
+    async (state) => {
+      const t = await setup(name);
+      t.host.loseResponses = 1;
+      await t.publish();
+      const [own] = t.host.prs;
+      own.target = 'main'; // a reviewer retargeted it, then closed or merged it
+      own.state = state;
+      const p = await t.retry();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+      expect(p.delivery.repositories[0].reason).toMatch(/retargeted to main/);
+      expect(t.host.prs).toHaveLength(1);
+      expect(await t.repository()).toMatchObject({ status: 'failed', retryable: false });
+      // Proven by this run's marker, so the view may link it as this run's.
+      expect(shownPrs(await t.view())).toEqual([Number(own.number)]);
+    },
+  );
+
+  it("publishes a new PR when only an earlier run's marked PR was retargeted", async () => {
+    const t = await setup(name);
+    await t.publish();
+    const [earlier] = t.host.prs;
+    earlier.target = 'main';
+    earlier.state = 'closed';
+    await t.relaunch('run2');
+    await t.publish();
+    expect(t.host.prs).toHaveLength(2);
+    expect(shownPrs(await t.view())).toEqual([2]);
+  });
+});
+
+// CodeCommit cannot filter pull requests by branch. Delivery must not walk a
+// long-lived repository's whole pull-request history, nor fail for good once
+// that history outgrows the page cap.
+describe('codecommit final delivery on a repository with a long pull-request history', () => {
+  const HAND = 'arn:aws:sts::123456789012:assumed-role/developer/alice';
+  // 12 pages of other people's closed pull requests: more than the 10-page cap.
+  const busy = async () => {
+    const t = await setup('codecommit', { pageSize: 5 });
+    for (let i = 0; i < 60; i++)
+      t.host.add({ state: 'closed', source: `feature/${i}`, author: HAND });
+    return t;
+  };
+  const platformHistory = async () => {
+    const t = await setup('codecommit', { pageSize: 100 });
+    for (let i = 0; i < 1100; i++) t.host.add({ state: 'closed', source: `feature/${i}` });
+    return t;
+  };
+
+  it('reconciles a lost create response without reading 1100 unrelated platform-authored closed PRs', async () => {
+    const t = await platformHistory();
+    t.host.loseResponses = 1;
+    await t.publish();
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'succeeded', retryable: false });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.creates).toBe(1);
+    expect(shownPrs(await t.view())).toEqual([1101]);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it('reads the complete open set before selecting the captured target', async () => {
+    const t = await setup('codecommit', { pageSize: 1, order: 'oldest' });
+    t.host.failCreates = 1;
+    await t.publish();
+    t.host.add({ state: 'open', target: 'main' });
+    t.host.add({ state: 'open', target: 'develop' });
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({
+      status: 'succeeded',
+      pr: { prNumber: '2' },
+    });
+    expect(t.host.gets).toBe(2);
+    expect(t.host.listCalls.map((input) => input.pullRequestStatus)).toEqual(['OPEN', 'OPEN']);
+  });
+
+  it.each(['retargeted', 'changed head'])(
+    'keeps the %s refusal without terminal reads',
+    async (cause) => {
+      const t = await platformHistory();
+      t.host.loseResponses = 1;
+      await t.publish();
+      const own = t.host.prs.at(-1);
+      if (cause === 'retargeted') own.target = 'main';
+      else own.headSha = 'different-head';
+      t.host.listCalls.length = 0;
+      const p = await t.preview();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+      expect(p.delivery.repositories[0].reason).toMatch(
+        cause === 'retargeted' ? /different branch or target/ : /branch.*changed/i,
+      );
+      expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+      expect(t.host.creates).toBe(1);
+    },
+  );
+
+  it('refuses an incomplete open set even if its first page contains a matching PR', async () => {
+    const t = await setup('codecommit', { pageSize: 1, order: 'oldest' });
+    t.host.failCreates = 1;
+    await t.publish();
+    t.host.add({ state: 'open' });
+    for (let i = 0; i < 10; i++) t.host.add({ state: 'open', source: `feature/${i}` });
+    t.host.listCalls.length = 0;
+    const p = await t.preview();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+    expect(p.delivery.repositories[0].reason).toMatch(/inspection limit/);
+    expect(t.host.listCalls).toHaveLength(10);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+  });
+
+  it('bounds terminal-only inspection and explains why no new PR can be created', async () => {
+    const t = await platformHistory();
+    t.host.failCreates = 1;
+    await t.publish();
+    const uncertain = await t.repository();
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({
+      status: 'failed',
+      retryable: false,
+      deliveryMarker: uncertain.deliveryMarker,
+    });
+    expect(p.delivery.repositories[0].reason).toMatch(/history exceeds.*inspection limit/);
+    // Preview and the claimed publisher each independently inspect, bounded to
+    // ten pages apiece; neither may create on this incomplete evidence.
+    expect(t.host.listCalls.filter((input) => input.pullRequestStatus === 'CLOSED')).toHaveLength(
+      20,
+    );
+    expect(t.host.gets).toBe(2000);
+    expect(t.host.creates).toBe(1);
+    expect(shownPrs(await t.view())).toEqual([null]);
+  });
+
+  it('publishes by listing only open pull requests when no create was requested', async () => {
+    const t = await busy();
+    await t.publish();
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    expect(t.host.prs).toHaveLength(61);
+    expect(t.host.listCalls.every((input) => input.pullRequestStatus === 'OPEN')).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it("after a lost create request, walks only the platform session's closed pull requests", async () => {
+    const t = await busy();
+    t.host.failCreates = 1;
+    await t.publish();
+    expect(await t.repository()).toMatchObject({ status: 'failed', retryable: true });
+    t.host.listCalls.length = 0;
+    t.host.gets = 0;
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'pending' });
+    expect(await t.repository()).toMatchObject({ status: 'succeeded' });
+    const closed = t.host.listCalls.filter((input) => input.pullRequestStatus === 'CLOSED');
+    expect(closed.length).toBeGreaterThan(0);
+    expect(closed.every((input) => input.authorArn === t.host.ctx.token.assumedRoleArn)).toBe(true);
+    expect(t.host.gets).toBeLessThan(10);
+  });
+
+  it('names the CodeCommit case when ownership is unconfirmed: a closed PR cannot be reopened', async () => {
+    const t = await setup('codecommit');
+    t.host.add({ state: 'closed', body: 'Description edited' });
+    t.host.failCreates = 1;
+    await t.publish();
+    const p = await t.retry();
+    expect(p.delivery.repositories[0]).toMatchObject({ status: 'uncertain', retryable: false });
+    expect(p.delivery.repositories[0].reason).toMatch(/CodeCommit cannot reopen/);
+    expect(p.delivery.repositories[0].reason).not.toMatch(/reopen the pull request if/);
+  });
+});

@@ -19,6 +19,10 @@
 //   getTree(ctx, repoId, branch)        -> GitFile[]
 //   getFileContents(ctx, repoId, path, branch) -> GitFileContent
 //   findPullRequest(ctx, repoId, {sourceBranch,targetBranch,state}) -> provider PR | null
+//   listPullRequests(ctx, repoId, {sourceBranch}) -> every PR from the branch, all
+//       states and pages: [{number,url,state,sourceBranch,targetBranch,headSha,body}];
+//       throws instead of returning a partial list
+//   getBranchHead(ctx, repoId, branch)  -> head SHA | null
 //   createPullRequest(ctx, repoId, {...,draft?}) -> created/existing PR summary
 //   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status
 //   setPullRequestDraft(ctx, repoId, prRef, draft) -> normalized live status
