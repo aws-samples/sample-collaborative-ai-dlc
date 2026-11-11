@@ -585,33 +585,51 @@ const getConnection = async () => {
 // Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, the
 // table the agents lambda builds from the AWS Price List API — this lambda
 // never calls Pricing, so it needs no extra SDK client). There is no built-in
-// price: until the table exists, or when it cannot be read, cost is reported
-// as unavailable (`priced: false`), and the next read picks the table up.
-// Best-effort: a failure never breaks the intent GET.
+// price: until the table exists cost is reported as unavailable (`priced:
+// false`), and the next read picks the table up. Best-effort: a failure never
+// breaks the intent GET.
 const MODEL_PRICING_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 const PRICING_TTL_MS = 15 * 60 * 1000; // re-read SSM at most every 15 minutes
-let cachedPricing = null; // { resolver, at }
+const PRICING_RETRY_MS = 60 * 1000; // wait this long after a failed read
+let cachedPricing = null; // { resolver, nextReadAt }
 
+// The stored table, or null when the parameter is missing or does not hold a
+// table of the current format. Throws when SSM could not be read.
 const loadPricingTable = async () => {
   const prefix = MODEL_PRICING_SSM_PREFIX();
   if (!prefix) return null;
   try {
     const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/model-pricing` }));
     return parsePriceTable(res.Parameter?.Value ?? '');
-  } catch {
-    return null; // not yet populated / unreadable → cost unavailable this read
+  } catch (error) {
+    if (error?.name === 'ParameterNotFound') return null;
+    throw error;
   }
 };
 
+// A read that succeeds is the truth: a table prices, and a missing, unreadable
+// or old-format parameter prices nothing (it is not cached, so the first
+// refresh after a deployment shows up on the next read). A read that FAILS says
+// nothing about the table: the resolver of the last successful read keeps being
+// used, the read is retried after PRICING_RETRY_MS, and with nothing read yet
+// cost is unavailable.
 const getPriceResolver = async () => {
-  if (cachedPricing && Date.now() - cachedPricing.at < PRICING_TTL_MS) {
+  if (cachedPricing && Date.now() < cachedPricing.nextReadAt) return cachedPricing.resolver;
+  let table;
+  try {
+    table = await loadPricingTable();
+  } catch (error) {
+    logger.warn('[pricing] price table read failed; keeping the last one read', {
+      error: error?.message,
+    });
+    cachedPricing = {
+      resolver: cachedPricing?.resolver ?? makePriceResolver(null),
+      nextReadAt: Date.now() + PRICING_RETRY_MS,
+    };
     return cachedPricing.resolver;
   }
-  const table = await loadPricingTable();
   const resolver = makePriceResolver(table);
-  // A missing table is not cached: the first refresh after a deployment should
-  // show up on the next read, not a quarter of an hour later.
-  if (table) cachedPricing = { resolver, at: Date.now() };
+  cachedPricing = table ? { resolver, nextReadAt: Date.now() + PRICING_TTL_MS } : null;
   return resolver;
 };
 

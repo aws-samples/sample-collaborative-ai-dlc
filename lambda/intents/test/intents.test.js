@@ -4584,6 +4584,71 @@ describe('GET list + detail', () => {
     expect(priced.metrics.tokensInput).toBe(1_000_000);
   });
 
+  it('keeps pricing with the table it read when a later SSM read fails', async () => {
+    storePriceTable();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:00Z#m1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:00Z#m1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: 'si-warm',
+      metricId: 'm1',
+      resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000 },
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    const read = async () => {
+      const res = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).metrics[0].cost;
+    };
+    const pricingReads = () =>
+      ssmMock
+        .commandCalls(GetParameterCommand)
+        .filter((call) => call.args[0].input.Name === '/collab/dev/model-pricing').length;
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      // Warm cache: the table is read and prices the sample.
+      clock.mockReturnValue(start + 60 * 60 * 1000);
+      expect(await read()).toMatchObject({ priced: true });
+
+      // Past the 15-minute time to live, SSM fails with a transient error.
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/model-pricing' })
+        .rejects(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 15 * 60 * 1000);
+      const before = pricingReads();
+      const kept = await read();
+      expect(pricingReads()).toBe(before + 1);
+      expect(kept.priced).toBe(true);
+      expect(kept.totalCost).toBeCloseTo(3.3 + 16.5);
+
+      // The failing parameter is not read again within the retry interval.
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 15 * 60 * 1000 + 59 * 1000);
+      expect(await read()).toMatchObject({ priced: true });
+      expect(pricingReads()).toBe(before + 1);
+
+      // After it, the read is retried; a parameter that was deleted is an answer.
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/model-pricing' })
+        .rejects(Object.assign(new Error('not found'), { name: 'ParameterNotFound' }));
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 16 * 60 * 1000);
+      expect(await read()).toMatchObject({ priced: false, totalCost: 0 });
+      expect(pricingReads()).toBe(before + 2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('attaches per-sample cost to metrics, joining the stage-row model', async () => {
     storePriceTable();
     const sub = `u-${randomUUID()}`;
