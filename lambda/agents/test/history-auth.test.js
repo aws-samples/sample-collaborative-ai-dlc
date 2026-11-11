@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
@@ -8,7 +9,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { GetParameterCommand, PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
 import { mockClient } from 'aws-sdk-client-mock';
@@ -286,10 +287,29 @@ describe('project agent capabilities', () => {
       expect.objectContaining({ cli: 'codex', enabled: false, available: false, installed: true }),
     ]);
   });
+});
 
-  it('labels a Codex catalogue model that has no price and leaves priced ones unchanged', async () => {
-    const caller = `u-${randomUUID()}`;
-    const { projectId } = await seedProject(caller);
+// Model lists and prices come from AWS at run time; each test loads its own
+// handler module so no list or price table cached by another test is in play.
+describe('picker models and prices', () => {
+  const PRICE_LIST = JSON.parse(
+    readFileSync(
+      new URL('../../shared/test/fixtures/price-list-sample.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  const PRICING_PARAMETER = '/collab/dev/model-pricing';
+  const model = (id) => ({ id, name: id, description: null });
+  const profile = (id) => ({ inferenceProfileId: id, inferenceProfileName: id, status: 'ACTIVE' });
+  let fresh;
+
+  beforeEach(async () => {
+    vi.stubEnv('BEDROCK_REGION', 'us-east-1');
+    vi.resetModules();
+    ({ handler: fresh } = await import('../index.js'));
+  });
+
+  const runtimeAnswers = (codexModels) =>
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: {
         transformToString: async () =>
@@ -297,36 +317,219 @@ describe('project agent capabilities', () => {
             ok: true,
             clis: [{ cli: 'codex', installed: true, authed: true, available: true }],
             kiroModels: { models: [], default: null },
-            codexModels: {
-              source: 'catalog',
-              models: [
-                { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra', description: null },
-                { id: 'openai.gpt-9-unlisted', name: 'openai.gpt-9-unlisted', description: null },
-              ],
-            },
+            ...(codexModels ? { codexModels } : {}),
           }),
       },
     });
-
+  const pickerModels = async () => {
+    const caller = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(caller);
     const request = event({
       path: `/projects/${projectId}/agent-capabilities`,
       projectId,
       sub: caller,
     });
-    const response = await handler({ ...request, queryStringParameters: { models: '1' } });
+    return {
+      request: { ...request, queryStringParameters: { models: '1' } },
+      response: await fresh({ ...request, queryStringParameters: { models: '1' } }),
+    };
+  };
+  const storedTable = async () => {
+    const { refreshPricing, serializePriceTable } = await import('../../shared/model-pricing.js');
+    return serializePriceTable(
+      await refreshPricing({ getProducts: async () => PRICE_LIST, region: 'us-east-1' }),
+    );
+  };
+
+  it('returns every list as read and marks only the models that have no price', async () => {
+    ssmMock
+      .on(GetParameterCommand, { Name: PRICING_PARAMETER })
+      .resolves({ Parameter: { Value: await storedTable() } });
+    // The region lists more inference profiles than one page holds.
+    bedrockMock
+      .on(ListInferenceProfilesCommand)
+      .resolves({
+        inferenceProfileSummaries: [profile('us.anthropic.claude-sonnet-4-6')],
+        nextToken: 'page-2',
+      })
+      .on(ListInferenceProfilesCommand, { nextToken: 'page-2' })
+      .resolves({ inferenceProfileSummaries: [profile('us.anthropic.claude-opus-9')] });
+    runtimeAnswers({
+      source: 'catalog',
+      models: [model('openai.gpt-6.1-terra'), model('openai.gpt-9-unlisted')],
+    });
+
+    const { response } = await pickerModels();
 
     expect(response.statusCode).toBe(200);
     const { models } = JSON.parse(response.body);
     expect(models.codexSource).toBe('catalog');
     expect(models.codex).toEqual([
-      { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra', description: null },
+      model('openai.gpt-6.1-terra'),
+      { ...model('openai.gpt-9-unlisted'), priced: false },
+    ]);
+    expect(models.claude).toEqual([
       {
-        id: 'openai.gpt-9-unlisted',
-        name: 'openai.gpt-9-unlisted (no price — cost unavailable)',
+        id: 'us.anthropic.claude-opus-9',
+        name: 'us.anthropic.claude-opus-9',
         description: null,
         priced: false,
       },
+      {
+        id: 'us.anthropic.claude-sonnet-4-6',
+        name: 'us.anthropic.claude-sonnet-4-6',
+        description: null,
+      },
     ]);
+    expect(models.opencode.map((m) => [m.id, m.priced])).toEqual([
+      ['amazon-bedrock/us.anthropic.claude-opus-9', false],
+      ['amazon-bedrock/us.anthropic.claude-sonnet-4-6', undefined],
+    ]);
+  });
+
+  it('answers with the lists and no price marks when pricing is unavailable', async () => {
+    ssmMock.on(GetParameterCommand, { Name: PRICING_PARAMETER }).rejects(new Error('Throttled'));
+    pricingMock.on(GetProductsCommand).rejects(new Error('Rate exceeded'));
+    bedrockMock
+      .on(ListInferenceProfilesCommand)
+      .resolves({ inferenceProfileSummaries: [profile('us.anthropic.claude-sonnet-4-6')] });
+    runtimeAnswers({ source: 'catalog', models: [model('openai.gpt-9-unlisted')] });
+
+    const { response } = await pickerModels();
+
+    expect(response.statusCode).toBe(200);
+    const { models } = JSON.parse(response.body);
+    expect(models.codex).toEqual([model('openai.gpt-9-unlisted')]);
+    expect(models.claude).toEqual([
+      {
+        id: 'us.anthropic.claude-sonnet-4-6',
+        name: 'us.anthropic.claude-sonnet-4-6',
+        description: null,
+      },
+    ]);
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+
+  it('marks every model as unpriced while no price table exists', async () => {
+    runtimeAnswers({ source: 'catalog', models: [model('openai.gpt-6.1-terra')] });
+
+    const { response } = await pickerModels();
+
+    expect(JSON.parse(response.body).models.codex).toEqual([
+      { ...model('openai.gpt-6.1-terra'), priced: false },
+    ]);
+  });
+
+  it('offers no built-in Codex list after a failed catalogue lookup, then the last list read', async () => {
+    runtimeAnswers({ source: 'error', models: [] });
+    const first = await pickerModels();
+    expect(JSON.parse(first.response.body).models).toMatchObject({
+      codex: [],
+      codexSource: 'error',
+    });
+
+    runtimeAnswers({ source: 'catalog', models: [model('openai.gpt-6.1-terra')] });
+    expect(JSON.parse((await fresh(first.request)).body).models.codexSource).toBe('catalog');
+
+    runtimeAnswers({ source: 'error', models: [] });
+    const cached = JSON.parse((await fresh(first.request)).body).models;
+    expect(cached.codexSource).toBe('cached');
+    expect(cached.codex.map((m) => m.id)).toEqual(['openai.gpt-6.1-terra']);
+  });
+
+  it('reports a runtime without a Codex catalogue as unavailable and keeps the Claude list', async () => {
+    bedrockMock
+      .on(ListInferenceProfilesCommand)
+      .resolves({ inferenceProfileSummaries: [profile('us.anthropic.claude-sonnet-4-6')] });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime unreachable'));
+
+    const { response } = await pickerModels();
+
+    expect(response.statusCode).toBe(200);
+    const { models } = JSON.parse(response.body);
+    expect(models).toMatchObject({ codex: [], codexSource: 'unavailable', kiro: [] });
+    expect(models.claude.map((m) => m.id)).toEqual(['us.anthropic.claude-sonnet-4-6']);
+  });
+
+  it('answers with an empty Claude list when the profile lookup fails', async () => {
+    bedrockMock.on(ListInferenceProfilesCommand).rejects(new Error('ThrottlingException'));
+    runtimeAnswers({ source: 'catalog', models: [model('openai.gpt-6.1-terra')] });
+
+    const { response } = await pickerModels();
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).models).toMatchObject({ claude: [], opencode: [] });
+  });
+
+  it('rebuilds the price table from the Price List on the scheduled event', async () => {
+    pricingMock
+      .on(GetProductsCommand)
+      .resolves({ PriceList: [] })
+      .on(GetProductsCommand, {
+        Filters: [
+          { Type: 'TERM_MATCH', Field: 'provider', Value: 'Anthropic' },
+          { Type: 'TERM_MATCH', Field: 'regionCode', Value: 'us-east-1' },
+          { Type: 'TERM_MATCH', Field: 'feature', Value: 'On-demand Inference' },
+        ],
+      })
+      .resolves({
+        PriceList: PRICE_LIST.filter((row) => row.product.attributes.provider === 'Anthropic').map(
+          // The SDK returns lazy JSON String objects.
+          (row) => new String(JSON.stringify(row)),
+        ),
+        NextToken: 'more',
+      })
+      .on(GetProductsCommand, { NextToken: 'more' })
+      .resolves({ PriceList: [] })
+      .on(GetProductsCommand, {
+        Filters: [
+          { Type: 'TERM_MATCH', Field: 'provider', Value: 'OpenAI' },
+          { Type: 'TERM_MATCH', Field: 'regionCode', Value: 'us-east-1' },
+          { Type: 'TERM_MATCH', Field: 'feature', Value: 'On-demand Inference' },
+        ],
+      })
+      .resolves({
+        PriceList: PRICE_LIST.filter((row) => row.product.attributes.provider === 'OpenAI'),
+      });
+    ssmMock.on(PutParameterCommand).resolves({});
+
+    const result = await fresh({ action: 'refresh-model-pricing' });
+
+    expect(result).toEqual({ refreshed: true });
+    for (const call of pricingMock.commandCalls(GetProductsCommand)) {
+      expect(call.args[0].input.ServiceCode).toBe('AmazonBedrockFoundationModels');
+    }
+    const [put] = ssmMock.commandCalls(PutParameterCommand);
+    expect(put.args[0].input).toMatchObject({
+      Name: PRICING_PARAMETER,
+      Type: 'String',
+      Tier: 'Intelligent-Tiering',
+      Overwrite: true,
+    });
+    const { parsePriceTable } = await import('../../shared/model-pricing.js');
+    const written = parsePriceTable(put.args[0].input.Value);
+    expect(written.region).toBe('us-east-1');
+    expect(written.prices).toEqual(parsePriceTable(await storedTable()).prices);
+    expect(put.args[0].input.Value.length).toBeLessThan(4096);
+  });
+
+  it.each([
+    ['is throttled', () => pricingMock.on(GetProductsCommand).rejects(new Error('Rate exceeded'))],
+    [
+      'fails on a later page',
+      () =>
+        pricingMock
+          .on(GetProductsCommand)
+          .resolves({ PriceList: PRICE_LIST, NextToken: 'more' })
+          .on(GetProductsCommand, { NextToken: 'more' })
+          .rejects(new Error('Rate exceeded')),
+    ],
+    ['returns no product', () => pricingMock.on(GetProductsCommand).resolves({ PriceList: [] })],
+  ])('leaves the stored table alone when the Price List %s', async (_label, arrange) => {
+    arrange();
+
+    expect(await fresh({ action: 'refresh-model-pricing' })).toEqual({ refreshed: false });
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
   });
 });
 

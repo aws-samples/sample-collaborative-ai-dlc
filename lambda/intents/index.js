@@ -88,7 +88,12 @@ import {
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
-import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
+import {
+  makePriceResolver,
+  costForMetrics,
+  modelFamily,
+  parsePriceTable,
+} from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { qualifyAgentAuthRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -577,26 +582,24 @@ const getConnection = async () => {
   return new DriverRemoteConnection(url, { headers });
 };
 
-// Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, a
-// family→{input,output} JSON that the agents lambda refreshes from the AWS Price
-// List API — this lambda never calls Pricing, so it needs no extra SDK client).
-// We cache the built resolver for the container's life. The static fallback baked
-// into model-pricing.js means cost is always computable even before the first
-// refresh has populated SSM. Best-effort: any failure degrades to the seed and
-// never breaks the intent GET.
+// Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, the
+// table the agents lambda builds from the AWS Price List API — this lambda
+// never calls Pricing, so it needs no extra SDK client). There is no built-in
+// price: until the table exists, or when it cannot be read, cost is reported
+// as unavailable (`priced: false`), and the next read picks the table up.
+// Best-effort: a failure never breaks the intent GET.
 const MODEL_PRICING_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-const PRICING_TTL_MS = 6 * 60 * 60 * 1000; // re-read SSM at most every 6h
+const PRICING_TTL_MS = 15 * 60 * 1000; // re-read SSM at most every 15 minutes
 let cachedPricing = null; // { resolver, at }
 
 const loadPricingTable = async () => {
   const prefix = MODEL_PRICING_SSM_PREFIX();
-  if (!prefix) return {};
+  if (!prefix) return null;
   try {
     const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/model-pricing` }));
-    const parsed = JSON.parse(res.Parameter?.Value || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    return parsePriceTable(res.Parameter?.Value ?? '');
   } catch {
-    return {}; // not yet populated / unreadable → static fallback prices this run
+    return null; // not yet populated / unreadable → cost unavailable this read
   }
 };
 
@@ -604,9 +607,11 @@ const getPriceResolver = async () => {
   if (cachedPricing && Date.now() - cachedPricing.at < PRICING_TTL_MS) {
     return cachedPricing.resolver;
   }
-  const table = await loadPricingTable().catch(() => ({}));
+  const table = await loadPricingTable();
   const resolver = makePriceResolver(table);
-  cachedPricing = { resolver, at: Date.now() };
+  // A missing table is not cached: the first refresh after a deployment should
+  // show up on the next read, not a quarter of an hour later.
+  if (table) cachedPricing = { resolver, at: Date.now() };
   return resolver;
 };
 

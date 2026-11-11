@@ -10,8 +10,6 @@
 // Pure of the AWS SDK: the caller injects a `listInferenceProfiles` fn (returns the
 // raw summaries array) so this is unit-tested without Bedrock.
 
-import { makePriceResolver } from './model-pricing.js';
-
 // Region → cross-region inference-profile geo prefix (mirrors model-resolver.js).
 const regionPrefix = (region = '') => {
   if (region.startsWith('eu-')) return 'eu';
@@ -70,27 +68,11 @@ const listClaudeModels = async ({
   return models;
 };
 
-// The OpenAI models Bedrock's OpenAI-compatible Responses API serves for the
-// Codex CLI (per the Codex-on-Bedrock docs). These are EXACT ids in codex's own
-// namespace — no geo prefix, no provider prefix — and ListInferenceProfiles does
-// not surface them, so a curated static list is the honest source for the UI
-// picker. Regional availability still applies at invoke time.
-const CODEX_BEDROCK_MODELS = [
-  { id: 'openai.gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null },
-  { id: 'openai.gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null },
-  { id: 'openai.gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null },
-  { id: 'openai.gpt-5.5', name: 'GPT-5.5', description: null },
-  { id: 'openai.gpt-5.4', name: 'GPT-5.4', description: null },
-];
-
 // Codex drives the OpenAI models that bedrock-mantle serves through its
 // OpenAI-compatible API, so the catalogue has to come from that endpoint: the
 // IDs are not inference profiles (ListInferenceProfiles never lists them) and
-// availability differs per inference region (#674).
-//
-// The curated list below stays as the fallback for a lookup that fails or a
-// runtime that cannot reach the endpoint; the discovery path is preferred
-// because it reflects the region the invocation will actually use.
+// availability differs per inference region (#674). There is no built-in list:
+// a lookup that fails reports `source: 'error'` and the caller says so.
 const CODEX_ID = /^openai\./;
 // GPT-OSS entries are listed by Mantle but their Responses-API compatibility is
 // untested (see #674), so the picker does not offer them yet.
@@ -108,7 +90,7 @@ const toCodexModel = (entry) => {
 //   listModels(region) -> the raw `/v1/models` payload ({ data: [{ id }] }) or throws.
 // A saved id the region no longer lists stays selectable, because a saved
 // selection is configuration the user owns; a failed lookup reports
-// `source: 'error'` so the caller can fall back instead of showing an empty list.
+// `source: 'error'` so the caller can tell it from a region that lists nothing.
 const listCodexModels = async ({ listModels, region, savedIds = [] }) => {
   const saved = [...new Set(savedIds.filter((id) => typeof id === 'string' && id))];
   const withSaved = (models) => {
@@ -136,43 +118,11 @@ const listCodexModels = async ({ listModels, region, savedIds = [] }) => {
   return { models: withSaved(models), source: 'catalog' };
 };
 
-// What the picker offers for Codex. The regional catalogue decides, even when it
-// is empty: a region that serves no compatible model is an answer, and swapping
-// in the curated ids would offer models that region cannot run (#674). The
-// curated list stays the fallback for a lookup that failed (`source: 'error'`)
-// or a runtime with no discovery path at all, so `source` is what tells the two
-// apart. A saved id survives either way — it is prepended by listCodexModels.
-//
-// The catalogue can list a model the price table (model-pricing.js) does not
-// know yet. Such a model stays selectable, but its usage will be recorded with
-// the cost unavailable, so the option says so (`priced: false` and a note in the
-// name every picker renders) instead of looking like any other model.
-const CODEX_UNPRICED_NOTE = 'no price — cost unavailable';
-const priceForCodex = makePriceResolver();
-const codexModelsFor = (codex) => {
-  const models = codex?.source === 'catalog' ? (codex.models ?? []) : CODEX_BEDROCK_MODELS;
-  if (models.every((model) => priceForCodex(model.id).priced)) return models;
-  return models.map((model) =>
-    priceForCodex(model.id).priced
-      ? model
-      : { ...model, name: `${model.name} (${CODEX_UNPRICED_NOTE})`, priced: false },
-  );
-};
-
 const __test = { isUsable, toModel, toCodexModel };
-export {
-  listClaudeModels,
-  listCodexModels,
-  codexModelsFor,
-  regionPrefix,
-  CODEX_BEDROCK_MODELS,
-  __test,
-};
+export { listClaudeModels, listCodexModels, regionPrefix, __test };
 export default {
   listClaudeModels,
   listCodexModels,
-  codexModelsFor,
   regionPrefix,
-  CODEX_BEDROCK_MODELS,
   __test,
 };

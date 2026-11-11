@@ -1,22 +1,40 @@
-// Model pricing — translate token usage into USD. Two layers:
-//   1. A cached price table keyed by canonical model FAMILY (e.g.
-//      "claude-sonnet-4-6"), refreshed from the AWS Price List API and persisted
-//      to SSM (so we don't do a cross-region pricing call per request).
-//   2. A static fallback seed for families the API's fuzzy SKU names miss, so a
-//      known model never silently prices at $0.
+// Model pricing — translate token usage into USD.
 //
-// Prices are USD per 1,000,000 tokens (the Price List unit for Bedrock token
-// SKUs). `priceFor` normalizes any resolved model id (region-prefixed Bedrock
-// inference profile, or a Kiro namespace id) to a family before lookup — a
-// Kiro credit id (e.g. "claude-opus-4.6", "auto") normalizes to something not in
-// the table and is reported unpriced, which is correct (Kiro is credit-based).
+// Every rate comes from the AWS Price List API. There is no static price table:
+// a model the Price List does not publish a usable rate for is reported
+// `priced: false` ("usage known, price unavailable"), never estimated and never
+// priced as another model.
+//
+// The price table is built for ONE region — the inference region — because
+// Bedrock publishes different rates per region. Its shape (PRICE_TABLE_VERSION):
+//   { version, region, refreshedAt, prices: { <family>: { regional?, global? } } }
+// where each tier is { input, output, cacheRead?, cacheWrite?, cacheWrite1h? }
+// in USD per 1,000,000 tokens. `regional` is the In-Region / Geo cross-region
+// rate (bare, `us.`, `eu.`, `apac.` ids); `global` is the Global cross-region
+// rate (`global.` ids). A tier the Price List does not publish stays absent, so
+// an id that needs it is unpriced.
+//
+// `priceFor` normalizes any resolved model id (region-prefixed Bedrock inference
+// profile, or a Kiro namespace id) to a family before lookup — a Kiro credit id
+// (e.g. "claude-opus-4.6", "auto") normalizes to something not in the table and
+// is reported unpriced, which is correct (Kiro is credit-based).
+//
+// Limits that the Price List cannot resolve on its own (see
+// docs/using-the-platform/intent-observability.md):
+//   - A product carries a display name ("Claude Sonnet 4.6", "OpenAI GPT-5.5"),
+//     not a model id. `familyFromPriceName` and `modelFamily` normalize both to
+//     the same key; a name that does not normalize to an id's family is simply
+//     never matched (unpriced).
+//   - Metric samples carry no per-request prompt length, so the short-context
+//     tier is always used; long-context, batch, flex, priority and
+//     latency-optimized SKUs are ignored.
 //
 // Pure of the AWS SDK: `refreshPricing` takes an injected `getProducts` fn (the
 // same testability contract as bedrock-models.js).
 //
 // Write/read split (deliberate): the AGENTS lambda REFRESHES the SSM table
-// (`refreshPricing` → Price List API → SSM) on model discovery; the INTENTS
-// lambda only READS it (+ this static fallback). The intents lambda bundles the
+// (`refreshPricing` → Price List API → SSM) on a schedule and on model
+// discovery; the INTENTS lambda only READS it. The intents lambda bundles the
 // AWS SDK via esbuild WITHOUT `--external:@aws-sdk/*`, so pulling in
 // @aws-sdk/client-pricing there would bundle a new client and risk the @smithy/*
 // major-version mismatch crash (the "hashConstructor is not a constructor"
@@ -25,62 +43,13 @@
 // there. Keep the two sides in this shape when touching pricing.
 
 const TOKENS_PER_UNIT = 1_000_000;
-
-// Static fallback — current published Anthropic-on-Bedrock token prices
-// (USD / 1M tokens). Keyed by canonical family. Used when the cached table lacks
-// an entry. Update when a model ships or a price changes.
-//
-// Claude 5.x entries are Amazon Bedrock Standard-tier on-demand prices from the
-// AWS Price List (offer AmazonBedrockFoundationModels, eu-west-1 / us-east-1,
-// October 2026). `input`/`output` are the Global cross-region inference rates
-// (`global.` ids); `regional` holds the Geo cross-region / in-Region rates
-// (`eu.`, `us.`, `apac.` and bare `anthropic.` ids), which Bedrock bills at
-// 1.1x. Mythos 5 has no Global profile, so only its regional rate is billable.
-// Not covered: Haiku 5.5 bills prompts over 100K tokens at 5x (input
-// $0.50/$0.55, output $2.50/$2.75), but metric samples don't carry per-request
-// prompt length, so the base rate is used.
-const FALLBACK_PRICES = {
-  'claude-fable-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
-  'claude-mythos-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
-  'claude-opus-5-5': { input: 4, output: 20, regional: { input: 4.4, output: 22 } },
-  'claude-sonnet-5-5': { input: 2, output: 10, regional: { input: 2.2, output: 11 } },
-  'claude-haiku-5-5': { input: 0.1, output: 0.5, regional: { input: 0.11, output: 0.55 } },
-  'claude-fable-5': { input: 10, output: 50, regional: { input: 11, output: 55 } },
-  'claude-mythos-5': { input: 10, output: 50, regional: { input: 11, output: 55 } },
-  'claude-opus-5': { input: 5, output: 25, regional: { input: 5.5, output: 27.5 } },
-  'claude-sonnet-5': { input: 2, output: 10, regional: { input: 2.2, output: 11 } },
-  'claude-opus-4-8': { input: 5, output: 25 },
-  'claude-opus-4-7': { input: 5, output: 25 },
-  'claude-opus-4-6': { input: 5, output: 25 },
-  'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
-  // OpenAI models served to Codex through the Bedrock Mantle endpoint, which
-  // takes the bare `openai.` id and bills the In-Region rate. Standard-tier
-  // short-context (272K input tokens or fewer) prices from each Bedrock model
-  // card and the AWS Price List (offer AmazonBedrockFoundationModels,
-  // us-east-1, November 2026). The long-context tier is not needed: the pinned
-  // Codex (0.162.1) gives every model in its Bedrock catalog a 272K context
-  // window, and the runtime does not raise it, so no request can exceed the
-  // threshold. GPT-5.5 and GPT-5.4 have no cache-write fee; those tokens bill
-  // at the input rate. GPT-5.4 and GPT-6.1 Terra are absent from that catalog
-  // but selectable (CODEX_BEDROCK_MODELS, the regional Mantle catalogue); Codex
-  // gives them the same window through its fallback metadata.
-  //
-  // This table cannot follow the Mantle catalogue on its own: a model the
-  // region starts to list has no entry until one is added here. The picker
-  // labels such a model (codexModelsFor in bedrock-models.js) and its usage is
-  // reported unpriced. Add the entry from the price list; never estimate one.
-  'openai.gpt-6.1-sol': { input: 2.2, output: 11, cacheRead: 0.11, cacheWrite: 2.75 },
-  'openai.gpt-6.1-terra': { input: 1.1, output: 5.5, cacheRead: 0.055, cacheWrite: 1.375 },
-  'openai.gpt-6-astra': { input: 11, output: 55, cacheRead: 1.1, cacheWrite: 13.75 },
-  'openai.gpt-6-sol': { input: 2.2, output: 11, cacheRead: 0.22, cacheWrite: 2.75 },
-  'openai.gpt-6-luna': { input: 0.11, output: 0.55, cacheRead: 0.011, cacheWrite: 0.1375 },
-  'openai.gpt-5.6-sol': { input: 4.4, output: 22, cacheRead: 0.44, cacheWrite: 5.5 },
-  'openai.gpt-5.6-terra': { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75 },
-  'openai.gpt-5.6-luna': { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275 },
-  'openai.gpt-5.5': { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 5.5 },
-  'openai.gpt-5.4': { input: 2.75, output: 16.5, cacheRead: 0.275, cacheWrite: 2.75 },
-};
+const PRICE_TABLE_VERSION = 2;
+// The offer that carries the current Bedrock foundation-model token SKUs. The
+// older `AmazonBedrock` offer only lists retired models.
+const PRICE_LIST_SERVICE_CODE = 'AmazonBedrockFoundationModels';
+// Providers whose models the agent CLIs run on Bedrock (Claude Code / OpenCode,
+// Codex). GetProducts cannot OR a filter, so each is one query.
+const PRICE_LIST_PROVIDERS = ['Anthropic', 'OpenAI'];
 
 // Normalize a resolved model id to a canonical family key.
 //   us.anthropic.claude-sonnet-4-6            → claude-sonnet-4-6
@@ -91,11 +60,14 @@ const FALLBACK_PRICES = {
 //   openai.gpt-5.5 (Codex)                    → openai.gpt-5.5
 //   openai.gpt-5.5-2026-04-23                 → openai.gpt-5.5
 //   global.openai.gpt-5.5                     → global.openai.gpt-5.5 (unpriced)
+//   anthropic.claude-3-5-sonnet-20241022-v2:0 → claude-3-5-sonnet-v2
 // Dots in a Kiro version (4.6) are intentionally NOT converted to dashes, so a
 // Kiro id never collides with a Bedrock family and gets token-priced.
 // Codex ids keep their exact Mantle form, except that a dated snapshot id
 // (`-YYYY-MM-DD`, which Mantle lists next to the undated id) is the same model:
 // Bedrock publishes one set of rates per model, so it prices as the undated id.
+// A `-v1` revision is the model itself; a later revision (`-v2`) is a separate
+// Price List product ("Claude 3.5 Sonnet v2") and keeps its suffix.
 // A geo-prefixed OpenAI id is a Bedrock Runtime profile with different rates, so
 // it keeps its prefix and no family.
 const modelFamily = (modelId) => {
@@ -109,10 +81,10 @@ const modelFamily = (modelId) => {
   id = id.replace(/^(us|eu|apac|global)\./, '');
   // Drop the anthropic provider prefix.
   id = id.replace(/^anthropic\./, '');
-  // Drop a trailing ":N" model-version selector and a "-vN" revision.
-  id = id.replace(/:\d+$/, '').replace(/-v\d+$/, '');
-  // Drop a trailing date stamp (…-20251001).
-  id = id.replace(/-\d{8}$/, '');
+  // Drop a trailing ":N" model-version selector and a "-v1" revision.
+  id = id.replace(/:\d+$/, '').replace(/-v1$/, '');
+  // Drop a date stamp (…-20251001), also in front of a later revision.
+  id = id.replace(/-\d{8}(?=$|-v\d+$)/, '');
   // Drop an OpenAI snapshot date (…-2026-04-23).
   if (id.startsWith('openai.')) id = id.replace(/-\d{4}-\d{2}-\d{2}$/, '');
   return id;
@@ -127,17 +99,27 @@ const isGlobalProfile = (modelId) =>
       .toLowerCase(),
   );
 
+const isRate = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const perToken = (value) => (isRate(value) ? value / TOKENS_PER_UNIT : null);
+
 // Build a priceFor(modelId) → { model, family, currency, inputPerToken,
-// outputPerToken, priced } resolver over a given table (falling back to the
-// static seed). Per-token rates are derived from the per-1M table entry. An
-// entry with a `regional` rate uses it for every id except a `global.` profile.
-const makePriceResolver = (table = {}) => {
-  const lookup = { ...FALLBACK_PRICES, ...table };
+// outputPerToken, cache rates, priced } resolver over a price table. Only a
+// table of the current version is read: an older SSM value was merged with the
+// retired static prices, so it is ignored and everything is unpriced until the
+// next refresh. A `global.` profile uses the `global` tier and every other id
+// the `regional` tier; a missing tier is unpriced, never replaced by the other.
+// A cache rate the Price List does not publish is null, which makes a sample
+// that carries those tokens unpriced (see costForMetrics).
+const makePriceResolver = (table) => {
+  const prices =
+    table?.version === PRICE_TABLE_VERSION && table.prices && typeof table.prices === 'object'
+      ? table.prices
+      : {};
   return (modelId) => {
     const family = modelFamily(modelId);
-    const base = family ? lookup[family] : null;
-    const entry = base?.regional && !isGlobalProfile(modelId) ? base.regional : base;
-    if (!entry) {
+    const tiers = family && Object.hasOwn(prices, family) ? prices[family] : null;
+    const entry = tiers?.[isGlobalProfile(modelId) ? 'global' : 'regional'];
+    if (!isRate(entry?.input) || !isRate(entry?.output)) {
       return {
         model: modelId ?? null,
         family,
@@ -153,24 +135,11 @@ const makePriceResolver = (table = {}) => {
       currency: 'USD',
       inputPerToken: entry.input / TOKENS_PER_UNIT,
       outputPerToken: entry.output / TOKENS_PER_UNIT,
-      // Anthropic explicit cache pricing, relative to standard input:
-      // https://aws.amazon.com/blogs/machine-learning/optimizing-cost-and-latency-with-amazon-bedrock-prompt-caching/
-      ...(family.startsWith('claude-')
-        ? {
-            cacheReadPerToken: (entry.cacheRead ?? entry.input * 0.1) / TOKENS_PER_UNIT,
-            cacheWritePerToken: (entry.cacheWrite ?? entry.input * 1.25) / TOKENS_PER_UNIT,
-            cacheWrite1hPerToken: (entry.cacheWrite1h ?? entry.input * 2) / TOKENS_PER_UNIT,
-          }
-        : {}),
+      cacheReadPerToken: perToken(entry.cacheRead),
+      cacheWritePerToken: perToken(entry.cacheWrite),
+      cacheWrite1hPerToken: perToken(entry.cacheWrite1h),
       // Responses API input_tokens includes cache reads and writes.
-      ...(family.startsWith('openai.')
-        ? {
-            inputIncludesCache: true,
-            cacheReadPerToken: entry.cacheRead != null ? entry.cacheRead / TOKENS_PER_UNIT : null,
-            cacheWritePerToken:
-              entry.cacheWrite != null ? entry.cacheWrite / TOKENS_PER_UNIT : null,
-          }
-        : {}),
+      ...(family.startsWith('openai.') ? { inputIncludesCache: true } : {}),
       priced: true,
     };
   };
@@ -190,6 +159,7 @@ const makePriceResolver = (table = {}) => {
 // `estimated: true` and the UI caveats it rather than presenting it as billing
 // truth.
 const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
+  // No resolver means no price table: every model is unpriced.
   const priceFor = resolver ?? makePriceResolver();
   const price = priceFor(modelId);
   const tin = typeof metrics.tokensInput === 'number' ? metrics.tokensInput : 0;
@@ -229,115 +199,190 @@ const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
   };
 };
 
-// Canonical family from a Price List display NAME (e.g. "Claude Sonnet 4.6").
-// Distinct from modelFamily (which normalizes runtime ids and deliberately keeps
-// a Kiro dotted version): here spaces and dots BOTH become dashes so the display
-// name lands on the same key as a Bedrock id ("claude-sonnet-4-6").
+// Canonical family from a Price List display NAME. The Price List has no model
+// id, so this is the only link between a product and a runtime id:
+//   "Claude Sonnet 4.6"     → claude-sonnet-4-6     (spaces and dots → dashes)
+//   "Claude 3.5 Sonnet v2"  → claude-3-5-sonnet-v2
+//   "OpenAI GPT-6.1 Terra"  → openai.gpt-6.1-terra  (Mantle ids keep their dots)
+// Anything else has no family and is skipped.
 const familyFromPriceName = (name) => {
-  if (!name) return null;
-  const m = String(name)
-    .toLowerCase()
-    .match(/claude[\s.\w-]*?(?=\s*(?:input|output|token|$))/);
-  const raw = (m?.[0] ?? '').trim();
-  if (!raw.startsWith('claude')) return null;
-  return raw.replace(/[\s.]+/g, '-').replace(/-+$/, '');
+  const text = String(name ?? '')
+    .trim()
+    .toLowerCase();
+  if (/^claude\s/.test(text)) return text.replace(/[\s.]+/g, '-');
+  if (/^openai\s+gpt/.test(text))
+    return `openai.${text.replace(/^openai\s+/, '').replace(/\s+/g, '-')}`;
+  return null;
 };
 
-// Parse an AWS Price List `GetProducts` page set into a family price table,
-// including cache rates. `products` is the array of PriceList JSON strings (or objects)
-// GetProducts returns. Best-effort: only Anthropic Claude on-demand token SKUs
-// with a usdPerToken price and a recognizable family are kept. Unrecognized rows
-// are skipped, never thrown.
-const parsePriceList = (products = []) => {
-  const table = {};
+// The token SKUs that are read, by the usage-type suffix the Price List gives
+// them (`<REGION>-MP:<REGION>_<suffix>-Units`). Bedrock uses two naming
+// generations. This is an allow-list on purpose: a SKU that is not listed here
+// (long context, batch, flex, priority, latency-optimized, anything new) is
+// ignored, so an unknown tier can leave a model unpriced but cannot misprice it.
+const SKU_SLOTS = {
+  input_tokens_standard: ['regional', 'input'],
+  output_tokens_standard: ['regional', 'output'],
+  cache_read_tokens_standard: ['regional', 'cacheRead'],
+  cached_input_tokens_standard: ['regional', 'cacheRead'],
+  cache_write_tokens_standard: ['regional', 'cacheWrite'],
+  cache_write_tokens_30m_standard: ['regional', 'cacheWrite'],
+  cache_write_tokens_1h_standard: ['regional', 'cacheWrite1h'],
+  input_tokens_global_standard: ['global', 'input'],
+  output_tokens_global_standard: ['global', 'output'],
+  cache_read_tokens_global_standard: ['global', 'cacheRead'],
+  cache_write_tokens_global_standard: ['global', 'cacheWrite'],
+  cache_write_tokens_30m_global_standard: ['global', 'cacheWrite'],
+  cache_write_tokens_1h_global_standard: ['global', 'cacheWrite1h'],
+  InputTokenCount: ['regional', 'input'],
+  OutputTokenCount: ['regional', 'output'],
+  CacheReadInputTokenCount: ['regional', 'cacheRead'],
+  CacheWriteInputTokenCount: ['regional', 'cacheWrite'],
+  CacheWrite1hInputTokenCount: ['regional', 'cacheWrite1h'],
+  InputTokenCount_Global: ['global', 'input'],
+  OutputTokenCount_Global: ['global', 'output'],
+  CacheReadInputTokenCount_Global: ['global', 'cacheRead'],
+  CacheWriteInputTokenCount_Global: ['global', 'cacheWrite'],
+  CacheWrite1hInputTokenCount_Global: ['global', 'cacheWrite1h'],
+};
+const USAGE_TYPE = /^[A-Z0-9]+-MP:[A-Z0-9]+_(.+)-Units$/;
+
+// The single on-demand USD rate of a product, per 1M tokens. A product with
+// another unit, several terms or dimensions, or no usable number has no rate.
+const onDemandPer1M = (terms) => {
+  const onDemand = Object.values(terms?.OnDemand ?? {});
+  if (onDemand.length !== 1) return null;
+  const dimensions = Object.values(onDemand[0]?.priceDimensions ?? {});
+  if (dimensions.length !== 1 || dimensions[0]?.unit !== '1M tokens') return null;
+  const raw = dimensions[0]?.pricePerUnit?.USD;
+  const usd = raw == null || raw === '' ? NaN : Number(raw);
+  return isRate(usd) ? usd : null;
+};
+
+// Parse AWS Price List `GetProducts` results into `prices` for one region.
+// `products` is the array of PriceList JSON strings (or parsed objects). Best-effort
+// per row: an unrecognized row is skipped, never thrown. Two rows that disagree
+// on the same rate drop that tier, and a tier without both an input and an
+// output rate is dropped, because either would misprice.
+const parsePriceList = (products = [], { region } = {}) => {
+  const prices = {};
+  const conflicts = new Set();
   for (const raw of products) {
-    let p;
+    // The AWS SDK returns each entry as a String object (lazy JSON), not a
+    // primitive string, so `typeof` cannot tell text from a parsed product.
+    let product;
     try {
-      p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      product = raw?.product ? raw : JSON.parse(String(raw));
     } catch {
       continue;
     }
-    const attrs = p?.product?.attributes ?? {};
-    // The `model` attribute is a display name ("Claude Sonnet 4.6"); fall back to
-    // scanning other name-ish attributes for a "claude…" token.
-    const family =
-      familyFromPriceName(attrs.model) ??
-      familyFromPriceName(`${attrs.titanModelName ?? ''} ${attrs.usagetype ?? ''}`);
-    if (!family || !family.startsWith('claude')) continue;
-    // Direction: Bedrock token SKUs distinguish input vs output tokens in the
-    // usagetype / feature attributes.
-    const blob = JSON.stringify({ attrs, terms: p?.terms }).toLowerCase();
-    const isInput = /input token|inputtoken/.test(blob);
-    const isOutput = /output token|outputtoken/.test(blob);
-    if (!isInput && !isOutput) continue;
-    const perToken = extractOnDemandUsd(p?.terms);
-    if (perToken == null) continue;
-    const per1M = perToken * TOKENS_PER_UNIT;
-    table[family] = table[family] ?? {};
-    // Cache SKUs also say "input token"; never let them overwrite the base rate.
-    if (/cache/.test(blob)) {
-      if (/read/.test(blob)) table[family].cacheRead = per1M;
-      else if (/write/.test(blob)) {
-        const key = /1.?hour|1.?hr|1h\b/.test(blob) ? 'cacheWrite1h' : 'cacheWrite';
-        table[family][key] = per1M;
-      }
-    } else {
-      if (isInput) table[family].input = per1M;
-      if (isOutput) table[family].output = per1M;
-    }
+    const attrs = product?.product?.attributes ?? {};
+    if (attrs.feature !== 'On-demand Inference') continue;
+    if (region && attrs.regionCode !== region) continue;
+    const family = familyFromPriceName(attrs.model);
+    const suffix = USAGE_TYPE.exec(attrs.usagetype ?? '')?.[1];
+    const slot = suffix && Object.hasOwn(SKU_SLOTS, suffix) ? SKU_SLOTS[suffix] : null;
+    if (!family || !slot) continue;
+    const rate = onDemandPer1M(product?.terms);
+    if (rate == null) continue;
+    const [tier, field] = slot;
+    const entry = ((prices[family] ??= {})[tier] ??= {});
+    if (Object.hasOwn(entry, field) && entry[field] !== rate) conflicts.add(`${family}/${tier}`);
+    entry[field] = rate;
   }
-  // Keep only families that resolved BOTH directions; a half-populated entry
-  // would misprice, so let it fall back to the static seed instead.
   const complete = {};
-  for (const [family, v] of Object.entries(table)) {
-    if (typeof v.input === 'number' && typeof v.output === 'number') complete[family] = v;
+  for (const [family, tiers] of Object.entries(prices)) {
+    for (const [tier, entry] of Object.entries(tiers)) {
+      if (conflicts.has(`${family}/${tier}`)) continue;
+      if (!isRate(entry.input) || !isRate(entry.output)) continue;
+      (complete[family] ??= {})[tier] = entry;
+    }
   }
   return complete;
 };
 
-// Pull the on-demand USD-per-unit out of a Price List `terms.OnDemand` block.
-const extractOnDemandUsd = (terms) => {
-  const onDemand = terms?.OnDemand;
-  if (!onDemand) return null;
-  for (const term of Object.values(onDemand)) {
-    for (const dim of Object.values(term?.priceDimensions ?? {})) {
-      const usd = dim?.pricePerUnit?.USD;
-      if (usd != null && !Number.isNaN(Number(usd))) return Number(usd);
+// Build a fresh price table for `region` from the Price List API. `getProducts`
+// is injected and returns the flat PriceList array (all pages, all providers).
+// A failed lookup throws and a lookup with no usable price returns null — never
+// a partial or made-up table — so the caller keeps whatever table it already has.
+const refreshPricing = async ({ getProducts, region, now = () => new Date() } = {}) => {
+  if (typeof getProducts !== 'function' || !region) return null;
+  const products = await getProducts();
+  const prices = parsePriceList(products ?? [], { region });
+  if (Object.keys(prices).length === 0) return null;
+  return { version: PRICE_TABLE_VERSION, region, refreshedAt: now().toISOString(), prices };
+};
+
+// SSM form of a price table. A standard parameter holds 4 KB and one region's
+// table is larger than that as plain objects, so each tier is stored as a rate
+// array in RATE_FIELDS order (null for a rate that is not published).
+const RATE_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'];
+const serializePriceTable = (table) =>
+  JSON.stringify({
+    ...table,
+    prices: Object.fromEntries(
+      Object.entries(table.prices).map(([family, tiers]) => [
+        family,
+        Object.fromEntries(
+          Object.entries(tiers).map(([tier, entry]) => [
+            tier,
+            RATE_FIELDS.map((field) => entry[field] ?? null),
+          ]),
+        ),
+      ]),
+    ),
+  });
+
+// Read a stored table back. Returns null for anything that is not a table of the
+// current version — notably the pre-version value, which was merged with the
+// retired static prices and must not be used.
+const parsePriceTable = (text) => {
+  let stored;
+  try {
+    stored = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (stored?.version !== PRICE_TABLE_VERSION || typeof stored.prices !== 'object') return null;
+  const prices = {};
+  for (const [family, tiers] of Object.entries(stored.prices ?? {})) {
+    for (const [tier, rates] of Object.entries(tiers ?? {})) {
+      if (!Array.isArray(rates)) continue;
+      const entry = {};
+      RATE_FIELDS.forEach((field, i) => {
+        if (isRate(rates[i])) entry[field] = rates[i];
+      });
+      (prices[family] ??= {})[tier] = entry;
     }
   }
-  return null;
+  return { ...stored, prices };
 };
 
-// Refresh the price table from the Price List API and return it. `getProducts`
-// is injected (returns the flat PriceList array). Never throws — a failed fetch
-// yields the static fallback so callers always get a usable table.
-const refreshPricing = async ({ getProducts } = {}) => {
-  if (typeof getProducts !== 'function') return { ...FALLBACK_PRICES };
-  try {
-    const products = await getProducts();
-    const parsed = parsePriceList(products ?? []);
-    // Merge over the seed so any family the API didn't return still has a price.
-    return { ...FALLBACK_PRICES, ...parsed };
-  } catch {
-    return { ...FALLBACK_PRICES };
-  }
-};
-
+const __test = { familyFromPriceName, SKU_SLOTS };
 export {
-  FALLBACK_PRICES,
   TOKENS_PER_UNIT,
+  PRICE_TABLE_VERSION,
+  PRICE_LIST_SERVICE_CODE,
+  PRICE_LIST_PROVIDERS,
   modelFamily,
   makePriceResolver,
   costForMetrics,
   parsePriceList,
   refreshPricing,
+  serializePriceTable,
+  parsePriceTable,
+  __test,
 };
 export default {
-  FALLBACK_PRICES,
   TOKENS_PER_UNIT,
+  PRICE_TABLE_VERSION,
+  PRICE_LIST_SERVICE_CODE,
+  PRICE_LIST_PROVIDERS,
   modelFamily,
   makePriceResolver,
   costForMetrics,
   parsePriceList,
   refreshPricing,
+  serializePriceTable,
+  parsePriceTable,
 };
