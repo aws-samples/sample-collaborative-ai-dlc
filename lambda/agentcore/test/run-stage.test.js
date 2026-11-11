@@ -3248,6 +3248,48 @@ describe('runStage — resume mode', () => {
     },
   );
 
+  // An ordinary question can carry several sub-questions, and a sub-question
+  // can allow several options. Every answer reaches the agent, each against its
+  // own question, with any note the human added.
+  it('resumes a multi-question answer with every choice and note', async () => {
+    const cap = captureArgv();
+    const deps = baseDeps({
+      spawnFn: cap.spawnFn,
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          questions: JSON.stringify([
+            { text: 'Which database?', options: [{ label: 'Postgres' }, { label: 'DynamoDB' }] },
+            {
+              text: 'Which regions?',
+              multiSelect: true,
+              options: [{ label: 'eu-west-1' }, { label: 'us-east-1' }, { label: 'ap-south-1' }],
+            },
+          ]),
+          answer: {
+            answers: [
+              { selectedOptions: [1] },
+              { selectedOptions: [0, 2], freeText: 'Keep latency under 50 ms.' },
+            ],
+          },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+
+    const prompt = cap.get().prompt;
+    expect(prompt).toContain('Which database?');
+    expect(prompt).toContain('"DynamoDB"');
+    expect(prompt).toContain('Which regions?');
+    expect(prompt).toContain('"eu-west-1"');
+    expect(prompt).toContain('"ap-south-1"');
+    expect(prompt).toContain('Keep latency under 50 ms.');
+    expect(prompt).not.toContain('selectedOptions');
+  });
+
   it('resumes the persisted Claude conversation with --resume + the answer, reaches SUCCEEDED', async () => {
     const cap = captureArgv();
     const deps = baseDeps({
