@@ -48,8 +48,9 @@ The **Observability** button opens the intent's execution dashboard:
   saved thread usage and record only the new usage. Codex input totals already
   include cache reads and writes, and Codex costs use the Bedrock In-Region rates
   for the OpenAI models in the pinned Codex catalog and GPT-5.4; other OpenAI
-  models show the cost as unavailable. Kiro credits use the captured overage
-  rate and remain an estimate.
+  models show the cost as unavailable. A Codex run with no model selected uses
+  the pinned Codex default (`openai.gpt-6.1-sol`) and is priced under it. Kiro
+  credits use the captured overage rate and remain an estimate.
 
   Usage is recorded when each invocation ends, including reported usage on failure
   or before a human pause. If a CLI stops without reporting usage, the runtime
