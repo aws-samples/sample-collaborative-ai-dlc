@@ -8,7 +8,7 @@
 // grammar under the configured bucket. Objects are strict: unknown keys are
 // refused, not dropped.
 import { z } from 'zod';
-import { isGithubOwner, isGithubRepo } from '../shared/aidlc-custom-source.js';
+import { GITLAB_PREFIX, parseRepositorySlug } from '../shared/aidlc-custom-source.js';
 import { OFFICIAL_AIDLC_REPOSITORY } from '../shared/aidlc-compatibility-profiles.js';
 import { CONDUCTOR_REPO_PATH } from '../shared/engine-catalog.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
@@ -34,8 +34,10 @@ export const CATALOG_BLOCK_TYPES = Object.freeze([
 const HEX64 = /^[0-9a-f]{64}$/;
 const BLOCK_OBJECT_KEY = /^blocks\/(?:bodies|scripts)\/sha256\/[0-9a-f]{64}$/;
 // Official releases sit directly under `v1/<sha>/`. A promoted fork's closure
-// sits under `v1/custom/<owner>/<repo>/<sha>/` (aidlc-release releaseKeyPrefix);
-// its owner and repo segments must be a GitHub slug other than the official one.
+// sits under `v1/custom/<owner>/<repo>/<sha>/` (GitHub) or
+// `v1/custom/gitlab/<url-encoded project path>/<sha>/` (GitLab), as
+// aidlc-release releaseKeyPrefix writes it; the two segments must be exactly
+// the key segments of a fork repository other than the official one.
 const RELEASE_JSON_KEY =
   /^aidlc-releases\/v1\/[0-9a-f]{40}\/i[1-9][0-9]{0,8}\/(?:manifest|catalog)\.json$/;
 const CUSTOM_RELEASE_JSON_KEY =
@@ -57,23 +59,45 @@ export const isCatalogRef = (ref) =>
   !hasControlChar(ref) &&
   ref.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 
+// The parsed fork repository a pin names, in its canonical form only
+// (`owner/repo` or `gitlab:<namespace>/<project>`), or null.
+const parseForkRepository = (repository) => {
+  if (typeof repository !== 'string' || repository === OFFICIAL_AIDLC_REPOSITORY) return null;
+  try {
+    const parsed = parseRepositorySlug(repository);
+    return parsed.repository === repository ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 // A fork repository as a pin names it and as its key prefix embeds it.
-export const isForkRepository = (repository) => {
-  if (typeof repository !== 'string') return false;
-  const parts = repository.split('/');
-  return (
-    parts.length === 2 &&
-    isGithubOwner(parts[0]) &&
-    isGithubRepo(parts[1]) &&
-    repository !== OFFICIAL_AIDLC_REPOSITORY
-  );
+export const isForkRepository = (repository) => parseForkRepository(repository) !== null;
+
+// The repositories a custom key's two segments can name: the GitHub
+// `<owner>/<repo>`, or a GitLab project when the first segment is `gitlab`.
+// A key is a fork's only if that repository's own key segments reproduce both
+// segments exactly, so a non-canonical encoding is refused.
+const isForkKeySegments = (first, second) => {
+  const candidates = [`${first}/${second}`];
+  if (first === 'gitlab') {
+    try {
+      candidates.push(`${GITLAB_PREFIX}${decodeURIComponent(second)}`);
+    } catch {
+      // A malformed escape names no GitLab project.
+    }
+  }
+  return candidates.some((repository) => {
+    const segments = parseForkRepository(repository)?.keySegments;
+    return segments?.length === 2 && segments[0] === first && segments[1] === second;
+  });
 };
 
 const isReleaseJsonKey = (key) => {
   if (typeof key !== 'string') return false;
   if (RELEASE_JSON_KEY.test(key)) return true;
   const custom = CUSTOM_RELEASE_JSON_KEY.exec(key);
-  return Boolean(custom) && isForkRepository(`${custom[1]}/${custom[2]}`);
+  return Boolean(custom) && isForkKeySegments(custom[1], custom[2]);
 };
 
 const isLegacyConductorKey = (key) =>

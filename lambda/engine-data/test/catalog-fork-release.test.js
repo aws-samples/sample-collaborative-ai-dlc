@@ -25,6 +25,7 @@ const BUCKET = 'artifacts-test';
 const TABLE = 'blocks-test';
 const BASE_PROFILE = 'current-stable';
 const FORK = 'acme/aidlc-fork';
+const GITLAB_FORK = 'gitlab:acme/platform/aidlc-fork';
 const EXECUTION = { mode: 'execution', projectId: 'p-1', intentId: 'i-1', executionId: 'e-1' };
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 
@@ -55,12 +56,12 @@ const fixtureFiles = filesFromCompatibilityFixture({
 });
 // One SHA per test: the resolver's closure cache is module-wide, and a fork
 // pin's promotion check runs only on a cache miss.
-const forkBundle = (sha) =>
+const forkBundle = (sha, repository = FORK) =>
   buildReleaseBundle({
-    profile: customProfile({ repository: FORK, sha, baseProfileId: BASE_PROFILE }),
+    profile: customProfile({ repository, sha, baseProfileId: BASE_PROFILE }),
     files: fixtureFiles,
   });
-const forkPin = ({ manifest }) => ({
+const forkPin = ({ manifest }, repository = FORK) => ({
   releaseId: manifest.releaseId,
   sourceSha: manifest.sourceSha,
   importerRevision: manifest.importerRevision,
@@ -70,10 +71,10 @@ const forkPin = ({ manifest }) => ({
     sha: manifest.sourceSha,
     importerRevision: manifest.importerRevision,
     custom: true,
-    sourceRepository: FORK,
+    sourceRepository: repository,
   }),
   custom: true,
-  sourceRepository: FORK,
+  sourceRepository: repository,
 });
 
 const s3Mock = mockClient(S3Client);
@@ -104,8 +105,8 @@ beforeEach(() => {
   ddbMock.on(QueryCommand).resolves({ Items: [] });
 });
 
-const publishFork = async (sha, record) => {
-  const bundle = forkBundle(sha);
+const publishFork = async (sha, record, repository = FORK) => {
+  const bundle = forkBundle(sha, repository);
   await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
   if (record) {
     rows.set(`AIDLC_RELEASE#${bundle.manifest.releaseId}|META`, {
@@ -114,7 +115,7 @@ const publishFork = async (sha, record) => {
       ...record,
     });
   }
-  return forkPin(bundle);
+  return forkPin(bundle, repository);
 };
 
 const gateway = () =>
@@ -141,6 +142,31 @@ describe('catalog gateway — promoted fork releases', () => {
     ).toBe(false);
     expect(isCatalogKey(`aidlc-releases/v1/custom/acme/../${sha}/i1/manifest.json`)).toBe(false);
     expect(isCatalogKey(`aidlc-releases/v1/custom/acme/x/y/${sha}/i1/manifest.json`)).toBe(false);
+  });
+
+  it('admits a GitLab fork closure key only in its canonical encoding', () => {
+    const sha = '1'.repeat(40);
+    const key = (segment) => `aidlc-releases/v1/custom/gitlab/${segment}/${sha}/i1/manifest.json`;
+    expect(isCatalogKey(key('acme%2Fplatform%2Faidlc-fork'))).toBe(true);
+    expect(isCatalogKey(key('acme%2fplatform%2faidlc-fork'))).toBe(false);
+    expect(isCatalogKey(key('acme%2F..%2Ffork'))).toBe(false);
+    expect(isCatalogKey(key('acme%2'))).toBe(false);
+    expect(isCatalogKey(key('acme%252Ffork'))).toBe(false);
+  });
+
+  it('loads a GitLab fork release the same through engine-data as directly', async () => {
+    const pin = await publishFork('7'.repeat(40), { runnable: true }, GITLAB_FORK);
+    expect(pin.manifestKey).toContain('/custom/gitlab/acme%2Fplatform%2Faidlc-fork/');
+    const blocks = await direct().listReleaseBlocks('SCOPE', pin);
+    const conductor = await direct().loadConductor(null, { methodologyRelease: pin });
+
+    await expect(
+      call('listReleaseBlocks', { type: 'SCOPE', methodologyRelease: pin }),
+    ).resolves.toEqual({ ok: true, result: JSON.parse(JSON.stringify(blocks)) });
+    await expect(call('loadConductor', { methodologyRelease: pin })).resolves.toEqual({
+      ok: true,
+      result: conductor,
+    });
   });
 
   it('lists release blocks the same through engine-data as directly', async () => {
@@ -183,6 +209,10 @@ describe('catalog gateway — promoted fork releases', () => {
     ['the official repository', (pin) => ({ ...pin, sourceRepository: 'awslabs/aidlc-workflows' })],
     ['a custom flag other than true', (pin) => ({ ...pin, custom: false })],
     ['a nested repository', (pin) => ({ ...pin, sourceRepository: 'acme/x/y' })],
+    [
+      'a non-canonical GitLab repository',
+      (pin) => ({ ...pin, sourceRepository: ' gitlab:acme/platform/aidlc-fork' }),
+    ],
   ])('denies a fork pin with %s', async (_case, mutate) => {
     const pin = mutate(await publishFork('6'.repeat(40), { runnable: true }));
     s3Mock.resetHistory();
