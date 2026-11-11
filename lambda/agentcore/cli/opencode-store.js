@@ -85,7 +85,9 @@ const settlesBy = (work, until, now) => {
 // Serialize the complete restore → execution → persist interval for a shared
 // durable store. `finally` persistence runs for success, non-zero exits, and
 // thrown spawn failures. A caller that must start by `waitUntil` gives up its
-// turn instead of running late, and rejects with OPENCODE_STORE_WAIT_EXPIRED.
+// turn instead of running late, and rejects with OPENCODE_STORE_WAIT_EXPIRED —
+// also when its restore is still running then; the store stays locked until
+// that restore settles, and `defer` receives the remaining work.
 // A caller that needs its result by `settleBy` gets it then even while the
 // persist still runs: the store stays locked until the persist ends, and
 // `defer` receives that remaining work so the caller can wait for it later.
@@ -119,9 +121,23 @@ export const withOpenCodeStore = async ({
       code: OPENCODE_STORE_WAIT_EXPIRED,
     });
   }
+  const restored = Promise.resolve()
+    .then(() => restore({ env }))
+    .catch(() => false);
+  if (!(await settlesBy(restored, waitUntil, now))) {
+    // Nothing ran, so the durable store is still authoritative: skip the
+    // persist, which would copy a half-restored local store over it.
+    const settled = restored.then(() => {
+      release();
+      if (locks.get(key) === tail) locks.delete(key);
+    });
+    defer(settled);
+    throw Object.assign(new Error('OpenCode store was not restored in time'), {
+      code: OPENCODE_STORE_WAIT_EXPIRED,
+    });
+  }
   let outcome;
   try {
-    await restore({ env }).catch(() => false);
     outcome = { value: await operation() };
   } catch (error) {
     outcome = { error };

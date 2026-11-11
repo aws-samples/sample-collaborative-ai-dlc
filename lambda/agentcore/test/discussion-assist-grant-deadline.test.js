@@ -59,7 +59,12 @@ const slowOpenCode = (inferenceMs = INFERENCE_MS) => {
   return child;
 };
 
-const harness = ({ inferenceMs = INFERENCE_MS, restoreMs = 0, persistMs = 0 } = {}) => {
+const harness = ({
+  inferenceMs = INFERENCE_MS,
+  restoreMs = 0,
+  persistMs = 0,
+  restore = () => sleep(restoreMs),
+} = {}) => {
   const audit = [];
   const writes = [];
   const fakeG = {
@@ -115,7 +120,7 @@ const harness = ({ inferenceMs = INFERENCE_MS, restoreMs = 0, persistMs = 0 } = 
         withOpenCodeStore: (options) =>
           withOpenCodeStore({
             ...options,
-            restore: () => sleep(restoreMs),
+            restore,
             persist: () => sleep(persistMs),
           }),
       }),
@@ -217,6 +222,44 @@ describe('queued discussion assists under short-lived grants', () => {
     expect(writes[0]).toMatchObject({ messageId: 'dm-1', status: 'failed' });
     expect(writes[0].content).toMatch(/busy/i);
     expect(writes[0].at).toBeLessThan(GRANT_MS);
+  });
+
+  it('answers before the grant expires while a slow restore keeps the store', async () => {
+    let restoreSettled = false;
+    const { audit, writes, spawned, start, handlers } = harness({
+      // Acquired at 149 s, the restore runs past exp (300 s) and then fails.
+      restore: () =>
+        sleep(152_000).then(() => {
+          restoreSettled = true;
+          throw new Error('restore failed');
+        }),
+    });
+    const holder = withOpenCodeStore({
+      env: {},
+      restore: async () => {},
+      persist: async () => {},
+      operation: () => sleep(149_000),
+    });
+    expect(await requestAssist(handlers, 1)).toMatchObject({ statusCode: 200 });
+
+    await vi.advanceTimersByTimeAsync(GRANT_MS - 1_000);
+    await holder;
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ messageId: 'dm-1', status: 'failed' });
+    expect(writes[0].content).toMatch(/busy/i);
+    expect(writes[0].at).toBeLessThan(GRANT_MS);
+    // The restore is still running: the store stays locked and the job active.
+    expect(restoreSettled).toBe(false);
+    expect(storeLocks.locks.has('__unconfigured__')).toBe(true);
+    expect(start.activeJobs.size).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(restoreSettled).toBe(true);
+    expect(storeLocks.locks.has('__unconfigured__')).toBe(false);
+    expect(start.activeJobs.size).toBe(0);
+    expect(spawned).toEqual([]);
+    expect(writes).toHaveLength(1);
+    expect(audit.filter((entry) => entry.decision === 'deny')).toEqual([]);
   });
 
   it('writes the answer before the grant expires while a slow persist keeps the store', async () => {
