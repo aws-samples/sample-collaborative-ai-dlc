@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { claudeDriver, getDriver, opencodeDriver } from '../cli/drivers.js';
 import { createGatewayBackend } from '../cli/backend-adapters.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
@@ -154,6 +155,70 @@ describe('OpenCode config parsing', () => {
         `"headers":{"Authorization":"Bearer {env:API_KEY}","X-Key":"{file:./key.txt}"}}}}`,
     );
     expect(names).toContain('api');
+  });
+});
+
+// A model of how OpenCode 1.19.0 loads one config layer (config/variable.ts,
+// then config/parse.ts) and merges the layers (remeda mergeDeep): `{env:…}` is
+// replaced raw, then `{file:…}` JSON-escaped, in the TEXT before it is parsed.
+const openCodeLayer = async (text, dir, env) => {
+  let out = text.replace(/\{env:([^}]+)\}/g, (_, name) => env[name] || '');
+  for (const [token] of out.matchAll(/\{file:[^}]+\}/g)) {
+    const file = path.resolve(dir, token.slice('{file:'.length, -1));
+    const content = (await readFile(file, 'utf8')).trim();
+    out = out.replace(token, () => JSON.stringify(content).slice(1, -1));
+  }
+  const errors = [];
+  const data = parseJsonc(out, errors, { allowTrailingComma: true });
+  if (errors.length) throw new Error('OpenCode refuses the layer');
+  return data;
+};
+const mergeDeep = (target, source) =>
+  Object.fromEntries(
+    [...new Set([...Object.keys(target), ...Object.keys(source)])].map((key) => {
+      const [a, b] = [target[key], source[key]];
+      const objects = [a, b].every((v) => v && typeof v === 'object' && !Array.isArray(v));
+      return [key, objects ? mergeDeep(a, b) : b === undefined ? a : b];
+    }),
+  );
+
+describe('OpenCode config through its own substitution', () => {
+  const ENV = { OPENCODE_PURE: '1', HOST: 'mcp.example.com' };
+  // The servers OpenCode starts: the repository file, then the inline config.
+  const started = async (text) => {
+    const { repo, cwd } = await repository();
+    await rm(path.join(repo, 'opencode.jsonc'));
+    await rm(path.join(cwd, '.opencode', 'opencode.json'));
+    await writeFile(path.join(repo, 'name.txt'), 'renamed');
+    await writeFile(path.join(cwd, 'name.txt'), 'renamed');
+    await writeFile(path.join(repo, 'opencode.json'), text);
+    gatewayOnly();
+    const inline = await materializeOpenCodeConfig({
+      workspaceDir: cwd,
+      mcpEntry: MCP_ENTRY,
+      scope: SCOPE,
+    });
+    const layers = [await openCodeLayer(text, repo, ENV), await openCodeLayer(inline, cwd, ENV)];
+    const { mcp } = layers.reduce(mergeDeep, {});
+    return Object.keys(mcp).filter((name) => mcp[name].enabled !== false);
+  };
+  const server = '{"type":"local","command":["node","server.js"]}';
+
+  it.each([
+    ['an escaped {env:…} name', `{"mcp":{"\\u007benv:OPENCODE_PURE}":${server}}}`],
+    ['an escaped {file:…} name', `{"mcp":{"\\u007bfile:./name.txt}":${server}}}`],
+    ['a name with an escaped letter', `{"mcp":{"{\\u0065nv:HOST}":${server}}}`],
+    ['an escaped name in an envelope', `{"mcp":{"servers":{"\\u007benv:HOST}":${server}}}}`],
+  ])('refuses %s, which the inline config would otherwise rename', async (_label, text) => {
+    await expect(started(text)).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+  });
+
+  it('disables a server whose values OpenCode substitutes', async () => {
+    const names = await started(
+      `{"mcp":{"api":{"type":"remote","url":"https://{env:HOST}/mcp",` +
+        `"headers":{"X-Key":"{file:./name.txt}"}}}}`,
+    );
+    expect(names).toEqual(['aidlc']);
   });
 });
 
