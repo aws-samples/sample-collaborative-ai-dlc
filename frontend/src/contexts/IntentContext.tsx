@@ -571,7 +571,12 @@ export function IntentProvider({
           pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
           pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
           // A server without the cursor resumes from the pane's own last chunk.
-          pane.cursor = typeof cursor === 'number' ? cursor : pane.maxSeededSeq;
+          // Catch-ups can overlap, so a late older response must not move the
+          // cursor back.
+          pane.cursor = Math.max(
+            pane.cursor,
+            typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
+          );
           pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
           pane.status = 'seeded';
           renderPane(key);

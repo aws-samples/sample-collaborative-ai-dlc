@@ -537,6 +537,55 @@ describe('IntentContext', () => {
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
   });
 
+  it('keeps the catch-up cursor when an older overlapping response arrives last', async () => {
+    get.mockResolvedValue(detail());
+    let resolveOlder: (value: unknown) => void = () => {};
+    outputs
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'before ' }],
+      })
+      // The first catch-up is slow and only covers seq 2.
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOlder = resolve;
+          }),
+      )
+      // The second overlaps it and advances the cursor past other stages' chunks.
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'missed' }],
+        cursor: 2000,
+      })
+      .mockResolvedValueOnce({ outputs: [], cursor: 2000 });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    await act(async () => {
+      capturedStatus?.('connected');
+    });
+    await act(async () => {
+      capturedStatus?.('connected');
+    });
+    await act(async () => {
+      resolveOlder({
+        outputs: [{ seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'missed' }],
+        cursor: 2,
+      });
+    });
+
+    await act(async () => {
+      capturedStatus?.('connected');
+    });
+    expect(outputs).toHaveBeenLastCalledWith('p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 2000,
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
+  });
+
   it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {
     // create_artifact broadcasts a v2.artifact.created note (agent.note); the
     // provider must refetch so the new artifact renders without waiting for

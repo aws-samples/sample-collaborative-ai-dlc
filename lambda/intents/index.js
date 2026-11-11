@@ -5481,6 +5481,12 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
 // advances over a contiguous run of sequences, and skips a gap only once a
 // later chunk is older than this grace period (its writer died between the
 // two writes, so that sequence will never be written).
+// The put normally lands milliseconds after the ADD; under throttling the SDK's
+// retries and backoff can delay it by tens of seconds, and writer and reader
+// clocks can differ by seconds. Five minutes is well beyond both, so a slow
+// put is not skipped. Do not shorten it to that range: a chunk whose put
+// lands after the grace period is missed by catch-up until a reload. A longer
+// period only means more re-reads behind a gap that will never fill.
 const OUTPUT_GAP_GRACE_MS = 5 * 60 * 1000;
 const outputsCursor = (rows, afterSeq, nowMs) => {
   let cursor = Math.max(0, Math.floor(afterSeq));
