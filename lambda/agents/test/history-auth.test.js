@@ -9,6 +9,8 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
+import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
 import { mockClient } from 'aws-sdk-client-mock';
 
 const PARTITION = `t-${randomUUID()}`;
@@ -16,6 +18,8 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
 const ssmMock = mockClient(SSMClient);
+const bedrockMock = mockClient(BedrockClient);
+const pricingMock = mockClient(PricingClient);
 const parameterNotFound = () =>
   Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
 let credentialMetadataHandler;
@@ -61,6 +65,10 @@ beforeEach(async () => {
   agentcoreMock.reset();
   ssmMock.reset();
   ssmMock.on(GetParameterCommand).rejects(parameterNotFound());
+  bedrockMock.reset();
+  bedrockMock.on(ListInferenceProfilesCommand).resolves({ inferenceProfileSummaries: [] });
+  pricingMock.reset();
+  pricingMock.on(GetProductsCommand).resolves({ PriceList: [] });
   credentialMetadataHandler = () => ({
     ok: true,
     bindings: {
@@ -276,6 +284,48 @@ describe('project agent capabilities', () => {
     expect(body.runtimeClis).toEqual([
       expect.objectContaining({ cli: 'kiro', enabled: true, available: true }),
       expect.objectContaining({ cli: 'codex', enabled: false, available: false, installed: true }),
+    ]);
+  });
+
+  it('labels a Codex catalogue model that has no price and leaves priced ones unchanged', async () => {
+    const caller = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(caller);
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            clis: [{ cli: 'codex', installed: true, authed: true, available: true }],
+            kiroModels: { models: [], default: null },
+            codexModels: {
+              source: 'catalog',
+              models: [
+                { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra', description: null },
+                { id: 'openai.gpt-9-unlisted', name: 'openai.gpt-9-unlisted', description: null },
+              ],
+            },
+          }),
+      },
+    });
+
+    const request = event({
+      path: `/projects/${projectId}/agent-capabilities`,
+      projectId,
+      sub: caller,
+    });
+    const response = await handler({ ...request, queryStringParameters: { models: '1' } });
+
+    expect(response.statusCode).toBe(200);
+    const { models } = JSON.parse(response.body);
+    expect(models.codexSource).toBe('catalog');
+    expect(models.codex).toEqual([
+      { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra', description: null },
+      {
+        id: 'openai.gpt-9-unlisted',
+        name: 'openai.gpt-9-unlisted (no price — cost unavailable)',
+        description: null,
+        priced: false,
+      },
     ]);
   });
 });

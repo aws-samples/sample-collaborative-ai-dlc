@@ -7,7 +7,7 @@ import {
   refreshPricing,
   FALLBACK_PRICES,
 } from '../model-pricing.js';
-import { CODEX_BEDROCK_MODELS } from '../bedrock-models.js';
+import { CODEX_BEDROCK_MODELS, listCodexModels, codexModelsFor } from '../bedrock-models.js';
 
 describe('modelFamily', () => {
   it('normalizes region-prefixed Bedrock inference-profile ids', () => {
@@ -28,6 +28,14 @@ describe('modelFamily', () => {
   it('keeps Codex Mantle ids exact and geo-prefixed OpenAI ids distinct', () => {
     expect(modelFamily('openai.gpt-5.6-sol')).toBe('openai.gpt-5.6-sol');
     expect(modelFamily('global.openai.gpt-5.6-sol')).toBe('global.openai.gpt-5.6-sol');
+  });
+
+  it('maps a dated OpenAI snapshot id to its model', () => {
+    expect(modelFamily('openai.gpt-5.4-2026-03-05')).toBe('openai.gpt-5.4');
+    expect(modelFamily('openai.gpt-5.5-2026-04-23')).toBe('openai.gpt-5.5');
+    // Not a snapshot date, and not a bare Mantle id.
+    expect(modelFamily('openai.gpt-oss-120b')).toBe('openai.gpt-oss-120b');
+    expect(modelFamily('us.openai.gpt-5.5-2026-04-23')).toBe('us.openai.gpt-5.5-2026-04-23');
   });
 });
 
@@ -139,9 +147,113 @@ describe('costForMetrics', () => {
     }
   });
 
+  it('prices GPT-6.1 Terra, which only the regional catalogue offers, at its In-Region rates', () => {
+    const c = costForMetrics(
+      {
+        tokensInput: 1_000_000,
+        tokensCacheRead: 300_000,
+        tokensCacheWrite: 200_000,
+        tokensOutput: 100_000,
+      },
+      'openai.gpt-6.1-terra',
+    );
+    expect(c.inputCost).toBeCloseTo(0.5 * 1.1 + 0.3 * 0.055 + 0.2 * 1.375);
+    expect(c.outputCost).toBeCloseTo(0.1 * 5.5);
+    expect(c.priced).toBe(true);
+  });
+
+  it('prices a dated snapshot id at the rates of its model', () => {
+    const usage = {
+      tokensInput: 1_000_000,
+      tokensCacheRead: 300_000,
+      tokensCacheWrite: 200_000,
+      tokensOutput: 100_000,
+    };
+    for (const [snapshot, model] of [
+      ['openai.gpt-5.4-2026-03-05', 'openai.gpt-5.4'],
+      ['openai.gpt-5.5-2026-04-23', 'openai.gpt-5.5'],
+    ]) {
+      const dated = costForMetrics(usage, snapshot);
+      const undated = costForMetrics(usage, model);
+      expect(dated.priced, snapshot).toBe(true);
+      expect(dated.totalCost, snapshot).toBeCloseTo(undated.totalCost);
+      expect(dated.model).toBe(snapshot);
+    }
+  });
+
+  // The `openai.*` ids bedrock-mantle listed per region on 2026-11-11. Every
+  // other region listed only `openai.gpt-oss-*`, which the picker leaves out.
+  // A model added here without a price entry fails the test below.
+  const MANTLE_CATALOGUES = {
+    'us-east-1': [
+      'openai.gpt-5.4',
+      'openai.gpt-5.4-2026-03-05',
+      'openai.gpt-5.5',
+      'openai.gpt-5.5-2026-04-23',
+      'openai.gpt-5.6-luna',
+      'openai.gpt-5.6-sol',
+      'openai.gpt-5.6-terra',
+      'openai.gpt-6-astra',
+      'openai.gpt-6-luna',
+      'openai.gpt-6-sol',
+      'openai.gpt-6.1-sol',
+      'openai.gpt-6.1-terra',
+      'openai.gpt-oss-120b',
+      'openai.gpt-oss-20b',
+      'openai.gpt-oss-safeguard-120b',
+      'openai.gpt-oss-safeguard-20b',
+    ],
+    'us-east-2': [
+      'openai.gpt-5.4',
+      'openai.gpt-5.4-2026-03-05',
+      'openai.gpt-5.5',
+      'openai.gpt-5.5-2026-04-23',
+      'openai.gpt-5.6-luna',
+      'openai.gpt-5.6-sol',
+      'openai.gpt-5.6-terra',
+      'openai.gpt-oss-120b',
+      'openai.gpt-oss-20b',
+      'openai.gpt-oss-safeguard-120b',
+      'openai.gpt-oss-safeguard-20b',
+    ],
+    'us-west-2': [
+      'openai.gpt-5.4',
+      'openai.gpt-5.4-2026-03-05',
+      'openai.gpt-5.6-luna',
+      'openai.gpt-5.6-terra',
+      'openai.gpt-6-astra',
+      'openai.gpt-oss-120b',
+      'openai.gpt-oss-20b',
+      'openai.gpt-oss-safeguard-120b',
+      'openai.gpt-oss-safeguard-20b',
+    ],
+  };
+
+  it.each(Object.keys(MANTLE_CATALOGUES))(
+    'prices every model the picker offers from the %s Mantle catalogue',
+    async (region) => {
+      const catalogue = await listCodexModels({
+        listModels: async (r) => ({ data: MANTLE_CATALOGUES[r].map((id) => ({ id })) }),
+        region,
+      });
+      const offered = codexModelsFor(catalogue);
+      expect(offered.length).toBeGreaterThan(0);
+      for (const model of offered) {
+        expect(costForMetrics({ tokensInput: 1000 }, model.id).priced, model.id).toBe(true);
+        expect(model.priced, model.id).toBeUndefined();
+        expect(model.name, model.id).toBe(model.id);
+      }
+    },
+  );
+
   it('leaves OpenAI models without a confirmed Mantle rate unpriced', () => {
-    for (const model of ['openai.gpt-6.1-terra', 'global.openai.gpt-5.6-sol']) {
-      expect(costForMetrics({ tokensInput: 1000 }, model).priced).toBe(false);
+    for (const model of [
+      'openai.gpt-9-unlisted',
+      'openai.gpt-9-unlisted-2027-01-01',
+      'global.openai.gpt-5.6-sol',
+      'us.openai.gpt-5.5-2026-04-23',
+    ]) {
+      expect(costForMetrics({ tokensInput: 1000 }, model).priced, model).toBe(false);
     }
   });
 

@@ -54,6 +54,9 @@ export interface AgentModel {
   id: string;
   name: string;
   description?: string | null;
+  /** `false` on a Codex model that has no price entry: it stays selectable, its
+   *  `name` already carries the note, and its usage shows the cost as unavailable. */
+  priced?: boolean;
 }
 
 /** Per-CLI availability as reported by the v2 AgentCore runtime (not the ECS

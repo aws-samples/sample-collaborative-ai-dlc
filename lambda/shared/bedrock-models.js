@@ -10,6 +10,8 @@
 // Pure of the AWS SDK: the caller injects a `listInferenceProfiles` fn (returns the
 // raw summaries array) so this is unit-tested without Bedrock.
 
+import { makePriceResolver } from './model-pricing.js';
+
 // Region → cross-region inference-profile geo prefix (mirrors model-resolver.js).
 const regionPrefix = (region = '') => {
   if (region.startsWith('eu-')) return 'eu';
@@ -140,8 +142,22 @@ const listCodexModels = async ({ listModels, region, savedIds = [] }) => {
 // curated list stays the fallback for a lookup that failed (`source: 'error'`)
 // or a runtime with no discovery path at all, so `source` is what tells the two
 // apart. A saved id survives either way — it is prepended by listCodexModels.
-const codexModelsFor = (codex) =>
-  codex?.source === 'catalog' ? (codex.models ?? []) : CODEX_BEDROCK_MODELS;
+//
+// The catalogue can list a model the price table (model-pricing.js) does not
+// know yet. Such a model stays selectable, but its usage will be recorded with
+// the cost unavailable, so the option says so (`priced: false` and a note in the
+// name every picker renders) instead of looking like any other model.
+const CODEX_UNPRICED_NOTE = 'no price — cost unavailable';
+const priceForCodex = makePriceResolver();
+const codexModelsFor = (codex) => {
+  const models = codex?.source === 'catalog' ? (codex.models ?? []) : CODEX_BEDROCK_MODELS;
+  if (models.every((model) => priceForCodex(model.id).priced)) return models;
+  return models.map((model) =>
+    priceForCodex(model.id).priced
+      ? model
+      : { ...model, name: `${model.name} (${CODEX_UNPRICED_NOTE})`, priced: false },
+  );
+};
 
 const __test = { isUsable, toModel, toCodexModel };
 export {

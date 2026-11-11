@@ -57,14 +57,21 @@ const FALLBACK_PRICES = {
   // OpenAI models served to Codex through the Bedrock Mantle endpoint, which
   // takes the bare `openai.` id and bills the In-Region rate. Standard-tier
   // short-context (272K input tokens or fewer) prices from each Bedrock model
-  // card, November 2026. The long-context tier is not needed: the pinned Codex
-  // (0.162.1) gives every model in its Bedrock catalog a 272K context window,
-  // and the runtime does not raise it, so no request can exceed the threshold.
-  // GPT-5.5 and GPT-5.4 have no cache-write fee; those tokens bill at the
-  // input rate. GPT-5.4 is absent from that catalog but stays selectable
-  // (CODEX_BEDROCK_MODELS); Codex gives it the same window through its fallback
-  // metadata. GPT-6.1 Terra is absent from both and stays unpriced.
+  // card and the AWS Price List (offer AmazonBedrockFoundationModels,
+  // us-east-1, November 2026). The long-context tier is not needed: the pinned
+  // Codex (0.162.1) gives every model in its Bedrock catalog a 272K context
+  // window, and the runtime does not raise it, so no request can exceed the
+  // threshold. GPT-5.5 and GPT-5.4 have no cache-write fee; those tokens bill
+  // at the input rate. GPT-5.4 and GPT-6.1 Terra are absent from that catalog
+  // but selectable (CODEX_BEDROCK_MODELS, the regional Mantle catalogue); Codex
+  // gives them the same window through its fallback metadata.
+  //
+  // This table cannot follow the Mantle catalogue on its own: a model the
+  // region starts to list has no entry until one is added here. The picker
+  // labels such a model (codexModelsFor in bedrock-models.js) and its usage is
+  // reported unpriced. Add the entry from the price list; never estimate one.
   'openai.gpt-6.1-sol': { input: 2.2, output: 11, cacheRead: 0.11, cacheWrite: 2.75 },
+  'openai.gpt-6.1-terra': { input: 1.1, output: 5.5, cacheRead: 0.055, cacheWrite: 1.375 },
   'openai.gpt-6-astra': { input: 11, output: 55, cacheRead: 1.1, cacheWrite: 13.75 },
   'openai.gpt-6-sol': { input: 2.2, output: 11, cacheRead: 0.22, cacheWrite: 2.75 },
   'openai.gpt-6-luna': { input: 0.11, output: 0.55, cacheRead: 0.011, cacheWrite: 0.1375 },
@@ -82,11 +89,15 @@ const FALLBACK_PRICES = {
 //   amazon-bedrock/us.anthropic.claude-...    → claude-...
 //   claude-opus-4.6 (Kiro), auto              → (no family — stays as-is / null)
 //   openai.gpt-5.5 (Codex)                    → openai.gpt-5.5
+//   openai.gpt-5.5-2026-04-23                 → openai.gpt-5.5
 //   global.openai.gpt-5.5                     → global.openai.gpt-5.5 (unpriced)
 // Dots in a Kiro version (4.6) are intentionally NOT converted to dashes, so a
 // Kiro id never collides with a Bedrock family and gets token-priced.
-// Codex ids keep their exact Mantle form. A geo-prefixed OpenAI id is a Bedrock
-// Runtime profile with different rates, so it keeps its prefix and no family.
+// Codex ids keep their exact Mantle form, except that a dated snapshot id
+// (`-YYYY-MM-DD`, which Mantle lists next to the undated id) is the same model:
+// Bedrock publishes one set of rates per model, so it prices as the undated id.
+// A geo-prefixed OpenAI id is a Bedrock Runtime profile with different rates, so
+// it keeps its prefix and no family.
 const modelFamily = (modelId) => {
   if (!modelId) return null;
   let id = String(modelId).trim().toLowerCase();
@@ -102,6 +113,8 @@ const modelFamily = (modelId) => {
   id = id.replace(/:\d+$/, '').replace(/-v\d+$/, '');
   // Drop a trailing date stamp (…-20251001).
   id = id.replace(/-\d{8}$/, '');
+  // Drop an OpenAI snapshot date (…-2026-04-23).
+  if (id.startsWith('openai.')) id = id.replace(/-\d{4}-\d{2}-\d{2}$/, '');
   return id;
 };
 

@@ -173,6 +173,38 @@ describe('codexModelsFor (what the picker offers)', () => {
     expect(codexModelsFor({ models, source: 'catalog' })).toBe(models);
   });
 
+  it('labels a catalogue model that has no price and leaves the priced ones as read', () => {
+    const priced = { id: 'openai.gpt-6-sol', name: 'openai.gpt-6-sol', description: null };
+    const unpriced = {
+      id: 'openai.gpt-9-unlisted',
+      name: 'openai.gpt-9-unlisted',
+      description: null,
+    };
+    const offered = codexModelsFor({ models: [unpriced, priced], source: 'catalog' });
+    expect(offered).toEqual([
+      {
+        id: 'openai.gpt-9-unlisted',
+        name: 'openai.gpt-9-unlisted (no price — cost unavailable)',
+        description: null,
+        priced: false,
+      },
+      priced,
+    ]);
+    expect(offered[1]).toBe(priced);
+  });
+
+  it('labels a saved id that has no price, so a kept selection is not silent either', async () => {
+    const catalogue = await listCodexModels({
+      listModels: async () => ({ data: [{ id: 'openai.gpt-6-sol' }] }),
+      region: 'us-east-1',
+      savedIds: ['us.openai.gpt-5.5'],
+    });
+    expect(codexModelsFor(catalogue).map((m) => [m.id, m.priced])).toEqual([
+      ['us.openai.gpt-5.5', false],
+      ['openai.gpt-6-sol', undefined],
+    ]);
+  });
+
   it('falls back to the curated list when the lookup failed', () => {
     expect(codexModelsFor({ models: [], source: 'error' })).toBe(CODEX_BEDROCK_MODELS);
   });

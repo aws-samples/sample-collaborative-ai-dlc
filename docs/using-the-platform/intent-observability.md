@@ -47,8 +47,12 @@ The **Observability** button opens the intent's execution dashboard:
   them. Codex reports cumulative thread totals, so resumed calls subtract the
   saved thread usage and record only the new usage. Codex input totals already
   include cache reads and writes, and Codex costs use the Bedrock In-Region rates
-  for the OpenAI models in the pinned Codex catalog and GPT-5.4; other OpenAI
-  models show the cost as unavailable. A Codex run with no model selected uses
+  for the OpenAI models in the pinned Codex catalog, GPT-5.4 and GPT-6.1 Terra. A
+  dated snapshot ID such as `openai.gpt-5.4-2026-03-05` uses the rates of its
+  model. Any other OpenAI model shows the cost as unavailable: the price table
+  is maintained by hand, so a model the regional catalogue starts to list has no
+  price until one is added. The model picker marks such a model "no price — cost
+  unavailable". A Codex run with no model selected uses
   the pinned Codex default (`openai.gpt-6.1-sol`) and is priced under it. Kiro
   credits use the captured overage rate and remain an estimate.
 

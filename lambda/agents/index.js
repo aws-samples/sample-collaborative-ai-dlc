@@ -494,7 +494,18 @@ const authChangeResponse = (response, error) =>
 
 // Codex models come from the runtime's regional Mantle catalogue (#674);
 // codexModelsFor in shared/bedrock-models.js decides when the curated list
-// stands in for it.
+// stands in for it and labels a model the price table does not know. The
+// warning names those models, so the missing price entry is visible to an
+// operator and not only to whoever opens the picker.
+const codexPickerModels = (codex) => {
+  const models = codexModelsFor(codex);
+  const unpriced = models.filter((model) => model.priced === false).map((model) => model.id);
+  if (unpriced.length > 0) {
+    logger.warn('[capabilities] Codex models without a price entry', { models: unpriced });
+  }
+  return models;
+};
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
@@ -716,7 +727,7 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: codexModelsFor(runtimeCaps?.codexModels),
+          codex: codexPickerModels(runtimeCaps?.codexModels),
           codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
@@ -1358,7 +1369,7 @@ export const handler = async (event, context) => {
           kiro: kiroModels,
           // Codex on Bedrock: the runtime's regional Mantle catalogue, falling
           // back to the curated list (see shared/bedrock-models.js).
-          codex: codexModelsFor(runtimeCaps?.codexModels),
+          codex: codexPickerModels(runtimeCaps?.codexModels),
           codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
