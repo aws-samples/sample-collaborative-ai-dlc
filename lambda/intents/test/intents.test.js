@@ -217,6 +217,9 @@ const installDdbFakes = () => {
       if (prefix) {
         items = items.filter((i) => (i.sk || '').startsWith(values[prefix[1]]));
       }
+      if (cond.includes('sk BETWEEN :from AND :to')) {
+        items = items.filter((i) => i.sk >= values[':from'] && i.sk <= values[':to']);
+      }
       if (cond.includes('sk < :lo')) items = items.filter((i) => i.sk < values[':lo']);
       if (cond.includes('sk >= :hi')) items = items.filter((i) => i.sk >= values[':hi']);
       items.sort((a, b) => (a.sk || '').localeCompare(b.sk || ''));
@@ -4367,7 +4370,7 @@ describe('GET list + detail', () => {
   const seedOutput = (
     intentId,
     seq,
-    { stageInstanceId = null, content = '', display = undefined } = {},
+    { stageInstanceId = null, content = '', display = undefined, timestamp = undefined } = {},
   ) => {
     const sk = `OUTPUT#${String(seq).padStart(12, '0')}`;
     procStore.set(keyOf(`EXEC#${intentId}`, sk), {
@@ -4380,7 +4383,7 @@ describe('GET list + detail', () => {
       seq,
       kind: 'stdout',
       content,
-      timestamp: `2026-01-01T00:00:0${seq}Z`,
+      timestamp: timestamp ?? `2026-01-01T00:00:0${seq}Z`,
       ...(display ? { display } : {}),
     });
   };
@@ -4452,10 +4455,62 @@ describe('GET list + detail', () => {
         .body,
     );
     expect(tail.outputs.map((o) => o.seq)).toEqual([3]);
+    expect(tail.cursor).toBe(3);
+
+    // Only catch-up reads carry a cursor.
+    expect(stage.cursor).toBeUndefined();
 
     // Malformed cursor is a 400, not a scan.
     const bad = await getOutputs(sub, projectId, intent.id, { afterSeq: 'x' });
     expect(bad.statusCode).toBe(400);
+  });
+
+  it('GET /outputs catch-up reads an SK range and returns a cursor past other stages', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const fresh = new Date().toISOString();
+    seedOutput(intent.id, 1, { stageInstanceId: 'si-done', content: 'old' });
+    seedOutput(intent.id, 2, { stageInstanceId: 'si-live', content: 'a', timestamp: fresh });
+    seedOutput(intent.id, 3, { stageInstanceId: 'si-live', content: 'b', timestamp: fresh });
+    ddbMock.resetHistory();
+
+    // A finished stage's pane: nothing new for it, but the cursor moves past
+    // the other stage's chunks so the next poll does not re-read them.
+    const done = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-done', afterSeq: '1' }))
+        .body,
+    );
+    expect(done.outputs).toEqual([]);
+    expect(done.cursor).toBe(3);
+    const query = ddbMock
+      .commandCalls(QueryCommand)
+      .map((c) => c.args[0].input)
+      .find((input) => input.KeyConditionExpression?.includes('BETWEEN'));
+    expect(query.ExpressionAttributeValues[':from']).toBe('OUTPUT#000000000002');
+    expect(query.FilterExpression).toBeUndefined();
+
+    // A fresh gap (seq 4 allocated, not yet written) holds the cursor; the
+    // pane still gets its chunk after the gap.
+    seedOutput(intent.id, 5, { stageInstanceId: 'si-live', content: 'c', timestamp: fresh });
+    const gap = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-live', afterSeq: '3' }))
+        .body,
+    );
+    expect(gap.outputs.map((o) => o.seq)).toEqual([5]);
+    expect(gap.cursor).toBe(3);
+
+    // Once the chunk after the gap is past the grace period, the gap is skipped.
+    seedOutput(intent.id, 5, {
+      stageInstanceId: 'si-live',
+      content: 'c',
+      timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    });
+    const stale = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-live', afterSeq: '3' }))
+        .body,
+    );
+    expect(stale.cursor).toBe(5);
   });
 
   it('GET /outputs 404s across projects (membership enforced)', async () => {
