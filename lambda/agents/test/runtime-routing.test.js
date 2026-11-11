@@ -157,12 +157,22 @@ describe('agent utility runtime routing', () => {
         expect(inputs[0].runtimeSessionId).not.toBe(inputs[2].runtimeSessionId);
         expect(JSON.parse(inputs[1].payload).agentCredentialGrant).toBeTruthy();
         expect(JSON.parse(inputs[3].payload).command).toBe('verify-mcp');
+        // Every call carries the policy: the runtime may hold no settings access.
+        for (const input of inputs)
+          expect(JSON.parse(input.payload).agentSandbox).toEqual({
+            enabled: true,
+            version: null,
+            settings: {},
+          });
       } else {
         expect(caps).toBeNull();
         expect(mcp.error).toContain('has not confirmed sandbox enforcement');
         expect(inputs).toHaveLength(2);
         for (const input of inputs)
-          expect(JSON.parse(input.payload)).toEqual({ command: 'capabilities' });
+          expect(JSON.parse(input.payload)).toEqual({
+            command: 'capabilities',
+            agentSandbox: { enabled: true, version: null, settings: {} },
+          });
       }
       for (const input of inputs) expect(input).toMatchObject(target);
     },

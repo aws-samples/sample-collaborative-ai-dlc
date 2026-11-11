@@ -184,7 +184,7 @@ const probeRuntimeCapabilities = async ({
         runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities', agentSandbox: sandbox })),
       }),
     );
     runtimeCapabilities = JSON.parse(await probe.response.transformToString());
@@ -212,6 +212,7 @@ const probeRuntimeCapabilities = async ({
       payload: Buffer.from(
         JSON.stringify({
           command: 'capabilities',
+          agentSandbox: sandbox,
           ...(credentialBindings ? { credentialBindings } : {}),
           ...(projectId ? { projectId } : {}),
           ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
@@ -250,10 +251,7 @@ export const verifyMcpServers = async ({
         context: { projectId: projectId ?? null },
       },
       async (runtimeSessionId) => {
-        const sandbox = await readSandboxSettings({
-          ddb,
-          tableName: process.env.V2_PROCESS_TABLE,
-        });
+        const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
         if (sandbox.enabled) {
           const probe = await agentcore.send(
             new InvokeAgentRuntimeCommand({
@@ -261,7 +259,9 @@ export const verifyMcpServers = async ({
               runtimeSessionId,
               contentType: 'application/json',
               accept: 'application/json',
-              payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+              payload: Buffer.from(
+                JSON.stringify({ command: 'capabilities', agentSandbox: sandbox }),
+              ),
             }),
           );
           assertSandboxRuntime(JSON.parse(await probe.response.transformToString()));
@@ -275,6 +275,7 @@ export const verifyMcpServers = async ({
             payload: Buffer.from(
               JSON.stringify({
                 command: 'verify-mcp',
+                agentSandbox: sandbox,
                 mcpServersByTier,
                 ...(projectId ? { projectId } : {}),
                 ...(unsavedSecrets ? { unsavedSecrets } : {}),

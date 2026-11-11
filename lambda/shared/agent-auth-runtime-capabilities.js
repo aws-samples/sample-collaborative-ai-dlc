@@ -5,6 +5,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { resolveRuntimeTarget, runtimeSdkInput } from './runtime-target.js';
 import { authError } from './agent-auth-catalog.js';
+import { resolveInvocationSandbox } from './sandbox-settings.js';
 
 const client = new BedrockAgentCoreClient({});
 const sandboxUnsupported = () =>
@@ -17,9 +18,18 @@ export const assertSandboxRuntime = (capabilities) => {
 };
 // Legacy/default snapshots have no authentication qualification. Probe the
 // actual target before issuing a versioned grant; never assume image support.
+// The probe carries the current sandbox policy (`sandbox`, else read here): an
+// engine-data runtime cannot read it and refuses a capabilities call without one.
 export const qualifyAgentAuthRuntime = async (
   capabilities,
-  { runtime = client, env = process.env, requiredModes = [], requireSandbox = false } = {},
+  {
+    runtime = client,
+    env = process.env,
+    requiredModes = [],
+    requireSandbox = false,
+    sandbox = null,
+    readSandbox = () => resolveInvocationSandbox({ payload: {} }),
+  } = {},
 ) => {
   if (
     capabilities?.agentAuthProtocol &&
@@ -49,6 +59,7 @@ export const qualifyAgentAuthRuntime = async (
     );
   }
   const target = runtimeSdkInput(resolved);
+  const agentSandbox = sandbox ?? (await readSandbox());
   try {
     const result = await runtime.send(
       new InvokeAgentRuntimeCommand({
@@ -57,7 +68,7 @@ export const qualifyAgentAuthRuntime = async (
         runtimeSessionId: randomUUID(),
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities', agentSandbox })),
       }),
     );
     const value = JSON.parse(await result.response.transformToString());

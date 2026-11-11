@@ -6,6 +6,7 @@ import { connectionBinding } from '../../shared/agent-auth-selection-strategies.
 import { normalizeConnection } from '../../shared/agent-auth-contracts.js';
 import { verifyAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
 import { TEST_CONNECTION_MODE } from '../../shared/test/helpers/auth-modes.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../../shared/sandbox-settings.js';
 
 // Verification is reached only through a registered mode, so register a synthetic one.
 vi.mock('../../shared/agent-auth-modes.js', async (importOriginal) =>
@@ -13,6 +14,11 @@ vi.mock('../../shared/agent-auth-modes.js', async (importOriginal) =>
 );
 
 const MODE = TEST_CONNECTION_MODE.id;
+const DISABLED_SANDBOX = {
+  enabled: false,
+  version: null,
+  settings: DEFAULT_SANDBOX_CONFIG.settings,
+};
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const SECRET = 'verification-grant-secret'.repeat(2);
 const runtimeTarget = Object.freeze({
@@ -85,7 +91,9 @@ describe('unsaved connection verification', () => {
           statusCode: 409,
           body: { code: 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED' },
         });
-        expect(payloads()).toEqual([{ command: 'capabilities' }]);
+        expect(payloads()).toEqual([
+          { command: 'capabilities', agentSandbox: { enabled: true, version: null, settings: {} } },
+        ]);
         expect(ssm.send).not.toHaveBeenCalled();
       }
     },
@@ -97,7 +105,9 @@ describe('unsaved connection verification', () => {
       body: { verified: true, account: 'fixture' },
     });
     const [probe, check] = payloads();
-    expect(probe).toEqual({ command: 'capabilities' });
+    // The runtime may be unable to read the sandbox settings, so both calls carry them.
+    expect(probe).toEqual({ command: 'capabilities', agentSandbox: DISABLED_SANDBOX });
+    expect(check.agentSandbox).toEqual(DISABLED_SANDBOX);
     const expected = connectionBinding(
       normalizeConnection({
         id: check.credentialBinding.connectionId,
@@ -160,7 +170,7 @@ describe('unsaved connection verification', () => {
             'Publish an environment whose runtime supports connection verification for this mode',
         },
       });
-      expect(payloads()).toEqual([{ command: 'capabilities' }]);
+      expect(payloads()).toEqual([{ command: 'capabilities', agentSandbox: DISABLED_SANDBOX }]);
     }
     expect(ssm.send).not.toHaveBeenCalled();
   });

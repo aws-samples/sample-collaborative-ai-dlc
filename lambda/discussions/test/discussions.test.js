@@ -1826,6 +1826,7 @@ describe('intent-scoped discussions', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
+    expect(payload.agentSandbox).toMatchObject({ enabled: false });
     expect(payload).not.toHaveProperty('gatewayGrant');
     expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 

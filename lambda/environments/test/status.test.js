@@ -444,6 +444,11 @@ describe('managed environment status handler', () => {
         expect(result.results[0].revision.verification.sandboxEnforcement).toBe(true);
       else expect(result.results[0].revision.verification).not.toHaveProperty('sandboxEnforcement');
       expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
+      // The runtime may hold no settings access, so qualification states its policy.
+      expect(JSON.parse(runtimeClient.send.mock.calls[0][0].input.payload)).toEqual({
+        command: 'capabilities',
+        agentSandbox: { enabled: false },
+      });
       expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
         'StopRuntimeSessionCommand',
       );
