@@ -856,6 +856,8 @@ test('deployment fails visibly if a supported catalog cannot be prepared', () =>
   });
   assert.equal(result.status, 42);
   assert.doesNotMatch(result.stdout, /Infrastructure deployment complete/);
+  assert.match(result.stdout, /AI-DLC default workflow and building blocks applied/);
+  assert.match(result.stderr, /prepare-aidlc-releases\.mjs/);
 });
 
 test('deployment initializes inventory after apply even when baseline seeding is skipped', () => {

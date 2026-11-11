@@ -467,9 +467,18 @@ closure and plan checks still run, and no runtime execution check is bypassed.
 
 The standard installer and deployment scripts publish and register all eight
 supported official versions, including 2.11.3. Preparation is idempotent, runs
-independently of `--skip-seed`, and fails deployment if a catalog cannot be
-prepared. It preserves existing approvals, visibility, notes, channel choices
-and registered closure revisions. It does not approve new versions.
+after the baseline reseed (or after it is skipped with `--skip-seed`), and fails
+deployment if a catalog cannot be prepared; the error names the command to retry
+it. It preserves existing approvals, visibility, notes and channel choices, and
+does not approve new versions.
+
+When a deployment raises the importer revision, preparation moves each
+registered official version to the closure it just published, through the same
+checked upgrade an administrator runs. Intents already pinned keep the closure
+they started with; only new intents pin the new one. If the registry refuses an
+upgrade, for example because a channel would no longer be satisfied, the version
+stays on its older closure, the deployment prints a warning, and the releases
+tab shows **Upgrade needed** in its status.
 
 After deployment:
 
@@ -495,9 +504,9 @@ SEED_BLOCKS_FUNCTION="<seed_blocks_lambda_name output>" \
 Custom forks still use the explicit `importRelease` mode and admin registration.
 A fork in a private GitLab project needs the token secret described under
 [Fork sources](#fork-sources).
-Older registered closure revisions remain available; **Maintenance → Import
-details and advanced state → Upgrade closure** adopts a newly published revision
-without changing existing intent pins.
+A custom fork, or an official version whose upgrade was refused, stays on its
+registered closure; opening it in the releases tab shows **Upgrade closure**,
+which adopts a newly published revision without changing existing intent pins.
 
 Existing intents keep the release they were created with. To stop offering a
 release, follow [Roll back a channel](#roll-back-a-channel).
