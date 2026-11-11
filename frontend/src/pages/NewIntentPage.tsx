@@ -107,8 +107,14 @@ export default function NewIntentPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // The release state belongs to the URL it was read for. A new lookup
+    // starts from nothing, so a version the page no longer asks for is never
+    // pinned while the current one is being read.
     setReleasesSettled(false);
     setReleaseRequestError(null);
+    setReleases([]);
+    setStableReleaseId(null);
+    setSelectedReleaseId(null);
     aidlcReleasesService
       .sharedChannels()
       .then((channels) => {
@@ -254,9 +260,10 @@ export default function NewIntentPage() {
     setImporting(false);
     setSource(null);
   };
-  const requestedReleaseBlocked = Boolean(
-    requestedReleaseId && (!releasesSettled || releaseRequestError),
-  );
+  // Nothing is submitted until the lookup for the current URL settles; an
+  // explicit version also blocks while it could not be confirmed.
+  const requestedReleaseBlocked =
+    !releasesSettled || Boolean(requestedReleaseId && releaseRequestError);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
+import { Link, MemoryRouter, Routes, Route, useLocation } from 'react-router';
 
 // Radix Select relies on pointer-capture / scrollIntoView APIs jsdom doesn't
 // implement — polyfill just enough for the trigger/option interaction below.
@@ -216,6 +216,55 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
     expect(screen.queryByTestId('compose-page')).not.toBeInTheDocument();
+  });
+
+  // Leaving an explicit version for the default page is a new lookup. Until it
+  // settles nothing may be submitted, and the previous version is never pinned.
+  it('drops an explicit version when the page returns to the default selection', async () => {
+    const other = release({ releaseId: 'aidlc:ccc333', sourceSha: 'ccc333ddd444' });
+    listReleases.mockResolvedValue({ releases: [release(), other] });
+    listChannels.mockResolvedValueOnce({
+      pinningEnabled: true,
+      stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
+      candidate: null,
+      preview: null,
+    });
+    let settle: (value: unknown) => void = () => {};
+    listChannels.mockReturnValueOnce(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/new?release=aidlc%3Accc333']}>
+        <Link to="/space/p1/intent/new">Default version</Link>
+        <Routes>
+          <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
+          <Route path="/space/:projectId/intent/:intentId/compose" element={<ComposePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await user.type(await screen.findByLabelText('Prompt'), 'Build X');
+    const submit = screen.getByRole('button', { name: /continue to compose/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+
+    await user.click(screen.getByRole('link', { name: 'Default version' }));
+    expect(screen.getByRole('button', { name: /continue to compose/i })).toBeDisabled();
+
+    await act(async () => {
+      settle({
+        pinningEnabled: true,
+        stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
+        candidate: null,
+        preview: null,
+      });
+    });
+    const ready = screen.getByRole('button', { name: /continue to compose/i });
+    await waitFor(() => expect(ready).toBeEnabled());
+    await user.click(ready);
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
   });
 
   it('preselects the stable channel release and leaves the pin to the platform default', async () => {
