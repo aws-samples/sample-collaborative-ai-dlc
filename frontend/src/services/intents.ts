@@ -1208,7 +1208,8 @@ export const intentsService = {
   // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
   // scopes to one pane — the literal "intent" is the stage-less workspace/init
   // bucket; `afterSeq` fetches only chunks emitted after a known sequence, and
-  // the response's `cursor` is the afterSeq to send next.
+  // the response's `cursor` is the afterSeq to send next. `more` means the
+  // response is one page of a longer transcript.
   outputs: (
     projectId: string,
     intentId: string,
@@ -1218,7 +1219,7 @@ export const intentsService = {
     if (params.stageInstanceId !== undefined) qs.set('stageInstanceId', params.stageInstanceId);
     if (params.afterSeq !== undefined) qs.set('afterSeq', String(params.afterSeq));
     const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
-    return api.get<{ outputs: IntentOutput[]; cursor?: number }>(
+    return api.get<{ outputs: IntentOutput[]; cursor?: number; more?: boolean }>(
       `/projects/${projectId}/intents/${intentId}/outputs${suffix}`,
     );
   },

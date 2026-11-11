@@ -5632,6 +5632,37 @@ const outputsCursor = (rows, afterSeq, nowMs) => {
   return cursor;
 };
 
+// A long run's transcript is tens of MB, so /outputs pages: a response holds
+// about OUTPUTS_PAGE_BYTES (as encoded in the Lambda response) and, when it
+// stops short, `more: true` with the `cursor` to send as the next afterSeq.
+const DEFAULT_OUTPUTS_PAGE_BYTES = 4 * 1024 * 1024;
+
+const outputsPageBytes = () => {
+  const configured = Number(process.env.OUTPUTS_PAGE_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_OUTPUTS_PAGE_BYTES;
+};
+
+const mapOutput = (o) => ({
+  seq: o.seq,
+  stageInstanceId: o.stageInstanceId ?? null,
+  unitSlug: o.unitSlug ?? null,
+  sectionIndex: o.sectionIndex ?? null,
+  kind: o.kind,
+  content: o.content,
+  timestamp: o.timestamp,
+  ...(o.display ? { display: o.display } : {}),
+});
+
+// The leading rows that fit `budget` (at least one); `next` is the first row left out.
+const fitOutputs = (rows, budget) => {
+  let used = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    used += envelopeBytes(rows[i]);
+    if (i > 0 && used > budget) return { rows: rows.slice(0, i), next: rows[i] };
+  }
+  return { rows, next: null };
+};
+
 const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -5648,33 +5679,36 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
     rawStage !== undefined
       ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
       : {};
-  let rows;
+  const budget = outputsPageBytes();
+  let page;
   let cursor;
+  let more;
   if (afterSeq == null) {
-    rows = await store.getOutputs(intentId, { ...stageFilter, afterSeq });
+    const read = await store.getOutputsPage(intentId, { ...stageFilter, maxBytes: budget });
+    page = fitOutputs(read.items.map(mapOutput), budget);
+    more = read.more || page.next !== null;
+    // Rows of other stages are not this pane's, so the last row returned is
+    // a complete cursor for it. (A read that found no rows drained the range.)
+    if (more) cursor = page.rows.at(-1).seq;
   } else {
     // Catch-up reads every chunk after the cursor (the stage filter is applied
     // here, not in DynamoDB) so the response can carry a `cursor` covering
     // other stages' chunks too. Without it a pane for a finished stage would
     // re-read every later chunk of the run on each poll.
-    const all = await store.getOutputs(intentId, { afterSeq });
-    cursor = outputsCursor(all, afterSeq, Date.now());
-    rows = stageFilter.filterByStage
-      ? all.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
-      : all;
+    const read = await store.getOutputsPage(intentId, { afterSeq, maxBytes: budget });
+    cursor = outputsCursor(read.items, afterSeq, Date.now());
+    const rows = stageFilter.filterByStage
+      ? read.items.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
+      : read.items;
+    page = fitOutputs(rows.map(mapOutput), budget);
+    // Never move the cursor past a row left out of this page.
+    if (page.next) cursor = Math.min(cursor, Number(page.next.seq) - 1);
+    more = read.more || page.next !== null;
   }
   return response(200, {
     ...(cursor !== undefined ? { cursor } : {}),
-    outputs: rows.map((o) => ({
-      seq: o.seq,
-      stageInstanceId: o.stageInstanceId ?? null,
-      unitSlug: o.unitSlug ?? null,
-      sectionIndex: o.sectionIndex ?? null,
-      kind: o.kind,
-      content: o.content,
-      timestamp: o.timestamp,
-      ...(o.display ? { display: o.display } : {}),
-    })),
+    ...(more ? { more: true } : {}),
+    outputs: page.rows,
   });
 };
 
