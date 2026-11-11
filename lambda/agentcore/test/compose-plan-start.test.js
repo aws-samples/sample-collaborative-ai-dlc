@@ -563,6 +563,86 @@ describe('compose-plan-start', () => {
     expect(update.fields.failureReason).toMatch(/boom: model unavailable/);
   });
 
+  it('fails a compose whose workflow version is missing before grounding anything', async () => {
+    const deps = makeDeps();
+    deps.loadLibraryFn = vi.fn(async () => ({ workflow: null, library: null }));
+    await createComposePlanStart(deps)(basePayload);
+    const update = await waitForFinish(deps.store);
+    expect(update).toMatchObject({
+      state: 'FAILED',
+      fields: { failureReason: 'workflow aidlc-v2@4 not found' },
+    });
+    expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
+    expect(deps.openGraph).not.toHaveBeenCalled();
+    expect(deps.oneShot).not.toHaveBeenCalled();
+  });
+
+  it('carries every one-shot diagnostic onto the row and the log, the sample capped', async () => {
+    const deps = makeDeps();
+    deps.oneShot = vi.fn(async () => ({
+      ok: false,
+      reason: 'cli_failed',
+      cli: 'claude',
+      exitCode: 0,
+      sample: `${'s'.repeat(600)}-beyond-the-cap`,
+      metrics: null,
+    }));
+    await createComposePlanStart(deps)(basePayload);
+    const update = await waitForFinish(deps.store);
+    const diagnostics = `cli=claude — exit=0 — output: ${'s'.repeat(600)}`;
+    expect(update.state).toBe('FAILED');
+    expect(update.fields.failureReason).toBe(`composer CLI failed: cli_failed (${diagnostics})`);
+    expect(deps.log).toHaveBeenCalledWith(`one-shot failed (i1:c1): cli_failed — ${diagnostics}`);
+    expect(deps.store.recordMetric).not.toHaveBeenCalled();
+  });
+
+  it('fails with the bare reason when the one-shot reports no diagnostics, keeping its spend', async () => {
+    const deps = makeDeps();
+    deps.oneShot = vi.fn(async () => ({ ok: false, metrics: { tokensInput: 7 } }));
+    await createComposePlanStart(deps)(basePayload);
+    const update = await waitForFinish(deps.store);
+    expect(update.state).toBe('FAILED');
+    expect(update.fields.failureReason).toBe('composer CLI failed: unknown');
+    expect(deps.log).toHaveBeenCalledWith('one-shot failed (i1:c1): unknown');
+    expect(deps.store.recordMetric).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: null,
+      metrics: { tokensInput: 7, composeCalls: 1 },
+      resolvedModel: null,
+      creditRate: null,
+    });
+  });
+
+  it('composes without a persona or knowledge when the library carries neither', async () => {
+    const deps = makeDeps({ oneShotText: '{"mode":"matched","scope":"feature"}' });
+    deps.loadLibraryFn = vi.fn(async () => ({
+      workflow: workflow(),
+      library: { ...library(), agentsById: undefined, knowledgeById: undefined },
+    }));
+    await createComposePlanStart(deps)(basePayload);
+    const update = await waitForFinish(deps.store);
+    expect(update.state).toBe('COMPLETED');
+    expect(deps.loadBlockBodyFn).not.toHaveBeenCalled();
+    const prompt = deps.oneShot.mock.calls[0][0].prompt;
+    expect(prompt).toContain('You are the AI-DLC composer agent');
+    expect(prompt).not.toContain('KNOWLEDGE');
+  });
+
+  it('fails with the generic reason when the job throws something other than an Error', async () => {
+    const deps = makeDeps();
+    const thrown = { code: 'catalog_unavailable' };
+    deps.loadLibraryFn = vi.fn(async () => {
+      throw thrown;
+    });
+    await createComposePlanStart(deps)(basePayload);
+    const update = await waitForFinish(deps.store);
+    expect(update).toMatchObject({
+      state: 'FAILED',
+      fields: { failureReason: 'compose job crashed' },
+    });
+    expect(deps.log).toHaveBeenCalledWith('job failed (i1:c1):', thrown);
+  });
+
   it('creates the throwaway working directory before spawning the CLI', async () => {
     const deps = makeDeps({ oneShotText: '{"mode":"matched","scope":"feature"}' });
     await createComposePlanStart(deps)(basePayload);
@@ -606,6 +686,25 @@ describe('compose-plan-start', () => {
     const starved = await waitForFinish(starve.store);
     expect(starved.state).toBe('FAILED');
     expect(starved.fields.validation.errors.map((e) => e.code)).toContain('starved_consume');
+  });
+
+  it('inflight mode pins the frozen stages a proposal leaves out', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '{"mode":"custom","scope":"reshape","grid":{"analyze":"EXECUTE","build":"EXECUTE"}}',
+    });
+    await createComposePlanStart(deps)({
+      ...basePayload,
+      mode: 'inflight',
+      frozenGrid: { init: 'EXECUTE' },
+    });
+    const update = await waitForFinish(deps.store);
+    expect(update.state).toBe('COMPLETED');
+    expect(update.fields.proposal.grid).toEqual({
+      analyze: 'EXECUTE',
+      build: 'EXECUTE',
+      init: 'EXECUTE',
+    });
   });
 
   it('records the one-shot metrics against the intent', async () => {

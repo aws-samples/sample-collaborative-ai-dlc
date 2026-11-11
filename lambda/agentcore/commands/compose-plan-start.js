@@ -349,6 +349,37 @@ const buildComposePrompt = ({
   return `${body}\n\n${contract}`;
 };
 
+// Carry the one-shot's diagnostics onto the row: the reason alone
+// ("cli_failed") is undebuggable — the exit code and the captured
+// output sample say WHY.
+const describeOneShotFailure = (out) => {
+  const detail = [
+    out.cli ? `cli=${out.cli}` : null,
+    out.exitCode != null ? `exit=${out.exitCode}` : null,
+    out.sample ? `output: ${String(out.sample).slice(0, 600)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' — ');
+  return {
+    summary: `${out.reason ?? 'unknown'}${detail ? ` — ${detail}` : ''}`,
+    failureReason: `composer CLI failed: ${out.reason ?? 'unknown'}${detail ? ` (${detail})` : ''}`,
+  };
+};
+
+// In-flight recompose: frozen stages (completed / in-progress /
+// already-skipped, supplied by the dispatcher) must survive verbatim —
+// enforce here so a hallucinated flip of the past can never validate.
+const pinFrozenStages = (frozenGrid, proposal) => {
+  if (!frozenGrid || !proposal.grid) return null;
+  for (const [stageId, value] of Object.entries(frozenGrid)) {
+    if (proposal.grid[stageId] !== undefined && proposal.grid[stageId] !== value) {
+      return `proposal flips frozen stage "${stageId}" (${value} → ${proposal.grid[stageId]})`;
+    }
+    proposal.grid[stageId] = value;
+  }
+  return null;
+};
+
 export const createComposePlanStart = ({
   openGraph,
   openEngineGraph,
@@ -439,80 +470,88 @@ export const createComposePlanStart = ({
       return row;
     };
 
+    const groundComposer = async () => {
+      const { workflow, library } = await loadLibraryFn({
+        workflowId,
+        workflowVersion,
+        ...(methodologyRelease
+          ? {
+              methodologyRelease,
+              ...(methodologyPins ? { methodologyPins } : {}),
+            }
+          : {}),
+      });
+      if (!workflow || !library) return null;
+      // A pinned intent grounds on its release's SCOPE vocabulary. No .catch
+      // here: an unresolvable closure must fail the compose, not silently
+      // ground the composer in an empty scope list.
+      const scopeBlocks = methodologyRelease
+        ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
+        : await listMergedBlocksFn('SCOPE').catch(() => []);
+      const { scopes, summaries, grids, stages, scopeSettings, offeredScopeIds } =
+        buildScopeGrounding({ workflow, library, scopeBlocks });
+      // The per-intent settings exist only for a release that authors at least
+      // one of them. Gating the settings grounding AND the richer output
+      // contract on the CATALOG — never on a version string — is what keeps
+      // the compose prompt of every older pinned release byte-for-byte what
+      // it was.
+      const settingsAware = scopes.some(
+        (scope) => Object.keys(scopeAidlcSettings(scope)).length > 0,
+      );
+      const settingsScopeBlock =
+        scopes.find((scope) => (scope.id ?? scope.blockId) === policyScope) ?? null;
+      const grounding = buildGroundingPack({
+        scopes,
+        summaries,
+        grids,
+        stages,
+        scopeSettings,
+        settingsScopeId: settingsAware ? (policyScope ?? null) : null,
+        effectiveSettings: settingsAware
+          ? effectiveAidlcSettingRows(aidlcSettings, scopeAidlcSettings(settingsScopeBlock))
+          : [],
+      });
+
+      // Composer persona + methodology knowledge from the block library
+      // (fork-shadowing applies — a user's edited composer is honoured).
+      const loadBody = methodologyRelease
+        ? (block) => loadBlockBodyFn(block, { methodologyRelease })
+        : (block) => loadBlockBodyFn(block).catch(() => '');
+      const agentBlock = library.agentsById?.[COMPOSER_AGENT_ID] ?? null;
+      const persona = agentBlock ? await loadBody(agentBlock) : '';
+      const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
+        (k) => k.agentRef === COMPOSER_AGENT_ID,
+      );
+      const knowledgeBodies = await Promise.all(knowledgeBlocks.map(loadBody));
+
+      const fullPrompt = buildComposePrompt({
+        mode,
+        persona,
+        knowledge: knowledgeBodies.filter(Boolean).join('\n\n'),
+        grounding,
+        intentPrompt: prompt,
+        instructions,
+        repoSignals,
+        reportExcerpt,
+        progressContext,
+        settingsAware,
+      });
+      return { workflow, library, scopeBlocks, offeredScopeIds, settingsAware, fullPrompt };
+    };
+
     const job = runCredentialJob(async () => {
       let graph;
       try {
-        const { workflow, library } = await loadLibraryFn({
-          workflowId,
-          workflowVersion,
-          ...(methodologyRelease
-            ? {
-                methodologyRelease,
-                ...(methodologyPins ? { methodologyPins } : {}),
-              }
-            : {}),
-        });
-        if (!workflow || !library) {
+        const grounded = await groundComposer();
+        if (!grounded) {
           await finish({
             state: 'FAILED',
             fields: { failureReason: `workflow ${workflowId}@${workflowVersion} not found` },
           });
           return;
         }
-        // A pinned intent grounds on its release's SCOPE vocabulary. No .catch
-        // here: an unresolvable closure must fail the compose, not silently
-        // ground the composer in an empty scope list.
-        const scopeBlocks = methodologyRelease
-          ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
-          : await listMergedBlocksFn('SCOPE').catch(() => []);
-        const { scopes, summaries, grids, stages, scopeSettings, offeredScopeIds } =
-          buildScopeGrounding({ workflow, library, scopeBlocks });
-        // The per-intent settings exist only for a release that authors at least
-        // one of them. Gating the settings grounding AND the richer output
-        // contract on the CATALOG — never on a version string — is what keeps
-        // the compose prompt of every older pinned release byte-for-byte what
-        // it was.
-        const settingsAware = scopes.some(
-          (scope) => Object.keys(scopeAidlcSettings(scope)).length > 0,
-        );
-        const settingsScopeBlock =
-          scopes.find((scope) => (scope.id ?? scope.blockId) === policyScope) ?? null;
-        const grounding = buildGroundingPack({
-          scopes,
-          summaries,
-          grids,
-          stages,
-          scopeSettings,
-          settingsScopeId: settingsAware ? (policyScope ?? null) : null,
-          effectiveSettings: settingsAware
-            ? effectiveAidlcSettingRows(aidlcSettings, scopeAidlcSettings(settingsScopeBlock))
-            : [],
-        });
-
-        // Composer persona + methodology knowledge from the block library
-        // (fork-shadowing applies — a user's edited composer is honoured).
-        const loadBody = methodologyRelease
-          ? (block) => loadBlockBodyFn(block, { methodologyRelease })
-          : (block) => loadBlockBodyFn(block).catch(() => '');
-        const agentBlock = library.agentsById?.[COMPOSER_AGENT_ID] ?? null;
-        const persona = agentBlock ? await loadBody(agentBlock) : '';
-        const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
-          (k) => k.agentRef === COMPOSER_AGENT_ID,
-        );
-        const knowledgeBodies = await Promise.all(knowledgeBlocks.map(loadBody));
-
-        const fullPrompt = buildComposePrompt({
-          mode,
-          persona,
-          knowledge: knowledgeBodies.filter(Boolean).join('\n\n'),
-          grounding,
-          intentPrompt: prompt,
-          instructions,
-          repoSignals,
-          reportExcerpt,
-          progressContext,
-          settingsAware,
-        });
+        const { workflow, library, scopeBlocks, offeredScopeIds, settingsAware, fullPrompt } =
+          grounded;
 
         graph = await engineGraphOpener({ openEngineGraph, openGraph })({
           projectId,
@@ -548,27 +587,9 @@ export const createComposePlanStart = ({
             .catch(() => {});
         }
         if (!out.ok) {
-          // Carry the one-shot's diagnostics onto the row: the reason alone
-          // ("cli_failed") is undebuggable — the exit code and the captured
-          // output sample say WHY.
-          const detail = [
-            out.cli ? `cli=${out.cli}` : null,
-            out.exitCode != null ? `exit=${out.exitCode}` : null,
-            out.sample ? `output: ${String(out.sample).slice(0, 600)}` : null,
-          ]
-            .filter(Boolean)
-            .join(' — ');
-          log(
-            `one-shot failed (${key}): ${out.reason ?? 'unknown'}${detail ? ` — ${detail}` : ''}`,
-          );
-          await finish({
-            state: 'FAILED',
-            fields: {
-              failureReason: `composer CLI failed: ${out.reason ?? 'unknown'}${
-                detail ? ` (${detail})` : ''
-              }`,
-            },
-          });
+          const failure = describeOneShotFailure(out);
+          log(`one-shot failed (${key}): ${failure.summary}`);
+          await finish({ state: 'FAILED', fields: { failureReason: failure.failureReason } });
           return;
         }
         const { proposal, error: parseError } = parseComposeProposal(out.text);
@@ -576,22 +597,10 @@ export const createComposePlanStart = ({
           await finish({ state: 'FAILED', fields: { failureReason: parseError } });
           return;
         }
-        // In-flight recompose: frozen stages (completed / in-progress /
-        // already-skipped, supplied by the dispatcher) must survive verbatim —
-        // enforce here so a hallucinated flip of the past can never validate.
-        if (frozenGrid && proposal.grid) {
-          for (const [stageId, value] of Object.entries(frozenGrid)) {
-            if (proposal.grid[stageId] !== undefined && proposal.grid[stageId] !== value) {
-              await finish({
-                state: 'FAILED',
-                fields: {
-                  failureReason: `proposal flips frozen stage "${stageId}" (${value} → ${proposal.grid[stageId]})`,
-                },
-              });
-              return;
-            }
-            proposal.grid[stageId] = value;
-          }
+        const frozenFlip = pinFrozenStages(frozenGrid, proposal);
+        if (frozenFlip) {
+          await finish({ state: 'FAILED', fields: { failureReason: frozenFlip } });
+          return;
         }
         const {
           validation,
