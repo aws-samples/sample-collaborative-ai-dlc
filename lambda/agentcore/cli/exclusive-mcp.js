@@ -19,14 +19,16 @@
 //                 AGENTS.md and the runtime's relative instructions), and it
 //                 deep-merges every config layer. So every server another
 //                 layer defines is listed again in the inline config, which
-//                 OpenCode reads last, with `enabled: false`.
+//                 OpenCode reads last, with `enabled: false`. OPENCODE_PURE
+//                 (cli/drivers.js) keeps workspace and user plugins, whose
+//                 `config` hook could re-enable them, from loading.
 // This isolates the agent's MCP tools only. Code the agent runs (shell, curl)
 // is bounded by network egress control, not by this module.
 // Allow mode never calls into this module.
 import { readFile, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parse as parseJsonc } from 'jsonc-parser';
+import { parse as parseJsonc, visit as visitJsonc } from 'jsonc-parser';
 import { RuntimeMcpPolicyError } from '../../shared/runtime-mcp-policy.js';
 
 const missing = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
@@ -76,13 +78,51 @@ const unreadable = (file, reason) =>
       'whose MCP servers cannot be read is not run.',
   );
 
+// OpenCode replaces `{env:NAME}` (raw) and then `{file:path}` (JSON-escaped)
+// in the config TEXT before parsing it (config/variable.ts), so a token outside
+// a string value — in a key, a comment, or spanning strings — changes the
+// structure OpenCode parses. Tokens are accepted only fully inside one string
+// value. A value with an `{env:…}` token may hold no other `{`: replacing the
+// token could otherwise join text into a `{file:…}` token that ends beyond the
+// string.
+const SUBSTITUTION_TOKENS = [/\{env:[^}]+\}/g, /\{file:[^}]+\}/g];
+
+const substitutesOutsideValues = (text) => {
+  const values = [];
+  visitJsonc(
+    text,
+    {
+      onLiteralValue: (value, offset, length) => {
+        if (typeof value === 'string') values.push([offset + 1, offset + length - 1]);
+      },
+    },
+    { allowTrailingComma: true },
+  );
+  const tokens = SUBSTITUTION_TOKENS.flatMap((pattern) => [...text.matchAll(pattern)]);
+  const outside = tokens.some(
+    ({ index, 0: token }) =>
+      !values.some(([start, end]) => start <= index && index + token.length <= end),
+  );
+  return (
+    outside ||
+    values.some(([start, end]) => {
+      const value = text.slice(start, end);
+      return /\{env:[^}]+\}/.test(value) && value.replace(/\{env:[^}]+\}/g, '').includes('{');
+    })
+  );
+};
+
 // Parsed exactly as OpenCode parses it (jsonc-parser, trailing commas allowed,
 // any error fatal), so the server names read here are the names OpenCode reads.
 // OpenCode decodes the file with a BOM-stripping decoder; Node's does not.
 export const parseOpenCodeConfig = (text, file) => {
   const errors = [];
-  const data = parseJsonc(text.replace(/^\uFEFF/, ''), errors, { allowTrailingComma: true });
+  const source = text.replace(/^\uFEFF/, '');
+  const data = parseJsonc(source, errors, { allowTrailingComma: true });
   if (errors.length) throw unreadable(file, 'is not valid JSONC');
+  if (substitutesOutsideValues(source)) {
+    throw unreadable(file, 'substitutes {env:…} or {file:…} outside a string value');
+  }
   return data;
 };
 
@@ -103,10 +143,8 @@ const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Arra
 
 // The server names OpenCode derives from one file's `mcp` object: its entries,
 // and the entries of an `mcp.servers` envelope (OpenCode's V2 form, flattened
-// into `mcp` when `servers` is not itself a server). OpenCode substitutes
-// `{env:…}` and `{file:…}` in the text before parsing, so such a name is not the
-// one read here and is refused.
-const openCodeServers = (mcp, file) => {
+// into `mcp` when `servers` is not itself a server).
+const openCodeServers = (mcp) => {
   if (!isRecord(mcp)) return [];
   const { servers } = mcp;
   const envelope =
@@ -116,14 +154,10 @@ const openCodeServers = (mcp, file) => {
         Object.hasOwn(servers, key) &&
         (servers[key] === null || typeof servers[key] !== 'object' || Array.isArray(servers[key])),
     );
-  const entries = [
+  return [
     ...Object.entries(mcp).filter(([name]) => !(envelope && name === 'servers')),
     ...(envelope ? Object.entries(servers) : []),
   ];
-  for (const [name] of entries) {
-    if (/\{(env|file):/.test(name)) throw unreadable(file, `names an MCP server ${name}`);
-  }
-  return entries;
 };
 
 const OPENCODE_FILES = ['opencode.jsonc', 'opencode.json'];
@@ -173,7 +207,7 @@ export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home }) => {
   const foreign = {};
   for (const file of await openCodeConfigFiles({ cwd, home })) {
     const parsed = await readJsoncFile(file);
-    for (const [name, server] of openCodeServers(parsed?.mcp, file)) {
+    for (const [name, server] of openCodeServers(parsed?.mcp)) {
       if (!Object.hasOwn(own, name)) foreign[name] = disabledOpenCodeServer(server);
     }
   }

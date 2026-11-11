@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { claudeDriver } from '../cli/drivers.js';
+import { claudeDriver, getDriver, opencodeDriver } from '../cli/drivers.js';
+import { createGatewayBackend } from '../cli/backend-adapters.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { codexUntrustedProjectsToml, exclusiveOpenCodeConfig } from '../cli/exclusive-mcp.js';
 import {
@@ -125,6 +126,34 @@ describe('OpenCode config parsing', () => {
     ['a substituted server name', `{"mcp":{"{env:NAME}":${server}}}`],
   ])('refuses a file with %s', async (_label, text) => {
     await expect(disabledNames(text)).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+  });
+
+  it('refuses a file key that becomes `mcp` once substituted', async () => {
+    const { repo, cwd } = await repository();
+    await writeFile(path.join(repo, 'key.txt'), 'mcp');
+    await writeFile(path.join(repo, 'opencode.json'), `{"{file:./key.txt}":{"extra":${server}}}`);
+    await expect(
+      exclusiveOpenCodeConfig({ config: { mcp: {} }, cwd, home: repo }),
+    ).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+  });
+
+  it.each([
+    ['as a top-level key', `{"{env:X}":{"extra":${server}},"mcp":{}}`],
+    ['in a line comment', `{\n  // {env:X}\n  "mcp":{}\n}`],
+    ['in a block comment', `{ /* {file:./key.txt} */ "mcp":{} }`],
+    ['in a nested key outside mcp', `{"agent":{"{env:X}":{}},"mcp":{}}`],
+    ['spanning two strings', `{"mcp":{},"a":"{env:","b":"}"}`],
+    ['joined into a file token by an env value', `{"mcp":{},"a":"{fi{env:E}le:","b":"}"}`],
+  ])('refuses a substitution %s', async (_label, text) => {
+    await expect(disabledNames(text)).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+  });
+
+  it('accepts substitutions inside string values', async () => {
+    const names = await disabledNames(
+      `{"mcp":{"api":{"type":"remote","url":"https://{env:HOST}/mcp",` +
+        `"headers":{"Authorization":"Bearer {env:API_KEY}","X-Key":"{file:./key.txt}"}}}}`,
+    );
+    expect(names).toContain('api');
   });
 });
 
@@ -358,5 +387,61 @@ describe('OpenCode: other layers disabled in the inline config', () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: ['opencode'], cwd, spawnFn });
     expect(out).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenCode: no workspace or user plugins', () => {
+  const fresh = (input = {}) =>
+    opencodeDriver.buildInvocation({ prompt: 'p', opencodeConfigContent: '{}', ...input });
+  const resumed = (input = {}) =>
+    opencodeDriver.buildResumeInvocation({
+      sessionId: 'ses_1',
+      answerMessage: 'a',
+      opencodeConfigContent: '{}',
+      ...input,
+    });
+
+  it.each([
+    ['fresh', fresh],
+    ['resumed', resumed],
+  ])('sets OPENCODE_PURE on %s runs under gateway_only only', (_label, build) => {
+    expect(build().env).toEqual({ OPENCODE_CONFIG_CONTENT: '{}' });
+    expect(build({ exclusiveMcp: true }).env).toEqual({
+      OPENCODE_CONFIG_CONTENT: '{}',
+      OPENCODE_PURE: '1',
+    });
+    gatewayOnly();
+    expect(build().env.OPENCODE_PURE).toBe('1');
+  });
+
+  it('keeps OPENCODE_PURE through a non-Bedrock backend', () => {
+    gatewayOnly();
+    const driver = getDriver('opencode', {
+      backend: createGatewayBackend({ endpoint: 'https://gateway.example' }),
+    });
+    expect(driver.buildInvocation({ prompt: 'p' }).env.OPENCODE_PURE).toBe('1');
+    expect(
+      driver.buildResumeInvocation({ sessionId: 's', answerMessage: 'a' }).env.OPENCODE_PURE,
+    ).toBe('1');
+  });
+
+  it('applies to one-shot runs', async () => {
+    const run = async () => {
+      let env;
+      await runOneShotPrompt({
+        prompt: 'p',
+        availableClis: ['opencode'],
+        cwd: (await repository()).cwd,
+        withOpenCodeStore: async ({ operation }) => operation(),
+        spawnFn: (command, args, options) => {
+          env = options.env;
+          return fakeChild('');
+        },
+      });
+      return env;
+    };
+    expect(await run()).not.toHaveProperty('OPENCODE_PURE');
+    gatewayOnly();
+    expect((await run()).OPENCODE_PURE).toBe('1');
   });
 });
