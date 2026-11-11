@@ -423,3 +423,13 @@ output "codecommit_platform_principals" {
   description = "Execution role ARNs a tenant must trust on a CodeCommit access role (comma-separated); also shown by the connect flow"
   value       = module.lambda.codecommit_platform_principals
 }
+
+output "notification_event_bus_name" {
+  description = "Notification event bus name, or empty when notification_events_enabled is false"
+  value       = module.lambda.notification_event_bus_name
+}
+
+output "notification_event_bus_arn" {
+  description = "Notification event bus ARN, or empty when notification_events_enabled is false"
+  value       = module.lambda.notification_event_bus_arn
+}

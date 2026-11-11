@@ -4,8 +4,14 @@
 // The first test is the byte-identity guarantee: an intent with no grant opens
 // exactly the gates it opened before the mode existed.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withDurableExecution } from '@aws/durable-execution-sdk-js';
+import {
+  LocalDurableTestRunner,
+  WaitingOperationStatus,
+} from '@aws/durable-execution-sdk-js-testing';
 import { __durableHandler } from './fixtures/completion-handler.js';
+import { loadMetaBeforeAutonomousLoopBack } from './fixtures/load-meta-before-autonomous-loop-back.js';
 
 const makeCtx = (over = {}) => {
   const stageCallbacks = new Map();
@@ -13,7 +19,7 @@ const makeCtx = (over = {}) => {
     logger: { info() {}, debug() {}, error() {} },
     step: async (_name, fn) => fn(),
     createCallback: async (name) => {
-      if (String(name).startsWith('stage-cb-')) {
+      if (name === 'init-ws-cb' || String(name).startsWith('stage-cb-')) {
         let resolve;
         const promise = new Promise((r) => {
           resolve = r;
@@ -99,11 +105,20 @@ let deps;
 let ctx;
 let stageVerdicts;
 let execution;
+let recommendations;
+// Every gate row the run wrote, keyed by id, as the store would hold it.
+let storedGates;
 
 const makeRuntime = () =>
   vi.fn(async (payload) => {
     if (payload.command === 'create-workflow-checkpoint') return { ok: true, checkpointId: 'cp' };
     if (payload.command === 'init-ws') return { ok: true };
+    if (payload.command === 'init-ws-start') {
+      if (payload.callbackId) {
+        ctx.stageCallbackResolvers.get(payload.callbackId)({ ok: true });
+      }
+      return { ok: true, accepted: true };
+    }
     if (payload.command === 'run-stage-start') {
       const resolve = ctx.stageCallbackResolvers.get(payload.stageCallbackId);
       resolve(stageVerdicts(payload.stageId));
@@ -148,18 +163,18 @@ const answerWithOfferedOption = (decisionFor = null) => {
 
 // A clean stage result: the runner observed the stage's declared output. Without
 // `producedHeads` the outputs were never observed, which must not read as clean.
-const cleanVerdict = (stageId) => ({
+const cleanVerdict = (stageId, artifactType = `${stageId}-out`) => ({
   ok: true,
   state: 'SUCCEEDED',
-  producedHeads: [
-    { artifactType: `${stageId}-out`, logicalKey: `${stageId}-k`, snapshotHash: 'sha-1' },
-  ],
+  producedHeads: [{ artifactType, logicalKey: `${stageId}-k`, snapshotHash: 'sha-1' }],
 });
 
 beforeEach(() => {
   ctx = makeCtx();
   stageVerdicts = cleanVerdict;
   execution = { ...META };
+  recommendations = new Map();
+  storedGates = new Map();
   deps = {
     store: {
       getExecution: vi.fn(async () => execution),
@@ -189,9 +204,23 @@ beforeEach(() => {
         }
         return {};
       }),
-      // Like the store: with a run, the gate row and its owned META park
-      // commit together, so nothing parks META separately afterwards.
+      // A conditional put, like the real store: an existing row is never
+      // overwritten, so a re-executed step cannot reopen an answered gate. With
+      // a run, the gate row and its owned META park commit together, so nothing
+      // parks META separately afterwards.
       createHumanTask: vi.fn(async (args) => {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
+        if (storedGates.has(args.humanTaskId)) {
+          throw Object.assign(new Error('exists'), { name: 'ConditionalCheckFailedException' });
+        }
         if (args.orchestratorRunId) {
           if (execution.orchestratorRunId !== args.orchestratorRunId) {
             throw Object.assign(new Error('conditional'), {
@@ -204,7 +233,24 @@ beforeEach(() => {
             pendingHumanTaskId: args.humanTaskId,
           };
         }
-        return { ...args, status: 'pending' };
+        const row = { ...args, status: 'pending' };
+        storedGates.set(args.humanTaskId, row);
+        return row;
+      }),
+      // Same CAS as the real store: only a pending row can be answered.
+      answerHumanTask: vi.fn(async ({ humanTaskId, ...answer }) => {
+        if (
+          answer.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== answer.ifOrchestratorRunId ||
+            !['RUNNING', 'WAITING'].includes(execution.status))
+        ) {
+          return null;
+        }
+        const row = storedGates.get(humanTaskId);
+        if (!row || row.status !== 'pending') return null;
+        const answered = { ...row, ...answer };
+        storedGates.set(humanTaskId, answered);
+        return answered;
       }),
       setGateCallbackId: vi.fn(async () => ({})),
       supersedeHumanTask: vi.fn(async () => ({})),
@@ -214,7 +260,19 @@ beforeEach(() => {
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
-      getStage: vi.fn(async (_e, stageInstanceId) => ({ stageInstanceId, attempt: 0 })),
+      // Upstream keeps the loop-back recommendation on the STAGE ROW and clears it
+      // in its own step after the gate; the offer step itself is read-only.
+      getStage: vi.fn(async (_e, stageInstanceId) => ({
+        stageInstanceId,
+        attempt: 0,
+        ...(recommendations.has(stageInstanceId)
+          ? { loopBackRecommendation: recommendations.get(stageInstanceId) }
+          : {}),
+      })),
+      setLoopBackRecommendation: vi.fn(async ({ stageInstanceId, reason }) => {
+        if (reason) recommendations.set(stageInstanceId, reason);
+        else recommendations.delete(stageInstanceId);
+      }),
       listReceipts: vi.fn(async () => []),
       listEvents: vi.fn(async () => []),
       putReceipt: vi.fn(async (args) => args),
@@ -222,12 +280,36 @@ beforeEach(() => {
       // so the fake has to bump it too — otherwise an autonomous run keeps
       // re-taking a jump that is never spent.
       resetStageRow: vi.fn(async (args) => {
-        if (args.loopBackId) {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
+        // Matches the real store: `loopBackId` supplies the guards for EITHER row,
+        // and `countsAgainstCap` is what spends the bound. The cap counts
+        // decisions, not rows, so a double that tallied both resets of one jump
+        // would report two.
+        if (args.loopBackId && (args.countsAgainstCap ?? true)) {
           execution = { ...execution, loopBackCount: Number(execution.loopBackCount ?? 0) + 1 };
         }
         return args;
       }),
-      updateStageState: vi.fn(async (args) => args),
+      updateStageState: vi.fn(async (args) => {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
+        return args;
+      }),
     },
     loadPlan: vi.fn(async () => ({ valid: true, plan: { stages: [ANCHOR, SECOND] } })),
     invokeRuntime: null,
@@ -475,7 +557,9 @@ describe('construction autonomy: an autonomous grant', () => {
 
   it.each([
     {
-      name: 'an offered loop-back',
+      // An offered loop-back is taken autonomously instead (see the loop-back
+      // tests below); only the recommendations it cannot act on open the gate.
+      name: 'a loop-back recommendation at the cap',
       stages: () => [
         ANCHOR,
         constructionStage('code-generation', {
@@ -483,16 +567,19 @@ describe('construction autonomy: an autonomous grant', () => {
         }),
         BUILD_AND_TEST,
       ],
-      options: ['approve', 'request-changes', 'loop-back'],
-      status: 'offered',
+      loopBackCount: 3,
+      options: ['approve', 'request-changes'],
+      status: 'at-cap',
     },
     {
       name: 'a loop-back recommendation with no code generation to go back to',
       stages: () => [ANCHOR, BUILD_AND_TEST],
+      loopBackCount: 0,
       options: ['approve', 'request-changes'],
       status: 'unavailable',
     },
-  ])('opens the human gate on $name', async ({ stages, options, status }) => {
+  ])('opens the human gate on $name', async ({ stages, loopBackCount, options, status }) => {
+    execution = { ...execution, loopBackCount };
     // The agent's "this code must be revised" is not a finding, so without this
     // rule the gate would be waived and the recommendation cleared unseen.
     deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: stages() } }));
@@ -551,6 +638,28 @@ describe('construction autonomy: an autonomous grant', () => {
     expect(gateFor('si-build-and-test')).not.toBeNull();
     expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
   });
+
+  // A stage whose Plan Approval was turned off by a setting carries no plan
+  // gate, so the grant is not refused by the Plan Approval clause. The stage
+  // still lost a gate it would have had, and that notice reaches the human: the
+  // autonomous walk must stop there rather than waive it.
+  it.each([
+    { name: 'for this intent', withheld: { source: 'intent', scope: 'feature' } },
+    { name: 'by the scope default', withheld: { source: 'scope-default', scope: 'bugfix' } },
+  ])(
+    'keeps the human gate on a stage whose Plan Approval was turned off $name',
+    async ({ withheld }) => {
+      deps.loadPlan = vi.fn(async () => ({
+        valid: true,
+        plan: {
+          stages: [ANCHOR, { ...SECOND, policy: { ...POLICY, planApprovalWithheld: withheld } }],
+        },
+      }));
+      await run();
+      expect(gateFor('si-build-and-test')).not.toBeNull();
+      expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+    },
+  );
 
   it.each([
     { name: 'the run was cancelled', over: { status: 'CANCELLED' } },
@@ -1095,5 +1204,766 @@ describe('an answered engine gate resumes only while this run still waits on it'
     expect(result.reason).not.toBe('ok');
     expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
     expect(eventsOfType('v2.stage.validated')).toEqual([]);
+  });
+});
+
+describe('construction autonomy: the build-and-test loop-back', () => {
+  // The loop-back target authors `code-generation-plan`, which is exactly what
+  // makes `resolveStagePolicy` require Plan Approval on it in every release that
+  // ships the construction protocol. Its gate is therefore never waived.
+  const CODE_GENERATION = constructionStage('code-generation', {
+    outputArtifacts: [{ artifact: 'code-generation-plan' }],
+    policy: { ...POLICY, planApproval: 'required' },
+  });
+  // `build-test-results` is the authored output that declares which stage may
+  // recommend the jump, so the fixture carries it for the same reason a real plan
+  // does: the offer is withheld from any stage that does not author it.
+  const LOOPBACK_PLAN = () => ({
+    valid: true,
+    plan: {
+      stages: [
+        ANCHOR,
+        CODE_GENERATION,
+        constructionStage('build-and-test', {
+          outputArtifacts: [{ artifact: 'build-test-results' }],
+          policy: { ...POLICY, loopBack: 'human-offered' },
+        }),
+      ],
+    },
+  });
+
+  // Each stage reports the output its plan entry declares, so the gate checks
+  // real, observed outputs.
+  const DECLARED = {
+    'functional-design': 'functional-design-out',
+    'code-generation': 'code-generation-plan',
+    'build-and-test': 'build-test-results',
+  };
+  const observed = (stageId, extra = {}) => ({
+    ...cleanVerdict(stageId, DECLARED[stageId]),
+    ...extra,
+  });
+
+  // Each stage row's attempt, bumped by its reset like the real store does, and
+  // the attempts whose plan the human approved at code generation's Plan
+  // Approval, which the container records as a `plan-approval` receipt.
+  let attempts;
+  let planApprovedAttempts;
+  let approvesPlanAt;
+
+  beforeEach(() => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous', loopBackCount: 0 };
+    deps.loadPlan = vi.fn(async () => LOOPBACK_PLAN());
+    stageVerdicts = (stageId) => observed(stageId);
+    attempts = new Map();
+    planApprovedAttempts = new Set();
+    approvesPlanAt = () => true;
+    const attemptOf = (stageInstanceId) => attempts.get(stageInstanceId) ?? 0;
+    const stageRow = deps.store.getStage.getMockImplementation();
+    deps.store.getStage = vi.fn(async (executionId, stageInstanceId) => ({
+      ...(await stageRow(executionId, stageInstanceId)),
+      attempt: attemptOf(stageInstanceId),
+    }));
+    const reset = deps.store.resetStageRow.getMockImplementation();
+    deps.store.resetStageRow = vi.fn(async (args) => {
+      attempts.set(args.stageInstanceId, attemptOf(args.stageInstanceId) + 1);
+      return reset(args);
+    });
+    deps.store.listReceipts = vi.fn(async (_executionId, { stageInstanceId, attempt }) =>
+      stageInstanceId === 'si-code-generation' && planApprovedAttempts.has(attempt)
+        ? [{ kind: 'plan-approval', stageInstanceId, attempt, decidedAt: 'T' }]
+        : [],
+    );
+    const runtime = deps.invokeRuntime.getMockImplementation();
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      const attempt = attemptOf('si-code-generation');
+      if (
+        payload.command === 'run-stage-start' &&
+        payload.stageId === 'code-generation' &&
+        approvesPlanAt(attempt)
+      ) {
+        planApprovedAttempts.add(attempt);
+      }
+      return runtime(payload);
+    });
+    // The agent recorded a recommendation on build-and-test's row. The engine
+    // clears it in its own step after the gate, so it is offered exactly once —
+    // which is also what keeps this fixture from looping to the cap.
+    recommendations.set('si-build-and-test', 'three suites fail');
+  });
+
+  const codeGenerationGates = () =>
+    openedGates().filter((gate) => gate.stageInstanceId === 'si-code-generation');
+
+  // What an autonomous loop-back leads to: code generation runs again under a new
+  // attempt, so it asks for Plan Approval again, and its validation gate (never
+  // waivable, because Plan Approval applies) opens for a human again.
+  it("stops at code generation's Plan Approval and its gate before and after the jump", async () => {
+    await run();
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect([...planApprovedAttempts]).toEqual([0, 1]);
+    const gates = codeGenerationGates();
+    expect(gates).toHaveLength(2);
+    for (const gate of gates) {
+      expect(gate.options).toEqual(['approve', 'request-changes']);
+      expect(gate.findings ?? []).toEqual([]);
+    }
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('code-generation');
+  });
+
+  it('does not carry the first Plan Approval over to the re-run', async () => {
+    approvesPlanAt = (attempt) => attempt === 0;
+    await run();
+    const [first, rerun] = codeGenerationGates();
+    expect(first.findings ?? []).toEqual([]);
+    expect(rerun.findings.map((item) => item.code)).toEqual(['plan_approval_missing']);
+  });
+
+  it('takes the jump itself, with the protocol marker as the recorded answer', async () => {
+    await run();
+    const recorded = eventsOfType('v2.loopback.recorded');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+    expect(execution.loopBackCount).toBe(1);
+    // The jump was taken without parking on build-and-test's gate: its row was
+    // written already answered, and no callback ever waited on it.
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row.status).toBe('rejected');
+    expect(deps.store.setGateCallbackId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ humanTaskId: row.humanTaskId }),
+    );
+  });
+
+  const dispatchedResumes = () =>
+    deps.invokeRuntime.mock.calls
+      .map(([payload]) => payload)
+      .filter((payload) => payload.command === 'run-stage-start' && payload.resumeFrom)
+      .map((payload) => [payload.stageId, payload.resumeFrom]);
+  // The nth RUN's id, in order. Distinct values: a run stamps its token when it
+  // claims the intent and re-stamps the same one whenever it fences a write.
+  const runIdOf = (call = 0) =>
+    [
+      ...new Set(
+        deps.store.updateExecution.mock.calls
+          .map(([args]) => args.orchestratorRunId)
+          .filter(Boolean),
+      ),
+    ][call];
+
+  // The container re-reads the gate it resumes from. A jump whose gate exists
+  // only in the orchestrator's memory fails the target's re-run with
+  // gate_not_found, and loses the archive and the reason that hang off the row.
+  // A recorded recommendation keeps a waivable gate from being approved. The
+  // jump is the one answer to it that does not open a human gate, and it is
+  // never an approval: build-and-test is approved only on the re-run, which has
+  // no recommendation left.
+  it('answers the recommendation with the jump, never with an approval', async () => {
+    await run();
+    const [first] = openedGates().filter((gate) => gate.stageInstanceId === 'si-build-and-test');
+    expect(first.options).toEqual(['loop-back']);
+    expect(storedGates.get(first.humanTaskId)).toMatchObject({
+      status: 'rejected',
+      answer: { decision: 'loop-back' },
+    });
+    const types = events().map((event) => event.type);
+    const jumped = types.indexOf('v2.loopback.recorded');
+    const approved = events().findIndex(
+      (event) =>
+        event.type === 'v2.gate.auto_approved' && event.detail?.stageId === 'build-and-test',
+    );
+    expect(jumped).toBeGreaterThanOrEqual(0);
+    expect(approved).toBeGreaterThan(jumped);
+  });
+
+  it('names a stored, answered gate row in every resumeFrom it dispatches', async () => {
+    await run();
+    const resumes = dispatchedResumes();
+    expect(resumes.map(([stageId]) => stageId)).toEqual(['code-generation']);
+    for (const [, resumeFrom] of resumes) {
+      expect(storedGates.get(resumeFrom)).toMatchObject({
+        stageInstanceId: 'si-build-and-test',
+        kind: 'validation',
+        status: 'rejected',
+        answer: {
+          decision: 'loop-back',
+          userInput: 'Autonomous loop-back 1 per construction protocol module',
+        },
+        answeredBy: null,
+        loopBackTarget: 'code-generation',
+        loopBackReason: 'three suites fail',
+      });
+    }
+  });
+
+  // A jump opens no gate, so nothing on this path parks META and un-parks it
+  // again — the un-park is where every human gate re-proves that this run still
+  // owns the intent. The jump's own writes therefore have to carry that proof:
+  // a cancel or a relaunch that lands before them has no row to supersede yet.
+  const afterTheOffer = (change) => {
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        const value = await fn();
+        if (name.startsWith('loop-back-offer-')) change();
+        return value;
+      },
+    });
+  };
+
+  it.each([
+    {
+      name: 'a cancel',
+      change: () => {
+        execution = { ...execution, status: 'CANCELLED', completedAt: 'T-cancel' };
+      },
+    },
+    {
+      name: 'a relaunch under a new run',
+      change: () => {
+        execution = { ...execution, orchestratorRunId: 'run-relaunched' };
+      },
+    },
+  ])('retires instead of jumping when $name lands before the jump', async ({ change }) => {
+    afterTheOffer(change);
+
+    const out = await run();
+
+    expect(out).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect([...storedGates.keys()].filter((id) => id.includes('si-build-and-test'))).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
+  });
+
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])(
+    'retires when a $name lands after the fence but before the gate write',
+    async ({ takeover }) => {
+      const create = deps.store.createHumanTask.getMockImplementation();
+      deps.store.createHumanTask = vi.fn(async (args) => {
+        if (args.options?.length === 1 && args.options[0] === 'loop-back') {
+          execution = { ...execution, ...takeover };
+        }
+        return create(args);
+      });
+
+      expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+      expect([...storedGates.keys()].filter((id) => id.includes('si-build-and-test'))).toEqual([]);
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      expect(execution.loopBackCount).toBe(0);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      expect(dispatchedResumes()).toEqual([]);
+    },
+  );
+
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])('retires when a $name lands before answering the autonomous gate', async ({ takeover }) => {
+    const answer = deps.store.answerHumanTask.getMockImplementation();
+    deps.store.answerHumanTask = vi.fn(async (args) => {
+      execution = { ...execution, ...takeover };
+      return answer(args);
+    });
+
+    expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+    const gate = [...storedGates.values()].find(
+      (row) => row.stageInstanceId === 'si-build-and-test',
+    );
+    expect(gate).toMatchObject({ status: 'pending' });
+    expect(gate.answer ?? null).toBeNull();
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'cancel before the recommender reset',
+      stageId: 'si-build-and-test',
+      takeover: { status: 'CANCELLED' },
+    },
+    {
+      name: 'relaunch before the recommender reset',
+      stageId: 'si-build-and-test',
+      takeover: { orchestratorRunId: 'run-relaunched' },
+    },
+    {
+      name: 'cancel before the target reset',
+      stageId: 'si-code-generation',
+      takeover: { status: 'CANCELLED' },
+    },
+    {
+      name: 'relaunch before the target reset',
+      stageId: 'si-code-generation',
+      takeover: { orchestratorRunId: 'run-relaunched' },
+    },
+  ])(
+    'retires on a $name without spending the bound or failing the new run',
+    async ({ stageId, takeover }) => {
+      const reset = deps.store.resetStageRow.getMockImplementation();
+      const applied = [];
+      deps.store.resetStageRow = vi.fn(async (args) => {
+        if (args.stageInstanceId === stageId) execution = { ...execution, ...takeover };
+        const row = await reset(args);
+        applied.push(args.stageInstanceId);
+        return row;
+      });
+
+      expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+      expect(applied).toEqual(stageId === 'si-code-generation' ? ['si-build-and-test'] : []);
+      expect(execution.loopBackCount).toBe(0);
+      expect(deps.store.updateStageState).not.toHaveBeenCalled();
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      expect(dispatchedResumes()).toEqual([]);
+    },
+  );
+
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])('does not mark a stage failed when a $name wins the failure write', async ({ takeover }) => {
+    deps.store.resetStageRow = vi.fn(async () => {
+      throw new Error('DynamoDB unavailable');
+    });
+    const update = deps.store.updateStageState.getMockImplementation();
+    const written = [];
+    deps.store.updateStageState = vi.fn(async (args) => {
+      execution = { ...execution, ...takeover };
+      const row = await update(args);
+      written.push(row);
+      return row;
+    });
+
+    expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(written).toEqual([]);
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
+  });
+
+  it('retires instead of jumping when a cancel superseded the row first', async () => {
+    const create = deps.store.createHumanTask.getMockImplementation();
+    deps.store.createHumanTask = vi.fn(async (args) => {
+      const row = await create(args);
+      if (args.options?.length === 1 && args.options[0] === 'loop-back') {
+        storedGates.set(args.humanTaskId, { ...row, status: 'superseded' });
+      }
+      return row;
+    });
+    deps.store.getHumanTask = vi.fn(async (_e, id) => storedGates.get(id) ?? null);
+    const out = await run();
+    expect(out).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+  });
+
+  // The Lambda can die after the jump's writes and before the step's checkpoint.
+  // The step then runs again: the row already exists and is no longer pending,
+  // so the create and the answer both refuse, and the step reads the row back.
+  it('converges on one jump when the jump step re-executes', async () => {
+    const answer = deps.store.getHumanTask;
+    deps.store.getHumanTask = vi.fn(async (executionId, humanTaskId, options) => {
+      const row = storedGates.get(humanTaskId);
+      return row && row.status !== 'pending' ? row : answer(executionId, humanTaskId, options);
+    });
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        if (!name.startsWith('auto-loop-back-')) return fn();
+        await fn();
+        return fn();
+      },
+    });
+
+    const out = await run();
+
+    expect(out?.reason).not.toBe('retired');
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect(execution.loopBackCount).toBe(1);
+    expect(deps.store.answerHumanTask).toHaveBeenCalledTimes(2);
+    expect(deps.store.getHumanTask).toHaveBeenCalledWith(
+      'i1',
+      expect.stringMatching(/^eg-validation-si-build-and-test-/),
+      { consistentRead: true },
+    );
+  });
+
+  // Run-scoped like every engine gate id, so a relaunch that reaches the same
+  // stage and round takes a NEW decision: both rows reset again and the cap is
+  // spent again, instead of the store reading the earlier jump as already done.
+  it('takes a distinct, run-scoped decision on a relaunch', async () => {
+    await run();
+    const [, first] = dispatchedResumes()[0];
+    recommendations.set('si-build-and-test', 'three suites fail');
+    deps.invokeRuntime.mockClear();
+    // The relaunch puts META back to CREATED, as `/start` does.
+    execution = { ...execution, status: 'CREATED' };
+    ctx = makeCtx();
+    await run();
+    const [, second] = dispatchedResumes()[0];
+    expect(first).toContain(runIdOf(0));
+    expect(second).toContain(runIdOf(1));
+    expect(second).not.toBe(first);
+    expect(execution.loopBackCount).toBe(2);
+  });
+
+  it.each([
+    {
+      name: 'a blocking gate sensor',
+      verdict: { gateSensorVerdicts: [BLOCKING_SENSOR] },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'an INCONCLUSIVE blocking sensor',
+      verdict: { gateSensorVerdicts: [{ ...BLOCKING_SENSOR, result: 'INCONCLUSIVE' }] },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'a terminal adversarial NOT-READY',
+      verdict: {
+        reviewAdvisory: { advisory: false, verdict: 'NOT-READY', reviewerAgent: 'arch-reviewer' },
+      },
+      code: 'review_not_ready',
+    },
+  ])(
+    'refuses to auto-rewind on $name and opens the human gate instead',
+    async ({ verdict, code }) => {
+      // The jump answers failing tests, never a blocking finding: rewinding here
+      // would discard the finding and silently re-run the work.
+      stageVerdicts = (stageId) => observed(stageId, stageId === 'build-and-test' ? verdict : {});
+      await run();
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      const gate = gateFor('si-build-and-test');
+      expect(gate).not.toBeNull();
+      expect(gate.findings.map((item) => item.code)).toContain(code);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      // code-generation is legitimately waived; build-and-test must NOT be.
+      expect(
+        eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+      ).not.toContain('build-and-test');
+    },
+  );
+
+  it('still takes the jump when only ADVISORY findings accompany the failure', async () => {
+    stageVerdicts = (stageId) =>
+      observed(
+        stageId,
+        stageId === 'build-and-test'
+          ? { reviewAdvisory: { advisory: true, verdict: 'NOT-READY', reviewerAgent: 'r' } }
+          : {},
+      );
+    await run();
+    // The jump is taken on the advisory evidence. (The later re-run then parks on
+    // its own gate, because `autoApprove` needs ZERO findings — advisory included.)
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect(deps.store.resetStageRow).toHaveBeenCalled();
+    expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+    // The stored row keeps the findings the jump was taken over.
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row.findings.map((item) => item.code)).toEqual(['review_advisory_findings']);
+  });
+
+  it('stores no findings on the jump row when there were none', async () => {
+    await run();
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row).not.toHaveProperty('findings');
+  });
+
+  it('halts at the cap instead of approving', async () => {
+    execution = { ...execution, loopBackCount: 3 };
+    await run();
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    const gate = gateFor('si-build-and-test');
+    expect(gate).not.toBeNull();
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('build-and-test');
+  });
+
+  // The jump needs the same evidence the waiver needs: no finding only means
+  // clean when the outputs were observed and the learning candidates were read.
+  it.each([
+    {
+      name: 'its produced outputs could not be observed',
+      verdict: () => observed('build-and-test', { producedHeadsUnavailable: true }),
+    },
+    {
+      name: 'the runner reported no produced outputs at all',
+      verdict: () => ({ ok: true, state: 'SUCCEEDED' }),
+    },
+    {
+      name: 'its learning candidates could not be read',
+      verdict: () => observed('build-and-test'),
+      learningsReadFails: true,
+    },
+  ])(
+    'opens the human gate instead of jumping when $name',
+    async ({ verdict, learningsReadFails = false }) => {
+      stageVerdicts = (stageId) => (stageId === 'build-and-test' ? verdict() : observed(stageId));
+      if (learningsReadFails) {
+        const plan = LOOPBACK_PLAN();
+        plan.plan.stages[2] = {
+          ...plan.plan.stages[2],
+          policy: { ...plan.plan.stages[2].policy, learnings: 'on' },
+        };
+        deps.loadPlan = vi.fn(async () => plan);
+        let lookingUpCandidates = false;
+        ctx = makeCtx({
+          step: async (name, fn) => {
+            lookingUpCandidates = name.startsWith('learning-candidates-');
+            try {
+              return await fn();
+            } finally {
+              lookingUpCandidates = false;
+            }
+          },
+        });
+        deps.store.listEvents = vi.fn(async () => {
+          if (lookingUpCandidates) throw new Error('ProvisionedThroughputExceededException');
+          return [];
+        });
+      }
+
+      await run();
+
+      const gate = gateFor('si-build-and-test');
+      expect(gate.options).toContain('loop-back');
+      expect(deps.store.setGateCallbackId).toHaveBeenCalledWith(
+        expect.objectContaining({ humanTaskId: gate.humanTaskId }),
+      );
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      expect(execution.loopBackCount).toBe(0);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    },
+  );
+
+  // A learning candidate is put to the human at the gate, so a jump taken over
+  // it would drop the candidate unseen, exactly as a waiver would.
+  it('opens the human gate instead of jumping when learning candidates wait for review', async () => {
+    const plan = LOOPBACK_PLAN();
+    plan.plan.stages[2] = {
+      ...plan.plan.stages[2],
+      policy: { ...plan.plan.stages[2].policy, learnings: 'on' },
+    };
+    deps.loadPlan = vi.fn(async () => plan);
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        type: 'v2.learning.candidate',
+        stageInstanceId: 'si-build-and-test',
+        summary: 'retry the flaky integration suite once before failing',
+      },
+    ]);
+
+    await run();
+
+    const gate = gateFor('si-build-and-test');
+    expect(gate).toMatchObject({ learningsRitual: true });
+    expect(gate.options).toContain('loop-back');
+    expect(gate.prompt).toContain('retry the flaky integration suite once before failing');
+    expect(deps.store.setGateCallbackId).toHaveBeenCalledWith(
+      expect.objectContaining({ humanTaskId: gate.humanTaskId }),
+    );
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+  });
+
+  // The autonomous path shares ONE offer resolution with the gated path, so the
+  // recommender rule holds here too: a stage that does not author
+  // `build-test-results` is not the stage the release lets recommend the jump, and
+  // no autonomy grant may promote its position in the plan into a jump.
+  it('refuses the autonomous jump from a stage the release never declared', async () => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [
+          ANCHOR,
+          CODE_GENERATION,
+          constructionStage('build-and-test', {
+            outputArtifacts: [{ artifact: 'build-and-test-out' }],
+            policy: { ...POLICY, loopBack: 'human-offered' },
+          }),
+        ],
+      },
+    }));
+    stageVerdicts = (stageId) =>
+      stageId === 'build-and-test' ? cleanVerdict(stageId) : observed(stageId);
+
+    await run();
+
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(Number(execution.loopBackCount ?? 0)).toBe(0);
+  });
+
+  // A waived jump invalidates the same two rows under the same guards a human
+  // decision uses, and names the target it resolved. Both resets carry the one
+  // decision id; only the target's spends the bound, because the cap counts
+  // decisions rather than rows.
+  it('resets both rows with the guards a human jump uses, and tallies once', async () => {
+    await run();
+
+    const [[recommender], [target]] = deps.store.resetStageRow.mock.calls;
+    expect(recommender).toMatchObject({
+      stageInstanceId: 'si-build-and-test',
+      countsAgainstCap: false,
+    });
+    expect(recommender.loopBackId).toMatch(/^eg-validation-si-build-and-test-/);
+    expect(target).toMatchObject({
+      stageInstanceId: 'si-code-generation',
+      loopBackId: recommender.loopBackId,
+    });
+    expect(target.countsAgainstCap ?? true).toBe(true);
+    expect(deps.store.resetStageRow).toHaveBeenCalledTimes(2);
+    expect(Number(execution.loopBackCount ?? 0)).toBe(1);
+  });
+
+  // Durable replay matches each operation to the history by position and name.
+  // An execution checkpointed before the jump existed has build-and-test's
+  // human gate in its history, so after a deployment it has to replay that same
+  // gate, not the jump.
+  describe('on the durable runner, across a deployment', () => {
+    beforeAll(async () => {
+      await LocalDurableTestRunner.setupTestEnvironment();
+    });
+    afterAll(async () => {
+      await LocalDurableTestRunner.teardownTestEnvironment();
+    });
+
+    const FIRST_PASS_GATE = /^eg-validation-si-build-and-test-0-/;
+
+    // Stage verdicts and gate answers are delivered out of band, against the
+    // callback id, as the container and the answer endpoint deliver them.
+    const runDurably = async ({ loadMeta = null, parkOnFirstPass = false } = {}) => {
+      const callbackNames = new Map();
+      let parkedGate = null;
+      // The previous release runs until the first suspension; every later
+      // invocation is the current handler replaying that history.
+      let upgraded = !loadMeta;
+      let previousLoads = 0;
+      let runner;
+      const deliver = (callbackId, body) =>
+        runner
+          .getOperation(callbackNames.get(callbackId))
+          .waitForData(WaitingOperationStatus.STARTED)
+          .then((operation) => operation.sendCallbackSuccess(JSON.stringify(body)));
+      ctx = {
+        stageCallbackResolvers: { get: (callbackId) => (body) => deliver(callbackId, body) },
+      };
+      if (parkOnFirstPass) {
+        const answerOthers = deps.store.getHumanTask;
+        deps.store.getHumanTask = vi.fn(async (executionId, humanTaskId, options) =>
+          FIRST_PASS_GATE.test(humanTaskId)
+            ? (storedGates.get(humanTaskId) ?? null)
+            : answerOthers(executionId, humanTaskId, options),
+        );
+        deps.store.setGateCallbackId = vi.fn(async ({ humanTaskId, callbackId }) => {
+          if (FIRST_PASS_GATE.test(humanTaskId)) {
+            parkedGate = { humanTaskId, callbackId };
+          }
+          return {};
+        });
+      }
+      // The human answers once the invocation has suspended on the gate, so
+      // everything after it runs in a replaying invocation.
+      const answerParkedGate = () => {
+        const { humanTaskId, callbackId } = parkedGate;
+        parkedGate = null;
+        const answer = { decision: 'loop-back' };
+        storedGates.set(humanTaskId, {
+          ...storedGates.get(humanTaskId),
+          status: 'rejected',
+          answer,
+        });
+        return deliver(callbackId, answer);
+      };
+      const handler = withDurableExecution((event, durableCtx) => {
+        const wrapped = new Proxy(durableCtx, {
+          get: (target, key) => {
+            if (key === 'createCallback') {
+              return async (name, options) => {
+                const created = await target.createCallback(name, options);
+                callbackNames.set(created[1], name);
+                return created;
+              };
+            }
+            if (key === 'step' && !upgraded) {
+              return (name, fn, options) =>
+                target.step(
+                  name,
+                  name === 'load-meta'
+                    ? () => {
+                        previousLoads++;
+                        return loadMeta(deps.store, event.executionId);
+                      }
+                    : fn,
+                  options,
+                );
+            }
+            return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
+          },
+        });
+        return __durableHandler(event, wrapped, deps);
+      });
+      runner = new LocalDurableTestRunner({
+        handlerFunction: async (...input) => {
+          const invocation = await handler(...input);
+          if (invocation.Status === 'PENDING') upgraded = true;
+          if (invocation.Status === 'PENDING' && parkedGate) void answerParkedGate();
+          return invocation;
+        },
+      });
+      const result = await runner.run({
+        payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+      });
+      return {
+        result,
+        previousLoads,
+        names: result.getOperations().map((operation) => operation.getName()),
+      };
+    };
+
+    it('replays a history parked on the offered loop-back gate before the jump existed', async () => {
+      const { result, names, previousLoads } = await runDurably({
+        loadMeta: loadMetaBeforeAutonomousLoopBack,
+        parkOnFirstPass: true,
+      });
+
+      const offer = names.indexOf('loop-back-offer-si-build-and-test-0');
+      expect(names.slice(offer + 1, offer + 3)).toEqual([
+        'gate-pre-validation-si-build-and-test-0',
+        'gate-open-validation-si-build-and-test-0',
+      ]);
+      expect(names).not.toContain('auto-loop-back-si-build-and-test-0');
+      expect(result.getResult()).toMatchObject({ ok: true });
+      expect(result.getInvocations().length).toBeGreaterThan(1);
+      expect(previousLoads).toBe(1);
+      const [first] = openedGates().filter((gate) => gate.stageInstanceId === 'si-build-and-test');
+      expect(first.options).toContain('loop-back');
+      expect(storedGates.get(first.humanTaskId).answer).toEqual({ decision: 'loop-back' });
+      expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+      expect(execution.loopBackCount).toBe(1);
+    });
+
+    it('takes the jump on an execution started by this release', async () => {
+      const { result, names } = await runDurably();
+
+      expect(result.getResult()).toMatchObject({ ok: true });
+      const offer = names.indexOf('loop-back-offer-si-build-and-test-0');
+      expect(names[offer + 1]).toBe('auto-loop-back-si-build-and-test-0');
+      expect(names).not.toContain('gate-pre-validation-si-build-and-test-0');
+      expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
+        'Autonomous loop-back 1 per construction protocol module',
+      );
+      expect(execution.loopBackCount).toBe(1);
+    });
   });
 });

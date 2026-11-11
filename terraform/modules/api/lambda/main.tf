@@ -3,6 +3,21 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
+  # Outbound notification events (shared/notification-events.js): only the
+  # Lambdas that publish get the bus and permission, and only when enabled.
+  notification_event_bus_name = var.notification_events_enabled ? (
+    var.notification_event_bus_name != "" ? var.notification_event_bus_name : "${var.project_name}-${var.environment}-events"
+  ) : ""
+  notification_event_env = var.notification_events_enabled ? {
+    NOTIFICATION_EVENT_BUS    = local.notification_event_bus_name
+    NOTIFICATION_EVENT_SOURCE = var.notification_event_source
+  } : {}
+  notification_event_publishers = var.notification_events_enabled ? {
+    projects        = aws_iam_role.neptune_artifacts.id
+    discussions     = aws_iam_role.discussions.id
+    v2_orchestrator = aws_iam_role.v2_orchestrator.id
+  } : {}
+
   partition            = data.aws_partition.current.partition
   dns_suffix           = data.aws_partition.current.dns_suffix
   enable_public_egress = contains(["public-egress", "all"], var.lambda_vpc_scope)
@@ -1485,7 +1500,7 @@ module "projects_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
@@ -1511,7 +1526,7 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }
+  }, local.notification_event_env)
 }
 
 # Users Lambda
@@ -2461,7 +2476,7 @@ resource "aws_iam_role_policy" "discussions" {
       },
       {
         # Started discussion assists stay on the intent's pinned credential
-        # binding; read only META to sign that exact binding into the grant.
+        # binding; read META for the grant and HUMAN# gates for question repair.
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
         Resource = var.v2_executions_table_arn
@@ -2538,7 +2553,7 @@ module "discussions_lambda" {
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
 }
 
 # Cognito Users Lambda (lists users from Cognito)
@@ -3503,7 +3518,7 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
@@ -3565,6 +3580,29 @@ resource "aws_iam_role_policy" "gateway_grant_signers" {
       Condition = {
         StringEquals = { "kms:SigningAlgorithm" = "ECDSA_SHA_256" }
       }
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Outbound notification events (optional): the bus integrations subscribe to,
+# and permission for the publishing Lambdas to put events on it.
+# -----------------------------------------------------------------------------
+resource "aws_cloudwatch_event_bus" "notifications" {
+  count = var.notification_events_enabled ? 1 : 0
+  name  = local.notification_event_bus_name
+}
+
+resource "aws_iam_role_policy" "notification_events" {
+  for_each = local.notification_event_publishers
+  name     = "notification-events"
+  role     = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["events:PutEvents"]
+      Resource = aws_cloudwatch_event_bus.notifications[0].arn
     }]
   })
 }

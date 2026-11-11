@@ -1,6 +1,7 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { randomUUID } from 'node:crypto';
+import { publishNotificationEvent } from '../shared/notification-events.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -1687,6 +1688,18 @@ export const handler = async (event, context) => {
           .property('role', 'owner')
           .to(__.V().has('User', 'id', userId))
           .next();
+
+        // Notification event for integrations (best-effort, never throws).
+        await publishNotificationEvent('space.created', {
+          eventId: id,
+          projectId: id,
+          name: data.name,
+          createdById: userId,
+          createdByEmail: userEmail,
+          gitProvider: data.gitProvider || 'github',
+          repoCount: reposOut.length,
+          createdAt,
+        });
 
         return response(201, {
           id,

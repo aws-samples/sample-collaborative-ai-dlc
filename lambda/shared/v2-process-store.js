@@ -993,6 +993,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     pendingHumanTaskId,
     pendingCodeCommitRefs,
     ownership = null,
+    ifOrchestratorRunId = null,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -1041,6 +1042,16 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     };
     if (ownership) {
       await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+      return getStage(executionId, stageInstanceId, { consistentRead: true });
+    }
+    if (ifOrchestratorRunId) {
+      const { ReturnValues: _returnValues, ...update } = input;
+      await updateExecution({
+        executionId,
+        fromStatus: 'RUNNING',
+        ifOrchestratorRunId,
+        additionalWrites: [{ Update: update }],
+      });
       return getStage(executionId, stageInstanceId, { consistentRead: true });
     }
     const { Attributes } = await ddb.send(new UpdateCommand(input));
@@ -1235,6 +1246,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     humanTaskId,
     ownership = null,
     orchestratorRunId = null,
+    ifOrchestratorRunId = null,
   }) => {
     const id = humanTaskId ?? nextId();
     const item = buildHumanTaskRow({
@@ -1303,6 +1315,26 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
           ownership,
           additionalWrites: writes,
         });
+      return item;
+    }
+    // An autonomous decision records its gate without parking META. Its token
+    // check must commit with the put, just as an ordinary gate's park does.
+    if (ifOrchestratorRunId) {
+      item.orchestratorRunId = ifOrchestratorRunId;
+      await updateExecution({
+        executionId,
+        fromStatus: 'RUNNING',
+        ifOrchestratorRunId,
+        additionalWrites: [
+          {
+            Put: {
+              TableName: table(),
+              Item: item,
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+        ],
+      });
       return item;
     }
     if (orchestratorRunId) {
@@ -1764,7 +1796,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // `countsAgainstCap` additionally tallies the decision on META, which is the
   // per-intent cap — true for the stage the run jumps TO (one tally per decision),
   // false for the stage it jumps FROM, which needs the same guards and no second
-  // tally.
+  // tally. An optional run token additionally fences both reset transactions on
+  // a still-RUNNING owner; a replay cannot report success to a retired run.
   const resetStageRow = async ({
     executionId,
     stageInstanceId,
@@ -1783,9 +1816,18 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       // Consistent, like every other read on this path: the tally this replay is
       // reporting was written by the transaction below, so an eventually
       // consistent META could hand the caller a count from before its own write.
-      const meta = countsAgainstCap
-        ? await getExecution(executionId, { consistentRead: true })
-        : null;
+      const meta =
+        countsAgainstCap || ifOrchestratorRunId
+          ? await getExecution(executionId, { consistentRead: true })
+          : null;
+      if (
+        ifOrchestratorRunId &&
+        (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING')
+      ) {
+        throw Object.assign(new Error('Loop-back run no longer owns the execution'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      }
       return countsAgainstCap
         ? { ...existing, loopBackCount: Number(meta?.loopBackCount ?? 0) }
         : existing;
@@ -1850,16 +1892,33 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
       return Attributes;
     }
-    // Guarded but not tallied: the attempt CAS alone, so a stale read cannot write
-    // an attempt another writer already used. A lost CAS returns null and the caller
+    // Guarded but not tallied: the attempt CAS, with the optional META ownership
+    // check in the same transaction. A stale read cannot write an attempt another
+    // writer already used. A lost attempt CAS returns null and the caller
     // fails the loop-back closed rather than leaving this stage's earlier receipts
     // reachable under the new attempt.
     if (!countsAgainstCap) {
       try {
+        if (ifOrchestratorRunId) {
+          const { ReturnValues: _returnValues, ...update } = stageUpdate;
+          await updateExecution({
+            executionId,
+            fromStatus: 'RUNNING',
+            ifOrchestratorRunId,
+            additionalWrites: [{ Update: update }],
+          });
+          return getStage(executionId, stageInstanceId, { consistentRead: true });
+        }
         const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
         return Attributes;
       } catch (error) {
         if (error?.name !== 'ConditionalCheckFailedException') throw error;
+        if (ifOrchestratorRunId) {
+          const meta = await getExecution(executionId, { consistentRead: true });
+          if (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING') {
+            throw error;
+          }
+        }
         const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
         return row?.lastLoopBackId === loopBackId ? row : null;
       }
@@ -1881,7 +1940,13 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
                 ConditionExpression:
                   'attribute_exists(pk) AND ' +
                   '(attribute_not_exists(loopBackIds) OR NOT contains(loopBackIds, :loopBackId)) AND ' +
-                  '(attribute_not_exists(loopBackCount) OR loopBackCount < :limit)',
+                  '(attribute_not_exists(loopBackCount) OR loopBackCount < :limit)' +
+                  (ifOrchestratorRunId
+                    ? ' AND orchestratorRunId = :ownedRun AND #ownedStatus = :ownedRunning'
+                    : ''),
+                ...(ifOrchestratorRunId
+                  ? { ExpressionAttributeNames: { '#ownedStatus': 'status' } }
+                  : {}),
                 ExpressionAttributeValues: {
                   ':zero': 0,
                   ':one': 1,
@@ -1890,6 +1955,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
                   ':loopBackId': loopBackId,
                   ':limit': LOOP_BACK_LIMIT,
                   ':ts': ts,
+                  ...(ifOrchestratorRunId
+                    ? { ':ownedRun': ifOrchestratorRunId, ':ownedRunning': 'RUNNING' }
+                    : {}),
                 },
               },
             },
@@ -1899,6 +1967,15 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     } catch (error) {
       if (error?.name !== 'TransactionCanceledException') throw error;
       const meta = await getExecution(executionId, { consistentRead: true });
+      if (
+        ifOrchestratorRunId &&
+        (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING')
+      ) {
+        throw Object.assign(new Error('Loop-back run no longer owns the execution'), {
+          name: 'ConditionalCheckFailedException',
+          cause: error,
+        });
+      }
       if (!meta?.loopBackIds?.includes(loopBackId)) throw error;
       const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
       return row ? { ...row, loopBackCount: Number(meta.loopBackCount ?? 0) } : row;

@@ -616,12 +616,16 @@ write path.
 
 Releases that ship the construction protocol (2.6.18 and later) let
 build-and-test send the work back to code generation. Upstream does this
-autonomously, up to three times per intent. Here the human decides, at the
-validation gate build-and-test already has.
+autonomously, up to three times per intent. Here a gated intent's human
+decides, at the validation gate build-and-test already has; an autonomous
+intent takes the jump.
 
-The capability is classified `approximated`: the loop-back is offered to a human
-at the gate rather than taken autonomously, and scopes that run code generation
-per unit get a gate note instead of the option.
+The capability is classified `approximated`: a gated intent is offered the
+loop-back at the gate rather than having it taken for it, and scopes that run code
+generation per unit get a gate note instead of the option. Under `Construction
+Autonomy Mode: autonomous` the jump IS taken for the intent, recorded with the
+protocol's `Autonomous loop-back N per construction protocol module` answer and
+bounded by the same three per intent.
 
 - The agent records a recommendation through the `loopBackRecommended` field of
   `emit_stage_note`. The platform writes the reason on the stage's own row; the
@@ -643,7 +647,44 @@ per unit get a gate note instead of the option.
   status for a loop-back, and rejects loop-back on a gate that does not offer it.
 - At the cap, and in scopes that run code generation per unit (classic,
   enterprise, feature, mvp, workshop), the gate shows the recommendation and why
-  the option is not offered. Those cases use request-changes or rewind.
+  the option is not offered. Those cases use request-changes or rewind. An
+  autonomous intent halts to that same human gate in both cases: a
+  recommendation is never approved over.
+- An autonomous intent takes the jump only in answer to the recommendation
+  itself. Any blocking finding — a blocking gate sensor that did not pass, a
+  missing required output, or a reviewer still not ready — opens the human gate
+  instead, because rewinding would discard the finding and silently re-run the
+  work. Advisory findings do not withhold the jump. Missing evidence does, as it
+  keeps a gate from being waived: outputs that could not be observed, or
+  learning candidates that could not be read, open the human gate. So do
+  learning candidates waiting for review, which the gate puts to the human.
+- The autonomous jump is stored the way a human one is: build-and-test's
+  validation gate row, under a run-scoped id, written already answered
+  (`rejected`, `loop-back`, the marker as the answer, no human author) with the
+  agent's reason. Code generation resumes from that row, so the same resets,
+  archive of both stages, reason in the prompt and cap tally apply, and a
+  relaunch takes a new decision rather than reusing the earlier one.
+- The autonomous gate creation and answer, and each stage reset, verify the
+  run's ownership in the transaction that writes them. Gate creation and resets
+  also require the intent to remain `RUNNING`; recording the decision never
+  parks it. A cancel or relaunch between those writes retires the old run without
+  further resets, cap spending or re-dispatch. A reset that committed while the
+  old run still owned the intent remains part of its history.
+- An autonomous jump does not run on to build-and-test unattended. Code
+  generation runs again under a new attempt, so it asks for Plan Approval
+  again, and its validation gate opens for a human again: the grant never
+  waives a gate that carries Plan Approval, and the reset leaves no earlier
+  approval in force. The jump replaces the human's loop-back answer at
+  build-and-test, not those two stops.
+- An execution started before this release keeps opening the human gate for
+  an offered loop-back, so an execution already parked on that gate replays
+  the same operations after the deployment. A relaunch starts a new execution,
+  which takes the jump.
+- Residual: the jump, like upstream's, depends on the agent's recommendation. A
+  build-and-test stage that succeeds with failing tests but records no
+  recommendation and raises no finding has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
 
 An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
@@ -691,8 +732,11 @@ all reproduced.
 - The halt-and-ask set is reproduced in full: the plan's first non-skipped
   construction stage with a sequential gate, every Code Generation Plan
   Approval, every fan-out approval, a stage failure, a blocking gate sensor,
-  and a loop-back recommendation (offered, at the bound, or with no code
-  generation to go back to) all still open a human gate. So does a gate
+  and a loop-back recommendation all still open a human gate. The one
+  exception is an offered loop-back with no blocking finding, which takes the
+  autonomous jump described under the build-and-test loop-back; it is never
+  approved. A recommendation at the bound, or with no code generation to go
+  back to, opens the gate. So does a gate
   with learning candidates waiting for the learnings ritual, and a gate whose
   stage outputs the runner could not observe: "no finding" is only read as
   clean when the outputs were actually checked. On an intent with a grant, each
@@ -701,10 +745,13 @@ all reproduced.
   stops the walk instead of approving. An intent without a grant, and every gate
   outside construction, skips that read and keeps its durable history.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
-  runs in full on a waived gate, so ANY finding (advisory included) opens the
-  human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
-  of being auto-approved. On a gate the grant does not cover, that same verdict
+  runs in full on a waived gate, so ANY finding (advisory included) keeps it
+  from being approved; and a terminal adversarial `NOT-READY` blocks a waived
+  gate instead of being auto-approved. On a gate the grant does not cover, that same verdict
   stays an advisory finding and `approve` remains on offer, exactly as before.
+  An offered loop-back is the one place an advisory finding does not open the
+  human gate: only a blocking finding withholds the autonomous jump, and the
+  advisory findings it is taken over are stored on the jump's gate row.
 - Residual: the grant governs only the once-per-workflow sequential gates.
   Per-unit stages inside a parallel section keep their own ceremony — the
   walking-skeleton gate and the section autonomy ladder — so a scope with a unit
