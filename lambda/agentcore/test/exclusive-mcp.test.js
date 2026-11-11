@@ -5,11 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { claudeDriver } from '../cli/drivers.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
-import {
-  codexUntrustedProjectsToml,
-  exclusiveOpenCodeConfig,
-  stripJsonc,
-} from '../cli/exclusive-mcp.js';
+import { codexUntrustedProjectsToml, exclusiveOpenCodeConfig } from '../cli/exclusive-mcp.js';
 import {
   buildOpenCodeConfig,
   materializeCodexHome,
@@ -82,11 +78,53 @@ const gatewayOnly = () => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
 
 afterEach(() => vi.unstubAllEnvs());
 
-describe('JSONC', () => {
-  it('drops comments and trailing commas but keeps strings intact', () => {
-    expect(
-      JSON.parse(stripJsonc('{ "url": "https://a//b", /* c */ "q": "x\\"//y", // d\n }')),
-    ).toEqual({ url: 'https://a//b', q: 'x"//y' });
+describe('OpenCode config parsing', () => {
+  const disabledNames = async (text) => {
+    const { repo, cwd } = await repository();
+    await writeFile(path.join(repo, 'opencode.json'), text);
+    const { mcp } = await exclusiveOpenCodeConfig({ config: { mcp: {} }, cwd, home: repo });
+    return Object.keys(mcp).filter((name) => mcp[name].enabled === false);
+  };
+  const server = '{ "type": "remote", "url": "https://example.com/mcp", "enabled": true }';
+
+  it('disables a server whose name contains a comma and a brace', async () => {
+    const names = await disabledNames(`{"mcp":{"docs,}":${server}}}`);
+    expect(names).toContain('docs,}');
+    expect(names).not.toContain('docs}');
+  });
+
+  it('reads names as OpenCode decodes them', async () => {
+    const names = await disabledNames(
+      [
+        '\uFEFF{',
+        '  // line comment',
+        '  "mcp": {',
+        `    "a//b": { "type": "remote", "url": "https://x//y" }, /* block */`,
+        `    "q\\"uote": ${server},`,
+        `    "back\\\\slash": ${server},`,
+        `    "\\u0064ocs": ${server},`,
+        `    "/* kept */": ${server},`,
+        '  },',
+        '}',
+      ].join('\n'),
+    );
+    expect(names).toEqual(
+      expect.arrayContaining(['a//b', 'q"uote', 'back\\slash', 'docs', '/* kept */']),
+    );
+    expect(names).not.toContain('\\u0064ocs');
+  });
+
+  it('disables the servers of an mcp.servers envelope', async () => {
+    const names = await disabledNames(`{"mcp":{"servers":{"nested":${server}}}}`);
+    expect(names).toContain('nested');
+  });
+
+  it.each([
+    ['an unterminated comment', '{"mcp":{} /* x'],
+    ['a raw control character in a string', '{"mcp":{"a\tb":{}}}'],
+    ['a substituted server name', `{"mcp":{"{env:NAME}":${server}}}`],
+  ])('refuses a file with %s', async (_label, text) => {
+    await expect(disabledNames(text)).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
   });
 });
 
