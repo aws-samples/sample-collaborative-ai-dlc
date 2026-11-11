@@ -191,10 +191,23 @@ describe('IAM capabilities', () => {
   it('reports Bedrock models only for an IAM invocation, and none when discovery fails', async () => {
     const models = [{ id: 'test-model' }];
     listModels.mockResolvedValueOnce(models);
-    expect((await probe(['bedrock-iam'])).bedrockModels).toEqual(models);
+    expect(await probe(['bedrock-iam'])).toMatchObject({
+      bedrockModels: models,
+      bedrockModelsSource: 'catalog',
+    });
+    // An empty answer and a failed lookup are both an empty list; the source tells them apart.
+    listModels.mockResolvedValueOnce([]);
+    expect(await probe(['bedrock-iam'])).toMatchObject({
+      bedrockModels: [],
+      bedrockModelsSource: 'catalog',
+    });
     listModels.mockRejectedValueOnce(new Error('discovery failed'));
-    expect((await probe(['bedrock-iam'])).bedrockModels).toEqual([]);
+    expect(await probe(['bedrock-iam'])).toMatchObject({
+      bedrockModels: [],
+      bedrockModelsSource: 'error',
+    });
     expect(await probe(['api-key'])).not.toHaveProperty('bedrockModels');
-    expect(listModels).toHaveBeenCalledTimes(2);
+    expect(await probe(['api-key'])).not.toHaveProperty('bedrockModelsSource');
+    expect(listModels).toHaveBeenCalledTimes(3);
   });
 });

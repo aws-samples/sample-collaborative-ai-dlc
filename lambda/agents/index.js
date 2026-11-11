@@ -52,7 +52,7 @@ import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole, getVal } from '../shared/trackers.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
-import { createModelCatalog, createModelPricing } from './model-catalog.js';
+import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
 import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
@@ -519,12 +519,20 @@ const loadKeyClaudeModels = () =>
 
 // The `models` block of a capabilities response. Starts a price refresh without
 // waiting for it; the response is built from the table already stored.
+// `discover(loadKeyModels)` runs discoverAgentModels; it calls `loadKeyModels`
+// only when the Claude list comes from this Lambda (API keys), otherwise the
+// list is the runtime's.
 const pickerModels = async ({ runtimeTarget, projectId, userId, credentialBindings, discover }) => {
   modelPricing.refresh().catch(() => {});
-  const [{ claudeModels, runtimeCaps }, priceFor] = await Promise.all([
-    discover(),
+  let keyClaude;
+  const [{ runtimeCaps }, priceFor] = await Promise.all([
+    discover(async () => {
+      keyClaude = await loadKeyClaudeModels();
+      return keyClaude.models ?? [];
+    }),
     modelPricing.priceResolver(),
   ]);
+  const lookups = runtimeLookups(runtimeCaps);
   const models = modelCatalog.assemble({
     key: JSON.stringify([
       runtimeTarget?.agentRuntimeArn ?? null,
@@ -532,12 +540,15 @@ const pickerModels = async ({ runtimeTarget, projectId, userId, credentialBindin
       userId ?? null,
       credentialBindings,
     ]),
-    claudeModels,
-    runtimeCaps,
+    ...lookups,
+    claude: keyClaude ?? lookups.claude,
     priceFor,
   });
-  if (models.codexSource === 'error' || models.codexSource === 'cached') {
-    logger.warn('[capabilities] Codex catalogue lookup failed', { source: models.codexSource });
+  const failed = Object.entries(models.sources).filter(
+    ([, source]) => source === 'error' || source === 'cached',
+  );
+  if (failed.length > 0) {
+    logger.warn('[capabilities] model list lookup failed', { sources: Object.fromEntries(failed) });
   }
   return { models, runtimeCaps };
 };
@@ -748,11 +759,11 @@ export const handler = async (event, context) => {
         return response(500, { error: 'Failed to resolve agent credentials' });
       }
       const withModels = event.queryStringParameters?.models === '1';
-      const discover = () =>
+      const discover = (loadKeyModels) =>
         discoverAgentModels({
           credentialBindings,
           withModels,
-          loadKeyModels: loadKeyClaudeModels,
+          loadKeyModels,
           loadRuntimeCapabilities: () =>
             fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
         });
@@ -1379,10 +1390,10 @@ export const handler = async (event, context) => {
         projectId: capabilitiesProjectId || null,
         userId: credentialUserId,
         credentialBindings,
-        discover: () =>
+        discover: (loadKeyModels) =>
           discoverAgentModels({
             credentialBindings,
-            loadKeyModels: loadKeyClaudeModels,
+            loadKeyModels,
             loadRuntimeCapabilities: () =>
               fetchRuntimeCapabilities(
                 runtimeTarget,

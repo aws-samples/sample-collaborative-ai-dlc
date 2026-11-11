@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createModelCatalog,
   createModelPricing,
+  runtimeLookups,
   CLAUDE_MODELS_TTL_MS,
+  PRICE_TABLE_RETRY_MS,
   PRICE_TABLE_TTL_MS,
   PRICING_REFRESH_INTERVAL_MS,
   PRICING_RETRY_INTERVAL_MS,
@@ -182,13 +184,73 @@ describe('model price resolver', () => {
     expect((await pricing.priceResolver())('us.anthropic.claude-sonnet-4-6').priced).toBe(false);
   });
 
-  it('returns no resolver when the table cannot be read, and reads again next time', async () => {
+  it('returns no resolver while no read has succeeded, and retries after the retry interval', async () => {
     const { pricing, calls } = pricingHarness();
     calls.readTable.mockRejectedValueOnce(new Error('ThrottlingException'));
 
     expect(await pricing.priceResolver()).toBeNull();
+    clock += PRICE_TABLE_RETRY_MS - 1;
+    expect(await pricing.priceResolver()).toBeNull();
+    expect(calls.readTable).toHaveBeenCalledTimes(1);
+
+    clock += 1;
     expect(await pricing.priceResolver()).toEqual(expect.any(Function));
     expect(calls.readTable).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes a successful read as the truth, also when it finds no usable table', async () => {
+    const { pricing, state } = pricingHarness();
+    state.stored = serializePriceTable({
+      version: 2,
+      region: REGION,
+      refreshedAt: '2026-11-11T12:00:00.000Z',
+      prices: { 'claude-sonnet-4-6': { regional: { input: 3.3, output: 16.5 } } },
+    });
+    expect((await pricing.priceResolver())('us.anthropic.claude-sonnet-4-6').priced).toBe(true);
+
+    // The parameter was deleted, or replaced by an old-format or unreadable value.
+    for (const stored of [null, JSON.stringify({ 'claude-sonnet-4-6': { input: 3 } }), '{']) {
+      state.stored = stored;
+      clock += PRICE_TABLE_TTL_MS;
+      expect((await pricing.priceResolver())('us.anthropic.claude-sonnet-4-6').priced).toBe(false);
+    }
+  });
+
+  it('keeps the last table read when a later read fails, and retries after the retry interval', async () => {
+    const { pricing, state, calls } = pricingHarness();
+    state.stored = serializePriceTable({
+      version: 2,
+      region: REGION,
+      refreshedAt: '2026-11-11T12:00:00.000Z',
+      prices: { 'claude-sonnet-4-6': { regional: { input: 3.3, output: 16.5 } } },
+    });
+    expect((await pricing.priceResolver())('us.anthropic.claude-sonnet-4-6').priced).toBe(true);
+
+    // Past the time to live, SSM fails with a transient error.
+    clock += PRICE_TABLE_TTL_MS;
+    calls.readTable.mockRejectedValue(new Error('ThrottlingException'));
+    const kept = await pricing.priceResolver();
+    expect(kept('us.anthropic.claude-sonnet-4-6').priced).toBe(true);
+    expect(calls.readTable).toHaveBeenCalledTimes(2);
+
+    // A failing SSM is not read on every call.
+    clock += PRICE_TABLE_RETRY_MS - 1;
+    expect((await pricing.priceResolver())('us.anthropic.claude-sonnet-4-6').priced).toBe(true);
+    expect(calls.readTable).toHaveBeenCalledTimes(2);
+
+    // It is read again after the retry interval, and a recovered read is used.
+    clock += 1;
+    state.stored = serializePriceTable({
+      version: 2,
+      region: REGION,
+      refreshedAt: '2026-11-11T13:00:00.000Z',
+      prices: { 'claude-opus-5': { regional: { input: 5.5, output: 27.5 } } },
+    });
+    calls.readTable.mockImplementation(async () => state.stored);
+    const recovered = await pricing.priceResolver();
+    expect(calls.readTable).toHaveBeenCalledTimes(3);
+    expect(recovered('us.anthropic.claude-opus-5').priced).toBe(true);
+    expect(recovered('us.anthropic.claude-sonnet-4-6').priced).toBe(false);
   });
 
   it('re-reads the stored table after its time to live', async () => {
@@ -212,22 +274,25 @@ describe('model price resolver', () => {
 const model = (id) => ({ id, name: id, description: null });
 const caps = (overrides = {}) => ({
   clis: [],
-  kiroModels: { models: [{ id: 'auto', name: 'Auto' }], default: 'auto' },
+  kiroModels: { models: [{ id: 'auto', name: 'Auto' }], default: 'auto', source: 'catalog' },
+  bedrockModels: [model('us.anthropic.claude-sonnet-4-6')],
+  bedrockModelsSource: 'catalog',
   codexModels: {
     source: 'catalog',
     models: [model('openai.gpt-6.1-terra'), model('openai.gpt-7-nova')],
   },
   ...overrides,
 });
+const ok = (...ids) => ({ ok: true, models: ids.map(model) });
 
-describe('Claude model list', () => {
+describe('Claude model list (API keys)', () => {
   it('reads the list once per time to live', async () => {
     const catalog = createModelCatalog({ logger, now });
     const load = vi.fn(async () => [model('us.anthropic.claude-sonnet-4-6')]);
 
     await catalog.claudeModels(load);
     clock += CLAUDE_MODELS_TTL_MS - 1;
-    expect(await catalog.claudeModels(load)).toEqual([model('us.anthropic.claude-sonnet-4-6')]);
+    expect(await catalog.claudeModels(load)).toEqual(ok('us.anthropic.claude-sonnet-4-6'));
     expect(load).toHaveBeenCalledTimes(1);
 
     clock += 1;
@@ -235,32 +300,105 @@ describe('Claude model list', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it('serves the last list read when the lookup fails, and an empty one on a cold start', async () => {
+  it('reports a failed lookup, with the last list read when there is one', async () => {
     const catalog = createModelCatalog({ logger, now });
     const failing = vi.fn(async () => {
       throw new Error('ThrottlingException');
     });
 
-    expect(await catalog.claudeModels(failing)).toEqual([]);
+    expect(await catalog.claudeModels(failing)).toEqual({ ok: false });
 
     await catalog.claudeModels(async () => [model('us.anthropic.claude-opus-5')]);
     clock += CLAUDE_MODELS_TTL_MS;
-    expect(await catalog.claudeModels(failing)).toEqual([model('us.anthropic.claude-opus-5')]);
+    expect(await catalog.claudeModels(failing)).toEqual({
+      ok: false,
+      stale: [model('us.anthropic.claude-opus-5')],
+    });
     expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not bring back a list that a later successful, empty read replaced', async () => {
+    const catalog = createModelCatalog({ logger, now });
+    await catalog.claudeModels(async () => [model('us.anthropic.claude-opus-5')]);
+    clock += CLAUDE_MODELS_TTL_MS;
+    expect(await catalog.claudeModels(async () => [])).toEqual(ok());
+
+    clock += CLAUDE_MODELS_TTL_MS;
+    const failed = await catalog.claudeModels(async () => {
+      throw new Error('ThrottlingException');
+    });
+
+    expect(failed).toEqual({ ok: false, stale: [] });
+    const models = catalog.assemble({ key: 'k', ...runtimeLookups(caps()), claude: failed });
+    expect(models.claude).toEqual([]);
+    expect(models.sources.claude).toBe('cached');
+  });
+});
+
+describe('runtime lookups', () => {
+  it('reads each list of a runtime that states its lookup status', () => {
+    expect(runtimeLookups(caps())).toEqual({
+      claude: ok('us.anthropic.claude-sonnet-4-6'),
+      kiro: { ok: true, models: [{ id: 'auto', name: 'Auto' }] },
+      codex: ok('openai.gpt-6.1-terra', 'openai.gpt-7-nova'),
+    });
+  });
+
+  it('tells a failed lookup from an empty answer by the status the runtime reports', () => {
+    expect(
+      runtimeLookups(
+        caps({
+          kiroModels: { models: [], default: null, source: 'error' },
+          bedrockModels: [],
+          bedrockModelsSource: 'error',
+          codexModels: { source: 'error', models: [model('openai.saved')] },
+        }),
+      ),
+    ).toEqual({
+      claude: { ok: false },
+      kiro: { ok: false },
+      codex: { ok: false, absent: false, models: [model('openai.saved')] },
+    });
+    expect(
+      runtimeLookups(
+        caps({
+          kiroModels: { models: [], default: null, source: 'catalog' },
+          bedrockModels: [],
+          codexModels: { source: 'catalog', models: [] },
+        }),
+      ),
+    ).toEqual({ claude: ok(), kiro: ok(), codex: ok() });
+  });
+
+  it('takes a list without a status, from an older runtime, as an answer', () => {
+    const older = { clis: [], kiroModels: { models: [], default: null }, bedrockModels: [] };
+
+    expect(runtimeLookups(older)).toEqual({
+      claude: ok(),
+      kiro: ok(),
+      codex: { ok: false, absent: true, models: [] },
+    });
+  });
+
+  it('reports every list as failed when the probe itself failed', () => {
+    expect(runtimeLookups(null)).toEqual({
+      claude: { ok: false },
+      kiro: { ok: false },
+      codex: { ok: false },
+    });
   });
 });
 
 describe('picker model lists', () => {
   const priceFor = (id) => ({ priced: id.includes('terra') || id.includes('sonnet-4-6') });
+  const assemble = (catalog, runtimeCaps, extra = {}) =>
+    catalog.assemble({ key: 'k', ...runtimeLookups(runtimeCaps), priceFor, ...extra });
 
   it('returns the lists as read and marks only the models without a price', () => {
     const catalog = createModelCatalog({ logger, now });
 
-    const models = catalog.assemble({
-      key: 'k',
-      claudeModels: [model('us.anthropic.claude-sonnet-4-6'), model('us.anthropic.claude-opus-9')],
-      runtimeCaps: caps(),
-      priceFor,
+    const models = assemble(catalog, caps(), {
+      claude: ok('us.anthropic.claude-sonnet-4-6', 'us.anthropic.claude-opus-9'),
     });
 
     expect(models).toEqual({
@@ -281,17 +419,16 @@ describe('picker model lists', () => {
       ],
       kiro: [{ id: 'auto', name: 'Auto' }],
       codex: [model('openai.gpt-6.1-terra'), { ...model('openai.gpt-7-nova'), priced: false }],
+      sources: { claude: 'catalog', opencode: 'catalog', kiro: 'catalog', codex: 'catalog' },
       codexSource: 'catalog',
     });
   });
 
-  it('leaves `priced` unset when the price table could not be read', () => {
+  it('leaves `priced` unset when no price table was read', () => {
     const catalog = createModelCatalog({ logger, now });
 
-    const models = catalog.assemble({
-      key: 'k',
-      claudeModels: [model('us.anthropic.claude-opus-9')],
-      runtimeCaps: caps(),
+    const models = assemble(catalog, caps(), {
+      claude: ok('us.anthropic.claude-opus-9'),
       priceFor: null,
     });
 
@@ -302,59 +439,43 @@ describe('picker model lists', () => {
   it('offers no built-in Codex list when the catalogue lookup failed', () => {
     const catalog = createModelCatalog({ logger, now });
 
-    const models = catalog.assemble({
-      key: 'k',
-      claudeModels: [],
-      runtimeCaps: caps({ codexModels: { source: 'error', models: [] } }),
-      priceFor,
-    });
+    const models = assemble(catalog, caps({ codexModels: { source: 'error', models: [] } }));
 
     expect(models.codex).toEqual([]);
     expect(models.codexSource).toBe('error');
+    expect(models.sources.codex).toBe('error');
   });
 
   it('reports a runtime that has no Codex catalogue as unavailable', () => {
     const catalog = createModelCatalog({ logger, now });
 
-    for (const runtimeCaps of [null, caps({ codexModels: undefined })]) {
-      const models = catalog.assemble({ key: 'k', claudeModels: [], runtimeCaps, priceFor });
-      expect(models.codex).toEqual([]);
-      expect(models.codexSource).toBe('unavailable');
-    }
-  });
-
-  it('keeps an empty catalogue empty: a region that lists no model is an answer', () => {
-    const catalog = createModelCatalog({ logger, now });
-    catalog.assemble({ key: 'k', claudeModels: [], runtimeCaps: caps(), priceFor });
-
-    const models = catalog.assemble({
-      key: 'k',
-      claudeModels: [],
-      runtimeCaps: caps({ codexModels: { source: 'catalog', models: [] } }),
-      priceFor,
-    });
+    const models = assemble(catalog, caps({ codexModels: undefined }));
 
     expect(models.codex).toEqual([]);
-    expect(models.codexSource).toBe('catalog');
+    expect(models.codexSource).toBe('unavailable');
+  });
+
+  it('reports every runtime list as failed when the probe fails on a cold container', () => {
+    const catalog = createModelCatalog({ logger, now });
+
+    const models = assemble(catalog, null);
+
+    expect(models).toMatchObject({ claude: [], kiro: [], codex: [] });
+    expect(models.sources).toEqual({
+      claude: 'error',
+      opencode: 'error',
+      kiro: 'error',
+      codex: 'error',
+    });
   });
 
   it('serves the last catalogue read for the same runtime and credentials after a failed lookup', () => {
     const catalog = createModelCatalog({ logger, now });
-    catalog.assemble({ key: 'project-a', claudeModels: [], runtimeCaps: caps(), priceFor });
+    catalog.assemble({ key: 'project-a', ...runtimeLookups(caps()), priceFor });
 
-    const failed = caps({ codexModels: { source: 'error', models: [] } });
-    const same = catalog.assemble({
-      key: 'project-a',
-      claudeModels: [],
-      runtimeCaps: failed,
-      priceFor,
-    });
-    const other = catalog.assemble({
-      key: 'project-b',
-      claudeModels: [],
-      runtimeCaps: failed,
-      priceFor,
-    });
+    const failed = runtimeLookups(caps({ codexModels: { source: 'error', models: [] } }));
+    const same = catalog.assemble({ key: 'project-a', ...failed, priceFor });
+    const other = catalog.assemble({ key: 'project-b', ...failed, priceFor });
 
     expect(same.codex.map((m) => m.id)).toEqual(['openai.gpt-6.1-terra', 'openai.gpt-7-nova']);
     expect(same.codexSource).toBe('cached');
@@ -365,31 +486,91 @@ describe('picker model lists', () => {
 
   it('serves the last runtime lists when the capabilities probe fails', () => {
     const catalog = createModelCatalog({ logger, now });
-    catalog.assemble({
-      key: 'k',
-      claudeModels: [model('us.anthropic.claude-sonnet-4-6')],
-      runtimeCaps: caps(),
-      priceFor,
-    });
+    assemble(catalog, caps());
 
-    const models = catalog.assemble({ key: 'k', claudeModels: [], runtimeCaps: null, priceFor });
+    const models = assemble(catalog, null);
 
     expect(models.claude).toEqual([model('us.anthropic.claude-sonnet-4-6')]);
     expect(models.kiro).toEqual([{ id: 'auto', name: 'Auto' }]);
     expect(models.codex.map((m) => m.id)).toEqual(['openai.gpt-6.1-terra', 'openai.gpt-7-nova']);
-    expect(models.codexSource).toBe('cached');
+    expect(models.sources).toEqual({
+      claude: 'cached',
+      opencode: 'cached',
+      kiro: 'cached',
+      codex: 'cached',
+    });
+  });
+
+  // Review finding: populated answer → empty answer → failed probe.
+  it.each([
+    [
+      'a runtime that reports its lookup status',
+      caps({
+        kiroModels: { models: [], default: null, source: 'catalog' },
+        bedrockModels: [],
+        bedrockModelsSource: 'catalog',
+        codexModels: { source: 'catalog', models: [] },
+      }),
+    ],
+    [
+      'an older runtime that reports plain lists',
+      {
+        clis: [],
+        kiroModels: { models: [], default: null },
+        bedrockModels: [],
+        codexModels: { source: 'catalog', models: [] },
+      },
+    ],
+  ])('does not bring back models that an empty answer of %s removed', (_label, empty) => {
+    const catalog = createModelCatalog({ logger, now });
+    assemble(catalog, caps());
+
+    expect(assemble(catalog, empty)).toMatchObject({ claude: [], kiro: [], codex: [] });
+
+    const afterFailure = assemble(catalog, null);
+    expect(afterFailure).toMatchObject({ claude: [], opencode: [], kiro: [], codex: [] });
+    expect(afterFailure.sources).toEqual({
+      claude: 'cached',
+      opencode: 'cached',
+      kiro: 'cached',
+      codex: 'cached',
+    });
+  });
+
+  it('keeps the last answer when a runtime reports that one of its lookups failed', () => {
+    const catalog = createModelCatalog({ logger, now });
+    assemble(catalog, caps());
+
+    const models = assemble(
+      catalog,
+      caps({
+        kiroModels: { models: [], default: null, source: 'error' },
+        bedrockModels: [],
+        bedrockModelsSource: 'error',
+      }),
+    );
+
+    expect(models.kiro).toEqual([{ id: 'auto', name: 'Auto' }]);
+    expect(models.claude).toEqual([model('us.anthropic.claude-sonnet-4-6')]);
+    expect(models.sources).toMatchObject({ kiro: 'cached', claude: 'cached', codex: 'catalog' });
+  });
+
+  it('prefers the list any caller read over nothing when the key-based Claude lookup fails', () => {
+    const catalog = createModelCatalog({ logger, now });
+
+    const models = assemble(catalog, caps(), {
+      claude: { ok: false, stale: [model('us.anthropic.claude-opus-5')] },
+    });
+
+    expect(models.claude.map((m) => m.id)).toEqual(['us.anthropic.claude-opus-5']);
+    expect(models.sources.claude).toBe('cached');
   });
 
   it('marks a cached model with the price table of the moment', () => {
     const catalog = createModelCatalog({ logger, now });
-    catalog.assemble({ key: 'k', claudeModels: [], runtimeCaps: caps(), priceFor });
+    assemble(catalog, caps());
 
-    const models = catalog.assemble({
-      key: 'k',
-      claudeModels: [],
-      runtimeCaps: null,
-      priceFor: () => ({ priced: true }),
-    });
+    const models = assemble(catalog, null, { priceFor: () => ({ priced: true }) });
 
     expect(models.codex).toEqual([model('openai.gpt-6.1-terra'), model('openai.gpt-7-nova')]);
   });

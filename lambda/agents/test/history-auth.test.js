@@ -437,7 +437,39 @@ describe('picker models and prices', () => {
     expect(cached.codex.map((m) => m.id)).toEqual(['openai.gpt-6.1-terra']);
   });
 
-  it('reports a runtime without a Codex catalogue as unavailable and keeps the Claude list', async () => {
+  it('does not bring back models that a later successful, empty answer removed', async () => {
+    const kiroAnswers = (models) =>
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: {
+          transformToString: async () =>
+            JSON.stringify({
+              ok: true,
+              clis: [{ cli: 'kiro', installed: true, authed: true, available: true }],
+              kiroModels: { models, default: null },
+              codexModels: {
+                source: 'catalog',
+                models: models.map((m) => model(`openai.${m.id}`)),
+              },
+            }),
+        },
+      });
+    const read = async (request) => JSON.parse((await fresh(request)).body).models;
+
+    // Successful populated list.
+    kiroAnswers([{ id: 'auto', name: 'Auto' }]);
+    const { request, response } = await pickerModels();
+    expect(JSON.parse(response.body).models.kiro).toEqual([{ id: 'auto', name: 'Auto' }]);
+
+    // Successful empty list.
+    kiroAnswers([]);
+    expect(await read(request)).toMatchObject({ kiro: [], codex: [] });
+
+    // Failed runtime probe: the last successful answer was "no models".
+    agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime unreachable'));
+    expect(await read(request)).toMatchObject({ kiro: [], codex: [] });
+  });
+
+  it('reports the runtime lists as failed when the probe fails, and keeps the Claude list', async () => {
     bedrockMock
       .on(ListInferenceProfilesCommand)
       .resolves({ inferenceProfileSummaries: [profile('us.anthropic.claude-sonnet-4-6')] });
@@ -447,7 +479,13 @@ describe('picker models and prices', () => {
 
     expect(response.statusCode).toBe(200);
     const { models } = JSON.parse(response.body);
-    expect(models).toMatchObject({ codex: [], codexSource: 'unavailable', kiro: [] });
+    expect(models).toMatchObject({ codex: [], codexSource: 'error', kiro: [] });
+    expect(models.sources).toEqual({
+      claude: 'catalog',
+      opencode: 'catalog',
+      kiro: 'error',
+      codex: 'error',
+    });
     expect(models.claude.map((m) => m.id)).toEqual(['us.anthropic.claude-sonnet-4-6']);
   });
 

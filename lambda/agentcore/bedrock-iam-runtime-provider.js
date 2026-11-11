@@ -21,18 +21,29 @@ const verifyBedrockIam = async ({ env }) => {
   }
 };
 
+// `bedrockModels` stays a plain list, which is what an older control plane reads;
+// `bedrockModelsSource` says whether it is an answer (`catalog`) or a failed lookup (`error`).
+const iamBedrockModels = async (env) => {
+  try {
+    return { bedrockModels: await listIamBedrockModels(env), bedrockModelsSource: 'catalog' };
+  } catch {
+    return { bedrockModels: [], bedrockModelsSource: 'error' };
+  }
+};
+
 export const BEDROCK_IAM_RUNTIME_PROVIDER = Object.freeze({
   id: 'bedrock-iam',
   modes: ['iam'],
   materials: { 'bedrock-iam': IAM_MATERIAL_ADAPTER },
   // Drivers prefer BEDROCK_REGION over AWS_REGION, so only this adapter may set it.
   controlledEnv: ['BEDROCK_REGION'],
-  // A failed discovery reports no models instead of failing the probe; Kiro stays independent.
+  // A failed discovery reports no models and `error` instead of failing the probe; Kiro stays
+  // independent.
   // Codex models come from Mantle in the same inference region the run will use, signed with
   // this invocation's IAM session; listCodexModels turns a failed lookup into `source: 'error'`
   // so the control plane can tell it from a region that lists no model.
   capabilities: async ({ env }) => ({
-    bedrockModels: await listIamBedrockModels(env).catch(() => []),
+    ...(await iamBedrockModels(env)),
     codexModels: await listCodexModels({
       region: env.BEDROCK_REGION,
       listModels: (region) => listMantleModels({ region, credentials: iamCredentialProvider() }),
