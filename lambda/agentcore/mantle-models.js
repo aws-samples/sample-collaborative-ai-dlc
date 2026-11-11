@@ -16,6 +16,8 @@ import { SignatureV4 } from '@smithy/signature-v4';
 
 const SERVICE = 'bedrock-mantle';
 const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 250;
 
 export const mantleModelsUrl = (region) => `https://bedrock-mantle.${region}.api.aws/v1/models`;
 
@@ -59,18 +61,9 @@ export const createMantleFetch = ({ region, apiKey, credentials, fetchImpl = fet
   };
 };
 
-// Returns the parsed payload; throws when the endpoint answers non-2xx, times
-// out, or returns something that is not a model list. Callers turn a throw into
-// an explicit "lookup failed" state (see listCodexModels).
-export const listMantleModels = async ({
-  region,
-  apiKey,
-  credentials,
-  fetchImpl = fetch,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-}) => {
-  if (!region) throw new Error('An inference region is required to list Mantle models');
-  const send = createMantleFetch({ region, apiKey, credentials, fetchImpl });
+// One attempt: the parsed payload, or a throw when the endpoint answers
+// non-2xx, times out, or returns something that is not a model list.
+const requestModels = async ({ send, region, timeoutMs }) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -79,15 +72,53 @@ export const listMantleModels = async ({
       signal: controller.signal,
     });
     if (!response?.ok) {
-      throw new Error(`The Mantle model catalogue answered ${response?.status ?? 'no status'}`);
+      const error = new Error(
+        `The Mantle model catalogue answered ${response?.status ?? 'no status'}`,
+      );
+      error.status = response?.status;
+      throw error;
     }
     const payload = await response.json();
     if (!Array.isArray(payload?.data)) {
-      throw new Error('The Mantle model catalogue did not return a model list');
+      const error = new Error('The Mantle model catalogue did not return a model list');
+      error.status = response.status;
+      throw error;
     }
     return payload;
   } finally {
     clearTimeout(timer);
+  }
+};
+
+// A 2xx that is not a model list or a 4xx other than 429 is an answer (bad
+// credentials, no access), and a timeout already used the whole budget of one
+// attempt: retrying either only delays the picker. Throttling, 5xx and network
+// errors retry.
+const isRetryable = (error) =>
+  error?.name !== 'AbortError' &&
+  (error?.status == null || error.status === 429 || error.status >= 500);
+
+// Returns the parsed payload; throws when every attempt failed. Callers turn a
+// throw into an explicit "lookup failed" state (see listCodexModels). At most
+// `attempts` requests are sent, `retryDelayMs`, then twice that, apart.
+export const listMantleModels = async ({
+  region,
+  apiKey,
+  credentials,
+  fetchImpl = fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  attempts = DEFAULT_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+}) => {
+  if (!region) throw new Error('An inference region is required to list Mantle models');
+  const send = createMantleFetch({ region, apiKey, credentials, fetchImpl });
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await requestModels({ send, region, timeoutMs });
+    } catch (error) {
+      if (attempt >= attempts || !isRetryable(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** (attempt - 1)));
+    }
   }
 };
 

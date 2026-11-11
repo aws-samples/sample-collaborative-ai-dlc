@@ -30,7 +30,7 @@ export const BEDROCK_IAM_RUNTIME_PROVIDER = Object.freeze({
   // A failed discovery reports no models instead of failing the probe; Kiro stays independent.
   // Codex models come from Mantle in the same inference region the run will use, signed with
   // this invocation's IAM session; listCodexModels turns a failed lookup into `source: 'error'`
-  // so the control plane falls back to its curated list instead of showing an empty picker.
+  // so the control plane can tell it from a region that lists no model.
   capabilities: async ({ env }) => ({
     bedrockModels: await listIamBedrockModels(env).catch(() => []),
     codexModels: await listCodexModels({
