@@ -1,13 +1,6 @@
 import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import {
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  ScanCommand,
-  TransactWriteCommand,
-} from '@aws-sdk/lib-dynamodb';
 import { createNativeExecutionStore, nativeExecutionKey } from '../execution-store.js';
 import { nativeRuntimeBindingKey } from '../../shared/native-runtime-binding.js';
 import { canonicalJson } from '../policies.js';
@@ -107,8 +100,10 @@ export const executionFixture = ({
   const ddb = {
     async send(command) {
       await hooks.before?.(command);
-      if (command instanceof GetCommand) return { Item: read(command.input.Key) };
-      if (command instanceof PutCommand) {
+      // Production image imports retain their own SDK constructors.
+      const operation = command.constructor.name;
+      if (operation === 'GetCommand') return { Item: read(command.input.Key) };
+      if (operation === 'PutCommand') {
         if (!condition(command.input))
           throw Object.assign(new Error('Conditional write failed'), {
             name: 'ConditionalCheckFailedException',
@@ -117,8 +112,8 @@ export const executionFixture = ({
         await hooks.after?.(command);
         return {};
       }
-      if (command instanceof ScanCommand) return { Items: [...rows.values()].map(clone) };
-      if (command instanceof QueryCommand) {
+      if (operation === 'ScanCommand') return { Items: [...rows.values()].map(clone) };
+      if (operation === 'QueryCommand') {
         const values = command.input.ExpressionAttributeValues;
         const matching = [...rows.values()]
           .filter(
@@ -139,8 +134,7 @@ export const executionFixture = ({
             : {}),
         };
       }
-      if (!(command instanceof TransactWriteCommand))
-        throw new Error('Unexpected authority operation');
+      if (operation !== 'TransactWriteCommand') throw new Error('Unexpected authority operation');
       const operations = command.input.TransactItems.map((v) => v.Put ?? v.ConditionCheck);
       if (!operations.every(condition))
         throw Object.assign(new Error('conditional conflict'), {

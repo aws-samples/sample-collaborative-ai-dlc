@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { expect, vi } from 'vitest';
 import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeArtifactRevisions } from '../../shared/native-artifact-revision.js';
@@ -35,12 +34,14 @@ export const serialFixture = (fixtureOptions) => {
       const input = command.input;
       expect(input.Bucket).toBe(f.configuration.publicationBucket);
       expect(input.ExpectedBucketOwner).toBe(f.configuration.accountId);
-      if (command instanceof PutObjectCommand) {
+      // Installed production and host tests have separate SDK installations.
+      // Route by the AWS operation, not JavaScript constructor identity.
+      if (command.constructor.name === 'PutObjectCommand') {
         const VersionId = `serial-${++version}`;
         objects.set(`${input.Key}\0${VersionId}`, Buffer.from(input.Body));
         return { VersionId };
       }
-      expect(command).toBeInstanceOf(GetObjectCommand);
+      expect(command.constructor.name).toBe('GetObjectCommand');
       reads.push(input);
       const bytes = objects.get(`${input.Key}\0${input.VersionId}`);
       if (!bytes) throw new Error('Unknown immutable object version');
