@@ -521,6 +521,71 @@ run "rejects_more_than_ten_custom_parameters" {
   expect_failures = [var.mcp_gateway_custom_targets]
 }
 
+run "accepts_custom_parameters_at_the_length_limits" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          custom_parameters       = { (format("k%0255d", 0)) = format("v%02047d", 0) }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+}
+
+run "rejects_a_custom_parameter_key_over_256_characters" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          custom_parameters       = { (format("k%0256d", 0)) = "v" }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_a_custom_parameter_value_over_2048_characters" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      "wiki" = {
+        endpoint = "https://mcp.example.com/mcp"
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+          custom_parameters       = { audience = format("v%02048d", 0) }
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
 run "rejects_a_scope_over_64_characters" {
   command = plan
   module {

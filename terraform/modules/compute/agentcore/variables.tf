@@ -335,11 +335,11 @@ variable "mcp_gateway_custom_targets" {
       alltrue([for scope in t.auth.scopes : length(scope) >= 1 && length(scope) <= 64]) &&
       (t.auth.custom_parameters == null || try(
         length(t.auth.custom_parameters) <= 10 &&
-        alltrue([for k, v in t.auth.custom_parameters : trimspace(k) != "" && v != ""]),
+        alltrue([for k, v in t.auth.custom_parameters : trimspace(k) != "" && length(k) <= 256 && v != null && length(v) >= 1 && length(v) <= 2048]),
         false
       ))
     ])
-    error_message = "mcp_gateway_custom_targets auth.scopes holds at most 100 scopes of 1-64 characters each; auth.custom_parameters holds at most 10 non-empty entries."
+    error_message = "mcp_gateway_custom_targets auth.scopes holds at most 100 scopes of 1-64 characters each; auth.custom_parameters holds at most 10 entries with keys of 1-256 characters and values of 1-2048 characters."
   }
   validation {
     condition = alltrue([

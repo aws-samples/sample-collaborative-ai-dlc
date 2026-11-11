@@ -106,7 +106,7 @@ mcp_gateway_custom_targets = {
 
 - The key (`confluence`, `jira`) is the Gateway target name: up to 32 lowercase letters and digits, with single hyphens between them, never `aidlc`. Agents and allow rules refer to tools through it, so treat it as immutable; renaming creates a different target.
 - `auth.scopes` is optional in Terraform but required in practice: most authorization servers issue no token, or a token without the needed scope, when none is requested. At most 100 scopes of 1–64 characters each.
-- `auth.custom_parameters` (OAuth only, at most 10 entries) adds parameters to the token request, for example `audience` for Auth0 or `resource` for Microsoft Entra ID v1 and AD FS.
+- `auth.custom_parameters` (OAuth only, at most 10 entries; keys up to 256 and values up to 2,048 characters) adds parameters to the token request, for example `audience` for Auth0 or `resource` for Microsoft Entra ID v1 and AD FS.
 - `allow.project_ids` is required. `stage_ids` and `tools` are optional; unset means every stage, or every tool of the target. Tool names are the server's own names, without the `<target>___` prefix.
 - `private_endpoint` takes the same `managed_vpc_resource` or `self_managed_lattice_resource` block as `aws_bedrockagentcore_gateway_target`.
 - The encoded allow rules must stay under 2 KB; Terraform refuses a larger set.
