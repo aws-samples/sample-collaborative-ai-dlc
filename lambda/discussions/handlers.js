@@ -14,7 +14,11 @@ import {
   executionCredentialBinding,
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
-import { executionMetaKey } from '../shared/v2-process-keys.js';
+import {
+  executionMetaKey,
+  humanTaskKey,
+  isHumanTaskAnswerStatus,
+} from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
@@ -53,6 +57,7 @@ import {
   findDiscussionByAnchor,
   anchorExistsInScope,
   fetchAnchorTitle,
+  ensureQuestionFromGate,
   createDiscussionVertex,
   fetchDiscussionInScope,
   fetchMessageInDiscussion,
@@ -174,6 +179,68 @@ export const listDiscussions = async (event, res) => {
   return res(200, discussions);
 };
 
+// The gate row behind a question anchor, read from the process table (the
+// handler already reads its META row). Null when the table is unwired or the
+// row is gone; the caller decides whether that is a 404.
+const fetchGateRow = async (executionId, humanTaskId) => {
+  if (!processTable()) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: processTable(),
+      Key: humanTaskKey(executionId, humanTaskId),
+      ConsistentRead: true,
+    }),
+  );
+  return Item ?? null;
+};
+
+// Drop a creation guard; a failed release only costs the early-retry shortcut —
+// the guard row's TTL still expires it.
+const releaseGuard = (lockId) =>
+  ddb.send(new DeleteCommand({ TableName: locksTable(), Key: { lockId } })).catch(() => {});
+
+// The gate row is authoritative and the Question vertex is a projection of it, so a
+// missing vertex is rebuilt from the gate; opening Discuss never answers the gate.
+const repairQuestionAnchor = async (scope, entityId) => {
+  const gate = await fetchGateRow(scope.rootId, entityId);
+  if (gate?.kind !== 'question') return false;
+  await query((g) => ensureQuestionFromGate(g, scope.rootId, gate));
+  // Earlier answers need copying; later answers see the vertex and sync themselves.
+  const freshGate = await fetchGateRow(scope.rootId, entityId);
+  if (
+    isHumanTaskAnswerStatus(freshGate?.status) &&
+    (!isHumanTaskAnswerStatus(gate.status) ||
+      freshGate.status !== gate.status ||
+      freshGate.answeredAt !== gate.answeredAt)
+  ) {
+    await query((g) => ensureQuestionFromGate(g, scope.rootId, freshGate));
+  }
+  return true;
+};
+
+// Take the creation guard. Returns false when another creator holds it; any
+// other DynamoDB failure propagates.
+const acquireGuard = async (guardKey) => {
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: locksTable(),
+        Item: {
+          lockId: guardKey,
+          kind: 'creation',
+          expiresAt: nowSeconds() + CREATION_GUARD_SECONDS,
+        },
+        ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
+        ExpressionAttributeValues: { ':now': nowSeconds() },
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (!isConditionalCheckFailed(err)) throw err;
+    return false;
+  }
+};
+
 export const getOrCreateDiscussion = async (event, res) => {
   const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
@@ -207,45 +274,32 @@ export const getOrCreateDiscussion = async (event, res) => {
   );
   if (existing) return res(200, existing);
 
-  // Validate the anchor lives in this scope before creating anything.
+  // Validate the anchor lives in this scope before creating anything. A missing
+  // Question vertex is the one repairable anchor: a checkpoint parks its gate
+  // without a mirror, so the graph can be rebuilt from the gate row below.
   const anchorOk = await query((g) => anchorExistsInScope(g, scope, entityType, entityId));
-  if (!anchorOk)
+  const repairableGate = entityType === 'question' && scope.kind === 'intent';
+  if (!anchorOk && !repairableGate)
     return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
 
   const guardKey = `create:${scope.rootId}:${entityType}:${entityId}`;
 
   // Two iterations max: a crashed-winner takeover re-runs the acquire once.
   for (let attempt = 0; attempt < 2; attempt++) {
-    let acquired = false;
-    try {
-      await ddb.send(
-        new PutCommand({
-          TableName: locksTable(),
-          Item: {
-            lockId: guardKey,
-            kind: 'creation',
-            expiresAt: nowSeconds() + CREATION_GUARD_SECONDS,
-          },
-          ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
-          ExpressionAttributeValues: { ':now': nowSeconds() },
-        }),
-      );
-      acquired = true;
-    } catch (err) {
-      if (!isConditionalCheckFailed(err)) throw err;
-    }
-
-    if (acquired) {
+    if (await acquireGuard(guardKey)) {
       // Winner: re-check the anchor (guard against a just-finished creator),
       // create vertex + edges, delete the guard.
       const recheck = await query((g) =>
         findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
       );
       if (recheck) {
-        await ddb
-          .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
-          .catch(() => {});
+        await releaseGuard(guardKey);
         return res(200, recheck);
+      }
+
+      if (!anchorOk && !(await repairQuestionAnchor(scope, entityId))) {
+        await releaseGuard(guardKey);
+        return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
       }
 
       const id = `disc-${randomUUID()}`;
@@ -269,9 +323,7 @@ export const getOrCreateDiscussion = async (event, res) => {
         }),
       );
 
-      await ddb
-        .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
-        .catch(() => {});
+      await releaseGuard(guardKey);
 
       const created = await query((g) =>
         findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),

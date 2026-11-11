@@ -83,6 +83,11 @@ Non-members get a 403 on everything, including realtime access.
 - **One thread per entity**: busy entities may mix decision and
   implementation topics in one thread. The data model is ready for multiple
   titled threads without migration when the need materializes.
+- **Checkpoint questions are discussable**: the summary-confirmation and
+  plan-approval gates are `Question` vertices too. If a gate has no vertex
+  (its mirror write never landed), Discuss rebuilds it from the gate row,
+  keeping the recorded answer and who answered it. Discussing a checkpoint
+  never answers it or resumes execution.
 - Messages live in the scope's graph (`Discussion` / `DiscussionMessage`
   vertices), so discussions are queryable collaboration context for both
   humans and agents — not throwaway chat history. Deleting an intent (or a

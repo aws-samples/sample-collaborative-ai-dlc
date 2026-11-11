@@ -236,6 +236,15 @@ export const createProcessBridge = ({
     return { parked: true, humanTaskId, message: parkedMessage };
   };
 
+  // Best-effort graph mirror of an asked question. A failed mirror must not
+  // block the question: the gate + broadcast are the source of truth.
+  const mirrorQuestion = async (questionId, questionsJson) => {
+    if (!graphWriter?.recordQuestion) return;
+    try {
+      await graphWriter.recordQuestion({ questionId, questionsJson });
+    } catch {}
+  };
+
   // Ask the human team one or more structured questions. Opens a pending gate,
   // mirrors a Question vertex (so the Intent page renders it), broadcasts, then
   // parks + polls (see parkAndPoll).
@@ -252,14 +261,7 @@ export const createProcessBridge = ({
       questions: questionsJson,
       humanTaskId,
     });
-    if (graphWriter?.recordQuestion) {
-      // Best-effort graph mirror — a failed mirror must not block the question.
-      try {
-        await graphWriter.recordQuestion({ questionId: humanTaskId, questionsJson });
-      } catch {
-        /* the gate + broadcast are the source of truth */
-      }
-    }
+    await mirrorQuestion(humanTaskId, questionsJson);
     await store.appendEvent({
       executionId,
       type: 'v2.question.asked',
@@ -670,6 +672,7 @@ export const createProcessBridge = ({
         reusedPending = true;
       }
       if (!reusedPending) {
+        await mirrorQuestion(humanTaskId, JSON.stringify(questions));
         await store.appendEvent({
           executionId,
           type: spec.events.requested,
