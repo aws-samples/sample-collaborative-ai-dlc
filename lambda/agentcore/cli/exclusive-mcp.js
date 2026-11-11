@@ -85,15 +85,30 @@ const unreadable = (file, reason) =>
 // value. A value with an `{env:…}` token may hold no other `{`: replacing the
 // token could otherwise join text into a `{file:…}` token that ends beyond the
 // string.
+// The names and fields read here are copied, decoded, into the inline config,
+// where OpenCode substitutes them again. So a string (key or value) whose
+// decoded text has a token, or the start of one, that its written text does
+// not — `"\u007benv:X}"` — is refused: the inline copy would no longer name or
+// match the entry it disables.
 const SUBSTITUTION_TOKENS = [/\{env:[^}]+\}/g, /\{file:[^}]+\}/g];
+const TOKEN_STARTS = /\{(?:env|file):[^}]*\}?/g;
+
+const tokenStarts = (text) => [...text.matchAll(TOKEN_STARTS)].map(([token]) => token).join('\0');
 
 const substitutesOutsideValues = (text) => {
   const values = [];
+  const decoded = [];
+  const literal = (value, offset, length) => {
+    decoded.push([value, text.slice(offset + 1, offset + length - 1)]);
+  };
   visitJsonc(
     text,
     {
+      onObjectProperty: literal,
       onLiteralValue: (value, offset, length) => {
-        if (typeof value === 'string') values.push([offset + 1, offset + length - 1]);
+        if (typeof value !== 'string') return;
+        values.push([offset + 1, offset + length - 1]);
+        literal(value, offset, length);
       },
     },
     { allowTrailingComma: true },
@@ -108,7 +123,8 @@ const substitutesOutsideValues = (text) => {
     values.some(([start, end]) => {
       const value = text.slice(start, end);
       return /\{env:[^}]+\}/.test(value) && value.replace(/\{env:[^}]+\}/g, '').includes('{');
-    })
+    }) ||
+    decoded.some(([value, written]) => tokenStarts(value) !== tokenStarts(written))
   );
 };
 
