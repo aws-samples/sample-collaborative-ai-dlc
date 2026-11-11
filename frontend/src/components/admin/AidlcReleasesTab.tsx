@@ -146,7 +146,15 @@ function unusableReason(release: AidlcRelease) {
   return null;
 }
 
+// A closure imported by an older importer revision keeps serving what it
+// served, but new intents miss what the current importer reads; the status
+// says so wherever the version stands.
 function versionStatus(release: AidlcRelease, channels: ReleaseChannels | null) {
+  const status = baseVersionStatus(release, channels);
+  return release.importerStale && status !== 'Not usable' ? `${status} · Upgrade needed` : status;
+}
+
+function baseVersionStatus(release: AidlcRelease, channels: ReleaseChannels | null) {
   if (unusableReason(release)) return 'Not usable';
   if (!release.fidelityEvidenceStale && release.unhonouredValues?.length)
     return 'Compatibility issue';
@@ -682,7 +690,7 @@ export function AidlcReleasesTab() {
             </div>
           </div>
         </details>
-        <details className="border-t pt-3">
+        <details className="border-t pt-3" open={release.importerStale === true}>
           <summary className="cursor-pointer text-xs font-medium">Maintenance</summary>
           <div className="mt-3 space-y-3">
             <p className="text-xs text-muted-foreground">
@@ -756,7 +764,7 @@ export function AidlcReleasesTab() {
                 </p>
               </div>
             )}
-            <details className="border-t pt-3">
+            <details className="border-t pt-3" open={release.importerStale === true}>
               <summary className="cursor-pointer text-xs font-medium">
                 Import details and advanced state
               </summary>

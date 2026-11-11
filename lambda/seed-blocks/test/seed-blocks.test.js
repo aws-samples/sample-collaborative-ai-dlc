@@ -20,7 +20,8 @@ import {
 import { fetchCoreFiles } from '../../shared/repo-fetch.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
-const { registerReleaseMock, getReleaseMock } = vi.hoisted(() => ({
+const { registerReleaseMock, getReleaseMock, upgradeReleaseClosureMock } = vi.hoisted(() => ({
+  upgradeReleaseClosureMock: vi.fn(),
   registerReleaseMock: vi.fn(),
   getReleaseMock: vi.fn(),
 }));
@@ -35,8 +36,11 @@ vi.mock('../../shared/repo-fetch.js', () => ({
 }));
 vi.mock('../../shared/release-registry.js', async (importOriginal) => ({
   isAccessDenied: (await importOriginal()).isAccessDenied,
+  isReleaseRegistryError: (await importOriginal()).isReleaseRegistryError,
+  ReleaseRegistryError: (await importOriginal()).ReleaseRegistryError,
   registerRelease: registerReleaseMock,
   getRelease: getReleaseMock,
+  upgradeReleaseClosure: upgradeReleaseClosureMock,
 }));
 
 const RELEASE_PROFILE = 'current-stable';
@@ -145,6 +149,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   getReleaseMock.mockReset().mockResolvedValue(null);
+  upgradeReleaseClosureMock.mockReset().mockResolvedValue({ status: 'upgraded' });
   registerReleaseMock.mockReset().mockImplementation(async ({ profileId }) => ({
     status: 'registered',
     release: { profileId },
@@ -484,31 +489,61 @@ describe('seed-blocks prepareRelease mode', () => {
     expect(s3Store.size).toBe(0);
   });
 
-  it('preserves an older registered closure, approval, visibility and notes', async () => {
+  const olderRecord = (profile) => ({
+    releaseId: profile.releaseId,
+    sourceSha: profile.upstreamRef,
+    profileId: profile.id,
+    importerRevision: 1,
+    closureDigest: 'old-closure',
+    supportState: 'certified',
+    visible: true,
+    notes: 'keep',
+    revision: 7,
+  });
+
+  // A deployment that raises the importer revision moves every official
+  // record to the closure it just published, through the same guarded upgrade
+  // an admin uses: approval, visibility and notes stay, and intents already
+  // pinned keep the closure they started with.
+  it('upgrades an older registered closure to the published importer revision', async () => {
     const profile = profiles[0];
-    const existing = {
-      releaseId: profile.releaseId,
-      sourceSha: profile.upstreamRef,
-      profileId: profile.id,
-      importerRevision: 1,
-      closureDigest: 'old-closure',
-      supportState: 'certified',
-      visible: true,
-      notes: 'keep',
-      revision: 7,
-    };
-    getReleaseMock.mockResolvedValue(existing);
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
     const result = await handler({ prepareRelease: true, profile: profile.id });
-    expect(result.registration).toBe('already-registered');
+    expect(result.registration).toBe('upgraded');
     expect(registerReleaseMock).not.toHaveBeenCalled();
-    expect(existing).toMatchObject({
-      importerRevision: 1,
-      supportState: 'certified',
-      visible: true,
-      notes: 'keep',
-      revision: 7,
+    expect(upgradeReleaseClosureMock).toHaveBeenCalledTimes(1);
+    expect(upgradeReleaseClosureMock.mock.calls[0][0]).toMatchObject({
+      releaseId: profile.releaseId,
+      expectedRevision: 7,
+      importerRevision: result.importerRevision,
+      actor: 'deployment',
     });
-    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('keeps the older closure and reports why when the upgrade is refused', async () => {
+    const profile = profiles[0];
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
+    const { ReleaseRegistryError } = await import('../../shared/release-registry.js');
+    upgradeReleaseClosureMock.mockRejectedValue(
+      new ReleaseRegistryError('release_channel_pinned', 'channel would break'),
+    );
+    const result = await handler({ prepareRelease: true, profile: profile.id });
+    expect(result).toMatchObject({
+      registration: 'upgrade-refused',
+      upgradeRefusal: 'release_channel_pinned',
+    });
+  });
+
+  it('fails preparation when the upgrade finds an inconsistent closure', async () => {
+    const profile = profiles[0];
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
+    const { ReleaseRegistryError } = await import('../../shared/release-registry.js');
+    upgradeReleaseClosureMock.mockRejectedValue(
+      new ReleaseRegistryError('release_conflict', 'manifest does not describe the release'),
+    );
+    await expect(handler({ prepareRelease: true, profile: profile.id })).rejects.toThrow(
+      'manifest does not describe the release',
+    );
   });
 
   // A redeploy must not depend on the upstream archive for a catalog it has

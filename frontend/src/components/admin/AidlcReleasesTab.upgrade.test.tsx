@@ -110,6 +110,22 @@ describe('AidlcReleasesTab closure upgrades', () => {
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
   });
 
+  // After an importer revision bump every existing record is stale; the list
+  // says so and the upgrade is visible as soon as the version is opened.
+  it('reports a stale closure in the status and shows its upgrade when the version opens', async () => {
+    channels.mockResolvedValue({
+      stable: { channel: 'stable', releaseId: RELEASE_ID, revision: 1 },
+      candidate: null,
+      preview: null,
+    });
+    render(<AidlcReleasesTab />);
+    expect(await screen.findByText('Stable · Upgrade needed')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Manage version 2.9.0' }));
+
+    expect(screen.getByRole('button', { name: 'Upgrade closure for 2.9.0' })).toBeVisible();
+  });
+
   it('sends nothing when the admin cancels the confirmation', async () => {
     const user = userEvent.setup();
     render(<AidlcReleasesTab />);

@@ -95,3 +95,28 @@ test('does not swallow network failures or accept asynchronous invocation acknow
     /preparation failed/,
   );
 });
+
+test('reports a version kept on its older closure and still prepares the others', async () => {
+  const kept = profiles[0];
+  const prepared = [];
+  const keptOnOlder = [];
+  const result = await prepareSupportedReleases({
+    invoke: async (event) =>
+      responseFor(
+        AIDLC_COMPATIBILITY_PROFILES[event.profile],
+        event.profile === kept.id
+          ? {
+              registration: 'upgrade-refused',
+              upgradeRefusal: 'release_channel_pinned',
+              registeredImporterRevision: 1,
+            }
+          : { registration: 'upgraded' },
+      ),
+    onPrepared: (profile) => prepared.push(profile.id),
+    onKept: (profile, response) => keptOnOlder.push([profile.id, response.upgradeRefusal]),
+  });
+  assert.equal(result.length, 8);
+  assert.deepEqual(keptOnOlder, [[kept.id, 'release_channel_pinned']]);
+  assert.equal(prepared.length, 7);
+  assert.ok(!prepared.includes(kept.id));
+});

@@ -6,7 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { AIDLC_COMPATIBILITY_PROFILES } from '../lambda/shared/aidlc-compatibility-profiles.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../lambda/shared/aidlc-release-importer.js';
 
-export async function prepareSupportedReleases({ invoke, onPrepared = () => {} }) {
+const PREPARED = ['registered', 'already-registered', 'upgraded'];
+// The registry declined to move this version's record to the new closure, for
+// a reason an admin resolves; the closure is published and the record unchanged.
+const KEPT_ON_OLDER_CLOSURE = 'upgrade-refused';
+
+export async function prepareSupportedReleases({
+  invoke,
+  onPrepared = () => {},
+  onKept = () => {},
+}) {
   const prepared = [];
   for (const profile of Object.values(AIDLC_COMPATIBILITY_PROFILES)) {
     const response = await invoke({
@@ -33,14 +42,15 @@ export async function prepareSupportedReleases({ invoke, onPrepared = () => {} }
       result.releaseId !== profile.releaseId ||
       result.sourceSha !== profile.upstreamRef ||
       result.importerRevision !== AIDLC_RELEASE_IMPORTER_REVISION ||
-      !['registered', 'already-registered'].includes(result.registration)
+      ![...PREPARED, KEPT_ON_OLDER_CLOSURE].includes(result.registration)
     ) {
       throw new Error(
         `AI-DLC ${profile.upstreamVersion} was not prepared by the deployed importer.`,
       );
     }
     prepared.push(result);
-    onPrepared(profile);
+    if (result.registration === KEPT_ON_OLDER_CLOSURE) onKept(profile, result);
+    else onPrepared(profile);
   }
   return prepared;
 }
@@ -63,6 +73,10 @@ async function main() {
           { abortSignal: AbortSignal.timeout(330_000) },
         ),
       onPrepared: (profile) => console.log(`Prepared AI-DLC ${profile.upstreamVersion}.`),
+      onKept: (profile, result) =>
+        console.warn(
+          `AI-DLC ${profile.upstreamVersion} stays on importer revision ${result.registeredImporterRevision} (${result.upgradeRefusal}). Upgrade it from the admin AI-DLC releases tab.`,
+        ),
     });
   } finally {
     client.destroy();

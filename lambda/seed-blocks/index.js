@@ -111,7 +111,13 @@ import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
-import { getRelease, isAccessDenied, registerRelease } from '../shared/release-registry.js';
+import {
+  getRelease,
+  isAccessDenied,
+  isReleaseRegistryError,
+  registerRelease,
+  upgradeReleaseClosure,
+} from '../shared/release-registry.js';
 import { parseRepositorySlug } from '../shared/aidlc-custom-source.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
@@ -563,8 +569,19 @@ const alreadyPublished = async (event) => {
   };
 };
 
+// An upgrade the registry refuses on purpose leaves the record on its older
+// closure and is reported; anything else is a broken publication and fails.
+const UPGRADE_REFUSALS = new Set([
+  'release_channel_pinned',
+  'release_revision_conflict',
+  'release_not_selectable',
+  'release_capability_unhandled',
+]);
+
 // Deployment invokes this once per official profile. Importing stays separate
-// from approval, and an existing record keeps its current pin and admin state.
+// from approval: an existing record keeps its admin state, and an older
+// closure is moved to the one just published by the same guarded upgrade an
+// admin uses, so only new intents pin it.
 const prepareRelease = async ({ event, dryRun }) => {
   if (
     event.reseed === true ||
@@ -595,7 +612,36 @@ const prepareRelease = async ({ event, dryRun }) => {
     ) {
       throw new Error('seed-blocks: registered release is inconsistent with the deployed importer');
     }
-    return { ...published, mode: 'prepareRelease', registration: 'already-registered' };
+    if (existing.importerRevision === published.importerRevision || existing.custom === true) {
+      return { ...published, mode: 'prepareRelease', registration: 'already-registered' };
+    }
+    try {
+      await upgradeReleaseClosure({
+        ddb,
+        tableName: blocksTable(),
+        s3,
+        bucket: artifactsBucket(),
+        releaseId: published.releaseId,
+        expectedRevision: existing.revision,
+        importerRevision: published.importerRevision,
+        actor: 'deployment',
+      });
+    } catch (error) {
+      if (!isReleaseRegistryError(error) || !UPGRADE_REFUSALS.has(error.code)) throw error;
+      logger.warn('registered release kept on its older closure', {
+        releaseId: published.releaseId,
+        importerRevision: existing.importerRevision,
+        code: error.code,
+      });
+      return {
+        ...published,
+        mode: 'prepareRelease',
+        registration: 'upgrade-refused',
+        upgradeRefusal: error.code,
+        registeredImporterRevision: existing.importerRevision,
+      };
+    }
+    return { ...published, mode: 'prepareRelease', registration: 'upgraded' };
   }
   const registration = await registerRelease({
     ddb,
