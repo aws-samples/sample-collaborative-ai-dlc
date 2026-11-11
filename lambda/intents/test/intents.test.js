@@ -4514,6 +4514,52 @@ describe('GET list + detail', () => {
     expect(stale.cursor).toBe(5);
   });
 
+  it('GET /outputs pages a transcript too large for one response', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const big = 'x'.repeat(1000);
+    for (let seq = 1; seq <= 9; seq += 1) {
+      seedOutput(intent.id, seq, {
+        stageInstanceId: seq % 3 === 0 ? 'si-other' : 'si-big',
+        content: `${seq}${big}`,
+      });
+    }
+    const budget = 2500;
+    vi.stubEnv('OUTPUTS_PAGE_BYTES', String(budget));
+    try {
+      const seen = [];
+      let res = JSON.parse(
+        (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-big' })).body,
+      );
+      const pages = [res];
+      while (res.more) {
+        res = JSON.parse(
+          (
+            await getOutputs(sub, projectId, intent.id, {
+              stageInstanceId: 'si-big',
+              afterSeq: String(res.cursor),
+            })
+          ).body,
+        );
+        pages.push(res);
+        if (pages.length > 20) throw new Error('paging did not finish');
+      }
+      for (const page of pages) {
+        seen.push(...page.outputs.map((o) => o.seq));
+        expect(Buffer.byteLength(JSON.stringify(JSON.stringify(page.outputs)))).toBeLessThan(
+          budget + 200,
+        );
+      }
+      expect(pages.length).toBeGreaterThan(2);
+      expect(pages[0].cursor).toBe(pages[0].outputs.at(-1).seq);
+      expect([...new Set(seen)]).toEqual([1, 2, 4, 5, 7, 8]);
+      expect(pages.at(-1).more).toBeUndefined();
+    } finally {
+      vi.stubEnv('OUTPUTS_PAGE_BYTES', undefined);
+    }
+  });
+
   it('GET /outputs 404s across projects (membership enforced)', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

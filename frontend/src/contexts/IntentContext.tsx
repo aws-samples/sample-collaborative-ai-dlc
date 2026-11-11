@@ -661,33 +661,38 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
       }
       const forIntent = intentId;
-      intentsService
-        .outputs(projectId, intentId, {
-          stageInstanceId: key,
-          ...(initial ? {} : { afterSeq: pane.cursor }),
-        })
-        .then(({ outputs: durable, cursor }) => {
-          if (activeIntentRef.current !== forIntent) return;
-          const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
-          durable.forEach((row) => bySeq.set(row.seq, row));
-          pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
-          pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
-          // A server without the cursor resumes from the pane's own last chunk.
-          // Catch-ups can overlap, so a late older response must not move the
-          // cursor back.
-          pane.cursor = Math.max(
-            pane.cursor,
-            typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
-          );
-          pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
-          pane.status = 'seeded';
-          renderPane(key);
-        })
-        .catch(() => {
-          if (activeIntentRef.current !== forIntent) return;
-          if (initial) pane.status = 'unseeded';
-          setOutputVersion((n) => n + 1);
-        });
+      // A long transcript arrives in pages: follow `more` while the cursor moves.
+      const fetchPage = (first: boolean): Promise<void> =>
+        intentsService
+          .outputs(projectId, forIntent, {
+            stageInstanceId: key,
+            ...(first && initial ? {} : { afterSeq: pane.cursor }),
+          })
+          .then(({ outputs: durable, cursor, more }): Promise<void> | undefined => {
+            if (activeIntentRef.current !== forIntent) return;
+            const before = first && initial ? -1 : pane.cursor;
+            const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
+            durable.forEach((row) => bySeq.set(row.seq, row));
+            pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
+            pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+            // A server without the cursor resumes from the pane's own last chunk.
+            // Catch-ups can overlap, so a late older response must not move the
+            // cursor back.
+            pane.cursor = Math.max(
+              pane.cursor,
+              typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
+            );
+            pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
+            pane.status = 'seeded';
+            renderPane(key);
+            if (more && pane.cursor > before) return fetchPage(false);
+            return undefined;
+          });
+      fetchPage(true).catch(() => {
+        if (activeIntentRef.current !== forIntent) return;
+        if (initial && pane.status === 'loading') pane.status = 'unseeded';
+        setOutputVersion((n) => n + 1);
+      });
     },
     [projectId, intentId, paneOf, renderPane],
   );
