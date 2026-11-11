@@ -1,6 +1,13 @@
 import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  TransactWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { createNativeExecutionStore, nativeExecutionKey } from '../execution-store.js';
 import { nativeRuntimeBindingKey } from '../../shared/native-runtime-binding.js';
 import { canonicalJson } from '../policies.js';
@@ -20,6 +27,10 @@ import {
 
 const clone = (v) => structuredClone(v);
 const hash = (v) => createHash('sha256').update(v).digest('hex');
+// Bundling may rename a local constructor. Separately installed production
+// commands retain their AWS operation name but have a different prototype.
+const isCommand = (command, Type, operation) =>
+  command instanceof Type || command.constructor.name === operation;
 export const executionFixture = ({
   harness = 'codex',
   model = 'openai.example',
@@ -100,10 +111,8 @@ export const executionFixture = ({
   const ddb = {
     async send(command) {
       await hooks.before?.(command);
-      // Production image imports retain their own SDK constructors.
-      const operation = command.constructor.name;
-      if (operation === 'GetCommand') return { Item: read(command.input.Key) };
-      if (operation === 'PutCommand') {
+      if (isCommand(command, GetCommand, 'GetCommand')) return { Item: read(command.input.Key) };
+      if (isCommand(command, PutCommand, 'PutCommand')) {
         if (!condition(command.input))
           throw Object.assign(new Error('Conditional write failed'), {
             name: 'ConditionalCheckFailedException',
@@ -112,8 +121,9 @@ export const executionFixture = ({
         await hooks.after?.(command);
         return {};
       }
-      if (operation === 'ScanCommand') return { Items: [...rows.values()].map(clone) };
-      if (operation === 'QueryCommand') {
+      if (isCommand(command, ScanCommand, 'ScanCommand'))
+        return { Items: [...rows.values()].map(clone) };
+      if (isCommand(command, QueryCommand, 'QueryCommand')) {
         const values = command.input.ExpressionAttributeValues;
         const matching = [...rows.values()]
           .filter(
@@ -134,7 +144,8 @@ export const executionFixture = ({
             : {}),
         };
       }
-      if (operation !== 'TransactWriteCommand') throw new Error('Unexpected authority operation');
+      if (!isCommand(command, TransactWriteCommand, 'TransactWriteCommand'))
+        throw new Error('Unexpected authority operation');
       const operations = command.input.TransactItems.map((v) => v.Put ?? v.ConditionCheck);
       if (!operations.every(condition))
         throw Object.assign(new Error('conditional conflict'), {

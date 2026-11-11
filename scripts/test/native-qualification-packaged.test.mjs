@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, writeFile, readFile, readlink, realpath, rm } from 'nod
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { qualificationOptions, installedDockerArgs } from '../native-qualification-options.mjs';
 import { stagePackagedQualification } from '../native-qualification-packaged.mjs';
 import {
@@ -12,6 +13,24 @@ import {
   localProviderInvocation,
 } from '../native-qualification-provider.mjs';
 import { prepareNativeTransportInstructions } from '../../lambda/agentcore/native/transport-instructions.js';
+
+test('the actual bundled controller adapter retains authoritative Start through its AWS transports', async () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const staged = await stagePackagedQualification(root);
+  try {
+    const adapter = await import(
+      pathToFileURL(join(staged.directory, 'controller-qualification.mjs'))
+    );
+    const fixture = adapter.executionFixture();
+    await fixture.start();
+    assert.equal(
+      fixture.row().configuration.repository.commit,
+      fixture.configuration.repository.commit,
+    );
+  } finally {
+    await rm(staged.directory, { recursive: true, force: true });
+  }
+});
 
 test('the offline OpenCode provider preserves the production instruction channel', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'native-provider-instructions-')));
