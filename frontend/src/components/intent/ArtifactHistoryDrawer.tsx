@@ -95,6 +95,10 @@ function ArtifactHistoryDrawerContent({
       ? history?.current
       : history?.versions.find((version) => version.versionId === selectedId);
   const content = selectedId === 'current' ? artifact.content : selectedVersion?.content;
+  const currentUnavailable =
+    selectedId === 'current' ? (artifact.contentUnavailable ?? null) : null;
+  const currentLoading =
+    selectedId === 'current' && artifact.content === undefined && !currentUnavailable;
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -146,7 +150,7 @@ function ArtifactHistoryDrawerContent({
           </ScrollArea>
           <ScrollArea>
             <div className="px-5 py-4">
-              {loading && !content && (
+              {(loading || currentLoading) && !content && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                   Loading version
@@ -182,7 +186,16 @@ function ArtifactHistoryDrawerContent({
                   />
                 </div>
               ) : (
-                !loading && <p className="text-sm text-muted-foreground">No content recorded.</p>
+                !loading &&
+                !currentLoading && (
+                  <p className="text-sm text-muted-foreground">
+                    {currentUnavailable === 'too_large'
+                      ? 'This version is too large to display here.'
+                      : currentUnavailable === 'error'
+                        ? "This version couldn't be loaded. Reload the intent to try again."
+                        : 'No content recorded.'}
+                  </p>
+                )
               )}
             </div>
           </ScrollArea>

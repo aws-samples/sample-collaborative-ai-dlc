@@ -58,17 +58,21 @@ export function ArtifactContentEditor({
       },
     });
 
-  // Seed the shared doc with the persisted content once synced (first editor
-  // wins; later joiners see the live state).
+  // Seed the shared doc with the persisted content once synced and the body
+  // has loaded (first editor wins; later joiners see the live state). A body
+  // that is too large or failed to load is never seeded: saving an empty doc
+  // would overwrite the real body.
+  const unavailable = artifact.contentUnavailable ?? null;
+  const contentLoaded = artifact.content !== undefined && !unavailable;
   const seededRef = useRef(false);
   useEffect(() => {
     seededRef.current = false;
   }, [artifact.id, artifact.collaborationEpoch]);
   useEffect(() => {
-    if (!synced || seededRef.current) return;
+    if (!synced || !contentLoaded || seededRef.current) return;
     seededRef.current = true;
     initContent(artifact.content ?? '');
-  }, [synced, initContent, artifact.content]);
+  }, [synced, contentLoaded, initContent, artifact.content]);
 
   const finish = async () => {
     setFinishing(true);
@@ -89,17 +93,49 @@ export function ArtifactContentEditor({
         yText={contentText}
         awareness={awareness}
         value={content}
-        disabled={!synced}
-        placeholder={synced ? 'Document content (markdown)…' : 'Connecting…'}
+        disabled={!synced || !contentLoaded}
+        placeholder={
+          unavailable
+            ? 'Editing is unavailable'
+            : !synced
+              ? 'Connecting…'
+              : contentLoaded
+                ? 'Document content (markdown)…'
+                : 'Loading…'
+        }
         className="min-h-64 rounded-md border bg-background p-3 font-mono text-xs leading-relaxed"
         rows={18}
       />
       <div className="flex items-center gap-2">
-        <Button size="sm" className="h-7 gap-1.5" onClick={finish} disabled={finishing || !synced}>
+        <Button
+          size="sm"
+          className="h-7 gap-1.5"
+          onClick={finish}
+          disabled={finishing || !synced || !contentLoaded}
+        >
           {finishing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
           Done
         </Button>
         {!synced && <span className="text-[11px] text-muted-foreground">Connecting…</span>}
+        {unavailable === 'too_large' && (
+          <span className="text-[11px] text-destructive">
+            This document is too large to load here, so it can't be edited.
+          </span>
+        )}
+        {unavailable === 'error' && (
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive">
+            The document couldn't be loaded.
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => void reload()}
+            >
+              Retry
+            </Button>
+          </span>
+        )}
         {remoteUsers.size > 0 && (
           <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
             <Users className="h-3 w-3" />
