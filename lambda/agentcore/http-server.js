@@ -147,31 +147,29 @@ export const dispatchInvocation = async ({
   busy?.enter();
   let credentialSession = null;
   try {
-    // Credential preparation reads the execution's META, so it runs under the
-    // invocation's grant like the handler does.
-    const context =
-      prepareInvocation && definition.agentAuth
-        ? await runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
-            prepareInvocation(payload, definition.agentAuth),
-          )
-        : {};
-    const handlerPayload = { ...payload };
-    delete handlerPayload.agentCredentialGrant;
-    delete handlerPayload.gatewayGrant;
-    credentialSession = context.credentialSession ?? null;
-    delete handlerPayload.sandbox;
-    delete handlerPayload.agentSandbox;
-    const operation = () =>
-      runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
+    // Credential preparation and the sandbox policy both read the execution's
+    // META, so they run under the invocation's grant like the handler does.
+    const result = await runWithGatewayGrant(payload.gatewayGrant ?? null, async () => {
+      const context =
+        prepareInvocation && definition.agentAuth
+          ? await prepareInvocation(payload, definition.agentAuth)
+          : {};
+      const handlerPayload = { ...payload };
+      delete handlerPayload.agentCredentialGrant;
+      delete handlerPayload.gatewayGrant;
+      credentialSession = context.credentialSession ?? null;
+      delete handlerPayload.sandbox;
+      delete handlerPayload.agentSandbox;
+      const operation = () =>
         credentialSession
           ? credentialSession.run(() => handler(handlerPayload, context))
-          : handler(handlerPayload, context),
-      );
-    const sandbox =
-      prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
-        ? await prepareSandbox(payload)
-        : null;
-    const result = sandbox ? await withSandbox(sandbox, operation) : await operation();
+          : handler(handlerPayload, context);
+      const sandbox =
+        prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
+          ? await prepareSandbox(payload)
+          : null;
+      return sandbox ? withSandbox(sandbox, operation) : operation();
+    });
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -316,6 +314,22 @@ export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
   const access = blobs ?? blobAccessFor({ env });
   return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
 };
+
+// The invocation's SRT policy: the execution's captured policy, or the current
+// settings for drafts and standalone operations.
+export const createSandboxPreparation =
+  ({ store, readSettings }) =>
+  async (payload) => {
+    const sandbox = await resolveInvocationSandbox({ payload, store, readSettings });
+    if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
+    logger.info('invocation sandbox configuration', {
+      command: payload.command,
+      executionId: payload.executionId || payload.intentId,
+      sandboxEnabled: sandbox.enabled,
+      sandboxVersion: sandbox.version ?? null,
+    });
+    return sandbox;
+  };
 
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
@@ -606,21 +620,10 @@ const main = async () => {
     handlers,
     busy,
     prepareInvocation: invocationContext,
-    prepareSandbox: async (payload) => {
-      const sandbox = await resolveInvocationSandbox({
-        payload,
-        store,
-        readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
-      });
-      if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
-      logger.info('invocation sandbox configuration', {
-        command: payload.command,
-        executionId: payload.executionId || payload.intentId,
-        sandboxEnabled: sandbox.enabled,
-        sandboxVersion: sandbox.version ?? null,
-      });
-      return sandbox;
-    },
+    prepareSandbox: createSandboxPreparation({
+      store,
+      readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+    }),
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
 };

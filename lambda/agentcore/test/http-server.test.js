@@ -5,10 +5,14 @@ import {
   createServer,
   processStoreFor,
   graphAccessFor,
+  createSandboxPreparation,
 } from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 import { currentSandbox, DEFAULT_SANDBOX_CONFIG } from '../sandbox/launcher.js';
+import { createRemoteProcessStore } from '../engine-data-client.js';
+import { currentGatewayGrant } from '../mcp/gateway-context.js';
+import { engineDataOp } from '../../shared/engine-data-ops.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -174,7 +178,6 @@ describe('dispatchInvocation', () => {
   });
 
   it('keeps the gateway grant out of command payloads but available to the invocation', async () => {
-    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
     let seen = null;
     const runStage = vi.fn(async (payload) => {
       await new Promise((resolve) => setTimeout(resolve, 1));
@@ -192,7 +195,6 @@ describe('dispatchInvocation', () => {
   });
 
   it('relays an execution grant to engine-only commands and their background work', async () => {
-    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
     const prepareInvocation = vi.fn();
     let background;
     const handlerFor = (name) =>
@@ -221,7 +223,6 @@ describe('dispatchInvocation', () => {
   });
 
   it('prepares credentials under the invocation grant', async () => {
-    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
     let seenByPrepare = null;
     await dispatchInvocation({
       payload: { command: 'run-stage', executionId: 'e1', gatewayGrant: 'gw-grant' },
@@ -532,7 +533,6 @@ describe('processStoreFor', () => {
   });
 
   it('routes the store to engine-data under the current grant', async () => {
-    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
     const store = processStoreFor({
       ...deps,
       env: { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' },
@@ -559,7 +559,6 @@ describe('graphAccessFor', () => {
   });
 
   it('routes engine graph operations to engine-data and trips any direct graph open', async () => {
-    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
     const remote = vi.fn();
     const createRemote = vi.fn(() => remote);
     const access = graphAccessFor({ env: REMOTE_ENV, openGraph, createRemote });
@@ -577,5 +576,99 @@ describe('graphAccessFor', () => {
     });
     await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
     expect(openGraph).not.toHaveBeenCalled();
+  });
+});
+
+// The production wiring: the real SRT policy resolver over the engine-data
+// process store, with only the Lambda transport replaced. Like engine-data, the
+// fake endpoint refuses any call that does not carry the invocation's grant.
+describe('dispatchInvocation with engine-data', () => {
+  const GRANT = 'gw-grant';
+  const ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+  const executions = {
+    off: { executionId: 'off', projectId: 'p1', status: 'RUNNING', agentSandbox: null },
+    on: {
+      executionId: 'on',
+      projectId: 'p1',
+      status: 'RUNNING',
+      agentSandbox: { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 4 },
+    },
+  };
+
+  const engineDataWiring = () => {
+    const calls = [];
+    const invoke = vi.fn(async ({ op, args, grant }) => {
+      calls.push({ op, grant });
+      if (grant !== GRANT) {
+        return { error: { name: 'EngineDataError', code: 'ENGINE_DATA_GRANT_INVALID' } };
+      }
+      if (op === engineDataOp('getExecution')) return { ok: true, result: executions[args[0]] };
+      return { error: { name: 'EngineDataError', message: `unexpected ${op}` } };
+    });
+    const store = processStoreFor({
+      env: ENV,
+      createRemote: (options) => createRemoteProcessStore({ ...options, invoke }),
+    });
+    const readSettings = vi.fn(async () => {
+      throw new Error('a RUNNING execution keeps its captured policy');
+    });
+    const release = vi.fn(async () => {});
+    const prepareInvocation = vi.fn(async (payload) => {
+      await store.getExecution(payload.executionId, { consistentRead: true });
+      return { credentialSession: { run: (fn) => fn(), release } };
+    });
+    return {
+      calls,
+      release,
+      dispatch: (payload, runStageStart) =>
+        dispatchInvocation({
+          payload: { command: 'run-stage-start', projectId: 'p1', ...payload },
+          handlers: { runStageStart },
+          prepareInvocation,
+          prepareSandbox: createSandboxPreparation({ store, readSettings }),
+        }),
+    };
+  };
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ])('starts a stage with SRT %s', async (executionId, enabled) => {
+    const { calls, release, dispatch } = engineDataWiring();
+    const seen = {};
+    const result = await dispatch({ executionId, gatewayGrant: GRANT }, async () => {
+      seen.grant = currentGatewayGrant();
+      seen.sandbox = currentSandbox();
+      return { ok: true, state: 'ACCEPTED' };
+    });
+    expect(result).toMatchObject({ statusCode: 200, body: { ok: true, state: 'ACCEPTED' } });
+    expect(seen.grant).toBe(GRANT);
+    expect(seen.sandbox.enabled).toBe(enabled);
+    expect(calls).toEqual([
+      { op: engineDataOp('getExecution'), grant: GRANT },
+      { op: engineDataOp('getExecution'), grant: GRANT },
+    ]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(currentGatewayGrant()).toBeNull();
+  });
+
+  it('refuses an invocation without a grant before reaching engine-data', async () => {
+    const { calls, dispatch } = engineDataWiring();
+    const runStageStart = vi.fn();
+    const result = await dispatch({ executionId: 'off' }, runStageStart);
+    expect(result.statusCode).toBe(500);
+    expect(result.body.error).toBe('No engine data grant for this invocation');
+    expect(calls).toEqual([]);
+    expect(runStageStart).not.toHaveBeenCalled();
+  });
+
+  it('releases the credentials and drops the grant when the handler throws', async () => {
+    const { release, dispatch } = engineDataWiring();
+    const result = await dispatch({ executionId: 'on', gatewayGrant: GRANT }, async () => {
+      throw new Error('boom');
+    });
+    expect(result).toMatchObject({ statusCode: 500, body: { error: 'boom' } });
+    expect(release).toHaveBeenCalledOnce();
+    expect(currentGatewayGrant()).toBeNull();
   });
 });
