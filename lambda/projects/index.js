@@ -68,7 +68,6 @@ import {
 import {
   deleteSpaceMemberships,
   listUserSpaces,
-  normalizeMembershipRole,
   saveMembershipChange,
 } from '../shared/space-membership.js';
 
@@ -82,6 +81,19 @@ const sessionCleanupStore = createSessionCleanupStore({
   tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
 });
 const store = createProcessStore({ ddb });
+
+const restoreProjectVertex = async (g, snapshot) => {
+  const entries =
+    snapshot instanceof Map ? [...snapshot.entries()] : Object.entries(snapshot || {});
+  let restore = g.addV('Project');
+  for (const [key, rawValue] of entries) {
+    const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+    if (value !== undefined && value !== null) {
+      restore = restore.property(cardinality.single, key, value);
+    }
+  }
+  await restore.next();
+};
 
 // Structured logger (Powertools). serviceName defaults to 'projects' and is
 // overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
@@ -1482,34 +1494,14 @@ export const handler = async (event, context) => {
 
         if (!userId) return response(401, { error: 'Unauthorized' });
         const memberships = [];
-        if (process.env.AIDLC_TEST_MEMBERSHIP_SOURCE === 'neptune') {
-          const seededMemberships = await g
-            .V()
-            .has('User', 'id', userId)
-            .inE('HAS_MEMBER')
-            .as('membership')
-            .outV()
-            .hasLabel('Project')
-            .project('spaceId', 'membershipRole')
-            .by('id')
-            .by(__.select('membership').values('role'))
-            .toList();
-          memberships.push(
-            ...seededMemberships.map((item) => ({
-              spaceId: getVal(item, 'spaceId'),
-              membershipRole: normalizeMembershipRole(getVal(item, 'membershipRole')),
-            })),
-          );
-        } else {
-          let membershipToken;
-          do {
-            const page = await listUserSpaces(ddb, userId, {
-              token: membershipToken,
-            });
-            memberships.push(...page.items);
-            membershipToken = page.nextToken;
-          } while (membershipToken);
-        }
+        let membershipToken;
+        do {
+          const page = await listUserSpaces(ddb, userId, {
+            token: membershipToken,
+          });
+          memberships.push(...page.items);
+          membershipToken = page.nextToken;
+        } while (membershipToken);
         const settled = await Promise.allSettled(
           memberships.map(async (membership) => {
             const pid = membership.spaceId || membership.pk.slice('SPACE#'.length);
@@ -2042,6 +2034,13 @@ export const handler = async (event, context) => {
         // and the delete is simply retryable.
         {
           const actor = userEmail || userId;
+          const projectSnapshotResult = await g
+            .V()
+            .has('Project', 'id', projectId)
+            .valueMap()
+            .next();
+          if (projectSnapshotResult.done) return response(404, { error: 'Project not found' });
+          const projectSnapshot = projectSnapshotResult.value;
           const legacySprintIds = await g
             .V()
             .has('Project', 'id', projectId)
@@ -2150,11 +2149,17 @@ export const handler = async (event, context) => {
           });
 
           // Drop the graph project only after the retryable membership cleanup
-          // has succeeded. Remove the preserved owner last.
+          // has succeeded. If removing the preserved owner fails, restore the
+          // Project vertex so the dashboard and normal UI can retry deletion.
           await g.V().has('Project', 'id', projectId).drop().next();
-          await deleteSpaceMemberships(ddb, projectId, {
-            preserveUserId: userId,
-          });
+          try {
+            await deleteSpaceMemberships(ddb, projectId, {
+              preserveUserId: userId,
+            });
+          } catch (error) {
+            await restoreProjectVertex(g, projectSnapshot);
+            throw error;
+          }
           logger.info('Project deleted', {
             projectId,
             actor,

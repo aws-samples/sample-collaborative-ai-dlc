@@ -7,7 +7,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import {
   SSMClient,
   GetParametersCommand,
@@ -119,6 +119,18 @@ export const addSpace = async (projectId, { callerRole } = {}) => {
     .to('u')
     .property('role', callerRole)
     .next();
+  await ddb.send(
+    new PutCommand({
+      TableName: process.env.ACCESS_TABLE,
+      Item: {
+        pk: `SPACE#${projectId}`,
+        sk: `MEMBER#${CALLER_ID}`,
+        spaceId: projectId,
+        userId: CALLER_ID,
+        membershipRole: callerRole === 'admin' ? 'owner' : callerRole,
+      },
+    }),
+  );
 };
 
 export const useSettingsHarness = () => {
@@ -144,6 +156,7 @@ export const useSettingsHarness = () => {
     );
     tables.push(TableName);
     vi.stubEnv('V2_PROCESS_TABLE', TableName);
+    vi.stubEnv('ACCESS_TABLE', TableName);
     vi.stubEnv('AGENTCORE_RUNTIME_ARN', RUNTIME_ARN);
     vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', GRANT_SECRET);
     await createAgentConnectionRepository({ ddb, tableName: TableName }).initializeInventory();

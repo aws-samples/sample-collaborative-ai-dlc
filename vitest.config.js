@@ -26,7 +26,6 @@ export default defineConfig({
         setupFiles,
         env: {
           POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc',
-          AIDLC_TEST_MEMBERSHIP_SOURCE: 'neptune',
           ACCESS_TABLE: 'access-test',
           AUDIT_TABLE: 'audit-test',
         },

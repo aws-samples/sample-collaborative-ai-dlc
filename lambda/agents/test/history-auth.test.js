@@ -116,6 +116,20 @@ const seedProject = async (memberId, { executionId = `exec-${randomUUID()}` } = 
     .to('u')
     .property('role', 'owner')
     .next();
+  ddbMock
+    .on(GetCommand, {
+      TableName: 'access-test',
+      Key: { pk: `SPACE#${projectId}`, sk: `MEMBER#${memberId}` },
+      ConsistentRead: true,
+    })
+    .resolves({
+      Item: {
+        pk: `SPACE#${projectId}`,
+        sk: `MEMBER#${memberId}`,
+        userId: memberId,
+        membershipRole: 'owner',
+      },
+    });
   await g
     .V()
     .has('Project', 'id', projectId)

@@ -1,3 +1,4 @@
+import { DynamoDBClient, CreateTableCommand } from '@aws-sdk/client-dynamodb';
 import { GenericContainer, Wait } from 'testcontainers';
 
 // One DynamoDB Local container for the whole vitest run, shared across projects
@@ -20,6 +21,31 @@ export async function setup() {
   process.env.AWS_ACCESS_KEY_ID ??= 'test';
   process.env.AWS_SECRET_ACCESS_KEY ??= 'test';
   process.env.AWS_REGION ??= 'us-east-1';
+  const client = new DynamoDBClient({
+    endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
+    region: process.env.AWS_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
+  });
+  for (const TableName of ['access-test', 'audit-test']) {
+    await client.send(
+      new CreateTableCommand({
+        TableName,
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [
+          { AttributeName: 'pk', KeyType: 'HASH' },
+          { AttributeName: 'sk', KeyType: 'RANGE' },
+        ],
+        AttributeDefinitions: [
+          { AttributeName: 'pk', AttributeType: 'S' },
+          { AttributeName: 'sk', AttributeType: 'S' },
+        ],
+      }),
+    );
+  }
+  client.destroy();
 }
 
 export async function teardown() {

@@ -8,7 +8,9 @@ import {
   QueryCommand,
   ScanCommand,
   BatchWriteCommand,
+  DeleteCommand,
   GetCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -36,6 +38,7 @@ const agentcoreMock = mockClient(BedrockAgentCoreClient);
 let projectExecs = new Map(); // projectId -> [{ intentId, executionId, status, projectId }]
 let batchWrites = [];
 let environmentRegistryItems = new Map();
+let membershipItems = new Map();
 
 const installProcessTableFakes = () => {
   ddbMock.reset();
@@ -43,6 +46,19 @@ const installProcessTableFakes = () => {
   ddbMock.on(ScanCommand).resolves({ Items: [] });
   batchWrites = [];
   ddbMock.on(QueryCommand).callsFake((input) => {
+    if (input.TableName === 'access-test') {
+      const items = [...membershipItems.values()];
+      if (input.IndexName === 'by-user') {
+        return {
+          Items: items.filter(
+            (item) => item.userId === input.ExpressionAttributeValues?.[':userId'],
+          ),
+        };
+      }
+      return {
+        Items: items.filter((item) => item.pk === input.ExpressionAttributeValues?.[':pk']),
+      };
+    }
     // listProjectExecutions: GSI1 query keyed by PROJECT#<id>.
     if (input.IndexName === 'GSI1') {
       const pk = input.ExpressionAttributeValues?.[':pk'] ?? '';
@@ -58,8 +74,31 @@ const installProcessTableFakes = () => {
     return {};
   });
   ddbMock.on(GetCommand).callsFake((input) => {
+    if (input.TableName === 'access-test') {
+      const membership = membershipItems.get(`${input.Key?.pk}|${input.Key?.sk}`);
+      return membership ? { Item: membership } : {};
+    }
     const item = environmentRegistryItems.get(`${input.Key?.pk}|${input.Key?.sk}`);
     return item ? { Item: item } : {};
+  });
+  ddbMock.on(TransactWriteCommand).callsFake((input) => {
+    for (const operation of input.TransactItems || []) {
+      if (operation.Put?.TableName === 'access-test') {
+        const item = operation.Put.Item;
+        membershipItems.set(`${item.pk}|${item.sk}`, item);
+      }
+      if (operation.Delete?.TableName === 'access-test') {
+        const key = operation.Delete.Key;
+        membershipItems.delete(`${key.pk}|${key.sk}`);
+      }
+    }
+    return {};
+  });
+  ddbMock.on(DeleteCommand).callsFake((input) => {
+    if (input.TableName === 'access-test') {
+      membershipItems.delete(`${input.Key.pk}|${input.Key.sk}`);
+    }
+    return {};
   });
   lambdaMock.reset();
   agentcoreMock.reset();
@@ -164,6 +203,13 @@ const addMember = async (projectId, sub, role) => {
     .property('role', role)
     .to(gremlin.process.statics.V().has('User', 'id', sub))
     .next();
+  membershipItems.set(`SPACE#${projectId}|MEMBER#${sub}`, {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${sub}`,
+    spaceId: projectId,
+    userId: sub,
+    membershipRole: role === 'admin' ? 'owner' : role,
+  });
 };
 
 beforeEach(() => {
@@ -173,6 +219,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   projectExecs = new Map();
   environmentRegistryItems = new Map();
+  membershipItems = new Map();
   installProcessTableFakes();
 
   // S3 mock: HeadObject resolves only for keys we've marked as "uploaded";
@@ -1049,6 +1096,28 @@ describe('DELETE /projects/:id', () => {
 
     expect(res.statusCode).toBe(500);
     expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+  });
+
+  it('restores the project when final owner membership cleanup fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Retry final cleanup' });
+    ddbMock.on(DeleteCommand).rejectsOnce(new Error('membership delete failed'));
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(fetched.statusCode).toBe(200);
+    expect(JSON.parse(fetched.body).name).toBe('Retry final cleanup');
   });
 
   it('returns 403 when the caller is not the owner', async () => {

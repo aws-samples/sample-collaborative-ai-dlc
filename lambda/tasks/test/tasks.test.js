@@ -2,6 +2,7 @@ import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { seedMembership } from '../../shared/test/helpers/membership-fixture.js';
 
 const PARTITION = `t-${randomUUID()}`;
 const USER_ID = `u-${randomUUID()}`;
@@ -55,6 +56,7 @@ const seedSprint = async () => {
     .to('u')
     .property('role', 'owner')
     .next();
+  await seedMembership(projectId, USER_ID, 'owner');
   await g
     .V()
     .has('Project', 'id', projectId)

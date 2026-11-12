@@ -99,6 +99,7 @@ module "dynamodb_kms_runtime_access" {
     neptune_artifacts    = aws_iam_role.neptune_artifacts.name
     neptune_questions    = aws_iam_role.neptune_questions.name
     neptune_reader       = aws_iam_role.neptune_reader.name
+    neptune_tasks        = aws_iam_role.neptune_tasks.name
     seed_blocks          = aws_iam_role.seed_blocks.name
     source_control       = aws_iam_role.source_control.name
     trackers             = aws_iam_role.trackers.name
@@ -3380,11 +3381,10 @@ module "membership_migration_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
-    NEPTUNE_ENDPOINT                   = var.neptune_endpoint
-    ACCESS_TABLE                       = var.access_table_name
-    AUDIT_TABLE                        = var.audit_table_name
-    MEMBERSHIP_MIGRATION_BASELINE_TIME = "1970-01-01T00:00:00.000Z"
+    AWS_SDK_UA_APP_ID = var.aws_sdk_ua_app_id
+    NEPTUNE_ENDPOINT  = var.neptune_endpoint
+    ACCESS_TABLE      = var.access_table_name
+    AUDIT_TABLE       = var.audit_table_name
   }
 }
 
@@ -3404,7 +3404,6 @@ locals {
     projects       = aws_iam_role.neptune_artifacts.id
     questions      = aws_iam_role.neptune_questions.id
     source_control = aws_iam_role.source_control.id
-    tasks          = aws_iam_role.neptune_reader.id
     trackers       = aws_iam_role.trackers.id
   }
 }
@@ -3414,6 +3413,19 @@ resource "aws_iam_role_policy" "membership_read" {
 
   name = "membership-read"
   role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+      Resource = [var.access_table_arn, "${var.access_table_arn}/index/*"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "membership_tasks_read" {
+  name = "membership-read"
+  role = aws_iam_role.neptune_tasks.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

@@ -8,7 +8,6 @@ import { DynamoDBDocumentClient, GetCommand, TransactWriteCommand } from '@aws-s
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const DEFAULT_BASELINE_TIME = '1970-01-01T00:00:00.000Z';
 
 const graphValue = (row, key) => {
   const value = row instanceof Map ? row.get(key) : row?.[key];
@@ -86,11 +85,7 @@ const copyMembership = async (client, source, now) => {
   }
 };
 
-const migrateMemberships = async ({
-  client,
-  sources,
-  now = process.env.MEMBERSHIP_MIGRATION_BASELINE_TIME || DEFAULT_BASELINE_TIME,
-}) => {
+const migrateMemberships = async ({ client, sources, now = new Date().toISOString() }) => {
   let copied = 0;
   let preserved = 0;
   for (const source of sources) {
