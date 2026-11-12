@@ -107,7 +107,18 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
-import { fetchCoreFiles } from '../shared/repo-fetch.js';
+import {
+  MAX_REPO_FILES,
+  MAX_REPO_RETAINED_BYTES,
+  fetchCoreFiles,
+  fetchRepoFiles,
+} from '../shared/repo-fetch.js';
+import { MAX_DISTRIBUTION_BYTES, MAX_DISTRIBUTION_FILES } from '../shared/distribution-archive.js';
+import {
+  NATIVE_DISTRIBUTION_HARNESSES,
+  publishReleaseDistributions,
+  splitReleaseDistributions,
+} from '../shared/release-distributions.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
@@ -448,9 +459,39 @@ const importRelease = async ({ event, dryRun, reseed }) => {
     }
   }
 
-  const files = source
-    ? await fetchCoreFiles(profile.upstreamRef, source)
-    : await fetchCoreFiles(profile.upstreamRef);
+  // A custom fork may also ship native harness distributions (`dist/<harness>/`)
+  // for the native export, which cannot fetch them from the official repository
+  // at the fork's commit. Read them in the same archive download as `core/` (a
+  // second download of the same commit can hit the source's rate limit), and
+  // store them beside the closure after it is published. They are not part of
+  // the closure, so its digest and compatibility record are unchanged.
+  let files;
+  let distributionFiles = new Map();
+  if (source) {
+    const fetched = await fetchRepoFiles(profile.upstreamRef, {
+      ...source,
+      prefixes: ['core/', ...NATIVE_DISTRIBUTION_HARNESSES.map((harness) => `dist/${harness}/`)],
+      maxFiles: MAX_REPO_FILES + NATIVE_DISTRIBUTION_HARNESSES.length * MAX_DISTRIBUTION_FILES,
+      maxRetainedBytes:
+        MAX_REPO_RETAINED_BYTES + NATIVE_DISTRIBUTION_HARNESSES.length * MAX_DISTRIBUTION_BYTES,
+    });
+    files = new Map(
+      [...fetched]
+        .filter(([path]) => path.startsWith('core/'))
+        .map(([path, body]) => [path, body.toString('utf8')]),
+    );
+    if (files.size === 0) {
+      throw new Error(
+        `seed-blocks: ${profile.sourceRepository} has no core/ files at ${profile.upstreamRef}`,
+      );
+    }
+    distributionFiles = new Map([...fetched].filter(([path]) => path.startsWith('dist/')));
+  } else {
+    files = await fetchCoreFiles(profile.upstreamRef);
+  }
+  const distributionHarnesses = [...splitReleaseDistributions(distributionFiles)]
+    .map(([harness, harnessFiles]) => ({ harness, files: harnessFiles.size }))
+    .toSorted((a, b) => a.harness.localeCompare(b.harness));
   const bundle = buildReleaseBundle({ profile, files });
   const { manifest, objects } = bundle;
   const summary = {
@@ -470,6 +511,7 @@ const importRelease = async ({ event, dryRun, reseed }) => {
     objectCount: objects.length,
     runtimeFileCount: manifest.runtimeFiles.length,
     compatibility: manifest.compatibility,
+    distributions: distributionHarnesses,
   };
 
   if (dryRun) {
@@ -478,8 +520,21 @@ const importRelease = async ({ event, dryRun, reseed }) => {
   }
 
   const published = await publishReleaseBundle({ s3, bucket: artifactsBucket(), bundle });
-  logger.info('seed-blocks importRelease result', { ...summary, status: published.status });
-  return { ...summary, status: published.status };
+  const distributions =
+    distributionHarnesses.length > 0
+      ? await publishReleaseDistributions({
+          s3,
+          bucket: artifactsBucket(),
+          keyArgs: releaseKeyArgs(manifest),
+          files: distributionFiles,
+        })
+      : [];
+  logger.info('seed-blocks importRelease result', {
+    ...summary,
+    status: published.status,
+    distributions,
+  });
+  return { ...summary, status: published.status, distributions };
 };
 
 // The current importer's closure for an official profile, when a previous

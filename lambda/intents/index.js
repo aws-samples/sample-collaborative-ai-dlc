@@ -129,6 +129,7 @@ import {
 import { AIDLC_RELEASE_IMPORTER_REVISION, readReleaseManifest } from '../shared/aidlc-release.js';
 import { blockPk, versionSk } from '../shared/blocks.js';
 import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
+import { resolveNativeExportSource } from './native-export-source.js';
 import {
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
@@ -157,6 +158,7 @@ import {
   createNativeExport,
   EXPORT_MISCONFIGURED,
   EXPORT_SOURCE_UNAVAILABLE,
+  loadReleaseDistribution,
 } from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
@@ -2135,18 +2137,29 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
     };
     const projection = buildProjection(records, artifactRows, customRules);
     const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
-    const legacyRefWarning = meta.aidlcRepoRef
-      ? []
-      : [
-          'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
-        ];
-    const upstreamRef = meta.aidlcRepoRef || (await resolveAidlcRepoRef(AIDLC_REPO_REF()));
+    const exportSource = await resolveNativeExportSource({
+      meta,
+      harness,
+      deploymentRef: () => resolveAidlcRepoRef(AIDLC_REPO_REF()),
+      readManifest: (args) => readReleaseManifest({ s3, bucket: ARTIFACTS_BUCKET(), ...args }),
+      loadReleaseDistribution: (args) =>
+        loadReleaseDistribution({ s3, bucket: ARTIFACTS_BUCKET(), ...args }),
+    });
+    if (!exportSource) {
+      return response(409, {
+        error:
+          'This intent runs a custom AI-DLC release that ships no distribution for this harness and whose base AI-DLC version is unknown, so it cannot be exported',
+        code: 'export_custom_release_base_unknown',
+      });
+    }
     const exported = await createNativeExport({
       s3,
       bucket: ARTIFACTS_BUCKET(),
-      upstreamRef,
+      upstreamRef: exportSource.upstreamRef,
       harness,
-      warnings: legacyRefWarning,
+      warnings: exportSource.warnings,
+      omitStagesNotInDistribution: exportSource.omitStagesNotInDistribution,
+      preloadedDistribution: exportSource.preloadedDistribution,
       projection,
       sourceCheckpoint: checkpoint
         ? {

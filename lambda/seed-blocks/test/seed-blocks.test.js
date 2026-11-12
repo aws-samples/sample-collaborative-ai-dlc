@@ -17,7 +17,7 @@ import {
   AIDLC_COMPATIBILITY_PROFILES,
   customProfile,
 } from '../../shared/aidlc-compatibility-profiles.js';
-import { fetchCoreFiles } from '../../shared/repo-fetch.js';
+import { fetchCoreFiles, fetchRepoFiles } from '../../shared/repo-fetch.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
 const { registerReleaseMock, getReleaseMock, upgradeReleaseClosureMock } = vi.hoisted(() => ({
@@ -31,9 +31,32 @@ const ARTIFACTS_BUCKET = 'artifacts-test';
 const REF = 'a'.repeat(40);
 
 // Mock the repo fetch so the seed reads the fixture tree, not the network.
-vi.mock('../../shared/repo-fetch.js', () => ({
-  fetchCoreFiles: vi.fn(async () => CORE_FILES),
-}));
+// A custom import reads core/ and dist/<harness>/ in one download through
+// fetchRepoFiles. The double serves core/ from the fetchCoreFiles mock (called
+// with the same source, minus the fetch limits, so a test can configure and
+// assert one function) and dist/ from `forkDist.files`.
+const forkDist = vi.hoisted(() => ({ files: new Map() }));
+vi.mock('../../shared/repo-fetch.js', () => {
+  const coreFilesMock = vi.fn(async () => CORE_FILES);
+  return {
+    MAX_REPO_FILES: 5_000,
+    MAX_REPO_RETAINED_BYTES: 50 * 1024 * 1024,
+    fetchCoreFiles: coreFilesMock,
+    fetchRepoFiles: vi.fn(async (ref, options) => {
+      const {
+        prefixes: _prefixes,
+        maxFiles: _maxFiles,
+        maxRetainedBytes: _bytes,
+        ...source
+      } = options;
+      const core = await coreFilesMock(ref, source);
+      return new Map([
+        ...[...core].map(([path, body]) => [path, Buffer.from(body)]),
+        ...forkDist.files,
+      ]);
+    }),
+  };
+});
 vi.mock('../../shared/release-registry.js', async (importOriginal) => ({
   isAccessDenied: (await importOriginal()).isAccessDenied,
   isReleaseRegistryError: (await importOriginal()).isReleaseRegistryError,
@@ -759,6 +782,7 @@ describe('seed-blocks importRelease custom mode', () => {
 
   beforeEach(() => {
     fetchCoreFiles.mockImplementation(async () => releaseFiles());
+    forkDist.files = new Map();
   });
 
   it('dry-run summarises the fork as import-only T0 without writing anything', async () => {
@@ -809,6 +833,45 @@ describe('seed-blocks importRelease custom mode', () => {
         `aidlc-releases/v1/${FORK_SHA}/i${AIDLC_RELEASE_IMPORTER_REVISION}/manifest.json`,
       ),
     ).toBe(false);
+  });
+
+  it('reads core/ and the native distributions in one download of the fork', async () => {
+    await handler({ importRelease: true, custom: custom(), dryRun: true });
+    expect(fetchRepoFiles).toHaveBeenLastCalledWith(
+      FORK_SHA,
+      expect.objectContaining({
+        owner: 'acme',
+        repo: 'aidlc-fork',
+        prefixes: expect.arrayContaining(['core/', 'dist/kiro-ide/', 'dist/kiro/', 'dist/claude/']),
+      }),
+    );
+  });
+
+  it('stores the native distributions a fork ships beside its closure, outside it', async () => {
+    const without = await handler({ importRelease: true, custom: custom(), dryRun: true });
+    expect(without.distributions).toEqual([]);
+    forkDist.files = new Map([
+      ['dist/kiro/.kiro/tools/data/harness.json', Buffer.from('{"name":"kiro"}')],
+      ['dist/claude/.claude/tools/data/harness.json', Buffer.from('{"name":"claude"}')],
+    ]);
+    const dry = await handler({ importRelease: true, custom: custom(), dryRun: true });
+    expect(dry.distributions).toEqual([
+      { harness: 'claude', files: 1 },
+      { harness: 'kiro', files: 1 },
+    ]);
+    expect(s3Store.size).toBe(0);
+    const result = await handler({ importRelease: true, custom: custom() });
+    expect(result.status).toBe('published');
+    expect(result.distributions).toEqual([
+      { harness: 'claude', status: 'published', files: 1 },
+      { harness: 'kiro', status: 'published', files: 1 },
+    ]);
+    for (const harness of ['claude', 'kiro']) {
+      expect(s3Store.has(`${forkPrefix}/dist/${harness}.tar.gz`)).toBe(true);
+      expect(s3Store.has(`${forkPrefix}/dist/${harness}.manifest.json`)).toBe(true);
+    }
+    // Not part of the closure: the digest is the one the fork gets without them.
+    expect(result.closureDigest).toBe(without.closureDigest);
   });
 
   it('is idempotent for the same fork closure', async () => {

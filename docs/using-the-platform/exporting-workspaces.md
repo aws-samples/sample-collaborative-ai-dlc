@@ -75,12 +75,22 @@ The download URL is short-lived and expires after 15 minutes. Create another exp
 
 Read any warnings shown after the download. They can identify a legacy intent that did not pin its methodology revision or an older AI-DLC runtime that needs an explicit construction-unit continuation instruction.
 
+### Intents on a custom fork release
+
+An intent pinned to a [custom fork release](../concepts/aidlc-release-compatibility.md) runs the fork's methodology. The official AI-DLC repository has no native distribution at the fork's commit, so the export uses the fork's own:
+
+- **The fork ships the harness.** If the fork carries a native distribution for the selected harness at `dist/<harness>/` (for example `dist/kiro-ide/`), the export uses it. The import stores it beside the release, so the export needs no access to the fork's repository. The workspace then matches the intent as configured: the fork's stages, agents, knowledge, rules and sensors.
+- **The fork doesn't ship it.** The export uses the official distribution of the release the fork is based on, the base profile it was registered with, and the download says so in a warning. Anything the fork adds or changes is not in the workspace. A stage only the fork defines is left out and named in a warning. If that stage already has recorded work, the export is refused, because the official distribution cannot resume it.
+
+A release imported before distributions were captured behaves as if the fork shipped none. Importing the same commit again stores its distributions without changing the release.
+
 An export may be unavailable when:
 
 - The intent is still a draft or has not started.
 - A running intent has no completed checkpoint yet.
 - The workflow used incompatible edited methodology blocks.
 - The execution contains stages from different AI-DLC methodology revisions.
+- The intent runs a custom fork release that ships no distribution for the selected harness, and its base AI-DLC release cannot be determined or a stage only the fork defines already has recorded work.
 - The intent changed while a parked-state export was being prepared. Retry to export a consistent snapshot.
 
 Exporting does not stop, cancel, or otherwise modify the collaborative intent.

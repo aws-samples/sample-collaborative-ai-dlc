@@ -90,6 +90,7 @@ vi.mock('../native-export.js', () => ({
   createNativeExport: createNativeExportSpy,
   EXPORT_SOURCE_UNAVAILABLE: 'export_source_unavailable',
   EXPORT_MISCONFIGURED: 'export_misconfigured',
+  loadReleaseDistribution: vi.fn(async () => null),
 }));
 
 const PARTITION = `t-${randomUUID()}`;

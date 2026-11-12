@@ -10,6 +10,7 @@ import {
   detectConstructionCapabilities,
   detectWorkspaceLayout,
   loadDistribution,
+  loadReleaseDistribution,
   loadCustomRules,
   registerNativeScope,
   resolveRulesDir,
@@ -18,6 +19,7 @@ import {
   workspaceSyncCommand,
 } from '../native-export.js';
 
+import { publishReleaseDistributions } from '../../shared/release-distributions.js';
 vi.mock('../../shared/repo-fetch.js', () => ({
   fetchRepoFiles: vi.fn(),
 }));
@@ -153,6 +155,87 @@ describe('native workflow export', () => {
     expect(result.files.get('AGENTS.md')).toEqual(body);
     expect(result.workspaceLayout).toBe('spaces');
     expect(s3.send).toHaveBeenCalledTimes(2);
+  });
+
+  // A custom fork release's own distribution, captured at import.
+  const FORK_KEY_ARGS = {
+    sha: '3333333333333333333333333333333333333333',
+    importerRevision: 3,
+    custom: true,
+    sourceRepository: 'acme/aidlc-fork',
+  };
+  const memoryS3 = () => {
+    const objects = new Map();
+    return {
+      objects,
+      send: vi.fn(async (command) => {
+        const { Key, Body } = command.input;
+        if (command instanceof PutObjectCommand) {
+          objects.set(Key, Buffer.isBuffer(Body) ? Body : Buffer.from(Body));
+          return {};
+        }
+        if (!objects.has(Key)) {
+          // As in production: GetObject without ListBucket masks a miss as 403.
+          throw Object.assign(new Error('AccessDenied'), { $metadata: { httpStatusCode: 403 } });
+        }
+        const body = objects.get(Key);
+        return {
+          Body: Object.assign(body, { transformToString: async () => body.toString('utf8') }),
+        };
+      }),
+    };
+  };
+
+  it("loads a custom release's own distribution from release storage", async () => {
+    fetchRepoFiles.mockClear();
+    const { body, distributionFiles } = await distribution();
+    const s3 = memoryS3();
+    await publishReleaseDistributions({
+      s3,
+      bucket: 'artifacts',
+      keyArgs: FORK_KEY_ARGS,
+      files: new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+    });
+    const loaded = await loadReleaseDistribution({
+      s3,
+      bucket: 'artifacts',
+      keyArgs: FORK_KEY_ARGS,
+      harness: 'codex',
+    });
+    expect(loaded.files.get('AGENTS.md')).toEqual(body);
+    expect(loaded.workspaceLayout).toBe('spaces');
+    expect(fetchRepoFiles).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the release ships no distribution for the harness', async () => {
+    const s3 = memoryS3();
+    await expect(
+      loadReleaseDistribution({ s3, bucket: 'artifacts', keyArgs: FORK_KEY_ARGS, harness: 'kiro' }),
+    ).resolves.toBeNull();
+    await expect(
+      loadReleaseDistribution({ s3, bucket: 'artifacts', keyArgs: FORK_KEY_ARGS, harness: 'vim' }),
+    ).rejects.toThrow('unsupported harness vim');
+  });
+
+  it("refuses a release distribution whose archive doesn't match its manifest", async () => {
+    const { distributionFiles } = await distribution();
+    const s3 = memoryS3();
+    await publishReleaseDistributions({
+      s3,
+      bucket: 'artifacts',
+      keyArgs: FORK_KEY_ARGS,
+      files: new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+    });
+    const archiveKey = [...s3.objects.keys()].find((key) => key.endsWith('/dist/codex.tar.gz'));
+    s3.objects.set(archiveKey, Buffer.from('tampered'));
+    await expect(
+      loadReleaseDistribution({
+        s3,
+        bucket: 'artifacts',
+        keyArgs: FORK_KEY_ARGS,
+        harness: 'codex',
+      }),
+    ).rejects.toThrow('checksum mismatch');
   });
 
   it('detects legacy workspaces from the scaffold graph when aidlc/ is absent', () => {
@@ -385,6 +468,51 @@ describe('native workflow export', () => {
     ]);
   });
 
+  it('rejects a stage the native harness lacks unless omission is allowed', () => {
+    const graph = Buffer.from(
+      JSON.stringify([{ slug: 'requirements-analysis', phase: 'inception', scopes: ['feature'] }]),
+    );
+    const distributionFiles = new Map([['.codex/tools/data/stage-graph.json', graph]]);
+    const projection = {
+      intent: { scope: 'feature' },
+      stages: [
+        { stageId: 'requirements-analysis', phase: 'inception' },
+        { stageId: 'fork-handoff', phase: 'operation' },
+      ],
+      stageRows: [{ stageId: 'requirements-analysis', state: 'SUCCEEDED' }],
+    };
+    expect(() =>
+      alignProjectionToDistribution({ harness: 'codex', distributionFiles, projection }),
+    ).toThrow('stages are not present in the native harness: fork-handoff');
+    const aligned = alignProjectionToDistribution({
+      harness: 'codex',
+      distributionFiles,
+      projection,
+      omitStagesNotInDistribution: true,
+    });
+    expect(aligned.stages.map((stage) => stage.stageId)).toEqual(['requirements-analysis']);
+    expect(aligned.omittedStages).toEqual(['fork-handoff']);
+  });
+  it('still rejects an omitted stage that has recorded work', () => {
+    const graph = Buffer.from(
+      JSON.stringify([{ slug: 'requirements-analysis', phase: 'inception', scopes: ['feature'] }]),
+    );
+    expect(() =>
+      alignProjectionToDistribution({
+        harness: 'codex',
+        distributionFiles: new Map([['.codex/tools/data/stage-graph.json', graph]]),
+        omitStagesNotInDistribution: true,
+        projection: {
+          intent: { scope: 'feature' },
+          stages: [
+            { stageId: 'requirements-analysis', phase: 'inception' },
+            { stageId: 'fork-handoff', phase: 'operation' },
+          ],
+          stageRows: [{ stageId: 'fork-handoff', state: 'RUNNING' }],
+        },
+      }),
+    ).toThrow('stages with recorded work are not present in the native harness: fork-handoff');
+  });
   it('registers an arbitrary custom scope in stage metadata and compiled data', async () => {
     const { distributionFiles } = await distribution();
     const result = registerNativeScope({
@@ -563,6 +691,48 @@ describe('native workflow export', () => {
     expect(puts).toHaveLength(1);
     expect(puts[0].Key).toMatch(/^workflow-exports\/intent-1\/.+\.zip$/);
     expect(puts[0].Body.subarray(0, 2).toString()).toBe('PK');
+  });
+
+  it('exports a preloaded distribution without reading or fetching an official one', async () => {
+    fetchRepoFiles.mockClear();
+    const { distributionFiles } = await distribution();
+    const reads = [];
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command instanceof PutObjectCommand) return {};
+        reads.push(command.input.Key);
+        throw new Error(`unexpected read ${command.input.Key}`);
+      }),
+    };
+    const result = await createNativeExport({
+      s3,
+      bucket: 'artifacts',
+      upstreamRef: '3333333333333333333333333333333333333333',
+      harness: 'codex',
+      now: '2026-08-11T12:00:00.000Z',
+      presign: vi.fn().mockResolvedValue('https://download.example/export.zip'),
+      preloadedDistribution: { files: distributionFiles, workspaceLayout: 'spaces' },
+      projection: {
+        intent: {
+          projectId: 'project-1',
+          intentId: 'intent-1',
+          title: 'Payment service',
+          prompt: 'Add payments',
+          scope: 'feature',
+          workflowId: 'aidlc-v2',
+          workflowVersion: 4,
+          createdAt: '2026-08-11T10:00:00.000Z',
+        },
+        stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
+        stageRows: [],
+        artifacts: [],
+        humanTasks: [],
+        repositories: [],
+      },
+    });
+    expect(result.downloadUrl).toBe('https://download.example/export.zip');
+    expect(reads).toEqual([]);
+    expect(fetchRepoFiles).not.toHaveBeenCalled();
   });
 
   it('does not upload a legacy live snapshot that changed during ZIP generation', async () => {
