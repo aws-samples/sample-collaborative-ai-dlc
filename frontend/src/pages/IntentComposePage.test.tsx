@@ -689,6 +689,91 @@ describe('IntentComposePage', () => {
     expect(screen.getByTestId('agent-cli-kiro')).toBeEnabled();
   });
 
+  it('shows a loader and placeholders while agent CLIs are loading', async () => {
+    let resolveCapabilities: (value: unknown) => void = () => {};
+    getProjectCapabilities.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCapabilities = resolve;
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByTestId('agent-cli-loader')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-cli-placeholders')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-kiro')).not.toBeInTheDocument();
+    expect(screen.queryByText('no credential')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveCapabilities({
+        available: ['kiro', 'claude'],
+        runtimeClis: [
+          {
+            cli: 'kiro',
+            installed: true,
+            authed: true,
+            available: true,
+            credentialSource: 'user',
+          },
+          {
+            cli: 'claude',
+            installed: true,
+            authed: true,
+            available: true,
+            credentialSource: 'space',
+          },
+        ],
+      });
+    });
+
+    expect(await screen.findByTestId('agent-cli-kiro')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-loader')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-placeholders')).not.toBeInTheDocument();
+  });
+
+  it('shows a Stages loader while the compiled workflow is loading', async () => {
+    let resolveCompiled: (value: unknown) => void = () => {};
+    compiled.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCompiled = resolve;
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByTestId('stages-loader')).toBeInTheDocument();
+    expect(screen.getByTestId('stages-placeholders')).toBeInTheDocument();
+    expect(screen.queryByTestId('scope-summary')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /predefined/i })).toBeDisabled();
+
+    await act(async () => {
+      resolveCompiled({
+        scopeGrid: {
+          feature: { init: 'EXECUTE', design: 'EXECUTE', build: 'EXECUTE' },
+        },
+        autonomy: { perStage: {}, rollup: { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 } },
+        graph: {
+          nodes: [
+            { stageId: 'init', phasePath: '01', order: 0 },
+            { stageId: 'design', phasePath: '04', order: 1 },
+            { stageId: 'build', phasePath: '04', order: 2 },
+          ],
+          edges: [],
+          cycles: [],
+          danglingConsumes: [],
+          orphanProduces: [],
+          unknownArtifacts: [],
+          acyclic: true,
+        },
+        rules: { universal: [], phaseRules: {}, pairings: [], perStage: {}, unresolved: [] },
+      });
+    });
+
+    expect(await screen.findByTestId('scope-summary')).toBeInTheDocument();
+    expect(screen.queryByTestId('stages-loader')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stages-placeholders')).not.toBeInTheDocument();
+  });
+
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {
     const user = userEvent.setup();
     listComposes.mockResolvedValue({
