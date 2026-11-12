@@ -578,6 +578,13 @@ const seedV2Project = async (sub) => {
     .property('role', 'owner')
     .to(gremlin.process.statics.V().has('User', 'id', sub))
     .next();
+  procStore.set(keyOf(`SPACE#${projectId}`, `MEMBER#${sub}`), {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${sub}`,
+    spaceId: projectId,
+    userId: sub,
+    membershipRole: 'owner',
+  });
   // Workflow META row (latest version) so create can pin it, plus a version-4
   // snapshot with a single 'feature' scope ref so scope validation passes.
   procStore.set(keyOf('WF#default#aidlc-v2', 'META'), {
@@ -1657,6 +1664,13 @@ describe('POST /projects/{id}/intents', () => {
       .property('role', 'owner')
       .to(gremlin.process.statics.V().has('User', 'id', sub))
       .next();
+    procStore.set(keyOf(`SPACE#${projectId}`, `MEMBER#${sub}`), {
+      pk: `SPACE#${projectId}`,
+      sk: `MEMBER#${sub}`,
+      spaceId: projectId,
+      userId: sub,
+      membershipRole: 'owner',
+    });
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
   });
@@ -6143,6 +6157,13 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
       .property('role', role)
       .to(gremlin.process.statics.V().has('User', 'id', sub))
       .next();
+    procStore.set(keyOf(`SPACE#${projectId}`, `MEMBER#${sub}`), {
+      pk: `SPACE#${projectId}`,
+      sk: `MEMBER#${sub}`,
+      spaceId: projectId,
+      userId: sub,
+      membershipRole: role === 'admin' ? 'owner' : role,
+    });
   };
 
   it('does not dispatch unknown nested DELETE routes as intent deletion', async () => {
@@ -7250,6 +7271,13 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       .property('role', role)
       .to(gremlin.process.statics.V().has('User', 'id', sub))
       .next();
+    procStore.set(keyOf(`SPACE#${projectId}`, `MEMBER#${sub}`), {
+      pk: `SPACE#${projectId}`,
+      sk: `MEMBER#${sub}`,
+      spaceId: projectId,
+      userId: sub,
+      membershipRole: role === 'admin' ? 'owner' : role,
+    });
   };
 
   const repair = (sub, projectId, intentId, input = {}) =>
@@ -11426,6 +11454,13 @@ describe('per-intent AI-DLC settings', () => {
       .property('role', role)
       .to(gremlin.process.statics.V().has('User', 'id', sub))
       .next();
+    procStore.set(keyOf(`SPACE#${projectId}`, `MEMBER#${sub}`), {
+      pk: `SPACE#${projectId}`,
+      sk: `MEMBER#${sub}`,
+      spaceId: projectId,
+      userId: sub,
+      membershipRole: role === 'admin' ? 'owner' : role,
+    });
   };
 
   const settingsFixture = async () => {

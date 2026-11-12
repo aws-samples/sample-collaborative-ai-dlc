@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } 
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { seedMembership } from '../../shared/test/helpers/membership-fixture.js';
 
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
@@ -63,6 +64,7 @@ const seedProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .to('u')
     .property('role', 'owner')
     .next();
+  await seedMembership(projectId, USER_ID, 'owner');
   return id;
 };
 

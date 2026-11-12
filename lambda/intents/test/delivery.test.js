@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, beforeEach, it, expect, vi } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { seedMembership } from '../../shared/test/helpers/membership-fixture.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -81,6 +82,7 @@ beforeEach(async () => {
     .from_('p')
     .property('role', 'owner')
     .next();
+  await seedMembership(projectId, sub, 'owner');
   const executionId = randomUUID();
   await store.createExecution({
     executionId,
@@ -168,8 +170,10 @@ it('enforces authentication, membership, project scope, and recovery roles', asy
     .outE('HAS_MEMBER')
     .property('role', 'member')
     .toList();
+  await seedMembership(projectId, sub, 'member');
   expect((await request({ preview: true })).statusCode).toBe(403);
   await g.V().has('Project', 'id', projectId).outE('HAS_MEMBER').property('role', 'admin').toList();
+  await seedMembership(projectId, sub, 'owner');
   expect((await request({ preview: true })).statusCode).toBe(200);
   expect(
     (await request({ preview: true }, { pathParameters: { projectId, intentId: 'foreign' } }))

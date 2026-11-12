@@ -28,6 +28,7 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
 const secretsMock = mockClient(SecretsManagerClient);
 const lambdaMock = mockClient(LambdaClient);
+const membershipItems = new Map();
 
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
@@ -92,6 +93,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   ddbMock.reset();
+  membershipItems.clear();
   ssmMock.reset();
   secretsMock.reset();
   lambdaMock.reset();
@@ -103,6 +105,9 @@ beforeEach(() => {
   ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({
     Item: { userId: 'user-1', parameterName: PARAM_NAME, createdAt: NOW.toISOString() },
   });
+  ddbMock.on(GetCommand, { TableName: 'access-test' }).callsFake((input) => ({
+    Item: membershipItems.get(`${input.Key.pk}|${input.Key.sk}`),
+  }));
   ssmMock.on(GetParameterCommand).resolves({
     Parameter: { Value: JSON.stringify({ accessToken: TOKEN }) },
   });
@@ -192,6 +197,12 @@ const seedProjectAndBinding = async ({
     .property('role', 'owner')
     .to(gremlin.process.statics.V().has('User', 'id', userId))
     .next();
+  membershipItems.set(`SPACE#${projectId}|MEMBER#${userId}`, {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${userId}`,
+    userId,
+    membershipRole: 'owner',
+  });
   // Binding
   await g
     .V()
@@ -234,6 +245,12 @@ const seedProjectWithRole = async (role, { gitRepo = 'acme/widgets' } = {}) => {
     .property('role', role)
     .to(gremlin.process.statics.V().has('User', 'id', userId))
     .next();
+  membershipItems.set(`SPACE#${projectId}|MEMBER#${userId}`, {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${userId}`,
+    userId,
+    membershipRole: role === 'admin' ? 'owner' : role,
+  });
   return projectId;
 };
 
@@ -263,6 +280,12 @@ const seedLegacyProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .property('role', 'owner')
     .to(gremlin.process.statics.V().has('User', 'id', userId))
     .next();
+  membershipItems.set(`SPACE#${projectId}|MEMBER#${userId}`, {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${userId}`,
+    userId,
+    membershipRole: 'owner',
+  });
   return projectId;
 };
 
@@ -698,7 +721,11 @@ describe('GET /projects/{id}/trackers/{bid}/issues (github-issues provider)', ()
       operation: 'list-issues',
       args: { page: '3', perPage: '500' },
     });
-    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+    expect(
+      ddbMock
+        .commandCalls(GetCommand)
+        .filter((call) => call.args[0].input.TableName !== 'access-test'),
+    ).toHaveLength(0);
     expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
   });
 
@@ -1627,6 +1654,12 @@ describe('Jira space delegation', () => {
       .property('role', 'member')
       .to('u')
       .toList();
+    membershipItems.set(`SPACE#${ids.projectId}|MEMBER#${member}`, {
+      pk: `SPACE#${ids.projectId}`,
+      sk: `MEMBER#${member}`,
+      userId: member,
+      membershipRole: 'member',
+    });
     return { ...ids, member };
   };
   const request = ({ projectId, bindingId, member }, suffix = '', method = 'GET', extra = {}) =>
@@ -1727,7 +1760,11 @@ describe('Jira space delegation', () => {
   it('denies a non-member before resolving credentials', async () => {
     const res = await request({ ...(await seed()), member: 'outsider' });
     expect(res.statusCode).toBe(403);
-    expect(ddbMock).not.toHaveReceivedCommand(GetCommand);
+    expect(
+      ddbMock
+        .commandCalls(GetCommand)
+        .filter((call) => call.args[0].input.TableName !== 'access-test'),
+    ).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1735,14 +1772,7 @@ describe('Jira space delegation', () => {
     'requires reconnection for %s bindings without falling back to the caller',
     async (reason) => {
       const ids = await seed({ legacy: reason === 'legacy' });
-      if (reason === 'removed')
-        await g
-          .V()
-          .has('Project', 'id', ids.projectId)
-          .outE('HAS_MEMBER')
-          .where(gremlin.process.statics.inV().has('id', 'user-1'))
-          .drop()
-          .toList();
+      if (reason === 'removed') membershipItems.delete(`SPACE#${ids.projectId}|MEMBER#user-1`);
       if (reason === 'disconnected')
         ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({});
       if (reason === 'site-changed')
@@ -1853,6 +1883,12 @@ describe('Jira space delegation', () => {
       .where(gremlin.process.statics.inV().has('id', ids.member))
       .property('role', 'admin')
       .toList();
+    membershipItems.set(`SPACE#${ids.projectId}|MEMBER#${ids.member}`, {
+      pk: `SPACE#${ids.projectId}`,
+      sk: `MEMBER#${ids.member}`,
+      userId: ids.member,
+      membershipRole: 'owner',
+    });
     // Explicitly seed set-valued properties: stock TinkerGraph otherwise hides
     // the old Neptune behavior by defaulting to single cardinality.
     await g

@@ -52,6 +52,7 @@ let credentialMetadataHandler = null;
 const lockStore = new Map();
 const readStateStore = new Map();
 const processStore = new Map();
+const membershipStore = new Map();
 let connectionItems = [];
 
 const condFail = () => {
@@ -84,6 +85,9 @@ const installDdbFake = () => {
     return {};
   });
   ddbMock.on(GetCommand).callsFake(async (input) => {
+    if (input.TableName === 'access-test') {
+      return { Item: membershipStore.get(`${input.Key.pk}|${input.Key.sk}`) };
+    }
     if (input.TableName === PROCESS_TABLE) {
       const item = processStore.get(input.Key.pk);
       return item ? { Item: { ...item } } : {};
@@ -109,6 +113,13 @@ const installDdbFake = () => {
     return {};
   });
   ddbMock.on(QueryCommand).callsFake(async (input) => {
+    if (input.TableName === 'access-test') {
+      return {
+        Items: [...membershipStore.values()].filter(
+          (item) => item.pk === input.ExpressionAttributeValues?.[':pk'],
+        ),
+      };
+    }
     if (input.TableName === CONNECTIONS_TABLE) {
       if (input.IndexName === 'UserIdIndex') {
         const uid = input.ExpressionAttributeValues[':uid'];
@@ -168,6 +179,7 @@ beforeEach(async () => {
   lockStore.clear();
   readStateStore.clear();
   processStore.clear();
+  membershipStore.clear();
   connectionItems = [];
   installDdbFake();
   apiMock.on(PostToConnectionCommand).resolves({});
@@ -239,6 +251,12 @@ const seedProject = async ({ projectId, sprintId, members = [] }) => {
       .from_('p')
       .to('u')
       .next();
+    membershipStore.set(`SPACE#${projectId}|MEMBER#${sub}`, {
+      pk: `SPACE#${projectId}`,
+      sk: `MEMBER#${sub}`,
+      userId: sub,
+      membershipRole: role === 'admin' ? 'owner' : role,
+    });
   }
 };
 

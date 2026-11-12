@@ -10,6 +10,7 @@ import { CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { makeDdb, createV2Table, deleteV2Table } from '../../agentcore/test/helpers/v2-table.js';
+import { seedMembership } from '../../shared/test/helpers/membership-fixture.js';
 
 const PARTITION = 'discussions-question-anchor-repair';
 const PROCESS_TABLE = 'v2-proc-question-anchor-repair';
@@ -75,6 +76,7 @@ beforeAll(async () => {
     .from_('p')
     .to('u')
     .next();
+  await seedMembership('proj-1', MEMBER, 'member');
 });
 
 afterAll(async () => {

@@ -1133,7 +1133,7 @@ describe('DELETE /projects/:id', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Only project owners can delete projects' });
   });
 
-  it('returns 403 when an admin (non-owner) tries to delete', async () => {
+  it('allows a legacy admin after normalization to Space Owner', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const adminSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);
@@ -1143,8 +1143,7 @@ describe('DELETE /projects/:id', () => {
       pathParameters: { projectId: id },
       ...claims(adminSub),
     });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Only project owners can delete projects' });
+    expect(res.statusCode).toBe(204);
   });
 
   it('returns 401 when sub is missing', async () => {

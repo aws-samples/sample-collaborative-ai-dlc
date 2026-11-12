@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { seedMembership } from '../../shared/test/helpers/membership-fixture.js';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -65,6 +66,7 @@ const addSprint = async (sprintId) => {
     .to('u')
     .property('role', 'owner')
     .next();
+  await seedMembership(projectId, USER_ID, 'owner');
   await g
     .V()
     .has('Project', 'id', projectId)

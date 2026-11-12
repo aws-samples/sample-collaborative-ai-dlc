@@ -17,6 +17,7 @@ export async function setup() {
     .start();
 
   process.env.DYNAMODB_LOCAL_ENDPOINT = `http://${container.getHost()}:${container.getMappedPort(8000)}`;
+  process.env.AWS_ENDPOINT_URL_DYNAMODB = process.env.DYNAMODB_LOCAL_ENDPOINT;
   // DynamoDB Local ignores credentials but the SDK still requires some present.
   process.env.AWS_ACCESS_KEY_ID ??= 'test';
   process.env.AWS_SECRET_ACCESS_KEY ??= 'test';
