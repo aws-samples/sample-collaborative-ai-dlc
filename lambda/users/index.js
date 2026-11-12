@@ -8,6 +8,7 @@ import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
 import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
 import {
+  assertOwnerChangeAllowed,
   getMembership,
   getMembershipRole,
   listSpaceMembers,
@@ -174,6 +175,7 @@ export const handler = async (event, context) => {
         }
         const before = await getMembership(ddb, projectId, targetUserId);
         if (!before) return response(404, { error: 'Member not found' });
+        await assertOwnerChangeAllowed(ddb, projectId, targetUserId, before, null);
 
         await invalidateTrackerBindingsByDelegator(g, targetUserId, 'delegator_removed', projectId);
         await invalidateProjectBindingsByDelegator(
@@ -196,6 +198,7 @@ export const handler = async (event, context) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
+    if (err?.code === 'LAST_OWNER') return response(409, { error: err.message });
     logger.error('Unhandled error', err);
     return response(500, { error: 'Internal server error' });
   } finally {

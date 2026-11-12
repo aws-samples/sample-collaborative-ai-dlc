@@ -218,15 +218,22 @@ export const projectsService = {
 
   // Members
   listMembers: async (projectId: string) => {
-    const response = await api.get<
-      | (Omit<Member, 'role'> & { role: LegacyProjectRole })[]
-      | {
-          members: (Omit<Member, 'role'> & { role: LegacyProjectRole })[];
-          nextToken?: string;
-        }
-    >(`/projects/${projectId}/members`);
-    const members = Array.isArray(response) ? response : response.members;
-    return members.map(normalizeMember);
+    const members: Member[] = [];
+    let nextToken: string | undefined;
+    do {
+      const query = nextToken ? `?nextToken=${encodeURIComponent(nextToken)}` : '';
+      const response = await api.get<
+        | (Omit<Member, 'role'> & { role: LegacyProjectRole })[]
+        | {
+            members: (Omit<Member, 'role'> & { role: LegacyProjectRole })[];
+            nextToken?: string;
+          }
+      >(`/projects/${projectId}/members${query}`);
+      const page = Array.isArray(response) ? response : response.members;
+      members.push(...page.map(normalizeMember));
+      nextToken = Array.isArray(response) ? undefined : response.nextToken;
+    } while (nextToken);
+    return members;
   },
   addMember: (projectId: string, input: AddMemberInput) =>
     api.post<Member>(`/projects/${projectId}/members`, input),

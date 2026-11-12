@@ -183,6 +183,29 @@ Then apply and rebuild the frontend, **in that order**:
 
 Both steps are required. Terraform updates the distribution, the OAuth redirect URIs and the CORS allowlists; the frontend then has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
 
+### Space-membership storage upgrade
+
+The normal Terraform deployment automatically provisions the access and audit
+tables, copies Neptune space memberships, verifies the copied keys, and only
+then deploys the DynamoDB-only readers. Owner and Admin become Owner; Member
+stays Member. A deterministic baseline audit key makes a failed invocation safe
+to retry, and an existing destination membership is never overwritten by a
+retry. When Neptune has no membership edges, the migration is a successful
+no-op that leaves DynamoDB unchanged.
+
+After all membership consumers have deployed, Terraform invokes the cleanup
+step that removes obsolete `HAS_MEMBER` edges. A failed migration stops the
+application switch. No separate migration command, maintenance pause, worker
+restart, or forced realtime disconnect is required. A membership edit made
+during the copy/deployment window can be lost; after the switch DynamoDB is
+authoritative and a failed lookup denies access. Existing browser connections
+remain open until their normal token refresh or reconnect, when membership is
+checked again.
+
+Before the switch, rollback can use the still-authoritative Neptune data. After
+new DynamoDB membership writes occur, rollback must preserve or reconcile those
+writes rather than restoring the old graph edges.
+
 To override without editing the file — useful for CI, throwaway environments, or trying a hostname before committing to it — pass `--var`, repeated per variable:
 
 ```bash

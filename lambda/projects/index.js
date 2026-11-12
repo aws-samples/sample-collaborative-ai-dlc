@@ -68,6 +68,7 @@ import {
 import {
   deleteSpaceMemberships,
   getMembershipRole,
+  listUserSpaces,
   saveMembershipChange,
 } from '../shared/space-membership.js';
 
@@ -89,7 +90,7 @@ const logger = new Logger({ persistentKeys: { component: 'projects' } });
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
-const { cardinality, P } = gremlin.process;
+const { cardinality } = gremlin.process;
 
 // Synthetic-binding id for legacy projects (issue_integration_enabled='true'
 // but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
@@ -1071,27 +1072,12 @@ const handleProjectEnvironment = async (g, response, httpMethod, projectId, user
 const handleReposRoute = async (g, response, event, projectId, userId) => {
   const { httpMethod } = event;
 
-  // Membership check — all repo routes require project membership
-  const isMember = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .inV()
-    .has('User', 'id', userId)
-    .hasNext();
-  if (!isMember) return response(403, { error: 'Access denied' });
+  const role = await getMembershipRole(ddb, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
 
   if (httpMethod === 'DELETE') {
-    const allowed = await g
-      .V()
-      .has('Project', 'id', projectId)
-      .outE('HAS_MEMBER')
-      .has('role', P.within('owner', 'admin'))
-      .inV()
-      .has('User', 'id', userId)
-      .hasNext();
-    if (!allowed) {
-      return response(403, { error: 'Only project owners and admins can remove repositories' });
+    if (role !== 'owner') {
+      return response(403, { error: 'Only space owners can remove repositories' });
     }
 
     const repoUrl = event.queryStringParameters?.url;
@@ -1147,16 +1133,8 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
   // POST /projects/{projectId}/repos
   if (httpMethod === 'POST') {
-    const allowed = await g
-      .V()
-      .has('Project', 'id', projectId)
-      .outE('HAS_MEMBER')
-      .has('role', P.within('owner', 'admin'))
-      .inV()
-      .has('User', 'id', userId)
-      .hasNext();
-    if (!allowed) {
-      return response(403, { error: 'Only project owners and admins can add repositories' });
+    if (role !== 'owner') {
+      return response(403, { error: 'Only space owners can add repositories' });
     }
 
     const data = JSON.parse(event.body || '{}');
@@ -1377,28 +1355,18 @@ export const handler = async (event, context) => {
     switch (httpMethod) {
       case 'GET':
         if (projectId) {
-          // Single project lookup - verify user is a member and return their
-          // role. Single round-trip: role + project valueMap + trackers all
-          // fold into one traversal (parity with the list endpoint).
           if (!userId) return response(401, { error: 'Unauthorized' });
-
+          const role = await getMembershipRole(ddb, projectId, userId);
+          if (!role) return response(403, { error: 'Access denied' });
           const single = await g
             .V()
             .has('Project', 'id', projectId)
-            .as('p')
-            .outE('HAS_MEMBER')
-            .as('e')
-            .inV()
-            .has('User', 'id', userId)
-            .select('e', 'p')
-            .by(__.values('role'))
-            .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
+            .project('vertex', 'trackers')
+            .by(__.valueMap())
+            .by(projectTrackersFoldStep())
             .next();
-          if (single.done) return response(403, { error: 'Access denied' });
-
-          const item = single.value;
-          const role = item instanceof Map ? item.get('e') : item.e;
-          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          if (single.done) return response(404, { error: 'Project not found' });
+          const pBundle = single.value;
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
             (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
@@ -1427,32 +1395,31 @@ export const handler = async (event, context) => {
           return response(200, withLegacyTracker(project));
         }
 
-        // List projects - only return projects where the current user is a member.
-        // Trackers fold into the same traversal so we don't fan out into N+1
-        // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
-
-        const results = await g
-          .V()
-          .has('User', 'id', userId)
-          .inE('HAS_MEMBER')
-          .as('e')
-          .outV()
-          .hasLabel('Project')
-          .as('p')
-          .select('e', 'p')
-          .by(__.values('role'))
-          .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
-          .toList();
+        const memberships = [];
+        let membershipToken;
+        do {
+          const page = await listUserSpaces(ddb, userId, { token: membershipToken });
+          memberships.push(...page.items);
+          membershipToken = page.nextToken;
+        } while (membershipToken);
         const settled = await Promise.allSettled(
-          results.map(async (item) => {
-            // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
-            const role = item instanceof Map ? item.get('e') : item.e;
-            const pBundle = item instanceof Map ? item.get('p') : item.p;
+          memberships.map(async (membership) => {
+            const pid = membership.spaceId || membership.pk.slice('SPACE#'.length);
+            const canonicalMembership = await getMembershipRole(ddb, pid, userId);
+            if (!canonicalMembership) return null;
+            const projectResult = await g
+              .V()
+              .has('Project', 'id', pid)
+              .project('vertex', 'trackers')
+              .by(__.valueMap())
+              .by(projectTrackersFoldStep())
+              .next();
+            if (projectResult.done) return null;
+            const pBundle = projectResult.value;
             const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
             const trackerMaps =
               (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
-            const pid = getVal(v, 'id');
             const legacyGitRepo = getVal(v, 'git_repo');
 
             await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
@@ -1470,7 +1437,7 @@ export const handler = async (event, context) => {
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
               // Legacy projects created before updated_at existed fall back to created_at.
               updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-              userRole: role || 'member',
+              userRole: canonicalMembership,
               trackers: trackerMaps.map(mapBinding),
               repos,
               ...readV2Settings(v),
@@ -1485,7 +1452,9 @@ export const handler = async (event, context) => {
             reasons: failed.map((f) => f.reason?.message),
           });
         }
-        const projects = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+        const projects = settled
+          .filter((r) => r.status === 'fulfilled' && r.value)
+          .map((r) => r.value);
         return response(200, projects);
 
       case 'POST': {
@@ -2051,10 +2020,10 @@ export const handler = async (event, context) => {
             .drop()
             .next();
 
-          await deleteSpaceMemberships(ddb, projectId);
-
-          // The Project vertex itself LAST.
+          // Drop graph state before membership cleanup. The deleting owner's
+          // membership is removed last so a failed cleanup remains retryable.
           await g.V().has('Project', 'id', projectId).drop().next();
+          await deleteSpaceMemberships(ddb, projectId, { preserveUserId: userId });
           logger.info('Project deleted', {
             projectId,
             actor,

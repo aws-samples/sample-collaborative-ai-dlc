@@ -3,6 +3,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dyn
 import {
   decodeToken,
   getMembershipRole,
+  hasAnotherOwner,
   listSpaceMembers,
   normalizeMembershipRole,
   removeMembership,
@@ -46,7 +47,7 @@ describe('space membership store', () => {
     expect(ddb.send.mock.calls[0][0].input.ConsistentRead).toBe(true);
   });
 
-  it('writes membership, audit, and owner guard in one transaction', async () => {
+  it('writes membership and audit in one transaction', async () => {
     const ddb = { send: vi.fn().mockResolvedValue({}) };
     await saveMembershipChange(ddb, {
       spaceId: 'space-1',
@@ -58,23 +59,36 @@ describe('space membership store', () => {
     });
     const command = ddb.send.mock.calls[0][0];
     expect(command).toBeInstanceOf(TransactWriteCommand);
-    expect(command.input.TransactItems).toHaveLength(3);
+    expect(command.input.TransactItems).toHaveLength(2);
     expect(command.input.TransactItems[0].Put.Item.membershipRole).toBe('owner');
     expect(command.input.TransactItems[1].Put.Item.actorId).toBe('user-1');
-    expect(command.input.TransactItems[2].Update.UpdateExpression).toContain('ownerCount');
   });
 
-  it('guards owner removal with the same atomic transaction', async () => {
-    const ddb = { send: vi.fn().mockResolvedValue({}) };
-    await removeMembership(ddb, {
-      spaceId: 'space-1',
-      actorId: 'user-2',
-      targetUserId: 'user-1',
-      before: { membershipRole: 'owner' },
-      now: '2026-11-12T12:00:00.000Z',
-      changeId: 'change-2',
-    });
-    const command = ddb.send.mock.calls[0][0];
-    expect(command.input.TransactItems[2].Update.ConditionExpression).toBe('ownerCount > :minimum');
+  it('finds another owner on a later page', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [{ userId: 'target', membershipRole: 'owner' }],
+          LastEvaluatedKey: { pk: 'SPACE#space-1', sk: 'MEMBER#target' },
+        })
+        .mockResolvedValueOnce({
+          Items: [{ userId: 'other', membershipRole: 'owner' }],
+        }),
+    };
+    await expect(hasAnotherOwner(ddb, 'space-1', 'target')).resolves.toBe(true);
+    expect(ddb.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects last-owner removal before writing', async () => {
+    const ddb = { send: vi.fn().mockResolvedValue({ Items: [] }) };
+    await expect(
+      removeMembership(ddb, {
+        spaceId: 'space-1',
+        actorId: 'user-1',
+        targetUserId: 'user-1',
+        before: { membershipRole: 'owner' },
+      }),
+    ).rejects.toMatchObject({ code: 'LAST_OWNER' });
   });
 });

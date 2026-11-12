@@ -44,7 +44,7 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 
 ## Space settings
 
-**Space Settings** (gear icon on the space page) is a tabbed page. Viewing is open to members; editing requires the Owner or Admin space role.
+**Space Settings** (gear icon on the space page) is a tabbed page. Viewing is open to members; editing requires the Owner space role.
 
 ### General
 
@@ -56,7 +56,10 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 
 ### Members
 
-Add or remove members and assign their space role (owner / admin / member).
+Add or remove members and assign their space role (Owner or Member). Existing
+Owner and Admin memberships are converted to Owner during deployment. Older
+clients may still send `admin`; the API accepts that value as an Owner
+compatibility alias but stores and returns `owner`.
 The picker includes enabled, confirmed Cognito accounts and enabled enterprise
 identities that pass their provider's access gate. An enterprise user appears
 after their first successful sign-in, when Cognito creates the broker identity.

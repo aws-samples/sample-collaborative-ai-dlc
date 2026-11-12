@@ -18,8 +18,9 @@ locals {
     v2_orchestrator = aws_iam_role.v2_orchestrator.id
   } : {}
   membership_env = {
-    ACCESS_TABLE = var.access_table_name
-    AUDIT_TABLE  = var.audit_table_name
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
   }
 
   partition            = data.aws_partition.current.partition
@@ -85,24 +86,25 @@ module "dynamodb_kms_runtime_access" {
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
   role_names = {
-    agents_orchestrator = aws_iam_role.agents_orchestrator.name
-    bitbucket_connector = aws_iam_role.bitbucket_connector.name
-    blocks              = aws_iam_role.blocks.name
-    credential_broker   = aws_iam_role.credential_broker.name
-    discussions         = aws_iam_role.discussions.name
-    github_connector    = aws_iam_role.github_connector.name
-    gitlab_connector    = aws_iam_role.gitlab_connector.name
-    intent_pin_lookup   = aws_iam_role.intent_pin_lookup.name
-    intents             = aws_iam_role.intents.name
-    neptune_artifacts   = aws_iam_role.neptune_artifacts.name
-    neptune_questions   = aws_iam_role.neptune_questions.name
-    neptune_reader      = aws_iam_role.neptune_reader.name
-    seed_blocks         = aws_iam_role.seed_blocks.name
-    source_control      = aws_iam_role.source_control.name
-    trackers            = aws_iam_role.trackers.name
-    users               = aws_iam_role.users.name
-    v2_orchestrator     = aws_iam_role.v2_orchestrator.name
-    workflows           = aws_iam_role.workflows.name
+    agents_orchestrator  = aws_iam_role.agents_orchestrator.name
+    bitbucket_connector  = aws_iam_role.bitbucket_connector.name
+    blocks               = aws_iam_role.blocks.name
+    credential_broker    = aws_iam_role.credential_broker.name
+    discussions          = aws_iam_role.discussions.name
+    github_connector     = aws_iam_role.github_connector.name
+    gitlab_connector     = aws_iam_role.gitlab_connector.name
+    intent_pin_lookup    = aws_iam_role.intent_pin_lookup.name
+    intents              = aws_iam_role.intents.name
+    membership_migration = aws_iam_role.membership_migration.name
+    neptune_artifacts    = aws_iam_role.neptune_artifacts.name
+    neptune_questions    = aws_iam_role.neptune_questions.name
+    neptune_reader       = aws_iam_role.neptune_reader.name
+    seed_blocks          = aws_iam_role.seed_blocks.name
+    source_control       = aws_iam_role.source_control.name
+    trackers             = aws_iam_role.trackers.name
+    users                = aws_iam_role.users.name
+    v2_orchestrator      = aws_iam_role.v2_orchestrator.name
+    workflows            = aws_iam_role.workflows.name
   }
 }
 
@@ -153,6 +155,11 @@ resource "aws_iam_role_policy" "neptune_reader" {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
         Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.access_table_arn, "${var.access_table_arn}/index/*"]
       }
     ]
   })
@@ -1288,7 +1295,9 @@ module "source_control_lambda" {
     CODECOMMIT_CONNECTION_PARAM        = var.codecommit_connection_param_name
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
-  }
+  }, local.membership_env)
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 # AgentCore-only credential broker. It has no API Gateway or event source; the
@@ -1529,6 +1538,9 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    ACCESS_TABLE                   = var.access_table_name
+    AUDIT_TABLE                    = var.audit_table_name
+    MEMBERSHIP_MIGRATION_RESULT    = aws_lambda_invocation.migrate_space_memberships.result
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
@@ -1550,7 +1562,9 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }, local.notification_event_env)
+  }, local.notification_event_env, local.membership_env)
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 # Users Lambda
@@ -1582,7 +1596,7 @@ module "users_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
@@ -1592,6 +1606,8 @@ module "users_lambda" {
     ENVIRONMENT                   = var.environment
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
   }, local.membership_env)
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 # Sprints Lambda
@@ -1623,6 +1639,8 @@ module "sprints_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1663,6 +1681,8 @@ module "requirements_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1703,6 +1723,8 @@ module "user_stories_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1742,6 +1764,8 @@ module "tasks_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1782,6 +1806,8 @@ module "code_files_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1822,6 +1848,8 @@ module "reviews_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1863,6 +1891,8 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1902,6 +1932,8 @@ module "sprint_graph_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -1942,6 +1974,8 @@ module "general_info_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -2104,6 +2138,8 @@ module "gitlab_lambda" {
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    ACCESS_TABLE                   = var.access_table_name
+    AUDIT_TABLE                    = var.audit_table_name
   }
 
   depends_on = [aws_iam_role_policy_attachment.gitlab_connector_vpc]
@@ -2378,7 +2414,11 @@ module "trackers_lambda" {
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    ACCESS_TABLE                   = var.access_table_name
+    AUDIT_TABLE                    = var.audit_table_name
   }
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 resource "aws_cloudwatch_event_rule" "tracker_delivery_reconciler" {
@@ -2431,6 +2471,8 @@ module "timeline_events_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    ACCESS_TABLE                = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -2577,7 +2619,9 @@ module "discussions_lambda" {
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env, local.membership_env)
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 # Cognito Users Lambda (lists users from Cognito)
@@ -3184,6 +3228,9 @@ module "intents_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
     V2_PROCESS_TABLE            = var.v2_executions_table_name
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
     BLOCKS_TABLE                = var.blocks_table_name
     REALTIME_SECRET_PARAM       = var.realtime_doc_secret_param_name
     # Intent-scoped realtime docs are removed on intent delete.
@@ -3217,6 +3264,8 @@ module "intents_lambda" {
     TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
+
+  depends_on = [aws_lambda_invocation.migrate_space_memberships]
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3259,9 +3308,161 @@ module "intent_pin_lookup_lambda" {
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     V2_PROCESS_TABLE            = var.v2_executions_table_name
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
+    MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation.migrate_space_memberships.result
   }
 
-  depends_on = [aws_iam_role_policy_attachment.intent_pin_lookup_vpc]
+  depends_on = [
+    aws_iam_role_policy_attachment.intent_pin_lookup_vpc,
+    aws_lambda_invocation.migrate_space_memberships
+  ]
+}
+
+resource "aws_iam_role" "membership_migration" {
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-membership-migration-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "membership_migration_basic" {
+  role       = aws_iam_role.membership_migration.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "membership_migration_vpc" {
+  role       = aws_iam_role.membership_migration.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "membership_migration" {
+  name = "membership-migration"
+  role = aws_iam_role.membership_migration.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems"
+        ]
+        Resource = [var.access_table_arn, var.audit_table_arn]
+      }
+    ]
+  })
+}
+
+module "membership_migration_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-membership-migration-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 900
+
+  source_path = [{
+    path = "${path.module}/../../../../lambda/migrate-space-memberships"
+    commands = [
+      "cd ../.. && npm run build -w migrate-space-memberships",
+      ":zip lambda/migrate-space-memberships/.build",
+    ]
+  }]
+
+  create_role = false
+  lambda_role = aws_iam_role.membership_migration.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    AWS_SDK_UA_APP_ID = var.aws_sdk_ua_app_id
+    NEPTUNE_ENDPOINT  = var.neptune_endpoint
+    ACCESS_TABLE      = var.access_table_name
+    AUDIT_TABLE       = var.audit_table_name
+  }
+}
+
+resource "aws_lambda_invocation" "migrate_space_memberships" {
+  function_name = module.membership_migration_lambda.lambda_function_name
+  input         = jsonencode({ action = "migrate" })
+
+  depends_on = [aws_iam_role_policy.membership_migration]
+}
+
+resource "aws_lambda_invocation" "cleanup_neptune_memberships" {
+  function_name = module.membership_migration_lambda.lambda_function_name
+  input         = jsonencode({ action = "cleanup" })
+
+  depends_on = [
+    module.code_files_lambda,
+    module.projects_lambda,
+    module.users_lambda,
+    module.sprints_lambda,
+    module.requirements_lambda,
+    module.user_stories_lambda,
+    module.tasks_lambda,
+    module.reviews_lambda,
+    module.questions_lambda,
+    module.sprint_graph_lambda,
+    module.general_info_lambda,
+    module.timeline_events_lambda,
+    module.source_control_lambda,
+    module.trackers_lambda,
+    module.discussions_lambda,
+    module.intents_lambda,
+    module.intent_pin_lookup_lambda
+  ]
+}
+
+locals {
+  membership_reader_roles = {
+    agents         = aws_iam_role.agents_orchestrator.id
+    discussions    = aws_iam_role.discussions.id
+    intent_lookup  = aws_iam_role.intent_pin_lookup.id
+    intents        = aws_iam_role.intents.id
+    projects       = aws_iam_role.neptune_artifacts.id
+    source_control = aws_iam_role.source_control.id
+    trackers       = aws_iam_role.trackers.id
+  }
+}
+
+resource "aws_iam_role_policy" "membership_read" {
+  for_each = local.membership_reader_roles
+
+  name = "membership-read"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+      Resource = [var.access_table_arn, "${var.access_table_arn}/index/*"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "membership_project_write" {
+  name = "membership-project-write"
+  role = aws_iam_role.neptune_artifacts.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "dynamodb:DeleteItem",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:TransactWriteItems"
+      ]
+      Resource = [var.access_table_arn, "${var.access_table_arn}/index/*", var.audit_table_arn]
+    }]
+  })
 }
 
 # Only the workflows principal may invoke the lookup, and only that one function.

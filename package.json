@@ -22,6 +22,7 @@
     "lambda/mcp-interceptor",
     "lambda/mcp-tools",
     "lambda/migrate-tracker-fields",
+    "lambda/migrate-space-memberships",
     "lambda/seed-blocks",
     "lambda/sso-token",
     "lambda/source-control",

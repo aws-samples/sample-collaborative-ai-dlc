@@ -23,7 +23,6 @@ const auditTable = () => {
 
 const spaceKey = (spaceId) => `SPACE#${spaceId}`;
 const memberKey = (userId) => `MEMBER#${userId}`;
-const ownerGuardKey = () => 'OWNER_GUARD';
 
 const normalizeMembershipRole = (role) => {
   if (role === 'owner' || role === 'admin') return ROLE_OWNER;
@@ -92,6 +91,33 @@ const listSpaceMembers = async (ddb, spaceId, { token, limit = PAGE_SIZE } = {})
     })),
     nextToken: encodeToken(result.LastEvaluatedKey),
   };
+};
+
+const hasAnotherOwner = async (ddb, spaceId, targetUserId) => {
+  let token;
+  do {
+    const page = await listSpaceMembers(ddb, spaceId, { token });
+    if (
+      page.items.some((item) => item.userId !== targetUserId && item.membershipRole === ROLE_OWNER)
+    ) {
+      return true;
+    }
+    token = page.nextToken;
+  } while (token);
+  return false;
+};
+
+const assertOwnerChangeAllowed = async (ddb, spaceId, targetUserId, before, nextRole) => {
+  const previousRole = before?.membershipRole
+    ? normalizeMembershipRole(before.membershipRole)
+    : null;
+  const normalizedNextRole = nextRole == null ? null : normalizeMembershipRole(nextRole);
+  if (previousRole !== ROLE_OWNER || normalizedNextRole === ROLE_OWNER) return;
+  if (!(await hasAnotherOwner(ddb, spaceId, targetUserId))) {
+    const error = new Error('Cannot remove or demote the last owner. Transfer ownership first.');
+    error.code = 'LAST_OWNER';
+    throw error;
+  }
 };
 
 const listUserSpaces = async (ddb, userId, { token, limit = PAGE_SIZE } = {}) => {
@@ -163,10 +189,7 @@ const saveMembershipChange = async (
   },
 ) => {
   const membershipRole = normalizeMembershipRole(role);
-  const previousRole = before?.membershipRole
-    ? normalizeMembershipRole(before.membershipRole)
-    : null;
-  const ownerDelta = Number(membershipRole === ROLE_OWNER) - Number(previousRole === ROLE_OWNER);
+  await assertOwnerChangeAllowed(ddb, spaceId, targetUserId, before, membershipRole);
   const item = {
     ...membershipKey(spaceId, targetUserId),
     spaceId,
@@ -200,21 +223,6 @@ const saveMembershipChange = async (
       },
     },
   ];
-  if (ownerDelta) {
-    transaction.push({
-      Update: {
-        TableName: accessTable(),
-        Key: { pk: spaceKey(spaceId), sk: ownerGuardKey() },
-        UpdateExpression: 'ADD ownerCount :delta SET updatedAt = :now',
-        ConditionExpression: ownerDelta < 0 ? 'ownerCount > :minimum' : undefined,
-        ExpressionAttributeValues: {
-          ':delta': ownerDelta,
-          ':now': now,
-          ...(ownerDelta < 0 ? { ':minimum': 1 } : {}),
-        },
-      },
-    });
-  }
   await ddb.send(new TransactWriteCommand({ TransactItems: transaction }));
   return item;
 };
@@ -232,6 +240,7 @@ const removeMembership = async (
 ) => {
   if (!before) return false;
   const previousRole = normalizeMembershipRole(before.membershipRole);
+  await assertOwnerChangeAllowed(ddb, spaceId, targetUserId, before, null);
   const transaction = [
     {
       Delete: {
@@ -258,26 +267,20 @@ const removeMembership = async (
       },
     },
   ];
-  if (previousRole === ROLE_OWNER) {
-    transaction.push({
-      Update: {
-        TableName: accessTable(),
-        Key: { pk: spaceKey(spaceId), sk: ownerGuardKey() },
-        UpdateExpression: 'ADD ownerCount :delta SET updatedAt = :now',
-        ConditionExpression: 'ownerCount > :minimum',
-        ExpressionAttributeValues: { ':delta': -1, ':minimum': 1, ':now': now },
-      },
-    });
-  }
   await ddb.send(new TransactWriteCommand({ TransactItems: transaction }));
   return true;
 };
 
-const deleteSpaceMemberships = async (ddb, spaceId) => {
+const deleteSpaceMemberships = async (ddb, spaceId, { preserveUserId } = {}) => {
+  let preserved;
   let token;
   do {
     const page = await listSpaceMembers(ddb, spaceId, { token });
     for (const item of page.items) {
+      if (item.userId === preserveUserId) {
+        preserved = item;
+        continue;
+      }
       await ddb.send(
         new DeleteCommand({
           TableName: accessTable(),
@@ -287,12 +290,14 @@ const deleteSpaceMemberships = async (ddb, spaceId) => {
     }
     token = page.nextToken;
   } while (token);
-  await ddb.send(
-    new DeleteCommand({
-      TableName: accessTable(),
-      Key: { pk: spaceKey(spaceId), sk: ownerGuardKey() },
-    }),
-  );
+  if (preserved) {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: accessTable(),
+        Key: { pk: preserved.pk, sk: preserved.sk },
+      }),
+    );
+  }
 };
 
 export {
@@ -301,19 +306,20 @@ export {
   ROLE_MEMBER,
   ROLE_OWNER,
   accessTable,
+  assertOwnerChangeAllowed,
   auditTable,
   decodeToken,
   deleteSpaceMemberships,
   encodeToken,
   getMembership,
   getMembershipRole,
+  hasAnotherOwner,
   listAuditHistory,
   listSpaceMembers,
   listUserSpaces,
   memberKey,
   membershipKey,
   normalizeMembershipRole,
-  ownerGuardKey,
   removeMembership,
   saveMembershipChange,
   spaceKey,

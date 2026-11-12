@@ -75,10 +75,14 @@ const kmsAuthorizedRoles = (text) =>
 
 test('all DynamoDB tables support CMK encryption and durable tables are recoverable', () => {
   const applicationTables = read('terraform/modules/data/dynamodb/main.tf');
-  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 10);
-  assert.equal(count(applicationTables, /server_side_encryption \{/g), 10);
-  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 8);
-  assert.equal(count(applicationTables, /point_in_time_recovery/g), 8);
+  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 12);
+  assert.equal(count(applicationTables, /server_side_encryption \{/g), 12);
+  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 10);
+  assert.equal(count(applicationTables, /point_in_time_recovery/g), 10);
+  assert.match(
+    applicationTables,
+    /resource "aws_dynamodb_table" "access"[\s\S]*?hash_key\s+= "pk"[\s\S]*?range_key\s+= "sk"[\s\S]*?name\s+= "by-user"[\s\S]*?projection_type\s+= "ALL"/,
+  );
 
   const integrationTables = read('terraform/modules/git/main.tf');
   assert.equal(count(integrationTables, /resource "aws_dynamodb_table"/g), 4);
@@ -90,6 +94,23 @@ test('all DynamoDB tables support CMK encryption and durable tables are recovera
   assert.match(
     agentcore,
     /resource "aws_dynamodb_table" "v2_executions"[\s\S]*?deletion_protection_enabled = var\.deletion_protection[\s\S]*?server_side_encryption \{[\s\S]*?point_in_time_recovery/,
+  );
+});
+
+test('membership migration gates DynamoDB-only readers and cleans graph edges afterward', () => {
+  const lambda = read('terraform/modules/api/lambda/main.tf');
+  assert.match(lambda, /module "membership_migration_lambda"/);
+  assert.match(
+    lambda,
+    /resource "aws_lambda_invocation" "migrate_space_memberships"[\s\S]*?action = "migrate"/,
+  );
+  assert.match(
+    lambda,
+    /membership_env = \{[\s\S]*?ACCESS_TABLE[\s\S]*?AUDIT_TABLE[\s\S]*?MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation\.migrate_space_memberships\.result/,
+  );
+  assert.match(
+    lambda,
+    /resource "aws_lambda_invocation" "cleanup_neptune_memberships"[\s\S]*?action = "cleanup"[\s\S]*?module\.projects_lambda[\s\S]*?module\.intents_lambda/,
   );
 });
 

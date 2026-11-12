@@ -2,8 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const post = vi.fn();
 const put = vi.fn();
+const get = vi.fn();
 vi.mock('./api', () => ({
-  api: { post: (...a: unknown[]) => post(...a), put: (...a: unknown[]) => put(...a) },
+  api: {
+    get: (...a: unknown[]) => get(...a),
+    post: (...a: unknown[]) => post(...a),
+    put: (...a: unknown[]) => put(...a),
+  },
 }));
 
 import { projectsService } from './projects';
@@ -12,6 +17,7 @@ describe('projectsService v2 create/update payloads', () => {
   beforeEach(() => {
     post.mockReset().mockResolvedValue({});
     put.mockReset().mockResolvedValue({});
+    get.mockReset();
   });
 
   it('create forwards the v2 kind + workflow/scope/park fields verbatim', async () => {
@@ -39,5 +45,23 @@ describe('projectsService v2 create/update payloads', () => {
       maxParallelUnits: 3,
       prStrategy: 'intent-pr',
     });
+  });
+
+  it('loads every member page and normalizes legacy admin to owner', async () => {
+    get
+      .mockResolvedValueOnce({
+        members: [{ userId: 'u1', role: 'admin' }],
+        nextToken: 'next page',
+      })
+      .mockResolvedValueOnce({
+        members: [{ userId: 'u2', role: 'member' }],
+      });
+
+    await expect(projectsService.listMembers('p1')).resolves.toEqual([
+      { userId: 'u1', role: 'owner' },
+      { userId: 'u2', role: 'member' },
+    ]);
+    expect(get).toHaveBeenNthCalledWith(1, '/projects/p1/members');
+    expect(get).toHaveBeenNthCalledWith(2, '/projects/p1/members?nextToken=next%20page');
   });
 });
