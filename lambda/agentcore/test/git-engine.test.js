@@ -403,6 +403,10 @@ describe('commitAll', () => {
         if (command === 'rev-parse HEAD') {
           return { exitCode: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
         }
+        // A full checkout: Git reports an unset key with exit 1.
+        if (command === 'config --bool core.sparseCheckout') {
+          return { exitCode: 1, stdout: '', stderr: '' };
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       });
 
@@ -658,7 +662,12 @@ describe('commitAll — retry / ENOSPC self-heal / dirty reporting', () => {
     const fn = async (args) => {
       const line = args.join(' ');
       calls.push(line);
-      for (const [match, resp] of script) {
+      // A full checkout unless a script says otherwise: Git reports the unset
+      // core.sparseCheckout key with exit 1.
+      for (const [match, resp] of [
+        ...script,
+        ['config --bool core.sparseCheckout', { exitCode: 1 }],
+      ]) {
         if (line.includes(match)) {
           const r = typeof resp === 'function' ? resp(args, calls) : resp;
           return { exitCode: 0, stdout: '', stderr: '', ...r };
@@ -2273,7 +2282,8 @@ describe('shallow checkouts deepen on demand', () => {
       urls: laneUrls(remote),
     });
 
-    expect(res).toEqual({ conflicted: true, conflicts: ['shared.txt'] });
+    // (the sparse guard also returns the staged baseline; not this test's subject)
+    expect(res).toMatchObject({ conflicted: true, conflicts: ['shared.txt'] });
   });
 
   it('deepens to a stored commit that a shallow re-clone does not hold', async () => {

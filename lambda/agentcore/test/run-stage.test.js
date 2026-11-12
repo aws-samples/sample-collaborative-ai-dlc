@@ -5683,6 +5683,64 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(ev[1].summary).toContain('owner/repo@abc12345');
   });
 
+  it('FAILS the stage when the engine refused a sparse commit outside the selection', async () => {
+    const sparseCheckout = { 'owner/repo': ['services/api'] };
+    const materialized = [];
+    const base = baseDeps();
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      materializeStage: async (args) => {
+        materialized.push(args);
+        return base.materializeStage(args);
+      },
+      // A previous attempt left the refused change staged in the workspace.
+      checkSparseSelection: async () => ({ state: 'violations', paths: ['docs/usage.md'] }),
+      // commitAll's refusal as commitAndPushAll reports it (real-Git coverage
+      // lives in sparse-checkout.test.js): nothing committed, nothing pushed.
+      // The engine saved the refused state under the side ref it was given.
+      commitAndPushAll: async ({ refusedRef }) => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            pushed: false,
+            reason: 'sparse_outside_selection',
+            detail:
+              'tracked files outside the sparse checkout selection were changed: docs/usage.md',
+            outsideSelection: ['docs/usage.md'],
+            dirty: true,
+            preserved: { ref: refusedRef, sha: 'abc1234567890' },
+          },
+        ],
+      }),
+    });
+    const res = await runStage({ ...gitArgs, sparseCheckout }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'git_commit_failed' });
+    expect(res.detail).toContain('owner/repo: sparse_outside_selection');
+    expect(res.detail).toContain('docs/usage.md');
+    expect(materialized[0].sparseCheckout).toEqual(sparseCheckout);
+    expect(materialized[0].sparseRefusals).toEqual([
+      { repo: 'owner/repo', paths: ['docs/usage.md'] },
+    ]);
+    const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+    const types = events.map((event) => event.type);
+    expect(types).toContain('v2.git.sparse_outside_selection');
+    // The timeline names where the refused state was saved.
+    expect(
+      events.find((event) => event.type === 'v2.git.sparse_outside_selection').summary,
+    ).toMatch(/saved to refs\/aidlc\/refused\/[^/\s]+\/[^/\s]+@abc12345\)/);
+    expect(types).toContain('v2.git.push_failed');
+    expect(types).not.toContain('v2.git.pushed');
+    const states = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].state);
+    expect(states).toContain('FAILED');
+    expect(states).not.toContain('SUCCEEDED');
+  });
+
   it('no event when nothing was committed and pushes were clean (quiet feed)', async () => {
     const deps = baseDeps({
       ...sourcePresent,

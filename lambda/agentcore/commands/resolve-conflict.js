@@ -102,6 +102,7 @@ const resolveConflictImplementation = async (
     intentBranch,
     gitProvider,
     repoProviders = null,
+    sparseCheckout = null,
     // Commit attribution: the starter is author; the delegated OAuth/App
     // identity resolved by the broker is committer.
     gitAuthor = null,
@@ -154,6 +155,7 @@ const resolveConflictImplementation = async (
     baseBranch: intentBranch,
     gitProvider,
     repoProviders,
+    sparseCheckout,
     projectId,
     executionId,
     workspaceDir,
@@ -194,7 +196,9 @@ const resolveConflictImplementation = async (
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: begin.error, detail: `${url}: ${begin.detail ?? ''}`.trim() };
     }
-    if (begin.conflicted) conflictedByRepo.push({ repo: url, conflicts: begin.conflicts });
+    if (begin.conflicted) {
+      conflictedByRepo.push({ repo: url, conflicts: begin.conflicts, baseline: begin.baseline });
+    }
     // A clean reverse merge (or up_to_date) needs no agent for THIS repo; the
     // conclude step below pushes any repo we merged. Track it with no
     // conflicts so conclude handles the push uniformly.
@@ -328,13 +332,14 @@ const resolveConflictImplementation = async (
 
   // ── 3. ENGINE: verify + conclude + push, per repo ──────────────────────────
   const concluded = [];
-  for (const { repo, conflicts } of conflictedByRepo) {
+  for (const { repo, conflicts, baseline } of conflictedByRepo) {
     const provider = repoProviders?.[repo] || gitProvider || 'github';
     const res = await concludeConflictMerge({
       dir: dirFor(repo),
       repo,
       unitBranch,
       conflicts,
+      baseline,
       author: gitAuthor,
       gitProvider: provider,
       projectId,
