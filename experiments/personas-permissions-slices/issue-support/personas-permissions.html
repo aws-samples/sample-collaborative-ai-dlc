@@ -1,0 +1,3729 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Personas & permissions — HTML mockups</title>
+    <link rel="icon" href="data:," />
+    <style>
+:root {
+  --bg: #fafafa;
+  --card: #fff;
+  --fg: #202024;
+  --muted: #71717b;
+  --line: #e6e6eb;
+  --soft: #f3f3f5;
+  --purple: #7953c8;
+  --purple-bg: #f4f0fc;
+  --green: #267655;
+  --green-bg: #edf8f1;
+  --amber: #906014;
+  --amber-bg: #fff8e9;
+  --red: #b43e45;
+  --radius: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+button,
+a {
+  touch-action: manipulation;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+button,
+select,
+input,
+textarea {
+  border-radius: 7px;
+}
+button {
+  color: inherit;
+}
+a {
+  color: inherit;
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 3px;
+}
+input:not([type='checkbox']),
+select,
+textarea {
+  background: white;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  padding: 9px 11px;
+}
+input[type='checkbox'] {
+  accent-color: var(--purple);
+  width: 16px;
+  height: 16px;
+}
+textarea {
+  resize: vertical;
+  width: 100%;
+  line-height: 1.7;
+  min-height: 138px;
+}
+textarea[readonly] {
+  background: #fafafa;
+}
+select {
+  max-width: 100%;
+}
+/* EnvironmentRegistry's h-8/text-xs variant of components/ui/select.tsx. */
+.app-select {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.select-trigger {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid oklch(0.915 0.006 286);
+  border-radius: 8px;
+  background: oklch(0.985 0 0);
+  color: oklch(0.145 0 0);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+}
+.select-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-trigger svg,
+.select-option svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.select-trigger svg {
+  opacity: 0.5;
+}
+.select-trigger:focus {
+  outline: none;
+  box-shadow:
+    0 0 0 2px oklch(0.985 0 0),
+    0 0 0 4px oklch(0.553 0.013 286);
+}
+.select-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid oklch(0.915 0.006 286);
+  border-radius: 8px;
+  background: white;
+  color: oklch(0.145 0 0);
+  box-shadow:
+    0 4px 6px -1px #0000001a,
+    0 2px 4px -2px #0000001a;
+}
+.select-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px 6px 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: default;
+}
+.select-option svg {
+  position: absolute;
+  left: 8px;
+  visibility: hidden;
+}
+.select-option[aria-selected='true'] svg {
+  visibility: visible;
+}
+.select-option:focus {
+  outline: none;
+  background: oklch(0.96 0.003 286);
+  color: oklch(0.205 0.006 286);
+}
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h1 {
+  font-size: 25px;
+  line-height: 1.3;
+  letter-spacing: -0.7px;
+  margin-bottom: 8px;
+  font-weight: 650;
+}
+h2 {
+  font-size: 16px;
+  line-height: 1.4;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+h3 {
+  font-size: 14px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+p {
+  line-height: 1.65;
+}
+small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  margin-top: 3px;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.tiny-label,
+.nav-label {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.flex {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.spread {
+  justify-content: space-between;
+}
+.wrap {
+  flex-wrap: wrap;
+}
+.stack {
+  display: grid;
+  gap: 18px;
+}
+.push {
+  margin-left: auto;
+}
+.mt {
+  margin-top: 18px;
+}
+.no-margin {
+  margin: 0;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  background: white;
+  font-weight: 500;
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.button:hover:not(:disabled) {
+  background: var(--soft);
+}
+.button.primary {
+  background: var(--fg);
+  color: white;
+  border-color: var(--fg);
+}
+.button.primary:hover:not(:disabled) {
+  background: #39393e;
+}
+.button.danger {
+  color: var(--red);
+}
+.button.compact {
+  padding: 6px 10px;
+}
+.text-button {
+  border: 0;
+  background: transparent;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.text-button:hover {
+  color: var(--fg);
+}
+.text-button.purple {
+  color: var(--purple);
+}
+.icon-button {
+  border: 0;
+  background: transparent;
+  width: 32px;
+  height: 32px;
+  font-size: 21px;
+  color: var(--muted);
+}
+.icon-button:hover {
+  background: var(--soft);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.badge.neutral,
+.badge.owner,
+.badge.member {
+  color: #666671;
+  background: var(--soft);
+}
+.badge.amber {
+  color: var(--amber);
+  background: var(--amber-bg);
+}
+.badge.viewer {
+  color: #58687b;
+  background: #edf1f6;
+}
+.badge.purple {
+  color: var(--purple);
+  background: var(--purple-bg);
+}
+.badge.green {
+  color: var(--green);
+  background: var(--green-bg);
+}
+.role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  padding: 3px 7px;
+  font-size: 11px;
+  border-radius: 5px;
+  line-height: 1.6;
+}
+.role button {
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.avatar {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #eeeaf5;
+  color: #6f598d;
+  font-size: 11px;
+  font-weight: 650;
+}
+.avatar.small-avatar {
+  width: 25px;
+  height: 25px;
+  font-size: 9px;
+}
+.avatar[data-color='1'] {
+  background: #e9f0f7;
+  color: #547292;
+}
+.avatar[data-color='2'] {
+  background: #e7f2ec;
+  color: #4a7d66;
+}
+.avatar[data-color='3'] {
+  background: #f5ebe3;
+  color: #9b7654;
+}
+.avatar[data-color='4'] {
+  background: #f1e9ee;
+  color: #966b85;
+}
+.avatar[data-color='5'] {
+  background: #eeedf1;
+  color: #76717f;
+}
+.person-name {
+  font-size: 13px;
+  font-weight: 550;
+}
+.prototype-bar {
+  min-height: 49px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 22px;
+  background: #26262c;
+  color: #f3f3f6;
+  flex-wrap: wrap;
+}
+.prototype-brand {
+  font-size: 12px;
+  font-weight: 550;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prototype-brand .muted {
+  color: #b8b6c1;
+}
+.prototype-dot {
+  height: 6px;
+  width: 6px;
+  background: #bc9bf2;
+  border-radius: 50%;
+}
+.prototype-nav {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.prototype-nav a {
+  text-decoration: none;
+  font-size: 11px;
+  color: #c9c7d0;
+  padding: 7px 12px;
+  border-radius: 6px;
+}
+.prototype-nav a.active {
+  background: #44434c;
+  color: white;
+}
+.prototype-bar > button {
+  margin-left: auto;
+  color: #c9c7d0;
+}
+.scenario-bar {
+  min-height: 48px;
+  padding: 8px 22px;
+  background: #f1eff5;
+  border-bottom: 1px solid #dedbe7;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.scenario-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #635d71;
+}
+.scenario-bar select {
+  font-size: 11px;
+  padding: 5px 23px 5px 8px;
+}
+.scenario-bar > span {
+  font-size: 10px;
+  color: #847b94;
+  margin-left: auto;
+}
+.app-shell {
+  display: grid;
+  grid-template-columns: 192px minmax(0, 1fr);
+  min-height: calc(100vh - 97px);
+}
+.sidebar {
+  background: #f7f7f9;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 28px 13px 18px;
+}
+.brand {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 0 10px 30px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+.brand-mark {
+  background: var(--fg);
+  color: white;
+  font-size: 23px;
+  font-weight: 600;
+  width: 31px;
+  height: 31px;
+  border-radius: 9px;
+  text-align: center;
+  line-height: 27px;
+}
+.brand-sub {
+  display: block;
+  letter-spacing: 2px;
+  font-size: 9px;
+  color: var(--muted);
+  margin-top: 2px;
+  font-weight: 500;
+}
+.workspace-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px 8px;
+  margin-bottom: 28px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.workspace-name small {
+  font-size: 10px;
+}
+.workspace-icon {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+}
+.nav-label {
+  padding: 0 11px;
+  margin: 0 0 9px;
+  font-size: 9px;
+}
+.sidebar nav {
+  margin-bottom: 28px;
+}
+.sidebar nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: 6px;
+  margin-bottom: 3px;
+}
+.sidebar nav a.active {
+  background: #eae9ef;
+  color: var(--fg);
+  font-weight: 550;
+}
+.sidebar nav a > span:first-child {
+  width: 15px;
+  font-size: 16px;
+}
+.nav-count {
+  margin-left: auto;
+  font-size: 10px;
+}
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 25px 10px 0;
+}
+.sidebar-bottom p {
+  font-size: 10px;
+  color: var(--muted);
+  margin: 8px 0 22px;
+}
+.sidebar-bottom .person-name {
+  font-size: 11px;
+}
+.sidebar-bottom small {
+  font-size: 10px;
+}
+.workspace {
+  min-width: 0;
+}
+.app-header {
+  min-height: 60px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  background: white;
+  font-size: 12px;
+}
+.breadcrumb-sep {
+  color: #c4c2ca;
+  margin: 0 12px;
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 32px;
+}
+.page-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 26px;
+}
+.page-heading p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 0;
+}
+.page-heading .badge {
+  margin-bottom: 9px;
+}
+.tabs {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 4px;
+  background: var(--soft);
+  margin-bottom: 24px;
+}
+.tabs button,
+.tabs span {
+  font-size: 12px;
+  padding: 8px 13px;
+  white-space: nowrap;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+}
+.tabs .active {
+  color: var(--fg);
+  background: white;
+  border-radius: 5px;
+  box-shadow: 0 1px 3px #17172512;
+}
+.tabs span:not(.active) {
+  opacity: 0.7;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.card-head {
+  padding: 21px 22px 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.card-head p {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 5px 0 0;
+}
+.card-body {
+  padding: 0 22px 22px;
+}
+.card-foot {
+  border-top: 1px solid var(--line);
+  padding: 14px 22px;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.card-foot .button {
+  margin-left: auto;
+}
+.search-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 17px;
+}
+.search-row input {
+  width: 265px;
+  max-width: 100%;
+  font-size: 12px;
+}
+.table-wrap {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+th {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 11px 12px;
+  background: #fafafa;
+  border-bottom: 1px solid var(--line);
+}
+td {
+  padding: 17px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+th:first-child,
+td:first-child {
+  padding-left: 0;
+}
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+th:first-child {
+  padding-left: 12px;
+}
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+.members-table td:first-child {
+  min-width: 205px;
+}
+.members-table td:nth-child(2) {
+  width: 125px;
+}
+.members-table td:nth-child(3) {
+  min-width: 205px;
+}
+.members-table td:last-child {
+  text-align: right;
+  width: 70px;
+}
+.legend {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  padding: 18px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.legend > div {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.note {
+  border-radius: 7px;
+  padding: 12px 14px;
+  background: var(--soft);
+  font-size: 12px;
+  line-height: 1.65;
+  color: #62616e;
+}
+.note.amber {
+  color: var(--amber);
+  background: var(--amber-bg);
+}
+.note.purple {
+  color: #715699;
+  background: var(--purple-bg);
+}
+.note strong {
+  font-weight: 600;
+}
+.section-label {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+/* Intent examples follow QuestionEditor, GateCard and StageReviewPanel. */
+.intent-primary {
+  min-width: 0;
+}
+.intent-screen .button {
+  font-size: 14px;
+}
+.intent-screen .button.compact {
+  font-size: 12px;
+}
+.pending-question-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.intent-permission-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.permission-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+.permission-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+.permission-tooltip [role='tooltip'] {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--fg);
+  color: white;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 1;
+}
+body:not(:has(#permission-popover:popover-open)) .permission-trigger:hover + [role='tooltip'],
+body:not(:has(#permission-popover:popover-open))
+  .permission-trigger:focus-visible
+  + [role='tooltip'] {
+  visibility: visible;
+}
+.permission-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  width: 560px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--fg);
+  box-shadow: 0 8px 24px #0000001a;
+}
+.permission-popover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+.permission-popover-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.permission-popover-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.permission-popover-body {
+  padding: 16px;
+}
+.permission-popover-foot {
+  display: flex;
+  justify-content: flex-start;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.permission-popover-foot .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.stage-permission-table {
+  table-layout: fixed;
+  border: 1px solid var(--line);
+}
+.stage-permission-table th,
+.stage-permission-table td {
+  padding: 12px;
+  border: 1px solid var(--line);
+  vertical-align: top;
+}
+.stage-permission-table th {
+  font-size: 13px;
+  font-weight: 600;
+}
+.stage-permission-table th > span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.stage-permission-table .person-line {
+  flex-wrap: wrap;
+}
+.permission-fallback {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.permission-fallback .person-line {
+  margin-top: 8px;
+}
+.intent-questions {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfaf3;
+  padding: 12px;
+}
+.intent-question {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fafafacc;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.intent-question-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.intent-question-title h2 {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  margin: 0;
+  flex: 1;
+}
+.question-number {
+  font-size: 11px;
+  font-weight: 600;
+  background: #20202418;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.question-number span {
+  color: var(--muted);
+  font-weight: 400;
+}
+.question-options {
+  display: grid;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.question-option strong {
+  font-weight: 500;
+}
+.question-option.selected {
+  background: #20202419;
+  border-color: #20202430;
+}
+.question-option.read-only {
+  cursor: default;
+}
+.question-option input {
+  accent-color: #202024;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin: 3px 0 0;
+}
+.intent-question textarea {
+  margin-top: 6px;
+  min-height: 66px;
+  font-size: 14px;
+}
+.intent-submit {
+  margin-top: 4px;
+  background: #10b981;
+  border-color: #10b981;
+  color: white;
+}
+.intent-submit:hover {
+  background: #059669;
+  color: white;
+}
+.intent-steering {
+  border: 1px dashed var(--line);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 6px;
+}
+.intent-steering summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.intent-steering textarea {
+  min-height: 60px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.intent-review .card-head h2 {
+  font-size: 16px;
+}
+.intent-review .card-head p {
+  font-size: 14px;
+}
+.review-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.review-stats > div {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.review-stats span {
+  display: block;
+  text-transform: uppercase;
+  font-size: 10px;
+  color: var(--muted);
+}
+.review-stats strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.review-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  padding: 0 16px;
+}
+.review-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+.review-section > summary::-webkit-details-marker {
+  display: none;
+}
+.review-section > summary::after {
+  content: '';
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+  margin-left: auto;
+}
+.review-section[open] > summary::after {
+  transform: rotate(225deg);
+}
+.review-section-body {
+  padding-bottom: 12px;
+  font-size: 14px;
+}
+.review-section-body.sample-artifacts {
+  margin: 0;
+}
+.review-section-body .artifact strong,
+.review-section-body .artifact p {
+  font-size: 14px;
+}
+.review-section-body details {
+  padding: 8px 0;
+}
+.review-section-body summary {
+  cursor: pointer;
+}
+.review-decision {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcfaf3;
+  margin-top: 16px;
+}
+.review-decision h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.review-decision label {
+  display: block;
+  margin: 16px 0 4px;
+  font-size: 14px;
+}
+.review-decision textarea {
+  min-height: 100px;
+  background: transparent;
+  font-size: 14px;
+  box-shadow: 0 1px 3px #0002;
+}
+.paragraph-action {
+  display: flex;
+  justify-content: flex-end;
+  margin: 6px 0 18px;
+}
+.review-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.review-actions > button:first-child {
+  margin-right: auto;
+}
+.intent-with-discussion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+.intent-discussion {
+  position: sticky;
+  top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #f7f7f9;
+  border-radius: 8px;
+  max-height: calc(100dvh - 24px);
+  display: flex;
+  flex-direction: column;
+}
+.intent-discussion h2 {
+  font-size: 14px;
+}
+.intent-discussion .tabs {
+  margin-bottom: 12px;
+}
+.intent-discussion .tabs span {
+  padding: 5px 8px;
+}
+.intent-messages {
+  overflow-y: auto;
+  min-height: 0;
+}
+.intent-discussion .discussion-composer {
+  flex-shrink: 0;
+}
+.intent-discuss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.intent-screen textarea[readonly] {
+  color: var(--muted);
+}
+@media (max-width: 1080px) {
+  .intent-with-discussion {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .intent-discussion {
+    position: static;
+  }
+}
+@media (max-width: 720px) {
+  .review-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+  .review-actions > button:first-child {
+    width: 100%;
+    margin: 0;
+  }
+  .review-actions > button {
+    flex-grow: 1;
+  }
+}
+.intent-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 22px;
+  align-items: start;
+}
+.stage-card {
+  border-top: 3px solid #ceb662;
+}
+.stage-topline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.answer-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 20px 0 9px;
+  font-size: 12px;
+  font-weight: 550;
+}
+.answer-help {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 8px 0 0;
+}
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+.permission-box {
+  padding: 18px;
+}
+.permission-box h3 {
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+.permission-box .person-line {
+  margin-top: 11px;
+}
+.person-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.permission-group {
+  margin: 18px 0;
+}
+.permission-group:last-child {
+  margin-bottom: 0;
+}
+.permission-group > .muted {
+  font-size: 11px;
+}
+.divider {
+  border-top: 1px solid var(--line);
+  margin: 17px 0;
+}
+.permission-explanation {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted);
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+.discussion-message {
+  padding: 15px 0;
+  display: flex;
+  gap: 10px;
+}
+.discussion-message p {
+  font-size: 12px;
+  margin: 7px 0 0;
+}
+.discussion-message time {
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 9px;
+}
+.discussion-composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 4px;
+}
+.discussion-composer textarea {
+  min-height: 65px;
+  font-size: 12px;
+  padding: 10px 12px;
+}
+.sample-artifacts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 17px 0;
+}
+.artifact {
+  border: 1px solid var(--line);
+  padding: 14px;
+  border-radius: 7px;
+  background: #fcfcfd;
+}
+.artifact strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.artifact p {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.history-item {
+  border-left: 1px solid var(--line);
+  padding: 0 0 22px 17px;
+  margin-left: 5px;
+  position: relative;
+}
+.history-item::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b7adc9;
+  position: absolute;
+  top: 6px;
+  left: -4px;
+}
+.history-item h3 {
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+.history-item p {
+  font-size: 12px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+.phase-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.phase-tabs button {
+  border: 1px solid var(--line);
+  background: white;
+  font-size: 11px;
+  padding: 8px 12px;
+}
+.phase-tabs button.active {
+  background: var(--purple-bg);
+  color: var(--purple);
+  border-color: #d9c7ed;
+}
+.workflow-table {
+  table-layout: fixed;
+}
+.workflow-table th:nth-child(1) {
+  width: 27%;
+}
+.workflow-table th:nth-child(2) {
+  width: 25%;
+}
+.workflow-table th:nth-child(3) {
+  width: 36%;
+}
+.workflow-table th:nth-child(4) {
+  width: 12%;
+}
+.workflow-table td {
+  padding-top: 15px;
+  padding-bottom: 15px;
+}
+.workflow-table td:last-child {
+  text-align: right;
+}
+.stage-number {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  margin-bottom: 5px;
+}
+.workflow-table .role {
+  font-size: 10px;
+  padding: 2px 5px;
+}
+.preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.preview-grid h3 {
+  font-size: 12px;
+}
+.preview-grid p {
+  margin-bottom: 0;
+}
+.empty {
+  text-align: center;
+  padding: 30px 15px;
+  color: var(--muted);
+}
+dialog {
+  border: 1px solid var(--line);
+  padding: 0;
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: 0 20px 60px #15121d25;
+}
+dialog::backdrop {
+  background: #25233244;
+}
+.modal {
+  border-radius: 12px;
+  width: 510px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100dvh - 40px);
+}
+.wide-modal {
+  width: 760px;
+}
+/* Match the existing MembersTab AlertDialog confirmation. */
+.delete-confirmation {
+  width: 512px;
+  max-width: calc(100% - 32px);
+  padding: 24px;
+  background: var(--bg);
+}
+.delete-confirmation[open] {
+  display: grid;
+  gap: 16px;
+}
+.delete-confirmation::backdrop {
+  background: rgb(0 0 0 / 80%);
+}
+.delete-header {
+  text-align: center;
+}
+.delete-header h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+.delete-header p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+.delete-actions {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+.delete-actions .button {
+  min-height: 36px;
+  padding: 8px 16px;
+  font-size: 14px;
+}
+.delete-actions .destructive {
+  background: oklch(0.577 0.245 27.325);
+  border-color: transparent;
+  color: white;
+}
+.delete-actions .destructive:hover {
+  background: oklch(0.577 0.245 27.325 / 90%);
+}
+@media (min-width: 640px) {
+  .delete-confirmation {
+    border-radius: 8px;
+  }
+  .delete-header {
+    text-align: left;
+  }
+  .delete-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}
+.stage-role-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.roles-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+}
+.roles-trigger:hover,
+.roles-trigger:focus-visible,
+.roles-trigger[aria-expanded='true'] {
+  border-color: var(--line);
+  background: var(--soft);
+}
+.roles-edit-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+  opacity: 0;
+}
+.roles-trigger:hover .roles-edit-icon,
+.roles-trigger:focus-visible .roles-edit-icon {
+  opacity: 1;
+}
+.sso-connection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 40px;
+}
+.sso-connection .field {
+  width: 240px;
+  max-width: 100%;
+  align-content: start;
+}
+.field-label {
+  font-size: 12px;
+  font-weight: 550;
+}
+.sso-source {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  font-size: 13px;
+}
+.sso-setup-note {
+  margin-bottom: 20px;
+}
+.sso-mappings-table {
+  table-layout: fixed;
+}
+.sso-mappings-table th:first-child {
+  width: 40%;
+}
+.sso-mappings-table .role,
+.sso-mappings-table td,
+#mapping-values .source-row > span {
+  overflow-wrap: anywhere;
+}
+.sso-mappings-table .roles-trigger {
+  min-width: 0;
+}
+.modal:has(#idp-value-form)[open] {
+  display: flex;
+  flex-direction: column;
+}
+.modal:has(#idp-value-form) .dialog-head,
+.modal:has(#idp-value-form) .dialog-foot {
+  flex-shrink: 0;
+}
+.modal:has(#idp-value-form) .dialog-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+.idp-value-input {
+  display: flex;
+  gap: 8px;
+}
+.idp-value-input input {
+  min-width: 0;
+}
+#mapping-values {
+  margin-bottom: 20px;
+}
+#mapping-values .text-button {
+  flex-shrink: 0;
+}
+#idp-value-form {
+  margin-bottom: 0;
+}
+.modal:has(#idp-value-form) .dialog-head h2 {
+  line-height: 1.3;
+}
+.remove-member-button:hover {
+  color: var(--red);
+}
+.role-editor {
+  width: 410px;
+  max-width: calc(100vw - 24px);
+  padding: 0;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px #15121d24;
+  overflow: hidden;
+}
+.role-editor[open] {
+  display: flex;
+  flex-direction: column;
+}
+#roles-modal {
+  width: 460px;
+  max-height: calc(100dvh - 40px);
+}
+.role-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 15px 16px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.role-editor-head h2 {
+  font-size: 14px;
+  margin: 0;
+}
+.role-editor-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+.role-editor .role-source {
+  margin-top: 18px;
+}
+.role-editor .role-source:first-child {
+  margin-top: 0;
+}
+.role-editor .source-row {
+  padding: 7px 0;
+}
+.role-editor .select-add {
+  margin-top: 8px;
+}
+.role-help {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.role-result {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  background: #faf9fc;
+  padding: 11px 16px;
+}
+.role-result strong {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 7px;
+}
+.role-editor .dialog-foot {
+  position: static;
+  flex-shrink: 0;
+  padding: 11px 16px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.dialog-head {
+  padding: 24px 24px 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dialog-head h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+.dialog-head p {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+.dialog-body {
+  padding: 24px;
+}
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 17px 24px;
+  border-top: 1px solid var(--line);
+  background: white;
+  position: sticky;
+  bottom: 0;
+}
+.field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.field > label {
+  font-size: 12px;
+  font-weight: 550;
+}
+.field p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.field input,
+.field select {
+  width: 100%;
+}
+.role-source {
+  margin-top: 24px;
+}
+.role-source h3 {
+  font-size: 12px;
+}
+.role-source p {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.source-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+  font-size: 12px;
+  gap: 10px;
+}
+.source-row:last-of-type {
+  border-bottom: 0;
+}
+.source-row.excluded > span {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.select-add {
+  width: 100%;
+  margin-top: 12px;
+}
+.final-roles {
+  background: #faf9fd;
+  border: 1px solid #e9e2f3;
+  padding: 14px;
+  border-radius: 8px;
+  margin: 24px 0;
+}
+.final-roles > strong {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.check-grid {
+  display: grid;
+  gap: 7px;
+}
+.check-grid label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px;
+}
+.check-grid label:has(input:checked) {
+  background: var(--purple-bg);
+  border-color: #dcd0ee;
+}
+.error {
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: white;
+  background: #27262e;
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 12px 20px;
+  box-shadow: 0 4px 20px #0002;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+  max-width: calc(100% - 30px);
+  text-align: center;
+}
+.toast.visible {
+  opacity: 1;
+}
+.skip-link {
+  position: fixed;
+  top: -60px;
+  z-index: 10;
+  padding: 10px;
+  background: white;
+}
+.skip-link:focus {
+  top: 5px;
+}
+@media (min-width: 1500px) {
+  main {
+    padding-top: 40px;
+  }
+  .intent-layout {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 26px;
+  }
+}
+@media (max-width: 1080px) {
+  .app-shell {
+    grid-template-columns: 166px minmax(0, 1fr);
+  }
+  main {
+    padding: 24px;
+  }
+  .intent-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .permission-box {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 22px;
+  }
+  .permission-box > h3,
+  .permission-box > .small,
+  .permission-box > .note,
+  .permission-box > .permission-explanation {
+    grid-column: 1 / -1;
+  }
+  .permission-box .divider {
+    display: none;
+  }
+  .workflow-table {
+    min-width: 650px;
+  }
+}
+@media (max-width: 720px) {
+  .prototype-bar {
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .prototype-brand {
+    width: 100%;
+  }
+  .prototype-nav a {
+    padding: 7px 9px;
+  }
+  .prototype-bar > button {
+    font-size: 10px;
+  }
+  .scenario-bar {
+    gap: 8px 14px;
+    padding: 10px 14px;
+  }
+  .scenario-bar > span {
+    display: none;
+  }
+  .app-shell {
+    display: block;
+  }
+  .sidebar {
+    display: none;
+  }
+  .app-header {
+    min-height: 48px;
+    padding: 0 16px;
+    font-size: 11px;
+  }
+  .app-header > .badge {
+    display: none;
+  }
+  main {
+    padding: 22px 16px;
+  }
+  h1 {
+    font-size: 22px;
+  }
+  .page-heading {
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .card-head {
+    padding: 18px 16px;
+  }
+  .card-body {
+    padding: 0 16px 18px;
+  }
+  .card-foot {
+    padding: 14px 16px;
+  }
+  .preview-grid,
+  .sample-artifacts,
+  .stage-role-columns {
+    grid-template-columns: 1fr;
+  }
+  .legend {
+    gap: 12px;
+  }
+  .dialog-head,
+  .dialog-body {
+    padding: 20px;
+  }
+  .dialog-foot {
+    padding: 15px 20px;
+  }
+  .action-row {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+</style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main" data-action="skip">Skip to content</a>
+    <section class="prototype-bar" aria-label="Mockup controls">
+      <div class="prototype-brand">
+        <span class="prototype-dot"></span> HTML mockups <span class="muted">/ #323</span>
+      </div>
+      <nav class="prototype-nav" aria-label="Mockup screens">
+        <a href="#members">01 Members</a>
+        <a href="#intent">02 Intent</a>
+        <a href="#workflow">03 Workflow</a>
+        <a href="#admin">04 Platform admin</a>
+      </nav>
+      <button class="text-button" data-action="reset">Reset examples</button>
+    </section>
+    <section id="scenario-bar" class="scenario-bar" aria-label="Example settings"></section>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">c</span
+          ><span>collaborative<span class="brand-sub">AI DLC</span></span>
+        </div>
+        <div class="workspace-name">
+          <span class="workspace-icon">CP</span>
+          <div>Customer portal<small>Team space</small></div>
+        </div>
+        <div class="nav-label">SPACE</div>
+        <nav aria-label="Space navigation">
+          <a href="#intent" data-nav="intent"
+            ><span aria-hidden="true">◇</span> Intents <span class="nav-count">1</span></a
+          >
+          <a href="#members" data-nav="members"><span aria-hidden="true">⚙</span> Settings</a>
+        </nav>
+        <div class="nav-label">PLATFORM</div>
+        <nav aria-label="Platform navigation">
+          <a href="#workflow" data-nav="workflow"><span aria-hidden="true">▦</span> Workflows</a>
+          <a href="#admin" data-nav="admin"><span aria-hidden="true">⚙</span> Platform admin</a>
+        </nav>
+        <div class="sidebar-bottom">
+          <span class="tiny-label">EXAMPLE WORKSPACE</span>
+          <p>Sample people and content.<br />Changes last until reset or reload.</p>
+          <div id="signed-in"></div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="app-header">
+          <div id="breadcrumb"></div>
+          <span class="badge neutral">Design proposal</span>
+        </header>
+        <main id="main" tabindex="-1"></main>
+      </div>
+    </div>
+    <div
+      id="permission-popover"
+      class="permission-popover"
+      popover
+      role="dialog"
+      aria-labelledby="permission-title"
+    ></div>
+    <dialog id="roles-modal" class="modal role-editor" aria-labelledby="roles-title"></dialog>
+    <dialog id="panel" class="modal wide-modal" aria-labelledby="panel-title"></dialog>
+    <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
+    <dialog
+      id="delete-confirmation"
+      class="delete-confirmation"
+      role="alertdialog"
+      aria-labelledby="delete-title"
+      aria-describedby="delete-description"
+    >
+      <div class="delete-header">
+        <h2 id="delete-title">Remove Member</h2>
+        <p id="delete-description"></p>
+      </div>
+      <div class="delete-actions">
+        <button class="button" data-action="close" autofocus>Cancel</button>
+        <button class="button destructive" data-action="confirm-remove">Remove</button>
+      </div>
+    </dialog>
+    <div id="toast" class="toast" role="status"></div>
+  <script>
+// Fictional identities. Stage mapping copied from the agreed P5 draft.
+window.mockData = {
+  roles: [
+    {
+      id: 'product-owner',
+      name: 'Product Owner / Product Manager',
+      short: 'Product Owner',
+    },
+    {
+      id: 'business-analyst',
+      name: 'Business Analyst',
+      short: 'Business Analyst',
+    },
+    {
+      id: 'architect',
+      name: 'Architect',
+      short: 'Architect',
+    },
+    {
+      id: 'ux-ui-designer',
+      name: 'UX/UI Designer',
+      short: 'UX',
+    },
+    {
+      id: 'developer',
+      name: 'Developer',
+      short: 'Developer',
+    },
+    {
+      id: 'qa-tester',
+      name: 'QA / Tester',
+      short: 'QA',
+    },
+    {
+      id: 'security-compliance',
+      name: 'Security / Compliance',
+      short: 'Security',
+    },
+    {
+      id: 'operations-devops',
+      name: 'Operations / DevOps',
+      short: 'Operations',
+    },
+    {
+      id: 'delivery-manager',
+      name: 'Delivery Manager',
+      short: 'Delivery Manager',
+    },
+  ],
+  stages: [
+    {
+      id: '1.1',
+      name: 'Intent Capture & Framing',
+      phase: 1,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst', 'architect'],
+    },
+    {
+      id: '1.2',
+      name: 'Market Research',
+      phase: 1,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst'],
+    },
+    {
+      id: '1.3',
+      name: 'Feasibility & Constraints',
+      phase: 1,
+      decisionMakerRoles: ['architect'],
+      contributorRoles: [
+        'product-owner',
+        'business-analyst',
+        'developer',
+        'operations-devops',
+        'security-compliance',
+      ],
+    },
+    {
+      id: '1.4',
+      name: 'Scope Definition',
+      phase: 1,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst', 'architect', 'delivery-manager'],
+    },
+    {
+      id: '1.5',
+      name: 'Team Formation',
+      phase: 1,
+      decisionMakerRoles: ['delivery-manager'],
+      contributorRoles: ['product-owner', 'architect', 'developer', 'operations-devops'],
+    },
+    {
+      id: '1.6',
+      name: 'Rough Mockups',
+      phase: 1,
+      decisionMakerRoles: ['ux-ui-designer', 'product-owner'],
+      contributorRoles: ['business-analyst', 'developer'],
+    },
+    {
+      id: '1.7',
+      name: 'Approval & Handoff',
+      phase: 1,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['delivery-manager', 'business-analyst', 'architect'],
+    },
+    {
+      id: '2.1',
+      name: 'Reverse Engineering',
+      phase: 2,
+      decisionMakerRoles: ['developer'],
+      contributorRoles: ['architect'],
+    },
+    {
+      id: '2.2',
+      name: 'Practices Discovery',
+      phase: 2,
+      decisionMakerRoles: ['developer'],
+      contributorRoles: ['operations-devops', 'qa-tester', 'security-compliance', 'architect'],
+    },
+    {
+      id: '2.3',
+      name: 'Requirements Analysis',
+      phase: 2,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst', 'architect', 'qa-tester', 'security-compliance'],
+    },
+    {
+      id: '2.4',
+      name: 'User Stories',
+      phase: 2,
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst', 'ux-ui-designer', 'developer', 'qa-tester'],
+    },
+    {
+      id: '2.5',
+      name: 'Refined Mockups',
+      phase: 2,
+      decisionMakerRoles: ['ux-ui-designer', 'product-owner'],
+      contributorRoles: ['business-analyst', 'architect', 'developer', 'qa-tester'],
+    },
+    {
+      id: '2.6',
+      name: 'Domain Design',
+      phase: 2,
+      decisionMakerRoles: ['architect'],
+      contributorRoles: [
+        'business-analyst',
+        'ux-ui-designer',
+        'developer',
+        'operations-devops',
+        'security-compliance',
+      ],
+    },
+    {
+      id: '2.7',
+      name: 'Units Generation',
+      phase: 2,
+      decisionMakerRoles: ['architect'],
+      contributorRoles: ['delivery-manager', 'developer', 'qa-tester', 'operations-devops'],
+    },
+    {
+      id: '2.8',
+      name: 'Contract Design',
+      phase: 2,
+      decisionMakerRoles: ['architect'],
+      contributorRoles: ['developer', 'operations-devops', 'security-compliance', 'qa-tester'],
+    },
+    {
+      id: '2.9',
+      name: 'Delivery Planning',
+      phase: 2,
+      decisionMakerRoles: ['delivery-manager'],
+      contributorRoles: [
+        'product-owner',
+        'architect',
+        'developer',
+        'operations-devops',
+        'qa-tester',
+      ],
+    },
+    {
+      id: '3.1',
+      name: 'Functional Design',
+      phase: 3,
+      decisionMakerRoles: ['architect'],
+      contributorRoles: [
+        'business-analyst',
+        'ux-ui-designer',
+        'developer',
+        'qa-tester',
+        'security-compliance',
+      ],
+    },
+    {
+      id: '3.2',
+      name: 'NFR Requirements',
+      phase: 3,
+      decisionMakerRoles: ['architect', 'security-compliance', 'operations-devops'],
+      contributorRoles: ['product-owner', 'developer', 'qa-tester'],
+    },
+    {
+      id: '3.3',
+      name: 'NFR Design',
+      phase: 3,
+      decisionMakerRoles: ['architect', 'security-compliance', 'operations-devops'],
+      contributorRoles: ['product-owner', 'developer', 'qa-tester'],
+    },
+    {
+      id: '3.4',
+      name: 'Infrastructure Design',
+      phase: 3,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['architect', 'developer', 'security-compliance'],
+    },
+    {
+      id: '3.5',
+      name: 'Code Generation',
+      phase: 3,
+      decisionMakerRoles: ['developer'],
+      contributorRoles: ['architect', 'qa-tester', 'security-compliance'],
+    },
+    {
+      id: '3.6',
+      name: 'Build and Test',
+      phase: 3,
+      decisionMakerRoles: ['qa-tester', 'developer'],
+      contributorRoles: ['architect', 'security-compliance', 'operations-devops'],
+    },
+    {
+      id: '3.7',
+      name: 'CI Pipeline',
+      phase: 3,
+      decisionMakerRoles: ['operations-devops', 'developer'],
+      contributorRoles: ['qa-tester', 'security-compliance'],
+    },
+    {
+      id: '4.1',
+      name: 'Deployment Pipeline',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['developer', 'architect', 'security-compliance', 'qa-tester'],
+    },
+    {
+      id: '4.2',
+      name: 'Environment Provisioning',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['architect', 'security-compliance', 'developer'],
+    },
+    {
+      id: '4.3',
+      name: 'Deployment Execution',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['developer', 'qa-tester', 'security-compliance', 'delivery-manager'],
+    },
+    {
+      id: '4.4',
+      name: 'Observability Setup',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['developer', 'qa-tester', 'security-compliance'],
+    },
+    {
+      id: '4.5',
+      name: 'Incident Response',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['developer', 'security-compliance', 'architect'],
+    },
+    {
+      id: '4.6',
+      name: 'Performance Validation',
+      phase: 4,
+      decisionMakerRoles: ['qa-tester'],
+      contributorRoles: ['developer', 'architect', 'operations-devops'],
+    },
+    {
+      id: '4.7',
+      name: 'Feedback & Optimization',
+      phase: 4,
+      decisionMakerRoles: ['operations-devops'],
+      contributorRoles: ['product-owner', 'architect', 'developer', 'qa-tester'],
+    },
+  ],
+  questions: [
+    {
+      text: 'Which sign-in methods should launch support?',
+      type: 'multi',
+      options: [
+        ['A. Company SSO', 'Employees sign in through their company identity provider.'],
+        ['B. Email sign-in', 'External customers sign in using their email address.'],
+        ['C. Social sign-in', 'Allow sign-in through a social account.'],
+      ],
+    },
+    {
+      text: 'Should web and mobile use the same customer account?',
+      type: 'single',
+      options: [
+        ['A. One shared account (recommended)', 'Use the same identity across both applications.'],
+        ['B. Separate accounts', 'Keep web and mobile identities independent.'],
+      ],
+    },
+    {
+      text: 'How should company SSO accounts be created?',
+      type: 'single',
+      options: [
+        ['A. On first sign-in', 'Create the account after a successful company sign-in.'],
+        ['B. By invitation', 'Require an invitation before the first sign-in.'],
+      ],
+    },
+    {
+      text: 'What should customers see when company sign-in is unavailable?',
+      type: 'single',
+      options: [
+        ['A. Retry message', 'Ask the customer to try company sign-in again later.'],
+        ['B. Support link', 'Explain the problem and link to customer support.'],
+        ['C. Both', 'Show a retry message and a support link.'],
+      ],
+    },
+  ],
+  ssoProviders: [
+    {
+      id: 'Entra',
+      attribute: 'roles',
+      roleMappings: {
+        'product-owner': ['ProductManagers'],
+        architect: ['Architects'],
+        developer: ['Engineering', 'Contractors'],
+      },
+    },
+    {
+      id: 'Okta',
+      attribute: 'groups',
+      roleMappings: {
+        developer: ['Developers', 'ExternalDevelopers'],
+        'qa-tester': ['QualityAssurance'],
+      },
+    },
+    {
+      id: 'CorporateOIDC',
+      attribute: 'department',
+      roleMappings: {},
+    },
+  ],
+  members: [
+    {
+      id: 'alice',
+      name: 'Alice Martin',
+      email: 'alice@example.com',
+      access: 'owner',
+      provider: 'Entra',
+      claimValues: ['ProductManagers'],
+      local: ['delivery-manager'],
+      excluded: [],
+      color: 0,
+    },
+    {
+      id: 'leo',
+      name: 'Leo Nguyen',
+      email: 'leo@example.com',
+      access: 'member',
+      provider: 'Entra',
+      claimValues: ['Architects', 'Engineering'],
+      local: [],
+      excluded: ['developer'],
+      color: 1,
+    },
+    {
+      id: 'maya',
+      name: 'Maya Chen',
+      email: 'maya@example.com',
+      access: 'member',
+      claimValues: [],
+      local: ['business-analyst', 'qa-tester'],
+      excluded: [],
+      color: 2,
+    },
+    {
+      id: 'sam',
+      name: 'Sam Rivera',
+      email: 'sam@example.com',
+      access: 'member',
+      claimValues: [],
+      local: [],
+      excluded: [],
+      color: 3,
+    },
+    {
+      id: 'nora',
+      name: 'Nora Patel',
+      email: 'nora@example.com',
+      access: 'viewer',
+      provider: 'Entra',
+      claimValues: ['Architects'],
+      local: [],
+      excluded: [],
+      color: 4,
+    },
+    {
+      id: 'alex',
+      name: 'Alex Morgan',
+      email: 'alex@example.com',
+      access: 'owner',
+      claimValues: [],
+      local: [],
+      excluded: [],
+      color: 5,
+    },
+  ],
+};
+
+</script>
+<script>
+/* Standalone UX mockup. No API calls or persistent storage. */
+(() => {
+  const { roles, stages, members: sampleMembers, ssoProviders, questions } = window.mockData;
+  const state = {
+    members: structuredClone(sampleMembers),
+    actor: 'alice',
+    sso: true,
+    providers: structuredClone(ssoProviders),
+    provider: 'Entra',
+    platformAdmin: true,
+    ssoSetup: 'configured',
+    scenario: 'assigned',
+    enforcement: 'active',
+    gate: 'question',
+    reviewOpen: true,
+    discussionScope: null,
+    selections: [[0, 1], [0], [0], ['other']],
+    freeTexts: ['', '', '', ''],
+    steering: '',
+    phase: 2,
+    systemWorkflow: false,
+    workflowEditor: true,
+    selectedStage: '2.3',
+    draftStages: structuredClone(stages),
+    publishedStages: structuredClone(stages),
+    version: 3,
+    dirty: false,
+    answer:
+      'For launch, support company SSO for employees and email sign-in for external customers. Use the same account across web and mobile.',
+    feedback: '',
+    decision: null,
+    corrections: [],
+    messages: [
+      {
+        name: 'Sam Rivera',
+        text: 'Several customers do not use company SSO. We should keep email sign-in for them.',
+        time: '10:32',
+        color: 3,
+      },
+    ],
+    reviewMessages: [],
+    audit: [
+      {
+        name: 'Alice Martin',
+        action: 'Excluded Developer for Leo Nguyen',
+        detail: 'Developer → excluded in this space',
+        time: 'Today, 09:41',
+      },
+    ],
+  };
+  let memberDraft = null;
+  let roleTrigger = null;
+  let pendingAccess = null;
+  let stageDraft = null;
+  let mappingDraft = null;
+  let toastTimer;
+  const $ = (selector) => document.querySelector(selector);
+  const esc = (s) =>
+    String(s ?? '').replace(
+      /[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+    );
+  const roleName = (id) => roles.find((role) => role.id === id)?.name ?? id;
+  const shortRole = (id) => roles.find((role) => role.id === id)?.short ?? id;
+  const actor = () => state.members.find((member) => member.id === state.actor);
+  const page = () =>
+    ['members', 'intent', 'workflow', 'admin'].includes(location.hash.slice(1))
+      ? location.hash.slice(1)
+      : 'members';
+  const accessName = (value) => ({ owner: 'Owner', member: 'Member', viewer: 'Viewer' })[value];
+  const provider = () => state.providers.find((item) => item.id === state.provider);
+  const canEditSsoMappings = () =>
+    state.platformAdmin && ['configured', 'multiple'].includes(state.ssoSetup);
+  const ssoRoles = (member) => {
+    if (!state.sso) return [];
+    const mappings =
+      state.providers.find((item) => item.id === member.provider)?.roleMappings ?? {};
+    return roles
+      .filter((role) =>
+        (mappings[role.id] ?? []).some((value) => member.claimValues.includes(value)),
+      )
+      .map((role) => role.id);
+  };
+  const effectiveRoles = (member) => [
+    ...new Set([
+      ...ssoRoles(member).filter((id) => !member.excluded.includes(id)),
+      ...member.local,
+    ]),
+  ];
+  const avatar = (person, small = false) =>
+    `<span class="avatar ${small ? 'small-avatar' : ''}" data-color="${person.color ?? 0}" aria-hidden="true">${esc(
+      person.name
+        .split(' ')
+        .map((v) => v[0])
+        .slice(0, 2)
+        .join(''),
+    )}</span>`;
+  const chips = (ids, short = false) =>
+    ids.length
+      ? ids
+          .map((id) => `<span class="role">${esc(short ? shortRole(id) : roleName(id))}</span>`)
+          .join('')
+      : '<span class="muted small">No business roles</span>';
+  const personLine = (person, extra = '') =>
+    `<div class="person-line">${avatar(person, true)}<span>${esc(person.name)}${extra ? `<small>${esc(extra)}</small>` : ''}</span>${person.id === state.actor ? '<span class="badge neutral">You</span>' : ''}</div>`;
+  const selected = (value, current) => (value === current ? 'selected' : '');
+  const disabled = (condition) => (condition ? 'disabled' : '');
+  const now = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  function toast(text) {
+    clearTimeout(toastTimer);
+    $('#toast').textContent = text;
+    $('#toast').classList.add('visible');
+    toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3500);
+  }
+  function options(items, current) {
+    return items
+      .map(
+        ([value, label]) =>
+          `<option value="${esc(value)}" ${selected(value, current)}>${esc(label)}</option>`,
+      )
+      .join('');
+  }
+  function closeDialogs() {
+    $('#permission-popover').hidePopover();
+    $('#roles-modal').close();
+    $('#panel').close();
+    $('#modal').close();
+    $('#delete-confirmation').close();
+    roleTrigger?.setAttribute('aria-expanded', 'false');
+  }
+  function openPanel(html) {
+    $('#permission-popover').hidePopover();
+    $('#panel').innerHTML = html;
+    if (!$('#panel').open) $('#panel').showModal();
+  }
+  const dialogHead = (title, subtitle = '', modal = false) =>
+    `<div class="dialog-head"><div><h2 id="${modal ? 'modal-title' : 'panel-title'}">${title}</h2>${subtitle ? `<p>${subtitle}</p>` : ''}</div><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>`;
+  const dialogFoot = (action, text) =>
+    `<div class="dialog-foot"><button class="button" data-action="close">Cancel</button><button class="button primary" data-action="${action}">${text}</button></div>`;
+
+  // These calculations only simulate the approved rules for clickable mockups.
+  // The real UI must consume backend permission results.
+  function eligibility(stage, scenario = 'assigned') {
+    if (scenario === 'unavailable')
+      return { unavailable: true, dm: [], contributors: [], deciders: [], fallback: '' };
+    const members = state.members.filter((member) => member.access !== 'viewer');
+    const dm =
+      scenario === 'assigned'
+        ? members.filter((member) =>
+            effectiveRoles(member).some((id) => stage.decisionMakerRoles.includes(id)),
+          )
+        : [];
+    const contributors =
+      scenario === 'owners'
+        ? []
+        : members.filter((member) =>
+            effectiveRoles(member).some((id) => stage.contributorRoles.includes(id)),
+          );
+    const fallback = dm.length ? '' : contributors.length ? 'contributors' : 'owners';
+    return {
+      dm,
+      contributors,
+      fallback,
+      deciders: dm.length
+        ? dm
+        : contributors.length
+          ? contributors
+          : members.filter((member) => member.access === 'owner'),
+    };
+  }
+  function currentRights() {
+    const result = eligibility(
+      stages.find((stage) => stage.id === '2.3'),
+      state.scenario,
+    );
+    const viewer = actor().access === 'viewer';
+    const preview = state.enforcement === 'preview';
+    const includesActor = (people) => people.some((person) => person.id === state.actor);
+    return {
+      ...result,
+      viewer,
+      preview,
+      edit:
+        !viewer &&
+        (preview ||
+          (!result.unavailable &&
+            (includesActor(result.dm) || includesActor(result.contributors)))),
+      decide: !viewer && (preview || (!result.unavailable && includesActor(result.deciders))),
+    };
+  }
+  function fallbackText(result) {
+    if (result.unavailable) return 'We could not load everyone’s roles. Try again before deciding.';
+    if (result.fallback === 'contributors')
+      return 'No Decision Maker role is held in this space. Contributors can decide.';
+    if (result.fallback === 'owners')
+      return 'No Decision Maker or Contributor role is held in this space. Space Owners can decide.';
+    return 'Decision Makers can submit the answer or approve this stage.';
+  }
+  function renderControls() {
+    let controls = `<label>View as <select id="actor-control">${state.members.map((person) => `<option value="${person.id}" ${selected(person.id, state.actor)}>${esc(person.name)} · ${accessName(person.access)}</option>`).join('')}</select></label>`;
+    if (page() === 'admin') {
+      controls = `<label>Platform access <select id="platform-access-control">${options(
+        [
+          ['admin', 'Platform Admin'],
+          ['none', 'No admin access'],
+        ],
+        state.platformAdmin ? 'admin' : 'none',
+      )}</select></label><label>SSO setup <select id="sso-setup-control">${options(
+        [
+          ['configured', 'One provider'],
+          ['multiple', 'Several providers'],
+          ['no-source', 'Source attribute missing'],
+          ['no-sso', 'No SSO provider'],
+        ],
+        state.ssoSetup,
+      )}</select></label>`;
+    }
+    if (page() === 'members') {
+      controls += `<label>Company sign-in <select id="sso-control">${options(
+        [
+          ['on', 'Enabled'],
+          ['off', 'Disabled'],
+        ],
+        state.sso ? 'on' : 'off',
+      )}</select></label>`;
+    }
+    if (page() === 'intent') {
+      controls += `<label>Rules <select id="enforcement-control">${options(
+        [
+          ['active', 'Enforced · P6'],
+          ['preview', 'Preview only · P5'],
+        ],
+        state.enforcement,
+      )}</select></label>`;
+      controls += `<label>Example <select id="scenario-control">${options(
+        [
+          ['assigned', 'Roles assigned'],
+          ['contributors', 'Contributor fallback'],
+          ['owners', 'Owner fallback'],
+          ['unavailable', 'Role lookup failed'],
+        ],
+        state.scenario,
+      )}</select></label>`;
+      controls += `<label>Gate <select id="gate-control">${options(
+        [
+          ['question', 'Question'],
+          ['review', 'Stage review'],
+          ['answered', 'Answered'],
+        ],
+        state.gate,
+      )}</select></label>`;
+    }
+    if (page() === 'workflow') {
+      controls += `<label>Workflow <select id="source-control">${options(
+        [
+          ['copy', 'Editable team copy'],
+          ['system', 'System workflow'],
+        ],
+        state.systemWorkflow ? 'system' : 'copy',
+      )}</select></label>`;
+      controls += `<label>Workflow access <select id="workflow-access-control">${options(
+        [
+          ['edit', 'Can edit'],
+          ['read', 'Can view'],
+        ],
+        state.workflowEditor ? 'edit' : 'read',
+      )}</select></label>`;
+    }
+    $('#scenario-bar').innerHTML = controls + '<span>SIMULATION CONTROLS · NOT PRODUCT UI</span>';
+  }
+  function render() {
+    renderControls();
+    $('.prototype-nav')
+      .querySelectorAll('a')
+      .forEach((a) => a.classList.toggle('active', a.hash === `#${page()}`));
+    document
+      .querySelectorAll('[data-nav]')
+      .forEach((a) => a.classList.toggle('active', a.dataset.nav === page()));
+    $('#signed-in').innerHTML =
+      `<div class="flex">${avatar(actor())}<div class="person-name">${esc(actor().name)}<small>${page() === 'admin' ? (state.platformAdmin ? 'Platform Admin' : 'No admin access') : accessName(actor().access)}</small></div></div>`;
+    const crumbs =
+      page() === 'admin'
+        ? ['Platform admin', 'SSO']
+        : page() === 'workflow'
+          ? ['Workflow library', 'Standard delivery']
+          : ['Customer portal', page() === 'members' ? 'Settings' : 'Customer sign-in'];
+    $('#breadcrumb').innerHTML = crumbs.map(esc).join('<span class="breadcrumb-sep">/</span>');
+    if (page() === 'members') renderMembers();
+    if (page() === 'intent') renderIntent();
+    if (page() === 'workflow') renderWorkflow();
+    if (page() === 'admin') renderAdmin();
+  }
+  function memberRow(member) {
+    const canManage = actor().access === 'owner';
+    const final = effectiveRoles(member);
+    return `<tr><td><div class="flex">${avatar(member)}<div><span class="person-name">${esc(member.name)}</span>${member.id === state.actor ? ' <span class="muted small">(you)</span>' : ''}<small>${esc(member.email)}</small></div></div></td>
+      <td>${
+        canManage
+          ? `<select class="access-select ${member.access}" data-member-access="${member.id}" aria-label="Space access for ${esc(member.name)}">${options(
+              [
+                ['owner', 'Owner'],
+                ['member', 'Member'],
+                ['viewer', 'Viewer'],
+              ],
+              member.access,
+            )}</select>`
+          : `<span class="badge ${member.access}">${accessName(member.access)}</span>`
+      }</td>
+      <td><button class="roles-trigger" data-action="member" data-id="${member.id}" aria-label="${canManage ? 'Edit' : 'View'} business roles for ${esc(member.name)}" aria-haspopup="dialog" aria-expanded="false"><span class="roles">${chips(final)}</span>${canManage ? '<svg class="roles-edit-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z"/><path d="m15 5 4 4"/></svg>' : ''}</button>${member.access === 'viewer' ? '<small>Read-only, regardless of business roles</small>' : ''}</td>
+      <td>${canManage ? `<button class="icon-button remove-member-button" data-action="remove-member" data-id="${member.id}" aria-label="Remove ${esc(member.name)} from space" title="Remove from space"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>` : ''}</td></tr>`;
+  }
+  function renderMembers() {
+    const canManage = actor().access === 'owner';
+    $('#main').innerHTML =
+      `<div class="page-heading"><div><h1>Space settings</h1><p>Manage who belongs to Customer portal.</p></div><span class="badge ${actor().access}">${accessName(actor().access)}</span></div>
+      <div class="tabs" aria-label="Settings sections"><span>General</span><span class="active">Members</span><span>Agent</span><span>Environment</span><span>Source Control</span><span>Trackers</span></div>
+      <section class="card"><div class="card-head"><div><h2>Members <span class="badge neutral">${state.members.length}</span></h2><p>Space access and business roles are managed separately.</p></div>${canManage ? '<button class="button primary" data-action="add-member">＋ Add member</button>' : ''}</div>
+      <div class="card-body"><div class="search-row"><input type="search" id="member-search" aria-label="Search members" placeholder="Search members…" /></div>
+      <div class="table-wrap"><table class="members-table"><thead><tr><th>Member</th><th>Space access</th><th>Business roles in this space</th><th><span class="visually-hidden">Remove member</span></th></tr></thead><tbody id="member-rows">${state.members.map(memberRow).join('')}</tbody></table></div>
+      <div class="legend"><div><span class="badge owner">Owner</span>Manages the space</div><div><span class="badge member">Member</span>Collaborates</div><div><span class="badge viewer">Viewer</span>Reads only</div></div></div>
+      </section>
+      <div class="note mt">Stage responsibilities come from the workflow. <button class="text-button purple" data-action="open-preview">See who can decide and contribute →</button></div>`;
+  }
+  function openMember(id, preserve = false, trigger = null) {
+    if (!preserve) {
+      closeDialogs();
+      memberDraft = structuredClone(state.members.find((member) => member.id === id));
+      roleTrigger = trigger;
+    }
+    const member = memberDraft;
+    const canManage = actor().access === 'owner';
+    const fromSso = ssoRoles(member);
+    const sourceRow = (role, source) => {
+      const excluded = source === 'sso' && member.excluded.includes(role);
+      return `<div class="source-row ${excluded ? 'excluded' : ''}"><span>${esc(roleName(role))}${excluded ? ' · excluded' : ''}</span>${canManage ? `<button class="text-button" data-action="${source === 'local' ? 'remove-local' : excluded ? 'restore' : 'exclude'}" data-role="${role}">${source === 'local' ? 'Remove' : excluded ? 'Restore' : 'Exclude here'}</button>` : ''}</div>`;
+    };
+    const availableLocal = roles.filter((role) => !member.local.includes(role.id));
+    const availableExclude = fromSso.filter((role) => !member.excluded.includes(role));
+    const editor = $('#roles-modal');
+    const focusedId = preserve ? document.activeElement.id : null;
+    editor.innerHTML = `<div class="role-editor-head"><div><h2 id="roles-title">Business roles</h2><small>${esc(member.name)}</small></div><button class="icon-button" data-action="close" aria-label="Close role editor">×</button></div>
+      <div class="role-editor-body">
+      <section class="role-source"><h3>From company ${state.sso && member.provider ? `<span class="badge neutral">${esc(member.provider)}</span>` : ''}</h3>${fromSso.map((role) => sourceRow(role, 'sso')).join('') || `<span class="muted small">${state.sso ? 'No company roles' : 'Company sign-in is off'}</span>`}</section>
+      <section class="role-source"><h3>Added in this space</h3>${member.local.map((role) => sourceRow(role, 'local')).join('') || '<span class="muted small">None</span>'}
+      ${
+        canManage && availableLocal.length
+          ? `<select id="add-local" class="select-add" aria-label="Add a business role"><option value="">＋ Add a role…</option>${options(
+              availableLocal.map((role) => [role.id, role.name]),
+              '',
+            )}</select>`
+          : ''
+      }</section>
+      <section class="role-source"><h3>Excluded company roles</h3><div class="roles">${member.excluded.map((role) => `<span class="role">${esc(roleName(role))}${canManage ? `<button data-action="restore" data-role="${role}" aria-label="Restore ${esc(roleName(role))}">×</button>` : ''}</span>`).join('') || '<span class="muted small">None</span>'}</div>
+      ${
+        canManage && availableExclude.length
+          ? `<select id="add-exclusion" class="select-add" aria-label="Exclude a company role"><option value="">Exclude a company role…</option>${options(
+              availableExclude.map((role) => [role, roleName(role)]),
+              '',
+            )}</select>`
+          : ''
+      }</section>
+      <p class="role-help">Only company roles can be excluded. Local roles can be removed.</p></div>
+      <div class="role-result"><strong>In this space</strong><div class="roles">${chips(effectiveRoles(member))}</div>${member.access === 'viewer' ? '<small>Viewer access still prevents changes.</small>' : ''}</div>
+      ${canManage ? dialogFoot('save-member', 'Save changes') : '<div class="dialog-foot"><button class="button" data-action="close">Close</button></div>'}`;
+    if (!editor.open) editor.showModal();
+    roleTrigger?.setAttribute('aria-expanded', 'true');
+    if (focusedId) editor.querySelector(`#${focusedId}`)?.focus();
+  }
+  const chatIcon =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+  const discussButton = (scope) =>
+    `<button class="icon-button intent-discuss" data-action="discuss" data-scope="${scope}" aria-label="Discuss ${scope === 'review' ? 'this decision' : 'these questions'}" title="Discuss">${chatIcon}</button>`;
+  const allQuestionsAnswered = () =>
+    questions.every((_, index) =>
+      state.selections[index].includes('other')
+        ? Boolean(state.freeTexts[index].trim())
+        : state.selections[index].length > 0,
+    );
+  const questionAnswerText = () =>
+    questions
+      .map(
+        (question, index) =>
+          `Q${index + 1}. ${question.text}\n${state.selections[index].map((choice) => (choice === 'other' ? state.freeTexts[index] : question.options[choice][0])).join('; ')}`,
+      )
+      .join('\n\n');
+  function permissionSummary(rights) {
+    const help = rights.viewer
+      ? 'Viewer access: read only.'
+      : rights.unavailable && !rights.preview
+        ? 'Roles could not be loaded. Editing and decisions are unavailable.'
+        : rights.decide
+          ? rights.edit
+            ? 'You can edit and decide.'
+            : 'You can decide. Draft editing requires a stage business role.'
+          : rights.edit
+            ? 'You can edit. A Decision Maker submits the decision.'
+            : 'You can discuss. Answers and feedback are read-only.';
+    return `<div class="intent-permission-line"><span>${esc(help)}</span><span class="permission-tooltip"><button class="icon-button permission-trigger" data-action="who-can-act" popovertarget="permission-popover" aria-label="Who can act?" aria-describedby="permission-tooltip" aria-haspopup="dialog"><svg class="lucide lucide-user-round-shield" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 21a8 8 0 0 1 8-8 5 5 0 1 1 4.845-3.759"/><path d="M22 17.5c0 2.5-1.75 3.75-3.83 4.474a.5.5 0 0 1-.335-.005C15.75 21.25 14 20 14 17.5V14a.5.5 0 0 1 .5-.499c1 0 2.25-.6 3.12-1.36a.6.6 0 0 1 .76-.001c.875.765 2.12 1.36 3.12 1.36a.5.5 0 0 1 .5.5z"/></svg></button><span id="permission-tooltip" role="tooltip">Who can act?</span></span></div>`;
+  }
+  function positionPermissionPopover() {
+    const popover = $('#permission-popover');
+    const trigger = $('.permission-trigger');
+    if (!popover.matches(':popover-open') || !trigger) return;
+    const anchor = trigger.getBoundingClientRect();
+    const { width, height } = popover.getBoundingClientRect();
+    const viewport = document.documentElement;
+    const top =
+      anchor.bottom + 8 + height <= viewport.clientHeight - 12
+        ? anchor.bottom + 8
+        : anchor.top - height - 8;
+    popover.style.left = `${Math.max(12, Math.min(anchor.left, viewport.clientWidth - width - 12))}px`;
+    popover.style.top = `${Math.max(12, Math.min(top, viewport.clientHeight - height - 12))}px`;
+  }
+  function showWhoCanAct() {
+    const rights = currentRights();
+    const review = state.gate === 'review';
+    const edit = review ? 'Can edit feedback.' : 'Can edit answers.';
+    const decide = review
+      ? 'Can edit feedback, approve or request changes.'
+      : 'Can edit and submit answers.';
+    let content;
+    if (rights.unavailable) {
+      content =
+        '<p class="small muted">Roles could not be loaded.</p><button class="button" data-action="retry-roles">Try again</button>';
+    } else {
+      const rows = Array.from(
+        { length: Math.max(1, rights.dm.length, rights.contributors.length) },
+        (_, index) =>
+          `<tr><td>${rights.dm[index] ? personLine(rights.dm[index]) : index === 0 ? '<span class="muted">None assigned</span>' : ''}</td><td>${rights.contributors[index] ? personLine(rights.contributors[index]) : index === 0 ? '<span class="muted">None assigned</span>' : ''}</td></tr>`,
+      ).join('');
+      content = `<table class="stage-permission-table"><thead><tr><th scope="col">Decision Makers<span>${decide}</span></th><th scope="col">Contributors<span>${rights.fallback === 'contributors' ? decide : edit}</span></th></tr></thead><tbody>${rows}</tbody></table>`;
+      if (rights.fallback === 'contributors') {
+        content +=
+          '<p class="permission-fallback">No Decision Makers are assigned. Contributors can submit decisions.</p>';
+      } else if (rights.fallback === 'owners') {
+        content += `<div class="permission-fallback"><p>No Decision Makers or Contributors are assigned. These Space Owners can submit decisions:</p>${rights.deciders.map((person) => personLine(person)).join('')}</div>`;
+      }
+    }
+    const popover = $('#permission-popover');
+    popover.innerHTML = `<div class="permission-popover-head"><div><h2 id="permission-title">Who can act?</h2><p>Requirements Analysis</p></div><button class="icon-button" popovertarget="permission-popover" popovertargetaction="hide" aria-label="Close permissions" autofocus>×</button></div><div class="permission-popover-body">${content}</div><div class="permission-popover-foot"><button class="text-button" data-action="open-preview"><svg class="lucide lucide-user-round-group" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21a5 5 0 00-10 0"/><path d="M22 10.5a3.5 3.5 0 00-5.507-2.868"/><path d="M7.507 7.632A3.5 3.5 0 002 10.5"/><circle cx="12" cy="13" r="3"/><circle cx="18.5" cy="4.5" r="2.5"/><circle cx="5.5" cy="4.5" r="2.5"/></svg>Stage responsibilities</button></div>`;
+    popover.showPopover({ source: $('.permission-trigger') });
+    positionPermissionPopover();
+  }
+  function renderIntent() {
+    $('#permission-popover').hidePopover();
+    const rights = currentRights();
+    const answered = state.gate === 'answered' || state.decision !== null;
+    const review = state.gate === 'review';
+    const heading = `<div class="page-heading"><div><h1>Customer sign-in</h1><p>Requirements Analysis · Standard delivery v3</p></div><span class="badge ${answered ? 'neutral' : 'amber'}">${answered ? 'Answered' : review ? 'Waiting for review' : 'Waiting for an answer'}</span></div>`;
+    let content;
+    if (answered) content = `${permissionSummary(rights)}${intentHistory(rights, true)}`;
+    else if (review && state.reviewOpen) content = reviewCard(rights);
+    else if (review)
+      content = `<section class="card"><div class="card-head"><div><h2>Review the results of Requirements Analysis</h2><p>The agent finished this stage and produced 2 artifacts. Review them and approve or request changes.</p></div></div><div class="card-body"><button class="button primary" data-action="review-stage">Review stage</button></div></section>`;
+    else
+      content = `<div class="pending-question-heading">Questions for you <span class="badge neutral">1</span></div>${permissionSummary(rights)}${questionCard(rights)}`;
+    $('#main').innerHTML =
+      `<div class="intent-screen">${heading}${rights.preview ? '<p class="note">Permission preview · P5. Stage permissions are not enforced in this example; Viewer access stays read-only.</p>' : ''}<div class="${state.discussionScope ? 'intent-with-discussion' : ''}"><div class="intent-primary">${content}</div>${state.discussionScope ? discussionCard(rights) : ''}</div></div>`;
+  }
+  function questionBlock(question, index, rights) {
+    const choices = [...question.options, ['X. Other (please specify)', 'Specify another answer.']];
+    const selectedChoices = state.selections[index];
+    return `<section class="intent-question" aria-labelledby="question-title-${index}"><div class="intent-question-title"><span class="question-number">Q${index + 1}<span> / ${questions.length}</span></span><h2 id="question-title-${index}">${esc(question.text)}</h2>${index === 0 ? discussButton('questions') : ''}</div>${question.type === 'multi' ? '<p class="small muted">Select all that apply</p>' : ''}
+      <div class="question-options">${choices
+        .map(([label, description], choiceIndex) => {
+          const value = choiceIndex === question.options.length ? 'other' : choiceIndex;
+          const active = selectedChoices.includes(value);
+          return `<label class="question-option ${active ? 'selected' : ''} ${rights.edit ? '' : 'read-only'}"><input type="${question.type === 'single' ? 'radio' : 'checkbox'}" name="question-${index}" data-question="${index}" value="${value}" ${active ? 'checked' : ''} ${disabled(!rights.edit)} /><span><strong>${esc(label)}</strong><span class="muted"> — ${esc(description)}</span></span></label>`;
+        })
+        .join(
+          '',
+        )}</div>${selectedChoices.includes('other') ? `<textarea id="question-text-${index}" data-question-text="${index}" aria-label="Other answer for question ${index + 1}" rows="2" placeholder="Type your answer..." ${rights.edit ? '' : 'readonly'}>${esc(state.freeTexts[index])}</textarea>` : ''}</section>`;
+  }
+  function questionCard(rights) {
+    return `<section class="intent-questions">${questions.map((question, index) => questionBlock(question, index, rights)).join('')}
+      <button class="button intent-submit" data-action="decide" data-decision="submit" ${disabled(!rights.decide || !allQuestionsAnswered())}>Submit All Answers</button></section>
+      <details class="intent-steering" open><summary>Add a note to the agent (optional)</summary><textarea id="agent-note" aria-label="Add a note to the agent (optional)" rows="2" ${rights.decide ? '' : 'readonly'} placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan.">${esc(state.steering)}</textarea></details>`;
+  }
+  function reviewCard(rights) {
+    return `<section class="card intent-review"><div class="card-head"><div><h2>Review: Requirements Analysis</h2><p>Review what the agent produced and approve or send it back with feedback.</p></div></div><div class="card-body">
+      <div class="review-stats"><div><span>Artifacts</span><strong>2</strong></div><div><span>Identified items</span><strong>4</strong></div><div><span>Reviewer verdict</span><strong>READY</strong></div><div><span>Status</span><strong>Waiting for review</strong></div></div>
+      <details class="review-section" open><summary>At a glance <span class="badge neutral">Agent Summary</span></summary><div class="review-section-body sample-artifacts"><div class="artifact"><strong>Sign-in requirements</strong><p>Company SSO for employees and email sign-in for external customers.</p></div><div class="artifact"><strong>Account requirements</strong><p>One customer account across web and mobile, created on first sign-in.</p></div></div></details>
+      <details class="review-section"><summary>Reviewer Agent findings <span class="badge neutral">READY</span></summary><div class="review-section-body"><p>No blocking findings. The requirements cover employee and external-customer sign-in.</p></div></details>
+      <details class="review-section"><summary>Identified items <span class="badge neutral">4</span></summary><div class="review-section-body"><ul><li>Company SSO</li><li>Email sign-in</li><li>Shared account across web and mobile</li><li>Account creation on first sign-in</li></ul></div></details>
+      <details class="review-section"><summary>Artifacts <span class="badge neutral">2</span></summary><div class="review-section-body"><details><summary>Sign-in requirements</summary><p>Employees use company SSO. External customers use email sign-in.</p></details><details><summary>Account requirements</summary><p>Web and mobile share a customer account. Accounts are created on first successful sign-in.</p></details></div></details>
+      <section class="review-decision"><div class="flex spread"><h2>Decision</h2>${discussButton('review')}</div>${permissionSummary(rights)}
+      <label for="review-feedback">Feedback for the agent</label><textarea id="review-feedback" rows="4" ${rights.edit ? '' : 'readonly'} placeholder="What should the agent change before this stage can continue?">${esc(state.feedback)}</textarea>
+      <div class="paragraph-action"><button class="button compact" data-action="new-paragraph" ${disabled(!rights.edit)}>¶ New paragraph</button></div>
+      <div class="review-actions"><button class="button" data-action="back-to-intent">Back to intent</button><button class="button" data-action="decide" data-decision="reject" ${disabled(!rights.decide || !state.feedback.trim())}>Request changes</button><button class="button primary" data-action="decide" data-decision="approve" ${disabled(!rights.decide)}>Approve — continue to user-stories</button></div></section></div></section>`;
+  }
+  function discussionCard(rights) {
+    const messages = state.discussionScope === 'review' ? state.reviewMessages : state.messages;
+    return `<aside class="intent-discussion" aria-label="Discussion"><div class="flex spread"><div class="tabs"><span>Agent</span><span>Timeline</span><span class="active">Discuss</span></div><button class="icon-button" data-action="close-discussion" aria-label="Close discussion">×</button></div><h2>${state.discussionScope === 'review' ? 'Decision' : 'Sign-in questions'}</h2><div class="intent-messages">${messages.map((message) => `<div class="discussion-message">${avatar(message)}<div><span class="person-name">${esc(message.name)}</span><time>${esc(message.time)}</time><p>${esc(message.text)}</p></div></div>`).join('') || '<p class="small muted">No messages yet.</p>'}</div>
+      ${rights.viewer ? '<p class="small muted">Viewer access: read only.</p>' : '<div class="discussion-composer"><textarea id="chat-message" aria-label="Message to the team" placeholder="Add to the discussion…"></textarea><button class="button primary" data-action="send-chat">Send</button></div>'}</aside>`;
+  }
+  function intentHistory(rights, answered) {
+    const decision =
+      state.decision ??
+      (answered
+        ? {
+            name: 'Alice Martin',
+            action: 'Submitted the answer',
+            answer: state.answer,
+            time: '10:40',
+          }
+        : null);
+    return `<section class="card"><div class="card-head"><div><h2>Intent history</h2><p>Decisions and corrections, with who acted and when.</p></div></div><div class="card-body">
+      ${state.corrections
+        .toReversed()
+        .map(
+          (item) =>
+            `<div class="history-item"><h3>${esc(item.name)} sent a correction</h3><small>${esc(item.time)} · Requirements Analysis</small><p>${esc(item.text)}</p><span class="badge amber mt">Pending delivery to the agent</span></div>`,
+        )
+        .join('')}
+      ${decision ? `<div class="history-item"><h3>${esc(decision.name)} · ${esc(decision.action)}</h3><small>${esc(decision.time)} · Requirements Analysis</small><p>${esc(decision.answer)}</p>${decision.steering ? `<p><strong>Note to the agent</strong><br />${esc(decision.steering)}</p>` : ''}${rights.decide ? '<button class="button compact mt" data-action="revise">Revise answer</button>' : ''}</div>` : ''}
+      <div class="history-item"><h3>Requirements Analysis started</h3><small>Today, 10:28</small><p>The agent asked the team to clarify sign-in requirements.</p></div></div></section>`;
+  }
+  function renderPreviewTable(mapping) {
+    const content = `<div class="table-wrap"><table><thead><tr><th>Stage</th><th>Can decide</th><th>Can contribute</th></tr></thead><tbody>${mapping
+      .filter((stage) => stage.phase === 2)
+      .map((stage) => {
+        const result = eligibility(stage, page() === 'intent' ? state.scenario : 'assigned');
+        return `<tr><td><span class="stage-number">${stage.id}</span>${esc(stage.name)}</td><td>${result.unavailable ? 'Roles unavailable' : result.deciders.map((person) => esc(person.name)).join(', ')}${result.fallback ? `<small>${result.fallback === 'owners' ? 'Space Owner' : 'Contributor'} fallback</small>` : ''}</td><td>${result.unavailable ? 'Roles unavailable' : result.contributors.map((person) => esc(person.name)).join(', ') || '<span class="muted">No Contributors</span>'}</td></tr>`;
+      })
+      .join('')}</tbody></table></div>`;
+    if (page() === 'members') return content;
+    return `<section class="card"><div class="card-head"><div><h2>Who can decide and contribute</h2><p>Current members of Customer portal · Standard delivery v3</p></div></div><div class="card-body">${content}</div></section>`;
+  }
+  function renderWorkflow() {
+    const canEdit = state.workflowEditor && !state.systemWorkflow;
+    const visibleStages = state.systemWorkflow ? stages : state.draftStages;
+    const stage = visibleStages.find((item) => item.id === state.selectedStage);
+    const result = eligibility(stage);
+    $('#main').innerHTML =
+      `<div class="page-heading"><div><span class="badge neutral">${state.systemWorkflow ? 'System workflow' : 'Team copy'}</span><h1>Standard delivery${state.systemWorkflow ? '' : ' · Customer portal'}</h1><p>Choose which business roles decide and contribute at each stage.</p></div><div class="flex wrap">${state.systemWorkflow && state.workflowEditor ? '<button class="button primary" data-action="copy-workflow">Copy to customize</button>' : `<span class="small muted">${state.dirty ? 'Unpublished changes' : `Published · v${state.version}`}</span>${canEdit ? `<button class="button primary" data-action="publish" ${disabled(!state.dirty)}>Publish new version</button>` : ''}`}</div></div>
+      <div class="tabs"><span>Compose</span><span>Scopes</span><span class="active">Stage roles</span><span>Validate</span></div>
+      ${state.systemWorkflow ? '<div class="note mt" style="margin-bottom:20px">System workflows are read-only. Create a copy to change the role mapping.</div>' : ''}
+      <section class="card"><div class="card-head"><div><h2>Stage roles</h2><p>Use the existing business roles. One stage can have several Decision Maker roles.</p></div><span class="badge neutral">30 stages</span></div><div class="card-body">
+      <div class="phase-tabs" aria-label="Workflow phases">${[
+        [1, 'Ideation'],
+        [2, 'Inception'],
+        [3, 'Construction'],
+        [4, 'Operation'],
+      ]
+        .map(
+          ([id, name]) =>
+            `<button data-action="phase" data-phase="${id}" class="${state.phase === id ? 'active' : ''}">${id}. ${name}</button>`,
+        )
+        .join('')}</div>
+      <div class="table-wrap"><table class="workflow-table"><thead><tr><th>Stage</th><th>Decision Makers</th><th>Contributors</th><th></th></tr></thead><tbody>${visibleStages
+        .filter((item) => item.phase === state.phase)
+        .map(
+          (item) =>
+            `<tr><td><span class="stage-number">${item.id}</span><span class="person-name">${esc(item.name)}</span></td><td><div class="roles">${chips(item.decisionMakerRoles, true)}</div></td><td><div class="roles">${chips(item.contributorRoles, true)}</div></td><td><button class="button compact" data-action="stage" data-id="${item.id}">${canEdit ? 'Edit' : 'View'}</button></td></tr>`,
+        )
+        .join('')}</tbody></table></div></div>
+      <div class="card-foot">Initialization stages are automatic. They do not ask for a human decision.</div></section>
+      <section class="card mt"><div class="card-head"><div><h2>Preview with a space</h2><p>See who holds these roles. Previewing does not change space membership.</p></div><span class="badge neutral">Customer portal</span></div><div class="card-body">
+      <div class="field"><label for="preview-stage">Stage</label><select id="preview-stage">${visibleStages.map((item) => `<option value="${item.id}" ${selected(item.id, state.selectedStage)}>${item.id} ${esc(item.name)}</option>`).join('')}</select></div>
+      <div class="preview-grid"><div><h3>Can decide ${result.fallback ? '<span class="badge amber">Fallback</span>' : ''}</h3>${result.deciders.map((person) => personLine(person)).join('')}</div><div><h3>Can contribute</h3>${result.contributors.map((person) => personLine(person)).join('') || '<p class="small muted">No Contributors assigned</p>'}</div></div>
+      <div class="note ${result.fallback ? 'amber' : ''} mt">${fallbackText(result)}</div></div></section>
+      <p class="permission-explanation">Publishing creates a new workflow version. Customer sign-in keeps v3. Current membership and role changes still apply to that intent.</p>`;
+  }
+  function openStage(id) {
+    stageDraft = structuredClone(
+      (state.systemWorkflow ? stages : state.draftStages).find((stage) => stage.id === id),
+    );
+    const canEdit = state.workflowEditor && !state.systemWorkflow;
+    const list = (field) =>
+      roles
+        .map(
+          (role) =>
+            `<label><input type="checkbox" data-stage-field="${field}" value="${role.id}" ${stageDraft[field].includes(role.id) ? 'checked' : ''} ${disabled(!canEdit)} />${esc(role.name)}</label>`,
+        )
+        .join('');
+    openPanel(`${dialogHead(`${stageDraft.id} ${esc(stageDraft.name)}`, canEdit ? 'Choose business roles for this workflow stage.' : 'Roles in this workflow stage.')}
+      <div class="dialog-body"><div class="stage-role-columns"><div class="field"><h3>Decision Makers</h3><p>Can edit and decide for this stage.</p><div class="check-grid">${list('decisionMakerRoles')}</div></div>
+      <div class="field"><h3>Contributors</h3><p>Can edit. Can decide only when no Decision Maker holds a role in this space.</p><div class="check-grid">${list('contributorRoles')}</div></div>
+      </div><div class="note">If neither group has a role holder, Space Owners can decide. Viewer access always stays read-only.</div><p id="stage-error" class="error mt" role="alert"></p></div>
+      ${canEdit ? dialogFoot('save-stage', 'Save to draft') : '<div class="dialog-foot"><button class="button" data-action="close">Close</button></div>'}`);
+  }
+  function showRevision() {
+    if (!currentRights().decide) return;
+    $('#modal').innerHTML =
+      `${dialogHead('Revise answer', 'Requirements Analysis', true)}<div class="dialog-body"><div class="note">Send a correction to the agent for its next stage start or resume. The original answer stays unchanged. Sending a correction does not resume the workflow.</div><div class="field mt"><label for="correction">Correction</label><textarea id="correction" placeholder="Explain what should change…"></textarea></div><p id="correction-error" class="error" role="alert"></p></div>${dialogFoot('send-correction', 'Send correction')}`;
+    $('#modal').showModal();
+  }
+  function addMemberDialog() {
+    const available = [
+      { id: 'jamie', name: 'Jamie Ellis', email: 'jamie@example.com' },
+      { id: 'robin', name: 'Robin Lee', email: 'robin@example.com' },
+    ].filter((person) => !state.members.some((member) => member.id === person.id));
+    $('#modal').innerHTML =
+      `${dialogHead('Add member', 'Choose someone from the user directory.', true)}<div class="dialog-body"><div class="field"><label for="new-person">Person</label><select id="new-person">${available.length ? available.map((person) => `<option value="${person.id}">${person.name} · ${person.email}</option>`).join('') : '<option value="">No more sample users</option>'}</select></div><div class="field"><label for="new-access">Space access</label><select id="new-access">${options(
+        [
+          ['owner', 'Owner'],
+          ['member', 'Member'],
+          ['viewer', 'Viewer'],
+        ],
+        'member',
+      )}</select><p>Business roles can be added after joining the space.</p></div></div><div class="dialog-foot"><button class="button" data-action="close">Cancel</button><button class="button primary" data-action="confirm-add" ${disabled(!available.length)}>Add member</button></div>`;
+    $('#modal').showModal();
+  }
+  function addAudit(action, detail) {
+    state.audit.push({ name: actor().name, action, detail, time: `Today, ${now()}` });
+  }
+  function renderAdmin() {
+    const heading =
+      '<div class="page-heading"><div><h1>Platform Admin</h1><p>Manage platform-wide settings.</p></div></div>';
+    if (!state.platformAdmin) {
+      $('#main').innerHTML =
+        `${heading}<div class="note">Platform Admin access is required to manage SSO mappings.</div>`;
+      return;
+    }
+    const tabs =
+      '<div class="tabs" aria-label="Platform settings"><span>Users</span><span class="active">SSO</span><span>Agents</span><span>Environments</span><span>AI-DLC versions</span><span>Source Control</span><span>Trackers</span></div>';
+    const cardHead =
+      '<div class="card-head"><div><h2>SSO business roles</h2><p>Map values from your identity provider to business roles.</p></div></div>';
+    if (state.ssoSetup === 'no-sso') {
+      $('#main').innerHTML =
+        `${heading}${tabs}<section class="card">${cardHead}<div class="card-body"><div class="note">Configure an SSO provider during platform setup to add role mappings.</div></div></section>`;
+      return;
+    }
+    const sourceMissing = state.ssoSetup === 'no-source';
+    const configuredProviders =
+      state.ssoSetup === 'multiple' ? state.providers : state.providers.slice(0, 1);
+    const rows = roles
+      .map((role) => {
+        const values = provider().roleMappings[role.id] ?? [];
+        return `<tr><td>${esc(role.name)}</td><td><button class="roles-trigger" data-action="edit-mapping" data-role="${role.id}" aria-label="Edit SSO mapping for ${esc(role.name)}" aria-haspopup="dialog" ${disabled(sourceMissing)}><span class="roles">${values.length ? values.map((value) => `<span class="role">${esc(value)}</span>`).join('') : '<span class="muted small">Add values…</span>'}</span><svg class="roles-edit-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z"/><path d="m15 5 4 4"/></svg></button></td></tr>`;
+      })
+      .join('');
+    $('#main').innerHTML =
+      `${heading}${tabs}<section class="card">${cardHead}<div class="card-body">
+      <div class="sso-connection"><div class="field">${
+        configuredProviders.length > 1
+          ? `<label for="sso-provider">Identity provider</label><select id="sso-provider">${options(
+              configuredProviders.map((item) => [item.id, item.id]),
+              state.provider,
+            )}</select>`
+          : `<span class="field-label">Identity provider</span><div class="sso-source">${esc(provider().id)}</div>`
+      }</div>
+      <div class="field"><span class="field-label">Source attribute</span><div class="sso-source">${sourceMissing ? '<span class="muted">Not configured</span>' : `<code>${esc(provider().attribute)}</code>`}</div></div></div>
+      ${sourceMissing ? '<div class="note sso-setup-note">Choose a source attribute in the SSO connection setup before editing mappings.</div>' : ''}
+      <div class="table-wrap"><table class="sso-mappings-table"><thead><tr><th>Business role</th><th>IdP values</th></tr></thead><tbody>${rows}</tbody></table></div>
+      </div></section>`;
+  }
+  function openMapping(role) {
+    if (!canEditSsoMappings()) return;
+    closeDialogs();
+    mappingDraft = { role, values: [...(provider().roleMappings[role] ?? [])] };
+    $('#modal').innerHTML =
+      `${dialogHead(esc(roleName(role)), `Grant this role when any value below is received in “${esc(provider().attribute)}” from ${esc(provider().id)}.`, true)}
+      <div class="dialog-body"><div id="mapping-values"></div>
+      <form id="idp-value-form" class="field"><label for="idp-value">IdP value</label><div class="idp-value-input"><input id="idp-value" autocomplete="off" placeholder="Enter a value…" aria-describedby="idp-value-help mapping-error" /><button class="button" type="submit">Add</button></div><p id="idp-value-help">Use the exact value sent by your IdP, including case.</p><div id="mapping-error" class="error" role="alert"></div></form></div>${dialogFoot('save-mapping', 'Save changes')}`;
+    renderMappingValues();
+    $('#modal').showModal();
+    $('#idp-value').focus();
+  }
+  function renderMappingValues() {
+    $('#mapping-values').innerHTML = mappingDraft.values.length
+      ? mappingDraft.values
+          .map(
+            (value, index) =>
+              `<div class="source-row"><span>${esc(value)}</span><button class="text-button" data-action="remove-idp-value" data-index="${index}" aria-label="Remove ${esc(value)}">Remove</button></div>`,
+          )
+          .join('')
+      : '<p class="small muted">No values mapped to this role.</p>';
+  }
+  function addIdpValue() {
+    const input = $('#idp-value');
+    const value = input.value.trim();
+    const error = !value
+      ? 'Enter an IdP value.'
+      : mappingDraft.values.includes(value)
+        ? 'This value is already added.'
+        : '';
+    $('#mapping-error').textContent = error;
+    input.setAttribute('aria-invalid', String(Boolean(error)));
+    if (error) {
+      input.focus();
+      return false;
+    }
+    mappingDraft.values.push(value);
+    input.value = '';
+    renderMappingValues();
+    input.focus();
+    return true;
+  }
+  document.addEventListener('submit', (event) => {
+    if (event.target.id !== 'idp-value-form') return;
+    event.preventDefault();
+    if (canEditSsoMappings()) addIdpValue();
+  });
+  document.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-action]');
+    if (!target || target.disabled) return;
+    const { action, id, role } = target.dataset;
+    switch (action) {
+      case 'skip':
+        event.preventDefault();
+        $('#main').focus();
+        $('#main').scrollIntoView();
+        break;
+      case 'reset':
+        location.reload();
+        break;
+      case 'close':
+        closeDialogs();
+        break;
+      case 'member':
+        openMember(id, false, target);
+        break;
+      case 'edit-mapping':
+        openMapping(role);
+        break;
+      case 'remove-idp-value':
+        if (!canEditSsoMappings()) return;
+        mappingDraft.values.splice(Number(target.dataset.index), 1);
+        renderMappingValues();
+        $('#idp-value').focus();
+        break;
+      case 'save-mapping':
+        if (!canEditSsoMappings()) return;
+        if ($('#idp-value').value && !addIdpValue()) return;
+        addAudit(
+          `Updated ${provider().id} mapping for ${roleName(mappingDraft.role)}`,
+          `${(provider().roleMappings[mappingDraft.role] ?? []).join(', ') || 'none'} → ${mappingDraft.values.join(', ') || 'none'}`,
+        );
+        provider().roleMappings[mappingDraft.role] = [...mappingDraft.values];
+        closeDialogs();
+        renderAdmin();
+        $(`[data-action="edit-mapping"][data-role="${mappingDraft.role}"]`).focus();
+        toast('SSO mapping saved in this example.');
+        break;
+      case 'remove-local':
+        memberDraft.local = memberDraft.local.filter((value) => value !== role);
+        openMember(memberDraft.id, true);
+        break;
+      case 'exclude':
+        if (!ssoRoles(memberDraft).includes(role)) return;
+        memberDraft.excluded = [...new Set([...memberDraft.excluded, role])];
+        openMember(memberDraft.id, true);
+        break;
+      case 'restore':
+        memberDraft.excluded = memberDraft.excluded.filter((value) => value !== role);
+        openMember(memberDraft.id, true);
+        break;
+      case 'save-member': {
+        if (actor().access !== 'owner') return;
+        const original = state.members.find((member) => member.id === memberDraft.id);
+        const changes = [];
+        if (JSON.stringify(original.local) !== JSON.stringify(memberDraft.local))
+          changes.push(
+            `Space roles: ${original.local.map(shortRole).join(', ') || 'none'} → ${memberDraft.local.map(shortRole).join(', ') || 'none'}`,
+          );
+        if (JSON.stringify(original.excluded) !== JSON.stringify(memberDraft.excluded))
+          changes.push(
+            `Excluded roles: ${original.excluded.map(shortRole).join(', ') || 'none'} → ${memberDraft.excluded.map(shortRole).join(', ') || 'none'}`,
+          );
+        if (changes.length) addAudit(`Updated ${original.name}`, changes.join('\n'));
+        original.local = [...memberDraft.local];
+        original.excluded = [...memberDraft.excluded];
+        closeDialogs();
+        render();
+        $(`[data-action="member"][data-id="${original.id}"]`)?.focus();
+        toast(changes.length ? 'Member updated in this example.' : 'No changes to save.');
+        break;
+      }
+      case 'confirm-access': {
+        if (actor().access !== 'owner' || !pendingAccess) return;
+        const member = state.members.find((item) => item.id === pendingAccess.id);
+        if (
+          member.access === 'owner' &&
+          pendingAccess.access !== 'owner' &&
+          !state.members.some((item) => item.id !== member.id && item.access === 'owner')
+        )
+          return;
+        addAudit(
+          `Updated ${member.name}`,
+          `Space access: ${accessName(member.access)} → ${accessName(pendingAccess.access)}`,
+        );
+        member.access = pendingAccess.access;
+        pendingAccess = null;
+        closeDialogs();
+        render();
+        toast('Space access updated in this example.');
+        break;
+      }
+      case 'remove-member': {
+        if (actor().access !== 'owner') return;
+        memberDraft = structuredClone(state.members.find((member) => member.id === id));
+        if (
+          state.members.find((member) => member.id === memberDraft.id).access === 'owner' &&
+          !state.members.some((member) => member.id !== memberDraft.id && member.access === 'owner')
+        ) {
+          toast('Keep at least one Space Owner. Make another member an Owner first.');
+          return;
+        }
+        closeDialogs();
+        $('#delete-description').textContent =
+          `${memberDraft.name} will lose access to this space immediately.`;
+        $('#delete-confirmation').showModal();
+        break;
+      }
+      case 'confirm-remove': {
+        if (actor().access !== 'owner') return;
+        const original = state.members.find((member) => member.id === memberDraft.id);
+        if (
+          original.access === 'owner' &&
+          !state.members.some((member) => member.id !== original.id && member.access === 'owner')
+        )
+          return;
+        addAudit(`Removed ${original.name}`, `${accessName(original.access)} → no space access`);
+        state.members = state.members.filter((member) => member.id !== original.id);
+        if (state.actor === original.id)
+          state.actor = state.members.find((member) => member.access === 'owner').id;
+        closeDialogs();
+        render();
+        toast('Member removed from this example.');
+        break;
+      }
+      case 'add-member':
+        if (actor().access === 'owner') addMemberDialog();
+        break;
+      case 'confirm-add': {
+        if (actor().access !== 'owner') return;
+        const userId = $('#new-person').value;
+        if (!userId) return;
+        const name = userId === 'jamie' ? 'Jamie Ellis' : 'Robin Lee';
+        const access = $('#new-access').value;
+        state.members.push({
+          id: userId,
+          name,
+          email: `${userId}@example.com`,
+          access,
+          claimValues: [],
+          local: [],
+          excluded: [],
+          color: 5,
+        });
+        addAudit(`Added ${name}`, `No space access → ${accessName(access)}`);
+        closeDialogs();
+        render();
+        toast('Member added to this example.');
+        break;
+      }
+      case 'open-preview':
+        openPanel(
+          `${dialogHead('Stage responsibilities')}<div class="dialog-body">${renderPreviewTable(page() === 'intent' ? stages : state.publishedStages)}</div><div class="dialog-foot"><button class="button" data-action="close">Close</button></div>`,
+        );
+        break;
+      case 'who-can-act':
+        event.preventDefault();
+        if ($('#permission-popover').matches(':popover-open'))
+          $('#permission-popover').hidePopover();
+        else showWhoCanAct();
+        break;
+      case 'back-to-intent':
+        state.reviewOpen = false;
+        renderIntent();
+        break;
+      case 'review-stage':
+        state.reviewOpen = true;
+        renderIntent();
+        break;
+      case 'discuss':
+        state.discussionScope = target.dataset.scope;
+        renderIntent();
+        break;
+      case 'close-discussion':
+        state.discussionScope = null;
+        renderIntent();
+        break;
+      case 'new-paragraph':
+        if (!currentRights().edit) return;
+        state.feedback += '\n\n';
+        $('#review-feedback').value = state.feedback;
+        $('#review-feedback').focus();
+        break;
+      case 'retry-roles':
+        state.scenario = 'assigned';
+        render();
+        showWhoCanAct();
+        break;
+      case 'decide': {
+        if (!currentRights().decide || state.decision) return;
+        const decision = target.dataset.decision;
+        if (decision === 'submit' && !allQuestionsAnswered()) {
+          toast('Answer every question before submitting.');
+          return;
+        }
+        if (decision === 'reject' && !state.feedback.trim()) {
+          toast('Describe the changes needed in review feedback.');
+          $('#review-feedback').focus();
+          return;
+        }
+        state.decision = {
+          name: actor().name,
+          action:
+            decision === 'approve'
+              ? 'Approved the stage'
+              : decision === 'reject'
+                ? 'Requested changes'
+                : 'Submitted the answer',
+          answer:
+            decision === 'reject'
+              ? state.feedback
+              : decision === 'approve'
+                ? 'Approved the requirements.'
+                : questionAnswerText(),
+          steering: decision === 'submit' ? state.steering : '',
+          time: now(),
+        };
+        state.gate = 'answered';
+        render();
+        toast('Decision recorded in this example.');
+        break;
+      }
+      case 'send-chat': {
+        if (actor().access === 'viewer') return;
+        const text = $('#chat-message').value.trim();
+        if (!text) return;
+        const messages = state.discussionScope === 'review' ? state.reviewMessages : state.messages;
+        messages.push({ name: actor().name, color: actor().color, text, time: now() });
+        renderIntent();
+        $('#chat-message').focus();
+        break;
+      }
+      case 'revise':
+        showRevision();
+        break;
+      case 'send-correction': {
+        if (!currentRights().decide) return;
+        const text = $('#correction').value.trim();
+        if (!text) {
+          $('#correction-error').textContent = 'Write a correction before sending it.';
+          return;
+        }
+        state.corrections.push({ name: actor().name, text, time: now() });
+        closeDialogs();
+        render();
+        toast('Correction queued in this example. Original answer unchanged.');
+        break;
+      }
+      case 'phase':
+        state.phase = Number(target.dataset.phase);
+        renderWorkflow();
+        break;
+      case 'stage':
+        openStage(id);
+        break;
+      case 'save-stage': {
+        if (!state.workflowEditor || state.systemWorkflow) return;
+        const index = state.draftStages.findIndex((stage) => stage.id === stageDraft.id);
+        state.draftStages[index] = structuredClone(stageDraft);
+        state.selectedStage = stageDraft.id;
+        state.dirty = JSON.stringify(state.draftStages) !== JSON.stringify(state.publishedStages);
+        closeDialogs();
+        renderWorkflow();
+        toast('Stage roles saved to the example draft.');
+        break;
+      }
+      case 'publish':
+        if (!state.workflowEditor || state.systemWorkflow || !state.dirty) return;
+        state.publishedStages = structuredClone(state.draftStages);
+        state.version += 1;
+        state.dirty = false;
+        renderWorkflow();
+        toast(`Published v${state.version} in this example. Customer sign-in still uses v3.`);
+        break;
+      case 'copy-workflow':
+        if (!state.workflowEditor) return;
+        state.systemWorkflow = false;
+        state.draftStages = structuredClone(stages);
+        state.dirty = true;
+        render();
+        toast('Created an editable example copy.');
+        break;
+    }
+  });
+  document.addEventListener('change', (event) => {
+    const el = event.target;
+    if (el.dataset.question !== undefined) {
+      if (!currentRights().edit) return;
+      const index = Number(el.dataset.question);
+      const choice = el.value === 'other' ? 'other' : Number(el.value);
+      state.selections[index] =
+        questions[index].type === 'single'
+          ? [choice]
+          : el.checked
+            ? [...new Set([...state.selections[index], choice])]
+            : state.selections[index].filter((value) => value !== choice);
+      if (!state.selections[index].includes('other')) state.freeTexts[index] = '';
+      renderIntent();
+      $(`[data-question="${index}"][value="${choice}"]`)?.focus({ preventScroll: true });
+    }
+    if (el.id === 'actor-control') {
+      state.actor = el.value;
+      closeDialogs();
+      render();
+    }
+    if (el.id === 'sso-control') {
+      state.sso = el.value === 'on';
+      closeDialogs();
+      render();
+    }
+    if (el.id === 'platform-access-control') {
+      state.platformAdmin = el.value === 'admin';
+      closeDialogs();
+      render();
+    }
+    if (el.id === 'sso-setup-control') {
+      state.ssoSetup = el.value;
+      if (state.ssoSetup !== 'multiple') state.provider = state.providers[0].id;
+      closeDialogs();
+      render();
+    }
+    if (el.id === 'sso-provider') {
+      state.provider = el.value;
+      renderAdmin();
+    }
+    if (el.id === 'scenario-control') {
+      state.scenario = el.value;
+      render();
+    }
+    if (el.id === 'enforcement-control') {
+      state.enforcement = el.value;
+      render();
+    }
+    if (el.id === 'gate-control') {
+      state.gate = el.value;
+      state.decision = null;
+      state.reviewOpen = true;
+      state.discussionScope = null;
+      render();
+    }
+    if (el.id === 'source-control') {
+      state.systemWorkflow = el.value === 'system';
+      render();
+    }
+    if (el.id === 'workflow-access-control') {
+      state.workflowEditor = el.value === 'edit';
+      render();
+    }
+    if (el.dataset.memberAccess) {
+      const member = state.members.find((item) => item.id === el.dataset.memberAccess);
+      const access = el.value;
+      el.value = member.access;
+      if (actor().access !== 'owner' || access === member.access) return;
+      if (
+        member.access === 'owner' &&
+        access !== 'owner' &&
+        !state.members.some((item) => item.id !== member.id && item.access === 'owner')
+      ) {
+        toast('Keep at least one Space Owner. Make another member an Owner first.');
+        return;
+      }
+      pendingAccess = { id: member.id, access };
+      closeDialogs();
+      $('#modal').innerHTML =
+        `${dialogHead('Change space access?', `${esc(member.name)}: ${accessName(member.access)} → ${accessName(access)}`, true)}<div class="dialog-body"><p class="small">${access === 'viewer' ? 'Viewer access allows reading only, regardless of business roles.' : access === 'owner' ? 'Owners can manage this space, its settings and its members.' : 'Members can collaborate. Their stage rights depend on their business roles.'}</p></div>${dialogFoot('confirm-access', 'Confirm')}`;
+      $('#modal').showModal();
+    }
+    if (el.id === 'add-local' && el.value) {
+      memberDraft.local.push(el.value);
+      openMember(memberDraft.id, true);
+    }
+    if (el.id === 'add-exclusion' && el.value) {
+      if (!ssoRoles(memberDraft).includes(el.value)) return;
+      memberDraft.excluded = [...new Set([...memberDraft.excluded, el.value])];
+      openMember(memberDraft.id, true);
+    }
+    if (el.id === 'preview-stage') {
+      state.selectedStage = el.value;
+      renderWorkflow();
+    }
+    if (el.dataset.stageField) {
+      const field = el.dataset.stageField;
+      stageDraft[field] = el.checked
+        ? [...new Set([...stageDraft[field], el.value])]
+        : stageDraft[field].filter((id) => id !== el.value);
+    }
+  });
+  document.addEventListener('input', (event) => {
+    const el = event.target;
+    if (el.id === 'review-feedback' && currentRights().edit) {
+      state.feedback = el.value;
+      $('[data-decision="reject"]').disabled = !currentRights().decide || !state.feedback.trim();
+    }
+    if (el.dataset.questionText !== undefined && currentRights().edit) {
+      state.freeTexts[Number(el.dataset.questionText)] = el.value;
+      $('[data-decision="submit"]').disabled = !currentRights().decide || !allQuestionsAnswered();
+    }
+    if (el.id === 'agent-note' && currentRights().decide) {
+      state.steering = el.value;
+    }
+    if (el.id === 'member-search') {
+      const q = el.value.trim().toLowerCase();
+      const matches = state.members.filter((member) =>
+        `${member.name} ${member.email}`.toLowerCase().includes(q),
+      );
+      $('#member-rows').innerHTML = matches.length
+        ? matches.map(memberRow).join('')
+        : '<tr><td colspan="4" class="empty">No matching members.</td></tr>';
+    }
+  });
+  window.addEventListener('hashchange', () => {
+    closeDialogs();
+    render();
+  });
+  $('#roles-modal').addEventListener('close', () => {
+    if (!$('#roles-modal').open) roleTrigger?.setAttribute('aria-expanded', 'false');
+  });
+  window.addEventListener('resize', positionPermissionPopover);
+  document.addEventListener('scroll', positionPermissionPopover, true);
+  render();
+})();
+
+</script>
+<script>
+// HTML mock of the shared Select used by EnvironmentRegistry (h-8, text-xs).
+// Keep the existing select values/change handlers; replace only their visible UI.
+(() => {
+  const chevron = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  const check = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>';
+  let nextId = 0;
+
+  function enhance(select) {
+    const id = select.id || `select-${++nextId}`;
+    const width = select.getBoundingClientRect().width;
+    const labels = Array.from(select.labels || []);
+    const name =
+      select.getAttribute('aria-label') ||
+      labels
+        .map((label) =>
+          Array.from(label.childNodes)
+            .filter((n) => n.nodeType === 3)
+            .map((n) => n.textContent)
+            .join(''),
+        )
+        .join(' ')
+        .trim();
+    const wrapper = document.createElement('span');
+    wrapper.className = `app-select ${select.className}`;
+    if (!select.matches('.select-add, .field select')) {
+      wrapper.style.width = `${Math.max(112, width + 20)}px`;
+    }
+    wrapper.innerHTML = `<button type="button" class="select-trigger" id="${id}-trigger"
+      role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-autocomplete="none"
+      aria-controls="${id}-options" data-state="closed"><span></span>${chevron}</button>
+      <div id="${id}-options" class="select-menu" role="listbox" popover="auto"></div>`;
+    const trigger = wrapper.querySelector('button');
+    const menu = wrapper.querySelector('.select-menu');
+    trigger.setAttribute('aria-label', name);
+    menu.setAttribute('aria-label', name);
+    trigger.disabled = select.disabled;
+    labels
+      .filter((label) => label.htmlFor === select.id)
+      .forEach((label) => {
+        label.htmlFor = trigger.id;
+      });
+    select.hidden = true;
+    select.after(wrapper);
+
+    function sync() {
+      trigger.querySelector('span').textContent = select.selectedOptions[0]?.label || '';
+    }
+    function close() {
+      menu.hidePopover();
+      trigger.focus();
+    }
+    function focusOption(item) {
+      if (!item) return;
+      item.focus({ preventScroll: true });
+      if (item.offsetTop < menu.scrollTop) menu.scrollTop = item.offsetTop;
+      if (item.offsetTop + item.offsetHeight > menu.scrollTop + menu.clientHeight) {
+        menu.scrollTop = item.offsetTop + item.offsetHeight - menu.clientHeight;
+      }
+    }
+    function choose(option) {
+      close();
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      sync();
+      // Role edits re-render their modal; restore focus to its replacement trigger.
+      if (!trigger.isConnected && document.activeElement === document.body) {
+        requestAnimationFrame(() => document.getElementById(trigger.id)?.focus());
+      }
+    }
+    function open() {
+      if (menu.matches(':popover-open')) {
+        close();
+        return;
+      }
+      menu.replaceChildren();
+      Array.from(select.options)
+        .filter((option) => option.value && !option.hidden)
+        .forEach((option) => {
+          const item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'select-option';
+          item.setAttribute('role', 'option');
+          item.setAttribute('aria-selected', String(option.selected));
+          item.tabIndex = -1;
+          item.disabled = option.disabled;
+          item.innerHTML = check;
+          item.append(document.createTextNode(option.label));
+          item.addEventListener('click', () => choose(option));
+          item.addEventListener('pointermove', () => item.focus({ preventScroll: true }));
+          menu.append(item);
+        });
+      const rect = trigger.getBoundingClientRect();
+      const below = innerHeight - rect.bottom - 12;
+      const above = rect.top - 12;
+      const desiredHeight = Math.min(384, menu.children.length * 32 + 10);
+      const upwards = below < desiredHeight && above > below;
+      const height = Math.min(desiredHeight, upwards ? above : below);
+      const menuWidth = Math.min(innerWidth - 16, Math.max(128, rect.width));
+      Object.assign(menu.style, {
+        width: `${menuWidth}px`,
+        maxHeight: `${Math.max(32, height)}px`,
+        left: `${Math.max(8, Math.min(rect.left, innerWidth - menuWidth - 8))}px`,
+        top: `${upwards ? rect.top - height - 4 : rect.bottom + 4}px`,
+      });
+      menu.showPopover();
+      const focused =
+        menu.querySelector('[aria-selected="true"]:not(:disabled)') ||
+        menu.querySelector('button:not(:disabled)');
+      focusOption(focused);
+    }
+    trigger.addEventListener('click', open);
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        open();
+      }
+    });
+    menu.addEventListener('beforetoggle', (event) => {
+      const opened = event.newState === 'open';
+      trigger.setAttribute('aria-expanded', String(opened));
+      trigger.dataset.state = opened ? 'open' : 'closed';
+    });
+    let search = '';
+    let lastKeyAt = 0;
+    menu.addEventListener('keydown', (event) => {
+      const items = Array.from(menu.querySelectorAll('button:not(:disabled)'));
+      const index = items.indexOf(document.activeElement);
+      let next;
+      if (event.key === 'ArrowDown') next = items[Math.min(index + 1, items.length - 1)];
+      if (event.key === 'ArrowUp') next = items[Math.max(0, index - 1)];
+      if (event.key === 'Home') next = items[0];
+      if (event.key === 'End') next = items.at(-1);
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        close();
+        return;
+      }
+      if (
+        event.key.length === 1 &&
+        event.key !== ' ' &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        search = (Date.now() - lastKeyAt < 700 ? search : '') + event.key.toLowerCase();
+        lastKeyAt = Date.now();
+        next = items.find((item) => item.textContent.toLowerCase().startsWith(search));
+      }
+      if (next) {
+        event.preventDefault();
+        focusOption(next);
+      }
+    });
+    sync();
+  }
+
+  function enhanceAll() {
+    document.querySelectorAll('select:not([hidden])').forEach(enhance);
+  }
+  // The standalone mockup renders screens and dialogs with innerHTML.
+  new MutationObserver(enhanceAll).observe(document.body, { childList: true, subtree: true });
+  enhanceAll();
+})();
+
+</script>
+</body>
+</html>
