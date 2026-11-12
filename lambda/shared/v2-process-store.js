@@ -96,6 +96,24 @@ const queryAll = async (ddb, input) => {
   return items;
 };
 
+// queryAll that stops at the first page boundary after `budget` bytes of items
+// (JSON size). `more` is true when the range was not drained; the next page may
+// still be empty.
+const queryUntilBytes = async (ddb, input, budget) => {
+  const items = [];
+  let bytes = 0;
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
+    for (const item of page.Items ?? []) {
+      items.push(item);
+      bytes += Buffer.byteLength(JSON.stringify(item));
+    }
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey && bytes < budget);
+  return { items, more: Boolean(ExclusiveStartKey) };
+};
+
 // META writes that also index the credential binding run as a transaction,
 // so a failed META condition arrives as TransactionCanceledException. Callers
 // expect the single-item ConditionalCheckFailedException, so translate it
@@ -2456,7 +2474,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // Paginated: output partitions routinely exceed one 1MB Query page.
   // OUTPUT_SEQ_MAX is the largest sequence the 12-digit padded SK holds.
   const OUTPUT_SEQ_MAX = 999_999_999_999;
-  const getOutputs = async (
+  const outputsQuery = (
     executionId,
     { stageInstanceId, filterByStage = stageInstanceId !== undefined, afterSeq = null } = {},
   ) => {
@@ -2467,7 +2485,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     } else {
       // seq > afterSeq ⇔ seq >= floor(afterSeq) + 1 for integer sequences.
       const first = Math.max(0, Math.floor(Number(afterSeq)) + 1);
-      if (first > OUTPUT_SEQ_MAX) return [];
+      if (first > OUTPUT_SEQ_MAX) return null;
       keyCondition = 'pk = :pk AND sk BETWEEN :from AND :to';
       values[':from'] = outputKey(executionId, first).sk;
       values[':to'] = outputKey(executionId, OUTPUT_SEQ_MAX).sk;
@@ -2482,14 +2500,27 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         values[':sid'] = stageInstanceId;
       }
     }
-    return queryAll(ddb, {
+    return {
       TableName: table(),
       KeyConditionExpression: keyCondition,
       ...(filters.length > 0
         ? { FilterExpression: filters.map((f) => `(${f})`).join(' AND ') }
         : {}),
       ExpressionAttributeValues: values,
-    });
+    };
+  };
+
+  const getOutputs = async (executionId, options) => {
+    const input = outputsQuery(executionId, options);
+    return input ? queryAll(ddb, input) : [];
+  };
+
+  // getOutputs bounded to about `maxBytes` of matching rows (plus at most one
+  // 1MB Query page), in seq order: { items, more }. A long run's transcript is
+  // tens of MB, more than a Lambda response can return.
+  const getOutputsPage = async (executionId, { maxBytes, ...options }) => {
+    const input = outputsQuery(executionId, options);
+    return input ? queryUntilBytes(ddb, input, maxBytes) : { items: [], more: false };
   };
 
   // List a project's executions (intents) newest-first via GSI1. Optionally
@@ -3812,6 +3843,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     raiseStageCounter,
     appendOutput,
     getOutputs,
+    getOutputsPage,
     listProjectExecutions,
     getCompletionRecords,
     listActiveExecutions,

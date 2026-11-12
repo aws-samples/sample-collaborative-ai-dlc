@@ -4514,6 +4514,52 @@ describe('GET list + detail', () => {
     expect(stale.cursor).toBe(5);
   });
 
+  it('GET /outputs pages a transcript too large for one response', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const big = 'x'.repeat(1000);
+    for (let seq = 1; seq <= 9; seq += 1) {
+      seedOutput(intent.id, seq, {
+        stageInstanceId: seq % 3 === 0 ? 'si-other' : 'si-big',
+        content: `${seq}${big}`,
+      });
+    }
+    const budget = 2500;
+    vi.stubEnv('OUTPUTS_PAGE_BYTES', String(budget));
+    try {
+      const seen = [];
+      let res = JSON.parse(
+        (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-big' })).body,
+      );
+      const pages = [res];
+      while (res.more) {
+        res = JSON.parse(
+          (
+            await getOutputs(sub, projectId, intent.id, {
+              stageInstanceId: 'si-big',
+              afterSeq: String(res.cursor),
+            })
+          ).body,
+        );
+        pages.push(res);
+        if (pages.length > 20) throw new Error('paging did not finish');
+      }
+      for (const page of pages) {
+        seen.push(...page.outputs.map((o) => o.seq));
+        expect(Buffer.byteLength(JSON.stringify(JSON.stringify(page.outputs)))).toBeLessThan(
+          budget + 200,
+        );
+      }
+      expect(pages.length).toBeGreaterThan(2);
+      expect(pages[0].cursor).toBe(pages[0].outputs.at(-1).seq);
+      expect([...new Set(seen)]).toEqual([1, 2, 4, 5, 7, 8]);
+      expect(pages.at(-1).more).toBeUndefined();
+    } finally {
+      vi.stubEnv('OUTPUTS_PAGE_BYTES', undefined);
+    }
+  });
+
   it('GET /outputs 404s across projects (membership enforced)', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -8302,6 +8348,148 @@ describe('GET /artifacts/{id}/impact', () => {
   });
 });
 
+describe('GET /artifacts (paged artifact bodies)', () => {
+  const getDetail = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+  const getContents = (sub, projectId, intentId, cursor) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}/artifacts`,
+      pathParameters: { projectId, intentId },
+      queryStringParameters: cursor ? { cursor } : null,
+      ...claims(sub),
+    });
+  const readAll = async (sub, projectId, intentId) => {
+    const pages = [];
+    let cursor = null;
+    do {
+      const res = await getContents(sub, projectId, intentId, cursor);
+      expect(res.statusCode).toBe(200);
+      const page = JSON.parse(res.body);
+      pages.push(page.artifacts);
+      cursor = page.nextCursor;
+    } while (cursor && pages.length < 10);
+    return pages;
+  };
+
+  it('omits bodies from the intent detail and serves them separately', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const detail = JSON.parse((await getDetail(sub, projectId, intent.id)).body);
+    expect(detail.artifacts.map((a) => a.id).toSorted()).toEqual(['bvb', 'mr', 'trends']);
+    for (const artifact of detail.artifacts) expect(artifact).not.toHaveProperty('content');
+
+    const pages = await readAll(sub, projectId, intent.id);
+    expect(pages).toHaveLength(1);
+    expect(
+      pages[0]
+        .map(({ id, content }) => ({ id, content }))
+        .toSorted((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual([
+      { id: 'bvb', content: '# x' },
+      { id: 'mr', content: '# x' },
+      { id: 'trends', content: '# x' },
+    ]);
+    // Each body pairs with exactly one detail artifact.
+    const keys = new Map(detail.artifacts.map((a) => [a.contentKey, a.id]));
+    expect(keys.size).toBe(3);
+    for (const entry of pages[0]) expect(keys.get(entry.contentKey)).toBe(entry.id);
+  });
+
+  it('pages bodies within the byte budget without gaps or repeats', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '60');
+    try {
+      const pages = await readAll(sub, projectId, intent.id);
+      expect(pages.length).toBeGreaterThan(1);
+      expect(
+        pages
+          .flat()
+          .map((a) => a.id)
+          .toSorted(),
+      ).toEqual(['bvb', 'mr', 'trends']);
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+    }
+  });
+
+  it('marks a body larger than any page instead of failing the page', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await seedArtifact(intent.id, 'big', { type: 'big-doc', content: 'x'.repeat(500) });
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '200');
+    try {
+      const entries = (await readAll(sub, projectId, intent.id)).flat();
+      expect(entries.find((a) => a.id === 'big')).toMatchObject({
+        id: 'big',
+        content: null,
+        contentOmitted: 'too_large',
+      });
+      expect(entries.find((a) => a.id === 'mr')).toMatchObject({ id: 'mr', content: '# x' });
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+    }
+  });
+
+  it('keeps same-id artifacts from different lanes apart', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    for (const unit of ['alpha', 'beta']) {
+      const stage = `si-spec:unit-${unit}`;
+      await g
+        .addV('Artifact')
+        .property('id', 'spec')
+        .property('intent_id', intent.id)
+        .property('artifact_type', 'spec')
+        .property('unit_slug', unit)
+        .property('section_index', '1')
+        .property('created_by_stage_instance_id', stage)
+        .property('content', `# ${unit}`)
+        .next();
+      await g
+        .V()
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to(
+          gremlin.process.statics
+            .V()
+            .has('Artifact', 'id', 'spec')
+            .has('intent_id', intent.id)
+            .has('created_by_stage_instance_id', stage),
+        )
+        .next();
+    }
+
+    const detail = JSON.parse((await getDetail(sub, projectId, intent.id)).body);
+    const byUnit = new Map(detail.artifacts.map((a) => [a.unitSlug, a.contentKey]));
+    expect(byUnit.size).toBe(2);
+    expect(byUnit.get('alpha')).not.toBe(byUnit.get('beta'));
+    const bodies = new Map(
+      (await readAll(sub, projectId, intent.id)).flat().map((e) => [e.contentKey, e.content]),
+    );
+    expect(bodies.get(byUnit.get('alpha'))).toBe('# alpha');
+    expect(bodies.get(byUnit.get('beta'))).toBe('# beta');
+  });
+
+  it('404s an intent from another project and 403s a non-member', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const otherProjectId = await seedV2Project(sub);
+    expect((await getContents(sub, otherProjectId, intent.id)).statusCode).toBe(404);
+    expect((await getContents(`outsider-${randomUUID()}`, projectId, intent.id)).statusCode).toBe(
+      403,
+    );
+  });
+});
+
 const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =>
   handler({
     httpMethod: 'PUT',
@@ -8377,7 +8565,19 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
       ).body,
     );
     const mr = detail.artifacts.find((a) => a.id === 'mr');
-    expect(mr.content).toBe('# Market research\nEU focus.');
+    const contents = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}/artifacts`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(contents.artifacts.find((a) => a.id === 'mr').content).toBe(
+      '# Market research\nEU focus.',
+    );
     expect(mr.editOrigin).toBe('human');
     expect(mr.editedBy).toBe(sub);
     expect(mr.staleSince).toBeNull(); // the edited doc itself is never stale
@@ -11161,6 +11361,64 @@ describe('GET intent — timeline event fields', () => {
     const event = JSON.parse(res.body).events.find((row) => row.eventId === 'e1');
     expect(event).toBeDefined();
     expect(event.detail).toEqual({ round: 1, maxRounds: 2 });
+  });
+});
+
+describe('GET intent — sensor run detail', () => {
+  it('drops the per-artifact coverage records and provenance the UI never renders', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const sensorRow = (id, sensorId, detail) =>
+      procStore.set(keyOf(`EXEC#${intent.id}`, `SENSOR#T#${id}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `SENSOR#T#${id}`,
+        type: 'SensorRun',
+        executionId: intent.id,
+        sensorRunId: id,
+        stageInstanceId: 'si-1',
+        sensorId,
+        result: 'FAIL',
+        severity: 'blocking',
+        held: false,
+        detail,
+        timestamp: 'T1',
+      });
+    sensorRow('s1', 'upstream-coverage', {
+      artifacts: [
+        {
+          artifact: 'design',
+          id: 'design',
+          consumes: ['req'],
+          unreferenced: [],
+          findings_count: 0,
+        },
+        { artifact: 'spec', id: null, reason: 'not found in graph', headings: ['## A'] },
+      ],
+    });
+    sensorRow('s2', 'linter', {
+      reason: 'lint failed',
+      provenance: { files: ['a.js', 'b.js'] },
+      files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
+    });
+    sensorRow('s3', 'reviewer:arch', { verdict: 'NOT_READY', findings: 'fix it', round: 1 });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const byId = new Map(JSON.parse(res.body).sensorRuns.map((s) => [s.sensorRunId, s.detail]));
+    expect(byId.get('s1')).toEqual({
+      artifacts: [{ artifact: 'spec', reason: 'not found in graph', id: null }],
+    });
+    expect(byId.get('s2')).toEqual({
+      reason: 'lint failed',
+      files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
+    });
+    expect(byId.get('s3')).toEqual({ verdict: 'NOT_READY', findings: 'fix it', round: 1 });
   });
 });
 

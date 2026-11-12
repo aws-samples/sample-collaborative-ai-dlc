@@ -1223,6 +1223,26 @@ describe('createProcessStore', () => {
     expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
   });
 
+  it('getOutputsPage stops at the first page boundary past maxBytes', async () => {
+    const row = (seq) => ({ sk: `OUTPUT#00000000000${seq}`, seq, content: 'x'.repeat(100) });
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [row(1)], LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'a' } })
+      .resolvesOnce({ Items: [row(2)], LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'b' } })
+      .resolvesOnce({ Items: [row(3)] });
+    const page = await store.getOutputsPage('e1', { stageInstanceId: 'si-1', maxBytes: 150 });
+    expect(page.items.map((r) => r.seq)).toEqual([1, 2]);
+    expect(page.more).toBe(true);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.FilterExpression).toBe(
+      '(stageInstanceId = :sid)',
+    );
+    expect(await store.getOutputsPage('e1', { afterSeq: 999_999_999_999, maxBytes: 1 })).toEqual({
+      items: [],
+      more: false,
+    });
+  });
+
   it('recordMetric stores the numeric bag', async () => {
     ddb.on(PutCommand).resolves({});
     await store.recordMetric({

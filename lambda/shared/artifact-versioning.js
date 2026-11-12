@@ -142,7 +142,8 @@ export const sameLogicalArtifact = (row, identity) => {
   return true;
 };
 
-export const readIntentArtifactEntries = async (g, intentId) => {
+// `withContent: false` skips the bodies, for callers that only need metadata.
+export const readIntentArtifactEntries = async (g, intentId, { withContent = true } = {}) => {
   const rows = await g
     .V()
     .has('Intent', 'id', intentId)
@@ -150,12 +151,28 @@ export const readIntentArtifactEntries = async (g, intentId) => {
     .hasLabel('Artifact')
     .project('vertexId', 'props')
     .by(T.id)
-    .by(__.valueMap(true))
+    .by(
+      withContent
+        ? __.valueMap(true)
+        : __.properties().not(__.hasKey('content')).group().by(__.key()).by(__.value()),
+    )
     .toList();
   return rows.map((row) => ({
     vertexId: row.get('vertexId'),
     ...flattenVertexMap(row.get('props')),
   }));
+};
+
+// Bodies of the given Artifact vertices, keyed by vertex id (null when unset).
+export const readArtifactContents = async (g, vertexIds) => {
+  if (vertexIds.length === 0) return new Map();
+  const rows = await g
+    .V(...vertexIds)
+    .project('vertexId', 'content')
+    .by(T.id)
+    .by(__.values('content').fold())
+    .toList();
+  return new Map(rows.map((row) => [row.get('vertexId'), row.get('content')[0] ?? null]));
 };
 
 export const legacyVersionId = (row) =>
