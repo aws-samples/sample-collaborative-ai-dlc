@@ -3530,7 +3530,13 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
+    },
+    var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    # Execution-scoped grants authorize engine-data calls only; without engine
+    # data the orchestrator signs stage and conflict grants alone.
+    var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
+    local.notification_event_env,
+  )
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 

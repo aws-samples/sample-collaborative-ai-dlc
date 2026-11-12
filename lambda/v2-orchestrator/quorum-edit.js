@@ -82,6 +82,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
             projectId,
             intentId: meta.intentId,
             executionId,
+            engineData: deps.engineData === true,
           })
         : null;
     const payload = gatewayScope

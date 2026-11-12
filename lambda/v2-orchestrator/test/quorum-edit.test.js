@@ -183,6 +183,7 @@ describe('runQuorumEdit', () => {
 
   it('signs an execution-scoped gateway grant from META into both runtime dispatches', async () => {
     deps.store.getExecution = vi.fn(async () => ({ ...META, projectId: 'p-meta' }));
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.projectId}`);
     const run = runQuorumEdit(EVENT, ctx, deps);
     await vi.waitFor(() => {
@@ -198,6 +199,19 @@ describe('runQuorumEdit', () => {
       [{ mode: 'execution', projectId: 'p-meta', intentId: 'i1', executionId: 'i1' }],
       [{ mode: 'execution', projectId: 'p-meta', intentId: 'i1', executionId: 'i1' }],
     ]);
+  });
+
+  it('signs no execution grant when the Gateway is on without engine data', async () => {
+    deps.issueGatewayGrant = vi.fn(async () => 'gw');
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    approve();
+    expect(await run).toMatchObject({ ok: true });
+    expect(invokes).toHaveLength(2);
+    for (const p of invokes) expect(p).not.toHaveProperty('gatewayGrant');
+    expect(deps.issueGatewayGrant).not.toHaveBeenCalled();
   });
 
   it('sends no gateway grant when the deployment has not enabled the Gateway', async () => {

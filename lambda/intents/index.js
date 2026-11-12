@@ -239,7 +239,8 @@ const issueInvocationAgentCredentialGrant = async (request) =>
   (await prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm }))
     .agentCredentialGrant;
 
-// Null unless the deployment enabled the MCP Gateway (GATEWAY_GRANT_KEY_ID).
+// Null unless the deployment enabled engine data: Terraform wires this
+// Lambda's GATEWAY_GRANT_KEY_ID only then.
 const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
 
 // The signed grant a runtime command's registry scope declares, as payload
@@ -248,7 +249,10 @@ const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
 // no grant, so the payload stays unchanged when the Gateway is off.
 const gatewayGrantFields = async (command, { projectId, intentId }) => {
   const scope = gatewayGrantIssuer
-    ? gatewayScopeForCommand({ command }, { projectId, intentId, executionId: intentId })
+    ? gatewayScopeForCommand(
+        { command },
+        { projectId, intentId, executionId: intentId, engineData: true },
+      )
     : null;
   return scope ? { gatewayGrant: await gatewayGrantIssuer(scope) } : {};
 };

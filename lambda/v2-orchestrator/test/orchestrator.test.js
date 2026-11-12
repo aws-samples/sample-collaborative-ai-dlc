@@ -244,6 +244,7 @@ describe('orchestrator durable handler', () => {
   });
 
   it('attaches a stage-scoped gateway grant only to MCP-launching commands', async () => {
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.stageId}`);
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
@@ -282,6 +283,16 @@ describe('orchestrator durable handler', () => {
     expect(deps.issueGatewayGrant).toHaveBeenCalledWith(
       expect.objectContaining({ stageId: 'a', policyDigest: gatewayPolicyDigest(policy) }),
     );
+  });
+
+  it('signs only stage grants when the Gateway is on without engine data', async () => {
+    deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.stageId}`);
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    const initWs = invokes.find((p) => p.command === 'init-ws-start' && p.callbackId);
+    expect(initWs).toBeDefined();
+    expect(initWs).not.toHaveProperty('gatewayGrant');
+    expect(stageStarts().map((s) => s.gatewayGrant)).toEqual(['gw:stage:a', 'gw:stage:b']);
+    for (const [scope] of deps.issueGatewayGrant.mock.calls) expect(scope.mode).toBe('stage');
   });
 
   it('sends no gateway grant when the deployment has not enabled the Gateway', async () => {
@@ -1892,6 +1903,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
   it('issues each dispatch the grant its registry scope declares', async () => {
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}`);
     const res = await start();
     expect(res.ok).toBe(true);

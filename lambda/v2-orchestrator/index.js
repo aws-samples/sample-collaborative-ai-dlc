@@ -308,6 +308,8 @@ const defaultDeps = () => ({
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   issueGatewayGrant: gatewayGrantIssuer,
+  // Execution grants are signed only when they have a reader: engine data.
+  engineData: process.env.ENGINE_DATA_ENABLED === 'true',
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   // Completes this execution's own callback for a gate answered before its
@@ -564,6 +566,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             intentId: meta.intentId,
             executionId,
             policy,
+            engineData: deps.engineData === true,
           })
         : null;
     const payload = gatewayScope

@@ -127,10 +127,11 @@ export const derToJose = (der) => {
 // Identity comes from the caller's authoritative record; only the lane/stage
 // selectors the control plane itself put in the command are read from it.
 // Discussion grants are issued by the discussions Lambda, so they map to null
-// here like commands that need no grant.
+// here like commands that need no grant. Execution grants only authorize
+// engine-data calls, so without engine data they map to null too.
 export const gatewayScopeForCommand = (
   payload,
-  { projectId, intentId, executionId, policy = null },
+  { projectId, intentId, executionId, policy = null, engineData = false },
 ) => {
   switch (commandDefinition(payload?.command)?.grantScope) {
     case GRANT_SCOPES.STAGE:
@@ -156,7 +157,7 @@ export const gatewayScopeForCommand = (
         sectionIndex: payload.sectionIndex,
       };
     case GRANT_SCOPES.EXECUTION:
-      return { mode: 'execution', projectId, intentId, executionId };
+      return engineData ? { mode: 'execution', projectId, intentId, executionId } : null;
     default:
       return null;
   }

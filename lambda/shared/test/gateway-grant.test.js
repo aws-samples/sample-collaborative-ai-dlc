@@ -301,6 +301,7 @@ describe('gateway grant', () => {
 
   it('scopes engine data commands to their execution only', async () => {
     const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    const engineData = { ...identity, engineData: true };
     for (const command of [
       'init-ws',
       'promote-units',
@@ -318,12 +319,12 @@ describe('gateway grant', () => {
       expect(
         gatewayScopeForCommand(
           { command, stageId: 's', unitSlug: 'api', sectionIndex: 1, stageCallbackId: 'cb' },
-          { ...identity, policy: { learnings: 'off' } },
+          { ...engineData, policy: { learnings: 'off' } },
         ),
       ).toEqual({ mode: 'execution', ...identity });
     }
     const claims = await verifyGatewayGrant(
-      await issueGatewayGrant(gatewayScopeForCommand({ command: 'init-ws' }, identity), signer),
+      await issueGatewayGrant(gatewayScopeForCommand({ command: 'init-ws' }, engineData), signer),
       { publicKeyFor: resolver(), now: () => NOW },
     );
     expect(claims).toMatchObject({
@@ -378,11 +379,24 @@ describe('gateway grant', () => {
   it('issues an execution grant for inspect and the lane commands', () => {
     const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
     for (const command of ['inspect', 'init-lane', 'merge-lane', 'reconcile-lane']) {
-      expect(gatewayScopeForCommand({ command, unitSlug: 'api' }, identity)).toEqual({
-        mode: 'execution',
-        ...identity,
-      });
+      expect(
+        gatewayScopeForCommand({ command, unitSlug: 'api' }, { ...identity, engineData: true }),
+      ).toEqual({ mode: 'execution', ...identity });
     }
+  });
+
+  it('issues no execution grant without engine data, and keeps stage and conflict grants', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of ['init-ws', 'promote-units', 'merge-lane', 'inspect']) {
+      expect(gatewayScopeForCommand({ command }, identity)).toBeNull();
+      expect(gatewayScopeForCommand({ command }, { ...identity, engineData: false })).toBeNull();
+    }
+    expect(gatewayScopeForCommand({ command: 'run-stage-start', stageId: 's' }, identity)).toEqual(
+      expect.objectContaining({ mode: 'stage', stageId: 's' }),
+    );
+    expect(
+      gatewayScopeForCommand({ command: 'resolve-conflict', unitSlug: 'api' }, identity),
+    ).toEqual(expect.objectContaining({ mode: 'conflict', unitSlug: 'api' }));
   });
 });
 
