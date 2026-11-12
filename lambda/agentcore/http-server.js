@@ -541,6 +541,7 @@ const main = async () => {
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({
       ...graphDeps,
+      engineData,
       store,
       broadcast,
       availableClis: context.availableClis,

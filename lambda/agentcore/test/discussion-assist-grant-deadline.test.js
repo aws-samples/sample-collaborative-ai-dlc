@@ -64,6 +64,7 @@ const harness = ({
   restoreMs = 0,
   persistMs = 0,
   restore = () => sleep(restoreMs),
+  engineData = true,
 } = {}) => {
   const audit = [];
   const writes = [];
@@ -80,32 +81,37 @@ const harness = ({
       verifyGatewayGrant(token, { publicKeyFor: async (kid) => (kid === KID ? publicKey : null) }),
     createStore: () => ({ getExecution: async () => ({ projectId: P, intentId: I }) }),
     withGraph: (fn) => fn(fakeG),
-    createOps: () => ({
-      readProjectCliConfig: async () => ({
-        agentCli: 'opencode',
-        cliModels: null,
-        tierModels: null,
-      }),
-      readDiscussionContext: async () => ({
-        discussion: { entity_type: 'artifact', entity_id: 'a-1', status: 'open' },
-        selected: [],
-        recent: [],
-        anchor: null,
-        intentMap: {},
-      }),
-      completeDiscussionAssist: async (input) => {
-        writes.push({ ...input, at: Date.now() - T0 });
-        return { id: input.messageId, assistStatus: input.status, content: input.content };
-      },
-    }),
+    createOps: () => ops,
     audit: (entry) => audit.push(entry),
   });
+  const ops = {
+    readProjectCliConfig: async () => ({
+      agentCli: 'opencode',
+      cliModels: null,
+      tierModels: null,
+    }),
+    readDiscussionContext: async () => ({
+      discussion: { entity_type: 'artifact', entity_id: 'a-1', status: 'open' },
+      selected: [],
+      recent: [],
+      anchor: null,
+      intentMap: {},
+    }),
+    completeDiscussionAssist: async (input) => {
+      writes.push({ ...input, at: Date.now() - T0 });
+      return { id: input.messageId, assistStatus: input.status, content: input.content };
+    },
+  };
   const spawned = [];
   const start = createDiscussionAssistStart({
-    openEngineGraph: createRemoteGraphAccess({
-      invoke: async (event) => gateway(JSON.parse(JSON.stringify(event))),
-      grant: currentGatewayGrant,
-    }),
+    // Engine data off: the runtime's own graph, which needs no grant.
+    openEngineGraph: engineData
+      ? createRemoteGraphAccess({
+          invoke: async (event) => gateway(JSON.parse(JSON.stringify(event))),
+          grant: currentGatewayGrant,
+        })
+      : async () => ({ ...ops, close: async () => {} }),
+    engineData,
     store: null,
     availableClis: ['opencode'],
     materializeCliContextFn: async () => ({}),
@@ -279,5 +285,34 @@ describe('queued discussion assists under short-lived grants', () => {
     expect(storeLocks.locks.has('__unconfigured__')).toBe(false);
     expect(start.activeJobs.size).toBe(0);
     expect(audit.filter((entry) => entry.decision === 'deny')).toEqual([]);
+  });
+});
+
+describe('queued discussion assists with engine data off', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: T0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('runs the CLI once the store frees up, even past the grant start deadline', async () => {
+    const { writes, spawned, handlers } = harness({ engineData: false });
+    // The store is held past the 150 s start deadline the grant would impose.
+    const holder = withOpenCodeStore({
+      env: {},
+      restore: async () => {},
+      persist: async () => {},
+      operation: () => sleep(151_000),
+    });
+    expect(await requestAssist(handlers, 1)).toMatchObject({ statusCode: 200 });
+
+    await vi.advanceTimersByTimeAsync(GRANT_MS + 60_000);
+    await holder;
+
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toBeGreaterThanOrEqual(151_000);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ messageId: 'dm-1', status: 'completed', content: 'answer' });
   });
 });

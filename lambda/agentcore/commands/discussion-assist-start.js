@@ -38,11 +38,13 @@ const COMMAND_INSTRUCTIONS = {
 };
 
 // Each assist's discussion grant expires minutes after the request, and the
-// assists of one thread share the session's OpenCode store, so they queue. The
-// final message write must land inside the grant: the CLI must start early
+// assists of one thread share the session's OpenCode store, so they queue.
+// With engine data on, the final message write goes through engine-data under
+// that grant, so it must land inside the grant: the CLI must start early
 // enough for its whole timeout, and its result is due `GRANT_WRITE_MARGIN_MS`
 // before exp even if the store persist is still running. An assist that
-// cannot start in time fails while it still can.
+// cannot start in time fails while it still can. With engine data off, the
+// write is direct and the assist waits for the store as long as it takes.
 const GRANT_WRITE_MARGIN_MS = 30_000;
 const inferenceDeadlines = (grant) => {
   const expiresAt = grant ? gatewayGrantExpiresAt(grant) : null;
@@ -188,6 +190,7 @@ export const createDiscussionAssistStart = ({
   openGraph,
   openEngineGraph,
   store,
+  engineData = false,
   broadcast = async () => {},
   availableClis = [],
   oneShot = runOneShotPrompt,
@@ -222,7 +225,9 @@ export const createDiscussionAssistStart = ({
     }
     activeJobs.set(key, { startedAt: Date.now(), messageId });
     busy?.enter();
-    const { startBy, finishBy } = inferenceDeadlines(currentGatewayGrant());
+    const { startBy, finishBy } = engineData
+      ? inferenceDeadlines(currentGatewayGrant())
+      : { startBy: null, finishBy: null };
 
     const job = runCredentialJob(async () => {
       let graph;
