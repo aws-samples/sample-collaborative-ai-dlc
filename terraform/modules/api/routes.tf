@@ -1275,6 +1275,7 @@ module "cors_aidlc_release_profiles" {
 #   /projects/{projectId}/intents/{intentId}                       GET
 #   /projects/{projectId}/intents/{intentId}/graph                 GET
 #   /projects/{projectId}/intents/{intentId}/outputs               GET
+#   /projects/{projectId}/intents/{intentId}/artifacts             GET
 #   /projects/{projectId}/intents/{intentId}/start                 POST
 #   /projects/{projectId}/intents/{intentId}/cancel                POST
 #   /projects/{projectId}/intents/{intentId}/rewind                POST
@@ -1497,6 +1498,8 @@ resource "aws_api_gateway_resource" "intent_gate_revise" {
   path_part   = "revise"
 }
 
+# Current artifact bodies, paged (the intent detail carries none):
+#   /intents/{intentId}/artifacts                           GET
 # Post-hoc artifact (document) editing:
 #   /intents/{intentId}/artifacts/{artifactId}/impact       GET  — drift warning data
 #   /intents/{intentId}/artifacts/{artifactId}/content      PUT  — human edit
@@ -1604,6 +1607,7 @@ locals {
     feedback_post          = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "POST" }
     answer_post            = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post            = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
+    artifacts_get          = { resource = aws_api_gateway_resource.intent_artifacts.id, method = "GET" }
     # Post-hoc artifact editing (human + Quorum-supported).
     artifact_impact_get   = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
     artifact_content_put  = { resource = aws_api_gateway_resource.intent_artifact_content.id, method = "PUT" }
@@ -1788,6 +1792,12 @@ module "cors_intent_gate_revise" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_gate_revise.id
+}
+
+module "cors_intent_artifacts" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifacts.id
 }
 
 module "cors_intent_artifact_impact" {
