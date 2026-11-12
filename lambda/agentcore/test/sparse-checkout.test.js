@@ -218,6 +218,28 @@ describe('sparse checkout', () => {
     expect(git(target, 'show', 'HEAD:services/config.json')).toBe('ancestor edit');
   });
 
+  // `git sparse-checkout list` quotes and escapes non-ASCII paths unless
+  // core.quotePath is off; the quoted form is not a valid selection.
+  it('commits in a selected directory with a non-ASCII name and still guards the rest', async () => {
+    await mkdir(path.join(source, 'docs/café'), { recursive: true });
+    await writeFile(path.join(source, 'docs/café/guide.md'), 'guide');
+    git(source, 'add', '.');
+    git(source, 'commit', '-m', 'docs');
+    const result = await checkoutRepo({ ...inputs(), sparseDirectories: ['docs/café'] });
+    expect(result.branchOk).toBe(true);
+    expect(await exists(path.join(target, 'assets'))).toBe(false);
+    await writeFile(path.join(target, 'docs/café/guide.md'), 'updated');
+    const committed = await commit();
+    expect(committed).toMatchObject({ committed: true });
+    expect(git(target, 'show', 'HEAD:docs/café/guide.md')).toBe('updated');
+    const head = git(target, 'rev-parse', 'HEAD');
+    await mkdir(path.join(target, 'assets'));
+    await writeFile(path.join(target, 'assets/large.txt'), 'rewritten');
+    const refused = await commit();
+    expectRefused(refused, head);
+    expect(refused.outsideSelection).toEqual(['assets/large.txt']);
+  });
+
   it.each([
     ['core.sparseCheckout is unreadable', 'config --bool core.sparseCheckout', { exitCode: 128 }],
     [
@@ -225,13 +247,17 @@ describe('sparse checkout', () => {
       'config --bool core.sparseCheckoutCone',
       { exitCode: 0, stdout: 'false\n' },
     ],
-    ['the selection list fails', 'sparse-checkout list', { exitCode: 128 }],
+    ['the selection list fails', '-c core.quotePath=false sparse-checkout list', { exitCode: 128 }],
     [
       'the selection list is malformed',
-      'sparse-checkout list',
+      '-c core.quotePath=false sparse-checkout list',
       { exitCode: 0, stdout: '"a\\tb"\n' },
     ],
-    ['the selection list is empty', 'sparse-checkout list', { exitCode: 0, stdout: '' }],
+    [
+      'the selection list is empty',
+      '-c core.quotePath=false sparse-checkout list',
+      { exitCode: 0, stdout: '' },
+    ],
     ['HEAD cannot be resolved', 'rev-parse --verify -q HEAD^{commit}', { exitCode: 128 }],
     ['the staged diff fails', 'diff-index --cached -z --no-renames HEAD', { exitCode: 128 }],
     [
