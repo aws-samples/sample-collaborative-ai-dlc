@@ -98,6 +98,8 @@ const makeWorld = ({ retireGrant, retireSyncGrant = () => ({ retired: true }) })
       }
       return { ok: true };
     },
+    // Engine commands get execution grants only when engine data is enabled.
+    engineData: true,
     issueGatewayGrant: async (scope, options) => `gw:${scope.mode}:${options?.randomId?.() ?? 'x'}`,
     retireGatewayGrant: async (retirement) => {
       if (!retirement.stageId) {

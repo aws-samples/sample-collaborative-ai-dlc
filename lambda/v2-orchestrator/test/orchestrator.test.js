@@ -1948,6 +1948,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
   });
 
   it('retires every lane grant by jti — lane stages at settle, lane git after each command', async () => {
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(
       async (scope, options) => `gw:${scope.mode}:${options?.randomId?.() ?? 'unpinned'}`,
     );
@@ -2438,6 +2439,7 @@ describe('PR per unit delivery', () => {
       }),
     });
     ctx.step = retryingStep(ctx);
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(
       async (scope, options) => `gw:${scope.mode}:${options?.randomId?.() ?? 'unpinned'}`,
     );
@@ -4290,6 +4292,8 @@ describe('gateway grant retirement by jti', () => {
   let order;
   beforeEach(() => {
     order = [];
+    // Engine commands get execution grants only when engine data is enabled.
+    deps.engineData = true;
     deps.issueGatewayGrant = vi.fn(async (scope, options) => {
       const id = options?.randomId?.() ?? 'unpinned';
       order.push(`issue:${scope.mode}:${id}`);

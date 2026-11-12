@@ -288,7 +288,9 @@ describe('gateway grant', () => {
     });
     expect(claims.policyDigest).toBe(digest);
     expect(claims).toMatchObject({ stageCallbackId: 'cb-1', orchestratorRunId: 'run-1' });
-    expect(gatewayScopeForCommand({ command: 'refresh-intent' }, scope)).toEqual({
+    expect(
+      gatewayScopeForCommand({ command: 'refresh-intent' }, { ...scope, engineData: true }),
+    ).toEqual({
       mode: 'execution',
       projectId: 'p',
       intentId: 'i',
