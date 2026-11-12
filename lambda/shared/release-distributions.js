@@ -19,9 +19,14 @@
 // Each harness is stored as `<harness>.tar.gz` plus `<harness>.manifest.json`,
 // the same shapes the native export cache uses. The manifest is written last
 // and is the publication marker.
+//
+// A distribution is optional. One that cannot be stored (an unsafe path, or more
+// files or bytes than an archive holds) is reported as unavailable and left out,
+// and the release still imports: an export of that harness then falls back to
+// the official distribution the release is based on.
 import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { buildDistributionArchive, safeDistributionPath } from './distribution-archive.js';
+import { buildDistributionArchive, distributionLimitError } from './distribution-archive.js';
 import { releaseKeyPrefix } from './aidlc-release.js';
 
 // The harnesses a native export can ship. Keep in step with the native export's
@@ -47,22 +52,51 @@ const releaseDistributionKeys = (keyArgs, harness) => {
   };
 };
 
+const byHarness = (a, b) => a.harness.localeCompare(b.harness);
+
 // Groups repository files under `dist/<harness>/` by harness, with paths made
 // relative to that harness root. Unknown harness folders are ignored.
 const splitReleaseDistributions = (files) => {
-  const byHarness = new Map();
+  const grouped = new Map();
   for (const [path, body] of files) {
     const match = /^dist\/([^/]+)\/(.+)$/.exec(path);
     if (!match || !NATIVE_DISTRIBUTION_HARNESSES.includes(match[1])) continue;
-    const harnessFiles = byHarness.get(match[1]) ?? new Map();
-    harnessFiles.set(
-      safeDistributionPath(match[2]),
-      Buffer.isBuffer(body) ? body : Buffer.from(body),
-    );
-    byHarness.set(match[1], harnessFiles);
+    const harnessFiles = grouped.get(match[1]) ?? new Map();
+    harnessFiles.set(match[2], Buffer.isBuffer(body) ? body : Buffer.from(body));
+    grouped.set(match[1], harnessFiles);
   }
-  return byHarness;
+  return grouped;
 };
+
+/**
+ * Decides, before anything is published, which distributions the release can
+ * store. Returns `usable` (harness -> files) and `unavailable` (one result per
+ * harness that cannot be stored, with the reason).
+ */
+const planReleaseDistributions = (files) => {
+  const usable = new Map();
+  const unavailable = [];
+  for (const [harness, harnessFiles] of splitReleaseDistributions(files)) {
+    const reason = distributionLimitError(harnessFiles);
+    if (reason) {
+      unavailable.push({ harness, status: 'unavailable', files: harnessFiles.size, reason });
+    } else {
+      usable.set(harness, harnessFiles);
+    }
+  }
+  return { usable, unavailable: unavailable.toSorted(byHarness) };
+};
+
+// What a dry run reports: every distribution found, and whether it would be stored.
+const describeReleaseDistributions = ({ usable, unavailable }) =>
+  [
+    ...[...usable].map(([harness, harnessFiles]) => ({
+      harness,
+      status: 'available',
+      files: harnessFiles.size,
+    })),
+    ...unavailable,
+  ].toSorted(byHarness);
 
 const fileManifest = (files) =>
   [...files]
@@ -89,14 +123,16 @@ const readJsonIfPresent = async ({ s3, bucket, key }) => {
 const sameFiles = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 /**
- * Stores each harness distribution the fork ships. Idempotent: a harness whose
- * manifest already records the same files is left alone, and one that records
- * different files is a conflict (the release SHA is immutable, so its bytes
- * cannot legitimately change). Returns the harnesses now available.
+ * Stores each usable distribution from planReleaseDistributions. Idempotent: a
+ * harness whose manifest already records the same files is left alone, and one
+ * that records different files is a conflict (the release SHA is immutable, so
+ * its bytes cannot legitimately change). The archive is built deterministically,
+ * so an overlapping import of the same release writes the same bytes the
+ * manifest records. Returns the harnesses now available.
  */
-const publishReleaseDistributions = async ({ s3, bucket, keyArgs, files }) => {
+const publishReleaseDistributions = async ({ s3, bucket, keyArgs, distributions }) => {
   const results = [];
-  for (const [harness, harnessFiles] of splitReleaseDistributions(files)) {
+  for (const [harness, harnessFiles] of distributions) {
     const keys = releaseDistributionKeys(keyArgs, harness);
     const filesRecord = fileManifest(harnessFiles);
     const existing = await readJsonIfPresent({ s3, bucket, key: keys.manifest });
@@ -151,17 +187,21 @@ const publishReleaseDistributions = async ({ s3, bucket, keyArgs, files }) => {
     }
     results.push({ harness, status: 'published', files: filesRecord.length });
   }
-  return results.toSorted((a, b) => a.harness.localeCompare(b.harness));
+  return results.toSorted(byHarness);
 };
 
 export {
   NATIVE_DISTRIBUTION_HARNESSES,
+  describeReleaseDistributions,
+  planReleaseDistributions,
   publishReleaseDistributions,
   releaseDistributionKeys,
   splitReleaseDistributions,
 };
 export default {
   NATIVE_DISTRIBUTION_HARNESSES,
+  describeReleaseDistributions,
+  planReleaseDistributions,
   publishReleaseDistributions,
   releaseDistributionKeys,
   splitReleaseDistributions,

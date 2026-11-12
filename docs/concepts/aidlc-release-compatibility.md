@@ -81,6 +81,12 @@ digest and the compatibility evidence are the same with or without them, so
 capturing them never changes what a pinned intent runs or what was certified.
 The import summary lists them under `distributions`.
 
+A distribution is optional. One the import cannot store (an unsafe path, or more
+than 1,000 files or 20 MiB) is listed with status `unavailable` and its reason,
+and the release still imports: a dry run reports the same result before anything
+is written. The same files always build the same archive bytes, so importing a
+commit twice, even at the same time, stores matching archives and manifests.
+
 The importer revision includes a fingerprint of the block mapper. Mapper keys
 and frontmatter normalization are defined for the supported profile set. A
 mapping change alters the importer fingerprint and catalog goldens, so it

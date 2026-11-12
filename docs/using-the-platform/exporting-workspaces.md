@@ -82,7 +82,7 @@ An intent pinned to a [custom fork release](../concepts/aidlc-release-compatibil
 - **The fork ships the harness.** If the fork carries a native distribution for the selected harness at `dist/<harness>/` (for example `dist/kiro-ide/`), the export uses it. The import stores it beside the release, so the export needs no access to the fork's repository. The workspace then matches the intent as configured: the fork's stages, agents, knowledge, rules and sensors.
 - **The fork doesn't ship it.** The export uses the official distribution of the release the fork is based on, the base profile it was registered with, and the download says so in a warning. Anything the fork adds or changes is not in the workspace. A stage only the fork defines is left out and named in a warning. If that stage already has recorded work, the export is refused, because the official distribution cannot resume it.
 
-A release imported before distributions were captured behaves as if the fork shipped none. Importing the same commit again stores its distributions without changing the release.
+A release imported before distributions were captured, or whose distribution for the harness was too large to store, behaves as if the fork shipped none. Importing the same commit again stores its distributions without changing the release.
 
 An export may be unavailable when:
 

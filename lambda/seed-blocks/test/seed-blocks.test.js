@@ -18,6 +18,7 @@ import {
   customProfile,
 } from '../../shared/aidlc-compatibility-profiles.js';
 import { fetchCoreFiles, fetchRepoFiles } from '../../shared/repo-fetch.js';
+import { MAX_DISTRIBUTION_BYTES } from '../../shared/distribution-archive.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
 const { registerReleaseMock, getReleaseMock, upgradeReleaseClosureMock } = vi.hoisted(() => ({
@@ -856,8 +857,8 @@ describe('seed-blocks importRelease custom mode', () => {
     ]);
     const dry = await handler({ importRelease: true, custom: custom(), dryRun: true });
     expect(dry.distributions).toEqual([
-      { harness: 'claude', files: 1 },
-      { harness: 'kiro', files: 1 },
+      { harness: 'claude', status: 'available', files: 1 },
+      { harness: 'kiro', status: 'available', files: 1 },
     ]);
     expect(s3Store.size).toBe(0);
     const result = await handler({ importRelease: true, custom: custom() });
@@ -872,6 +873,60 @@ describe('seed-blocks importRelease custom mode', () => {
     }
     // Not part of the closure: the digest is the one the fork gets without them.
     expect(result.closureDigest).toBe(without.closureDigest);
+  });
+
+  it('imports the release without a distribution it cannot store, in dry run and for real', async () => {
+    const tooBig = Buffer.alloc(MAX_DISTRIBUTION_BYTES + 1);
+    forkDist.files = new Map([
+      ['dist/kiro/.kiro/tools/data/harness.json', Buffer.from('{"name":"kiro"}')],
+      ['dist/claude/big.bin', tooBig],
+    ]);
+    const unavailable = {
+      harness: 'claude',
+      status: 'unavailable',
+      files: 1,
+      reason: `distribution-archive: exceeds ${MAX_DISTRIBUTION_BYTES} bytes`,
+    };
+    const dry = await handler({ importRelease: true, custom: custom(), dryRun: true });
+    expect(dry.status).toBe('dry-run');
+    expect(dry.distributions).toEqual([
+      unavailable,
+      { harness: 'kiro', status: 'available', files: 1 },
+    ]);
+    expect(s3Store.size).toBe(0);
+
+    const result = await handler({ importRelease: true, custom: custom() });
+    expect(result.status).toBe('published');
+    expect(result.distributions).toEqual([
+      unavailable,
+      { harness: 'kiro', status: 'published', files: 1 },
+    ]);
+    expect(s3Store.has(`${forkPrefix}/manifest.json`)).toBe(true);
+    expect(s3Store.has(`${forkPrefix}/dist/kiro.manifest.json`)).toBe(true);
+    expect([...s3Store.keys()].some((key) => key.includes('/dist/claude.'))).toBe(false);
+  });
+
+  it('reports already-published distributions on a re-import', async () => {
+    forkDist.files = new Map([
+      ['dist/kiro/.kiro/tools/data/harness.json', Buffer.from('{"name":"kiro"}')],
+    ]);
+    await handler({ importRelease: true, custom: custom() });
+    const again = await handler({ importRelease: true, custom: custom() });
+    expect(again.status).toBe('already-published');
+    expect(again.distributions).toEqual([
+      { harness: 'kiro', status: 'already-published', files: 1 },
+    ]);
+  });
+
+  it('refuses a fork commit with no core/ files before writing anything', async () => {
+    fetchCoreFiles.mockImplementationOnce(async () => new Map());
+    forkDist.files = new Map([
+      ['dist/kiro/.kiro/tools/data/harness.json', Buffer.from('{"name":"kiro"}')],
+    ]);
+    await expect(handler({ importRelease: true, custom: custom() })).rejects.toThrow(
+      `${FORK_REPOSITORY} has no core/ files at ${FORK_SHA}`,
+    );
+    expect(s3Store.size).toBe(0);
   });
 
   it('is idempotent for the same fork closure', async () => {

@@ -194,7 +194,7 @@ describe('native workflow export', () => {
       s3,
       bucket: 'artifacts',
       keyArgs: FORK_KEY_ARGS,
-      files: new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+      distributions: new Map([['codex', distributionFiles]]),
     });
     const loaded = await loadReleaseDistribution({
       s3,
@@ -224,7 +224,7 @@ describe('native workflow export', () => {
       s3,
       bucket: 'artifacts',
       keyArgs: FORK_KEY_ARGS,
-      files: new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+      distributions: new Map([['codex', distributionFiles]]),
     });
     const archiveKey = [...s3.objects.keys()].find((key) => key.endsWith('/dist/codex.tar.gz'));
     s3.objects.set(archiveKey, Buffer.from('tampered'));
