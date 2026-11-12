@@ -72,6 +72,36 @@ export const SHALLOW_CLONE_ARGS = Object.freeze(['clone', '--depth', '1', '--no-
 const STORAGE_EXHAUSTED = /no space left on device|disk quota exceeded/i;
 export const isStorageExhausted = (result) => STORAGE_EXHAUSTED.test(result?.stderr ?? '');
 
+// The sparse (cone) part of a checkout, for a validated selection. An empty
+// selection is a full checkout: no extra arguments, and both steps succeed
+// without running Git.
+const sparseSetup = ({ directories, runner, targetDir }) => {
+  if (!directories.length) {
+    return {
+      cloneArgs: [],
+      startPoint: [],
+      select: async () => true,
+      populateHead: async () => true,
+    };
+  }
+  const git = (args) => runner('git', args, { cwd: targetDir });
+  return {
+    // Do not materialize a full working tree even temporarily: the selection
+    // is set before the first checkout, on every clone attempt.
+    cloneArgs: ['--no-checkout'],
+    // Start point for `checkout -b <branch>`, which then populates the tree.
+    startPoint: ['HEAD'],
+    select: async () =>
+      (await git(['sparse-checkout', 'set', '--cone', '--', ...directories])).code === 0,
+    // Without a requested branch nothing else checks out the --no-checkout
+    // clone, so populate HEAD (an empty repository has none to populate).
+    populateHead: async () => {
+      const head = await git(['rev-parse', '--verify', 'HEAD']);
+      return head.code !== 0 || (await git(['checkout', 'HEAD'])).code === 0;
+    },
+  };
+};
+
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
@@ -109,14 +139,7 @@ export const checkoutRepo = async ({
   if (selection.error) {
     return { repo, targetDir, cloned: false, branchOk: false, error: selection.error };
   }
-  const directories = selection.value;
-  const configureSparseCheckout = async () => {
-    if (!directories.length) return true;
-    const result = await runner('git', ['sparse-checkout', 'set', '--cone', '--', ...directories], {
-      cwd: targetDir,
-    });
-    return result.code === 0;
-  };
+  const sparse = sparseSetup({ directories: selection.value, runner, targetDir });
   await ensureDir(targetDir);
   if (!(await trustDirectory({ targetDir, runner }))) {
     return {
@@ -181,11 +204,9 @@ export const checkoutRepo = async ({
     if (checkout.code === 0) return true;
 
     if (!baseBranch) {
-      const createFromHead = await runner(
-        'git',
-        ['checkout', '-b', branch, ...(directories.length ? ['HEAD'] : [])],
-        { cwd: targetDir },
-      );
+      const createFromHead = await runner('git', ['checkout', '-b', branch, ...sparse.startPoint], {
+        cwd: targetDir,
+      });
       if (createFromHead.code === 0) return true;
     } else {
       const createFromOrigin = await runner(
@@ -210,7 +231,7 @@ export const checkoutRepo = async ({
 
   if (await hasCheckout(targetDir, statFn)) {
     await scrubRemote();
-    if (!(await configureSparseCheckout())) {
+    if (!(await sparse.select())) {
       return { repo, targetDir, cloned: true, branchOk: false, error: 'sparse_checkout_failed' };
     }
     const branchOk = await ensureBranch();
@@ -235,12 +256,9 @@ export const checkoutRepo = async ({
         requiredAccess: 'read',
       },
       async ({ env }) => {
-        // Do not materialize a full working tree even temporarily: a sparse
-        // selection is set before the first checkout, on every clone attempt.
-        const noCheckout = directories.length ? ['--no-checkout'] : [];
         // A full clone keeps the tags and ancestry that build and version
         // tooling may need. stderr is captured to recognise a full workspace.
-        const full = await runner('git', ['clone', ...noCheckout, cleanUrl, targetDir], {
+        const full = await runner('git', ['clone', ...sparse.cloneArgs, cleanUrl, targetDir], {
           env,
           captureOutput: true,
         });
@@ -255,7 +273,9 @@ export const checkoutRepo = async ({
         });
         await removeDir(targetDir).catch(() => {});
         await ensureDir(targetDir);
-        return runner('git', [...SHALLOW_CLONE_ARGS, ...noCheckout, cleanUrl, targetDir], { env });
+        return runner('git', [...SHALLOW_CLONE_ARGS, ...sparse.cloneArgs, cleanUrl, targetDir], {
+          env,
+        });
       },
     );
   } catch (error) {
@@ -285,22 +305,11 @@ export const checkoutRepo = async ({
   // Defense in depth: origin was cloned from this same clean URL, but re-stamp
   // it before the agent can inspect the checkout.
   await scrubRemote();
-  if (!(await configureSparseCheckout())) {
+  // The selection is set on the --no-checkout clone before ensureBranch
+  // populates the selected base; without a requested branch, HEAD is populated.
+  if (!(await sparse.select()) || !(branch || (await sparse.populateHead()))) {
     await removeDir(targetDir).catch(() => {});
     return { repo, targetDir, cloned: false, branchOk: false, error: 'sparse_checkout_failed' };
-  }
-  // sparse-checkout set on a --no-checkout clone configures the cone before
-  // ensureBranch populates the selected base. Without a requested branch,
-  // populate HEAD explicitly (empty repositories need no checkout).
-  if (directories.length && !branch) {
-    const head = await runner('git', ['rev-parse', '--verify', 'HEAD'], { cwd: targetDir });
-    if (head.code === 0) {
-      const checkout = await runner('git', ['checkout', 'HEAD'], { cwd: targetDir });
-      if (checkout.code !== 0) {
-        await removeDir(targetDir).catch(() => {});
-        return { repo, targetDir, cloned: false, branchOk: false, error: 'sparse_checkout_failed' };
-      }
-    }
   }
   const branchOk = await ensureBranch();
   return { repo, targetDir, cloned, branchOk };
