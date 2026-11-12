@@ -19,7 +19,9 @@
 //                 AGENTS.md and the runtime's relative instructions), and it
 //                 deep-merges every config layer. So every server another
 //                 layer defines is listed again in the inline config, which
-//                 OpenCode reads last, with `enabled: false`. OPENCODE_PURE
+//                 OpenCode reads last, with `enabled: false`; one named like a
+//                 runtime server is refused, since the merge would keep its
+//                 other properties on the runtime's entry. OPENCODE_PURE
 //                 (cli/drivers.js) keeps workspace and user plugins, whose
 //                 `config` hook could re-enable them, from loading.
 // This isolates the agent's MCP tools only. Code the agent runs (shell, curl)
@@ -244,9 +246,21 @@ export const assertOpenCodeStoreUntracked = async ({ env = process.env, git = ru
   if (stdout) throw unreadable(store, 'is tracked by the repository');
 };
 
+// OpenCode deep-merges an entry another layer defines under a name the runtime
+// uses into the runtime's entry: every property the inline entry does not set
+// (an `environment` with NODE_OPTIONS, `headers`, `oauth`) survives and applies
+// to the platform server. Such an entry is refused, not overridden.
+const platformNameTaken = (file, name) =>
+  new RuntimeMcpPolicyError(
+    `${file} defines the MCP server ${JSON.stringify(name)}, a name the platform uses for ` +
+      'its own server; this deployment serves custom MCP servers only through the AgentCore ' +
+      'Gateway (runtime_mcp_credentials = "gateway_only"), and OpenCode would merge that ' +
+      "entry's settings into the platform server, so it is not run. Rename the entry.",
+  );
+
 // `config` is the runtime's inline OpenCode config (object). Returns it with
-// every server another layer defines disabled; the runtime's own entries keep
-// their position after them, so they still win a name collision.
+// every server another layer defines disabled; a server named like one of the
+// runtime's own entries is refused.
 export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home, env = process.env }) => {
   await assertOpenCodeStoreUntracked({ env });
   const own = config.mcp ?? {};
@@ -254,7 +268,8 @@ export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home, env = pr
   for (const file of await openCodeConfigFiles({ cwd, home })) {
     const parsed = await readJsoncFile(file);
     for (const [name, server] of openCodeServers(parsed?.mcp)) {
-      if (!Object.hasOwn(own, name)) foreign[name] = disabledOpenCodeServer(server);
+      if (Object.hasOwn(own, name)) throw platformNameTaken(file, name);
+      foreign[name] = disabledOpenCodeServer(server);
     }
   }
   return { ...config, mcp: { ...foreign, ...own } };
