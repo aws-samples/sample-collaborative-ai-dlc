@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -76,6 +76,11 @@ const fakeChild = (stdout) => {
 };
 
 const gatewayOnly = () => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+
+// The user config OpenCode reads is under HOME: keep the developer's out.
+beforeEach(async () => {
+  vi.stubEnv('HOME', await mkdtemp(path.join(tmpdir(), 'aidlc-home-')));
+});
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -529,6 +534,131 @@ describe('OpenCode: repository servers named like a platform server', () => {
 
   it('is unchanged under allow', async () => {
     const { cwd } = await colliding('opencode.json', JSON.stringify({ mcp: { aidlc: PRELOAD } }));
+    expect(JSON.parse(await materialize(cwd))).toEqual(
+      buildOpenCodeConfig({ mcpEntry: MCP_ENTRY, scope: SCOPE, env: process.env }),
+    );
+  });
+
+  // Discussion assist materializes the config, then the one-shot isolates it
+  // again: the first pass's stand-ins are not platform servers.
+  const oneShot = (cwd, opencodeConfigContent) => {
+    let content = null;
+    const spawnFn = vi.fn((command, args, options) => {
+      content = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT);
+      return fakeChild('');
+    });
+    return runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      cwd,
+      opencodeConfigContent,
+      withOpenCodeStore: async ({ operation }) => operation(),
+      spawnFn,
+    }).then((out) => ({ out, content, spawnFn }));
+  };
+
+  it('isolates a materialized config again without refusing its stand-ins', async () => {
+    const { cwd } = await colliding(
+      'opencode.json',
+      JSON.stringify({ mcp: { 'user-tools': { type: 'remote', url: 'https://tools.example' } } }),
+    );
+    gatewayOnly();
+    const first = JSON.parse(await materialize(cwd));
+    expect(first.mcp['user-tools']).toEqual({
+      type: 'remote',
+      url: 'https://tools.example',
+      enabled: false,
+    });
+    await expect(exclusiveOpenCodeConfig({ config: first, cwd })).resolves.toEqual(first);
+    const { out, content } = await oneShot(cwd, JSON.stringify(first));
+    expect(out.cli).toBe('opencode');
+    expect(content).toEqual(first);
+  });
+
+  it('refuses a colliding server on the second pass too', async () => {
+    const { repo, cwd } = await colliding(
+      'opencode.json',
+      JSON.stringify({ mcp: { 'user-tools': { type: 'remote', url: 'https://tools.example' } } }),
+    );
+    gatewayOnly();
+    const first = await materialize(cwd);
+    await writeFile(
+      path.join(repo, 'opencode.json'),
+      JSON.stringify({
+        mcp: { 'user-tools': { type: 'remote', url: 'https://x' }, aidlc: PRELOAD },
+      }),
+    );
+    const { out, spawnFn } = await oneShot(cwd, first);
+    expect(out).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+});
+
+// OpenCode imports a provider's `npm` module into the CLI process.
+describe('OpenCode: repository provider SDK modules', () => {
+  const materialize = (cwd) =>
+    materializeOpenCodeConfig({ workspaceDir: cwd, mcpEntry: MCP_ENTRY, scope: SCOPE });
+  const withProvider = async (provider) => {
+    const { repo, cwd } = await repository();
+    await writeFile(path.join(repo, 'opencode.json'), JSON.stringify({ provider }));
+    return { repo, cwd };
+  };
+  const MODULE = 'file:///tmp/payload.mjs';
+
+  it.each([
+    ['on the provider', { custom: { npm: MODULE } }, 'provider."custom".npm'],
+    [
+      'on a model',
+      { 'amazon-bedrock': { models: { m: { provider: { npm: MODULE } } } } },
+      'provider."amazon-bedrock".models."m".provider.npm',
+    ],
+  ])('refuses one set %s', async (_label, provider, field) => {
+    const { repo, cwd } = await withProvider(provider);
+    gatewayOnly();
+    const refusal = materialize(cwd);
+    await expect(refusal).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+    await expect(refusal).rejects.toThrow(path.join(repo, 'opencode.json'));
+    await expect(refusal).rejects.toThrow(field);
+  });
+
+  it('refuses one in a user config and in a one-shot', async () => {
+    const { root, cwd } = await repository();
+    const home = path.join(root, 'home');
+    await mkdir(path.join(home, '.config', 'opencode'), { recursive: true });
+    await writeFile(
+      path.join(home, '.config', 'opencode', 'opencode.json'),
+      JSON.stringify({ provider: { custom: { npm: MODULE } } }),
+    );
+    await expect(exclusiveOpenCodeConfig({ config: {}, cwd, home })).rejects.toMatchObject({
+      code: 'runtime_mcp_gateway_only',
+    });
+    const { repo } = await withProvider({ custom: { npm: MODULE } });
+    gatewayOnly();
+    const spawnFn = vi.fn();
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      cwd: path.join(repo, 'service'),
+      spawnFn,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('accepts provider options and models without a module', async () => {
+    const { cwd } = await withProvider({
+      'amazon-bedrock': {
+        options: { region: 'eu-west-1' },
+        models: { m: { name: 'M', provider: { api: 'https://api.example' } } },
+      },
+    });
+    gatewayOnly();
+    const { mcp } = JSON.parse(await materialize(cwd));
+    expect(mcp['repo-remote'].enabled).toBe(false);
+  });
+
+  it('is unchanged under allow', async () => {
+    const { cwd } = await withProvider({ custom: { npm: MODULE } });
     expect(JSON.parse(await materialize(cwd))).toEqual(
       buildOpenCodeConfig({ mcpEntry: MCP_ENTRY, scope: SCOPE, env: process.env }),
     );

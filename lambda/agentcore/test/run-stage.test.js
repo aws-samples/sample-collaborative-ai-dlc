@@ -4050,6 +4050,8 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     const resume = async ({ tracked }) => {
       vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
       const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-ocstore-'));
+      // OpenCode's user config is under HOME: keep the developer's out.
+      vi.stubEnv('HOME', nodePath.join(root, 'home'));
       const ws = nodePath.join(root, 'ws');
       const stored = nodePath.join(ws, '.opencode-data', 'opencode');
       await mkdir(stored, { recursive: true });

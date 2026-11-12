@@ -21,7 +21,9 @@
 //                 layer defines is listed again in the inline config, which
 //                 OpenCode reads last, with `enabled: false`; one named like a
 //                 runtime server is refused, since the merge would keep its
-//                 other properties on the runtime's entry. OPENCODE_PURE
+//                 other properties on the runtime's entry, and so is a
+//                 provider SDK module (`npm`), which OpenCode imports into its
+//                 own process. OPENCODE_PURE
 //                 (cli/drivers.js) keeps workspace and user plugins, whose
 //                 `config` hook could re-enable them, from loading.
 // This isolates the agent's MCP tools only. Code the agent runs (shell, curl)
@@ -258,15 +260,58 @@ const platformNameTaken = (file, name) =>
       "entry's settings into the platform server, so it is not run. Rename the entry.",
   );
 
+// OpenCode imports a provider's SDK module — `provider.<id>.npm`, or
+// `provider.<id>.models.<model>.provider.npm` — into its own process when the
+// model is used (provider/provider.ts), OPENCODE_PURE or not; that module runs
+// with the CLI's MCP clients and inline config. Another layer setting one is
+// refused. The runtime's own provider settings arrive inline (cli/drivers.js),
+// not through these files.
+const providerModuleSet = (file, field) =>
+  new RuntimeMcpPolicyError(
+    `${file} sets the provider SDK module ${field}; this deployment serves custom MCP ` +
+      'servers only through the AgentCore Gateway (runtime_mcp_credentials = "gateway_only"), ' +
+      'and OpenCode would import that module into the agent CLI process, so it is not run. ' +
+      'Remove the field.',
+  );
+
+const assertNoProviderModule = (file, providers) => {
+  if (!isRecord(providers)) return;
+  for (const [id, provider] of Object.entries(providers)) {
+    if (!isRecord(provider)) continue;
+    if (Object.hasOwn(provider, 'npm')) {
+      throw providerModuleSet(file, `provider.${JSON.stringify(id)}.npm`);
+    }
+    if (!isRecord(provider.models)) continue;
+    for (const [model, entry] of Object.entries(provider.models)) {
+      if (isRecord(entry?.provider) && Object.hasOwn(entry.provider, 'npm')) {
+        throw providerModuleSet(
+          file,
+          `provider.${JSON.stringify(id)}.models.${JSON.stringify(model)}.provider.npm`,
+        );
+      }
+    }
+  }
+};
+
+// A disabled stand-in, which an earlier pass over the same inline config added:
+// a one-shot isolates the materialized config it is given again. The runtime's
+// own entries never set `enabled` (stage-materializer.js toOpenCodeMcp), and a
+// disabled entry never starts, whatever another layer merges into it.
+const isStandIn = (server) => isRecord(server) && server.enabled === false;
+
 // `config` is the runtime's inline OpenCode config (object). Returns it with
 // every server another layer defines disabled; a server named like one of the
-// runtime's own entries is refused.
+// runtime's own entries, or a provider SDK module, is refused. Isolating the
+// result again returns it unchanged.
 export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home, env = process.env }) => {
   await assertOpenCodeStoreUntracked({ env });
-  const own = config.mcp ?? {};
+  const own = Object.fromEntries(
+    Object.entries(config.mcp ?? {}).filter(([, server]) => !isStandIn(server)),
+  );
   const foreign = {};
   for (const file of await openCodeConfigFiles({ cwd, home })) {
     const parsed = await readJsoncFile(file);
+    assertNoProviderModule(file, parsed?.provider);
     for (const [name, server] of openCodeServers(parsed?.mcp)) {
       if (Object.hasOwn(own, name)) throw platformNameTaken(file, name);
       foreign[name] = disabledOpenCodeServer(server);
