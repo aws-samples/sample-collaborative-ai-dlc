@@ -95,6 +95,11 @@ interface OutputPane {
   seededRows: IntentOutput[];
   /** Highest seq contained in seededRows — live chunks at or below are dupes. */
   maxSeededSeq: number;
+  /**
+   * The afterSeq for the next catch-up: the server's cursor, which can move
+   * past other stages' chunks (a finished stage's pane stops re-reading them).
+   */
+  cursor: number;
   /** Live websocket chunks (kept until seeding merges or supersedes them). */
   live: IntentOutput[];
 }
@@ -487,11 +492,16 @@ export function IntentProvider({
   // (CREATED during init-ws, RUNNING, WAITING) we also poll on a slow interval
   // to guarantee init-ws progress and FAILED transitions reach the UI.
   const pollStatus = detail?.intent.status;
+  const deliveryPending = detail?.delivery?.status === 'in_progress';
   useEffect(() => {
-    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
+    if (
+      !deliveryPending &&
+      (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus))
+    )
+      return;
     const id = setInterval(load, 8000);
     return () => clearInterval(id);
-  }, [pollStatus, load]);
+  }, [pollStatus, deliveryPending, load]);
 
   // Refetch debouncing (docs/v2-parallel.md WP7): every lifecycle event used
   // to trigger an immediate full-DTO refetch — N parallel lanes multiply
@@ -517,7 +527,7 @@ export function IntentProvider({
   const paneOf = useCallback((key: string): OutputPane => {
     let pane = panesRef.current.get(key);
     if (!pane) {
-      pane = { status: 'unseeded', seededRows: [], maxSeededSeq: 0, live: [] };
+      pane = { status: 'unseeded', seededRows: [], maxSeededSeq: 0, cursor: 0, live: [] };
       panesRef.current.set(key, pane);
     }
     return pane;
@@ -557,14 +567,21 @@ export function IntentProvider({
       intentsService
         .outputs(projectId, intentId, {
           stageInstanceId: key,
-          ...(initial ? {} : { afterSeq: pane.maxSeededSeq }),
+          ...(initial ? {} : { afterSeq: pane.cursor }),
         })
-        .then(({ outputs: durable }) => {
+        .then(({ outputs: durable, cursor }) => {
           if (activeIntentRef.current !== forIntent) return;
           const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
           durable.forEach((row) => bySeq.set(row.seq, row));
           pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
           pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+          // A server without the cursor resumes from the pane's own last chunk.
+          // Catch-ups can overlap, so a late older response must not move the
+          // cursor back.
+          pane.cursor = Math.max(
+            pane.cursor,
+            typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
+          );
           pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
           pane.status = 'seeded';
           renderPane(key);

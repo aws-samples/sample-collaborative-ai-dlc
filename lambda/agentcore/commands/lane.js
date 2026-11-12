@@ -34,6 +34,7 @@ import {
 import { stat } from 'node:fs/promises';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
 import { materializeAttachments } from '../attachments.js';
+import { createEngineCommitMessages } from '../commit-message.js';
 
 const hasCheckout = async (dir, statFn = stat) => {
   try {
@@ -240,6 +241,10 @@ export const mergeLane = async (
 
   const multi = repos.length > 1;
   const results = [];
+  const message = await createEngineCommitMessages({ store, executionId })({
+    kind: 'merge',
+    unitSlug,
+  });
   for (const repo of repos) {
     const url = repoUrl(repo);
     const provider = repoProvider(repo, gitProvider, repoProviders);
@@ -249,7 +254,7 @@ export const mergeLane = async (
       repo: url,
       intentBranch,
       unitBranch,
-      message: `aidlc(merge): ${unitSlug} — ${executionId}`,
+      message,
       author: gitAuthor,
       gitProvider: provider,
       projectId,
@@ -364,6 +369,10 @@ export const reconcileLane = async (
 
   const multi = repos.length > 1;
   const results = [];
+  const message = await createEngineCommitMessages({ store, executionId })({
+    kind: 'reconcile',
+    unitSlug,
+  });
   for (const repo of repos) {
     const url = repoUrl(repo);
     const provider = repoProvider(repo, gitProvider, repoProviders);
@@ -373,7 +382,7 @@ export const reconcileLane = async (
       // Reverse merge: latest intent into the unit branch, then push unit.
       intentBranch: unitBranch,
       unitBranch: intentBranch,
-      message: `aidlc(reconcile): ${unitSlug} - ${executionId}`,
+      message,
       author: gitAuthor,
       gitProvider: provider,
       projectId,

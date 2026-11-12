@@ -54,6 +54,7 @@ const ASSERTED_FIELDS = Object.freeze([
   'agentRef',
   'checkpointOwner',
   'canAsk',
+  'describeChanges',
 ]);
 const TOP_FIELDS = Object.freeze(['v', 'granted', 'verified', 'asserted']);
 
@@ -174,7 +175,8 @@ const validatePayload = (payload) => {
     !optionalString(asserted.reviewerAgent) ||
     !optionalString(asserted.agentRef) ||
     typeof asserted.checkpointOwner !== 'boolean' ||
-    typeof asserted.canAsk !== 'boolean'
+    typeof asserted.canAsk !== 'boolean' ||
+    typeof asserted.describeChanges !== 'boolean'
   ) {
     throw invalid();
   }

@@ -127,6 +127,34 @@ describe('changeControlChoice', () => {
     expect(changeControlChoice({ answer: { freeText: 'stop here' } })).toBe('stop');
   });
 
+  it.each([
+    [0, 'reconfirm'],
+    [1, 'stop'],
+  ])('reads UI option %s from the stored question', (index, expected) => {
+    const gate = {
+      questions: JSON.stringify([
+        { options: [{ label: 'Reconfirm and continue' }, { label: 'Stop here so I can rewind' }] },
+      ]),
+      answer: { answers: [{ selectedOptions: [index] }] },
+    };
+    expect(changeControlChoice(gate)).toBe(expected);
+  });
+
+  it.each([[0, 1], [-1], [2], ['0'], []])(
+    'does not authorize malformed UI selection %j',
+    (...selectedOptions) => {
+      const gate = {
+        questions: JSON.stringify([
+          {
+            options: [{ label: 'Reconfirm and continue' }, { label: 'Stop here so I can rewind' }],
+          },
+        ]),
+        answer: { answers: [{ selectedOptions, freeText: 'Reconfirm and continue' }] },
+      };
+      expect(changeControlChoice(gate)).toBeNull();
+    },
+  );
+
   // A garbled answer names no option; the caller treats that as NOT a
   // reconfirmation and halts (recoverable via rewind).
   it('returns null for an answer that names neither option', () => {
@@ -555,6 +583,35 @@ describe('runStage — change_control: strict', () => {
     const [gate] = store.of('createHumanTask');
     const [question] = JSON.parse(gate.questions);
     expect(question.text).toContain('could not be read');
+  });
+
+  it('accepts reconfirmation from the actual UI gate and writes a receipt before running', async () => {
+    const first = harnessStore({ receipts: [APPROVAL] });
+    await runStage(args, deps(first, { scopeFm: { changeControl: 'strict' } }));
+    const [question] = first.of('createHumanTask');
+    const store = harnessStore({
+      receipts: [APPROVAL],
+      humanTask: {
+        ...question,
+        status: 'answered',
+        answeredBy: 'u1',
+        answer: { answers: [{ selectedOptions: [0] }] },
+      },
+    });
+    const capture = promptCapture();
+    const result = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+    expect(result.state).toBe('SUCCEEDED');
+    expect(store.of('putReceipt')).toContainEqual(
+      expect.objectContaining({
+        kind: 'change-reconfirm',
+        choice: 'reconfirm',
+        detail: expect.objectContaining({ inputsFingerprint: CHANGED_FINGERPRINT }),
+      }),
+    );
+    expect(capture.seen.prompt).toContain('reconfirmed');
   });
 
   it('reconfirm writes the receipt, tells the agent, and runs the stage', async () => {

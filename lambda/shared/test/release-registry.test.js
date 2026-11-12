@@ -2303,7 +2303,7 @@ describe('a 2.9.0 whose developer persona carries the engine command', () => {
 // An execution-relevant authored field no adapter consumes is how a future
 // release would silently lose a setting: the closure already records its name,
 // so promotion must name it as a blocker rather than leave it to certification.
-// AI-DLC 2.11.0 and 2.11.1, end to end on the real releases: the exact upstream commit's
+// AI-DLC 2.11 releases, end to end on the real releases: the exact upstream commit's
 // frontmatter (the pinned compatibility fixture, every blob verified against the
 // upstream git tree when it was generated) plus every `{{INVOKE}} engine` line
 // those files really carry. Publication, registration, promotion and every
@@ -2312,8 +2312,9 @@ describe('a 2.9.0 whose developer persona carries the engine command', () => {
 // It promotes with nothing unhonoured, and it promotes the whole way an
 // administrator may take it: `selectable`, then `certified`, then the `stable`
 // channel.
-// 2.11.1 answers one command 2.11.0 never invokes: build-and-test's cross-unit
-// coverage gate asks for a sensor run on request.
+// 2.11.1 adds a sensor-on-request command. 2.11.3 adds the upstream Unit/Bolt
+// lifecycle commands; this list makes the runtime's complete answer surface
+// explicit so a future profile cannot silently omit commands from its closure.
 const REAL_211_RELEASES = Object.freeze([
   {
     PROFILE: 'v2.11.0',
@@ -2327,6 +2328,12 @@ const REAL_211_RELEASES = Object.freeze([
     VERSION: '2.11.1',
     ADDED: ['engine sensor-<id> --stage'],
   },
+  {
+    PROFILE: 'v2.11.3',
+    SHA: '63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    VERSION: '2.11.3',
+    ADDED: ['engine intent add-checkout', 'engine intent add-repo', 'engine sensor-<id> --stage'],
+  },
 ]);
 for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
   describe(`a deployment admitting the real AI-DLC ${VERSION}`, () => {
@@ -2334,6 +2341,8 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     // answered by name in the dialect annex, plus the four families 2.9.0 already
     // answered. Listed verbatim: a command that stopped being answered, or a new
     // one that started being honoured without an answer, must fail here.
+    const REMOVED_ENGINE_COMMANDS =
+      PROFILE === 'v2.11.3' ? ['engine recompose', 'engine testing-posture restore'] : [];
     const ANSWERED_ENGINE_COMMANDS = Object.freeze(
       [
         'engine config set',
@@ -2352,7 +2361,9 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
         'engine worktree purge',
         'engine worktree restore',
         ...ADDED,
-      ].toSorted(),
+      ]
+        .filter((command) => !REMOVED_ENGINE_COMMANDS.includes(command))
+        .toSorted(),
     );
     const bundle = buildReleaseBundle({ profileId: PROFILE, files: filesWithInvokeLines(PROFILE) });
     const { releaseId } = bundle.manifest;
@@ -3556,4 +3567,76 @@ describe('admin listing with a stale row whose closure cannot be verified', () =
       FIDELITY_EVIDENCE_REVISION,
     );
   });
+});
+
+// Every version offered by the product must support the same admin path. Keep
+// older profiles here too: compiling their plans alone does not prove promotion.
+describe('all supported versions can be approved and promoted', () => {
+  beforeEach(() => installFakes());
+
+  it('refreshes revision-7 compatibility evidence after the new command adapters', async () => {
+    const bundle = buildReleaseBundle({
+      profileId: 'v2.11.3',
+      files: filesWithInvokeLines('v2.11.3'),
+    });
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    const { release } = await registerRelease(registerArgs('v2.11.3'));
+    const [key, record] = [...rows.entries()].find(
+      ([, row]) => row.pk === 'AIDLC_RELEASE#' + release.releaseId,
+    );
+    rows.set(key, { ...record, fidelityEvidenceRevision: 7, fidelityGaps: [UNPRODUCIBLE_GAP] });
+    const [listed] = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(rows.get(key).fidelityEvidenceRevision).toBe(FIDELITY_EVIDENCE_REVISION);
+  });
+
+  it.each(Object.keys(AIDLC_COMPATIBILITY_PROFILES))(
+    '%s remains usable as a selected or stable version',
+    async (profileId) => {
+      const captured = JSON.parse(
+        readFileSync(
+          new URL('./fixtures/aidlc-release-invoke-lines.json', import.meta.url),
+          'utf8',
+        ),
+      );
+      const supportedBundle = Object.hasOwn(captured, profileId)
+        ? buildReleaseBundle({ profileId, files: filesWithInvokeLines(profileId) })
+        : bundleFor(profileId);
+      await publishReleaseBundle({ s3, bucket: BUCKET, bundle: supportedBundle });
+      const { release } = await registerRelease(registerArgs(profileId));
+      const approved = await updateRelease({
+        ...registryArgs(),
+        s3,
+        bucket: BUCKET,
+        releaseId: release.releaseId,
+        expectedRevision: release.revision,
+        patch: { supportState: 'certified', visible: true },
+        actor: 'admin',
+      });
+      expect(approved).toMatchObject({
+        runnable: true,
+        visible: true,
+        supportState: 'certified',
+        unhonouredValues: [],
+      });
+      await setChannel({
+        ...registryArgs(),
+        s3,
+        bucket: BUCKET,
+        channel: 'stable',
+        releaseId: release.releaseId,
+        expectedRevision: null,
+        actor: 'admin',
+      });
+      expect(
+        await resolveSelectableRelease({ ...registryArgs(), releaseId: release.releaseId }),
+      ).toMatchObject({
+        releaseId: release.releaseId,
+        sourceSha: AIDLC_COMPATIBILITY_PROFILES[profileId].upstreamRef,
+      });
+      expect(await resolveSelectableRelease(registryArgs())).toMatchObject({
+        releaseId: release.releaseId,
+      });
+    },
+  );
 });

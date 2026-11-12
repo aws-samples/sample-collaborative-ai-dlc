@@ -68,7 +68,9 @@ locals {
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
   agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
-  agentcore_image_tag     = substr(local.agentcore_files_sha, 0, 16)
+  # A pre-built image (var.image_tag) replaces the build below.
+  build_image         = var.image_tag == null
+  agentcore_image_tag = local.build_image ? substr(local.agentcore_files_sha, 0, 16) : var.image_tag
 
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
@@ -207,7 +209,14 @@ resource "aws_ecr_lifecycle_policy" "managed_environments" {
   })
 }
 
+moved {
+  from = module.agentcore_docker_build
+  to   = module.agentcore_docker_build[0]
+}
+
 module "agentcore_docker_build" {
+  count = local.build_image ? 1 : 0
+
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
@@ -242,7 +251,7 @@ data "aws_ecr_image" "agentcore" {
 # environments targeting x86_64 instances need an amd64 core to build FROM.
 # Gated behind var.build_amd64_image so default installs pay no extra build.
 module "agentcore_docker_build_amd64" {
-  count = var.build_amd64_image ? 1 : 0
+  count = var.build_amd64_image && local.build_image ? 1 : 0
 
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
@@ -833,4 +842,15 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   environment_variables = local.runtime_environment_variables
 
   tags = var.tags
+}
+
+# The version this apply leaves the runtime on. The resource's own
+# agent_runtime_version keeps its pre-update value through an in-place update
+# (the provider plans it from state) and only catches up on the next refresh,
+# so consumers reading it stay one version behind until a second apply.
+# depends_on defers this read until the update has completed; without it the
+# read happens at plan time and returns the same stale version.
+data "awscc_bedrockagentcore_runtime" "stage_executor" {
+  id         = awscc_bedrockagentcore_runtime.stage_executor.id
+  depends_on = [awscc_bedrockagentcore_runtime.stage_executor]
 }

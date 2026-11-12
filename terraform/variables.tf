@@ -123,10 +123,28 @@ variable "aidlc_repo_ref" {
   default     = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"
 }
 
-variable "aidlc_release_pinning" {
-  description = "Pin new intents to the immutable AI-DLC release published for the resolved ref (issue #482). \"on\" or \"off\"; existing intents are unaffected either way."
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance a custom AI-DLC fork release named \"gitlab:<namespace>/<project>\" is imported from (seed-blocks importRelease). An https origin."
   type        = string
-  default     = "off"
+  default     = "https://gitlab.com"
+  validation {
+    condition     = can(regex("^https://[^/?#@]+/?$", var.aidlc_custom_source_gitlab_url))
+    error_message = "aidlc_custom_source_gitlab_url must be an https origin, such as https://gitlab.com."
+  }
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN whose value is a GitLab token with read_api, used to import a custom AI-DLC fork release from a private GitLab project. Empty: only public GitLab projects can be imported."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.aidlc_custom_source_gitlab_token_secret_arn == "" || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.aidlc_custom_source_gitlab_token_secret_arn))
+    error_message = "aidlc_custom_source_gitlab_token_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+variable "aidlc_release_pinning" {
+  description = "Enable AI-DLC version selection for new intents. Standard deployment prepares the supported catalogs; an explicit \"off\" opts out. Until Stable is selected, the configured baseline remains in use. Existing intents are unaffected."
+  type        = string
+  default     = "on"
 
   validation {
     condition     = contains(["on", "off"], var.aidlc_release_pinning)
@@ -134,11 +152,29 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
+  type        = bool
+  default     = false
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)
   default     = {}
   sensitive   = true
+}
+
+variable "agentcore_image_tag" {
+  description = "Tag of a pre-built AgentCore image in its ECR repository (plus <tag>-amd64 when enable_instances_compute is true), built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
+}
+
+variable "yjs_image_tag" {
+  description = "Tag of a pre-built yjs-server image in its ECR repository, built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
 }
 
 # ---------------------------------------------------------------------------
@@ -368,4 +404,32 @@ variable "enable_mcp_gateway" {
   description = "Serve the built-in aidlc MCP tools through AgentCore Gateway (grant-verified per call) instead of the in-runtime MCP server. Requires network_mode = VPC."
   type        = bool
   default     = false
+}
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish best-effort notification events to it (discussion.message, discussion.resolved, gate.pending, space.created) for integrations such as chat notifications. See docs/using-the-platform/notification-events.md."
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "With notification_events_enabled: the event bus name. Empty uses <project_name>-<environment>-events."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.notification_event_bus_name == "" || can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_bus_name))
+    error_message = "notification_event_bus_name must be empty or 1-256 characters of A-Z, a-z, 0-9, ., _ and -."
+  }
+}
+
+variable "notification_event_source" {
+  description = "With notification_events_enabled: the EventBridge source the events carry, for rule patterns."
+  type        = string
+  default     = "collaborative-ai-dlc"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_source)) && !startswith(var.notification_event_source, "aws.")
+    error_message = "notification_event_source must be 1-256 characters of A-Z, a-z, 0-9, ., _ and -, and must not start with aws."
+  }
 }

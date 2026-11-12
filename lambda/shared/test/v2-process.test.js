@@ -107,6 +107,27 @@ describe('stage attempt ownership transactions', () => {
     expect(items[2].Update.ConditionExpression).toContain('stageInstanceId = :ownedStage');
     expect(items[2].Update.ConditionExpression).toContain('stageCallbackId = :ownedCallback');
   });
+  it('fences the commit description by run AND callback, so a retired attempt cannot write it', async () => {
+    const { ddb, store } = setup();
+    const description = { type: 'fix', summary: 'x', descriptionId: 'd1' };
+    await store.setCommitDescription({
+      executionId: 'e1',
+      stageInstanceId: 's1',
+      description,
+      ownership,
+    });
+    const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+    expect(items[0].ConditionCheck).toMatchObject({
+      Key: { sk: 'META' },
+      ExpressionAttributeValues: { ':ownedRun': 'run1' },
+    });
+    expect(items[1].Update).toMatchObject({
+      Key: { sk: 'STAGE#s1' },
+      UpdateExpression: 'SET commitDescription = :description',
+      ConditionExpression: 'attribute_exists(pk) AND stageCallbackId = :ownedCallback',
+      ExpressionAttributeValues: { ':description': description, ':ownedCallback': 'cb1' },
+    });
+  });
   it('opens the question and parks its stage and execution atomically', async () => {
     const { ddb, store } = setup();
     await store.createHumanTask({
@@ -312,7 +333,8 @@ describe('stage attempt ownership transactions', () => {
       orchestratorRunId: 'run1',
     });
     expect(tx.TransactItems[1].Update).toMatchObject({
-      ConditionExpression: 'orchestratorRunId = :ifOrid',
+      ConditionExpression:
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
       ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
     });
     expect(
@@ -1146,10 +1168,32 @@ describe('createProcessStore', () => {
     ddb.on(QueryCommand).resolves({ Items: [] });
     await store.getOutputs('e1', { stageInstanceId: 'si-1', afterSeq: 7 });
     let input = ddb.commandCalls(QueryCommand)[0].args[0].input;
-    expect(input.KeyConditionExpression).toBe('pk = :pk AND begins_with(sk, :p)');
-    expect(input.FilterExpression).toBe('(stageInstanceId = :sid) AND (seq > :after)');
+    // afterSeq is an SK range (a filter would still read the whole transcript).
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND sk BETWEEN :from AND :to');
+    expect(input.ExpressionAttributeValues[':from']).toBe('OUTPUT#000000000008');
+    expect(input.ExpressionAttributeValues[':to']).toBe('OUTPUT#999999999999');
+    expect(input.FilterExpression).toBe('(stageInstanceId = :sid)');
     expect(input.ExpressionAttributeValues[':sid']).toBe('si-1');
-    expect(input.ExpressionAttributeValues[':after']).toBe(7);
+
+    // A fractional or negative cursor still means seq > afterSeq.
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { afterSeq: 2.5 });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues[':from']).toBe(
+      'OUTPUT#000000000003',
+    );
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { afterSeq: -4 });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues[':from']).toBe(
+      'OUTPUT#000000000000',
+    );
+
+    // Past the largest sequence the SK can hold: nothing to read.
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    expect(await store.getOutputs('e1', { afterSeq: 999_999_999_999 })).toEqual([]);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(0);
 
     ddb.reset();
     ddb.on(QueryCommand).resolves({ Items: [] });
@@ -1878,6 +1922,37 @@ describe('steering store methods', () => {
     expect(clear).not.toHaveProperty('ExpressionAttributeValues');
   });
 
+  it('records the commit description on the stage row', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    const description = { type: 'fix', summary: 'handle empty carts', descriptionId: 'd1' };
+    await store.setCommitDescription({ executionId: 'e1', stageInstanceId: 'si-1', description });
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression: 'SET commitDescription = :description',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':description': description },
+    });
+  });
+
+  it('records the repositories a commit used the description in, only while it is current', async () => {
+    ddb.on(UpdateCommand).resolvesOnce({});
+    const where = { executionId: 'e1', stageInstanceId: 'si-1', descriptionId: 'd1' };
+    expect(await store.recordCommitDescriptionUse({ ...where, repos: ['a'] })).toBe(true);
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression:
+        'SET commitDescription.committedRepos = list_append(if_not_exists(commitDescription.committedRepos, :none), :repos)',
+      ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
+      ExpressionAttributeValues: { ':descriptionId': 'd1', ':repos': ['a'], ':none': [] },
+    });
+    ddb
+      .on(UpdateCommand)
+      .rejects(
+        Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
+      );
+    expect(await store.recordCommitDescriptionUse({ ...where, repos: ['a'] })).toBe(false);
+  });
+
   // Stamped by the target's re-run after it archived both rewound stages, so a
   // replayed re-run recognises its own completed archive and does not version the
   // heads pass 1 has since written.
@@ -1979,7 +2054,9 @@ describe('steering store methods', () => {
       ifOrchestratorRunId: 'run-1',
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
-    expect(input.ConditionExpression).toBe('orchestratorRunId = :ifOrid');
+    expect(input.ConditionExpression).toBe(
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+    );
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
@@ -1996,7 +2073,7 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '#status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
     );
     expect(input.ExpressionAttributeValues).toMatchObject({
       ':fromStatus': 'WAITING',

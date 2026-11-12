@@ -43,7 +43,7 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole, getVal } from '../shared/trackers.js';
-import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
+import { listClaudeModels, codexModelsFor } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 import {
   isEnvironmentResolutionError,
@@ -66,6 +66,14 @@ import {
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import {
+  resolveInvocationSandbox,
+  readSandboxSettings,
+  sandboxSettingsView,
+  writeSandboxSettings,
+} from '../shared/sandbox-settings.js';
+import { validateSandboxConfig } from '../shared/sandbox-config.js';
+import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -145,8 +153,12 @@ const probeRuntimeCapabilities = async ({
   credentialBindings,
   projectId,
 }) => {
+  const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
   let runtimeCapabilities;
-  if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
+  if (
+    sandbox.enabled ||
+    Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)
+  ) {
     const probe = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
@@ -165,7 +177,12 @@ const probeRuntimeCapabilities = async ({
       credentialBindings,
       runtimeCapabilities,
     },
-    { ssm },
+    {
+      ssm,
+      readSandbox: async () => sandbox,
+      // This request already owns and probes the exact session it will use.
+      qualifyRuntime: async () => runtimeCapabilities,
+    },
   );
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
@@ -213,6 +230,22 @@ export const verifyMcpServers = async ({
         context: { projectId: projectId ?? null },
       },
       async (runtimeSessionId) => {
+        const sandbox = await readSandboxSettings({
+          ddb,
+          tableName: process.env.V2_PROCESS_TABLE,
+        });
+        if (sandbox.enabled) {
+          const probe = await agentcore.send(
+            new InvokeAgentRuntimeCommand({
+              ...runtimeSdkInput(runtimeTarget),
+              runtimeSessionId,
+              contentType: 'application/json',
+              accept: 'application/json',
+              payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+            }),
+          );
+          assertSandboxRuntime(JSON.parse(await probe.response.transformToString()));
+        }
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             ...runtimeSdkInput(runtimeTarget),
@@ -459,6 +492,9 @@ const authChangeResponse = (response, error) =>
 
 // --- Handler ---
 
+// Codex models come from the runtime's regional Mantle catalogue (#674);
+// codexModelsFor in shared/bedrock-models.js decides when the curated list
+// stands in for it.
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
@@ -680,7 +716,8 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: CODEX_BEDROCK_MODELS,
+          codex: codexModelsFor(runtimeCaps?.codexModels),
+          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
     }
@@ -788,6 +825,7 @@ export const handler = async (event, context) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
+          bedrockRegion: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
           ...(process.env.V2_PROCESS_TABLE
             ? {
                 authentication: await authenticationView({
@@ -807,6 +845,13 @@ export const handler = async (event, context) => {
           customMcpServerNames,
           mcpSecretsSet,
           globalMcpServerSecretRefs,
+          ...(isPlatformAdmin(event) && process.env.V2_PROCESS_TABLE
+            ? {
+                sandbox: sandboxSettingsView(
+                  await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+                ),
+              }
+            : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -819,8 +864,62 @@ export const handler = async (event, context) => {
       const denied = requirePlatformAdmin(event);
       if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const input = JSON.parse(body || '{}');
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return response(400, { error: 'Invalid settings request' });
+      }
       const errors = [];
+
+      if (Object.hasOwn(input, 'sandbox')) {
+        // A sandbox operation is atomic and must not partially apply unrelated
+        // credentials/model updates if validation or the revision check fails.
+        if (Object.keys(input).length !== 1) {
+          return response(400, { error: 'Save sandbox settings separately from other settings' });
+        }
+        const request = input.sandbox;
+        if (
+          !request ||
+          !['draft', 'apply', 'toggle'].includes(request.action) ||
+          !Number.isSafeInteger(request.expectedRevision) ||
+          request.expectedRevision < 0 ||
+          Object.keys(request).some(
+            (key) => !['action', 'expectedRevision', 'config', 'enabled'].includes(key),
+          ) ||
+          (request.action === 'toggle'
+            ? request.config !== undefined || typeof request.enabled !== 'boolean'
+            : request.enabled !== undefined || typeof request.config !== 'string')
+        ) {
+          return response(400, { error: 'Invalid sandbox settings request' });
+        }
+        try {
+          const config =
+            request.action === 'toggle' ? undefined : validateSandboxConfig(request.config);
+          const sandbox = await writeSandboxSettings({
+            ddb,
+            tableName: process.env.V2_PROCESS_TABLE,
+            expectedRevision: request.expectedRevision,
+            action: request.action,
+            enabled: request.enabled,
+            config,
+            actor: credentialUserId,
+          });
+          return response(200, { saved: true, sandbox });
+        } catch (error) {
+          if (error.code === 'sandbox_invalid' || error.code === 'sandbox_conflict') {
+            return response(error.code === 'sandbox_conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+              ...(error.issues ? { issues: error.issues } : {}),
+            });
+          }
+          throw error;
+        }
+      }
 
       if (input.authenticationChange) {
         const settings = authenticationSettings();
@@ -1257,9 +1356,10 @@ export const handler = async (event, context) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: kiroModels,
-          // Codex on Bedrock: curated static list — the OpenAI models are not
-          // surfaced by ListInferenceProfiles (see shared/bedrock-models.js).
-          codex: CODEX_BEDROCK_MODELS,
+          // Codex on Bedrock: the runtime's regional Mantle catalogue, falling
+          // back to the curated list (see shared/bedrock-models.js).
+          codex: codexModelsFor(runtimeCaps?.codexModels),
+          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
         },
       });
     }

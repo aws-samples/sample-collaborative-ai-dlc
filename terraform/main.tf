@@ -505,6 +505,10 @@ module "neptune" {
 module "lambda" {
   source = "./modules/api/lambda"
 
+  notification_events_enabled = var.notification_events_enabled
+  notification_event_bus_name = var.notification_event_bus_name
+  notification_event_source   = var.notification_event_source
+
   iam_role_path                = var.iam_role_path
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
@@ -517,11 +521,17 @@ module "lambda" {
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
   aidlc_release_pinning       = var.aidlc_release_pinning
+  pr_title_tracker_key        = var.pr_title_tracker_key
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
+
+  # Custom AI-DLC fork releases kept in GitLab (seed-blocks importRelease).
+  aidlc_custom_source_gitlab_url              = var.aidlc_custom_source_gitlab_url
+  aidlc_custom_source_gitlab_token_secret_arn = var.aidlc_custom_source_gitlab_token_secret_arn
+
   dynamodb_table_arns = [
     module.dynamodb.sessions_table_arn,
     module.dynamodb.notifications_table_arn,
@@ -717,6 +727,7 @@ module "yjs_server" {
   powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
+  image_tag                     = var.yjs_image_tag
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.private_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
@@ -751,6 +762,7 @@ module "agentcore" {
   powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
+  image_tag                   = var.agentcore_image_tag
   build_amd64_image           = var.enable_instances_compute
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id

@@ -49,6 +49,7 @@
 // never re-execute (poc-a). Engine gates are re-read after their callback
 // wakes: a superseded gate (cancel/rewind) retires the run with NO writes.
 
+import { StepError } from '@aws/durable-execution-sdk-js';
 import processKeysPkg from '../shared/v2-process-keys.js';
 import { normalizeChangedFileProvenance } from '../shared/changed-file-provenance.js';
 import {
@@ -62,12 +63,25 @@ import {
   completionMessage,
 } from '../shared/unit-completion.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
-import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback, unparkGate } from './gate-callback.js';
+import { buildIntentAttribution } from '../shared/pr-attribution.js';
+import { bindGateCallback, releaseUnusedGateCallback, unparkGate } from './gate-callback.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { parseChoice } from '../shared/gate-answer.js';
 import { laneSessionIdFor } from '../shared/runtime-session-ids.js';
+import { notifyGatePending } from '../shared/notification-events.js';
+
+// Notification events: the `stage` of an engine gate with no stage of its own,
+// from its name prefix.
+const ENGINE_GATE_LABELS = {
+  halt: 'Lane failure',
+  skeleton: 'Walking skeleton review',
+  ladder: 'Autonomy choice',
+  batch: 'Batch review',
+  validation: 'Stage review',
+};
+export const engineGateLabel = (name) =>
+  ENGINE_GATE_LABELS[String(name ?? '').split('-')[0]] ?? 'Review';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -211,6 +225,8 @@ export const awaitEngineGate = async (
     // That outcome in one sentence for the reviewer. The gate prompt carries the
     // same text, which nothing renders.
     loopBackNote = null,
+    // Notification events only: the gate's `stage`. Defaults to engineGateLabel(name).
+    stageLabel = null,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -309,6 +325,17 @@ export const awaitEngineGate = async (
     } catch {
       /* live fan-out is best-effort */
     }
+    // Notification event: a human is needed. Inside this step, so the step
+    // sequence is unchanged and a replay doesn't publish again. Never throws;
+    // does nothing without a bus.
+    await notifyGatePending(store, {
+      projectId,
+      intentId,
+      executionId,
+      humanTaskId,
+      stage: stageLabel ?? engineGateLabel(name),
+      gate: { kind, prompt },
+    });
     return true;
   });
   if (opened === false) return { superseded: true };
@@ -334,13 +361,25 @@ export const awaitEngineGate = async (
       `gate_callback_conflict: ${humanTaskId} already has a different callback owner`,
     );
   }
-  if (!callbackBound.status || callbackBound.status === 'pending') await callbackPromise;
+  const answeredEarly = Boolean(callbackBound.status) && callbackBound.status !== 'pending';
+  if (!answeredEarly) await callbackPromise;
 
   // Re-read after the wake (or an answer observed while binding), so a
-  // subsequent cancellation is not hidden by the bind checkpoint.
-  const gate = await ctxArg.step(`gate-after-${name}`, () =>
-    store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-  );
+  // subsequent cancellation is not hidden by the bind checkpoint. An early
+  // answer's unused callback is released in this same step, so the operation
+  // sequence of runs in progress is unchanged.
+  const gate = await ctxArg.step(`gate-after-${name}`, async () => {
+    const current = await store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+    if (answeredEarly) {
+      await releaseUnusedGateCallback(toolkit.releaseCallback, {
+        gate: current,
+        callbackId,
+        humanTaskId,
+        logger: ctxArg.logger,
+      });
+    }
+    return current;
+  });
   if (!gate || gate.status === 'superseded') return { superseded: true };
   const unparked = await ctxArg.step(`gate-unpark-${name}`, () =>
     unparkGate(store, { executionId, humanTaskId, runId }),
@@ -473,6 +512,10 @@ export const runParallelSection = async (segment, toolkit) => {
     applicationUrl,
     runId = null,
     completionPolicyVersion = 1,
+    // 1: the integration turn is read in durable steps (waitForIntegrationTurn).
+    // Rides the run's load-meta checkpoint; histories without it replay the
+    // original operation sequence.
+    laneWaitPolicyVersion = 1,
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
     deriveEnrichment = 'off',
@@ -480,6 +523,7 @@ export const runParallelSection = async (segment, toolkit) => {
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const checkedCompletion = completionPolicyVersion >= 1;
+  const durableLaneWaits = laneWaitPolicyVersion >= 1;
   const sk = `s${segment.index}`;
 
   // Consistent: the fan-out approval patched this plan's decisions just before.
@@ -818,10 +862,30 @@ export const runParallelSection = async (segment, toolkit) => {
       return rows.filter(Boolean);
     });
 
-  const waitForIntegrationTurn = async (slug) => {
+  // A predecessor's unit row. Runs with durable lane waits read it in a
+  // durable step: a replay then sees what this lane saw first time, and the
+  // read counts as running work (the durable runtime suspends an invocation
+  // when no operation is running and a callback is pending, so a plain read
+  // here let a wake-up end before the lane reached its next step). The step
+  // retries a failed read; one that still fails is checkpointed as failed and
+  // treated as "not queued", the same as before, on every replay.
+  const readPredecessorUnit = async (laneCtx, slug, rTag, predecessor) => {
+    if (!durableLaneWaits) {
+      return store.getUnit(executionId, segment.index, predecessor).catch(() => null);
+    }
+    try {
+      return await laneCtx.step(`integration-turn-${sk}-${slug}${rTag}-${predecessor}`, () =>
+        store.getUnit(executionId, segment.index, predecessor),
+      );
+    } catch (error) {
+      if (error instanceof StepError) return null;
+      throw error;
+    }
+  };
+  const waitForIntegrationTurn = async (laneCtx, slug, rTag) => {
     for (const predecessor of laneOrder.slice(0, laneOrder.indexOf(slug))) {
       if (laneState.has(predecessor)) continue;
-      const row = await store.getUnit(executionId, segment.index, predecessor).catch(() => null);
+      const row = await readPredecessorUnit(laneCtx, slug, rTag, predecessor);
       // Authored order only applies among units that are actually queued for
       // integration. A sibling that is still building, parked, failed, or
       // blocked must not create permanent head-of-line blocking.
@@ -1788,7 +1852,7 @@ export const runParallelSection = async (segment, toolkit) => {
         `Unit ${slug} resumed from its existing review PR(s) without rebuilding completed stages`,
         { unitSlug: slug, sectionIndex: segment.index, state: persistedUnit.state },
       );
-      await waitForIntegrationTurn(slug);
+      await waitForIntegrationTurn(laneCtx, slug, rTag);
       const integrated = await withIntegrationLock(() =>
         integrateUnitPullRequests({
           laneCtx,
@@ -2028,7 +2092,7 @@ export const runParallelSection = async (segment, toolkit) => {
           stopSession(laneSession),
         );
         releasePermit();
-        await waitForIntegrationTurn(slug);
+        await waitForIntegrationTurn(laneCtx, slug, rTag);
         const integrated = await withIntegrationLock(() =>
           integrateUnitPullRequests({
             laneCtx,

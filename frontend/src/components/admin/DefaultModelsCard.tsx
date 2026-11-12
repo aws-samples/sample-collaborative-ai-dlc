@@ -25,6 +25,10 @@ import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
 const MODEL_DEFAULT_SENTINEL = '__default__';
+// A catalog is not the whole story: a model the region serves may be missing from
+// it (#674), so the dropdown carries an entry that turns the field back into a
+// text input instead of closing the caller out.
+const MODEL_CUSTOM_SENTINEL = '__custom__';
 
 function canonicalCliModels(models: CliModels = {}) {
   return AGENT_CLIS.reduce<CliModels>((acc, cli) => {
@@ -52,6 +56,14 @@ export function DefaultModelsCard() {
     {},
   );
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  // Why the Codex list is what it is (#674): the picker only calls a list
+  // regional when the runtime read it (`catalog`); anything else — a failed
+  // lookup or a runtime that answered without a catalogue — is the built-in
+  // fallback, and it says so instead of looking current.
+  const [codexSource, setCodexSource] = useState<'catalog' | 'error' | 'static'>();
+  // CLI whose field is in free-text mode while a catalog exists: the caller is
+  // typing a model ID the catalog does not list.
+  const [customEntry, setCustomEntry] = useState<Partial<Record<RuntimeModelCli, boolean>>>({});
 
   useEffect(() => {
     agentsService
@@ -70,6 +82,7 @@ export function DefaultModelsCard() {
       .getCapabilities(true)
       .then((c) => {
         if (c.models) setModelOptions(c.models);
+        setCodexSource(c.models?.codexSource);
       })
       .catch(() => {
         /* non-fatal — fall back to Input fields when models unavailable */
@@ -158,15 +171,20 @@ export function DefaultModelsCard() {
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
-                  {modelsLoaded && options.length > 0 ? (
+                  {modelsLoaded && options.length > 0 && !customEntry[cli] ? (
                     <Select
                       value={current || MODEL_DEFAULT_SENTINEL}
-                      onValueChange={(v) =>
+                      onValueChange={(v) => {
+                        if (v === MODEL_CUSTOM_SENTINEL) {
+                          // Keep what is saved; the input below edits it.
+                          setCustomEntry((cur) => ({ ...cur, [cli]: true }));
+                          return;
+                        }
                         setCliModels((cur) => ({
                           ...cur,
                           [cli]: v === MODEL_DEFAULT_SENTINEL ? '' : v,
-                        }))
-                      }
+                        }));
+                      }}
                       disabled={!modelsLoaded || saving}
                     >
                       <SelectTrigger
@@ -183,18 +201,42 @@ export function DefaultModelsCard() {
                             <span className="font-mono text-xs">{m.name}</span>
                           </SelectItem>
                         ))}
+                        <SelectItem value={MODEL_CUSTOM_SENTINEL}>
+                          <span className="text-xs">Custom model ID…</span>
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   ) : (
-                    <Input
-                      id={`default-model-${cli}`}
-                      data-testid={`default-model-input-${cli}`}
-                      value={current}
-                      onChange={(e) => setCliModels((cur) => ({ ...cur, [cli]: e.target.value }))}
-                      placeholder={AGENT_CLI_METADATA[cli].modelPlaceholder}
-                      className="font-mono text-sm h-9"
-                      disabled={!modelsLoaded || saving}
-                    />
+                    <>
+                      <Input
+                        id={`default-model-${cli}`}
+                        data-testid={`default-model-input-${cli}`}
+                        value={current}
+                        onChange={(e) => setCliModels((cur) => ({ ...cur, [cli]: e.target.value }))}
+                        placeholder={AGENT_CLI_METADATA[cli].modelPlaceholder}
+                        className="font-mono text-sm h-9"
+                        disabled={!modelsLoaded || saving}
+                      />
+                      {modelsLoaded && options.length > 0 && (
+                        <button
+                          type="button"
+                          data-testid={`default-model-list-${cli}`}
+                          onClick={() => setCustomEntry((cur) => ({ ...cur, [cli]: false }))}
+                          disabled={saving}
+                          className="text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          Choose from the list
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {cli === 'codex' && codexSource !== 'catalog' && options.length > 0 && (
+                    <p
+                      data-testid="codex-catalog-unavailable"
+                      className="text-[11px] text-muted-foreground"
+                    >
+                      Could not read this region&apos;s Codex catalogue — showing the built-in list.
+                    </p>
                   )}
                 </div>
               );

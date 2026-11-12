@@ -27,6 +27,7 @@ import {
 } from '../../shared/v2-execution-plan.js';
 import { evaluateGatePreconditions, sensorGateFindings } from '../../shared/gate-preconditions.js';
 import { MAX_SENSOR_REASON_LENGTH } from '../../shared/sensor-verdict.js';
+import { autonomousLoopBackGate } from '../../shared/construction-autonomy.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -907,6 +908,29 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
   });
 
+  it.each([0, 2])('logs CLI exit %s at the appropriate severity', async (exitCode) => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      await runStage(
+        baseArgs,
+        baseDeps({
+          spawnFn: () => ({
+            on: (event, callback) => event === 'close' && setImmediate(() => callback(exitCode)),
+            stdin: { end() {} },
+          }),
+        }),
+      );
+      const expected = exitCode === 0 ? info : error;
+      const other = exitCode === 0 ? error : info;
+      expect(expected).toHaveBeenCalledWith('cli exit', expect.objectContaining({ exitCode }));
+      expect(other).not.toHaveBeenCalledWith('cli exit', expect.anything());
+    } finally {
+      info.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('records FAILED on a non-zero CLI exit', async () => {
     const deps = baseDeps({
       spawnFn: () => ({
@@ -920,6 +944,46 @@ describe('runStage — failure paths (always records terminal state)', () => {
       deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
     ).toBe(true);
   });
+
+  it.each(['error', 'close'])(
+    'records FAILED and logs cli_error when the child emits %s without an exit code',
+    async (event) => {
+      const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      try {
+        const deps = baseDeps({
+          spawnFn: () => {
+            const child = new EventEmitter();
+            child.stdin = { end() {} };
+            setImmediate(() =>
+              child.emit(
+                event,
+                event === 'error'
+                  ? Object.assign(new Error('spawn fixture ENOENT'), { code: 'ENOENT' })
+                  : null,
+              ),
+            );
+            return child;
+          },
+        });
+        const result = await runStage(baseArgs, deps);
+        expect(result).toMatchObject({ ok: false, reason: 'cli_error' });
+        expect(
+          deps.store.calls.some(
+            ([name, row]) => name === 'updateStageState' && row.state === 'FAILED',
+          ),
+        ).toBe(true);
+        expect(error).toHaveBeenCalledWith(
+          'cli_error',
+          expect.objectContaining({ code: event === 'error' ? 'ENOENT' : 'cli_no_exit_code' }),
+        );
+        expect(info).not.toHaveBeenCalledWith('cli exit', expect.anything());
+      } finally {
+        info.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
 
   it('fails fast on a not-implemented (agent-team) stage without spawning', async () => {
     const lib = library();
@@ -3142,6 +3206,90 @@ describe('runStage — resume mode', () => {
     return { spawnFn, get: () => captured };
   };
 
+  // The gate UI answers a single-choice question with an option index. The
+  // resumed agent must read the chosen label (and any note), not raw JSON: the
+  // 2.11.3 plan-review fallback asks Approve plan / Request changes this way and
+  // the agent revises and asks again only if it can tell which one was chosen.
+  it.each([
+    { pick: 0, label: 'Approve plan', note: undefined },
+    { pick: 1, label: 'Request changes', note: 'Split the migration into its own step.' },
+  ])(
+    'resumes an ordinary question with its chosen label: $label',
+    async ({ pick, label, note }) => {
+      const cap = captureArgv();
+      const deps = baseDeps({
+        spawnFn: cap.spawnFn,
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-1',
+            status: 'answered',
+            questions: JSON.stringify([
+              {
+                text: 'Review the plan before coding',
+                options: [{ label: 'Approve plan' }, { label: 'Request changes' }],
+              },
+            ]),
+            answer: { answers: [{ selectedOptions: [pick], ...(note ? { freeText: note } : {}) }] },
+          },
+          stage: { cli: 'claude', cliSessionId: 'sess-7' },
+        }),
+      });
+
+      const res = await runStage(
+        { ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) },
+        deps,
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const prompt = cap.get().prompt;
+      expect(prompt).toContain(`"${label}"`);
+      expect(prompt).not.toContain('selectedOptions');
+      if (note) expect(prompt).toContain(note);
+    },
+  );
+
+  // An ordinary question can carry several sub-questions, and a sub-question
+  // can allow several options. Every answer reaches the agent, each against its
+  // own question, with any note the human added.
+  it('resumes a multi-question answer with every choice and note', async () => {
+    const cap = captureArgv();
+    const deps = baseDeps({
+      spawnFn: cap.spawnFn,
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          questions: JSON.stringify([
+            { text: 'Which database?', options: [{ label: 'Postgres' }, { label: 'DynamoDB' }] },
+            {
+              text: 'Which regions?',
+              multiSelect: true,
+              options: [{ label: 'eu-west-1' }, { label: 'us-east-1' }, { label: 'ap-south-1' }],
+            },
+          ]),
+          answer: {
+            answers: [
+              { selectedOptions: [1] },
+              { selectedOptions: [0, 2], freeText: 'Keep latency under 50 ms.' },
+            ],
+          },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+
+    const prompt = cap.get().prompt;
+    expect(prompt).toContain('Which database?');
+    expect(prompt).toContain('"DynamoDB"');
+    expect(prompt).toContain('Which regions?');
+    expect(prompt).toContain('"eu-west-1"');
+    expect(prompt).toContain('"ap-south-1"');
+    expect(prompt).toContain('Keep latency under 50 ms.');
+    expect(prompt).not.toContain('selectedOptions');
+  });
+
   it('resumes the persisted Claude conversation with --resume + the answer, reaches SUCCEEDED', async () => {
     const cap = captureArgv();
     const deps = baseDeps({
@@ -3404,6 +3552,40 @@ describe('runStage — resume mode', () => {
     // The marker is stamped only after a COMPLETE archive, so a replay of a
     // finished archive skips it and the pass-1 heads this attempt is about to write
     // are not archived as if they were pass 0's.
+    // The jump an autonomous run takes itself writes the same kind of row a human
+    // loop-back leaves, so the target's re-run finds it, archives, and is told why.
+    it('re-enters fresh from the gate row an autonomous loop-back stores', async () => {
+      const AUTO_ID = 'eg-validation-si-bt-lb0-0-run-1';
+      const { open, answer } = autonomousLoopBackGate({
+        humanTaskId: AUTO_ID,
+        stage: { stageId: 'build-and-test', stageInstanceId: RECOMMENDER_INSTANCE_ID },
+        loopBack: {
+          offered: true,
+          target: { stageId: 'requirements-analysis' },
+          reason: 'payment integration tests fail',
+          spent: 0,
+        },
+      });
+      const { deps, archiveArtifactsForStages, order } = archiveHarness();
+      deps.store.getHumanTask = async (_executionId, humanTaskId) =>
+        humanTaskId === AUTO_ID ? { ...open, ...answer } : null;
+      let promptSeen = null;
+      deps.spawnFn = () => {
+        order.push('spawn');
+        return { ...okSpawn(), stdin: { end: (prompt) => (promptSeen = prompt) } };
+      };
+
+      const res = await runStage({ ...baseArgs, resumeFrom: AUTO_ID }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(archiveArtifactsForStages.mock.calls[0][0]).toMatchObject({
+        stageInstanceIds: [BASE_STAGE_INSTANCE_ID, RECOMMENDER_INSTANCE_ID],
+        restartId: `loopback-${AUTO_ID}`,
+      });
+      expect(order[0]).toBe('archive');
+      expect(promptSeen).toContain('payment integration tests fail');
+    });
+
     it('does not archive again when this decision already archived', async () => {
       const { deps, archiveArtifactsForStages } = archiveHarness({
         stage: { loopBackArchiveId: GATE_ID },
@@ -5402,7 +5584,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       gitProvider: 'github',
       projectId: 'p1',
       executionId: 'e1',
-      message: 'aidlc(requirements-analysis): e1',
+      message: expect.stringMatching(/^docs\(aidlc\): checkpoint requirements-analysis stage\n/),
     });
     // No gitAuthor in the payload → engine-only identity (author: null).
     expect(calls[0].author).toBeNull();
@@ -6043,9 +6225,16 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
-  it('carries the unit dimension in the engine commit message', async () => {
+  it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {
     const messages = [];
     const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        execution: {
+          title: 'Stagger renovate runs',
+          source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+        },
+      }),
       ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
       commitAndPushAll: async ({ message }) => {
         messages.push(message);
@@ -6056,7 +6245,67 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
       deps,
     );
-    expect(messages).toEqual(['aidlc(code-generation): billing — e1']);
+    expect(messages).toEqual([
+      [
+        'chore(aidlc): checkpoint code-generation stage for billing [ABC-12]',
+        '',
+        'Intent: Stagger renovate runs',
+        '',
+        'AIDLC-Stage: code-generation',
+        'AIDLC-Unit: billing',
+        'AIDLC-Execution: e1',
+      ].join('\n'),
+    ]);
+  });
+
+  it('commits with the change description the agent recorded, then records its use', async () => {
+    const messages = [];
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      execution: {
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      stage: {
+        commitDescription: {
+          type: 'fix',
+          scope: 'billing',
+          summary: 'round totals',
+          descriptionId: 'd1',
+        },
+      },
+    });
+    const recorded = [];
+    store.recordCommitDescriptionUse = async (args) => recorded.push(args);
+    let mcpScope = null;
+    const deps = unitDeps({
+      store,
+      materializeStage: async ({ scope }) => {
+        mcpScope = scope;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async ({ message }) => {
+        messages.push(message);
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'https://x/r.git', committed: true, pushed: true }],
+        };
+      },
+    });
+    await runStage(
+      { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
+      deps,
+    );
+    expect(mcpScope).toMatchObject({ describeChanges: true });
+    expect(messages[0].split('\n')[0]).toBe('fix(billing): round totals [ABC-12]');
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        executionId: 'e1',
+        descriptionId: 'd1',
+        repos: ['https://x/r.git'],
+      }),
+    ]);
   });
 
   it('retains committed code refs when a unit stage parks before projection', async () => {
@@ -6189,6 +6438,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: parkedGitResult, unitSlug: 'billing' }),
@@ -6271,6 +6525,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: failedGitResult, unitSlug: 'billing' }),

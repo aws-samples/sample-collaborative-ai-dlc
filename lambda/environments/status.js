@@ -813,6 +813,7 @@ const verifyLeasedRuntime = async ({
         toolBuilds: 'PASSED',
         endpoint: 'PASSED',
         capabilities: capabilities.clis,
+        ...(capabilities.sandboxEnforcement === true ? { sandboxEnforcement: true } : {}),
         ...(capabilities.agentAuthProtocol
           ? {
               agentAuthProtocol: capabilities.agentAuthProtocol,

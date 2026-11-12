@@ -7,6 +7,7 @@ import {
   refreshPricing,
   FALLBACK_PRICES,
 } from '../model-pricing.js';
+import { CODEX_BEDROCK_MODELS } from '../bedrock-models.js';
 
 describe('modelFamily', () => {
   it('normalizes region-prefixed Bedrock inference-profile ids', () => {
@@ -22,6 +23,11 @@ describe('modelFamily', () => {
     expect(modelFamily('claude-opus-4.6')).toBe('claude-opus-4.6');
     expect(modelFamily('auto')).toBe('auto');
     expect(modelFamily(null)).toBeNull();
+  });
+
+  it('keeps Codex Mantle ids exact and geo-prefixed OpenAI ids distinct', () => {
+    expect(modelFamily('openai.gpt-5.6-sol')).toBe('openai.gpt-5.6-sol');
+    expect(modelFamily('global.openai.gpt-5.6-sol')).toBe('global.openai.gpt-5.6-sol');
   });
 });
 
@@ -83,6 +89,60 @@ describe('costForMetrics', () => {
     const resolver = makePriceResolver({ 'openai.gpt-5.5': { input: 1, output: 2 } });
     const c = costForMetrics({ tokensCacheRead: 1000 }, 'openai.gpt-5.5', resolver);
     expect(c.priced).toBe(false);
+  });
+
+  it('prices Codex usage whose input total includes cache reads and writes', () => {
+    // Codex input 1M = 0.5M uncached + 0.3M cache read + 0.2M cache write;
+    // output 0.1M already includes the 0.04M reasoning tokens.
+    const c = costForMetrics(
+      {
+        tokensInput: 1_000_000,
+        tokensCacheRead: 300_000,
+        tokensCacheWrite: 200_000,
+        tokensOutput: 100_000,
+        tokensReasoning: 40_000,
+      },
+      'openai.gpt-5.6-sol',
+    );
+    expect(c.inputCost).toBeCloseTo(0.5 * 4.4 + 0.3 * 0.44 + 0.2 * 5.5);
+    expect(c.outputCost).toBeCloseTo(0.1 * 22);
+    expect(c.priced).toBe(true);
+  });
+
+  it('bills GPT-5.5 cache writes at the input rate', () => {
+    const c = costForMetrics(
+      { tokensInput: 1_000_000, tokensCacheWrite: 1_000_000 },
+      'openai.gpt-5.5',
+    );
+    expect(c.inputCost).toBeCloseTo(5.5);
+    expect(c.priced).toBe(true);
+  });
+
+  it('prices GPT-5.4, which has no cache-write fee, at its In-Region rates', () => {
+    const c = costForMetrics(
+      {
+        tokensInput: 1_000_000,
+        tokensCacheRead: 300_000,
+        tokensCacheWrite: 200_000,
+        tokensOutput: 100_000,
+      },
+      'openai.gpt-5.4',
+    );
+    expect(c.inputCost).toBeCloseTo(0.5 * 2.75 + 0.3 * 0.275 + 0.2 * 2.75);
+    expect(c.outputCost).toBeCloseTo(0.1 * 16.5);
+    expect(c.priced).toBe(true);
+  });
+
+  it('prices every model in the curated Codex picker list', () => {
+    for (const { id } of CODEX_BEDROCK_MODELS) {
+      expect(costForMetrics({ tokensInput: 1000 }, id).priced, id).toBe(true);
+    }
+  });
+
+  it('leaves OpenAI models without a confirmed Mantle rate unpriced', () => {
+    for (const model of ['openai.gpt-6.1-terra', 'global.openai.gpt-5.6-sol']) {
+      expect(costForMetrics({ tokensInput: 1000 }, model).priced).toBe(false);
+    }
   });
 
   it('computes input+output cost for a priced model', () => {

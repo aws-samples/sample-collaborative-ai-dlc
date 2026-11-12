@@ -10,11 +10,11 @@
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
-# archives), jq, procps,
+# archives), jq, procps, bubblewrap/socat/ripgrep/util-linux (SRT),
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 \
+    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 bubblewrap socat ripgrep util-linux \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
@@ -119,7 +119,6 @@ RUN install -d -o node -g node -m 0755 \
     /opt/agentcore \
     /opt/shared \
     /mnt/workspace \
-    /home/node/.codex-state \
     /home/node/.codex-runs
 
 # Install the agentcore package deps (its own package.json — isolated).

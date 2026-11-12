@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
@@ -29,6 +29,7 @@ beforeAll(async () => {
   vi.stubEnv('AWS_PROFILE', undefined);
   vi.stubEnv('AGENT_OUTPUTS_TABLE', 'agent-outputs-test');
   vi.stubEnv('QUESTIONS_TABLE', 'agent-questions-test');
+  vi.stubEnv('V2_PROCESS_TABLE', 'process-table');
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
   vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
@@ -55,6 +56,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   ddbMock.reset();
+  ddbMock.on(GetCommand).resolves({});
   lambdaMock.reset();
   agentcoreMock.reset();
   ssmMock.reset();

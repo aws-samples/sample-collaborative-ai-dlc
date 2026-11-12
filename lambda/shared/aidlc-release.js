@@ -91,7 +91,8 @@ const assertImporterRevision = (revision) => {
  * All release bytes live under one versioned prefix keyed by the exact source
  * SHA and the importer revision that produced them.
  *
- * A custom fork gets its own `custom/<owner>/<name>/` segment. That is a hard
+ * A custom fork gets its own `custom/<owner>/<name>/` segment (GitHub), or
+ * `custom/gitlab/<url-encoded project path>/` (GitLab). That is a hard
  * separation, not a convention: the official layout puts the SHA directly under
  * `v1/`, so no custom repository — whatever it is named — can ever produce a key
  * that an official release would also produce, and an official reader can never
@@ -106,14 +107,14 @@ const releaseKeyPrefix = ({
   const root = `aidlc-releases/v${AIDLC_RELEASE_SCHEMA_VERSION}`;
   const tail = `${assertSha(sha)}/i${assertImporterRevision(importerRevision)}`;
   if (!custom) return `${root}/${tail}`;
-  const { owner, repo } = parseRepositorySlug(sourceRepository);
-  if (`${owner}/${repo}` === OFFICIAL_AIDLC_REPOSITORY) {
+  const { repository, keySegments } = parseRepositorySlug(sourceRepository);
+  if (repository === OFFICIAL_AIDLC_REPOSITORY) {
     throw new AidlcReleaseError(
       'release_source_invalid',
       `aidlc-release: ${OFFICIAL_AIDLC_REPOSITORY} cannot be stored under the custom prefix`,
     );
   }
-  return `${root}/custom/${owner}/${repo}/${tail}`;
+  return `${root}/custom/${keySegments.join('/')}/${tail}`;
 };
 
 // The key arguments implied by an already-built manifest, so every writer and
@@ -709,6 +710,14 @@ const verifyPublishedBytes = async ({ s3, bucket, manifest, objects }) => {
 };
 
 /**
+ * Reads back every object and the catalog an already-published manifest names,
+ * and throws `release_verification_failed` naming any that is missing or holds
+ * other bytes. The same check publication runs before writing the manifest.
+ */
+const verifyPublishedRelease = ({ s3, bucket, manifest }) =>
+  verifyPublishedBytes({ s3, bucket, manifest, objects: manifest.objects ?? [] });
+
+/**
  * Writes the bundle in dependency order and only then the manifest. The
  * manifest is the publication marker: readers that find it can assume every
  * object and the catalog were already verified present with the exact bytes it
@@ -773,8 +782,8 @@ const assertManifestProvenance = ({
     mismatched.push('importerRevision');
   }
   if (custom) {
-    const { owner, repo } = parseRepositorySlug(sourceRepository);
-    if (manifest.sourceRepository !== `${owner}/${repo}`) mismatched.push('sourceRepository');
+    const { repository } = parseRepositorySlug(sourceRepository);
+    if (manifest.sourceRepository !== repository) mismatched.push('sourceRepository');
   }
   if (mismatched.length > 0) {
     throw new AidlcReleaseError(
@@ -844,6 +853,7 @@ export {
   releaseManifestKey,
   runtimeObjectKey,
   validateReleaseManifest,
+  verifyPublishedRelease,
 };
 
 export default {
@@ -861,4 +871,5 @@ export default {
   releaseManifestKey,
   runtimeObjectKey,
   validateReleaseManifest,
+  verifyPublishedRelease,
 };

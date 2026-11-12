@@ -38,6 +38,12 @@ variable "application_url" {
   type        = string
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix intent pull request titles with the intent's Jira issue key"
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string
@@ -100,10 +106,20 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance the seed-blocks lambda imports gitlab: custom fork releases from"
+  type        = string
+  default     = "https://gitlab.com"
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN holding a GitLab read_api token for private gitlab: custom fork releases"
+  type        = string
+  default     = ""
+}
 variable "aidlc_release_pinning" {
   description = "Whether new intents are pinned to a published immutable AI-DLC release (\"on\"/\"off\")"
   type        = string
-  default     = "off"
+  default     = "on"
 }
 
 variable "github_oauth_secret_name" {
@@ -426,4 +442,22 @@ variable "gateway_grant_key_arn" {
   description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
   type        = string
   default     = null
+}
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish notification events to it"
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "Name of the notification event bus. Empty uses <project>-<environment>-events"
+  type        = string
+  default     = ""
+}
+
+variable "notification_event_source" {
+  description = "EventBridge source of the notification events"
+  type        = string
+  default     = "collaborative-ai-dlc"
 }

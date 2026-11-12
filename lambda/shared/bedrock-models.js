@@ -81,6 +81,82 @@ const CODEX_BEDROCK_MODELS = [
   { id: 'openai.gpt-5.4', name: 'GPT-5.4', description: null },
 ];
 
-const __test = { isUsable, toModel };
-export { listClaudeModels, regionPrefix, CODEX_BEDROCK_MODELS, __test };
-export default { listClaudeModels, regionPrefix, CODEX_BEDROCK_MODELS, __test };
+// Codex drives the OpenAI models that bedrock-mantle serves through its
+// OpenAI-compatible API, so the catalogue has to come from that endpoint: the
+// IDs are not inference profiles (ListInferenceProfiles never lists them) and
+// availability differs per inference region (#674).
+//
+// The curated list below stays as the fallback for a lookup that fails or a
+// runtime that cannot reach the endpoint; the discovery path is preferred
+// because it reflects the region the invocation will actually use.
+const CODEX_ID = /^openai\./;
+// GPT-OSS entries are listed by Mantle but their Responses-API compatibility is
+// untested (see #674), so the picker does not offer them yet.
+const CODEX_EXCLUDED_ID = /^openai\.gpt-oss-/;
+
+const toCodexModel = (entry) => {
+  const id = typeof entry === 'string' ? entry : entry?.id;
+  if (typeof id !== 'string' || !id) return null;
+  if (!CODEX_ID.test(id) || CODEX_EXCLUDED_ID.test(id)) return null;
+  const name = (typeof entry === 'object' && typeof entry?.name === 'string' && entry.name) || id;
+  return { id, name, description: null };
+};
+
+// Resolve the Codex models the configured inference region serves.
+//   listModels(region) -> the raw `/v1/models` payload ({ data: [{ id }] }) or throws.
+// A saved id the region no longer lists stays selectable, because a saved
+// selection is configuration the user owns; a failed lookup reports
+// `source: 'error'` so the caller can fall back instead of showing an empty list.
+const listCodexModels = async ({ listModels, region, savedIds = [] }) => {
+  const saved = [...new Set(savedIds.filter((id) => typeof id === 'string' && id))];
+  const withSaved = (models) => {
+    const seen = new Set(models.map((m) => m.id));
+    return [
+      ...saved.filter((id) => !seen.has(id)).map((id) => ({ id, name: id, description: null })),
+      ...models,
+    ];
+  };
+  let payload;
+  try {
+    payload = await listModels(region);
+  } catch {
+    return { models: withSaved([]), source: 'error' };
+  }
+  const seen = new Set();
+  const models = [];
+  for (const entry of payload?.data ?? []) {
+    const model = toCodexModel(entry);
+    if (!model || seen.has(model.id)) continue;
+    seen.add(model.id);
+    models.push(model);
+  }
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  return { models: withSaved(models), source: 'catalog' };
+};
+
+// What the picker offers for Codex. The regional catalogue decides, even when it
+// is empty: a region that serves no compatible model is an answer, and swapping
+// in the curated ids would offer models that region cannot run (#674). The
+// curated list stays the fallback for a lookup that failed (`source: 'error'`)
+// or a runtime with no discovery path at all, so `source` is what tells the two
+// apart. A saved id survives either way — it is prepended by listCodexModels.
+const codexModelsFor = (codex) =>
+  codex?.source === 'catalog' ? (codex.models ?? []) : CODEX_BEDROCK_MODELS;
+
+const __test = { isUsable, toModel, toCodexModel };
+export {
+  listClaudeModels,
+  listCodexModels,
+  codexModelsFor,
+  regionPrefix,
+  CODEX_BEDROCK_MODELS,
+  __test,
+};
+export default {
+  listClaudeModels,
+  listCodexModels,
+  codexModelsFor,
+  regionPrefix,
+  CODEX_BEDROCK_MODELS,
+  __test,
+};

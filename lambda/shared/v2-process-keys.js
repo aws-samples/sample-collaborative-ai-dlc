@@ -259,6 +259,53 @@ const humanTaskMatchesOwner = ({
     Number(task.sectionIndex) === Number(sectionIndex)
   );
 };
+// A lane question whose answer is reaching the run leaves the stage
+// WAITING_FOR_HUMAN until the runtime resumes it, which can take a cold start.
+// Within this window that lane is resuming, not orphaned.
+//
+// The answer commits before its durable callback is sent, and
+// callbackConsumedAt is written only after the send (best-effort), so the
+// window starts when the answer commits: answeredAt, or callbackConsumedAt
+// when it's later. A missing or failed consumption marker therefore never
+// makes a lane look orphaned while its resume may still be in flight. An
+// answer whose delivery is recorded as failed (META resumeRequired names the
+// gate) isn't resuming: the Resume action owns it.
+const LANE_RESUME_GRACE_MS = 10 * 60 * 1000;
+const laneResumeStartedAt = (gate) => {
+  const times = [gate.answeredAt, gate.callbackConsumedAt]
+    .map((value) => Date.parse(value ?? ''))
+    .filter(Number.isFinite);
+  return times.length > 0 ? Math.max(...times) : null;
+};
+const isLaneResumeInFlight = ({
+  stage,
+  gates = [],
+  executionStatus,
+  resumeRequired = null,
+  now = Date.now(),
+}) => {
+  if (!['RUNNING', 'WAITING'].includes(executionStatus)) return false;
+  if (stage?.state !== 'WAITING_FOR_HUMAN' || !stage.unitSlug) return false;
+  return gates.some((gate) => {
+    if (!isHumanTaskAnswerStatus(gate?.status)) return false;
+    if (resumeRequired?.humanTaskId && resumeRequired.humanTaskId === gate.humanTaskId) {
+      return false;
+    }
+    if (stage.pendingHumanTaskId && gate.humanTaskId !== stage.pendingHumanTaskId) return false;
+    if (
+      !humanTaskMatchesOwner({
+        task: gate,
+        stageInstanceId: stage.stageInstanceId,
+        unitSlug: stage.unitSlug,
+        sectionIndex: stage.sectionIndex ?? null,
+      })
+    ) {
+      return false;
+    }
+    const startedAt = laneResumeStartedAt(gate);
+    return startedAt !== null && now - startedAt < LANE_RESUME_GRACE_MS;
+  });
+};
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
 // happens at a deterministic injection point: a gate resume or a fresh stage
@@ -388,6 +435,8 @@ const buildExecutionMeta = ({
   // overlays — neither changes meaning. Shape:
   // { releaseId, sourceSha, importerRevision, closureDigest, catalogKey, manifestKey }.
   methodologyRelease = null,
+  // Informational marker for an admin-created validation intent; grants no runtime privilege.
+  methodologyReleaseTest = false,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -573,6 +622,7 @@ const buildExecutionMeta = ({
   // Only a pinned intent carries a release, and only a failed callback carries a
   // resume marker: an unpinned row keeps exactly the attributes it always had.
   ...(methodologyRelease ? { methodologyRelease } : {}),
+  ...(methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
   scope,
   currentPhase,
   currentStage,
@@ -1413,6 +1463,8 @@ export {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  LANE_RESUME_GRACE_MS,
+  isLaneResumeInFlight,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,
@@ -1488,6 +1540,8 @@ export default {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  LANE_RESUME_GRACE_MS,
+  isLaneResumeInFlight,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,
@@ -1520,3 +1574,9 @@ export default {
   buildTrackerSyncRow,
   buildReceiptRow,
 };
+
+// One publication record per run; prior run outcomes remain readable.
+export const deliveryKey = (executionId, runId) => ({
+  pk: executionPk(executionId),
+  sk: `DELIVERY#${runId}`,
+});

@@ -2,10 +2,9 @@
 // resolves the exit contract the runner cares about: { exitCode, stderrTail }.
 //
 // shell:false (argv comes from the driver, never concatenated). The prompt is
-// either on argv (default) or piped on stdin (promptViaStdin). stdout is normally
-// inherited to the container log, but callers can tee it with `onStdout` when they
-// need live process output. `spawnFn` is injectable so the runner is fully
-// testable with the child mocked.
+// either on argv (default) or piped on stdin (promptViaStdin). Harness JSON stdout
+// produces tool-only runtime logs; callers still receive full output through
+// `onStdout` or captureChild. Other commands inherit stdout as before.
 //
 // stderr: when `captureStderrTail` is set, stderr is TEE'd — still written to
 // the container log AND buffered (last N bytes) so the runner can inspect the
@@ -18,11 +17,33 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { childEnvironment } from './environment.js';
 import { currentCredentialSession } from '../credential-session.js';
+import { currentSandbox, spawnSandbox } from '../sandbox/launcher.js';
+import { createCliToolLogSink } from '../output-normalizer.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
 const usesPosixProcessGroups = process.platform !== 'win32';
+const toolLogsFor = ({ command, args, env, invocationId, sandboxEnabled, logContext }) =>
+  createCliToolLogSink({
+    command,
+    args,
+    env,
+    context: {
+      invocationId,
+      sandboxEnabled,
+      ...Object.fromEntries(
+        ['executionId', 'stageInstanceId', 'intentId', 'projectId']
+          .filter((key) => typeof logContext[key] === 'string')
+          .map((key) => [key, logContext[key]]),
+      ),
+    },
+    log: (record) =>
+      record.status === 'error'
+        ? logger.warn('harness event', record)
+        : logger.info('harness event', record),
+  });
 const SHUTDOWN_GRACE_MS = 250;
 // Persona-session process groups still running, killed if the runner is stopped.
 const liveProcessGroups = new Map();
@@ -112,13 +133,41 @@ const clampTail = (s, max) => (s.length > max ? s.slice(s.length - max) : s);
 // Session-owned process groups include tool/MCP descendants. Killing just the
 // CLI parent would let those children keep using credentials the session
 // already delivered.
-const terminateChild = (child, detached, killProcessGroup) => {
-  try {
-    if (detached && child.pid) killProcessGroup(-child.pid, 'SIGKILL');
-    else child.kill?.('SIGKILL');
-  } catch {
-    /* group has already exited */
-  }
+const terminateChild = async (child, detached, killProcessGroup, sandboxEnabled) => {
+  const kill = () => {
+    try {
+      if (detached && child.pid) killProcessGroup(-child.pid, 'SIGKILL');
+      else child.kill?.('SIGKILL');
+    } catch {
+      /* group has already exited */
+    }
+  };
+  if (!sandboxEnabled) return kill();
+  // Keep the worker alive to remove SRT's host-side mount points. IPC also
+  // reaches it through an unshare supervisor without killing that supervisor.
+  await new Promise((resolve) => {
+    let done = false;
+    const finished = () => {
+      done = true;
+      clearTimeout(timer);
+      child.removeListener('close', finished);
+      resolve();
+    };
+    const force = () => {
+      if (done) return;
+      kill();
+      finished();
+    };
+    const timer = setTimeout(force, 2000);
+    child.once('close', finished);
+    try {
+      child.send({ type: 'sandbox.cancel' }, (error) => {
+        if (error) force();
+      });
+    } catch {
+      force();
+    }
+  });
 };
 
 export const runChild = ({
@@ -130,6 +179,7 @@ export const runChild = ({
   promptViaStdin = false,
   captureStderrTail = 0,
   onStdout = null,
+  logContext = {},
   // Persona sessions only: run the CLI as its own process group, reaped when it
   // exits, killed whole on `timeoutMs` or runner shutdown. Every other caller
   // spawns exactly as before.
@@ -140,7 +190,9 @@ export const runChild = ({
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
-    const grouped = processGroup && usesPosixProcessGroups;
+    const sandbox = currentSandbox();
+    const sandboxEnabled = sandbox.enabled;
+    const grouped = (processGroup || sandboxEnabled) && usesPosixProcessGroups;
     const session = currentCredentialSession();
     try {
       session?.assertAvailable();
@@ -158,19 +210,31 @@ export const runChild = ({
     // A persona session or a credential-session child leads its own group.
     const detached = (grouped || Boolean(session)) && usesPosixProcessGroups;
     const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
+    const invocationId = randomUUID();
+    const toolLogs = toolLogsFor({
+      command,
+      args,
+      env: mergedEnv,
+      invocationId,
+      sandboxEnabled,
+      logContext,
+    });
     let child;
     try {
-      child = spawnFn(command, args, {
+      const options = {
         cwd,
         env: mergedEnv,
         shell: false,
         ...(detached ? { detached: true } : {}),
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
-          onStdout ? 'pipe' : 'inherit',
+          onStdout || toolLogs ? 'pipe' : 'inherit',
           capture ? 'pipe' : 'inherit',
         ],
-      });
+      };
+      child = sandboxEnabled
+        ? spawnSandbox(command, args, options, { sandbox, spawnFn, invocationId })
+        : spawnFn(command, args, options);
     } catch (e) {
       // spawn() throws SYNCHRONOUSLY for E2BIG (argv/env too large) — it never
       // reaches child.on('error'). Log the code loudly, then reject so the
@@ -181,10 +245,11 @@ export const runChild = ({
     }
     const untrackProcessGroup = grouped ? trackProcessGroup(child) : () => {};
     let stderrTail = '';
-    if (onStdout) {
+    if (onStdout || toolLogs) {
       child.stdout?.on('data', (c) => {
-        process.stdout.write(c);
-        onStdout(c.toString());
+        if (!toolLogs) process.stdout.write(c);
+        toolLogs?.write(c.toString());
+        onStdout?.(c.toString());
       });
     }
     if (capture) {
@@ -194,22 +259,32 @@ export const runChild = ({
         stderrTail = clampTail(stderrTail + c.toString(), captureStderrTail);
       });
     }
-    const cancel = () => {
-      terminateChild(child, detached, killProcessGroup);
+    const cancel = async () => {
+      if (settled || stopping) return;
+      stopping = true;
+      if (timer) clearTimeout(timer);
+      await terminateChild(child, detached, killProcessGroup, sandboxEnabled);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
+    let stopping = false;
     let timedOut = false;
     let timer = null;
-    const finish = (exitCode) => {
+    const finish = (exitCode, error) => {
       if (settled) return;
       settled = true;
+      toolLogs?.flush();
       if (timer) clearTimeout(timer);
       session?.signal.removeEventListener('abort', cancel);
+      if (error) {
+        reject(error);
+        return;
+      }
       resolve({
-        exitCode,
+        exitCode: timedOut || session?.signal.aborted ? null : exitCode,
         stderrTail,
+        ...(child.sandboxError ? { sandboxError: child.sandboxError } : {}),
         ...(timedOut ? { timedOut: true } : {}),
         ...(session?.signal.aborted
           ? {
@@ -219,9 +294,9 @@ export const runChild = ({
       });
     };
     if (session?.signal.aborted) cancel();
-    child.on('error', () => {
+    child.on('error', (error) => {
       untrackProcessGroup();
-      finish(null);
+      finish(null, error);
     }); // spawn failure → runner maps to FAILED
     if (grouped) {
       // A CLI may exit after leaving background tools behind: reap the rest of
@@ -239,8 +314,9 @@ export const runChild = ({
       timer = setTimeout(() => {
         if (settled) return;
         timedOut = true;
-        if (grouped && child.pid) signalGroup(child, 'SIGKILL');
-        else terminateChild(child, detached, killProcessGroup);
+        if (sandboxEnabled) void cancel();
+        else if (grouped && child.pid) signalGroup(child, 'SIGKILL');
+        else void terminateChild(child, detached, killProcessGroup, false);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -271,11 +347,15 @@ export const captureChild = ({
   prompt,
   promptViaStdin = false,
   captureStderr = false,
+  inheritCredentialEnvironment = true,
+  logContext = {},
   timeoutMs = 0,
   spawnFn = spawn,
   killProcessGroup = (pid, signal) => process.kill(pid, signal),
 }) =>
   new Promise((resolve) => {
+    const sandbox = currentSandbox();
+    const sandboxEnabled = sandbox.enabled;
     const session = currentCredentialSession();
     try {
       session?.assertAvailable();
@@ -290,46 +370,78 @@ export const captureChild = ({
       });
       return;
     }
-    const detached = Boolean(session) && process.platform !== 'win32';
-    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
+    const detached = Boolean(session || sandboxEnabled) && process.platform !== 'win32';
+    const mergedEnv = childEnvironment(
+      env,
+      process.env,
+      inheritCredentialEnvironment ? session?.credentialEnvironment : {},
+    );
+    const invocationId = randomUUID();
+    const toolLogs = toolLogsFor({
+      command,
+      args,
+      env: mergedEnv,
+      invocationId,
+      sandboxEnabled,
+      logContext,
+    });
     let child;
     try {
-      child = spawnFn(command, args, {
+      const options = {
         cwd,
         env: mergedEnv,
         shell: false,
         ...(detached ? { detached: true } : {}),
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
-      });
+      };
+      child = sandboxEnabled
+        ? spawnSandbox(command, args, options, { sandbox, spawnFn, invocationId })
+        : spawnFn(command, args, options);
     } catch (e) {
       // E2BIG throws synchronously here too. Log + degrade (this path resolves
       // rather than rejects — the caller treats exitCode null as a soft failure).
       logger.error('captureChild failed', e, { command });
-      resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false });
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        ...(sandboxEnabled ? { sandboxError: 'sandbox_start_failed' } : {}),
+      });
       return;
     }
+    const untrackProcessGroup = sandboxEnabled ? trackProcessGroup(child) : () => {};
     let stdout = '';
-    child.stdout?.on('data', (c) => (stdout += c.toString()));
+    child.stdout?.on('data', (c) => {
+      stdout += c.toString();
+      toolLogs?.write(c.toString());
+    });
     let stderr = '';
     if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
-    const cancel = () => {
-      terminateChild(child, detached, killProcessGroup);
+    const cancel = async () => {
+      if (settled || stopping) return;
+      stopping = true;
+      if (timer) clearTimeout(timer);
+      await terminateChild(child, detached, killProcessGroup, sandboxEnabled);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
+    let stopping = false;
     let timedOut = false;
     let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
+      toolLogs?.flush();
       session?.signal.removeEventListener('abort', cancel);
       if (timer) clearTimeout(timer);
       resolve({
-        exitCode,
+        exitCode: timedOut || session?.signal.aborted ? null : exitCode,
         stdout,
         stderr,
         timedOut,
+        ...(child.sandboxError ? { sandboxError: child.sandboxError } : {}),
         ...(session?.signal.aborted
           ? {
               credentialError: session.signal.reason?.code ?? 'credential_unavailable',
@@ -339,23 +451,28 @@ export const captureChild = ({
     };
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
+        if (settled) return;
         timedOut = true;
-        try {
-          terminateChild(child, detached, killProcessGroup);
-        } catch {
-          /* already gone */
-        }
-        // Resolve immediately — a SIGKILLed child's close event may never
-        // arrive through a mocked/edge-case stream teardown, and the caller
-        // must not hang on the very thing the timeout guards against.
-        finish(null);
+        void cancel();
       }, timeoutMs);
       // Never hold the event loop open for the watchdog alone.
       timer.unref?.();
     }
     if (session?.signal.aborted) cancel();
-    child.on('error', () => finish(null));
-    child.on('close', (code) => finish(code));
+    child.on('error', () => {
+      untrackProcessGroup();
+      finish(null);
+    });
+    if (sandboxEnabled) {
+      child.on('exit', () => {
+        if (child.pid) signalGroup(child, 'SIGKILL');
+        untrackProcessGroup();
+      });
+    }
+    child.on('close', (code) => {
+      untrackProcessGroup();
+      finish(code);
+    });
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');

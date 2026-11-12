@@ -166,6 +166,11 @@ if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   echo inventory >> "$EVENTS"
   exit 0
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  echo prepare-releases >> "$EVENTS"
+  [[ "\${FAIL_PHASE:-}" == release-preparation ]] && exit 42
+  exit 0
+fi
 exec '${process.execPath}' "$@"
 `,
   );
@@ -208,6 +213,7 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
     'apply',
     'inventory',
     'seed',
+    'prepare-releases',
     'frontend-ci',
     'frontend-build',
     'upload s3://test-frontend/assets/',
@@ -227,12 +233,17 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
   );
 });
 
-test('plan/apply failures stop the two-command deployment before frontend publication', (t) => {
-  for (const phase of ['plan', 'apply']) {
+test('plan/apply/preparation failures stop deployment before frontend publication', (t) => {
+  for (const phase of ['plan', 'apply', 'release-preparation']) {
     const fixture = deploymentFixture(t);
     const result = deploy(fixture, { FAIL_PHASE: phase });
     assert.equal(result.status, 42, result.stderr);
-    assert.equal(events(fixture).at(-1), phase);
+    assert.equal(
+      events(fixture).at(-1),
+      phase === 'release-preparation' ? 'prepare-releases' : phase,
+    );
+    // The baseline is reseeded before an upstream import can fail.
+    if (phase === 'release-preparation') assert.ok(events(fixture).includes('seed'));
     assert.equal(existsSync(join(fixture.directory, 'frontend/.env')), false);
   }
 });

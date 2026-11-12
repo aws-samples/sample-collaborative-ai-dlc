@@ -628,7 +628,7 @@ describe('OpenCode inline config', () => {
 });
 
 describe('Codex config (per-stage CODEX_HOME)', () => {
-  it('pins the Bedrock provider, full-auto policy, and ephemeral sqlite home', () => {
+  it('pins the Bedrock provider and full-auto policy without sharing SQLite state', () => {
     const toml = buildCodexConfigToml({
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e1', intentId: 'i1' },
@@ -637,7 +637,7 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(toml).toContain('approval_policy = "never"');
     expect(toml).toContain('sandbox_mode = "danger-full-access"');
     expect(toml).toContain('project_doc_fallback_filenames = [".aidlc/rules.md"]');
-    expect(toml).toContain('sqlite_home = "/home/node/.codex-state"');
+    expect(toml).not.toContain('sqlite_home');
     expect(toml).toContain('persistence = "save-all"');
   });
 
@@ -782,13 +782,13 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(body).toBe('# team rules');
   });
 
-  it('honors the V2_CODEX_SQLITE_HOME override', async () => {
+  it('keeps SQLite private even when the retired shared-directory override is present', () => {
     const toml = buildCodexConfigToml({
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e', intentId: 'i' },
       env: { V2_CODEX_SQLITE_HOME: '/tmp/codex-state' },
     });
-    expect(toml).toContain('sqlite_home = "/tmp/codex-state"');
+    expect(toml).not.toContain('sqlite_home');
   });
 });
 
@@ -973,6 +973,29 @@ describe('buildMcpConfig — dispatched persona session scope', () => {
       scope: { executionId: 'e', intentId: 'i', policy: POLICY },
     }).mcpServers.aidlc;
     expect(env).not.toHaveProperty('V2_ASK_QUESTION');
+  });
+});
+
+describe('describe_changes wiring', () => {
+  const scope = { executionId: 'e', intentId: 'i' };
+  const envOf = (extra) =>
+    buildMcpConfig({ mcpEntry: 'x', scope: { ...scope, ...extra } }).mcpServers.aidlc.env;
+
+  it('offers describe_changes to the owning session only when enabled', () => {
+    expect(envOf({ describeChanges: true }).V2_DESCRIBE_CHANGES).toBe('1');
+    expect(envOf({})).not.toHaveProperty('V2_DESCRIBE_CHANGES');
+    expect(envOf({ describeChanges: true, checkpointOwner: false })).not.toHaveProperty(
+      'V2_DESCRIBE_CHANGES',
+    );
+  });
+
+  it('adds the commit description contract to the prompt only when enabled', () => {
+    const input = { stage: { stageId: 'code-generation' }, stageBody: 'Do the work.' };
+    expect(buildStagePrompt({ ...input, describeChanges: true })).toContain(
+      '## Commit description contract',
+    );
+    expect(buildStagePrompt(input)).toBe(buildStagePrompt({ ...input, describeChanges: false }));
+    expect(buildStagePrompt(input)).not.toContain('describe_changes');
   });
 });
 

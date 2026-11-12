@@ -379,6 +379,21 @@ else
     echo "AI-DLC default workflow and building blocks applied."
 fi
 
+# Immutable release preparation imports from upstream, so it runs after the
+# baseline reseed: an upstream outage then cannot leave the new code running
+# against the previous baseline. Every supported version must still be
+# present before deployment is reported successful; approvals, channels and
+# existing intent pins stay untouched.
+echo "Preparing supported AI-DLC versions..."
+PREPARE_STATUS=0
+AWS_REGION="$INVENTORY_REGION" SEED_BLOCKS_FUNCTION="$(tf_output seed_blocks_lambda_name)" \
+    node "$SCRIPT_DIR/prepare-aidlc-releases.mjs" || PREPARE_STATUS=$?
+if [[ "$PREPARE_STATUS" -ne 0 ]]; then
+    echo "Error: infrastructure is applied and the baseline step finished, but AI-DLC version preparation failed." >&2
+    echo "Retry it with: AWS_REGION=$INVENTORY_REGION SEED_BLOCKS_FUNCTION=$(tf_output seed_blocks_lambda_name) node scripts/prepare-aidlc-releases.mjs" >&2
+    exit "$PREPARE_STATUS"
+fi
+
 if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
     print_deployment_summary
 fi

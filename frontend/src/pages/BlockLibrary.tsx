@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import {
   blocksService,
   BLOCK_TYPES,
@@ -7,6 +7,7 @@ import {
   type Block,
   type BlockType,
 } from '@/services/blocks';
+import { useBlockLibraryRelease } from '@/hooks/useBlockLibraryRelease';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -24,6 +25,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, Trash2, Blocks as BlocksIcon, Search, Lock } from 'lucide-react';
+import { BlockLibraryReleaseSection } from './BlockLibraryReleaseSection';
 
 const isBlockType = (v: string | undefined): v is BlockType =>
   !!v && (BLOCK_TYPES as readonly string[]).includes(v);
@@ -38,6 +40,18 @@ export default function BlockLibrary() {
   const [searchQuery, setSearchQuery] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Block | null>(null);
+
+  // The release shown beside the library (issue #607): the one named by
+  // `?release=`, else the stable release when pinning is on. Its blocks are
+  // what pinned intents resolve in place of the SYSTEM baseline.
+  const [searchParams] = useSearchParams();
+  const requestedRelease = searchParams.get('release') || null;
+  const requestedLibraryRelease = searchParams.get('libraryRelease') || null;
+  const { release, error: releaseError } = useBlockLibraryRelease(
+    activeType,
+    requestedRelease,
+    requestedLibraryRelease,
+  );
 
   const loadBlocks = useCallback(async () => {
     setLoading(true);
@@ -70,11 +84,21 @@ export default function BlockLibrary() {
     }
   };
 
-  const filtered = blocks.filter(
-    (b) =>
-      b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      b.id.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  const matchesSearch = (b: Block) =>
+    b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    b.id.toLowerCase().includes(searchQuery.toLowerCase());
+  const filtered = blocks.filter(matchesSearch);
+  const authoringReleaseId =
+    requestedLibraryRelease ?? requestedRelease ?? (release?.stable ? release.releaseId : null);
+  const authoringQuery = authoringReleaseId
+    ? `?libraryRelease=${encodeURIComponent(authoringReleaseId)}`
+    : '';
+  const tabQuery = [
+    requestedRelease ? `release=${encodeURIComponent(requestedRelease)}` : '',
+    requestedLibraryRelease ? `libraryRelease=${encodeURIComponent(requestedLibraryRelease)}` : '',
+  ]
+    .filter(Boolean)
+    .join('&');
 
   const labels = BLOCK_TYPE_LABELS[activeType];
 
@@ -94,7 +118,11 @@ export default function BlockLibrary() {
               </p>
             </div>
           </div>
-          <Button onClick={() => navigate(`/blocks/${activeType}/new`)} className="gap-2">
+          <Button
+            onClick={() => navigate(`/blocks/${activeType}/new${authoringQuery}`)}
+            className="gap-2"
+            disabled={Boolean((requestedLibraryRelease || requestedRelease) && releaseError)}
+          >
             <Plus className="h-4 w-4" />
             New {labels.singular}
           </Button>
@@ -104,7 +132,11 @@ export default function BlockLibrary() {
         <Tabs value={activeType} className="mb-6">
           <TabsList className="flex-wrap h-auto">
             {BLOCK_TYPES.map((t) => (
-              <TabsTrigger key={t} value={t} onClick={() => navigate(`/blocks/${t}`)}>
+              <TabsTrigger
+                key={t}
+                value={t}
+                onClick={() => navigate(`/blocks/${t}${tabQuery ? `?${tabQuery}` : ''}`)}
+              >
                 {BLOCK_TYPE_LABELS[t].plural}
               </TabsTrigger>
             ))}
@@ -150,7 +182,13 @@ export default function BlockLibrary() {
                   <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
                     Create a {labels.singular.toLowerCase()} to add it to the shared library.
                   </p>
-                  <Button onClick={() => navigate(`/blocks/${activeType}/new`)} className="gap-2">
+                  <Button
+                    onClick={() => navigate(`/blocks/${activeType}/new${authoringQuery}`)}
+                    className="gap-2"
+                    disabled={Boolean(
+                      (requestedLibraryRelease || requestedRelease) && releaseError,
+                    )}
+                  >
                     <Plus className="h-4 w-4" />
                     New {labels.singular}
                   </Button>
@@ -164,7 +202,7 @@ export default function BlockLibrary() {
               <Card
                 key={block.id}
                 className="group cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
-                onClick={() => navigate(`/blocks/${activeType}/${block.id}`)}
+                onClick={() => navigate(`/blocks/${activeType}/${block.id}${authoringQuery}`)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-2">
@@ -204,6 +242,17 @@ export default function BlockLibrary() {
             ))}
           </div>
         )}
+
+        <BlockLibraryReleaseSection
+          activeType={activeType}
+          pluralLabel={labels.plural}
+          searchQuery={searchQuery}
+          libraryBlocks={blocks}
+          release={release}
+          error={releaseError}
+          requestedRelease={requestedRelease}
+          authoringQuery={authoringQuery}
+        />
       </div>
 
       {/* Delete confirmation */}

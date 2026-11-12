@@ -50,7 +50,9 @@ const runtimeResponse = (value) => ({
 describe('agent utility runtime routing', () => {
   beforeEach(() => {
     ddbMock.reset();
+    ddbMock.on(GetCommand).resolves({});
     agentcoreMock.reset();
+    vi.stubEnv('V2_PROCESS_TABLE', 'process-table');
     vi.stubEnv('AGENTCORE_RUNTIME_ARN', CORE_RUNTIME_ARN);
     vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', REGISTRY_TABLE);
     vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '1');
@@ -127,6 +129,44 @@ describe('agent utility runtime routing', () => {
     expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
     expect(input).not.toHaveProperty('qualifier');
   });
+
+  it.each([false, true])(
+    'checks sandbox support before credentialed discovery and MCP verification: %s',
+    async (sandboxEnforcement) => {
+      ddbMock.on(GetCommand).resolves({ Item: { enabled: true, applied: { settings: {} } } });
+      agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async (input) => {
+        const payload = JSON.parse(input.payload);
+        return runtimeResponse(
+          payload.command === 'capabilities'
+            ? { ok: true, sandboxEnforcement, clis: [] }
+            : { results: {} },
+        );
+      });
+      const target = { agentRuntimeArn: MANAGED_RUNTIME_ARN, qualifier: 'revision_r_1' };
+      const caps = await fetchRuntimeCapabilities(target);
+      const mcp = await verifyMcpServers({ mcpServersByTier: {}, runtimeTarget: target });
+      const inputs = agentcoreMock
+        .commandCalls(InvokeAgentRuntimeCommand)
+        .map((call) => call.args[0].input);
+      if (sandboxEnforcement) {
+        expect(caps.sandboxEnforcement).toBe(true);
+        expect(mcp).toEqual({ results: {} });
+        expect(inputs).toHaveLength(4);
+        expect(inputs[0].runtimeSessionId).toBe(inputs[1].runtimeSessionId);
+        expect(inputs[2].runtimeSessionId).toBe(inputs[3].runtimeSessionId);
+        expect(inputs[0].runtimeSessionId).not.toBe(inputs[2].runtimeSessionId);
+        expect(JSON.parse(inputs[1].payload).agentCredentialGrant).toBeTruthy();
+        expect(JSON.parse(inputs[3].payload).command).toBe('verify-mcp');
+      } else {
+        expect(caps).toBeNull();
+        expect(mcp.error).toContain('has not confirmed sandbox enforcement');
+        expect(inputs).toHaveLength(2);
+        for (const input of inputs)
+          expect(JSON.parse(input.payload)).toEqual({ command: 'capabilities' });
+      }
+      for (const input of inputs) expect(input).toMatchObject(target);
+    },
+  );
 
   it('discovers a new mode after a deployment while older sessions still run the key-only image', async () => {
     const mode = TEST_CONNECTION_MODE.id;

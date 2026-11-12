@@ -78,6 +78,7 @@
   "devDependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "^3.1106.0",
     "@aws-sdk/client-dynamodb": "^3.1106.0",
+    "@aws-sdk/client-eventbridge": "^3.1106.0",
     "@aws-sdk/client-lambda": "^3.1106.0",
     "@aws-sdk/client-s3": "^3.1106.0",
     "@aws-sdk/client-secrets-manager": "^3.1106.0",
@@ -115,7 +116,7 @@
       "@hono/node-server": "^2.0.5"
     },
     "archiver-utils": {
-      "glob": "^13.0.6"
+      "glob": "^14.0.2"
     },
     "js-yaml": "4.3.2",
     "uuid": "^11.1.1"

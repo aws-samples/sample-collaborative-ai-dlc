@@ -1,3 +1,4 @@
+import { releaseSourceInfo } from './aidlc-release-source-info.js';
 // The release registry and channel pointers.
 //
 // The importer publishes an immutable release closure to S3; the runtime resolves
@@ -708,7 +709,7 @@ const registerCustomRelease = async ({
 // Bump this with EVERY change to what the evidence collector decides. Without
 // it, eligibility would depend on when a record was registered or last
 // refreshed rather than on its immutable closure and this runtime.
-const FIDELITY_EVIDENCE_REVISION = 7;
+const FIDELITY_EVIDENCE_REVISION = 8;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&
@@ -1523,7 +1524,19 @@ const clearChannel = async ({ ddb, tableName, channel, expectedRevision, actor =
  * to make intent creation fail platform-wide — an EXPLICIT id is still rejected,
  * so no caller silently gets a release it did not ask for.
  */
-const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) => {
+// forAdminTest is set only after the intent API verifies platform-admin access.
+// It permits a hidden, already-qualified release; it never qualifies a release.
+const resolveSelectableRelease = async ({
+  ddb,
+  tableName,
+  releaseId = null,
+  forAdminTest = false,
+}) => {
+  if (forAdminTest && !releaseId)
+    throw new ReleaseRegistryError(
+      'release_selection_invalid',
+      'An admin test requires an explicit release',
+    );
   if (!releaseId) {
     const stable = await getChannel({ ddb, tableName, channel: 'stable' });
     if (!stable?.releaseId) return null;
@@ -1552,7 +1565,7 @@ const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) =>
       { details: { releaseId: String(releaseId) } },
     );
   }
-  assertSelectableRecord(record);
+  assertSelectableRecord(forAdminTest ? { ...record, visible: true } : record);
   return releaseToApi(record);
 };
 
@@ -1608,6 +1621,7 @@ const listRegistrableProfiles = async ({ ddb, tableName, s3, bucket }) => {
       const registered = await getRelease({ ddb, tableName, releaseId: profile.releaseId });
       return {
         profileId: profile.id,
+        sourceInfo: releaseSourceInfo(profile.id),
         releaseId: profile.releaseId,
         label: profile.label ?? null,
         upstreamVersion: profile.upstreamVersion ?? null,

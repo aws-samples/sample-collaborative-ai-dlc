@@ -36,6 +36,7 @@ import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
+import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -55,7 +56,11 @@ import {
 } from '../shared/runtime-session-ids.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { createProcessStore, isTransactionConflict } from '../shared/v2-process-store.js';
-import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import {
+  CONSTRUCTION_AUTONOMY_MODES,
+  isHumanTaskAnswerStatus,
+  isLaneResumeInFlight,
+} from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -87,6 +92,7 @@ import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-gri
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
+import { qualifyAgentAuthRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import {
   applyArtifactEdit,
@@ -103,6 +109,7 @@ import {
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { htmlArtifactRefusal } from '../shared/html-artifact.js';
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
@@ -137,6 +144,7 @@ import {
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
 import { credentialBindingDisplay } from '../shared/agent-auth-contracts.js';
+import { captureSandboxSettings, readSandboxSettings } from '../shared/sandbox-settings.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -1396,6 +1404,7 @@ const mapIntent = (meta) => ({
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
   aidlcRepoRef: meta.aidlcRepoRef ?? null,
+  ...(meta.methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
   methodologyRelease: meta.methodologyRelease
     ? {
         ...meta.methodologyRelease,
@@ -1447,6 +1456,10 @@ const mapIntent = (meta) => ({
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
+  // Set when an orchestrator run claims the execution (cleared on relaunch).
+  // Lets the client tell a long workspace initialization from a hand-off that
+  // never reached an orchestrator.
+  orchestratorStartedAt: meta.orchestratorStartedAt ?? null,
 });
 
 const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
@@ -2378,6 +2391,8 @@ const handleArtifactContentUpdate = async ({
       code: 'artifact_replaced',
     });
   }
+  const htmlRefusal = htmlArtifactRefusal(artifact.artifactType, data.content);
+  if (htmlRefusal) return response(400, { error: htmlRefusal, code: 'html_not_allowed' });
   if (
     !Object.hasOwn(data, 'ifEditRevision') ||
     (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
@@ -3164,11 +3179,23 @@ const handleGateRevise = async ({ event, body, projectId, intentId, humanTaskId,
 // when the run's snapshotted stageSkipping is 'enabled', and the plan must
 // resolve with the overlay applied. FAILED/CREATED restarts never touch
 // the overlay (the prior run's plan holds).
+// A validation intent runs a release nobody else can select yet, so every route
+// that launches or relaunches its orchestrator (start, rewind, recompose,
+// repair) is a platform-admin action. Checked right after the intent is loaded,
+// before any side effect.
+const validationIntentDenied = (event, meta, response) => {
+  if (!meta?.methodologyReleaseTest) return null;
+  const denied = requirePlatformAdmin(event);
+  return denied ? response(denied.statusCode, { error: denied.error, code: denied.code }) : null;
+};
+
 const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
   // a CREATED run whose hand-off never reached a live orchestrator (stranded —
   // see the rollback below). init-ws is idempotent in the runtime, so a restart
@@ -3285,6 +3312,19 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   if (sourceControlBlocked) return sourceControlBlocked;
   const mcpLaunch = await prepareMcpLaunch(g, meta);
   if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  const agentSandbox =
+    meta.status === 'DRAFT'
+      ? captureSandboxSettings(
+          await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+        )
+      : meta.agentSandbox;
+  if (agentSandbox?.enabled) {
+    try {
+      await qualifyAgentAuthRuntime(meta.environment, { requireSandbox: true });
+    } catch (error) {
+      return response(409, { error: error.message, code: error.code });
+    }
+  }
   // Flip <current> → CREATED (CAS on the observed status) so a double-start
   // can't launch two runs, then hand off to the orchestrator (init-ws + run the
   // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -3316,6 +3356,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: selectedAgentCli,
             credentialBinding: selectedCredentialBinding,
+            agentSandbox,
           }
         : {}),
       // Launch-time skip override (validated above; undefined = untouched).
@@ -3352,6 +3393,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: meta.agentCli ?? null,
             credentialBinding: meta.credentialBinding ?? null,
+            agentSandbox: meta.agentSandbox ?? null,
           }
         : {}),
     });
@@ -4397,6 +4439,86 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
   }
 };
 
+// POST /projects/{projectId}/intents/{intentId}/delivery
+// Publication recovery is independent of stage recovery and always scoped
+// to the current run. Preview performs reads only, including old executions.
+const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, response }) => {
+  if (auth.role !== 'owner' && auth.role !== 'admin')
+    return response(403, { error: 'Only project owners and admins can retry delivery' });
+  const records = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
+  const meta = records.meta;
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  const input = body ? JSON.parse(body) : {};
+  try {
+    const resolved = await intentMethodology.loadPlan(meta);
+    if (!resolved.valid || !resolved.plan)
+      return response(409, { error: 'The pinned workflow cannot be verified for delivery' });
+    const preview = await previewDelivery({
+      meta,
+      records,
+      plan: resolved.plan,
+      operation: sourceControlOperation,
+    });
+    if (input.preview)
+      return response(200, { ...preview, delivery: deliveryView(meta, preview.delivery) });
+    if (!input.previewToken || input.previewToken !== preview.previewToken)
+      return response(409, {
+        error: 'Delivery state changed. Check delivery again before retrying.',
+        code: 'delivery_preview_changed',
+      });
+    const claimed = await store.claimDelivery({
+      meta,
+      delivery: { ...preview.delivery, requestedBy: sub },
+      attemptId: randomUUID(),
+      ifUnitPlan: records.unitPlan,
+    });
+    try {
+      await lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: ORCHESTRATOR_FN(),
+          InvocationType: 'Event',
+          DurableExecutionName: `delivery-${randomBytes(16).toString('hex')}`,
+          Payload: Buffer.from(
+            JSON.stringify({
+              action: 'retry-delivery',
+              projectId,
+              intentId,
+              executionId: intentId,
+              runId: meta.orchestratorRunId,
+              attemptId: claimed.attemptId,
+            }),
+          ),
+        }),
+      );
+    } catch {
+      // An invocation timeout can mean accepted. Keep the bounded lease:
+      // immediately releasing it could overlap an already running publisher.
+      return response(202, {
+        delivery: deliveryView(meta, claimed),
+        message:
+          'Delivery launch is uncertain. Refresh status; the attempt lease expires automatically.',
+      });
+    }
+    return response(202, { delivery: deliveryView(meta, claimed) });
+  } catch (error) {
+    if (
+      error.statusCode === 409 ||
+      ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error.name)
+    )
+      return response(409, {
+        error:
+          error.statusCode === 409
+            ? error.message
+            : 'Delivery or execution changed. Refresh before retrying.',
+        code: error.code ?? 'delivery_changed',
+      });
+    throw error;
+  }
+};
+
 // POST /projects/{projectId}/intents/{intentId}/repair
 // Recover a parallel section whose stage callbacks became orphaned. This is
 // intentionally narrower than rewind: merged units remain merged, pending
@@ -4407,20 +4529,31 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
   if (auth.role !== 'owner' && auth.role !== 'admin') {
     return response(403, { error: 'Only project owners and admins can repair intents' });
   }
-  const meta = await store.getExecution(intentId);
+  const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   if (!['RUNNING', 'WAITING', 'FAILED'].includes(meta.status)) {
     return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
   }
 
-  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  // Consistent: an answer committed just before this read must be seen.
+  const records = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
   const pendingByStage = new Map(
     (records.humanTasks ?? [])
       .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
       .map((gate) => [gate.stageInstanceId, gate]),
   );
+  // A lane whose answer is reaching the run is still WAITING_FOR_HUMAN until
+  // its runtime resumes. Repair would stop that run and discard the answer, so
+  // refuse while any lane is mid-resume and the run is alive.
+  const resumeBlocked = await laneResumeBlocksRepair(meta, records);
+  if (resumeBlocked) return response(409, resumeBlocked);
   const orphaned = (records.stages ?? []).filter(
     (stage) =>
       stage.state === 'WAITING_FOR_HUMAN' &&
@@ -4589,6 +4722,15 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     );
     priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
   }
+  // The provider calls above leave time for a lane gate to be answered after
+  // the first read. Check again, consistently, immediately before stopping the
+  // run, so that answer isn't discarded.
+  const latest = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
+  const resumeBlockedLate = await laneResumeBlocksRepair(latest.meta ?? meta, latest);
+  if (resumeBlockedLate) return response(409, resumeBlockedLate);
 
   await store.updateExecution({
     executionId: intentId,
@@ -4848,6 +4990,8 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   const REWINDABLE = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
   if (!REWINDABLE.has(meta.status)) {
     return response(409, {
@@ -5188,6 +5332,8 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
+  const validationDenied = validationIntentDenied(event, meta, response);
+  if (validationDenied) return validationDenied;
   const RECOMPOSABLE = new Set(['WAITING', 'FAILED']);
   if (!RECOMPOSABLE.has(meta.status)) {
     return response(409, {
@@ -5457,7 +5603,35 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
 //   stageInstanceId — that stage's chunks; the literal "intent" selects
 //     the stage-less workspace/init bucket; absent = ALL chunks.
 //   afterSeq — only chunks with seq > afterSeq (incremental catch-up
-//     after a websocket-live pane is seeded).
+//     after a websocket-live pane is seeded). The response then also carries
+//     `cursor`: the next afterSeq to send, which may be past the pane's own
+//     last chunk.
+
+// A writer allocates a sequence (ADD on META) before it puts the row, so a
+// read can see seq N+1 while N is still in flight. The cursor therefore only
+// advances over a contiguous run of sequences, and skips a gap only once a
+// later chunk is older than this grace period (its writer died between the
+// two writes, so that sequence will never be written).
+// The put normally lands milliseconds after the ADD; under throttling the SDK's
+// retries and backoff can delay it by tens of seconds, and writer and reader
+// clocks can differ by seconds. Five minutes is well beyond both, so a slow
+// put is not skipped. Do not shorten it to that range: a chunk whose put
+// lands after the grace period is missed by catch-up until a reload. A longer
+// period only means more re-reads behind a gap that will never fill.
+const OUTPUT_GAP_GRACE_MS = 5 * 60 * 1000;
+const outputsCursor = (rows, afterSeq, nowMs) => {
+  let cursor = Math.max(0, Math.floor(afterSeq));
+  for (const row of rows) {
+    const seq = Number(row.seq);
+    if (seq <= cursor) continue;
+    const written = Date.parse(row.timestamp);
+    const gapAbandoned = Number.isFinite(written) && nowMs - written > OUTPUT_GAP_GRACE_MS;
+    if (seq !== cursor + 1 && !gapAbandoned) break;
+    cursor = seq;
+  }
+  return cursor;
+};
+
 const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -5469,14 +5643,28 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
   if (afterSeq != null && !Number.isFinite(afterSeq)) {
     return response(400, { error: 'afterSeq must be a number' });
   }
-  const rows = await store.getOutputs(intentId, {
-    // "intent" is the UI's bucket key for stage-less (init-ws) output.
-    ...(rawStage !== undefined
+  // "intent" is the UI's bucket key for stage-less (init-ws) output.
+  const stageFilter =
+    rawStage !== undefined
       ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
-      : {}),
-    afterSeq,
-  });
+      : {};
+  let rows;
+  let cursor;
+  if (afterSeq == null) {
+    rows = await store.getOutputs(intentId, { ...stageFilter, afterSeq });
+  } else {
+    // Catch-up reads every chunk after the cursor (the stage filter is applied
+    // here, not in DynamoDB) so the response can carry a `cursor` covering
+    // other stages' chunks too. Without it a pane for a finished stage would
+    // re-read every later chunk of the run on each poll.
+    const all = await store.getOutputs(intentId, { afterSeq });
+    cursor = outputsCursor(all, afterSeq, Date.now());
+    rows = stageFilter.filterByStage
+      ? all.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
+      : all;
+  }
   return response(200, {
+    ...(cursor !== undefined ? { cursor } : {}),
     outputs: rows.map((o) => ({
       seq: o.seq,
       stageInstanceId: o.stageInstanceId ?? null,
@@ -5518,7 +5706,16 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
   const priceFor = await getPriceResolver();
   return response(200, {
     intent: mapIntent(records.meta),
-    stages: records.stages.map(mapStage),
+    stages: records.stages.map((stage) => ({
+      ...mapStage(stage),
+      // Judged here, on the server's clock, with the rule /repair uses.
+      laneResuming: isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: records.meta.status,
+        resumeRequired: records.meta.resumeRequired ?? null,
+      }),
+    })),
     // Activity feed: lifecycle events (workspace init, failures, completion)
     // newest-last in emit order, so the UI can show what's happening — init-ws
     // is otherwise invisible (it creates no stage row).
@@ -5574,6 +5771,7 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
     // attribute per-unit stage instances. Both null/empty pre-promotion.
     unitCompletion: completion,
     unitPlan: mapUnitPlan(records.unitPlan),
+    delivery: deliveryView(records.meta, currentDelivery(records)),
     units: (records.units ?? []).map(mapUnit),
     unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
     feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
@@ -5628,9 +5826,75 @@ const handleListIntents = async ({ event, projectId, response }) => {
   return response(200, metas.map(mapIntent));
 };
 
+const validateAdminReleaseTest = (event, data) => {
+  const requested = data.methodologyReleaseTest;
+  if (requested === undefined || requested === false) return { enabled: false };
+  if (typeof requested !== 'boolean') {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'methodologyReleaseTest must be a boolean',
+          code: 'release_selection_invalid',
+        },
+      },
+    };
+  }
+  const denied = requirePlatformAdmin(event);
+  if (denied) {
+    return {
+      error: { status: denied.statusCode, body: { error: denied.error, code: denied.code } },
+    };
+  }
+  if (typeof data.methodologyReleaseId !== 'string' || !data.methodologyReleaseId) {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'A version test requires an explicit release',
+          code: 'release_selection_invalid',
+        },
+      },
+    };
+  }
+  return { enabled: true };
+};
+
+const resolveIntentRelease = async ({ requestedReleaseId, forAdminTest }) => {
+  const pinningEnabled = AIDLC_RELEASE_PINNING() === 'on';
+  if (requestedReleaseId && !pinningEnabled) {
+    return {
+      error: {
+        error: 'Per-intent AI-DLC release selection is disabled',
+        code: 'release_selection_disabled',
+      },
+    };
+  }
+  if (!pinningEnabled) return { release: null };
+
+  try {
+    return {
+      release: await resolveSelectableRelease({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        releaseId: requestedReleaseId,
+        forAdminTest,
+      }),
+    };
+  } catch (error) {
+    if (isReleaseRegistryError(error)) {
+      return { error: { error: error.message, code: error.code } };
+    }
+    throw error;
+  }
+};
+
 const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) => {
   // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
   const data = body ? JSON.parse(body) : {};
+  const releaseTest = validateAdminReleaseTest(event, data);
+  if (releaseTest.error) return response(releaseTest.error.status, releaseTest.error.body);
+  const methodologyReleaseTest = releaseTest.enabled;
   if (!data.title && !data.prompt) {
     return response(400, { error: 'title or prompt is required' });
   }
@@ -5717,30 +5981,14 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
   // has, so it is stored as no grant and accepted on any release.
   const requestedAutonomyMode =
     data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
-  if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
-    return response(400, {
-      error: 'Per-intent AI-DLC release selection is disabled',
-      code: 'release_selection_disabled',
-    });
-  }
-  let selectedRelease = null;
-  if (AIDLC_RELEASE_PINNING() === 'on') {
-    try {
-      // A null id falls back to the stable channel; an unset stable channel
-      // returns null, which keeps today's derive-the-pin-from-the-ref path.
-      selectedRelease = await resolveSelectableRelease({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        releaseId: requestedReleaseId,
-      });
-    } catch (error) {
-      // Never substitute a different release than the one requested.
-      if (isReleaseRegistryError(error)) {
-        return response(400, { error: error.message, code: error.code });
-      }
-      throw error;
-    }
-  }
+  // A null id follows the stable channel; if pinning is off, the legacy path
+  // remains unchanged and no registry lookup occurs.
+  const releaseSelection = await resolveIntentRelease({
+    requestedReleaseId,
+    forAdminTest: methodologyReleaseTest,
+  });
+  if (releaseSelection.error) return response(400, releaseSelection.error);
+  const selectedRelease = releaseSelection.release;
   let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
   // Allowed, but loud: the intent pins a closure an older importer produced,
   // so it misses every field later mappers learned until an admin upgrades
@@ -6299,6 +6547,7 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
     aidlcRepoRef,
     methodologyPins,
     methodologyRelease,
+    ...(methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
     scope,
     startedBy: sub,
     title: data.title || null,
@@ -6421,6 +6670,19 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+    if (
+      intentId &&
+      (httpMethod === 'DELETE' ||
+        (httpMethod === 'POST' && /\/(rewind|recompose|cancel|repair)$/.test(path ?? '')))
+    ) {
+      const current = await store.getExecution(intentId, { consistentRead: true });
+      if (current?.projectId === projectId && Date.parse(current.deliveryLeaseUntil) > Date.now()) {
+        return response(409, {
+          error: 'Delivery is in progress. Wait for it to finish before changing this execution.',
+          code: 'delivery_in_progress',
+        });
+      }
+    }
 
     // Await each route so failures reach catch and finally closes the graph
     // connection only after the route has finished using it.
@@ -6583,6 +6845,10 @@ export const handler = async (event, context) => {
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/derive')) {
       return await handleDeriveIntent({ event, projectId, intentId, response });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/delivery')) {
+      return await handleRetryDelivery({ body, projectId, intentId, sub, auth, response });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/repair')) {
@@ -6791,6 +7057,41 @@ const lookupDurableExecutionStatus = async (meta) => {
 };
 
 const DURABLE_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'STOPPED']);
+// The 409 body when repair must wait for a lane that is resuming after its
+// answer, or null. Fails closed: a durable status that can't be read counts as
+// live, and the grace window in isLaneResumeInFlight bounds how long that holds.
+const laneResumeBlocksRepair = async (meta, records) => {
+  const pendingStages = new Set(
+    (records.humanTasks ?? [])
+      .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
+      .map((gate) => gate.stageInstanceId),
+  );
+  const resuming = (records.stages ?? []).filter(
+    (stage) =>
+      !pendingStages.has(stage.stageInstanceId) &&
+      isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: meta.status,
+        resumeRequired: meta.resumeRequired ?? null,
+      }),
+  );
+  if (resuming.length === 0) return null;
+  const durableStatus = await lookupDurableExecutionStatus(meta).catch((error) =>
+    error?.name === 'ResourceNotFoundException' ? 'NOT_FOUND' : 'UNKNOWN',
+  );
+  if (!durableStatus || durableStatus === 'NOT_FOUND') return null;
+  if (DURABLE_TERMINAL_STATUSES.has(durableStatus)) return null;
+  return {
+    error: 'A lane is resuming after an answer. Wait for it to restart before repairing the run.',
+    code: 'lane_resuming',
+    lanes: resuming.map((stage) => ({
+      stageInstanceId: stage.stageInstanceId,
+      unitSlug: stage.unitSlug,
+      sectionIndex: stage.sectionIndex ?? null,
+    })),
+  };
+};
 
 const repairExpiredDurableExecution = async ({
   executionId,

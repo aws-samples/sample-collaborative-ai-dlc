@@ -92,7 +92,7 @@ function IntentComposePageContent() {
   const navigate = useNavigate();
   const location = useLocation();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
-  const { user } = useAuth();
+  const { user, isPlatformAdmin } = useAuth();
   const { reload } = useIntent();
   const setAssistAgentCli = useDiscussions()?.setAssistAgentCli;
   const userName = user?.displayName || user?.email || '';
@@ -320,17 +320,22 @@ function IntentComposePageContent() {
   // initialization (those stages are locked EXECUTE in the editor).
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [phases, setPhases] = useState<PhaseNode[]>([]);
+  const [compiledLoading, setCompiledLoading] = useState(true);
   // A pinned intent whose release-backed compile fails must SAY so. Falling back
   // to the live SYSTEM rows would render a preview of methodology this intent
   // will never execute, which is worse than rendering nothing.
   const [releaseViewUnavailable, setReleaseViewUnavailable] = useState(false);
   useEffect(() => {
-    if (!workflowId) return;
     // Wait for the intent before compiling: loading the live workflow first and
     // correcting it afterwards would let a user pick a scope the release does
     // not offer.
     if (!intentReady) return;
+    if (!workflowId) {
+      setCompiledLoading(false);
+      return;
+    }
     let cancelled = false;
+    setCompiledLoading(true);
     setReleaseViewUnavailable(false);
     workflowsService
       .compiled(
@@ -354,6 +359,9 @@ function IntentComposePageContent() {
           return;
         }
         setError(e instanceof Error ? e.message : 'Failed to load scopes');
+      })
+      .finally(() => {
+        if (!cancelled) setCompiledLoading(false);
       });
     if (!releaseId) {
       workflowsService
@@ -656,7 +664,9 @@ function IntentComposePageContent() {
     intentId,
   ]);
 
+  const validationStartBlocked = Boolean(intent?.methodologyReleaseTest && !isPlatformAdmin);
   const handleStart = async () => {
+    if (validationStartBlocked) return;
     if (!projectId || !intentId || !draftReady || uploadProgress !== null || trackerImportBusy)
       return;
     setStarting(true);
@@ -733,6 +743,12 @@ function IntentComposePageContent() {
           )}
         </div>
 
+        {intent?.methodologyReleaseTest && (
+          <p role="status" className="rounded-md border bg-muted p-3 text-sm">
+            Version validation intent: shared with this space. Only a platform administrator can
+            start or retry this test.
+          </p>
+        )}
         {error && (
           <div className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md flex items-start justify-between gap-3 text-sm">
             <div className="flex items-start gap-2">
@@ -925,67 +941,86 @@ function IntentComposePageContent() {
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-muted-foreground" />
               <Label className="text-sm font-medium">Agent CLI</Label>
+              {capabilitiesLoading && (
+                <Loader2
+                  className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+                  role="status"
+                  aria-label="Loading agent CLIs"
+                  data-testid="agent-cli-loader"
+                />
+              )}
             </div>
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {AGENT_CLIS.map((cli) => {
-                const status = runtimeCliStatus.get(cli);
-                const available = cliAvailable(cli);
-                const selected = selectedCli === cli;
-                const source =
-                  status?.credentialSource ??
-                  agentCapabilities?.credentialSources?.[
-                    AGENT_CLI_METADATA[cli].credentialProvider
-                  ] ??
-                  null;
-                const disabledByAdmin =
-                  status?.enabled === false ||
-                  (agentCapabilities?.disabledClis ?? []).includes(cli);
-                const unavailableReason = disabledByAdmin
-                  ? 'disabled by admin'
-                  : status?.installed === false
-                    ? 'not installed'
-                    : status?.authed === false || !source
-                      ? 'no credential'
-                      : 'unavailable';
-                return (
-                  <button
-                    key={cli}
-                    type="button"
-                    aria-pressed={selected}
-                    disabled={!draftReady || starting || capabilitiesLoading || !available}
-                    onClick={() => setSelectedCli(cli)}
-                    className={`relative min-h-20 rounded-md border px-3 py-2.5 text-left transition-colors ${
-                      selected
-                        ? 'border-primary bg-primary/[0.04] ring-1 ring-primary'
-                        : available
-                          ? 'hover:border-primary/40 hover:bg-muted/30'
-                          : 'cursor-not-allowed bg-muted/30 opacity-60'
-                    }`}
-                    data-testid={`agent-cli-${cli}`}
-                  >
-                    {selected && (
-                      <CheckCircle2 className="absolute right-2.5 top-2.5 h-4 w-4 text-primary" />
-                    )}
-                    <span className="block pr-5 text-xs font-semibold">
-                      {AGENT_CLI_METADATA[cli].label}
-                    </span>
-                    <span className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
-                      {project.agentCli === cli && (
-                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                          recommended
-                        </span>
+            {capabilitiesLoading ? (
+              <div
+                className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
+                data-testid="agent-cli-placeholders"
+              >
+                {AGENT_CLIS.map((cli) => (
+                  <Skeleton key={cli} className="min-h-20 rounded-md" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                {AGENT_CLIS.map((cli) => {
+                  const status = runtimeCliStatus.get(cli);
+                  const available = cliAvailable(cli);
+                  const selected = selectedCli === cli;
+                  const source =
+                    status?.credentialSource ??
+                    agentCapabilities?.credentialSources?.[
+                      AGENT_CLI_METADATA[cli].credentialProvider
+                    ] ??
+                    null;
+                  const disabledByAdmin =
+                    status?.enabled === false ||
+                    (agentCapabilities?.disabledClis ?? []).includes(cli);
+                  const unavailableReason = disabledByAdmin
+                    ? 'disabled by admin'
+                    : status?.installed === false
+                      ? 'not installed'
+                      : status?.authed === false || !source
+                        ? 'no credential'
+                        : 'unavailable';
+                  return (
+                    <button
+                      key={cli}
+                      type="button"
+                      aria-pressed={selected}
+                      disabled={!draftReady || starting || capabilitiesLoading || !available}
+                      onClick={() => setSelectedCli(cli)}
+                      className={`relative min-h-20 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                        selected
+                          ? 'border-primary bg-primary/[0.04] ring-1 ring-primary'
+                          : available
+                            ? 'hover:border-primary/40 hover:bg-muted/30'
+                            : 'cursor-not-allowed bg-muted/30 opacity-60'
+                      }`}
+                      data-testid={`agent-cli-${cli}`}
+                    >
+                      {selected && (
+                        <CheckCircle2 className="absolute right-2.5 top-2.5 h-4 w-4 text-primary" />
                       )}
-                      {source && (
-                        <span className="rounded bg-muted px-1.5 py-0.5">
-                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
-                        </span>
-                      )}
-                      {!available && <span>{unavailableReason}</span>}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+                      <span className="block pr-5 text-xs font-semibold">
+                        {AGENT_CLI_METADATA[cli].label}
+                      </span>
+                      <span className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+                        {project.agentCli === cli && (
+                          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                            recommended
+                          </span>
+                        )}
+                        {source && (
+                          <span className="rounded bg-muted px-1.5 py-0.5">
+                            {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
+                          </span>
+                        )}
+                        {!available && <span>{unavailableReason}</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {!capabilitiesLoading && availableCliCount === 0 && (
               <div className="flex items-center justify-between gap-3 rounded-md border border-agent-warning/30 bg-agent-warning/[0.06] px-3 py-2">
                 <p className="text-xs text-muted-foreground">
@@ -1071,6 +1106,21 @@ function IntentComposePageContent() {
               This selection does not offer {withdrawnSettings.join(', ')}, so the choice recorded
               for it was removed and the run follows the scope&rsquo;s defaults.
             </p>
+          )}
+
+          {compiledLoading && gridStages.length === 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Label className="text-sm font-medium">Stages</Label>
+                <Loader2
+                  className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+                  role="status"
+                  aria-label="Loading stages"
+                  data-testid="stages-loader"
+                />
+              </div>
+              <Skeleton className="h-24 rounded-md" data-testid="stages-placeholders" />
+            </div>
           )}
 
           {gridStages.length > 0 && (
@@ -1180,6 +1230,7 @@ function IntentComposePageContent() {
               onClick={handleStart}
               disabled={
                 starting ||
+                validationStartBlocked ||
                 !draftReady ||
                 uploadProgress !== null ||
                 trackerImportBusy ||

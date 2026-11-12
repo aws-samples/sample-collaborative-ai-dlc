@@ -92,6 +92,13 @@ describe('gateway context codec', () => {
     expect(payload.granted).not.toHaveProperty('role');
   });
 
+  it('carries the stage owner describe_changes flag through the context', () => {
+    const { headers } = contextFor(grantFor(), { ...session, describeChanges: true });
+    expect(rawPayload(headers).asserted.describeChanges).toBe(true);
+    expect(decode(headers).scope.describeChanges).toBe(true);
+    expect(decode(contextFor().headers).scope.describeChanges).toBe(false);
+  });
+
   it('round-trips an intent-level discussion reader without a policy', () => {
     const grant = grantFor({
       mode: 'discussion',

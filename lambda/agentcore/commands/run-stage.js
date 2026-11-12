@@ -97,6 +97,12 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
+import {
+  consumeCommitDescription,
+  createEngineCommitMessages,
+  readCommitDescription,
+  stageCommitMessages,
+} from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
@@ -1004,12 +1010,8 @@ const changedApprovedInputs = ({ requiredInputs = [], heads = [], approvals = []
 // running against moved inputs without an explicit yes, and a garbled answer is
 // not a yes.
 const changeControlChoice = (gate) => {
-  const answer = gate?.answer ?? null;
-  const text =
-    typeof answer === 'string'
-      ? answer
-      : (answer?.perQuestion?.[0]?.answer ?? answer?.freeText ?? answer?.decision ?? '');
-  const normalized = String(text ?? '').toLowerCase();
+  // Resolve UI indices against this gate's stored options, just as checkpoints do.
+  const normalized = chosenLabel(gate).toLowerCase();
   if (normalized.includes('stop')) return 'stop';
   if (normalized.includes('reconfirm') || normalized.includes('continue')) return 'reconfirm';
   return null;
@@ -1400,6 +1402,40 @@ const formatRevisionAnswer = (a, reviewFindings) => {
   return `The human reviewed this stage's output and requested changes:\n${text}${review}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
 };
 
+const parsedQuestions = (raw) => {
+  if (Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(raw ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+// The gate UI's `answers[]` shape: one entry per question, with option indices
+// and an optional free-text note. Null when nothing in it can be decoded, so the
+// caller falls back to the raw representation rather than dropping it.
+const renderStructuredAnswers = (gate) => {
+  const questions = parsedQuestions(gate?.questions);
+  const lines = [];
+  gate.answer.answers.forEach((entry, index) => {
+    const question = questions[index] ?? {};
+    const options = Array.isArray(question.options) ? question.options : [];
+    const labels = (Array.isArray(entry?.selectedOptions) ? entry.selectedOptions : [])
+      .map((choice) => options[choice]?.label ?? options[choice])
+      .filter((label) => typeof label === 'string' && label);
+    const note = typeof entry?.freeText === 'string' ? entry.freeText.trim() : '';
+    if (!labels.length && !note) return;
+    const asked = question.text ?? question.question ?? `Question ${index + 1}`;
+    const chosen = labels.length ? labels.map((label) => `"${label}"`).join(', ') : '(no option)';
+    lines.push(`- ${asked}: ${chosen}${note ? `\n  They added: ${note}` : ''}`);
+  });
+  if (!lines.length) return null;
+  return lines.length === 1 && gate.answer.answers.length === 1
+    ? `The human answered your question:\n${lines[0]}\n\nContinue the stage with this answer.`
+    : `The human answered your questions:\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
+};
+
 // Render an answered gate into the message that re-enters the parked conversation.
 // The agent asked structured questions; we feed back the human's answer so it
 // continues from where it parked. Tolerant of the answer shapes the resume lambda
@@ -1453,6 +1489,12 @@ const formatResumeAnswer = (gate, stageId, { reviewFindings = null } = {}) => {
     const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
     return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
   }
+  // The gate UI answers each question of the row with option indices into that
+  // question's options, plus an optional note. Render every answer against its
+  // own question, so the agent reads the chosen labels and notes rather than
+  // the raw answer JSON, and no later question is lost.
+  const structured = Array.isArray(a?.answers) ? renderStructuredAnswers(gate) : null;
+  if (structured) return structured;
   const text = typeof a === 'string' ? a : (a?.freeText ?? JSON.stringify(a ?? {}));
   return `The human answered your question(s): ${text}\n\nContinue the stage with this answer.`;
 };
@@ -1855,6 +1897,7 @@ const runStageAttempt = async (
     processUptimeMs = () => process.uptime() * 1000,
   } = deps;
   let store = processStore;
+  const engineCommitMessage = createEngineCommitMessages({ store: processStore, executionId });
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
@@ -2670,6 +2713,8 @@ const runStageAttempt = async (
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
     ...(stage.policy && stage.agentRef ? { agentRef: stage.agentRef } : {}),
+    // The stage's owner describes its changes for the engine's commit message.
+    describeChanges: true,
   };
 
   let codexHome = null;
@@ -3718,6 +3763,7 @@ const runStageAttempt = async (
       // still tees stderr to the container log; the captured value is never
       // persisted verbatim.
       captureStderrTail: 16_384,
+      logContext: { executionId, stageInstanceId, intentId, projectId },
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
@@ -3830,8 +3876,12 @@ const runStageAttempt = async (
     );
   }
 
-  const exitCode = result?.exitCode ?? 0;
-  logger.error('cli exit', {
+  const exitCode = result?.exitCode;
+  if (exitCode == null) {
+    logger.error('cli_error', { cli, stage: stageId, code: 'cli_no_exit_code' });
+    return fail(stageInstanceId, 'cli_error', 'The agent process ended without an exit code');
+  }
+  logger[exitCode === 0 ? 'info' : 'error']('cli exit', {
     cli,
     stage: stageId,
     exitCode,
@@ -3993,6 +4043,13 @@ const runStageAttempt = async (
       // event as a repair turn; the engine commit below then captures whatever
       // the personas added.
       await warnIfDiskLow('before the lead-draft commit');
+      // The lead described its changes, which this commit holds; the final
+      // commit uses the description instead in each repository this one didn't
+      // commit to (a clean tree or a failed commit).
+      const leadDescription =
+        repos.length > 0
+          ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+          : null;
       leadDraftGit = await commitAndPushAll({
         repos,
         workspaceDir,
@@ -4004,14 +4061,26 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: unitSlug
-          ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (lead draft)`
-          : `aidlc(${stageId}): ${executionId} (lead draft)`,
+        ...(await stageCommitMessages({
+          messageFor: engineCommitMessage,
+          stageId,
+          phase: stage.phase,
+          unitSlug,
+          label: 'lead draft',
+          description: leadDescription,
+        })),
       }).catch((error) => ({
         ok: false,
         committed: false,
         results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
       }));
+      await consumeCommitDescription({
+        store: processStore,
+        executionId,
+        stageInstanceId,
+        description: leadDescription,
+        gitResult: leadDraftGit,
+      });
       const leadDraftRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit);
       if (leadDraftRefs.length > 0) retainedCodeCommitRefs = leadDraftRefs;
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
@@ -4335,6 +4404,11 @@ const runStageAttempt = async (
         .catch(() => {});
     }
   }
+  // No repository, no commit to describe.
+  const commitDescription =
+    repos.length > 0
+      ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+      : null;
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -4348,9 +4422,20 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: unitSlug
-      ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
-      : `aidlc(${stageId}): ${executionId}`,
+    ...(await stageCommitMessages({
+      messageFor: engineCommitMessage,
+      stageId,
+      phase: stage.phase,
+      unitSlug,
+      description: commitDescription,
+    })),
+  });
+  await consumeCommitDescription({
+    store: processStore,
+    executionId,
+    stageInstanceId,
+    description: commitDescription,
+    gitResult,
   });
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
@@ -4624,6 +4709,10 @@ const runStageAttempt = async (
           commitRefs: stageCodeCommitRefs,
           repos,
           workspaceDir,
+          projectId,
+          executionId,
+          gitProvider,
+          repoProviders,
         });
         completedGitError = null;
       } catch (error) {
@@ -4676,6 +4765,7 @@ const runStageAttempt = async (
             prompt: repair.prompt,
             promptViaStdin: repair.promptViaStdin,
             captureStderrTail: 16_384,
+            logContext: { executionId, stageInstanceId, intentId, projectId },
             onStdout: (chunk) => repairSink.write(chunk),
             spawnFn,
           });
@@ -4710,9 +4800,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
-            : `aidlc(${stageId}): ${executionId} (${label})`,
+          message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,
           committed: false,

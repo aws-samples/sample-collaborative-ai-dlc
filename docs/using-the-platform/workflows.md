@@ -16,6 +16,10 @@ Platform administrators can tailor the methodology: fork building blocks, edit s
 
 Editing a block affects future intents only — running intents pinned an earlier workflow version.
 
+### Release blocks
+
+With AI-DLC release pinning on, new intents run the stable release's blocks in place of the SYSTEM baseline. The library shows that release's blocks of the current type below your own, read-only and labelled with the release id; open one to read it. A library block with the same id replaces the release's in pinned intents, and is flagged. The stage editor's pickers include the release's agents, artifacts, sensors and stages, labelled by source, so a custom stage can name a release agent. See [release contents](../concepts/aidlc-release-compatibility.md#release-contents-in-the-authoring-ui).
+
 ## The workflow list
 
 **Workflows** lists all workflows. The SYSTEM default (`aidlc-v2`) is read-only; creating your own offers two paths:

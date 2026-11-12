@@ -68,7 +68,16 @@
 //     --payload '{"importRelease":true,"custom":{"repository":"acme/aidlc-workflows-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
 //     --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-// Three modes:
+//   # A fork can also live in a GitLab project, private or public, on the
+//   # instance in AIDLC_GITLAB_URL (default https://gitlab.com). A private
+//   # project needs a token with read_api in the AIDLC_GITLAB_TOKEN_SECRET_ARN
+//   # secret (Terraform: aidlc_custom_source_gitlab_*). Nested groups are fine:
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"custom":{"repository":"gitlab:acme/platform/aidlc-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//
+// Four modes:
 //   - Default (insert-only): a conditional write skips any block that already
 //     exists, so re-running only inserts blocks added since the last run. Safe,
 //     but it CANNOT update an existing baseline block.
@@ -78,11 +87,15 @@
 //     Combine with dryRun to preview the clear without deleting.
 //   - importRelease: stages one release commit under
 //     aidlc-releases/v1/<sha>/i<importerRevision>/ (official) or
-//     aidlc-releases/v1/custom/<owner>/<name>/<sha>/i<importerRevision>/ (fork)
+//     aidlc-releases/v1/custom/<owner>/<name>/<sha>/i<importerRevision>/ (GitHub
+//     fork) or aidlc-releases/v1/custom/gitlab/<url-encoded path>/<sha>/i<N>/
+//     (GitLab fork)
 //     plus its content-addressed bodies/scripts/runtime objects, and returns
 //     before touching DynamoDB. An official commit is resolved only from the
 //     compatibility profile allowlist and a fork only from an exact SHA, so this
 //     mode rejects {"ref":...} and cannot be combined with reseed.
+//   - prepareRelease: publishes and registers one allowlisted official profile. Records start hidden and structurally-valid/importable;
+//     this action never approves releases or changes channel pointers.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -99,14 +112,26 @@ import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import {
+  getRelease,
+  isAccessDenied,
+  isReleaseRegistryError,
+  registerRelease,
+  upgradeReleaseClosure,
+} from '../shared/release-registry.js';
+import { parseRepositorySlug } from '../shared/aidlc-custom-source.js';
+import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   buildReleaseBundle,
   publishReleaseBundle,
+  readReleaseManifest,
   releaseKeyArgs,
   releaseManifestKey,
+  verifyPublishedRelease,
 } from '../shared/aidlc-release.js';
+import { inspectReleaseClosure } from '../shared/release-resolver.js';
 import {
   buildMethodologyCatalog,
+  isNotFound,
   methodologyCatalogKey,
   writeMethodologyCatalog,
 } from '../shared/methodology-catalog.js';
@@ -138,6 +163,73 @@ const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
 const defaultRef = () => process.env.AIDLC_REPO_REF;
 
 const isConditionalCheckFailed = (err) => err?.name === 'ConditionalCheckFailedException';
+
+// A `gitlab:` custom source is read from AIDLC_GITLAB_URL (default gitlab.com)
+// with the read token in the Secrets Manager secret AIDLC_GITLAB_TOKEN_SECRET_ARN,
+// when one is configured. The secret's value is the token itself, or a JSON
+// object whose `token` field holds it, the shape a rotation function keeps
+// alongside the token's id and project. A public GitLab project needs no secret.
+const gitlabSourceUrl = () => process.env.AIDLC_GITLAB_URL || undefined;
+const gitlabTokenSecretArn = () => process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN || '';
+
+const readGitlabToken = async () => {
+  const secretId = gitlabTokenSecretArn();
+  if (!secretId) return null;
+  // Imported on first use: only a GitLab import needs it, and the Lambda
+  // runtime provides the SDK (esbuild keeps @aws-sdk/* external).
+  const { SecretsManagerClient, GetSecretValueCommand } =
+    await import('@aws-sdk/client-secrets-manager');
+  const { SecretString } = await new SecretsManagerClient({}).send(
+    new GetSecretValueCommand({ SecretId: secretId }),
+  );
+  const token = gitlabTokenFromSecret(SecretString);
+  if (!token) {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) is empty',
+    );
+  }
+  return token;
+};
+
+// The token in a secret value: the trimmed value, or the `token` field of a
+// JSON object. Never echoes the value: a malformed secret is reported by shape.
+const gitlabTokenFromSecret = (secretString) => {
+  const value = String(secretString ?? '').trim();
+  if (!value.startsWith('{')) return value;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) starts with "{" but is not valid JSON',
+    );
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    typeof parsed.token !== 'string'
+  ) {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) is JSON without a string "token" field',
+    );
+  }
+  return parsed.token.trim();
+};
+
+// The fetch source for a custom profile's canonical repository.
+const customFetchSource = async (sourceRepository) => {
+  const parsed = parseRepositorySlug(sourceRepository);
+  if (parsed.provider === 'gitlab') {
+    return {
+      provider: 'gitlab',
+      path: parsed.path,
+      baseUrl: gitlabSourceUrl(),
+      token: await readGitlabToken(),
+    };
+  }
+  return { owner: parsed.owner, repo: parsed.repo };
+};
 
 // The S3 prefix for the commit-pinned internal runtime snapshot.
 const runtimePrefix = (ref) => `aidlc-runtime/${ref}`;
@@ -304,7 +396,7 @@ const putObject = (key, body, contentType) =>
 //
 // Two mutually exclusive sources: an allowlisted official `profile` id, or a
 // `custom` fork pinned to an exact SHA. A custom import lands on its own
-// `custom/<owner>/<name>/` prefix and is recorded T0 and import-only; only an
+// `custom/<owner>/<name>/` (or `custom/gitlab/<path>/`) prefix and is recorded T0 and import-only; only an
 // admin promotion through the fidelity guard makes it runnable.
 const importRelease = async ({ event, dryRun, reseed }) => {
   if (reseed) {
@@ -347,8 +439,7 @@ const importRelease = async ({ event, dryRun, reseed }) => {
       sha: requestedCustom.sha,
       baseProfileId: requestedCustom.baseProfile,
     });
-    const [owner, repo] = profile.sourceRepository.split('/');
-    source = { owner, repo };
+    source = await customFetchSource(profile.sourceRepository);
   } else {
     // Profile id only (never a raw SHA) so the invoke payload is self-describing.
     profile = typeof requested === 'string' ? profileFor(requested) : null;
@@ -391,10 +482,182 @@ const importRelease = async ({ event, dryRun, reseed }) => {
   return { ...summary, status: published.status };
 };
 
+// The current importer's closure for an official profile, when a previous
+// deployment already published it. It is read and verified from object storage
+// rather than rebuilt, so a redeploy does not depend on the upstream archive. A
+// missing manifest returns null and the release is built; a manifest whose
+// catalog no longer verifies throws instead of being trusted.
+const alreadyPublished = async (event) => {
+  if (
+    event.importerRevision != null &&
+    event.importerRevision !== AIDLC_RELEASE_IMPORTER_REVISION
+  ) {
+    return null;
+  }
+  const profile = typeof event.profile === 'string' ? profileFor(event.profile) : null;
+  if (!profile || profile.id !== event.profile) return null;
+  // This role holds no s3:ListBucket, so S3 answers a GET for an absent key
+  // with 403 AccessDenied instead of 404: either way the manifest is not there
+  // and the release is built. The build itself still fails on a real denial.
+  let manifest;
+  try {
+    manifest = await readReleaseManifest({
+      s3,
+      bucket: artifactsBucket(),
+      sha: profile.upstreamRef,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
+  } catch (error) {
+    if (!isAccessDenied(error)) throw error;
+    return null;
+  }
+  if (!manifest) return null;
+  // A missing catalog is rebuilt like any other missing object; a catalog
+  // holding other bytes still fails the deployment.
+  try {
+    await inspectReleaseClosure({
+      s3,
+      bucket: artifactsBucket(),
+      cache: null,
+      methodologyRelease: {
+        releaseId: manifest.releaseId,
+        sourceSha: manifest.sourceSha,
+        importerRevision: manifest.importerRevision,
+        closureDigest: manifest.closureDigest,
+      },
+    });
+  } catch (error) {
+    if (!isAccessDenied(error) && !isNotFound(error?.cause)) throw error;
+    logger.warn('published release catalog is missing; building it again', {
+      profile: profile.id,
+    });
+    return null;
+  }
+  // Every object the manifest names must still hold its recorded bytes. A
+  // missing one is restored by building the release again; an object holding
+  // other bytes cannot be overwritten, so that build fails the deployment.
+  // Without s3:ListBucket a missing object reads as AccessDenied, which is also
+  // a rebuild: publication's own writes and read-back then expose a real denial.
+  try {
+    await verifyPublishedRelease({ s3, bucket: artifactsBucket(), manifest });
+  } catch (error) {
+    if (error?.code !== 'release_verification_failed' && !isAccessDenied(error)) throw error;
+    logger.warn('published release failed verification; building it again', {
+      profile: profile.id,
+      keys: error.keys,
+    });
+    return null;
+  }
+  return {
+    mode: 'importRelease',
+    dryRun: false,
+    profile: profile.id,
+    custom: manifest.custom === true,
+    sourceRepository: manifest.sourceRepository,
+    trustTier: manifest.trustTier,
+    releaseId: manifest.releaseId,
+    sourceSha: manifest.sourceSha,
+    importerRevision: manifest.importerRevision,
+    mapperFingerprint: manifest.mapperFingerprint ?? null,
+    manifestKey: releaseManifestKey(releaseKeyArgs(manifest)),
+    catalogKey: manifest.catalog.key,
+    closureDigest: manifest.closureDigest,
+    objectCount: (manifest.objects ?? []).length,
+    runtimeFileCount: (manifest.runtimeFiles ?? []).length,
+    compatibility: manifest.compatibility,
+    status: 'already-published',
+  };
+};
+
+// An upgrade the registry refuses on purpose leaves the record on its older
+// closure and is reported; anything else is a broken publication and fails.
+const UPGRADE_REFUSALS = new Set([
+  'release_channel_pinned',
+  'release_revision_conflict',
+  'release_not_selectable',
+  'release_capability_unhandled',
+]);
+
+// Deployment invokes this once per official profile. Importing stays separate
+// from approval: an existing record keeps its admin state, and an older
+// closure is moved to the one just published by the same guarded upgrade an
+// admin uses, so only new intents pin it.
+const prepareRelease = async ({ event, dryRun }) => {
+  if (
+    event.reseed === true ||
+    event.importRelease === true ||
+    event.ref != null ||
+    event.custom != null
+  ) {
+    throw new Error(
+      'seed-blocks: prepareRelease cannot be combined with reseed, importRelease, ref or custom',
+    );
+  }
+  const published =
+    (dryRun ? null : await alreadyPublished(event)) ??
+    (await importRelease({ event, dryRun, reseed: false }));
+  if (dryRun) return { ...published, mode: 'prepareRelease', registration: 'not-attempted' };
+  const existing = await getRelease({
+    ddb,
+    tableName: blocksTable(),
+    releaseId: published.releaseId,
+  });
+  if (existing) {
+    if (
+      existing.sourceSha !== published.sourceSha ||
+      existing.profileId !== published.profile ||
+      existing.importerRevision > published.importerRevision ||
+      (existing.importerRevision === published.importerRevision &&
+        existing.closureDigest !== published.closureDigest)
+    ) {
+      throw new Error('seed-blocks: registered release is inconsistent with the deployed importer');
+    }
+    if (existing.importerRevision === published.importerRevision || existing.custom === true) {
+      return { ...published, mode: 'prepareRelease', registration: 'already-registered' };
+    }
+    try {
+      await upgradeReleaseClosure({
+        ddb,
+        tableName: blocksTable(),
+        s3,
+        bucket: artifactsBucket(),
+        releaseId: published.releaseId,
+        expectedRevision: existing.revision,
+        importerRevision: published.importerRevision,
+        actor: 'deployment',
+      });
+    } catch (error) {
+      if (!isReleaseRegistryError(error) || !UPGRADE_REFUSALS.has(error.code)) throw error;
+      logger.warn('registered release kept on its older closure', {
+        releaseId: published.releaseId,
+        importerRevision: existing.importerRevision,
+        code: error.code,
+      });
+      return {
+        ...published,
+        mode: 'prepareRelease',
+        registration: 'upgrade-refused',
+        upgradeRefusal: error.code,
+        registeredImporterRevision: existing.importerRevision,
+      };
+    }
+    return { ...published, mode: 'prepareRelease', registration: 'upgraded' };
+  }
+  const registration = await registerRelease({
+    ddb,
+    tableName: blocksTable(),
+    s3,
+    bucket: artifactsBucket(),
+    profileId: published.profile,
+  });
+  return { ...published, mode: 'prepareRelease', registration: registration.status };
+};
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
+  if (event?.prepareRelease === true) return prepareRelease({ event, dryRun });
   if (event?.importRelease === true) {
     return importRelease({ event, dryRun, reseed });
   }

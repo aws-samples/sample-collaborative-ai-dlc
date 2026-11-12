@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import bedrockModels from '../bedrock-models.js';
 
-const { listClaudeModels, regionPrefix } = bedrockModels;
+const { listClaudeModels, listCodexModels, codexModelsFor, CODEX_BEDROCK_MODELS, regionPrefix } =
+  bedrockModels;
 
 const P = (id, extra = {}) => ({
   inferenceProfileId: id,
@@ -93,9 +94,96 @@ describe('listClaudeModels', () => {
   });
 });
 
+describe('listCodexModels (Mantle catalogue for the inference region)', () => {
+  const catalog = (...ids) => ({
+    object: 'list',
+    data: ids.map((id) => ({ id, object: 'model' })),
+  });
+
+  // Trimmed 2026-11-03 responses from the issue: us-east-1 serves GPT-6/5,
+  // eu-central-1 serves only the GPT-OSS entries.
+  const US_EAST = catalog(
+    'openai.gpt-6.1-sol',
+    'openai.gpt-6-sol',
+    'openai.gpt-oss-120b-1:0',
+    'anthropic.claude-sonnet-4-6',
+    'google.gemma-3-27b-it',
+  );
+  const EU_CENTRAL = catalog('openai.gpt-oss-120b-1:0', 'anthropic.claude-sonnet-4-6');
+
+  it('keeps only the openai namespace and leaves GPT-OSS out', async () => {
+    const { models } = await listCodexModels({
+      region: 'us-east-1',
+      listModels: async () => US_EAST,
+    });
+    expect(models.map((m) => m.id)).toEqual(['openai.gpt-6-sol', 'openai.gpt-6.1-sol']);
+  });
+
+  it('reports a different catalogue for a region that serves different models', async () => {
+    const byRegion = { 'us-east-1': US_EAST, 'eu-central-1': EU_CENTRAL };
+    const listModels = async (region) => byRegion[region];
+    const us = await listCodexModels({ region: 'us-east-1', listModels });
+    const eu = await listCodexModels({ region: 'eu-central-1', listModels });
+    expect(us.models.map((m) => m.id)).toContain('openai.gpt-6.1-sol');
+    expect(eu.models).toEqual([]);
+  });
+
+  it('asks the loader for the region it was given', async () => {
+    const seen = [];
+    await listCodexModels({
+      region: 'eu-central-1',
+      listModels: async (region) => {
+        seen.push(region);
+        return EU_CENTRAL;
+      },
+    });
+    expect(seen).toEqual(['eu-central-1']);
+  });
+
+  it('keeps a saved id the region no longer lists, ahead of the catalogue', async () => {
+    const { models, source } = await listCodexModels({
+      region: 'eu-central-1',
+      listModels: async () => catalog('openai.gpt-6-sol'),
+      savedIds: ['openai.gpt-7-preview'],
+    });
+    expect(source).toBe('catalog');
+    expect(models.map((m) => m.id)).toEqual(['openai.gpt-7-preview', 'openai.gpt-6-sol']);
+  });
+
+  it('reports a failed lookup instead of an empty catalogue', async () => {
+    const { models, source } = await listCodexModels({
+      region: 'us-east-1',
+      listModels: async () => {
+        throw new Error('403');
+      },
+      savedIds: ['openai.gpt-5.5'],
+    });
+    expect(source).toBe('error');
+    expect(models.map((m) => m.id)).toEqual(['openai.gpt-5.5']);
+  });
+});
+
+describe('codexModelsFor (what the picker offers)', () => {
+  it('keeps a regional catalogue that resolved to no compatible model empty', () => {
+    expect(codexModelsFor({ models: [], source: 'catalog' })).toEqual([]);
+  });
+
+  it('offers the regional catalogue as it was read', () => {
+    const models = [{ id: 'openai.gpt-6-sol', name: 'openai.gpt-6-sol', description: null }];
+    expect(codexModelsFor({ models, source: 'catalog' })).toBe(models);
+  });
+
+  it('falls back to the curated list when the lookup failed', () => {
+    expect(codexModelsFor({ models: [], source: 'error' })).toBe(CODEX_BEDROCK_MODELS);
+  });
+
+  it('falls back to the curated list when the runtime reported no catalogue at all', () => {
+    expect(codexModelsFor(undefined)).toBe(CODEX_BEDROCK_MODELS);
+  });
+});
+
 describe('CODEX_BEDROCK_MODELS (curated static list)', () => {
   it('offers only exact openai.* ids — no geo or provider prefixes', () => {
-    const { CODEX_BEDROCK_MODELS } = bedrockModels;
     expect(CODEX_BEDROCK_MODELS.length).toBeGreaterThan(0);
     for (const m of CODEX_BEDROCK_MODELS) {
       expect(m.id).toMatch(/^openai\./);

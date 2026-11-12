@@ -1133,6 +1133,9 @@ resource "aws_lambda_permission" "workflows" {
 #
 #   /aidlc-releases                      GET (list), POST (register)
 #   /aidlc-releases/{releaseId}          PATCH (support-state decision, CAS)
+#   /aidlc-releases/{releaseId}/blocks   GET (the release's catalog, read-only)
+#   /aidlc-releases/{releaseId}/blocks/{type}/{blockId}
+#                                        GET (one catalog block + its body)
 #   /aidlc-release-channels              GET (stable/candidate/preview)
 #   /aidlc-release-channels/{channel}    PUT (move a pointer, CAS),
 #                                        DELETE (clear a pointer, CAS)
@@ -1151,6 +1154,24 @@ resource "aws_api_gateway_resource" "aidlc_release" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.aidlc_releases.id
   path_part   = "{releaseId}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_blocks" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release.id
+  path_part   = "blocks"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_block_type" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release_blocks.id
+  path_part   = "{type}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_block" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release_block_type.id
+  path_part   = "{blockId}"
 }
 
 resource "aws_api_gateway_resource" "aidlc_release_channels" {
@@ -1176,6 +1197,8 @@ locals {
     releases_get   = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "GET" }
     releases_post  = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "POST" }
     release_patch  = { resource = aws_api_gateway_resource.aidlc_release.id, method = "PATCH" }
+    blocks_get     = { resource = aws_api_gateway_resource.aidlc_release_blocks.id, method = "GET" }
+    block_get      = { resource = aws_api_gateway_resource.aidlc_release_block.id, method = "GET" }
     channels_get   = { resource = aws_api_gateway_resource.aidlc_release_channels.id, method = "GET" }
     channel_put    = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "PUT" }
     channel_delete = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "DELETE" }
@@ -1212,6 +1235,18 @@ module "cors_aidlc_release" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.aidlc_release.id
+}
+
+module "cors_aidlc_release_blocks" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_blocks.id
+}
+
+module "cors_aidlc_release_block" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_block.id
 }
 
 module "cors_aidlc_release_channels" {
@@ -1346,6 +1381,12 @@ resource "aws_api_gateway_resource" "intent_repair" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
   path_part   = "repair"
+}
+
+resource "aws_api_gateway_resource" "intent_delivery" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "delivery"
 }
 
 # Composer sessions (Adaptive Workflows): start a compose (front/report),
@@ -1547,6 +1588,7 @@ locals {
     cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
     resume_post            = { resource = aws_api_gateway_resource.intent_resume.id, method = "POST" }
+    delivery_post          = { resource = aws_api_gateway_resource.intent_delivery.id, method = "POST" }
     repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
@@ -1692,6 +1734,12 @@ module "cors_intent_repair" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_repair.id
+}
+
+module "cors_intent_delivery" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_delivery.id
 }
 
 module "cors_intent_compose" {

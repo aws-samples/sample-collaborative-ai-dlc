@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { ddb, cardinality, order, __, P, locksTable, readStateTable } from './clients.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { MESSAGE_GUARD_COMPLETE_SECONDS } from './constants.js';
 import { getVal, mapDiscussion, nowSeconds, isConditionalCheckFailed } from './mappers.js';
 
@@ -166,6 +167,47 @@ export const fetchAnchorTitle = async (
   const r = await anchorTraversal(g, scope, entityType, entityId).valueMap('title', 'name').next();
   if (r.done || !r.value) return '';
   return getVal(r.value, 'title') || getVal(r.value, 'name') || '';
+};
+
+export const ensureQuestionFromGate = async (g, intentId, gate) => {
+  const questionId = gate.humanTaskId;
+  const answered = isHumanTaskAnswerStatus(gate.status);
+  const create = __.addV('Question')
+    .property('id', questionId)
+    .property('intent_id', intentId)
+    .property('stage_instance_id', gate.stageInstanceId ?? '')
+    .property('questions', gate.questions ?? '[]')
+    .property('structured_answer', answered ? JSON.stringify(gate.answer ?? null) : '')
+    .property('created_at', gate.createdAt);
+  // Scoped to this intent: another intent may hold a Question with the same id,
+  // and this repair must never overwrite or re-link that vertex.
+  let question = g
+    .V()
+    .has('Question', 'id', questionId)
+    .has('intent_id', intentId)
+    .fold()
+    .coalesce(__.unfold(), create);
+  if (answered) {
+    question = question
+      .property(cardinality.single, 'structured_answer', JSON.stringify(gate.answer ?? null))
+      .property(cardinality.single, 'answered_by', gate.answeredBy ?? '')
+      .property(cardinality.single, 'answered_by_name', gate.answeredByName ?? '')
+      .property(cardinality.single, 'answered_at', gate.answeredAt ?? '');
+  }
+  await question.next();
+  await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .as('intent')
+    .V()
+    .has('Question', 'id', questionId)
+    .has('intent_id', intentId)
+    .as('question')
+    .coalesce(
+      __.inE('CONTAINS').where(__.outV().as('intent')),
+      __.addE('CONTAINS').from_('intent').to('question'),
+    )
+    .next();
 };
 
 export const createDiscussionVertex = async (

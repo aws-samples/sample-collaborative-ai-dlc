@@ -491,4 +491,15 @@ describe('gateway authorization', () => {
     expect(toolAllowedForContext(context, 'aidlc', 'create_artifact')).toBe(false);
     expect(toolAllowedForContext(context, 'other', 'get_artifact')).toBe(false);
   });
+
+  it('allows describe_changes only to the session that owns the stage', () => {
+    const author = (scope) => ({
+      role: 'author',
+      scope: { stageId: 'code-generation', policy: null, canAsk: true, ...scope },
+    });
+    const allowed = (scope) => toolAllowedForContext(author(scope), 'aidlc', 'describe_changes');
+    expect(allowed({ checkpointOwner: true, describeChanges: true })).toBe(true);
+    expect(allowed({ checkpointOwner: false, describeChanges: true })).toBe(false);
+    expect(allowed({ checkpointOwner: true, describeChanges: false })).toBe(false);
+  });
 });

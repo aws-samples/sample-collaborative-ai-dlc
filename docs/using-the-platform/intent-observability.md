@@ -27,6 +27,12 @@ The default intent view is the **workbench** — the working surface for humans:
 - **Gates** — pending questions and approvals render inline (see [Human gates](#human-gates) below).
 - **Course corrections** — the steering history of the run.
 
+### HTML artifacts
+
+The visual artifacts `wireframes`, `user-flow`, and `mockups` can be a complete HTML page instead of markdown. They render as a page wherever an artifact is shown (work products, stage review, artifact history), with a **Rendered / Source** toggle. Other artifact types stay markdown: the agent tools, Quorum rewrites, and manual edits refuse HTML for them.
+
+The page renders in a fixed-height, scrollable sandboxed frame with scripts and links disabled and all network requests blocked, so only inline CSS, inline SVG, and `data:` images display. To get HTML mockups from a stage, request changes at its review gate and ask for the visual outputs as static HTML.
+
 ## The observability page
 
 The **Observability** button opens the intent's execution dashboard:
@@ -39,8 +45,12 @@ The **Observability** button opens the intent's execution dashboard:
   and cache writes; **Usage details** shows the cache counts separately. Costs apply
   the corresponding cache rates, including one-hour writes when the CLI reports
   them. Codex reports cumulative thread totals, so resumed calls subtract the
-  saved thread usage and record only the new usage. Kiro credits use the captured
-  overage rate and remain an estimate.
+  saved thread usage and record only the new usage. Codex input totals already
+  include cache reads and writes, and Codex costs use the Bedrock In-Region rates
+  for the OpenAI models in the pinned Codex catalog and GPT-5.4; other OpenAI
+  models show the cost as unavailable. A Codex run with no model selected uses
+  the pinned Codex default (`openai.gpt-6.1-sol`) and is priced under it. Kiro
+  credits use the captured overage rate and remain an estimate.
 
   Usage is recorded when each invocation ends, including reported usage on failure
   or before a human pause. If a CLI stops without reporting usage, the runtime

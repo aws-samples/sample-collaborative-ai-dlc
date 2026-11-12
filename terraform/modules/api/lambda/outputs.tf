@@ -264,7 +264,7 @@ output "building_blocks_lambda_name" {
 }
 
 output "seed_blocks_lambda_name" {
-  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  description = "Name of the seed and release-preparation Lambda used by the post-deploy catalog preparation step."
   value       = module.seed_blocks_lambda.lambda_function_name
 }
 
@@ -330,4 +330,14 @@ output "v2_orchestrator_qualified_name" {
 output "v2_orchestrator_qualified_arn" {
   description = "Qualified ARN of the v2 orchestrator durable Lambda"
   value       = module.v2_orchestrator_alias.lambda_alias_arn
+}
+
+output "notification_event_bus_name" {
+  description = "Notification event bus name, or empty when notification events are disabled"
+  value       = local.notification_event_bus_name
+}
+
+output "notification_event_bus_arn" {
+  description = "Notification event bus ARN, or empty when notification events are disabled"
+  value       = one(aws_cloudwatch_event_bus.notifications[*].arn) == null ? "" : one(aws_cloudwatch_event_bus.notifications[*].arn)
 }

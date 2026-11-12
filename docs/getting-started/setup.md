@@ -96,6 +96,15 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
+#### Building-block bodies
+
+Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
+
+- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`), with `{type}` matched in any case as the API accepts it. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
+- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
+
+The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
@@ -407,6 +416,35 @@ and evaluate a separately approved private ECR mirror or pull-through cache.
 That requires repository/cache permissions, lifecycle and cost decisions, and
 verification of the pinned image digests for each architecture. This deployment
 does not provision a mirror or fall back to anonymous Docker Hub pulls.
+
+### Pre-built container images
+
+By default Terraform builds the AgentCore and Yjs images during apply. To build
+them elsewhere (for example in CI, so they can be scanned before they deploy),
+push them to the deployment's ECR repositories and set their tags:
+
+```hcl
+# terraform/environments/dev.tfvars
+agentcore_image_tag = "1.2.3"
+yjs_image_tag       = "1.2.3"
+```
+
+| Image     | Repository                   | Build context        | Dockerfile                     | Platform                                                       |
+| --------- | ---------------------------- | -------------------- | ------------------------------ | -------------------------------------------------------------- |
+| AgentCore | `<project>-agentcore-<env>`  | `lambda/`            | `lambda/agentcore/Dockerfile`  | `linux/arm64`, plus `linux/amd64` as `<tag>-amd64` (see below) |
+| Yjs       | `<project>-yjs-server-<env>` | `lambda/yjs-server/` | `lambda/yjs-server/Dockerfile` | `linux/amd64`                                                  |
+
+- With `enable_instances_compute = true`, also push the AgentCore amd64 image
+  as `<tag>-amd64`.
+- Each tag is resolved to its digest, and both images deploy by digest, so
+  moving a tag later does not change a running deployment. Treat the tags as
+  write-once: published environment revisions pin the AgentCore digest, and the
+  AgentCore repository has no lifecycle policy (see issue #427).
+- Plan fails if a tag is missing from its repository, so push the images
+  before planning. Terraform creates the repositories, so a new environment
+  needs one apply with the defaults (or a targeted apply of the two
+  `aws_ecr_repository` resources) before switching to pre-built images.
+- Leaving either variable unset (`null`) keeps the build during apply.
 
 ### Bootstrap the first platform administrator
 

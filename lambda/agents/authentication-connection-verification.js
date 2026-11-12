@@ -57,6 +57,8 @@ export const createConnectionVerifier =
       );
     } catch (error) {
       if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
+      if (error?.code === 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED')
+        return response(409, { code: error.code, error: error.message });
       const rejected = stage === 'runtime' && error?.name === 'RuntimeClientError';
       logger.error('Connection verification request failed', {
         mode,
@@ -101,7 +103,7 @@ export const createConnectionVerifier =
           credentialBinding,
           runtimeCapabilities,
         },
-        { ssm },
+        { ssm, qualifyRuntime: async () => runtimeCapabilities },
       );
       const result = await invoke({
         command: 'verify-connection',
