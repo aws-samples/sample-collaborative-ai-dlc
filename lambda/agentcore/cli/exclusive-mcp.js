@@ -23,13 +23,15 @@
 //                 runtime server is refused, since the merge would keep its
 //                 other properties on the runtime's entry, and so is a
 //                 provider SDK module (`npm`), which OpenCode imports into its
-//                 own process. OPENCODE_PURE
+//                 own process, and so is a custom tool file
+//                 (`.opencode/tool(s)/*.js|ts`), which it imports too.
+//                 OPENCODE_PURE
 //                 (cli/drivers.js) keeps workspace and user plugins, whose
 //                 `config` hook could re-enable them, from loading.
 // This isolates the agent's MCP tools only. Code the agent runs (shell, curl)
 // is bounded by network egress control, not by this module.
 // Allow mode never calls into this module.
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseJsonc, visit as visitJsonc } from 'jsonc-parser';
@@ -293,6 +295,67 @@ const assertNoProviderModule = (file, providers) => {
   }
 };
 
+// OpenCode imports every `{tool,tools}/*.{js,ts}` file (dot files and
+// symlinks included) of each config directory into its own process as a custom
+// tool (tool/registry.ts), OPENCODE_PURE or not. Those directories
+// (config/paths.ts) are the global config directory, each `.opencode` from the
+// working directory up to the repository root, `~/.opencode`, and
+// OPENCODE_CONFIG_DIR. The runtime writes no tool there, so any such file is
+// refused. Matched case-insensitively, and a file whose type cannot be read
+// counts as one.
+const TOOL_DIRECTORIES = ['tool', 'tools'];
+const TOOL_FILE = /\.(?:js|ts)$/i;
+
+export const openCodeToolDirectories = async ({ cwd, home = os.homedir(), env = process.env }) => {
+  const roots = [
+    path.join(home, '.config', 'opencode'),
+    ...(await projectDirectories(cwd)).map((directory) => path.join(directory, '.opencode')),
+    path.join(home, '.opencode'),
+    ...(env.OPENCODE_CONFIG_DIR ? [path.resolve(env.OPENCODE_CONFIG_DIR)] : []),
+  ];
+  return [
+    ...new Set(roots.flatMap((root) => TOOL_DIRECTORIES.map((name) => path.join(root, name)))),
+  ];
+};
+
+const isDirectory = async (file) => {
+  try {
+    return (await stat(file)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const customToolFile = async (directory) => {
+  let entries;
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if (missing(error)) return null;
+    throw unreadable(directory, 'cannot be listed');
+  }
+  for (const name of entries.filter((entry) => TOOL_FILE.test(entry)).toSorted()) {
+    const file = path.join(directory, name);
+    if (!(await isDirectory(file))) return file;
+  }
+  return null;
+};
+
+const customToolFound = (file) =>
+  new RuntimeMcpPolicyError(
+    `${file} is an OpenCode custom tool in ${path.dirname(file)}; this deployment serves ` +
+      'custom MCP servers only through the AgentCore Gateway (runtime_mcp_credentials = ' +
+      '"gateway_only"), and OpenCode would import that file into the agent CLI process as a ' +
+      'tool, so it is not run. Remove the file or serve the tool through the Gateway.',
+  );
+
+export const assertNoOpenCodeCustomTools = async ({ cwd, home, env = process.env }) => {
+  for (const directory of await openCodeToolDirectories({ cwd, home, env })) {
+    const file = await customToolFile(directory);
+    if (file) throw customToolFound(file);
+  }
+};
+
 // A disabled stand-in, which an earlier pass over the same inline config added:
 // a one-shot isolates the materialized config it is given again. The runtime's
 // own entries never set `enabled` (stage-materializer.js toOpenCodeMcp), and a
@@ -301,10 +364,11 @@ const isStandIn = (server) => isRecord(server) && server.enabled === false;
 
 // `config` is the runtime's inline OpenCode config (object). Returns it with
 // every server another layer defines disabled; a server named like one of the
-// runtime's own entries, or a provider SDK module, is refused. Isolating the
+// runtime's own entries, a provider SDK module, or a custom tool file is refused. Isolating the
 // result again returns it unchanged.
 export const exclusiveOpenCodeConfig = async ({ config = {}, cwd, home, env = process.env }) => {
   await assertOpenCodeStoreUntracked({ env });
+  await assertNoOpenCodeCustomTools({ cwd, home, env });
   const own = Object.fromEntries(
     Object.entries(config.mcp ?? {}).filter(([, server]) => !isStandIn(server)),
   );
