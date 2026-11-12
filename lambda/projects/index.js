@@ -67,8 +67,8 @@ import {
 } from '../shared/pr-strategy.js';
 import {
   deleteSpaceMemberships,
-  getMembershipRole,
   listUserSpaces,
+  normalizeMembershipRole,
   saveMembershipChange,
 } from '../shared/space-membership.js';
 
@@ -208,8 +208,9 @@ const readV2Settings = (v) => {
     // Missing means a pre-inheritance project. Preserve its former explicit
     // intent-pr behavior instead of silently changing it with the platform.
     prStrategy:
-      normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
-      DEFAULT_PR_STRATEGY,
+      normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), {
+        legacyDefault: true,
+      }) || DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
     environmentId: getVal(v, 'environment_id') || 'standard',
   };
@@ -431,7 +432,11 @@ const CONFIG_SIGNATURES = {
   'docker-compose.yml': { lang: null, parse: null },
   terraform: { lang: null, parse: null, type: 'dir', framework: 'Terraform' },
   'cdk.json': { lang: null, parse: null, framework: 'AWS CDK' },
-  'serverless.yml': { lang: null, parse: null, framework: 'Serverless Framework' },
+  'serverless.yml': {
+    lang: null,
+    parse: null,
+    framework: 'Serverless Framework',
+  },
   'sam.json': { lang: null, parse: null, framework: 'AWS SAM' },
   'template.yaml': { lang: null, parse: null, framework: 'AWS SAM' },
 };
@@ -523,7 +528,13 @@ const getUserGitToken = async (userId, provider) => {
     if (!item?.parameterName) return null;
     // Refresh GitLab OAuth tokens just-in-time (they live ~2h); passthrough for
     // other providers. Keeps detection working even if the stored token expired.
-    return await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider: provider });
+    return await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item,
+      gitProvider: provider,
+    });
   } catch {
     return null;
   }
@@ -552,14 +563,24 @@ const rootEntriesFromTree = (tree) => {
 // All failures are non-fatal; the caller falls back to guessRole.
 async function detectRepoStack(repoUrl, token, providerId = 'github') {
   if (!repoUrl || !token) {
-    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+    return {
+      languages: [],
+      frameworks: [],
+      role: guessRole(repoUrl),
+      summary: '',
+    };
   }
 
   let provider;
   try {
     provider = getProvider(providerId);
   } catch {
-    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+    return {
+      languages: [],
+      frameworks: [],
+      role: guessRole(repoUrl),
+      summary: '',
+    };
   }
   const ctx = { token };
 
@@ -568,7 +589,12 @@ async function detectRepoStack(repoUrl, token, providerId = 'github') {
     tree = await provider.getTree(ctx, repoUrl);
   } catch {
     // Branch may not be 'main', repo may be empty/inaccessible — non-fatal.
-    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+    return {
+      languages: [],
+      frameworks: [],
+      role: guessRole(repoUrl),
+      summary: '',
+    };
   }
 
   const { fileNames, dirNames } = rootEntriesFromTree(tree);
@@ -642,7 +668,9 @@ const handleProjectCustomMcpServers = async (
   // Owner/admin only (never exposed to members).
   if (/\/custom-mcp-servers\/secrets(\/|$)/.test(requestPath)) {
     if (!canEdit) {
-      return response(403, { error: 'Only project owners and admins can access MCP secrets' });
+      return response(403, {
+        error: 'Only project owners and admins can access MCP secrets',
+      });
     }
     const base = mcpSecretsPrefix();
     if (!base) return response(500, { error: 'MCP secret store not configured' });
@@ -664,10 +692,16 @@ const handleProjectCustomMcpServers = async (
       }
       const secretsMap = data.mcpSecrets;
       if (secretsMap === null || typeof secretsMap !== 'object' || Array.isArray(secretsMap)) {
-        return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
+        return response(400, {
+          error: 'mcpSecrets must be an object of { VAR: value }',
+        });
       }
       try {
-        const { errors } = await putMcpSecrets(ssm, { base, projectId, secrets: secretsMap });
+        const { errors } = await putMcpSecrets(ssm, {
+          base,
+          projectId,
+          secrets: secretsMap,
+        });
         if (errors.length) return response(400, { error: errors.join('; ') });
         return response(200, { saved: true });
       } catch (e) {
@@ -704,7 +738,9 @@ const handleProjectCustomMcpServers = async (
 
   if (httpMethod === 'PUT') {
     if (!canEdit) {
-      return response(403, { error: 'Only project owners and admins can modify MCP servers' });
+      return response(403, {
+        error: 'Only project owners and admins can modify MCP servers',
+      });
     }
     let data;
     try {
@@ -754,7 +790,10 @@ const fetchGlobalMcpConfig = async () => {
   if (!prefix) return {};
   try {
     const res = await ssm.send(
-      new GetParameterCommand({ Name: `${prefix}/custom-mcp-servers`, WithDecryption: true }),
+      new GetParameterCommand({
+        Name: `${prefix}/custom-mcp-servers`,
+        WithDecryption: true,
+      }),
     );
     const parsed = JSON.parse(res.Parameter?.Value || '{}');
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -818,7 +857,12 @@ const purgeS3Object = async (s3, bucket, key) => {
       .filter((v) => v.Key === key)
       .map((v) => ({ Key: v.Key, VersionId: v.VersionId }));
     if (objects.length === 0) return;
-    await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }));
+    await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: { Objects: objects },
+      }),
+    );
   } catch (err) {
     logger.error('Failed to purge S3 object', err, { key });
   }
@@ -834,7 +878,9 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
   if (!role) return response(403, { error: 'Access denied' });
   const canEdit = role === 'owner' || role === 'admin';
   if (httpMethod === 'PUT' && !canEdit) {
-    return response(403, { error: 'Only project owners and admins can modify custom rules' });
+    return response(403, {
+      error: 'Only project owners and admins can modify custom rules',
+    });
   }
 
   const artifactsBucket = process.env.ARTIFACTS_BUCKET;
@@ -889,10 +935,14 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
     const mode = data.mode === 'commit' ? 'commit' : 'presign';
 
     if (!artifactsBucket) {
-      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
+      return response(500, {
+        error: 'ARTIFACTS_BUCKET env var not configured',
+      });
     }
     if (incomingDocs.length > MAX_CUSTOM_RULES) {
-      return response(400, { error: `Maximum ${MAX_CUSTOM_RULES} custom rules per project` });
+      return response(400, {
+        error: `Maximum ${MAX_CUSTOM_RULES} custom rules per project`,
+      });
     }
 
     // Validate filenames + compute S3 keys once (shared by both modes).
@@ -905,7 +955,10 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
           error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
         });
       }
-      docs.push({ filename: safeBase, s3Key: `custom-rules/${projectId}/${safeBase}` });
+      docs.push({
+        filename: safeBase,
+        s3Key: `custom-rules/${projectId}/${safeBase}`,
+      });
     }
 
     if (mode === 'presign') {
@@ -923,7 +976,11 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
             }),
             { expiresIn: 3600 },
           );
-          uploadUrls.push({ filename: doc.filename, s3Key: doc.s3Key, uploadUrl });
+          uploadUrls.push({
+            filename: doc.filename,
+            s3Key: doc.s3Key,
+            uploadUrl,
+          });
         } catch (err) {
           logger.error('Failed to generate presigned URL', {
             s3Key: doc.s3Key,
@@ -1072,12 +1129,14 @@ const handleProjectEnvironment = async (g, response, httpMethod, projectId, user
 const handleReposRoute = async (g, response, event, projectId, userId) => {
   const { httpMethod } = event;
 
-  const role = await getMembershipRole(ddb, projectId, userId);
+  const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
 
   if (httpMethod === 'DELETE') {
     if (role !== 'owner') {
-      return response(403, { error: 'Only space owners can remove repositories' });
+      return response(403, {
+        error: 'Only space owners can remove repositories',
+      });
     }
 
     const repoUrl = event.queryStringParameters?.url;
@@ -1140,7 +1199,9 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     const data = JSON.parse(event.body || '{}');
     if (!data.url) return response(400, { error: 'url is required' });
     if (!isValidRepoPath(data.url)) {
-      return response(400, { error: 'url must be a namespace/repository path' });
+      return response(400, {
+        error: 'url must be a namespace/repository path',
+      });
     }
     const repoInputError = validateRepoRoleAndProvider(data);
     if (repoInputError) return response(400, { error: repoInputError });
@@ -1152,7 +1213,10 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .out('HAS_REPO')
       .has('Repository', 'url', data.url)
       .hasNext();
-    if (duplicate) return response(409, { error: 'Repository already added to this project' });
+    if (duplicate)
+      return response(409, {
+        error: 'Repository already added to this project',
+      });
     // Distinct repositories must not share a workspace checkout directory
     // (the agent would reuse one's clone for the other).
     const existingUrls = await g
@@ -1173,7 +1237,12 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     // runs against the repo's own provider so GitLab repos are detected too.
     const detectionProvider = data.provider || 'github';
     const token = await getUserGitToken(userId, detectionProvider, data.url);
-    let detection = { languages: [], frameworks: [], role: guessRole(data.url), summary: '' };
+    let detection = {
+      languages: [],
+      frameworks: [],
+      role: guessRole(data.url),
+      summary: '',
+    };
     if (token) {
       try {
         detection = await detectRepoStack(data.url, token, detectionProvider);
@@ -1219,7 +1288,13 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .property(cardinality.single, 'git_repo', primaryUrl)
       .next();
 
-    return response(201, { url: data.url, provider, role: repoRole, detectedStack, addedAt });
+    return response(201, {
+      url: data.url,
+      provider,
+      role: repoRole,
+      detectedStack,
+      addedAt,
+    });
   }
 
   return response(405, { error: 'Method not allowed' });
@@ -1277,7 +1352,9 @@ export const handler = async (event, context) => {
       const role = await fetchMembershipRole(g, projectId, userId);
       if (!role) return response(403, { error: 'Access denied' });
       if (role !== 'owner' && role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can migrate trackers' });
+        return response(403, {
+          error: 'Only project owners and admins can migrate trackers',
+        });
       }
       let dryRun = false;
       if (body) {
@@ -1301,7 +1378,11 @@ export const handler = async (event, context) => {
     if (isAdminMigrationStatus) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       const denied = requirePlatformAdmin(event);
-      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      if (denied)
+        return response(denied.statusCode, {
+          error: denied.error,
+          code: denied.code,
+        });
       const result = await runTrackerMigration(g, { dryRun: true });
       return response(200, result);
     }
@@ -1313,7 +1394,11 @@ export const handler = async (event, context) => {
     if (isAdminMigrationRun) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       const denied = requirePlatformAdmin(event);
-      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      if (denied)
+        return response(denied.statusCode, {
+          error: denied.error,
+          code: denied.code,
+        });
       let dryRun = false;
       if (body) {
         try {
@@ -1356,7 +1441,7 @@ export const handler = async (event, context) => {
       case 'GET':
         if (projectId) {
           if (!userId) return response(401, { error: 'Unauthorized' });
-          const role = await getMembershipRole(ddb, projectId, userId);
+          const role = await fetchMembershipRole(g, projectId, userId);
           if (!role) return response(403, { error: 'Access denied' });
           const single = await g
             .V()
@@ -1397,16 +1482,38 @@ export const handler = async (event, context) => {
 
         if (!userId) return response(401, { error: 'Unauthorized' });
         const memberships = [];
-        let membershipToken;
-        do {
-          const page = await listUserSpaces(ddb, userId, { token: membershipToken });
-          memberships.push(...page.items);
-          membershipToken = page.nextToken;
-        } while (membershipToken);
+        if (process.env.AIDLC_TEST_MEMBERSHIP_SOURCE === 'neptune') {
+          const seededMemberships = await g
+            .V()
+            .has('User', 'id', userId)
+            .inE('HAS_MEMBER')
+            .as('membership')
+            .outV()
+            .hasLabel('Project')
+            .project('spaceId', 'membershipRole')
+            .by('id')
+            .by(__.select('membership').values('role'))
+            .toList();
+          memberships.push(
+            ...seededMemberships.map((item) => ({
+              spaceId: getVal(item, 'spaceId'),
+              membershipRole: normalizeMembershipRole(getVal(item, 'membershipRole')),
+            })),
+          );
+        } else {
+          let membershipToken;
+          do {
+            const page = await listUserSpaces(ddb, userId, {
+              token: membershipToken,
+            });
+            memberships.push(...page.items);
+            membershipToken = page.nextToken;
+          } while (membershipToken);
+        }
         const settled = await Promise.allSettled(
           memberships.map(async (membership) => {
             const pid = membership.spaceId || membership.pk.slice('SPACE#'.length);
-            const canonicalMembership = await getMembershipRole(ddb, pid, userId);
+            const canonicalMembership = await fetchMembershipRole(g, pid, userId);
             if (!canonicalMembership) return null;
             const projectResult = await g
               .V()
@@ -1486,7 +1593,9 @@ export const handler = async (event, context) => {
           if (repoInputError) return response(400, { error: repoInputError });
         }
         if (legacyGitRepo && !isValidRepoPath(legacyGitRepo) && !isSafeRepo(legacyGitRepo)) {
-          return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
+          return response(400, {
+            error: `Invalid gitRepo "${legacyGitRepo}".`,
+          });
         }
 
         if (inputRepos.length === 0 && legacyGitRepo) {
@@ -1551,7 +1660,9 @@ export const handler = async (event, context) => {
         try {
           disabledClis = await readDisabledClis(ssm, process.env.AGENT_SETTINGS_SSM_PREFIX || '');
         } catch (err) {
-          logger.warn('[create] disabled-clis read failed', { error: err?.message });
+          logger.warn('[create] disabled-clis read failed', {
+            error: err?.message,
+          });
         }
         if (data.agentCli && disabledClis.includes(data.agentCli)) {
           const disabledError = agentCliDisabledError(data.agentCli);
@@ -1575,7 +1686,9 @@ export const handler = async (event, context) => {
         const environmentId = await resolveDefaultEnvironmentId({
           ddb,
           tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
-          fallback: { compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1' },
+          fallback: {
+            compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+          },
           onFallback: (error, configured) =>
             logger.warn('Default environment unavailable; new space uses Standard', {
               environmentId: configured,
@@ -1699,7 +1812,9 @@ export const handler = async (event, context) => {
         const updaterRole = await fetchMembershipRole(g, projectId, userId);
         if (!updaterRole) return response(403, { error: 'Access denied' });
         if (updaterRole !== 'owner' && updaterRole !== 'admin') {
-          return response(403, { error: 'Only project owners and admins can update settings' });
+          return response(403, {
+            error: 'Only project owners and admins can update settings',
+          });
         }
 
         const data = JSON.parse(body);
@@ -1907,8 +2022,11 @@ export const handler = async (event, context) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Only owners can delete projects
-        const canDelete = (await getMembershipRole(ddb, projectId, userId)) === 'owner';
-        if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
+        const canDelete = (await fetchMembershipRole(g, projectId, userId)) === 'owner';
+        if (!canDelete)
+          return response(403, {
+            error: 'Only project owners can delete projects',
+          });
 
         // Full cascade. A project owns many intents; each intent owns an entire
         // EXEC#<id> DynamoDB partition (META, stages, events, gates, METRIC#,
@@ -1945,7 +2063,10 @@ export const handler = async (event, context) => {
               deadline: cleanupDeadline,
             });
           }
-          const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
+          const execs = await store.listProjectExecutions({
+            projectId,
+            limit: 1000,
+          });
           const failures = [];
           for (const execMeta of execs) {
             requireYjsCleanupTime(cleanupDeadline);
@@ -2020,10 +2141,20 @@ export const handler = async (event, context) => {
             .drop()
             .next();
 
-          // Drop graph state before membership cleanup. The deleting owner's
-          // membership is removed last so a failed cleanup remains retryable.
+          // Remove every other membership while the Project and deleting
+          // owner's membership still exist. If cleanup fails, the normal UI
+          // continues to list the space and the owner can retry.
+          await deleteSpaceMemberships(ddb, projectId, {
+            preserveUserId: userId,
+            deletePreserved: false,
+          });
+
+          // Drop the graph project only after the retryable membership cleanup
+          // has succeeded. Remove the preserved owner last.
           await g.V().has('Project', 'id', projectId).drop().next();
-          await deleteSpaceMemberships(ddb, projectId, { preserveUserId: userId });
+          await deleteSpaceMemberships(ddb, projectId, {
+            preserveUserId: userId,
+          });
           logger.info('Project deleted', {
             projectId,
             actor,

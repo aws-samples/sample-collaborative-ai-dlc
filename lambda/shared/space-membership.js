@@ -159,7 +159,10 @@ const listAuditHistory = async (
       ScanIndexForward: !newestFirst,
     }),
   );
-  return { items: result.Items ?? [], nextToken: encodeToken(result.LastEvaluatedKey) };
+  return {
+    items: result.Items ?? [],
+    nextToken: encodeToken(result.LastEvaluatedKey),
+  };
 };
 
 const auditItem = ({ spaceId, actorId, action, targetUserId, before, after, now, changeId }) => ({
@@ -271,7 +274,11 @@ const removeMembership = async (
   return true;
 };
 
-const deleteSpaceMemberships = async (ddb, spaceId, { preserveUserId } = {}) => {
+const deleteSpaceMemberships = async (
+  ddb,
+  spaceId,
+  { preserveUserId, deletePreserved = true } = {},
+) => {
   let preserved;
   let token;
   do {
@@ -290,7 +297,7 @@ const deleteSpaceMemberships = async (ddb, spaceId, { preserveUserId } = {}) => 
     }
     token = page.nextToken;
   } while (token);
-  if (preserved) {
+  if (preserved && deletePreserved) {
     await ddb.send(
       new DeleteCommand({
         TableName: accessTable(),
@@ -298,6 +305,7 @@ const deleteSpaceMemberships = async (ddb, spaceId, { preserveUserId } = {}) => 
       }),
     );
   }
+  return preserved;
 };
 
 export {

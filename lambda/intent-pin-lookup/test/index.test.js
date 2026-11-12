@@ -63,6 +63,12 @@ const seedMember = async (projectId, sub) => {
     .to(gremlin.process.statics.V(user.value.id))
     .property('role', 'member')
     .next();
+  rows.set(`SPACE#${projectId}|MEMBER#${sub}`, {
+    pk: `SPACE#${projectId}`,
+    sk: `MEMBER#${sub}`,
+    userId: sub,
+    membershipRole: 'member',
+  });
 };
 
 const seedIntent = (intentId, meta) => {
@@ -118,7 +124,11 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     await seedMember(projectId, sub);
-    seedIntent(intentId, { projectId, workflowId: 'aidlc-v2', workflowVersion: 4 });
+    seedIntent(intentId, {
+      projectId,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
 
     const res = await handler({ sub, projectId, intentId });
 
@@ -132,7 +142,11 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     await seedMember(projectId, sub);
-    seedIntent(intentId, { projectId, workflowId: 'aidlc-v2', workflowVersion: 4 });
+    seedIntent(intentId, {
+      projectId,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
 
     expect(await handler({ sub: `outsider-${randomUUID()}`, projectId, intentId })).toEqual({
       statusCode: 404,
@@ -144,9 +158,15 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     await seedMember(projectId, sub);
-    seedIntent(intentId, { projectId: randomUUID(), workflowId: 'aidlc-v2', workflowVersion: 4 });
+    seedIntent(intentId, {
+      projectId: randomUUID(),
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
 
-    expect(await handler({ sub, projectId, intentId })).toEqual({ statusCode: 404 });
+    expect(await handler({ sub, projectId, intentId })).toEqual({
+      statusCode: 404,
+    });
   });
 
   it('404s an intent that does not exist', async () => {
@@ -154,7 +174,9 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     await seedMember(projectId, sub);
 
-    expect(await handler({ sub, projectId, intentId: randomUUID() })).toEqual({ statusCode: 404 });
+    expect(await handler({ sub, projectId, intentId: randomUUID() })).toEqual({
+      statusCode: 404,
+    });
   });
 
   // The function has no API Gateway route. An HTTP-shaped event, or forwarded
@@ -190,7 +212,11 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     await seedMember(projectId, sub);
-    seedIntent(intentId, { projectId, workflowId: 'aidlc-v2', workflowVersion: 4 });
+    seedIntent(intentId, {
+      projectId,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
     membership.fetchMembershipRole.mockClear();
 
     expect((await handler({ sub, projectId, intentId })).statusCode).toBe(200);
@@ -202,7 +228,11 @@ describe('intent-pin-lookup handler', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     await seedMember(projectId, sub);
-    seedIntent(intentId, { projectId, workflowId: 'aidlc-v2', workflowVersion: 4 });
+    seedIntent(intentId, {
+      projectId,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
     const endpoint = process.env.NEPTUNE_ENDPOINT;
     const port = process.env.GREMLIN_PORT;
     vi.stubEnv('NEPTUNE_ENDPOINT', '127.0.0.1');

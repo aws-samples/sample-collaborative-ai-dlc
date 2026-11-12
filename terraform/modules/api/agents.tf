@@ -58,6 +58,8 @@ module "agents_lambda" {
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     QUESTIONS_TABLE                     = var.agent_questions_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
+    ACCESS_TABLE                        = var.access_table_name
+    MEMBERSHIP_MIGRATION_RESULT         = var.membership_migration_result
     AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"

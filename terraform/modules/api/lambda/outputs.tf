@@ -4,6 +4,16 @@ output "agents_orchestrator_role_arn" {
   depends_on  = [aws_iam_role_policy.agents_orchestrator]
 }
 
+output "membership_migration_result" {
+  description = "Successful migration invocation result used to order DynamoDB-only consumers."
+  value       = aws_lambda_invocation.migrate_space_memberships.result
+}
+
+output "membership_migration_lambda_name" {
+  description = "Migration Lambda name used for the post-cutover Neptune membership cleanup."
+  value       = module.membership_migration_lambda.lambda_function_name
+}
+
 output "lambda_security_group_id" {
   description = "Security group ID for Lambda functions"
   value       = aws_security_group.lambda.id

@@ -17,6 +17,9 @@ describe('membership migration', () => {
     });
     expect(first.membership.membershipRole).toBe('owner');
     expect(first.audit.changeId).toBe(baselineId('space-1', 'user-1'));
+    expect(first.audit.sk).toBe(
+      `AUDIT#2026-11-12T00:00:00.000Z#${baselineId('space-1', 'user-1')}`,
+    );
   });
 
   it('copies and verifies each source membership', async () => {
@@ -31,6 +34,7 @@ describe('membership migration', () => {
       migrateMemberships({
         client,
         sources: [{ spaceId: 'space-1', userId: 'user-1', role: 'owner' }],
+        now: '2026-11-12T00:00:00.000Z',
       }),
     ).resolves.toMatchObject({ copied: 1, sourceCount: 1 });
   });
@@ -50,6 +54,7 @@ describe('membership migration', () => {
       migrateMemberships({
         client,
         sources: [{ spaceId: 'space-1', userId: 'user-1', role: 'owner' }],
+        now: '2026-11-12T00:00:00.000Z',
       }),
     ).resolves.toMatchObject({ preserved: 1 });
   });

@@ -1,6 +1,6 @@
 {
   "name": "migrate-space-memberships",
-  "version": "1.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "build": "esbuild index.js --bundle --platform=node --target=node24 --outfile=.build/index.js --external:@aws-sdk/* --external:@aws-lambda-powertools/*"

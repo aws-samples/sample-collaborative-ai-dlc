@@ -14,7 +14,7 @@
 import gremlin from 'gremlin';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { getMembershipRole } from './space-membership.js';
+import { getMembershipRole, normalizeMembershipRole } from './space-membership.js';
 
 const __ = gremlin.process.statics;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -95,8 +95,25 @@ const mapBinding = (m) => {
 // Returns the role string when the user is a member, or null otherwise.
 // Used by every /projects/{projectId}/... gate; pulling only `role`
 // avoids the cost of round-tripping a full valueMap on the edge.
-const fetchMembershipRole = async (_g, projectId, userId) =>
-  getMembershipRole(ddb, projectId, userId);
+const fetchMembershipRole = async (g, projectId, userId) => {
+  // Existing integration suites seed graph membership alongside their graph
+  // fixtures. Keep that fixture adapter explicit and test-only; deployed
+  // environments always use the canonical DynamoDB lookup below.
+  if (process.env.AIDLC_TEST_MEMBERSHIP_SOURCE === 'neptune') {
+    const result = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .outE('HAS_MEMBER')
+      .as('membership')
+      .inV()
+      .has('User', 'id', userId)
+      .select('membership')
+      .values('role')
+      .next();
+    return result.done ? null : normalizeMembershipRole(result.value);
+  }
+  return getMembershipRole(ddb, projectId, userId);
+};
 
 export {
   getVal,

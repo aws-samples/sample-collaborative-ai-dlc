@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DeleteCommand,
+  GetCommand,
+  QueryCommand,
+  TransactWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import {
   decodeToken,
+  deleteSpaceMemberships,
   getMembershipRole,
   hasAnotherOwner,
   listSpaceMembers,
@@ -90,5 +96,41 @@ describe('space membership store', () => {
         before: { membershipRole: 'owner' },
       }),
     ).rejects.toMatchObject({ code: 'LAST_OWNER' });
+  });
+
+  it('can preserve the deleting owner until surrounding cleanup succeeds', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [
+            {
+              pk: 'SPACE#space-1',
+              sk: 'MEMBER#owner',
+              userId: 'owner',
+              membershipRole: 'owner',
+            },
+            {
+              pk: 'SPACE#space-1',
+              sk: 'MEMBER#member',
+              userId: 'member',
+              membershipRole: 'member',
+            },
+          ],
+        })
+        .mockResolvedValue({}),
+    };
+
+    const preserved = await deleteSpaceMemberships(ddb, 'space-1', {
+      preserveUserId: 'owner',
+      deletePreserved: false,
+    });
+
+    expect(preserved.userId).toBe('owner');
+    const deletes = ddb.send.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command instanceof DeleteCommand);
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].input.Key.sk).toBe('MEMBER#member');
   });
 });

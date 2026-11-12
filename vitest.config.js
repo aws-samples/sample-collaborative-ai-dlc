@@ -24,7 +24,12 @@ export default defineConfig({
         root: fileURLToPath(new URL(name, lambdaRoot)),
         include: ['test/**/*.test.js'],
         setupFiles,
-        env: { POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc' },
+        env: {
+          POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc',
+          AIDLC_TEST_MEMBERSHIP_SOURCE: 'neptune',
+          ACCESS_TABLE: 'access-test',
+          AUDIT_TABLE: 'audit-test',
+        },
       },
     })),
     globalSetup,

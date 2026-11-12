@@ -676,6 +676,8 @@ module "api" {
   agent_questions_table_name               = module.dynamodb.agent_questions_table_name
   agent_outputs_table_name                 = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn                   = module.lambda.agents_orchestrator_role_arn
+  access_table_name                        = module.dynamodb.access_table_name
+  membership_migration_result              = module.lambda.membership_migration_result
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   bedrock_region                           = local.bedrock_region
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
@@ -691,6 +693,13 @@ module "api" {
   # into the stage description to create an implicit dependency so the stage waits
   # for this account-level CloudWatch config (see modules/api/main.tf).
   api_gateway_account_id = aws_api_gateway_account.main.cloudwatch_role_arn
+}
+
+resource "aws_lambda_invocation" "cleanup_neptune_memberships" {
+  function_name = module.lambda.membership_migration_lambda_name
+  input         = jsonencode({ action = "cleanup" })
+
+  depends_on = [module.lambda, module.api]
 }
 
 # Real-time (WebSocket)

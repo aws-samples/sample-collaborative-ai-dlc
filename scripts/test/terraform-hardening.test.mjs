@@ -99,6 +99,8 @@ test('all DynamoDB tables support CMK encryption and durable tables are recovera
 
 test('membership migration gates DynamoDB-only readers and cleans graph edges afterward', () => {
   const lambda = read('terraform/modules/api/lambda/main.tf');
+  const apiAgents = read('terraform/modules/api/agents.tf');
+  const rootMain = read('terraform/main.tf');
   assert.match(lambda, /module "membership_migration_lambda"/);
   assert.match(
     lambda,
@@ -108,9 +110,11 @@ test('membership migration gates DynamoDB-only readers and cleans graph edges af
     lambda,
     /membership_env = \{[\s\S]*?ACCESS_TABLE[\s\S]*?AUDIT_TABLE[\s\S]*?MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation\.migrate_space_memberships\.result/,
   );
+  assert.match(apiAgents, /ACCESS_TABLE\s+= var\.access_table_name/);
+  assert.match(apiAgents, /MEMBERSHIP_MIGRATION_RESULT\s+= var\.membership_migration_result/);
   assert.match(
-    lambda,
-    /resource "aws_lambda_invocation" "cleanup_neptune_memberships"[\s\S]*?action = "cleanup"[\s\S]*?module\.projects_lambda[\s\S]*?module\.intents_lambda/,
+    rootMain,
+    /resource "aws_lambda_invocation" "cleanup_neptune_memberships"[\s\S]*?action = "cleanup"[\s\S]*?depends_on = \[module\.lambda, module\.api\]/,
   );
 });
 

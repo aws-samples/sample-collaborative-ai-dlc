@@ -3380,10 +3380,11 @@ module "membership_migration_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    AWS_SDK_UA_APP_ID = var.aws_sdk_ua_app_id
-    NEPTUNE_ENDPOINT  = var.neptune_endpoint
-    ACCESS_TABLE      = var.access_table_name
-    AUDIT_TABLE       = var.audit_table_name
+    AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
+    NEPTUNE_ENDPOINT                   = var.neptune_endpoint
+    ACCESS_TABLE                       = var.access_table_name
+    AUDIT_TABLE                        = var.audit_table_name
+    MEMBERSHIP_MIGRATION_BASELINE_TIME = "1970-01-01T00:00:00.000Z"
   }
 }
 
@@ -3394,31 +3395,6 @@ resource "aws_lambda_invocation" "migrate_space_memberships" {
   depends_on = [aws_iam_role_policy.membership_migration]
 }
 
-resource "aws_lambda_invocation" "cleanup_neptune_memberships" {
-  function_name = module.membership_migration_lambda.lambda_function_name
-  input         = jsonencode({ action = "cleanup" })
-
-  depends_on = [
-    module.code_files_lambda,
-    module.projects_lambda,
-    module.users_lambda,
-    module.sprints_lambda,
-    module.requirements_lambda,
-    module.user_stories_lambda,
-    module.tasks_lambda,
-    module.reviews_lambda,
-    module.questions_lambda,
-    module.sprint_graph_lambda,
-    module.general_info_lambda,
-    module.timeline_events_lambda,
-    module.source_control_lambda,
-    module.trackers_lambda,
-    module.discussions_lambda,
-    module.intents_lambda,
-    module.intent_pin_lookup_lambda
-  ]
-}
-
 locals {
   membership_reader_roles = {
     agents         = aws_iam_role.agents_orchestrator.id
@@ -3426,7 +3402,9 @@ locals {
     intent_lookup  = aws_iam_role.intent_pin_lookup.id
     intents        = aws_iam_role.intents.id
     projects       = aws_iam_role.neptune_artifacts.id
+    questions      = aws_iam_role.neptune_questions.id
     source_control = aws_iam_role.source_control.id
+    tasks          = aws_iam_role.neptune_reader.id
     trackers       = aws_iam_role.trackers.id
   }
 }
