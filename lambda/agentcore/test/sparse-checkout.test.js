@@ -18,8 +18,14 @@ import {
   validateSparseDirectories,
 } from '../../shared/sparse-checkout.js';
 
+// Git exports GIT_DIR / GIT_INDEX_FILE to its hooks. A run started from one
+// (the pre-commit hook) must act on the fixture repositories, never on the
+// repository the hook belongs to.
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+);
 const git = (cwd, ...args) => {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
 };
@@ -60,7 +66,7 @@ beforeEach(async () => {
     calls.push(commandArgs);
     const actual = [...args];
     if (commandArgs[0] === 'clone') actual[actual.length - 2] = source;
-    const result = spawnSync(command, actual, { cwd: options.cwd, encoding: 'utf8' });
+    const result = spawnSync(command, actual, { cwd: options.cwd, env, encoding: 'utf8' });
     return { code: result.status };
   };
 });
@@ -306,7 +312,7 @@ describe('sparse checkout', () => {
         if (commandArgs[0] === 'clone' && commandArgs.at(-1).endsWith('owner/other')) {
           const actual = [...args];
           actual[actual.length - 2] = other;
-          const result = spawnSync(command, actual, { cwd: opts?.cwd, encoding: 'utf8' });
+          const result = spawnSync(command, actual, { cwd: opts?.cwd, env, encoding: 'utf8' });
           return { code: result.status };
         }
         return realRunner(command, args, opts);
@@ -348,7 +354,8 @@ describe('sparse checkout', () => {
     expect(delivered).toMatchObject({ repo: 'owner/other', committed: true, pushed: true });
     // No intent branch reached the refused remote; the other one was pushed.
     expect(
-      spawnSync('git', ['rev-parse', '--verify', 'refs/heads/aidlc/test'], { cwd: remote }).status,
+      spawnSync('git', ['rev-parse', '--verify', 'refs/heads/aidlc/test'], { cwd: remote, env })
+        .status,
     ).not.toBe(0);
     expect(git(other, 'show', 'aidlc/test:assets/large.txt')).toBe('full checkout edit');
     // The refused state is durable on its remote, on top of the unchanged HEAD
@@ -469,7 +476,7 @@ describe('sparse checkout', () => {
     // Aborted before committing: nothing reached the remote, no merge in progress.
     expect(git(remote, 'rev-parse', unitBranch)).toBe(unitHead);
     expect(
-      spawnSync('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: target }).status,
+      spawnSync('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: target, env }).status,
     ).not.toBe(0);
   });
 
