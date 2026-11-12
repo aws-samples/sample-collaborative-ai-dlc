@@ -61,7 +61,7 @@ describe('projectsService v2 create/update payloads', () => {
       { userId: 'u1', role: 'owner' },
       { userId: 'u2', role: 'member' },
     ]);
-    expect(get).toHaveBeenNthCalledWith(1, '/projects/p1/members');
-    expect(get).toHaveBeenNthCalledWith(2, '/projects/p1/members?nextToken=next%20page');
+    expect(get).toHaveBeenNthCalledWith(1, '/projects/p1/members?limit=50');
+    expect(get).toHaveBeenNthCalledWith(2, '/projects/p1/members?limit=50&nextToken=next%20page');
   });
 });

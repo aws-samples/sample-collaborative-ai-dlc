@@ -1098,7 +1098,7 @@ describe('DELETE /projects/:id', () => {
     expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
   });
 
-  it('restores the project when final owner membership cleanup fails', async () => {
+  it('finishes membership cleanup on retry after the graph project was removed', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub, { name: 'Retry final cleanup' });
     ddbMock.on(DeleteCommand).rejectsOnce(new Error('membership delete failed'));
@@ -1110,14 +1110,21 @@ describe('DELETE /projects/:id', () => {
     });
 
     expect(res.statusCode).toBe(500);
-    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
     const fetched = await handler({
       httpMethod: 'GET',
       pathParameters: { projectId: id },
       ...claims(sub),
     });
-    expect(fetched.statusCode).toBe(200);
-    expect(JSON.parse(fetched.body).name).toBe('Retry final cleanup');
+    expect(fetched.statusCode).toBe(404);
+
+    const retried = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(retried.statusCode).toBe(204);
+    expect(membershipItems.has(`SPACE#${id}|MEMBER#${sub}`)).toBe(false);
   });
 
   it('returns 403 when the caller is not the owner', async () => {

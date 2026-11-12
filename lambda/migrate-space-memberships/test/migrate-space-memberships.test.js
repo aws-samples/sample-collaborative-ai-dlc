@@ -22,7 +22,7 @@ describe('membership migration', () => {
     );
   });
 
-  it('copies and verifies each source membership', async () => {
+  it('copies each source membership once', async () => {
     const client = {
       send: vi.fn(async (command) => {
         if (command instanceof TransactWriteCommand) return {};

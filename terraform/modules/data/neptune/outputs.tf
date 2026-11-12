@@ -18,6 +18,11 @@ output "cluster_endpoint" {
   value       = aws_neptune_cluster.main.endpoint
 }
 
+output "cluster_instance_id" {
+  description = "Neptune cluster instance identifier; consumers can depend on this before connecting"
+  value       = aws_neptune_cluster_instance.main.id
+}
+
 output "cluster_reader_endpoint" {
   description = "Neptune cluster reader endpoint"
   value       = aws_neptune_cluster.main.reader_endpoint

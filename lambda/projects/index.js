@@ -82,19 +82,6 @@ const sessionCleanupStore = createSessionCleanupStore({
 });
 const store = createProcessStore({ ddb });
 
-const restoreProjectVertex = async (g, snapshot) => {
-  const entries =
-    snapshot instanceof Map ? [...snapshot.entries()] : Object.entries(snapshot || {});
-  let restore = g.addV('Project');
-  for (const [key, rawValue] of entries) {
-    const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
-    if (value !== undefined && value !== null) {
-      restore = restore.property(cardinality.single, key, value);
-    }
-  }
-  await restore.next();
-};
-
 // Structured logger (Powertools). serviceName defaults to 'projects' and is
 // overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
 const logger = new Logger({ persistentKeys: { component: 'projects' } });
@@ -2034,13 +2021,13 @@ export const handler = async (event, context) => {
         // and the delete is simply retryable.
         {
           const actor = userEmail || userId;
-          const projectSnapshotResult = await g
-            .V()
-            .has('Project', 'id', projectId)
-            .valueMap()
-            .next();
-          if (projectSnapshotResult.done) return response(404, { error: 'Project not found' });
-          const projectSnapshot = projectSnapshotResult.value;
+          const projectExists = await g.V().has('Project', 'id', projectId).hasNext();
+          if (!projectExists) {
+            await deleteSpaceMemberships(ddb, projectId, {
+              preserveUserId: userId,
+            });
+            return response(204, {});
+          }
           const legacySprintIds = await g
             .V()
             .has('Project', 'id', projectId)
@@ -2140,26 +2127,14 @@ export const handler = async (event, context) => {
             .drop()
             .next();
 
-          // Remove every other membership while the Project and deleting
-          // owner's membership still exist. If cleanup fails, the normal UI
-          // continues to list the space and the owner can retry.
+          // Drop the graph project after all other cleanup. Membership deletion
+          // keeps the requesting Owner until last, so any failure remains
+          // authorized for an idempotent direct retry even when the graph
+          // vertex is already gone.
+          await g.V().has('Project', 'id', projectId).drop().next();
           await deleteSpaceMemberships(ddb, projectId, {
             preserveUserId: userId,
-            deletePreserved: false,
           });
-
-          // Drop the graph project only after the retryable membership cleanup
-          // has succeeded. If removing the preserved owner fails, restore the
-          // Project vertex so the dashboard and normal UI can retry deletion.
-          await g.V().has('Project', 'id', projectId).drop().next();
-          try {
-            await deleteSpaceMemberships(ddb, projectId, {
-              preserveUserId: userId,
-            });
-          } catch (error) {
-            await restoreProjectVertex(g, projectSnapshot);
-            throw error;
-          }
           logger.info('Project deleted', {
             projectId,
             actor,

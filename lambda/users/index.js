@@ -78,8 +78,18 @@ export const handler = async (event, context) => {
         if (!role) return response(403, { error: 'Access denied' });
 
         if (!(await projectExists())) return response(404, { error: 'Project not found' });
+        const query = event.queryStringParameters || {};
+        const paginationRequested = query.nextToken !== undefined || query.limit !== undefined;
+        const requestedLimit = query.limit === undefined ? undefined : Number(query.limit);
+        if (
+          requestedLimit !== undefined &&
+          (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50)
+        ) {
+          return response(400, { error: 'limit must be an integer between 1 and 50' });
+        }
         const page = await listSpaceMembers(ddb, projectId, {
-          token: event.queryStringParameters?.nextToken,
+          token: query.nextToken,
+          limit: requestedLimit,
         });
         const members = await Promise.all(
           page.items.map(async (membership) => {
@@ -92,7 +102,10 @@ export const handler = async (event, context) => {
             };
           }),
         );
-        return response(200, { members, nextToken: page.nextToken });
+        return response(
+          200,
+          paginationRequested ? { members, nextToken: page.nextToken } : members,
+        );
       }
 
       case 'POST': {
@@ -199,6 +212,9 @@ export const handler = async (event, context) => {
     }
   } catch (err) {
     if (err?.code === 'LAST_OWNER') return response(409, { error: err.message });
+    if (err?.code === 'INVALID_CONTINUATION_TOKEN') {
+      return response(400, { error: err.message });
+    }
     logger.error('Unhandled error', err);
     return response(500, { error: 'Internal server error' });
   } finally {

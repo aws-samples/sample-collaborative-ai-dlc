@@ -97,25 +97,26 @@ test('all DynamoDB tables support CMK encryption and durable tables are recovera
   );
 });
 
-test('membership migration gates DynamoDB-only readers and cleans graph edges afterward', () => {
+test('membership migration waits for storage, encryption access, and the Neptune instance', () => {
   const lambda = read('terraform/modules/api/lambda/main.tf');
   const apiAgents = read('terraform/modules/api/agents.tf');
   const rootMain = read('terraform/main.tf');
+  const neptuneOutputs = read('terraform/modules/data/neptune/outputs.tf');
   assert.match(lambda, /module "membership_migration_lambda"/);
   assert.match(
     lambda,
-    /resource "aws_lambda_invocation" "migrate_space_memberships"[\s\S]*?action = "migrate"/,
+    /resource "aws_lambda_invocation" "migrate_space_memberships"[\s\S]*?action = "migrate"[\s\S]*?module\.dynamodb_kms_runtime_access[\s\S]*?terraform_data\.neptune_instance_ready/,
   );
   assert.match(
     lambda,
-    /membership_env = \{[\s\S]*?ACCESS_TABLE[\s\S]*?AUDIT_TABLE[\s\S]*?MEMBERSHIP_MIGRATION_RESULT = aws_lambda_invocation\.migrate_space_memberships\.result/,
+    /resource "terraform_data" "neptune_instance_ready"[\s\S]*?var\.neptune_cluster_instance_id/,
   );
+  assert.match(neptuneOutputs, /output "cluster_instance_id"/);
+  assert.match(rootMain, /neptune_cluster_instance_id = module\.neptune\.cluster_instance_id/);
   assert.match(apiAgents, /ACCESS_TABLE\s+= var\.access_table_name/);
-  assert.match(apiAgents, /MEMBERSHIP_MIGRATION_RESULT\s+= var\.membership_migration_result/);
-  assert.match(
-    rootMain,
-    /resource "aws_lambda_invocation" "cleanup_neptune_memberships"[\s\S]*?action = "cleanup"[\s\S]*?depends_on = \[module\.lambda, module\.api\]/,
-  );
+  assert.doesNotMatch(lambda, /MEMBERSHIP_MIGRATION_RESULT/);
+  assert.doesNotMatch(apiAgents, /MEMBERSHIP_MIGRATION_RESULT/);
+  assert.doesNotMatch(rootMain, /cleanup_neptune_memberships/);
 });
 
 test('Neptune and production S3 resources resist accidental deletion', () => {

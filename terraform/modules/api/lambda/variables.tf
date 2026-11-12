@@ -64,6 +64,11 @@ variable "neptune_endpoint" {
   type        = string
 }
 
+variable "neptune_cluster_instance_id" {
+  description = "Neptune cluster instance identifier used to order the membership migration"
+  type        = string
+}
+
 
 variable "neptune_cluster_resource_id" {
   description = "Neptune cluster resource ID for IAM auth"

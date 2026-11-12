@@ -221,7 +221,9 @@ export const projectsService = {
     const members: Member[] = [];
     let nextToken: string | undefined;
     do {
-      const query = nextToken ? `?nextToken=${encodeURIComponent(nextToken)}` : '';
+      const query = nextToken
+        ? `?limit=50&nextToken=${encodeURIComponent(nextToken)}`
+        : '?limit=50';
       const response = await api.get<
         | (Omit<Member, 'role'> & { role: LegacyProjectRole })[]
         | {

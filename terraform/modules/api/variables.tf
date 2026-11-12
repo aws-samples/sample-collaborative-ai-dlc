@@ -197,11 +197,6 @@ variable "access_table_name" {
   type        = string
 }
 
-variable "membership_migration_result" {
-  description = "Successful membership migration result used to order DynamoDB-only consumers"
-  type        = string
-}
-
 variable "agents_lambda_role_arn" {
   description = "ARN of the IAM role dedicated to the agents Lambda (agents-orchestrator). This role is the most privileged Lambda role (Neptune + multiple DDB tables + SSM agent-settings + AgentCore invoke) and is intentionally isolated from the other REST-API Lambdas."
   type        = string

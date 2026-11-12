@@ -93,16 +93,6 @@ const migrateMemberships = async ({ client, sources, now = new Date().toISOStrin
     if (result === 'copied') copied += 1;
     else preserved += 1;
   }
-  for (const source of sources) {
-    const result = await client.send(
-      new GetCommand({
-        TableName: process.env.ACCESS_TABLE,
-        Key: { pk: `SPACE#${source.spaceId}`, sk: `MEMBER#${source.userId}` },
-        ConsistentRead: true,
-      }),
-    );
-    if (!result.Item) throw new Error(`Membership verification failed for ${source.spaceId}`);
-  }
   return { sourceCount: sources.length, copied, preserved };
 };
 
@@ -144,15 +134,10 @@ const readSources = async (g) => {
   });
 };
 
-export const handler = async (event = {}) => {
+export const handler = async () => {
   const conn = await getConnection();
   try {
     const g = traversal().withRemote(conn);
-    if (event.action === 'cleanup') {
-      const count = await g.E().hasLabel('HAS_MEMBER').count().next();
-      await g.E().hasLabel('HAS_MEMBER').drop().next();
-      return { cleaned: Number(count.value) };
-    }
     const sources = await readSources(g);
     if (sources.length === 0) return { sourceCount: 0, copied: 0, preserved: 0 };
     return migrateMemberships({ client: ddb, sources });
