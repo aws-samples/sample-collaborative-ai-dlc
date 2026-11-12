@@ -59,6 +59,7 @@ describe('agent command registry', () => {
           projectId: 'p',
           intentId: 'i',
           executionId: 'e',
+          engineData: true,
         },
       ),
     ).toEqual({ mode: 'execution', projectId: 'p', intentId: 'i', executionId: 'e' });
