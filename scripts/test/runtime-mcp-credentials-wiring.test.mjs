@@ -27,7 +27,7 @@ test('the enforcing Lambdas receive the profile only when it is gateway_only', (
   ]) {
     assert.match(
       block(lambdas, 'module', name),
-      /environment_variables = merge\([\s\S]*local\.runtime_mcp_policy_env\)/,
+      /environment_variables = merge\([\s\S]*local\.runtime_mcp_policy_env,?\s*\)/,
       `${name} must receive RUNTIME_MCP_CREDENTIALS`,
     );
   }
