@@ -511,6 +511,85 @@ describe('sparse checkout', () => {
     expect(await exists(path.join(target, 'assets'))).toBe(false);
   });
 
+  // Runs real Git except for the commands `fail` answers itself.
+  const failing = (fail) => (command, args, options) =>
+    fail(args.slice(HOOKS_DISABLED_ARGS.length)) ?? runner(command, args, options);
+
+  it('keeps --no-checkout on the shallow retry after the full clone ran out of storage', async () => {
+    let clones = 0;
+    const result = await checkoutRepo({
+      ...inputs(),
+      sparseDirectories: ['services/api'],
+      runner: failing((args) =>
+        args[0] === 'clone' && ++clones === 1
+          ? { code: 128, stderr: 'fatal: write error: No space left on device' }
+          : undefined,
+      ),
+    });
+    expect(result).toMatchObject({ cloned: true, branchOk: true });
+    // The refused full clone never reached the shared recorder; the retry did.
+    expect(clones).toBe(2);
+    expect(calls.filter((args) => args[0] === 'clone')).toEqual([
+      ['clone', '--depth', '1', '--no-single-branch', '--no-checkout', expect.any(String), target],
+    ]);
+    expect(await exists(path.join(target, 'services/api/index.js'))).toBe(true);
+    expect(await exists(path.join(target, 'assets'))).toBe(false);
+  });
+
+  it('removes the clone when HEAD cannot be populated without a requested branch', async () => {
+    const result = await checkoutRepo({
+      ...inputs(),
+      branch: null,
+      sparseDirectories: ['services/api'],
+      runner: failing((args) => (args.join(' ') === 'checkout HEAD' ? { code: 1 } : undefined)),
+    });
+    expect(result).toMatchObject({
+      cloned: false,
+      branchOk: false,
+      error: 'sparse_checkout_failed',
+    });
+    expect(await exists(target)).toBe(false);
+  });
+
+  it('keeps a warm checkout and reports the failure when its selection cannot be set', async () => {
+    expect(
+      (await checkoutRepo({ ...inputs(), sparseDirectories: ['services/api'] })).branchOk,
+    ).toBe(true);
+    await writeFile(path.join(target, 'services/api/index.js'), 'uncommitted');
+    const result = await checkoutRepo({
+      ...inputs(),
+      sparseDirectories: ['services/web'],
+      runner: failing((args) => (args[0] === 'sparse-checkout' ? { code: 1 } : undefined)),
+    });
+    expect(result).toEqual({
+      repo: 'owner/repo',
+      targetDir: target,
+      cloned: true,
+      branchOk: false,
+      error: 'sparse_checkout_failed',
+    });
+    expect(await readFile(path.join(target, 'services/api/index.js'), 'utf8')).toBe('uncommitted');
+  });
+
+  it('checks out an empty repository with a selection, with and without a branch', async () => {
+    await rm(source, { recursive: true, force: true });
+    await mkdir(source);
+    git(source, 'init', '-b', 'main');
+    const unbranched = await checkoutRepo({
+      ...inputs(),
+      branch: null,
+      sparseDirectories: ['services/api'],
+    });
+    expect(unbranched).toMatchObject({ cloned: true, branchOk: true });
+    // Nothing to populate: HEAD is unborn.
+    expect(calls.some((args) => args.join(' ') === 'checkout HEAD')).toBe(false);
+    await rm(target, { recursive: true, force: true });
+    const branched = await checkoutRepo({ ...inputs(), sparseDirectories: ['services/api'] });
+    expect(branched).toMatchObject({ cloned: true, branchOk: true });
+    expect(git(target, 'symbolic-ref', '--short', 'HEAD')).toBe('aidlc/test');
+    expect(git(target, 'config', '--bool', 'core.sparseCheckoutCone')).toBe('true');
+  });
+
   it('applies per-repo selections and restores them after mount loss', async () => {
     const options = {
       ...inputs(),
