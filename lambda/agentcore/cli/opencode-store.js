@@ -67,14 +67,39 @@ export const persistOpenCodeStore = async ({
   }
 };
 
+export const OPENCODE_STORE_WAIT_EXPIRED = 'OPENCODE_STORE_WAIT_EXPIRED';
+
+// Whether `work` settles by `until` (epoch ms; null waits forever).
+const settlesBy = (work, until, now) => {
+  const settled = work.catch(() => {}).then(() => true);
+  if (until === null) return settled;
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, until - now()));
+  });
+  return Promise.race([settled, expired])
+    .then((arrived) => arrived && now() <= until)
+    .finally(() => clearTimeout(timer));
+};
+
 // Serialize the complete restore → execution → persist interval for a shared
 // durable store. `finally` persistence runs for success, non-zero exits, and
-// thrown spawn failures.
+// thrown spawn failures. A caller that must start by `waitUntil` gives up its
+// turn instead of running late, and rejects with OPENCODE_STORE_WAIT_EXPIRED —
+// also when its restore is still running then; the store stays locked until
+// that restore settles, and `defer` receives the remaining work.
+// A caller that needs its result by `settleBy` gets it then even while the
+// persist still runs: the store stays locked until the persist ends, and
+// `defer` receives that remaining work so the caller can wait for it later.
 export const withOpenCodeStore = async ({
   env = process.env,
   operation,
   restore = restoreOpenCodeStore,
   persist = persistOpenCodeStore,
+  waitUntil = null,
+  settleBy = null,
+  defer = () => {},
+  now = Date.now,
 } = {}) => {
   const store = resolveOpenCodeStore(env);
   const key = store?.mountDir ?? '__unconfigured__';
@@ -85,15 +110,47 @@ export const withOpenCodeStore = async ({
   });
   const tail = previous.catch(() => {}).then(() => turn);
   locks.set(key, tail);
-  await previous.catch(() => {});
+  if (!(await settlesBy(previous, waitUntil, now))) {
+    // The chain still waits for `previous`, so later callers never overlap the
+    // current holder; the entry is dropped once that holder is done.
+    release();
+    void tail.then(() => {
+      if (locks.get(key) === tail) locks.delete(key);
+    });
+    throw Object.assign(new Error('OpenCode store was not free in time'), {
+      code: OPENCODE_STORE_WAIT_EXPIRED,
+    });
+  }
+  const restored = Promise.resolve()
+    .then(() => restore({ env }))
+    .catch(() => false);
+  if (!(await settlesBy(restored, waitUntil, now))) {
+    // Nothing ran, so the durable store is still authoritative: skip the
+    // persist, which would copy a half-restored local store over it.
+    const settled = restored.then(() => {
+      release();
+      if (locks.get(key) === tail) locks.delete(key);
+    });
+    defer(settled);
+    throw Object.assign(new Error('OpenCode store was not restored in time'), {
+      code: OPENCODE_STORE_WAIT_EXPIRED,
+    });
+  }
+  let outcome;
   try {
-    await restore({ env }).catch(() => false);
-    return await operation();
-  } finally {
+    outcome = { value: await operation() };
+  } catch (error) {
+    outcome = { error };
+  }
+  const persisted = (async () => {
     await persist({ env }).catch(() => false);
     release();
     if (locks.get(key) === tail) locks.delete(key);
-  }
+  })();
+  if (await settlesBy(persisted, settleBy, now)) await persisted;
+  else defer(persisted);
+  if ('error' in outcome) throw outcome.error;
+  return outcome.value;
 };
 
 export const __test = { OPENCODE_SUBDIR, locks };

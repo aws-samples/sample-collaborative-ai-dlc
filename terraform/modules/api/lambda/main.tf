@@ -3159,7 +3159,7 @@ module "intents_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -3200,7 +3200,7 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }
+  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3530,7 +3530,13 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
+    },
+    var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    # Execution-scoped grants authorize engine-data calls only; without engine
+    # data the orchestrator signs stage and conflict grants alone.
+    var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
+    local.notification_event_env,
+  )
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
@@ -3576,10 +3582,12 @@ resource "aws_lambda_permission" "yjs_cleanup" {
 # Lambdas that start MCP-launching runtime commands sign the grant; nothing
 # else in the platform can.
 resource "aws_iam_role_policy" "gateway_grant_signers" {
-  for_each = var.enable_mcp_gateway ? {
+  for_each = merge(var.enable_mcp_gateway ? {
     v2_orchestrator = aws_iam_role.v2_orchestrator.id
     discussions     = aws_iam_role.discussions.id
-  } : {}
+    } : {}, var.enable_engine_data ? {
+    intents = aws_iam_role.intents.id
+  } : {})
 
   name = "sign-gateway-grants"
   role = each.value

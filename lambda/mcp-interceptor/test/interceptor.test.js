@@ -222,6 +222,22 @@ describe('MCP gateway interceptor — REQUEST', () => {
     expectDenied(output, Array.isArray(body) ? null : 7, reason);
   });
 
+  it('treats a REQUEST event with gatewayResponse: null as the request phase', async () => {
+    const { handler } = setup();
+    const body = callBody('aidlc___get_artifact');
+    const event = requestEvent(body, await trustedHeaders());
+    const output = await handler({ ...event, mcp: { ...event.mcp, gatewayResponse: null } });
+    expect(output.mcp.transformedGatewayResponse).toBeUndefined();
+    expect(output.mcp.transformedGatewayRequest.body).toBe(body);
+  });
+
+  it('denies a REQUEST event with gatewayResponse: null and no grant', async () => {
+    const { handler } = setup();
+    const event = requestEvent(callBody('aidlc___get_artifact'), {});
+    const output = await handler({ ...event, mcp: { ...event.mcp, gatewayResponse: null } });
+    expectDenied(output, 7, 'missing_grant');
+  });
+
   it('denies a call for a stage that is no longer active', async () => {
     const { handler } = setup({ stageState: 'SUCCEEDED' });
     const output = await handler(

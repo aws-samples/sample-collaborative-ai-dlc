@@ -28,7 +28,10 @@ import {
 import { parseOpenCodeJsonl } from './opencode-parser.js';
 import { parseCodexJsonl } from './codex-parser.js';
 import { parseKiroJsonl } from './kiro-parser.js';
-import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
+import {
+  OPENCODE_STORE_WAIT_EXPIRED,
+  withOpenCodeStore as defaultWithOpenCodeStore,
+} from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
 import { claudeUsageMetrics } from './claude-usage.js';
@@ -82,7 +85,12 @@ const sampleOf = (raw = '') => String(raw ?? '').slice(0, SAMPLE_BYTES);
 // conversation lands in its own cwd group and never collides with the
 // workspace session run-stage resumes by cwd. `timeoutMs` bounds the call —
 // a hung CLI must never wedge the derive command. Failure results carry a
-// bounded raw `sample` for field diagnosis.
+// bounded raw `sample` for field diagnosis. `startBy` (epoch ms) is the latest
+// moment the CLI may start, checked after any wait for and restore of the
+// OpenCode store; past it the call fails with `deadline_exceeded` instead of
+// running late. `finishBy` (epoch ms) is when the caller needs the result: it
+// caps the CLI timeout, and an OpenCode store persist still running then is
+// handed to `defer` for the caller to await instead of delaying the result.
 export const DEFAULT_ONE_SHOT_TIMEOUT_MS = 120_000;
 
 export const runOneShotPrompt = async ({
@@ -97,6 +105,10 @@ export const runOneShotPrompt = async ({
   opencodeConfigContent = null,
   codexHome = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
+  startBy = null,
+  finishBy = null,
+  defer = () => {},
+  now = Date.now,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
   persistKiroStore = defaultPersistKiroStore,
@@ -140,24 +152,51 @@ export const runOneShotPrompt = async ({
   // one-shot session itself rides along; its distinct cwd keeps it out of the
   // workspace session list run-stage checks before a resume.
   if (cli === 'kiro') await restoreKiroStore({ env }).catch(() => false);
-  const execute = () =>
-    captureChild({
+  // Null when the CLI can no longer start and finish inside the deadlines.
+  const execute = async () => {
+    const at = now();
+    const budgetMs = finishBy === null ? timeoutMs : Math.min(timeoutMs, finishBy - at);
+    if ((startBy !== null && at > startBy) || budgetMs <= 0) return null;
+    return captureChild({
       command: invocation.command,
       args: invocation.args,
       env: { ...invocation.env, ...driver.envForAuth(env) },
       cwd,
       prompt: invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      timeoutMs,
+      timeoutMs: budgetMs,
       ...(spawnFn ? { spawnFn } : {}),
     });
-  let capture;
+  };
+  let capture = null;
   try {
     capture =
-      cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
+      cli === 'opencode'
+        ? await withOpenCodeStore({
+            env,
+            operation: execute,
+            waitUntil: startBy,
+            settleBy: finishBy,
+            defer,
+            now,
+          })
+        : await execute();
+  } catch (error) {
+    if (error?.code !== OPENCODE_STORE_WAIT_EXPIRED) throw error;
   } finally {
     if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
     if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+  }
+  if (!capture) {
+    return {
+      ok: false,
+      reason: 'deadline_exceeded',
+      text: '',
+      cli,
+      model: model ?? null,
+      exitCode: null,
+      metrics: null,
+    };
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
   const parsers = {

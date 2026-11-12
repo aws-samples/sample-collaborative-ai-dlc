@@ -16,11 +16,7 @@
 //              the grant: the stage, lane and leg it acts in are all granted.
 // The resolved release policy travels in its own header, bound to the signed
 // digest, so the context stays far below the Gateway's per-header limit.
-import {
-  GATEWAY_GRANT_MODES,
-  gatewayPolicyDigest,
-  normalizeGatewayScope,
-} from '../gateway-grant.js';
+import { MCP_GRANT_MODES, gatewayPolicyDigest, normalizeGatewayScope } from '../gateway-grant.js';
 import { scopeFromGrantAndSession } from './gateway-session.js';
 
 export const CONTEXT_HEADER = 'x-aidlc-context';
@@ -160,7 +156,7 @@ const validatePayload = (payload) => {
   if (!exactKeys(asserted, ASSERTED_FIELDS)) throw invalid();
   if (typeof granted.grantId !== 'string' || !granted.grantId) throw invalid();
   if (!Number.isInteger(granted.expiresAt) || granted.expiresAt <= 0) throw invalid();
-  if (!GATEWAY_GRANT_MODES.includes(granted.mode)) throw invalid();
+  if (!MCP_GRANT_MODES.includes(granted.mode)) throw invalid();
   try {
     normalizeGatewayScope(granted);
   } catch {

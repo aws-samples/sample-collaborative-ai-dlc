@@ -83,10 +83,20 @@ import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
-import { runWithGatewayGrant } from './mcp/gateway-context.js';
+import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
 import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
 import { readSandboxSettings } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
+import {
+  blobAccessFor,
+  createRemoteGraphAccess,
+  createRemoteProcessStore,
+  directGraphTripwire,
+  misconfiguredGraphAccess,
+  misconfiguredProcessStore,
+} from './engine-data-client.js';
+import { localEngineGraph } from './engine-graph.js';
+import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -107,9 +117,9 @@ export const createBusyTracker = () => {
 };
 
 export const createRecordLearningHandler =
-  ({ recordLearning, store, openGraph, broadcast }) =>
+  ({ recordLearning, store, openGraph, openEngineGraph, broadcast }) =>
   (payload) =>
-    recordLearning(payload, { store, openGraph, broadcast });
+    recordLearning(payload, { store, openGraph, openEngineGraph, broadcast });
 
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
@@ -137,27 +147,29 @@ export const dispatchInvocation = async ({
   busy?.enter();
   let credentialSession = null;
   try {
-    const context =
-      prepareInvocation && definition.agentAuth
-        ? await prepareInvocation(payload, definition.agentAuth)
-        : {};
-    const handlerPayload = { ...payload };
-    delete handlerPayload.agentCredentialGrant;
-    delete handlerPayload.gatewayGrant;
-    credentialSession = context.credentialSession ?? null;
-    delete handlerPayload.sandbox;
-    delete handlerPayload.agentSandbox;
-    const operation = () =>
-      runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
+    // Credential preparation and the sandbox policy both read the execution's
+    // META, so they run under the invocation's grant like the handler does.
+    const result = await runWithGatewayGrant(payload.gatewayGrant ?? null, async () => {
+      const context =
+        prepareInvocation && definition.agentAuth
+          ? await prepareInvocation(payload, definition.agentAuth)
+          : {};
+      const handlerPayload = { ...payload };
+      delete handlerPayload.agentCredentialGrant;
+      delete handlerPayload.gatewayGrant;
+      credentialSession = context.credentialSession ?? null;
+      delete handlerPayload.sandbox;
+      delete handlerPayload.agentSandbox;
+      const operation = () =>
         credentialSession
           ? credentialSession.run(() => handler(handlerPayload, context))
-          : handler(handlerPayload, context),
-      );
-    const sandbox =
-      prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
-        ? await prepareSandbox(payload)
-        : null;
-    const result = sandbox ? await withSandbox(sandbox, operation) : await operation();
+          : handler(handlerPayload, context);
+      const sandbox =
+        prepareSandbox && (definition.agentAuth || command === 'verify-mcp')
+          ? await prepareSandbox(payload)
+          : null;
+      return sandbox ? withSandbox(sandbox, operation) : operation();
+    });
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -244,12 +256,87 @@ export const createServer = ({
   });
 };
 
+// With engine-data enabled the engine's process state goes through the
+// engine-data Lambda under each invocation's grant. That is only coherent when
+// the built-in MCP also runs remotely; otherwise the store fails closed.
+export const processStoreFor = ({
+  env = process.env,
+  ddb,
+  createLocal = createProcessStore,
+  createRemote = createRemoteProcessStore,
+  misconfigured = misconfiguredProcessStore,
+} = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) return createLocal({ ddb, tableName: env.V2_PROCESS_TABLE });
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; process store disabled');
+    return misconfigured('Engine data requires the MCP Gateway');
+  }
+  return createRemote({ grant: currentGatewayGrant });
+};
+
+// The engine's Neptune access, chosen once with the process store. With engine
+// data enabled every engine graph operation goes to engine-data under the
+// invocation's grant and the direct opener handed to commands is a tripwire, so
+// a path that still opens its own connection fails rather than using the
+// runtime role. `engineData` lets commands refuse work no grant can authorize.
+export const graphAccessFor = ({
+  env = process.env,
+  openGraph,
+  createLocal = localEngineGraph,
+  createRemote = createRemoteGraphAccess,
+} = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) {
+    return { engineData: false, openGraph, openEngineGraph: createLocal({ openGraph }) };
+  }
+  const tripwire = directGraphTripwire();
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; graph access disabled');
+    return {
+      engineData: true,
+      openGraph: tripwire,
+      openEngineGraph: misconfiguredGraphAccess('Engine data requires the MCP Gateway'),
+    };
+  }
+  return {
+    engineData: true,
+    openGraph: tripwire,
+    openEngineGraph: createRemote({ grant: currentGatewayGrant }),
+  };
+};
+
+// The checkpoint's custom-rule pinning as a semantic operation. With engine
+// data enabled engine-data pins the rules the execution META lists, under the
+// invocation's grant; the runtime S3 client is not used.
+export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) {
+    return ({ rules }) => pinCustomRuleVersions({ s3, bucket: env.ARTIFACTS_BUCKET, rules });
+  }
+  const access = blobs ?? blobAccessFor({ env });
+  return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
+};
+
+// The invocation's SRT policy: the execution's captured policy, or the current
+// settings for drafts and standalone operations.
+export const createSandboxPreparation =
+  ({ store, readSettings }) =>
+  async (payload) => {
+    const sandbox = await resolveInvocationSandbox({ payload, store, readSettings });
+    if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
+    logger.info('invocation sandbox configuration', {
+      command: payload.command,
+      executionId: payload.executionId || payload.intentId,
+      sandboxEnabled: sandbox.enabled,
+      sandboxVersion: sandbox.version ?? null,
+    });
+    return sandbox;
+  };
+
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
   const {
     ddb,
     s3,
-    openGraph,
+    openGraph: openDirectGraph,
     broadcastToIntent,
     sendStageCallbackSuccess,
     sendStageCallbackHeartbeat,
@@ -276,8 +363,7 @@ const main = async () => {
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
-  const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
-    await import('./block-loader.js');
+  const { catalogAccessFor } = await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
@@ -285,7 +371,17 @@ const main = async () => {
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
-  const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
+  const store = processStoreFor({ env: process.env, ddb });
+  const { engineData, openGraph, openEngineGraph } = graphAccessFor({
+    env: process.env,
+    openGraph: openDirectGraph,
+  });
+  const graphDeps = { openGraph, openEngineGraph };
+  if (engineData && !process.env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; catalog access disabled');
+  }
+  const catalog = catalogAccessFor({ env: process.env });
+  const customRulePins = customRulePinsFor({ env: process.env, s3 });
   const installedClis = await discoverInstalledClis();
   const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
@@ -331,20 +427,20 @@ const main = async () => {
   const broadcast = (payload) => broadcastToIntent(payload?.intentId, payload);
 
   const handlers = {
-    initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir, broadcast }),
+    initWs: (p) => initWs(p, { store, ...graphDeps, checkoutRepos, workspaceDir, broadcast }),
     runStage: (p, context) =>
       runStage(
         { ...p, workspaceDir },
         {
           store,
-          loadLibrary,
-          loadBlockBody,
-          loadBlockScript,
-          loadConductor,
+          loadLibrary: catalog.loadLibrary,
+          loadBlockBody: catalog.loadBlockBody,
+          loadBlockScript: catalog.loadBlockScript,
+          loadConductor: catalog.loadConductor,
           materializeStage,
           renderRulesDoc,
           mcpEntry,
-          openGraph,
+          ...graphDeps,
           availableClis: context.availableClis,
           credentialBindings: context.credentialBindings,
           missingCredentialBindings: context.missingCredentialBindings,
@@ -352,7 +448,7 @@ const main = async () => {
           env: context.env,
         },
       ),
-    inspect: (p) => inspect(p, { openGraph }),
+    inspect: (p) => inspect(p, { ...graphDeps, engineData }),
     capabilities: (p, context) =>
       capabilities(p, {
         env: context.env,
@@ -366,11 +462,11 @@ const main = async () => {
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
-    promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
+    promoteUnits: (p) => promoteUnits(p, { store, ...graphDeps, broadcast }),
     deriveArtifacts: (p, context) =>
       deriveArtifacts(p, {
         store,
-        openGraph,
+        ...graphDeps,
         broadcast,
         availableClis: context.availableClis,
         env: context.env,
@@ -378,17 +474,21 @@ const main = async () => {
     createWorkflowCheckpoint: (p) =>
       createWorkflowCheckpoint(p, {
         store,
-        openGraph,
-        s3,
-        bucket: process.env.ARTIFACTS_BUCKET,
+        ...graphDeps,
+        pinCustomRuleVersions: customRulePins,
       }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
-    recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
+    recordPr: (p) => recordPr(p, { store, ...graphDeps, broadcast }),
     // Learnings ritual: the human's gate answer becomes a durable
     // project learning here, because the orchestrator has no Neptune access.
-    recordLearning: createRecordLearningHandler({ recordLearning, store, openGraph, broadcast }),
-    recordUnitPr: (p) => recordUnitPr(p, { store, openGraph, broadcast }),
+    recordLearning: createRecordLearningHandler({
+      recordLearning,
+      store,
+      ...graphDeps,
+      broadcast,
+    }),
+    recordUnitPr: (p) => recordUnitPr(p, { store, ...graphDeps, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
@@ -440,7 +540,8 @@ const main = async () => {
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({
-      openGraph,
+      ...graphDeps,
+      engineData,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -455,8 +556,12 @@ const main = async () => {
   const composeJobs = new Map();
   handlers.composePlanStart = (p, context) =>
     createComposePlanStart({
-      openGraph,
+      ...graphDeps,
       store,
+      loadLibraryFn: catalog.loadLibrary,
+      loadBlockBodyFn: catalog.loadBlockBody,
+      listMergedBlocksFn: catalog.listMergedBlocks,
+      listReleaseBlocksFn: catalog.listReleaseBlocks,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
@@ -469,7 +574,7 @@ const main = async () => {
   const quorumPlanJobs = new Map();
   handlers.quorumEditPlanStart = (p, context) =>
     createQuorumEditPlanStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -482,7 +587,7 @@ const main = async () => {
   const quorumApplyJobs = new Map();
   handlers.quorumEditApplyStart = (p, context) =>
     createQuorumEditApplyStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -496,7 +601,7 @@ const main = async () => {
   // Ops remediation: reconstruct lost structured blocks (see command header).
   handlers.repairStructure = (p, context) =>
     repairStructure(p, {
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -516,21 +621,10 @@ const main = async () => {
     handlers,
     busy,
     prepareInvocation: invocationContext,
-    prepareSandbox: async (payload) => {
-      const sandbox = await resolveInvocationSandbox({
-        payload,
-        store,
-        readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
-      });
-      if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
-      logger.info('invocation sandbox configuration', {
-        command: payload.command,
-        executionId: payload.executionId || payload.intentId,
-        sandboxEnabled: sandbox.enabled,
-        sandboxVersion: sandbox.version ?? null,
-      });
-      return sandbox;
-    },
+    prepareSandbox: createSandboxPreparation({
+      store,
+      readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+    }),
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
 };

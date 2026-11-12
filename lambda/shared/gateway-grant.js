@@ -15,13 +15,18 @@
 // a local P-256 key through the same seam.
 import { createHash, createPublicKey, randomUUID, verify as cryptoVerify } from 'node:crypto';
 import { canonicalJson } from './workflow-checkpoint.js';
+import { GRANT_SCOPES, commandDefinition } from './agent-command-registry.js';
 
 export const GATEWAY_GRANT_ISSUER = 'aidlc-control-plane';
 export const GATEWAY_GRANT_AUDIENCE = 'aidlc-gateway';
 // Bounded by the AgentCore runtime's 8h maximum session lifetime. Revocation is
 // per call (the verifier re-checks execution/stage state), not expiry.
 export const GATEWAY_GRANT_MAX_TTL_SECONDS = 8 * 60 * 60;
-export const GATEWAY_GRANT_MODES = Object.freeze(['stage', 'discussion', 'conflict']);
+// `execution` authorizes engine data access for one execution and no stage; it
+// is never accepted by the built-in MCP (interceptor or tools Lambda).
+export const GATEWAY_GRANT_MODES = Object.freeze(['stage', 'discussion', 'conflict', 'execution']);
+// The grant modes that may open a built-in MCP tool session.
+export const MCP_GRANT_MODES = Object.freeze(['stage', 'discussion', 'conflict']);
 // Discussion assists have no execution/stage row to re-check per call, so their
 // grant must expire on its own, quickly.
 export const DISCUSSION_GRANT_TTL_SECONDS = 300;
@@ -78,7 +83,17 @@ export const normalizeGatewayScope = (input = {}) => {
   if (mode !== 'stage' && (scope.stageId || scope.stageCallbackId || scope.orchestratorRunId)) {
     throw invalid();
   }
-  if (mode === 'discussion' && (scope.unitSlug || scope.sectionIndex !== null)) throw invalid();
+  // Discussion and execution grants span the whole intent/execution, so a lane
+  // selector would only suggest a narrowing no verifier enforces.
+  if (
+    (mode === 'discussion' || mode === 'execution') &&
+    (scope.unitSlug || scope.sectionIndex !== null)
+  ) {
+    throw invalid();
+  }
+  // A conflict grant is one unit lane: the engine-data gateways bind its
+  // events, metrics and broadcasts to exactly that unit and section.
+  if (mode === 'conflict' && (!scope.unitSlug || scope.sectionIndex === null)) throw invalid();
   return scope;
 };
 
@@ -111,16 +126,18 @@ export const derToJose = (der) => {
   return Buffer.concat([readInt(), readInt()]);
 };
 
-// Runtime commands that start the built-in MCP, and the grant scope each needs.
+// The grant scope a runtime command needs, from its registry `grantScope`.
 // Identity comes from the caller's authoritative record; only the lane/stage
 // selectors the control plane itself put in the command are read from it.
+// Discussion grants are issued by the discussions Lambda, so they map to null
+// here like commands that need no grant. Execution grants only authorize
+// engine-data calls, so without engine data they map to null too.
 export const gatewayScopeForCommand = (
   payload,
-  { projectId, intentId, executionId, policy = null },
+  { projectId, intentId, executionId, policy = null, engineData = false },
 ) => {
-  switch (payload?.command) {
-    case 'run-stage':
-    case 'run-stage-start':
+  switch (commandDefinition(payload?.command)?.grantScope) {
+    case GRANT_SCOPES.STAGE:
       return {
         mode: 'stage',
         projectId,
@@ -133,7 +150,7 @@ export const gatewayScopeForCommand = (
         stageCallbackId: payload.stageCallbackId,
         orchestratorRunId: payload.orchestratorRunId,
       };
-    case 'resolve-conflict':
+    case GRANT_SCOPES.CONFLICT:
       return {
         mode: 'conflict',
         projectId,
@@ -142,10 +159,22 @@ export const gatewayScopeForCommand = (
         unitSlug: payload.unitSlug,
         sectionIndex: payload.sectionIndex,
       };
+    case GRANT_SCOPES.EXECUTION:
+      return engineData ? { mode: 'execution', projectId, intentId, executionId } : null;
     default:
       return null;
   }
 };
+
+// True when a stage grant's run is no longer the execution's: rewind,
+// recompose and lane repair replace META's orchestratorRunId, and a grant
+// signed for the replaced run must stop acting. Grants without a run
+// (execution, conflict, discussion) and META without one are not compared.
+export const isGatewayGrantRunReplaced = (grant, meta) =>
+  grant?.mode === 'stage' &&
+  Boolean(grant.orchestratorRunId) &&
+  Boolean(meta?.orchestratorRunId) &&
+  meta.orchestratorRunId !== grant.orchestratorRunId;
 
 export const issueGatewayGrant = async (
   scopeInput,
@@ -194,6 +223,18 @@ const parsePart = (part) => {
     return value;
   } catch {
     throw invalid();
+  }
+};
+
+// When the grant stops being accepted (epoch ms), for a holder scheduling its
+// own work around it; null when unreadable. Unverified on purpose: it never
+// authorizes anything, and every call is still verified by its receiver.
+export const gatewayGrantExpiresAt = (token) => {
+  try {
+    const { exp } = parsePart(String(token).split('.')[1] ?? '');
+    return Number.isInteger(exp) ? exp * 1000 : null;
+  } catch {
+    return null;
   }
 };
 

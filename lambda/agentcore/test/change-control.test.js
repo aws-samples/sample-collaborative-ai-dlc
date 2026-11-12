@@ -447,6 +447,70 @@ describe('runStage — change_control: relaxed', () => {
     });
   });
 
+  // The rehydrated engine-data error for a history past the Invoke cap.
+  const tooLarge = () =>
+    Object.assign(new Error('Store result is too large to return'), {
+      name: 'EngineStoreError',
+      code: 'response_too_large',
+    });
+
+  it('fails the stage when the event history is too large to read', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.listEvents = async () => {
+      throw tooLarge();
+    };
+    let spawned = false;
+    const res = await runStage(
+      args,
+      deps(store, {
+        scopeFm: { changeControl: 'relaxed' },
+        deps: {
+          spawnFn: () => {
+            spawned = true;
+            return {
+              on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+              stdin: { end() {} },
+            };
+          },
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'execution_history_too_large' });
+    expect(spawned).toBe(false);
+    expect(store.of('appendEvent').filter((e) => e.type === 'v2.change.accepted')).toEqual([]);
+    expect(store.of('updateStageState')).toContainEqual(
+      expect.objectContaining({ state: 'FAILED', runtimeError: 'execution_history_too_large' }),
+    );
+  });
+
+  it('fails the stage when the checkpoint ladder cannot read the event history', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    // The change-control dedup reads the history first; the history then grows
+    // past the cap before the ladder's read after the agent turn.
+    let reads = 0;
+    store.listEvents = async () => {
+      reads += 1;
+      if (reads > 1) throw tooLarge();
+      return [];
+    };
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
+    expect(reads).toBe(2);
+    expect(res).toMatchObject({ ok: false, reason: 'execution_history_too_large' });
+    expect(store.of('updateStageState')).toContainEqual(
+      expect.objectContaining({ state: 'FAILED', runtimeError: 'execution_history_too_large' }),
+    );
+  });
+
+  it('still treats an unreadable event history as empty when the read merely failed', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.listEvents = async () => {
+      throw new Error('throttled');
+    };
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(store.of('appendEvent').filter((e) => e.type === 'v2.change.accepted')).toHaveLength(1);
+  });
+
   it('records the change the first time it is seen', async () => {
     const store = harnessStore({ receipts: [APPROVAL] });
     await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));

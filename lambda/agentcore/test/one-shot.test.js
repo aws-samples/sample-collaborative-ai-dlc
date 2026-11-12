@@ -285,6 +285,92 @@ describe('runOneShotPrompt', () => {
     expect(withOpenCodeStore).toHaveBeenCalledOnce();
   });
 
+  it('fails with deadline_exceeded instead of starting after startBy', async () => {
+    const spawnFn = vi.fn(() => fakeChild({ stdout: 'never' }));
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['claude'],
+      startBy: 1_000,
+      now: () => 1_001,
+      spawnFn,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'claude' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('reports an OpenCode store wait past startBy as deadline_exceeded', async () => {
+    const spawnFn = vi.fn();
+    const withOpenCodeStore = vi.fn(async ({ waitUntil }) => {
+      expect(waitUntil).toBe(1_000);
+      throw Object.assign(new Error('busy'), { code: 'OPENCODE_STORE_WAIT_EXPIRED' });
+    });
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      startBy: 1_000,
+      spawnFn,
+      withOpenCodeStore,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'opencode' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('re-checks startBy after the OpenCode store restore, before spawning', async () => {
+    let clock = 0;
+    const spawnFn = vi.fn();
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      startBy: 1_000,
+      now: () => clock,
+      spawnFn,
+      withOpenCodeStore: async ({ operation }) => {
+        clock = 1_001; // the restore outlasted the start deadline
+        return operation();
+      },
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'opencode' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('caps the CLI timeout at finishBy and hands late store work to defer', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const hung = () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end: () => {} };
+        child.kill = () => {
+          child.emit('exit', null);
+          child.emit('close', null);
+        };
+        return child;
+      };
+      const pending = Promise.resolve('persisting');
+      const defer = vi.fn();
+      const out = runOneShotPrompt({
+        prompt: 'p',
+        availableClis: ['opencode'],
+        finishBy: 1_005_000,
+        defer,
+        makeDirectory: async () => {},
+        spawnFn: hung,
+        withOpenCodeStore: async ({ operation, settleBy, defer: handOff }) => {
+          expect(settleBy).toBe(1_005_000);
+          const capture = await operation();
+          handOff(pending);
+          return capture;
+        },
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(out).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+      expect(defer).toHaveBeenCalledWith(pending);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('runs Codex with CODEX_HOME, Bedrock bearer auth, and turn usage', async () => {
     let argv;
     let childEnv;

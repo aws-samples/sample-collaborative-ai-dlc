@@ -306,6 +306,32 @@ describe('gateway authorization', () => {
     expect(error.reason).toBe('mode_not_allowed');
   });
 
+  it('denies an execution-scoped engine grant before any store or graph access', async () => {
+    const { authorizer, createStore, openGraph } = setup();
+    const error = await deniedWith(
+      authorizer.authorize(
+        await headersFor({
+          grant: await grantFor({
+            mode: 'execution',
+            projectId: 'p-1',
+            intentId: 'i-1',
+            executionId: 'e-1',
+          }),
+          session: encodeGatewaySession(authorSession),
+        }),
+        { qualifiedTool: 'aidlc___get_artifact' },
+      ),
+    );
+    expect(error.reason).toBe('mode_not_allowed');
+    expect(error.auditScope).toMatchObject({
+      mode: 'execution',
+      executionId: 'e-1',
+      grantId: 'grant-1',
+    });
+    expect(createStore).not.toHaveBeenCalled();
+    expect(openGraph).not.toHaveBeenCalled();
+  });
+
   it('records the verified scope on denials after the grant is accepted', async () => {
     const { authorizer } = setup();
     const error = await deniedWith(

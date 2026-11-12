@@ -10,11 +10,20 @@
 // enrichment failure is recorded and skipped, deterministic derivation and the
 // stage flow are never blocked by it.
 
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
-import { selectCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
+import {
+  artifactLogicalKeyFromRow,
+  selectCurrentArtifactHeads,
+} from '../../shared/artifact-versioning.js';
+
+// An artifact that changed, vanished or became ambiguous between the listing
+// and its mirror is skipped: the next derive picks up its current head.
+const SKIPPED_ARTIFACT_CODES = new Set(['artifact_changed', 'not_found', 'artifact_ambiguous']);
+const isSkippedArtifact = (error) =>
+  error?.name === 'EngineGraphError' && SKIPPED_ARTIFACT_CODES.has(error.code);
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
 export const currentArtifacts = (rows = []) =>
@@ -58,7 +67,15 @@ export const buildEnrichmentPrompt = ({ artifactType, title, content }) => {
 };
 
 // Enrich one artifact via the one-shot CLI, recording spend before interpreting its answer.
-const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs, recordUsage }) => {
+const enrichArtifact = async ({
+  artifact,
+  logicalKey,
+  extraction,
+  graph,
+  oneShot,
+  cliArgs,
+  recordUsage,
+}) => {
   // Unchanged content keeps its existing summary — no repeat spend.
   if (
     artifact.enrichment_source_hash &&
@@ -80,6 +97,7 @@ const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs, r
   const claims = Array.isArray(parsed.claims) ? parsed.claims.map(String).slice(0, 5) : [];
   await graph.applyArtifactEnrichment({
     artifactId: artifact.id,
+    logicalKey,
     gist,
     claims,
     model: out.model,
@@ -104,16 +122,14 @@ export const deriveArtifacts = async (payload, deps) => {
     unitSlug = null,
   } = payload ?? {};
   const {
-    openGraph,
     store,
     broadcast = async () => {},
-    clock,
-    createWriter = createGraphWriter,
     availableClis = [],
     oneShot = runOneShotPrompt,
     env = process.env,
   } = deps;
   if (!intentId || !executionId) return { ok: false, reason: 'missing_identity' };
+  const openEngineGraph = engineGraphOpener(deps);
 
   const publish = (p) => broadcast({ executionId, intentId, projectId, ...p }).catch(() => {});
   const event = (type, summary) =>
@@ -121,16 +137,13 @@ export const deriveArtifacts = async (payload, deps) => {
       ?.appendEvent?.({ executionId, type, stageInstanceId, actor: 'agentcore', summary })
       .catch(() => {});
 
-  let g;
+  let graph;
   try {
-    g = await openGraph();
-    const graph = createWriter({
-      g,
-      scope: { projectId, intentId, executionId, stageInstanceId },
-      ...(clock ? { clock } : {}),
-    });
+    graph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
 
-    const rows = await graph.getIntentGraph({ includeContent: true, includeSuperseded: true });
+    // Metadata only: bodies are fetched one target at a time below, so no
+    // single engine-data response has to carry the whole intent's content.
+    const rows = await graph.getIntentGraph({ includeSuperseded: true });
     const all = currentArtifacts(rows);
     // Orphan sweep (rewind hygiene): a re-run that minted a NEW artifact id
     // leaves the OLD (superseded) artifact's sections/items current forever —
@@ -139,7 +152,7 @@ export const deriveArtifacts = async (payload, deps) => {
     // deterministic projection.
     const supersededArtifactIds = rows.filter((r) => r.superseded_at).map((r) => r.id);
     let swept = 0;
-    if (supersededArtifactIds.length && graph.supersedeDerivationsForArtifacts) {
+    if (supersededArtifactIds.length) {
       try {
         const sweep = await graph.supersedeDerivationsForArtifacts({
           artifactIds: supersededArtifactIds,
@@ -176,17 +189,35 @@ export const deriveArtifacts = async (payload, deps) => {
       env,
     };
     const enrichmentDeadline = Date.now() + ENRICHMENT_BUDGET_MS;
-    for (const artifact of targets) {
-      const extraction = extractArtifactStructure({
-        artifactType: artifact.artifact_type,
-        artifactId: artifact.id,
-        content: artifact.content ?? '',
-      });
-      if (extraction.error) {
-        errors.push({ artifactId: artifact.id, error: extraction.error });
+    for (const head of targets) {
+      const logicalKey = artifactLogicalKeyFromRow(head, intentId);
+      let artifact;
+      let extraction;
+      let mirrored;
+      try {
+        artifact = await graph.getArtifactContent({ artifactId: head.id, logicalKey });
+        extraction = extractArtifactStructure({
+          artifactType: artifact.artifact_type,
+          artifactId: artifact.id,
+          content: artifact.content ?? '',
+        });
+        if (extraction.error) {
+          errors.push({ artifactId: artifact.id, error: extraction.error });
+          continue;
+        }
+        // The graph re-reads and re-extracts the artifact itself and refuses a
+        // projection of content that changed since this read. The logical key
+        // names this lane's head when other lanes reuse the same artifact id.
+        mirrored = await graph.mirrorArtifactDerivations({
+          artifactId: artifact.id,
+          logicalKey,
+          sourceHash: extraction.contentHash,
+        });
+      } catch (error) {
+        if (!isSkippedArtifact(error)) throw error;
+        errors.push({ artifactId: head.id, error: error.code });
         continue;
       }
-      const mirrored = await graph.mirrorArtifactDerivations({ artifact, extraction });
       artifacts.push(mirrored.artifactId);
       sections += mirrored.sections;
       items += mirrored.items;
@@ -201,6 +232,7 @@ export const deriveArtifacts = async (payload, deps) => {
       try {
         const result = await enrichArtifact({
           artifact,
+          logicalKey,
           extraction,
           graph,
           oneShot,
@@ -238,12 +270,10 @@ export const deriveArtifacts = async (payload, deps) => {
     // mirrors. Best-effort: edge materialization is a projection of props that
     // remain readable either way (getCoverage joins them in memory).
     let itemEdges = 0;
-    if (graph.resolveDerivedItemEdges) {
-      try {
-        itemEdges = (await graph.resolveDerivedItemEdges()).edges ?? 0;
-      } catch {
-        /* traceability edges are a projection, never a blocker */
-      }
+    try {
+      itemEdges = (await graph.resolveDerivedItemEdges({})).edges ?? 0;
+    } catch {
+      /* traceability edges are a projection, never a blocker */
     }
 
     if (enrichmentSkips.length) {
@@ -283,6 +313,6 @@ export const deriveArtifacts = async (payload, deps) => {
     await event('v2.derive.failed', e.message);
     return { ok: false, reason: 'derive_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };

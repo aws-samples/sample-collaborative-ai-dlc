@@ -4,6 +4,7 @@ import {
   DISCUSSION_GRANT_TTL_SECONDS,
   GATEWAY_GRANT_MAX_TTL_SECONDS,
   derToJose,
+  gatewayGrantExpiresAt,
   gatewayPolicyDigest,
   gatewayScopeForCommand,
   issueGatewayGrant,
@@ -105,6 +106,14 @@ describe('gateway grant', () => {
         signer,
       ),
     ).rejects.toThrow('Gateway grant is invalid');
+    for (const lane of [{ unitSlug: 'u' }, { sectionIndex: 1 }]) {
+      await expect(
+        issueGatewayGrant(
+          { mode: 'conflict', projectId: 'p', intentId: 'i', executionId: 'e', ...lane },
+          signer,
+        ),
+      ).rejects.toThrow('Gateway grant is invalid');
+    }
     await expect(
       issueGatewayGrant(
         {
@@ -279,6 +288,137 @@ describe('gateway grant', () => {
     });
     expect(claims.policyDigest).toBe(digest);
     expect(claims).toMatchObject({ stageCallbackId: 'cb-1', orchestratorRunId: 'run-1' });
-    expect(gatewayScopeForCommand({ command: 'init-ws' }, scope)).toBeNull();
+    expect(gatewayScopeForCommand({ command: 'refresh-intent' }, scope)).toBeNull();
+  });
+
+  it('scopes a conflict resolution to its execution and lane, without a stage', () => {
+    expect(
+      gatewayScopeForCommand(
+        { command: 'resolve-conflict', unitSlug: 'api', sectionIndex: 2, stageId: 'ignored' },
+        { projectId: 'p', intentId: 'i', executionId: 'e', policy: { learnings: 'off' } },
+      ),
+    ).toEqual({
+      mode: 'conflict',
+      projectId: 'p',
+      intentId: 'i',
+      executionId: 'e',
+      unitSlug: 'api',
+      sectionIndex: 2,
+    });
+  });
+
+  it('scopes engine data commands to their execution only', async () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    const engineData = { ...identity, engineData: true };
+    for (const command of [
+      'init-ws',
+      'promote-units',
+      'create-workflow-checkpoint',
+      'record-pr',
+      'record-learning',
+      'record-unit-pr',
+      'derive-artifacts',
+      'compose-plan-start',
+      'quorum-edit-plan-start',
+      'quorum-edit-apply-start',
+      'repair-structure',
+    ]) {
+      // Lane and stage selectors in the payload never narrow or widen the grant.
+      expect(
+        gatewayScopeForCommand(
+          { command, stageId: 's', unitSlug: 'api', sectionIndex: 1, stageCallbackId: 'cb' },
+          { ...engineData, policy: { learnings: 'off' } },
+        ),
+      ).toEqual({ mode: 'execution', ...identity });
+    }
+    const claims = await verifyGatewayGrant(
+      await issueGatewayGrant(gatewayScopeForCommand({ command: 'init-ws' }, engineData), signer),
+      { publicKeyFor: resolver(), now: () => NOW },
+    );
+    expect(claims).toMatchObject({
+      mode: 'execution',
+      ...identity,
+      stageId: null,
+      unitSlug: null,
+      sectionIndex: null,
+      stageCallbackId: null,
+      orchestratorRunId: null,
+    });
+  });
+
+  it('rejects execution grants without an execution or with stage or lane selectors', async () => {
+    const execution = { mode: 'execution', projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const scope of [
+      { ...execution, executionId: null },
+      { ...execution, stageId: 's' },
+      { ...execution, stageCallbackId: 'cb' },
+      { ...execution, orchestratorRunId: 'run' },
+      { ...execution, unitSlug: 'api' },
+      { ...execution, sectionIndex: 0 },
+    ]) {
+      await expect(issueGatewayGrant(scope, signer)).rejects.toThrow('Gateway grant is invalid');
+    }
+    const token = await issueGatewayGrant(execution, signer);
+    await expect(
+      verifyGatewayGrant(
+        tamper(token, (p) => ({ ...p, stageId: 's' })),
+        { publicKeyFor: resolver(), now: () => NOW },
+      ),
+    ).rejects.toThrow('Gateway grant is invalid');
+  });
+
+  it('issues no grant for commands without one, discussions, or unknown commands', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of [
+      'refresh-intent',
+      'capabilities',
+      'managed-runtime-check',
+      'verify-mcp',
+      'verify-connection',
+      'discussion-assist-start',
+      'nope',
+      'toString',
+    ]) {
+      expect(gatewayScopeForCommand({ command }, identity)).toBeNull();
+    }
+    expect(gatewayScopeForCommand(null, identity)).toBeNull();
+  });
+
+  it('issues an execution grant for inspect and the lane commands', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of ['inspect', 'init-lane', 'merge-lane', 'reconcile-lane']) {
+      expect(
+        gatewayScopeForCommand({ command, unitSlug: 'api' }, { ...identity, engineData: true }),
+      ).toEqual({ mode: 'execution', ...identity });
+    }
+  });
+
+  it('issues no execution grant without engine data, and keeps stage and conflict grants', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of ['init-ws', 'promote-units', 'merge-lane', 'inspect']) {
+      expect(gatewayScopeForCommand({ command }, identity)).toBeNull();
+      expect(gatewayScopeForCommand({ command }, { ...identity, engineData: false })).toBeNull();
+    }
+    expect(gatewayScopeForCommand({ command: 'run-stage-start', stageId: 's' }, identity)).toEqual(
+      expect.objectContaining({ mode: 'stage', stageId: 's' }),
+    );
+    expect(
+      gatewayScopeForCommand({ command: 'resolve-conflict', unitSlug: 'api' }, identity),
+    ).toEqual(expect.objectContaining({ mode: 'conflict', unitSlug: 'api' }));
+  });
+});
+
+describe('gatewayGrantExpiresAt', () => {
+  it('reads the expiry a holder schedules around, and null for anything unreadable', async () => {
+    const token = await issueGatewayGrant(
+      { mode: 'discussion', projectId: 'p-1', intentId: 'i-1' },
+      { ...signer, ttlSeconds: DISCUSSION_GRANT_TTL_SECONDS },
+    );
+    expect(gatewayGrantExpiresAt(token)).toBe(
+      (Math.floor(NOW / 1000) + DISCUSSION_GRANT_TTL_SECONDS) * 1000,
+    );
+    for (const bad of [null, '', 'a.b.c', 'only-one-part', 'x.e30.y']) {
+      expect(gatewayGrantExpiresAt(bad)).toBeNull();
+    }
   });
 });

@@ -9,8 +9,8 @@
 // Intended for test-data cleanup of a known intent id.
 
 import gremlin from 'gremlin';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import {
-  createGraphWriter,
   closeGraphSource,
   INTENT_LABEL,
   ANCHOR_EDGE,
@@ -60,9 +60,32 @@ const cleanupOrphans = async (g, { apply = false }) => {
   return { ok: true, cleanup: true, applied: apply, orphans: counts, total };
 };
 
+// The engine-data read: the same compact summary through the engine's graph
+// operations, so it works whether the graph is local or behind engine-data.
+const inspectRead = async (
+  { projectId, intentId, executionId, artifactType, artifactId },
+  deps,
+) => {
+  let graph;
+  try {
+    graph = await engineGraphOpener(deps)({ projectId, intentId, executionId });
+  } catch (e) {
+    return { ok: false, reason: 'graph_open_failed', detail: e.message };
+  }
+  try {
+    return await graph.inspect({ artifactType, artifactId });
+  } catch (e) {
+    return { ok: false, reason: 'graph_query_failed', detail: e.message };
+  } finally {
+    await closeEngineGraph(graph);
+  }
+};
+
 export const inspect = async (
   {
+    projectId = null,
     intentId,
+    executionId = null,
     artifactType = null,
     artifactId = null,
     drop = false,
@@ -71,10 +94,19 @@ export const inspect = async (
   },
   deps,
 ) => {
-  const { openGraph } = deps;
+  // Cleanup and drop are partition-level maintenance with no grant that could
+  // authorize them; with engine data on they are refused before any graph
+  // access, dry runs included.
+  if (deps.engineData && (cleanup || drop || apply)) {
+    return { ok: false, reason: 'maintenance_not_supported' };
+  }
   // Orphan cleanup is partition-wide remediation — it needs no intentId.
   if (!cleanup && !intentId) return { ok: false, reason: 'missing_intentId' };
+  if (!cleanup && !drop) {
+    return inspectRead({ projectId, intentId, executionId, artifactType, artifactId }, deps);
+  }
 
+  const { openGraph } = deps;
   let g;
   try {
     g = await openGraph();
@@ -92,69 +124,36 @@ export const inspect = async (
     }
     // Scoped delete: drop the contained vertices, then the Intent anchor itself.
     // Bounded to this intentId — never a global drop.
-    if (drop) {
-      try {
-        const before = await g
-          .V()
-          .has(INTENT_LABEL, 'id', intentId)
-          .out(ANCHOR_EDGE)
-          .count()
-          .next();
-        // Terminate with next() (not iterate(): its discard() step is unsupported
-        // on some Gremlin server versions). TWO passes because drop() consumes
-        // eagerly — a Section/item reached THROUGH an artifact the same drop
-        // removes would become unreachable mid-drop and orphan-leak (the field
-        // incident). Pass 1: the derived layer; pass 2: the anchor + children.
-        // intent_id-guarded so a legacy shared vertex is never dropped for a
-        // sibling intent that still owns it.
-        await g
-          .V()
-          .has(INTENT_LABEL, 'id', intentId)
-          .out(ANCHOR_EDGE)
-          .has('intent_id', intentId)
-          .hasLabel('Artifact')
-          .out('HAS_SECTION', 'HAS_ITEM')
-          .has('intent_id', intentId)
-          .drop()
-          .next();
-        await g
-          .V()
-          .has(INTENT_LABEL, 'id', intentId)
-          .out(ANCHOR_EDGE)
-          .has('intent_id', intentId)
-          .drop()
-          .next();
-        await g.V().has(INTENT_LABEL, 'id', intentId).drop().next();
-        return { ok: true, intentId, dropped: true, containedDropped: before.value };
-      } catch (e) {
-        return { ok: false, reason: 'graph_drop_failed', detail: e.message };
-      }
-    }
-
     try {
-      const reader = createGraphWriter({ g, scope: { intentId } });
-      const artifacts = await reader.getIntentGraph({ includeContent: true });
-      const result = {
-        ok: true,
-        intentId,
-        artifactCount: artifacts.length,
-        // Compact list so the response stays small; full content via artifactId.
-        artifacts: artifacts.map((a) => ({
-          id: a.id,
-          artifact_type: a.artifact_type,
-          title: a.title ?? null,
-          created_by_execution_id: a.created_by_execution_id ?? null,
-          created_by_stage_instance_id: a.created_by_stage_instance_id ?? null,
-          created_at: a.created_at ?? null,
-          contentBytes: typeof a.content === 'string' ? a.content.length : 0,
-        })),
-      };
-      if (artifactType)
-        result.ofType = await reader.lookupArtifacts({ artifactType, includeContent: true });
-      if (artifactId) result.artifact = await reader.getArtifact({ id: artifactId });
-      return result;
+      const before = await g.V().has(INTENT_LABEL, 'id', intentId).out(ANCHOR_EDGE).count().next();
+      // Terminate with next() (not iterate(): its discard() step is unsupported
+      // on some Gremlin server versions). TWO passes because drop() consumes
+      // eagerly — a Section/item reached THROUGH an artifact the same drop
+      // removes would become unreachable mid-drop and orphan-leak (the field
+      // incident). Pass 1: the derived layer; pass 2: the anchor + children.
+      // intent_id-guarded so a legacy shared vertex is never dropped for a
+      // sibling intent that still owns it.
+      await g
+        .V()
+        .has(INTENT_LABEL, 'id', intentId)
+        .out(ANCHOR_EDGE)
+        .has('intent_id', intentId)
+        .hasLabel('Artifact')
+        .out('HAS_SECTION', 'HAS_ITEM')
+        .has('intent_id', intentId)
+        .drop()
+        .next();
+      await g
+        .V()
+        .has(INTENT_LABEL, 'id', intentId)
+        .out(ANCHOR_EDGE)
+        .has('intent_id', intentId)
+        .drop()
+        .next();
+      await g.V().has(INTENT_LABEL, 'id', intentId).drop().next();
+      return { ok: true, intentId, dropped: true, containedDropped: before.value };
     } catch (e) {
-      return { ok: false, reason: 'graph_query_failed', detail: e.message };
+      return { ok: false, reason: 'graph_drop_failed', detail: e.message };
     }
   } finally {
     await closeGraphSource(g);

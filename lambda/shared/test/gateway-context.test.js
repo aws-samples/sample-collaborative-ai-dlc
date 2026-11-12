@@ -221,6 +221,25 @@ describe('gateway context codec', () => {
       },
     ],
     [
+      'an engine-data execution grant',
+      (h) => {
+        const p = rawPayload(h);
+        return {
+          ...h,
+          [CONTEXT_HEADER]: encodeRaw({
+            ...p,
+            granted: {
+              ...p.granted,
+              mode: 'execution',
+              stageId: null,
+              stageCallbackId: null,
+              orchestratorRunId: null,
+            },
+          }),
+        };
+      },
+    ],
+    [
       'a policy the digest does not sign',
       (h) => ({ ...h, [CONTEXT_POLICY_HEADER]: encodeRaw({ ...POLICY, learnings: 'on' }) }),
     ],

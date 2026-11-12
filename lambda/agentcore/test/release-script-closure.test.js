@@ -14,6 +14,8 @@ import {
   resolveScriptClosure,
 } from '../release-script-closure.js';
 import { isReleaseDependencyError } from '../sensor-runner.js';
+import { readReleaseScriptClosure } from '../../shared/release-script-closure.js';
+import { sensorScriptPath } from '../../shared/block-mappers.js';
 
 const ENTRY = 'core/tools/aidlc-sensor-linter.ts';
 
@@ -94,48 +96,102 @@ describe('resolveScriptClosure', () => {
   });
 });
 
-describe('createReleaseScriptClosureReader', () => {
+describe('readReleaseScriptClosure', () => {
   const closure = {
     releaseId: 'aidlc:abc',
     runtimeFiles: new Map([['core/tools/aidlc-lib.ts', { sha256: 'd', key: 'k' }]]),
   };
 
+  it('reads each dependency through the digest-checked release path', async () => {
+    const asked = [];
+    expect(
+      await readReleaseScriptClosure({
+        entryPath: ENTRY,
+        entryContent: 'import { lib } from "./aidlc-lib.ts";',
+        loadClosure: async () => closure,
+        readRuntimeFile: async (given, repoPath) => {
+          asked.push({ releaseId: given.releaseId, repoPath });
+          return 'export const lib = 1;';
+        },
+      }),
+    ).toEqual([{ relativePath: 'aidlc-lib.ts', content: 'export const lib = 1;' }]);
+    expect(asked).toEqual([{ releaseId: 'aidlc:abc', repoPath: 'core/tools/aidlc-lib.ts' }]);
+  });
+
+  it('names an unreadable import and keeps a typed resolver error as itself', async () => {
+    const raw = await readReleaseScriptClosure({
+      entryPath: ENTRY,
+      entryContent: 'import { lib } from "./aidlc-lib.ts";',
+      loadClosure: async () => closure,
+      readRuntimeFile: async () => {
+        throw Object.assign(new Error('denied'), { name: 'AccessDenied' });
+      },
+    }).catch((caught) => caught);
+    expect(raw).toMatchObject({
+      name: 'ReleaseResolverError',
+      code: 'release_object_unreadable',
+      details: { entryPath: ENTRY, repoPath: 'core/tools/aidlc-lib.ts', reason: 'AccessDenied' },
+    });
+    const typed = Object.assign(new Error('gone'), {
+      name: 'ReleaseResolverError',
+      code: 'runtime_file_missing',
+    });
+    await expect(
+      readReleaseScriptClosure({
+        entryPath: ENTRY,
+        entryContent: 'import { lib } from "./aidlc-lib.ts";',
+        loadClosure: async () => {
+          throw typed;
+        },
+        readRuntimeFile: async () => '',
+      }),
+    ).rejects.toBe(typed);
+  });
+});
+
+describe('createReleaseScriptClosureReader', () => {
+  const methodologyRelease = { releaseId: 'aidlc:abc' };
+
   it('reads nothing in legacy mode, where a script is one self-contained object', () => {
     expect(createReleaseScriptClosureReader({ methodologyRelease: null })).toBeNull();
   });
 
-  it('reads each dependency through the digest-checked release path', async () => {
+  it('asks the catalog for the release sensor\u2019s closure', async () => {
     const asked = [];
-    const loaderArgs = [];
-    const methodologyRelease = { releaseId: 'aidlc:abc' };
+    const files = [{ relativePath: 'aidlc-lib.ts', content: 'export const lib = 1;' }];
     const reader = createReleaseScriptClosureReader({
       methodologyRelease,
       releaseOwnsSensor: () => true,
-      s3: 'the-client',
-      bucket: () => 'the-bucket',
-      loadReleaseClosure: async (args) => {
-        loaderArgs.push(args);
-        return closure;
-      },
-      resolveRuntimeFile: async ({ s3, bucket, closure: given, repoPath }) => {
-        asked.push({ s3, bucket, releaseId: given.releaseId, repoPath });
-        return { content: 'export const lib = 1;' };
+      loadScriptClosure: async (input) => {
+        asked.push(input);
+        return files;
       },
     });
-    expect(await reader('linter', 'import { lib } from "./aidlc-lib.ts";')).toEqual([
-      { relativePath: 'aidlc-lib.ts', content: 'export const lib = 1;' },
-    ]);
-    // The closure loader takes an envelope, not the pin alone: handing it the
-    // pin rejects every well-formed release before storage is read.
-    expect(loaderArgs).toEqual([{ s3: 'the-client', bucket: 'the-bucket', methodologyRelease }]);
-    expect(asked).toEqual([
-      {
-        s3: 'the-client',
-        bucket: 'the-bucket',
-        releaseId: 'aidlc:abc',
-        repoPath: 'core/tools/aidlc-lib.ts',
+    const entryContent = 'import { lib } from "./aidlc-lib.ts";';
+    expect(await reader('linter', entryContent)).toBe(files);
+    expect(asked).toEqual([{ sensorId: 'linter', entryContent, methodologyRelease }]);
+  });
+
+  // In remote mode the catalog call can fail in transport or be denied; neither
+  // produced a closure, so both hold the stage like an unreadable object.
+  it('holds on a catalog failure that is not a release error', async () => {
+    const reader = createReleaseScriptClosureReader({
+      methodologyRelease,
+      releaseOwnsSensor: () => true,
+      loadScriptClosure: async () => {
+        throw Object.assign(new Error('denied'), {
+          name: 'EngineDataAccessDenied',
+          code: 'catalog_key_not_allowed',
+        });
       },
-    ]);
+    });
+    const error = await reader('linter', 'import "./aidlc-lib.ts";').catch((caught) => caught);
+    expect(error).toMatchObject({
+      name: 'ReleaseResolverError',
+      code: 'release_object_unreadable',
+      details: { entryPath: sensorScriptPath('linter'), reason: 'EngineDataAccessDenied' },
+    });
+    expect(isReleaseDependencyError(error)).toBe(true);
   });
 
   // A user-tenant SENSOR overlay is not part of the methodology release. Its
@@ -145,11 +201,8 @@ describe('createReleaseScriptClosureReader', () => {
     const reader = createReleaseScriptClosureReader({
       methodologyRelease: { releaseId: 'aidlc:abc' },
       releaseOwnsSensor: (sensorId) => sensorId !== 'type-check',
-      loadReleaseClosure: async () => {
+      loadScriptClosure: async () => {
         throw new Error('must not read the closure');
-      },
-      resolveRuntimeFile: async () => {
-        throw new Error('must not read an object');
       },
     });
     expect(await reader('type-check', 'import { ok } from "../../src/helper.ts";')).toEqual([]);
@@ -187,11 +240,8 @@ describe('createReleaseScriptClosureReader — a self-contained script', () => {
     const reader = createReleaseScriptClosureReader({
       methodologyRelease: { releaseId: 'aidlc:abc' },
       releaseOwnsSensor: () => true,
-      loadReleaseClosure: async () => {
+      loadScriptClosure: async () => {
         throw new Error('must not read the closure');
-      },
-      resolveRuntimeFile: async () => {
-        throw new Error('must not read an object');
       },
     });
     expect(await reader('linter', 'import { spawnSync } from "node:child_process";')).toEqual([]);
@@ -221,9 +271,13 @@ describe('the sibling imports a published release actually declares', () => {
     const reader = createReleaseScriptClosureReader({
       methodologyRelease: { releaseId: profileId },
       releaseOwnsSensor: () => true,
-      bucket: () => 'bucket',
-      loadReleaseClosure: async () => ({ releaseId: profileId, runtimeFiles: runtimePaths }),
-      resolveRuntimeFile: async ({ repoPath }) => ({ content: `// ${repoPath}` }),
+      loadScriptClosure: ({ sensorId: id, entryContent }) =>
+        readReleaseScriptClosure({
+          entryPath: sensorScriptPath(id),
+          entryContent,
+          loadClosure: async () => ({ releaseId: profileId, runtimeFiles: runtimePaths }),
+          readRuntimeFile: async (_closure, repoPath) => `// ${repoPath}`,
+        }),
     });
     const script = fixture.files[`core/tools/aidlc-sensor-${sensorId}.ts`];
     expect(script, `${profileId} publishes no ${sensorId} script`).toBeTruthy();

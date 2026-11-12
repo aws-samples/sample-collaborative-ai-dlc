@@ -101,6 +101,29 @@ const stamp = (over = {}) => ({
 
 const types = (store) => store.appended.map((event) => event.type);
 
+describe('an unreadable event history', () => {
+  it('surfaces a history too large to read instead of judging it empty', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+    store.listEvents = async () => {
+      throw Object.assign(new Error('Store result is too large to return'), {
+        name: 'EngineStoreError',
+        code: 'response_too_large',
+      });
+    };
+    await expect(ladder(store)).rejects.toMatchObject({ code: 'response_too_large' });
+    expect(store.appended).toHaveLength(0);
+  });
+
+  it('keeps judging a transiently unreadable history as empty', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+    store.listEvents = async () => {
+      throw new Error('throttled');
+    };
+    const empty = fakeStore({ receipts: [confirmationReceipt()] });
+    expect((await ladder(store)).findings).toEqual((await ladder(empty)).findings);
+  });
+});
+
 describe('the ladder is inert where it must be', () => {
   it('does nothing at all without a resolved release policy', async () => {
     const store = fakeStore();

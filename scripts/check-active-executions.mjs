@@ -2,7 +2,10 @@
 // Refuses a plan that moves the runtime onto a grant-verified path while
 // executions started without grants are still running or parked: their
 // orchestrator cannot issue the grants the new path requires, so they would
-// fail when they next invoke the runtime.
+// fail when they next invoke the runtime. Also refuses a plan that takes the
+// runtime off engine-data while executions are active: a warm session keeps
+// the runtime version it started with, and so keeps calling the engine-data
+// function the plan destroys.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -15,7 +18,14 @@ const DRAINED_STATUSES = new Set(['CREATED', 'RUNNING', 'WAITING']);
 // Detecting its arrival on the runtime, rather than the creation of a
 // resource, also catches a retry after an apply that failed before the runtime
 // was updated.
-const ACTIVATIONS = [{ flag: 'enable_mcp_gateway', variable: 'AIDLC_MCP_GATEWAY_URL' }];
+const ACTIVATIONS = [
+  { flag: 'enable_mcp_gateway', variable: 'AIDLC_MCP_GATEWAY_URL' },
+  { flag: 'enable_engine_data', variable: 'ENGINE_DATA_FUNCTION' },
+];
+
+// The runtime environment variable whose removal destroys a resource that warm
+// sessions still call.
+const DEACTIVATIONS = [{ flag: 'enable_engine_data', variable: 'ENGINE_DATA_FUNCTION' }];
 
 const isRuntime = (change) =>
   change.mode === 'managed' &&
@@ -32,11 +42,24 @@ const gains = (change, variable) => {
   );
 };
 
-export const activatedFlags = (plan) => {
+// A runtime being destroyed has no warm sessions left to strand.
+const loses = (change, variable) => {
+  const before = change.change?.before?.environment_variables;
+  if (!before || !Object.hasOwn(before, variable)) return false;
+  const after = change.change?.after?.environment_variables;
+  if (!after) return false;
+  const unknown = change.change?.after_unknown?.environment_variables;
+  return !Object.hasOwn(after, variable) && !(unknown && Object.hasOwn(unknown, variable));
+};
+
+const changedFlags = (plan, entries, changed) => {
   const runtime = (plan.resource_changes ?? []).find(isRuntime);
   if (!runtime) return [];
-  return ACTIVATIONS.filter(({ variable }) => gains(runtime, variable)).map(({ flag }) => flag);
+  return entries.filter(({ variable }) => changed(runtime, variable)).map(({ flag }) => flag);
 };
+
+export const activatedFlags = (plan) => changedFlags(plan, ACTIVATIONS, gains);
+export const deactivatedFlags = (plan) => changedFlags(plan, DEACTIVATIONS, loses);
 
 // The process table as it exists before this apply; null on a fresh install.
 export const existingExecutionsTable = (plan) => {
@@ -53,17 +76,19 @@ export const existingExecutionsTable = (plan) => {
 
 export const checkActiveExecutions = async ({ plan, listActiveExecutions, env = process.env }) => {
   const flags = activatedFlags(plan);
-  if (flags.length === 0) return { ok: true, flags };
+  const deactivated = deactivatedFlags(plan);
+  if (flags.length === 0 && deactivated.length === 0) return { ok: true, flags, deactivated };
   const table = existingExecutionsTable(plan);
-  if (!table) return { ok: true, flags };
+  if (!table) return { ok: true, flags, deactivated };
   const active = (await listActiveExecutions(table)).filter((row) =>
     DRAINED_STATUSES.has(row.status),
   );
-  if (active.length === 0) return { ok: true, flags };
+  if (active.length === 0) return { ok: true, flags, deactivated };
   return {
     ok: env[OVERRIDE] === '1',
     overridden: env[OVERRIDE] === '1',
     flags,
+    deactivated,
     active,
   };
 };
@@ -83,11 +108,15 @@ const listFromTable = async ({ name, region }) => {
   }
 };
 
-const report = ({ flags, active, overridden }) => {
+const report = ({ flags, deactivated, active, overridden }) => {
   const log = overridden ? console.warn : console.error;
+  const changes = [
+    flags.length && `turns on ${flags.join(', ')}`,
+    deactivated.length && `turns off ${deactivated.join(', ')}`,
+  ].filter(Boolean);
   log(
-    `${overridden ? 'Warning' : 'Refusing Terraform plan'}: it turns on ${flags.join(', ')} ` +
-      `while ${active.length} execution(s) started without runtime grants are running or parked:`,
+    `${overridden ? 'Warning' : 'Refusing Terraform plan'}: it ${changes.join(' and ')} ` +
+      `while ${active.length} execution(s) are running or parked:`,
   );
   for (const row of active) {
     log(`  - ${row.executionId} (project ${row.projectId}, ${row.status})`);
@@ -100,8 +129,18 @@ const report = ({ flags, active, overridden }) => {
     'Stop starting new intents until the deployment has succeeded, retries included. Wait for ' +
       'RUNNING executions to park or finish, cancel the parked (WAITING) and queued (CREATED) ' +
       'ones, re-plan and apply, then rewind each cancelled execution to its current stage (its ' +
-      'first stage if it had not reached one): the rewind relaunches it with grants. To apply ' +
-      `anyway, set ${OVERRIDE}=1; the executions listed will fail when they next invoke the runtime.`,
+      'first stage if it had not reached one): the rewind relaunches it on the new runtime.',
+  );
+  if (deactivated.length) {
+    log(
+      'After the apply, stop the remaining intent runtime sessions or wait until they idle out or ' +
+        'reach their maximum lifetime (8 h): a warm session keeps the previous runtime version ' +
+        'and its calls to the removed engine-data function.',
+    );
+  }
+  log(
+    `To apply anyway, set ${OVERRIDE}=1; the executions listed will fail when they next invoke ` +
+      'the runtime.',
   );
 };
 
@@ -120,5 +159,7 @@ if (
   });
   if (result.active) report(result);
   if (!result.ok) process.exit(1);
-  if (result.flags.length) console.log('Active execution check passed.');
+  if (result.flags.length || result.deactivated.length) {
+    console.log('Active execution check passed.');
+  }
 }

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sanitizePlan, stripMarkdownFence, bounded } from '../commands/quorum-edit-shared.js';
+import {
+  sanitizePlan,
+  stripMarkdownFence,
+  bounded,
+  REWRITE_DOC_LIMIT,
+} from '../commands/quorum-edit-shared.js';
 import { createQuorumEditPlanStart } from '../commands/quorum-edit-plan-start.js';
 import { createQuorumEditApplyStart } from '../commands/quorum-edit-apply-start.js';
 import { sanitizeProps } from '../mcp/graph-writer.js';
@@ -308,10 +313,9 @@ describe('quorum-edit-apply-start', () => {
     });
     // Target + the ONE approved update were written with quorum provenance.
     expect(collab.applyEdit.mock.calls.map(([a]) => a.artifactId)).toEqual(['a1', 'a2']);
-    expect(collab.applyEdit.mock.calls[0][0]).toMatchObject({
-      origin: 'quorum',
-      editRef: 'qedit:qe-1',
-    });
+    // Quorum origin/actor and the qedit ref are fixed by the graph operation;
+    // the job only names the edit.
+    expect(collab.applyEdit.mock.calls[0][0]).toMatchObject({ editId: 'qe-1' });
     // The WHOLE closure was marked stale before rehabilitation (a4 stays).
     expect(collab.markStale.mock.calls[0][0].artifactIds).toEqual(['a2', 'a3', 'a4']);
     // Verify-unaffected carried Quorum's rationale as the note.
@@ -365,6 +369,221 @@ describe('quorum-edit-apply-start', () => {
     });
     expect(collab.applyEdit).not.toHaveBeenCalled();
     expect(collab.markStale).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['artifact_not_found', null],
+    ['content_too_large', { ...TARGET, content: 'x'.repeat(REWRITE_DOC_LIMIT + 1) }],
+  ])('refuses the whole apply with %s before any rewrite', async (reason, target) => {
+    const { start, collab } = makeApply({
+      fetchArtifact: vi.fn(async (_g, _i, id) => (id === 'a1' ? target : (ROWS[id] ?? null))),
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0]).toEqual(['cb-apply', { ok: false, reason }]);
+    expect(collab.oneShot).not.toHaveBeenCalled();
+    expect(collab.applyEdit).not.toHaveBeenCalled();
+    expect(collab.markStale).not.toHaveBeenCalled();
+  });
+
+  it('fails on an empty answer, without a corrective retry, instead of blanking the target', async () => {
+    const { start, collab } = makeApply({
+      oneShot: vi.fn(async () => ({ ok: true, text: '\n  \n', metrics: null })),
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toEqual({
+      ok: false,
+      reason: 'rewrite_failed',
+    });
+    expect(collab.oneShot).toHaveBeenCalledTimes(1);
+    expect(collab.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('marks the whole closure stale before rehabilitating any plan item', async () => {
+    const { start, collab } = makeApply();
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    const [staleAt] = collab.markStale.mock.invocationCallOrder;
+    const [targetEditAt, updateAt] = collab.applyEdit.mock.invocationCallOrder;
+    expect(targetEditAt).toBeLessThan(staleAt);
+    expect(updateAt).toBeGreaterThan(staleAt);
+    expect(collab.verify.mock.invocationCallOrder[0]).toBeGreaterThan(staleAt);
+  });
+
+  it('without a persisted plan, rewrites the target alone and leaves the closure stale', async () => {
+    const { start, collab, store } = makeApply();
+    store.getQuorumEdit.mockResolvedValue(null);
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toEqual({
+      ok: true,
+      updatedArtifactIds: [],
+      verifiedArtifactIds: [],
+      failedArtifactIds: [],
+      failures: [],
+    });
+    expect(collab.applyEdit.mock.calls.map(([a]) => a.artifactId)).toEqual(['a1']);
+    expect(collab.markStale.mock.calls[0][0].artifactIds).toEqual(['a2', 'a3', 'a4']);
+    expect(collab.verify).not.toHaveBeenCalled();
+    expect(collab.deriveArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactTypes: ['market-research'] }),
+    );
+  });
+
+  it('reports every approved item it cannot rehabilitate and leaves it stale', async () => {
+    const rows = {
+      ...ROWS,
+      big: {
+        id: 'big',
+        title: 'Big',
+        artifact_type: 'market-trends',
+        content: 'x'.repeat(REWRITE_DOC_LIMIT + 1),
+      },
+    };
+    const { start, collab, store } = makeApply({
+      fetchArtifact: vi.fn(async (_g, _i, id) => rows[id] ?? null),
+    });
+    store.getQuorumEdit.mockResolvedValue({
+      plan: {
+        items: [
+          { artifactId: 'gone', artifactType: 'market-trends', action: 'update' },
+          { artifactId: 'big', artifactType: 'market-trends', action: 'update' },
+          { artifactId: 'a3', artifactType: 'build-vs-buy', action: 'verify-unaffected' },
+        ],
+      },
+    });
+    await start({ ...applyPayload, approvedArtifactIds: ['gone', 'big', 'a3'] });
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toEqual({
+      ok: true,
+      updatedArtifactIds: [],
+      verifiedArtifactIds: ['a3'],
+      failedArtifactIds: ['gone', 'big'],
+      failures: [
+        { artifactId: 'gone', reason: 'artifact_not_found' },
+        { artifactId: 'big', reason: 'content_too_large' },
+      ],
+    });
+    expect(collab.oneShot).toHaveBeenCalledTimes(1);
+    expect(collab.applyEdit.mock.calls.map(([a]) => a.artifactId)).toEqual(['a1']);
+    expect(collab.verify).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactId: 'a3', note: '' }),
+    );
+    expect(store.appendOutput).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stageInstanceId: 'qedit-qe-1',
+        content:
+          'Done: target updated, 0 downstream artifact(s) updated, 1 verified unaffected, 2 left stale (failed).\n',
+      }),
+    );
+  });
+
+  it('records each rewrite call as Quorum spend on the edit', async () => {
+    const { start, collab, store } = makeApply({
+      oneShot: vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          text: 'updated target',
+          metrics: { tokensInput: 10 },
+          model: 'm1',
+          creditRate: 2,
+        })
+        .mockResolvedValueOnce({ ok: true, text: 'updated trends', metrics: { tokensInput: 4 } }),
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(store.recordMetric.mock.calls.map(([metric]) => metric)).toEqual([
+      {
+        executionId: 'i1',
+        stageInstanceId: 'qedit-qe-1',
+        metrics: { tokensInput: 10, quorumEditCalls: 1 },
+        resolvedModel: 'm1',
+        creditRate: 2,
+      },
+      {
+        executionId: 'i1',
+        stageInstanceId: 'qedit-qe-1',
+        metrics: { tokensInput: 4, quorumEditCalls: 1 },
+        resolvedModel: null,
+        creditRate: null,
+      },
+    ]);
+  });
+
+  it('logs a failed re-derive without failing the applied edit', async () => {
+    const log = vi.fn();
+    const { start, collab } = makeApply({
+      deriveArtifacts: vi.fn(async () => {
+        throw new Error('projection busy');
+      }),
+      log,
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toMatchObject({
+      ok: true,
+      updatedArtifactIds: ['a2'],
+    });
+    expect(log).toHaveBeenCalledWith(
+      'derive after apply failed (i1:qedit-apply:qe-1):',
+      'projection busy',
+    );
+  });
+
+  it.each([
+    ['an Error', new Error('neptune down')],
+    ['a bare value', 'neptune down'],
+  ])('still completes the callback when the job crashes with %s', async (_label, thrown) => {
+    const log = vi.fn();
+    const { start, collab } = makeApply({
+      fetchArtifact: vi.fn(async () => {
+        throw thrown;
+      }),
+      log,
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toEqual({
+      ok: false,
+      reason: 'apply_job_crashed',
+      detail: 'neptune down',
+    });
+    expect(log).toHaveBeenCalledWith('apply job crashed (i1:qedit-apply:qe-1):', 'neptune down');
+    expect(collab.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('logs an undelivered callback and still frees the job', async () => {
+    const log = vi.fn();
+    const { start } = makeApply({
+      sendCallbackSuccess: vi.fn(async () => ({ delivered: false, error: 'TaskTimedOut' })),
+      log,
+    });
+    await start(applyPayload);
+    await vi.waitFor(() => {
+      expect(start.activeJobs.size).toBe(0);
+    });
+    expect(log).toHaveBeenCalledWith(
+      'FAILED to deliver apply callback for i1:qedit-apply:qe-1:',
+      'TaskTimedOut',
+    );
   });
 });
 
@@ -576,6 +795,67 @@ describe('quorum-edit-apply-start structure guard', () => {
       // stripMarkdownFence trims the answer before the guard/write.
       expect.objectContaining({ artifactId: 'requirements', content: editedDoc.trim() }),
     );
+  });
+
+  it('leaves a dependent document stale when every rewrite loses its structure', async () => {
+    const brief = {
+      id: 'brief',
+      title: 'Brief',
+      artifact_type: 'market-research',
+      content: '# Brief\nUS focus.',
+    };
+    const rows = { brief, requirements: REQ_ROW };
+    const collab = {
+      openGraph: vi.fn(async () => ({})),
+      store: {
+        ...guardStore(),
+        getQuorumEdit: vi.fn(async () => ({
+          plan: {
+            items: [
+              {
+                artifactId: 'requirements',
+                artifactType: 'requirements',
+                action: 'update',
+                rationale: 'r',
+                proposedChange: 'p',
+              },
+            ],
+          },
+        })),
+      },
+      sendCallbackSuccess: vi.fn(async () => ({ delivered: true })),
+      fetchArtifact: vi.fn(async (_g, _i, id) => rows[id] ?? null),
+      fetchClosure: vi.fn(async () => [{ id: 'requirements', depth: 1 }]),
+      applyEdit: vi.fn(async ({ artifactId }) => ({ artifactId, editedAt: 'T' })),
+      verify: vi.fn(),
+      markStale: vi.fn(async () => []),
+      log: vi.fn(),
+      oneShot: vi.fn(async ({ prompt }) => ({
+        ok: true,
+        text: prompt.includes('DEPENDENT DOCUMENT') ? REQ_DOC_NO_BLOCK : '# Brief\nEU focus.',
+        metrics: null,
+      })),
+    };
+    const start = createQuorumEditApplyStart(collab);
+    await start({ ...guardPayload, artifactId: 'brief', approvedArtifactIds: ['requirements'] });
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    const [, result] = collab.sendCallbackSuccess.mock.calls[0];
+    expect(result).toMatchObject({
+      ok: true,
+      updatedArtifactIds: [],
+      failedArtifactIds: ['requirements'],
+    });
+    expect(result.failures).toEqual([
+      {
+        artifactId: 'requirements',
+        reason: 'structure_lost',
+        detail: expect.stringContaining('`requirements:`'),
+      },
+    ]);
+    expect(collab.oneShot).toHaveBeenCalledTimes(3);
+    expect(collab.applyEdit.mock.calls.map(([a]) => a.artifactId)).toEqual(['brief']);
   });
 });
 
