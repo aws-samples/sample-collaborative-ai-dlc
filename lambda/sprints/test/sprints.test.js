@@ -64,7 +64,7 @@ const seedProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .to('u')
     .property('role', 'owner')
     .next();
-  await seedMembership(projectId, USER_ID, 'owner');
+  await seedMembership(id, USER_ID, 'owner');
   return id;
 };
 

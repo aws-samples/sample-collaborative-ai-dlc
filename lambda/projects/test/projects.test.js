@@ -1885,7 +1885,7 @@ describe('POST /projects/:id/repos', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can add repositories',
+      error: 'Only space owners can add repositories',
     });
   });
 
@@ -2001,7 +2001,7 @@ describe('DELETE /projects/:id/repos', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can remove repositories',
+      error: 'Only space owners can remove repositories',
     });
   });
 

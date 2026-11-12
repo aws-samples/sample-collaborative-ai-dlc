@@ -5,13 +5,6 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 
-const membership = vi.hoisted(() => ({ fetchMembershipRole: vi.fn() }));
-vi.mock('../../shared/trackers.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  membership.fetchMembershipRole.mockImplementation(actual.fetchMembershipRole);
-  return { ...actual, fetchMembershipRole: membership.fetchMembershipRole };
-});
-
 const PARTITION = `t-${randomUUID()}`;
 const TABLE = 'process-test';
 
@@ -200,14 +193,11 @@ describe('intent-pin-lookup handler', () => {
     ],
     ['an empty event', {}],
   ])('400s %s without reading anything', async (_label, event) => {
-    membership.fetchMembershipRole.mockClear();
-
     expect(await handler(event)).toEqual({ statusCode: 400 });
     expect(ddbMock.calls()).toHaveLength(0);
-    expect(membership.fetchMembershipRole).not.toHaveBeenCalled();
   });
 
-  it('checks membership in Neptune for a well-formed request', async () => {
+  it('checks canonical DynamoDB membership for a well-formed request', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = randomUUID();
     const intentId = randomUUID();
@@ -217,13 +207,19 @@ describe('intent-pin-lookup handler', () => {
       workflowId: 'aidlc-v2',
       workflowVersion: 4,
     });
-    membership.fetchMembershipRole.mockClear();
+    ddbMock.resetHistory();
 
     expect((await handler({ sub, projectId, intentId })).statusCode).toBe(200);
-    expect(membership.fetchMembershipRole).toHaveBeenCalledWith(expect.anything(), projectId, sub);
+    expect(
+      ddbMock.commandCalls(GetCommand, {
+        TableName: 'access-test',
+        Key: { pk: `SPACE#${projectId}`, sk: `MEMBER#${sub}` },
+        ConsistentRead: true,
+      }),
+    ).toHaveLength(1);
   });
 
-  it('reports a graph failure as a 5xx rather than a 404', async () => {
+  it('reports a membership-store failure as a 5xx rather than granting access', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = randomUUID();
     const intentId = randomUUID();
@@ -233,16 +229,15 @@ describe('intent-pin-lookup handler', () => {
       workflowId: 'aidlc-v2',
       workflowVersion: 4,
     });
-    const endpoint = process.env.NEPTUNE_ENDPOINT;
-    const port = process.env.GREMLIN_PORT;
-    vi.stubEnv('NEPTUNE_ENDPOINT', '127.0.0.1');
-    vi.stubEnv('GREMLIN_PORT', '1');
-    try {
-      const res = await handler({ sub, projectId, intentId });
-      expect(res.statusCode).toBeGreaterThanOrEqual(500);
-    } finally {
-      vi.stubEnv('NEPTUNE_ENDPOINT', endpoint);
-      vi.stubEnv('GREMLIN_PORT', port);
-    }
+    ddbMock
+      .on(GetCommand, {
+        TableName: 'access-test',
+        Key: { pk: `SPACE#${projectId}`, sk: `MEMBER#${sub}` },
+        ConsistentRead: true,
+      })
+      .rejects(new Error('membership store unavailable'));
+
+    const res = await handler({ sub, projectId, intentId });
+    expect(res.statusCode).toBeGreaterThanOrEqual(500);
   });
 });

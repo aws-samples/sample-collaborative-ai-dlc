@@ -1706,7 +1706,10 @@ describe('Jira space delegation', () => {
     });
     expect(res.statusCode).toBe(method === 'POST' ? 201 : 200);
     expect(
-      ddbMock.commandCalls(GetCommand).every((call) => call.args[0].input.Key.userId === 'user-1'),
+      ddbMock
+        .commandCalls(GetCommand)
+        .filter((call) => call.args[0].input.TableName === TRACKER_TABLE)
+        .every((call) => call.args[0].input.Key.userId === 'user-1'),
     ).toBe(true);
     expect(
       fetchMock.mock.calls.every(
@@ -1735,7 +1738,10 @@ describe('Jira space delegation', () => {
     });
     expect(result).toEqual({ attachments: [] });
     expect(
-      ddbMock.commandCalls(GetCommand).every((call) => call.args[0].input.Key.userId === 'user-1'),
+      ddbMock
+        .commandCalls(GetCommand)
+        .filter((call) => call.args[0].input.TableName === TRACKER_TABLE)
+        .every((call) => call.args[0].input.Key.userId === 'user-1'),
     ).toBe(true);
     expect(
       fetchMock.mock.calls.every(
@@ -2088,6 +2094,7 @@ describe('Jira space delegation', () => {
       expect(
         ddbMock
           .commandCalls(GetCommand)
+          .filter((call) => call.args[0].input.TableName === TRACKER_TABLE)
           .every((call) => call.args[0].input.Key.userId === 'user-1'),
       ).toBe(true);
     },

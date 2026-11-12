@@ -110,6 +110,19 @@ describe('PUT /projects/{id}/source-control, CodeCommit region (review #578)', (
     });
     vi.spyOn(DynamoDBDocumentClient.prototype, 'send').mockImplementation(async (command) => {
       if (command.constructor.name === 'QueryCommand') return { Items: [EXISTING] };
+      if (
+        command.constructor.name === 'GetCommand' &&
+        command.input.Key?.pk === 'SPACE#p1' &&
+        command.input.Key?.sk === 'MEMBER#u1'
+      ) {
+        return {
+          Item: {
+            ...command.input.Key,
+            userId: 'u1',
+            membershipRole: 'owner',
+          },
+        };
+      }
       writes.push(command);
       return {};
     });
