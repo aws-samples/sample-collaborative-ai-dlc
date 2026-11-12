@@ -2199,6 +2199,9 @@ const runStageAttempt = async (
   // Human-readable stage label for event summaries — carries the lane so the
   // activity feed stays attributable when N instances of a stage exist.
   const stageLabel = unitSlug ? `${stageId} [unit ${unitSlug}]` : stageId;
+  // Where the engine preserves a refused sparse commit (git-engine.js
+  // preserveRefusedState): per execution, stage and lane, outside refs/heads.
+  const refusedRef = `refs/aidlc/refused/${executionId}/${stageId}${unitSlug ? `--${unitSlug}` : ''}`;
 
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
 
@@ -3902,12 +3905,20 @@ const runStageAttempt = async (
   // A sparse checkout leaves tracked files outside the selection off disk;
   // commitAll refuses commits that change them (see checkSparseSelection).
   // Name the refused paths on the timeline and live. The stage then fails
-  // through workAtRiskFailure; nothing of that repo was committed or pushed.
+  // through workAtRiskFailure; nothing of that repo reached the intent branch.
+  // The engine pushed the refused state to a side ref so it survives a wiped
+  // workspace; say where it is, or that it could not be saved.
   const reportSparseRefusal = async (result, label) => {
     const refused = (result.results ?? []).filter((r) => SPARSE_REJECTIONS.has(r.reason));
     if (refused.length === 0) return;
     const scope = label ? `${stageLabel} (${label})` : stageLabel;
-    const detail = refused.map((r) => `${r.repo}: ${r.detail ?? r.reason}`).join('; ');
+    const preservation = (r) => {
+      if (r.preserved?.sha) return ` (saved to ${r.preserved.ref}@${r.preserved.sha.slice(0, 8)})`;
+      return r.preserved ? ` (not saved to ${r.preserved.ref}: ${r.preserved.error})` : '';
+    };
+    const detail = refused
+      .map((r) => `${r.repo}: ${r.detail ?? r.reason}${preservation(r)}`)
+      .join('; ');
     const summary = `Engine refused to commit ${scope}: ${detail}. The changes are left uncommitted in the workspace; the next attempt is told to restore them.`;
     await store
       .appendEvent({
@@ -4061,6 +4072,7 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
+        refusedRef,
         ...(await stageCommitMessages({
           messageFor: engineCommitMessage,
           stageId,
@@ -4420,6 +4432,7 @@ const runStageAttempt = async (
     projectId,
     executionId,
     author: gitAuthor,
+    refusedRef,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
     ...(await stageCommitMessages({
@@ -4800,6 +4813,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
+          refusedRef,
           message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,

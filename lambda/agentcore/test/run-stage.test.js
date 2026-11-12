@@ -5698,7 +5698,8 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       checkSparseSelection: async () => ({ state: 'violations', paths: ['docs/usage.md'] }),
       // commitAll's refusal as commitAndPushAll reports it (real-Git coverage
       // lives in sparse-checkout.test.js): nothing committed, nothing pushed.
-      commitAndPushAll: async () => ({
+      // The engine saved the refused state under the side ref it was given.
+      commitAndPushAll: async ({ refusedRef }) => ({
         ok: false,
         committed: false,
         results: [
@@ -5711,6 +5712,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
               'tracked files outside the sparse checkout selection were changed: docs/usage.md',
             outsideSelection: ['docs/usage.md'],
             dirty: true,
+            preserved: { ref: refusedRef, sha: 'abc1234567890' },
           },
         ],
       }),
@@ -5723,8 +5725,13 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(materialized[0].sparseRefusals).toEqual([
       { repo: 'owner/repo', paths: ['docs/usage.md'] },
     ]);
-    const types = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+    const types = events.map((event) => event.type);
     expect(types).toContain('v2.git.sparse_outside_selection');
+    // The timeline names where the refused state was saved.
+    expect(
+      events.find((event) => event.type === 'v2.git.sparse_outside_selection').summary,
+    ).toMatch(/saved to refs\/aidlc\/refused\/[^/\s]+\/[^/\s]+@abc12345\)/);
     expect(types).toContain('v2.git.push_failed');
     expect(types).not.toContain('v2.git.pushed');
     const states = deps.store.calls
