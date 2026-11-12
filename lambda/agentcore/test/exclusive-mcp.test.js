@@ -791,3 +791,75 @@ describe('OpenCode: no workspace or user plugins', () => {
     expect((await run()).OPENCODE_PURE).toBe('1');
   });
 });
+
+// OpenCode imports `{tool,tools}/*.{js,ts}` from each config directory.
+describe('OpenCode: custom tool files', () => {
+  const materialize = (cwd) =>
+    materializeOpenCodeConfig({ workspaceDir: cwd, mcpEntry: MCP_ENTRY, scope: SCOPE });
+  const withFile = async (relative, { home } = {}) => {
+    const { root, repo, cwd } = await repository();
+    const base = home ? path.join(root, 'home') : repo;
+    const file = path.join(base, relative);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'export const x = {};');
+    return { root, cwd, file, home: path.join(root, 'home') };
+  };
+
+  it.each([
+    ['in the repository .opencode/tool', '.opencode/tool/x.js'],
+    ['in the repository .opencode/tools', '.opencode/tools/x.ts'],
+    ['in the working directory .opencode/tool', 'service/.opencode/tool/.hidden.JS'],
+  ])('refuses a file %s', async (_label, relative) => {
+    const { cwd, file } = await withFile(relative);
+    gatewayOnly();
+    const refusal = materialize(cwd);
+    await expect(refusal).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+    await expect(refusal).rejects.toThrow(file);
+  });
+
+  it.each([
+    ['the global config directory', '.config/opencode/tools/x.js'],
+    ['~/.opencode', '.opencode/tool/x.ts'],
+  ])('refuses a file in %s', async (_label, relative) => {
+    const { cwd, file, home } = await withFile(relative, { home: true });
+    gatewayOnly();
+    const refusal = exclusiveOpenCodeConfig({ config: {}, cwd, home });
+    await expect(refusal).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+    await expect(refusal).rejects.toThrow(file);
+  });
+
+  it('refuses a file in OPENCODE_CONFIG_DIR', async () => {
+    const { root, cwd, file } = await withFile('../extra/tool/x.js');
+    const env = { ...process.env, OPENCODE_CONFIG_DIR: path.join(root, 'extra') };
+    await expect(exclusiveOpenCodeConfig({ config: {}, cwd, env })).rejects.toThrow(file);
+  });
+
+  it('refuses a one-shot without spawning the CLI', async () => {
+    const { cwd } = await withFile('.opencode/tool/x.js');
+    gatewayOnly();
+    const spawnFn = vi.fn();
+    const out = await runOneShotPrompt({ prompt: 'p', availableClis: ['opencode'], cwd, spawnFn });
+    expect(out).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('accepts an empty tool directory, other files, and nested ones', async () => {
+    const { repo, cwd } = await repository();
+    await mkdir(path.join(repo, '.opencode', 'tools'), { recursive: true });
+    await mkdir(path.join(repo, '.opencode', 'tool', 'dir.js'), { recursive: true });
+    await mkdir(path.join(repo, '.opencode', 'tool', 'nested'), { recursive: true });
+    await writeFile(path.join(repo, '.opencode', 'tool', 'README.md'), 'notes');
+    await writeFile(path.join(repo, '.opencode', 'tool', 'nested', 'x.js'), '');
+    await writeFile(path.join(repo, 'tool.js'), '');
+    gatewayOnly();
+    const { mcp } = JSON.parse(await materialize(cwd));
+    expect(mcp['repo-remote'].enabled).toBe(false);
+  });
+
+  it('is unchanged under allow', async () => {
+    const { cwd } = await withFile('.opencode/tool/x.js');
+    expect(JSON.parse(await materialize(cwd))).toEqual(
+      buildOpenCodeConfig({ mcpEntry: MCP_ENTRY, scope: SCOPE, env: process.env }),
+    );
+  });
+});
