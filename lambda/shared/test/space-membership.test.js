@@ -65,9 +65,14 @@ describe('space membership store', () => {
     });
     const command = ddb.send.mock.calls[0][0];
     expect(command).toBeInstanceOf(TransactWriteCommand);
-    expect(command.input.TransactItems).toHaveLength(2);
+    expect(command.input.TransactItems).toHaveLength(3);
     expect(command.input.TransactItems[0].Put.Item.membershipRole).toBe('owner');
     expect(command.input.TransactItems[1].Put.Item.actorId).toBe('user-1');
+    expect(command.input.TransactItems[2].Update).toMatchObject({
+      Key: { pk: 'SPACE#space-1', sk: 'OWNER_GUARD' },
+      UpdateExpression: 'ADD ownerCount :delta',
+      ExpressionAttributeValues: { ':delta': 1 },
+    });
   });
 
   it('finds another owner on a later page', async () => {
@@ -96,6 +101,35 @@ describe('space membership store', () => {
         before: { membershipRole: 'owner' },
       }),
     ).rejects.toMatchObject({ code: 'LAST_OWNER' });
+  });
+
+  it('guards owner removal atomically after the paginated pre-check', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          Items: [
+            { userId: 'target', membershipRole: 'owner' },
+            { userId: 'other', membershipRole: 'owner' },
+          ],
+        })
+        .mockResolvedValueOnce({}),
+    };
+
+    await removeMembership(ddb, {
+      spaceId: 'space-1',
+      actorId: 'other',
+      targetUserId: 'target',
+      before: { membershipRole: 'owner' },
+    });
+
+    const transaction = ddb.send.mock.calls[1][0];
+    expect(transaction).toBeInstanceOf(TransactWriteCommand);
+    expect(transaction.input.TransactItems[2].Update).toMatchObject({
+      Key: { pk: 'SPACE#space-1', sk: 'OWNER_GUARD' },
+      ConditionExpression: 'ownerCount > :minimum',
+      ExpressionAttributeValues: { ':delta': -1, ':minimum': 1 },
+    });
   });
 
   it('can preserve the deleting owner until surrounding cleanup succeeds', async () => {

@@ -70,6 +70,7 @@ export const handler = async (event, context) => {
 
     const projectExists = async () => g.V().has('Project', 'id', projectId).hasNext();
     const getRequestingUserRole = async () => getMembershipRole(ddb, projectId, requestingUserId);
+    if (!(await projectExists())) return response(404, { error: 'Project not found' });
 
     switch (httpMethod) {
       case 'GET': {
@@ -77,7 +78,6 @@ export const handler = async (event, context) => {
         const role = await getRequestingUserRole();
         if (!role) return response(403, { error: 'Access denied' });
 
-        if (!(await projectExists())) return response(404, { error: 'Project not found' });
         const query = event.queryStringParameters || {};
         const paginationRequested = query.nextToken !== undefined || query.limit !== undefined;
         const requestedLimit = query.limit === undefined ? undefined : Number(query.limit);

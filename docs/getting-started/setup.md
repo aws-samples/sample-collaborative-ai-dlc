@@ -193,20 +193,20 @@ to retry, and an existing destination membership is never overwritten by a
 retry. When Neptune has no membership edges, the migration is a successful
 no-op that leaves DynamoDB unchanged.
 
-A failed migration stops the application switch. The obsolete `HAS_MEMBER`
-edges are deliberately retained for a later cleanup release so the previous
-application version remains deployable during the rollback window. The new
-application never consults those edges for authorization. No separate migration
-command, maintenance pause, worker restart, or forced realtime disconnect is
-required. A membership edit made during the copy/deployment window can be lost;
-after the switch DynamoDB is authoritative and a failed lookup denies access.
+A failed migration stops the application switch. After all DynamoDB-only
+membership consumers have deployed, Terraform removes the obsolete
+`HAS_MEMBER` edges in a retry-safe cleanup invocation. The new application
+never consults those edges for authorization. No separate migration command,
+maintenance pause, worker restart, or forced realtime disconnect is required.
+A membership edit made during the copy/deployment window can be lost; after
+the switch DynamoDB is authoritative and a failed lookup denies access.
 Existing browser connections remain open until their normal token refresh or
 reconnect, when membership is checked again.
 
-During the rollback window, reverting to the previous application version can
-use the retained Neptune data. After new DynamoDB membership writes occur,
-rollback must preserve or reconcile those writes rather than treating the old
-graph edges as current.
+After the cleanup invocation, rollback to a Neptune-authorized application
+version is not supported. Rollback must keep the DynamoDB membership readers
+and preserve or reconcile any membership writes that occurred after the
+switch.
 
 To override without editing the file — useful for CI, throwaway environments, or trying a hostname before committing to it — pass `--var`, repeated per variable:
 

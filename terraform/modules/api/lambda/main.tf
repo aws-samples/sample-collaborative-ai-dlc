@@ -3387,6 +3387,27 @@ resource "aws_lambda_invocation" "migrate_space_memberships" {
   ]
 }
 
+resource "aws_lambda_invocation" "cleanup_neptune_space_memberships" {
+  function_name = module.membership_migration_lambda.lambda_function_name
+  input         = jsonencode({ action = "cleanup" })
+
+  depends_on = [
+    aws_lambda_invocation.migrate_space_memberships,
+    module.source_control_lambda,
+    module.projects_lambda,
+    module.users_lambda,
+    module.sprints_lambda,
+    module.questions_lambda,
+    module.trackers_lambda,
+    module.discussions_lambda,
+    module.intents_lambda,
+    module.intent_pin_lookup_lambda,
+    aws_iam_role_policy.membership_read,
+    aws_iam_role_policy.membership_tasks_read,
+    aws_iam_role_policy.membership_project_write,
+  ]
+}
+
 locals {
   membership_reader_roles = {
     agents         = aws_iam_role.agents_orchestrator.id

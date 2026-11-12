@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { baselineId, migrateMemberships, migrationItems } from '../index.js';
+import { baselineId, migrateMemberships, migrationItems, removeMembershipEdges } from '../index.js';
 
 beforeEach(() => {
   process.env.ACCESS_TABLE = 'access';
@@ -26,7 +26,9 @@ describe('membership migration', () => {
     const client = {
       send: vi.fn(async (command) => {
         if (command instanceof TransactWriteCommand) return {};
-        if (command instanceof GetCommand) return { Item: { membershipRole: 'owner' } };
+        if (command instanceof GetCommand) {
+          return { Item: { membershipRole: 'owner' } };
+        }
         throw new Error('unexpected command');
       }),
     };
@@ -37,6 +39,11 @@ describe('membership migration', () => {
         now: '2026-11-12T00:00:00.000Z',
       }),
     ).resolves.toMatchObject({ copied: 1, sourceCount: 1 });
+    const transaction = client.send.mock.calls[0][0];
+    expect(transaction.input.TransactItems[2].Update).toMatchObject({
+      Key: { pk: 'SPACE#space-1', sk: 'OWNER_GUARD' },
+      UpdateExpression: 'ADD ownerCount :one',
+    });
   });
 
   it('preserves an existing destination membership on retry', async () => {
@@ -57,5 +64,32 @@ describe('membership migration', () => {
         now: '2026-11-12T00:00:00.000Z',
       }),
     ).resolves.toMatchObject({ preserved: 1 });
+  });
+
+  it('fails deployment verification when a source membership is missing', async () => {
+    const client = {
+      send: vi.fn().mockResolvedValueOnce({}).mockResolvedValueOnce({}),
+    };
+    await expect(
+      migrateMemberships({
+        client,
+        sources: [{ spaceId: 'space-1', userId: 'user-1', role: 'member' }],
+        now: '2026-11-12T00:00:00.000Z',
+      }),
+    ).rejects.toThrow('Membership migration verification failed for space space-1');
+  });
+
+  it('removes only project membership edges during cleanup', async () => {
+    const iterate = vi.fn().mockResolvedValue(undefined);
+    const drop = vi.fn(() => ({ iterate }));
+    const outE = vi.fn(() => ({ drop }));
+    const hasLabel = vi.fn(() => ({ outE }));
+    const g = { V: vi.fn(() => ({ hasLabel })) };
+
+    await expect(removeMembershipEdges(g)).resolves.toEqual({ cleaned: true });
+    expect(hasLabel).toHaveBeenCalledWith('Project');
+    expect(outE).toHaveBeenCalledWith('HAS_MEMBER');
+    expect(drop).toHaveBeenCalledOnce();
+    expect(iterate).toHaveBeenCalledOnce();
   });
 });

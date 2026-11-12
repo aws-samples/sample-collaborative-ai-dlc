@@ -23,6 +23,10 @@ const auditTable = () => {
 
 const spaceKey = (spaceId) => `SPACE#${spaceId}`;
 const memberKey = (userId) => `MEMBER#${userId}`;
+const ownerGuardKey = (spaceId) => ({
+  pk: spaceKey(spaceId),
+  sk: 'OWNER_GUARD',
+});
 
 const normalizeMembershipRole = (role) => {
   if (role === 'owner' || role === 'admin') return ROLE_OWNER;
@@ -178,6 +182,30 @@ const auditItem = ({ spaceId, actorId, action, targetUserId, before, after, now,
   changeId,
 });
 
+const ownerCountChange = (beforeRole, afterRole) => {
+  const wasOwner = beforeRole === ROLE_OWNER;
+  const isOwner = afterRole === ROLE_OWNER;
+  if (wasOwner === isOwner) return 0;
+  return isOwner ? 1 : -1;
+};
+
+const ownerGuardUpdate = (spaceId, delta) => {
+  if (!delta) return null;
+  const decrement = delta < 0;
+  return {
+    Update: {
+      TableName: accessTable(),
+      Key: ownerGuardKey(spaceId),
+      UpdateExpression: 'ADD ownerCount :delta',
+      ExpressionAttributeValues: {
+        ':delta': delta,
+        ...(decrement ? { ':minimum': 1 } : {}),
+      },
+      ...(decrement ? { ConditionExpression: 'ownerCount > :minimum' } : {}),
+    },
+  };
+};
+
 const saveMembershipChange = async (
   ddb,
   {
@@ -193,6 +221,9 @@ const saveMembershipChange = async (
 ) => {
   const membershipRole = normalizeMembershipRole(role);
   await assertOwnerChangeAllowed(ddb, spaceId, targetUserId, before, membershipRole);
+  const previousRole = before?.membershipRole
+    ? normalizeMembershipRole(before.membershipRole)
+    : null;
   const item = {
     ...membershipKey(spaceId, targetUserId),
     spaceId,
@@ -206,7 +237,10 @@ const saveMembershipChange = async (
       Put: {
         TableName: accessTable(),
         Item: item,
-        ConditionExpression: before ? 'attribute_exists(pk)' : 'attribute_not_exists(pk)',
+        ConditionExpression: before
+          ? 'attribute_exists(pk) AND membershipRole = :previousRole'
+          : 'attribute_not_exists(pk)',
+        ...(before ? { ExpressionAttributeValues: { ':previousRole': previousRole } } : {}),
       },
     },
     {
@@ -226,6 +260,8 @@ const saveMembershipChange = async (
       },
     },
   ];
+  const guard = ownerGuardUpdate(spaceId, ownerCountChange(previousRole, membershipRole));
+  if (guard) transaction.push(guard);
   await ddb.send(new TransactWriteCommand({ TransactItems: transaction }));
   return item;
 };
@@ -270,6 +306,8 @@ const removeMembership = async (
       },
     },
   ];
+  const guard = ownerGuardUpdate(spaceId, ownerCountChange(previousRole, null));
+  if (guard) transaction.push(guard);
   await ddb.send(new TransactWriteCommand({ TransactItems: transaction }));
   return true;
 };
@@ -305,6 +343,14 @@ const deleteSpaceMemberships = async (
       }),
     );
   }
+  if (deletePreserved) {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: accessTable(),
+        Key: ownerGuardKey(spaceId),
+      }),
+    );
+  }
   return preserved;
 };
 
@@ -328,6 +374,7 @@ export {
   memberKey,
   membershipKey,
   normalizeMembershipRole,
+  ownerGuardKey,
   removeMembership,
   saveMembershipChange,
   spaceKey,

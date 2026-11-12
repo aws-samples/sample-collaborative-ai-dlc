@@ -49,6 +49,17 @@ const migrationItems = ({ spaceId, userId, role, now }) => {
 
 const copyMembership = async (client, source, now) => {
   const { membership, audit } = migrationItems({ ...source, now });
+  const ownerGuard =
+    membership.membershipRole === 'owner'
+      ? {
+          Update: {
+            TableName: process.env.ACCESS_TABLE,
+            Key: { pk: membership.pk, sk: 'OWNER_GUARD' },
+            UpdateExpression: 'ADD ownerCount :one',
+            ExpressionAttributeValues: { ':one': 1 },
+          },
+        }
+      : null;
   try {
     await client.send(
       new TransactWriteCommand({
@@ -67,6 +78,7 @@ const copyMembership = async (client, source, now) => {
               ConditionExpression: 'attribute_not_exists(pk)',
             },
           },
+          ...(ownerGuard ? [ownerGuard] : []),
         ],
       }),
     );
@@ -85,6 +97,24 @@ const copyMembership = async (client, source, now) => {
   }
 };
 
+const verifyMemberships = async (client, sources) => {
+  for (const source of sources) {
+    const result = await client.send(
+      new GetCommand({
+        TableName: process.env.ACCESS_TABLE,
+        Key: {
+          pk: `SPACE#${source.spaceId}`,
+          sk: `MEMBER#${source.userId}`,
+        },
+        ConsistentRead: true,
+      }),
+    );
+    if (!result.Item) {
+      throw new Error(`Membership migration verification failed for space ${source.spaceId}`);
+    }
+  }
+};
+
 const migrateMemberships = async ({ client, sources, now = new Date().toISOString() }) => {
   let copied = 0;
   let preserved = 0;
@@ -93,6 +123,7 @@ const migrateMemberships = async ({ client, sources, now = new Date().toISOStrin
     if (result === 'copied') copied += 1;
     else preserved += 1;
   }
+  await verifyMemberships(client, sources);
   return { sourceCount: sources.length, copied, preserved };
 };
 
@@ -134,10 +165,16 @@ const readSources = async (g) => {
   });
 };
 
-export const handler = async () => {
+const removeMembershipEdges = async (g) => {
+  await g.V().hasLabel('Project').outE('HAS_MEMBER').drop().iterate();
+  return { cleaned: true };
+};
+
+export const handler = async (event = {}) => {
   const conn = await getConnection();
   try {
     const g = traversal().withRemote(conn);
+    if (event.action === 'cleanup') return removeMembershipEdges(g);
     const sources = await readSources(g);
     if (sources.length === 0) return { sourceCount: 0, copied: 0, preserved: 0 };
     return migrateMemberships({ client: ddb, sources });
@@ -146,4 +183,4 @@ export const handler = async () => {
   }
 };
 
-export { baselineId, migrateMemberships, migrationItems, normalizedRole };
+export { baselineId, migrateMemberships, migrationItems, normalizedRole, removeMembershipEdges };
