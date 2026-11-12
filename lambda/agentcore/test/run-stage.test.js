@@ -21,6 +21,7 @@ import { currentCredentialSession } from '../credential-session.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
+import { createRemoteProcessStore } from '../engine-data-client.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -4699,6 +4700,56 @@ describe('runStage — Kiro store sync (restore before spawn, persist after)', (
     );
     expect(res).toMatchObject({ ok: false, reason });
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  // Engine data answers every call under a grant whose run a rewind replaced
+  // with this denial; the client rehydrates it into a thrown error.
+  const deniedStore = (code) =>
+    createRemoteProcessStore({
+      grant: () => 'grant',
+      invoke: async () => ({
+        error: { name: 'EngineDataAccessDenied', code, message: 'Engine data call denied' },
+      }),
+    });
+
+  it('reports a stage claim denied for a replaced run as retired', async () => {
+    const remote = deniedStore('run_retired');
+    const store = { ...spyStore(), claimStageAttempt: remote.claimStageAttempt };
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn }),
+    );
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed claim as retired when the META re-read is denied for a replaced run', async () => {
+    const store = {
+      ...spyStore(),
+      claimStageAttempt: async () => {
+        throw Object.assign(new Error('RUNNING under cb-old'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      },
+      getExecution: deniedStore('run_retired').getExecution,
+    };
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn: vi.fn(okSpawn) }),
+    );
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+  });
+
+  it('still fails a stage on any other engine-data denial', async () => {
+    const remote = deniedStore('scope_mismatch');
+    const store = { ...spyStore(), claimStageAttempt: remote.claimStageAttempt };
+    await expect(
+      runStage(
+        { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+        baseDeps({ store, spawnFn: vi.fn(okSpawn) }),
+      ),
+    ).rejects.toMatchObject({ name: 'EngineDataAccessDenied', code: 'scope_mismatch' });
   });
 
   it('retires a superseded Kiro answer without changing stage state', async () => {

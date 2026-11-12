@@ -138,6 +138,7 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'r
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
+import { ENGINE_DATA_DENIED_ERROR } from '../../shared/engine-data-ops.js';
 import { invokeSourceControlOperation } from '../clients.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -5359,11 +5360,17 @@ const runStageAttempt = async (
 // callback, left by an earlier attempt that crashed or was refused, leaves this
 // run the owner: the orchestrator exits without a terminal write on `retired`,
 // so report a stage failure it can retry instead.
+// Engine data denies every call of a grant whose run a rewind replaced, before
+// any conditional write runs.
+const isRunRetired = (error) =>
+  error?.name === ENGINE_DATA_DENIED_ERROR && error.code === 'run_retired';
+
 const ownershipConflict = async (store, { executionId, orchestratorRunId }) => {
   let meta;
   try {
     meta = await store.getExecution(executionId, { consistentRead: true });
-  } catch {
+  } catch (error) {
+    if (isRunRetired(error)) return { ok: false, reason: 'retired' };
     meta = undefined; // unknown: a failure is retryable, a wrong `retired` is not
   }
   if (
@@ -5388,6 +5395,7 @@ const runStageImplementation = async (payload, deps) => {
   } catch (error) {
     if (error?.name === 'ConditionalCheckFailedException')
       return ownershipConflict(deps.store, payload);
+    if (isRunRetired(error)) return { ok: false, reason: 'retired' };
     throw error;
   }
 };
