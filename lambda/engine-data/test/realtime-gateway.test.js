@@ -10,6 +10,7 @@ import {
 import { issueGatewayGrant, verifyGatewayGrant } from '../../shared/gateway-grant.js';
 import { createRealtimeGateway } from '../realtime-gateway.js';
 import { REALTIME_EVENT } from '../realtime-schemas.js';
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
 const NOW = Date.parse('2026-10-19T12:00:00.000Z');
 const KID = 'kid-1';
@@ -194,7 +195,7 @@ describe('realtime gateway — event DTO and grants', () => {
     for (const payload of SAMPLES) {
       expect(REALTIME_EVENT.safeParse(payload).success).toBe(true);
       apiMock.resetHistory();
-      await expect(call(handler, payload, STAGE)).resolves.toEqual({
+      await expect(call(handler, payload)).resolves.toEqual({
         ok: true,
         result: { recipients: 1, delivered: 1, gone: 0, failed: 0 },
       });
@@ -293,6 +294,97 @@ describe('realtime gateway — event DTO and grants', () => {
     await expect(call(handler, SAMPLES.at(-1))).resolves.toEqual(denial('intent_not_found'));
     anchor = { exists: true, projectIds: ['p-2'] };
     await expect(call(handler, SAMPLES.at(-1))).resolves.toEqual(denial('scope_mismatch'));
+  });
+});
+
+describe('realtime gateway — stage grants speak only as their own stage', () => {
+  const PIN = { workflowId: 'aidlc-v2', workflowVersion: 3 };
+  const OWN = planStageInstanceId('aidlc-v2@3', 'build');
+  const SIBLING = planStageInstanceId('aidlc-v2@3', 'review');
+  const LANE = { ...STAGE, stageId: 'code-generation', unitSlug: 'billing', sectionIndex: 2 };
+  const LANE_SI = planStageInstanceId('aidlc-v2@3', 'code-generation', 'billing', 2);
+  const own = (stageInstanceId, unitSlug = null, sectionIndex = null) => ({
+    ...IDS,
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+  });
+
+  beforeEach(() => {
+    metas['i-1'] = { projectId: 'p-1', intentId: 'i-1', ...PIN };
+    for (const id of [OWN, SIBLING, LANE_SI]) {
+      stages[`i-1/${id}`] = { executionId: 'i-1', stageInstanceId: id };
+    }
+  });
+
+  // What run-stage (and the process bridge and usage recorder inside it)
+  // broadcasts for its stage, plus the execution-level events that name no stage.
+  const runStagePayloads = (si, unitSlug = null, sectionIndex = null) => [
+    {
+      action: 'agent.stage',
+      ...own(si, unitSlug, sectionIndex),
+      stageId: 'build',
+      state: 'RUNNING',
+    },
+    { action: 'agent.stage', ...IDS, stageInstanceId: null, stageId: 'build', state: 'FAILED' },
+    { action: 'agent.note', ...own(si, unitSlug, sectionIndex), noteType: 'v2.stage.note' },
+    { action: 'agent.workspace', ...own(si, unitSlug, sectionIndex), state: 'RESTORED' },
+    { action: 'agent.steering', ...IDS, stageInstanceId: si, state: 'consumed', steerIds: ['s'] },
+    { action: 'agent.question', ...own(si, unitSlug, sectionIndex), humanTaskId: 'h' },
+    { action: 'agent.output', ...own(si, unitSlug, sectionIndex), seq: 1, content: 'x' },
+    { action: 'agent.metric', ...own(si, unitSlug, sectionIndex), metricId: 'm' },
+    { action: 'agent.execution', ...IDS, status: 'RUNNING', currentStage: 'build' },
+    { action: 'agent.units', ...IDS, unitCount: 2, state: 'PROMOTED' },
+    { action: 'agent.pr', ...IDS, prs: [{ prUrl: 'u' }] },
+    { action: 'agent.derived', ...IDS, artifactCount: 1, sectionCount: 2, itemCount: 3 },
+  ];
+
+  it('allows every event run-stage sends for its own stage', async () => {
+    const handler = gatewayWith();
+    for (const payload of runStagePayloads(OWN)) {
+      expect(REALTIME_EVENT.safeParse(payload).success, payload.action).toBe(true);
+      await expect(call(handler, payload, STAGE), payload.action).resolves.toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
+  it('allows a lane stage its own unit and section', async () => {
+    const handler = gatewayWith();
+    for (const payload of [
+      ...runStagePayloads(LANE_SI, 'billing', 2),
+      { action: 'agent.unit', ...IDS, unitSlug: 'billing', sectionIndex: 2, state: 'RUNNING' },
+    ]) {
+      await expect(call(handler, payload, LANE), payload.action).resolves.toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
+  it('denies a broadcast for a sibling stage, lane or Quorum edit pane', async () => {
+    const handler = gatewayWith();
+    for (const [payload, scope] of [
+      [{ action: 'agent.stage', ...own(SIBLING), stageId: 'review', state: 'FAILED' }, STAGE],
+      [{ action: 'agent.note', ...IDS, stageInstanceId: SIBLING }, STAGE],
+      [{ action: 'agent.output', ...IDS, stageInstanceId: 'qedit-e-1', content: 'x' }, STAGE],
+      [{ action: 'agent.unit', ...IDS, unitSlug: 'u', sectionIndex: 0, state: 'RUNNING' }, STAGE],
+      [{ action: 'agent.note', ...own(LANE_SI, 'billing', 2) }, STAGE],
+      [{ action: 'agent.unit', ...IDS, unitSlug: 'billing', sectionIndex: 3, state: 'X' }, LANE],
+      [{ action: 'agent.unit', ...IDS, unitSlug: 'search', sectionIndex: 2, state: 'X' }, LANE],
+      [{ action: 'agent.note', ...own(LANE_SI, 'billing', null) }, LANE],
+    ]) {
+      await expect(call(handler, payload, scope), JSON.stringify(payload)).resolves.toEqual(
+        denial('scope_mismatch'),
+      );
+    }
+    expect(posted()).toEqual([]);
+  });
+
+  it('denies a stage grant on an execution without a workflow pin', async () => {
+    metas['i-1'] = { projectId: 'p-1', intentId: 'i-1' };
+    await expect(
+      call(gatewayWith(), { action: 'agent.execution', ...IDS, status: 'RUNNING' }, STAGE),
+    ).resolves.toEqual(denial('scope_mismatch'));
   });
 });
 

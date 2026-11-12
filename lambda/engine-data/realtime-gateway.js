@@ -11,7 +11,10 @@
 //      intent (and still name a stage grant's run); without META, a draft
 //      compose or a discussion falls back to the Neptune Intent anchor. An
 //      existing contradictory META always denies;
-//   4. ids the event embeds resolve inside the granted scope: stages (or the
+//   4. a stage grant speaks only as its own stage: a stage instance, unit or
+//      section the event names must be the grant's (events naming none, such as
+//      execution progress, stay open to it);
+//   5. ids the event embeds resolve inside the granted scope: stages (or the
 //      Quorum edit behind a `qedit-` pane) in the execution, the compose row in
 //      the execution, the discussion message in the intent.
 // The channel is always `intent:<grant.intentId>`; connection ids, table and
@@ -35,9 +38,11 @@ import {
   deny,
   denyReplacedRun,
   grantAudit,
+  grantStageInstanceId,
   hasPrototypeKey,
   issuePaths,
   onConflictLane,
+  sameAsGrant,
   serializeError,
   verifyGrantOrDeny,
 } from './gateway-common.js';
@@ -101,6 +106,18 @@ const checkEmbedded = async (store, grant, payload) => {
   }
 };
 
+// The same binding the store applies to a stage grant's writes, so a session
+// cannot spoof live progress for a sibling stage or lane of its execution.
+const bindStageEvent = (grant, meta, payload) => {
+  if (
+    !sameAsGrant(payload.stageInstanceId ?? undefined, grantStageInstanceId(grant, meta)) ||
+    !sameAsGrant(payload.unitSlug, grant.unitSlug) ||
+    !sameAsGrant(payload.sectionIndex, grant.sectionIndex)
+  ) {
+    deny('scope_mismatch');
+  }
+};
+
 export const createRealtimeGateway = ({
   verifyGrant,
   createStore,
@@ -161,6 +178,7 @@ export const createRealtimeGateway = ({
     ) {
       deny('execution_not_found');
     }
+    if (grant.mode === 'stage') bindStageEvent(grant, meta, payload);
     if (!discussion) await checkEmbedded(store, grant, payload);
     if (meta && !discussion) return;
 
