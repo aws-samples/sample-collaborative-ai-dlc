@@ -85,7 +85,13 @@ const harness = () => {
     ...(mode
       ? {
           gatewayGrant: await issueGatewayGrant(
-            { mode, projectId, executionId, intentId: 'i' },
+            {
+              mode,
+              projectId,
+              executionId,
+              intentId: 'i',
+              ...(mode === 'conflict' ? { unitSlug: 'u', sectionIndex: 0 } : {}),
+            },
             {
               now,
               ttlSeconds: 300,

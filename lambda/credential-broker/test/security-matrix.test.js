@@ -187,7 +187,16 @@ describe('broker source-control security matrix', () => {
     'accepts engine mode %s and canonical attached repository identity',
     async (mode) => {
       await expect(
-        authorizeCredentialRequest({ ...request, gatewayGrant: await token({ mode }) }, harness()),
+        authorizeCredentialRequest(
+          {
+            ...request,
+            gatewayGrant: await token({
+              mode,
+              ...(mode === 'conflict' ? { unitSlug: 'u', sectionIndex: 0 } : {}),
+            }),
+          },
+          harness(),
+        ),
       ).resolves.toEqual({ committer: { name: 'App', email: 'app@example.test' } });
     },
   );
