@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Loader2, Package, Search, Workflow as WorkflowIcon } from 'lucide-react';
 import {
@@ -38,6 +38,7 @@ export function ReleaseContentsDialog({
   const [error, setError] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<BlockType>(initialType);
   const [query, setQuery] = useState('');
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!releaseId) return;
@@ -73,7 +74,18 @@ export function ReleaseContentsDialog({
 
   return (
     <Dialog open={!!releaseId} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent
+        className="max-w-3xl"
+        onOpenAutoFocus={() => {
+          returnFocus.current = document.activeElement as HTMLElement | null;
+        }}
+        onCloseAutoFocus={(event) => {
+          if (returnFocus.current?.isConnected) {
+            event.preventDefault();
+            returnFocus.current.focus();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Package className="h-4 w-4" />

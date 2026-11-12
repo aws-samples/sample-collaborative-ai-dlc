@@ -4,6 +4,7 @@ import type { ReleaseBlock } from '@/services/aidlcReleases';
 
 const list = vi.fn();
 const stableCatalog = vi.fn();
+const catalog = vi.fn();
 
 vi.mock('@/services/blocks', () => ({
   blocksService: { list: (...a: unknown[]) => list(...a) },
@@ -12,11 +13,18 @@ vi.mock('@/services/aidlcReleases', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/aidlcReleases')>();
   return {
     ...original,
-    aidlcReleasesService: { stableCatalog: (...a: unknown[]) => stableCatalog(...a) },
+    aidlcReleasesService: {
+      stableCatalog: (...a: unknown[]) => stableCatalog(...a),
+      catalog: (...a: unknown[]) => catalog(...a),
+    },
   };
 });
 
-import { loadStageReferenceOptions, mergeReferenceBlocks } from './stageReferenceOptions';
+import {
+  loadStageReferenceOptions,
+  mergeReferenceBlocks,
+  mergeReleaseLibraryBlocks,
+} from './stageReferenceOptions';
 
 const block = (id: string, tenantId: string, name = id): Block => ({
   id,
@@ -70,9 +78,39 @@ describe('mergeReferenceBlocks', () => {
       // …the release replaces the SYSTEM baseline…
       { id: 'both', label: 'Release both', source: 'AI-DLC 2.11.0' },
       { id: 'security-reviewer', label: 'security-reviewer', source: 'AI-DLC 2.11.0' },
-      // …and a SYSTEM-only block is still offered, labelled as such.
-      { id: 'system-only', label: 'system-only', source: 'SYSTEM' },
+      // …and a SYSTEM-only block is not offered: a pinned intent resolves the
+      // release and the library, never the SYSTEM rows, so it could not run.
     ]);
+  });
+});
+
+describe('mergeReleaseLibraryBlocks', () => {
+  it('keeps library overrides, applies the selected release over SYSTEM, and labels release blocks read-only', () => {
+    const blocks = mergeReleaseLibraryBlocks(
+      [
+        block('library-only', 'default'),
+        block('shared', 'default', 'Library copy'),
+        block('shared', 'SYSTEM', 'System copy'),
+        block('system-only', 'SYSTEM'),
+      ],
+      [{ ...releaseBlock('shared', 'Release copy') }, { ...releaseBlock('release-only') }],
+    );
+
+    expect(blocks.map(({ id, name, tenantId }) => ({ id, name, tenantId }))).toEqual([
+      { id: 'library-only', name: 'library-only', tenantId: 'default' },
+      { id: 'shared', name: 'Library copy', tenantId: 'default' },
+      { id: 'release-only', name: 'release-only', tenantId: 'SYSTEM' },
+      { id: 'system-only', name: 'system-only', tenantId: 'SYSTEM' },
+    ]);
+    // Kept so a workflow that already places it still shows it, but marked:
+    // the selected release cannot resolve it, so it is not offered to add.
+    expect(blocks.find(({ id }) => id === 'system-only')).toMatchObject({ notInRelease: true });
+    expect(blocks.find(({ id }) => id === 'shared')).not.toHaveProperty('notInRelease');
+    expect(blocks.find(({ id }) => id === 'release-only')).toMatchObject({
+      readOnly: true,
+      source: 'release',
+      releaseId: 'aidlc:abc',
+    });
   });
 });
 
@@ -84,6 +122,7 @@ describe('loadStageReferenceOptions', () => {
         Promise.resolve({ blocks: type === 'stage' ? [block('this-stage', 'default')] : [] }),
       );
     stableCatalog.mockReset();
+    catalog.mockReset();
   });
 
   it('adds the stable release to every picker', async () => {
@@ -123,5 +162,29 @@ describe('loadStageReferenceOptions', () => {
     expect(options.stages).toEqual([
       { id: 'this-stage', label: 'this-stage', description: undefined },
     ]);
+  });
+
+  it('loads the requested release exactly and propagates a failed read', async () => {
+    catalog.mockResolvedValue({
+      releaseId: 'aidlc:old',
+      release: { releaseId: 'aidlc:old', upstreamVersion: '2.9.0' },
+      contents: {
+        release: { releaseId: 'aidlc:old', upstreamVersion: '2.9.0' },
+        workflow: null,
+        blocks: { agent: [releaseBlock('old-reviewer')] },
+      },
+    });
+
+    const { options, release } = await loadStageReferenceOptions(undefined, 'aidlc:old');
+
+    expect(catalog).toHaveBeenCalledWith('aidlc:old', ['agent', 'artifact', 'sensor', 'stage']);
+    expect(stableCatalog).not.toHaveBeenCalled();
+    expect(release).toEqual({ releaseId: 'aidlc:old', label: 'AI-DLC 2.9.0' });
+    expect(options.agents?.[0]).toMatchObject({ id: 'old-reviewer', source: 'AI-DLC 2.9.0' });
+
+    catalog.mockRejectedValueOnce(new Error('release unavailable'));
+    await expect(loadStageReferenceOptions(undefined, 'aidlc:old')).rejects.toThrow(
+      'release unavailable',
+    );
   });
 });

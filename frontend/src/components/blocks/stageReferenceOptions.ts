@@ -11,9 +11,10 @@ import type { ReferenceOption, StageReferenceOptions } from './StageEditor';
 //
 // One entry per id, in the precedence a pinned intent resolves them: the user
 // library (`default`) shadows the release, and the release replaces the SYSTEM
-// baseline, which only an unpinned intent still reads. Each option names its
-// source when a release is in play, so an author can tell a release agent from
-// a library copy of it.
+// baseline entirely. A pinned intent never reads the SYSTEM rows, so with a
+// release in play a block only SYSTEM has is not offered: it could not run.
+// Each option names its source when a release is in play, so an author can
+// tell a release agent from a library copy of it.
 
 export interface StageReferenceRelease {
   releaseId: string;
@@ -39,23 +40,47 @@ export const mergeReferenceBlocks = (
   };
   for (const block of library) if (block.tenantId !== 'SYSTEM') add(block, 'library');
   for (const block of release) add(block, releaseLabel);
-  for (const block of library) if (block.tenantId === 'SYSTEM') add(block, 'SYSTEM');
+  return [...byId.values()];
+};
+
+export const mergeReleaseLibraryBlocks = (
+  library: Block[],
+  release: ReleaseBlock[] | null = null,
+): Block[] => {
+  if (!release) return library;
+  const byId = new Map<string, Block>();
+  for (const block of library) {
+    if (block.tenantId !== 'SYSTEM') byId.set(block.id, block);
+  }
+  for (const block of release) {
+    if (!byId.has(block.id)) byId.set(block.id, { ...block, tenantId: 'SYSTEM', readOnly: true });
+  }
+  // A SYSTEM-only block stays so a workflow that already places it can still
+  // show it, marked because the selected release cannot resolve it.
+  for (const block of library) {
+    if (block.tenantId === 'SYSTEM' && !byId.has(block.id)) {
+      byId.set(block.id, { ...block, notInRelease: true });
+    }
+  }
   return [...byId.values()];
 };
 
 export const loadStageReferenceOptions = async (
   excludeStageId?: string,
+  releaseId?: string | null,
 ): Promise<{ options: StageReferenceOptions; release: StageReferenceRelease | null }> => {
-  const [agents, artifacts, sensors, stages, stable] = await Promise.all([
+  const [agents, artifacts, sensors, stages, selected] = await Promise.all([
     blocksService.list('agent'),
     blocksService.list('artifact'),
     blocksService.list('sensor'),
     blocksService.list('stage'),
-    aidlcReleasesService.stableCatalog(['agent', 'artifact', 'sensor', 'stage']),
+    releaseId
+      ? aidlcReleasesService.catalog(releaseId, ['agent', 'artifact', 'sensor', 'stage'])
+      : aidlcReleasesService.stableCatalog(['agent', 'artifact', 'sensor', 'stage']),
   ]);
-  const label = stable ? releaseDisplayLabel(stable.release) : 'release';
+  const label = selected ? releaseDisplayLabel(selected.release) : 'release';
   const merge = (library: Block[], type: 'agent' | 'artifact' | 'sensor' | 'stage') =>
-    mergeReferenceBlocks(library, stable ? (stable.contents.blocks[type] ?? []) : null, label);
+    mergeReferenceBlocks(library, selected ? (selected.contents.blocks[type] ?? []) : null, label);
   return {
     options: {
       agents: merge(agents.blocks, 'agent'),
@@ -63,6 +88,6 @@ export const loadStageReferenceOptions = async (
       sensors: merge(sensors.blocks, 'sensor'),
       stages: merge(stages.blocks, 'stage').filter((stage) => stage.id !== excludeStageId),
     },
-    release: stable ? { releaseId: stable.releaseId, label } : null,
+    release: selected ? { releaseId: selected.releaseId, label } : null,
   };
 };

@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { Block, BlockType } from './blocks';
+import { currentSessionEpoch } from './sessionExpiry';
 
 // AI-DLC release registry — the typed client over the
 // registry routes in lambda/workflows. A "release" is one immutably imported
@@ -130,6 +131,7 @@ export interface ReleaseChannels {
 // An allowlisted compatibility profile an admin may register, annotated with
 // its publish/registration state (GET /aidlc-release-profiles).
 export interface RegistrableProfile {
+  sourceInfo?: { date: string; dateKind: 'release' | 'commit'; url: string } | null;
   profileId: string;
   releaseId: string;
   label: string | null;
@@ -197,19 +199,28 @@ export const isReleaseSelectable = (release: AidlcRelease): boolean =>
 // channel move or clear drops the cached value.
 export const SHARED_CHANNELS_TTL_MS = 30_000;
 
-let sharedChannelsEntry: { request: Promise<ReleaseChannels>; expiresAt: number } | null = null;
+let sharedChannelsEntry: {
+  request: Promise<ReleaseChannels>;
+  expiresAt: number;
+  sessionEpoch: number;
+} | null = null;
 
 const invalidateSharedChannels = () => {
   sharedChannelsEntry = null;
 };
 
 const sharedChannels = (): Promise<ReleaseChannels> => {
-  if (sharedChannelsEntry && sharedChannelsEntry.expiresAt > Date.now()) {
+  if (
+    sharedChannelsEntry &&
+    sharedChannelsEntry.expiresAt > Date.now() &&
+    sharedChannelsEntry.sessionEpoch === currentSessionEpoch()
+  ) {
     return sharedChannelsEntry.request;
   }
   const entry = {
     request: api.get<ReleaseChannels>('/aidlc-release-channels'),
     expiresAt: Date.now() + SHARED_CHANNELS_TTL_MS,
+    sessionEpoch: currentSessionEpoch(),
   };
   entry.request.catch(() => {
     if (sharedChannelsEntry === entry) sharedChannelsEntry = null;
@@ -272,28 +283,42 @@ const fetchReleaseContents = (releaseId: string, types?: readonly BlockType[]) =
   return api.get<ReleaseContents>(`${releasePath(releaseId)}/blocks${qs}`);
 };
 
-// A closure never changes under a release id, so the contents only go stale
-// when the record's closure is upgraded. A short TTL keeps every picker and
-// library tab on one read without pinning an upgraded closure for long.
+// Share concurrent picker reads, but bound retained catalogs like the intent
+// caches. Recheck after the TTL, an import upgrade, or a new login session.
 export const RELEASE_CONTENTS_TTL_MS = 60_000;
+const RELEASE_CONTENTS_CACHE_MAX = 20;
 
 const releaseContentsCache = new Map<
   string,
-  { request: Promise<ReleaseContents>; expiresAt: number }
+  { request: Promise<ReleaseContents>; expiresAt: number; sessionEpoch: number }
 >();
 
 const cachedReleaseContents = (releaseId: string, types?: readonly BlockType[]) => {
+  const now = Date.now();
+  const sessionEpoch = currentSessionEpoch();
+  for (const [entryKey, entry] of releaseContentsCache) {
+    if (entry.expiresAt <= now || entry.sessionEpoch !== sessionEpoch)
+      releaseContentsCache.delete(entryKey);
+  }
   const key = `${releaseId}|${types?.toSorted().join(',') ?? '*'}`;
   const cached = releaseContentsCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.request;
+  if (cached) {
+    releaseContentsCache.delete(key);
+    releaseContentsCache.set(key, cached);
+    return cached.request;
+  }
   const entry = {
     request: fetchReleaseContents(releaseId, types),
-    expiresAt: Date.now() + RELEASE_CONTENTS_TTL_MS,
+    expiresAt: now + RELEASE_CONTENTS_TTL_MS,
+    sessionEpoch,
   };
   entry.request.catch(() => {
     if (releaseContentsCache.get(key) === entry) releaseContentsCache.delete(key);
   });
   releaseContentsCache.set(key, entry);
+  while (releaseContentsCache.size > RELEASE_CONTENTS_CACHE_MAX) {
+    releaseContentsCache.delete(releaseContentsCache.keys().next().value!);
+  }
   return entry.request;
 };
 
@@ -321,6 +346,31 @@ const stableReleaseCatalog = async (
   } catch {
     return null;
   }
+};
+
+// An explicitly selected release is part of the caller's requested authoring
+// context. Surface load failures to that caller instead of silently substituting
+// the stable release or mutable library.
+const catalog = async (
+  releaseId: string,
+  types?: readonly BlockType[],
+): Promise<StableReleaseCatalog> => {
+  const contents = await cachedReleaseContents(releaseId, types);
+  return { releaseId, release: contents.release, contents };
+};
+
+// Forks sharing a base dialect must remain distinguishable in every selector.
+export const releaseVersionLabel = (
+  release: Pick<AidlcRelease, 'releaseId' | 'upstreamVersion'> & { sourceSha?: string },
+) => {
+  if (release.releaseId.startsWith('aidlc-custom:')) {
+    const identity = release.releaseId.slice('aidlc-custom:'.length);
+    const split = identity.lastIndexOf('@');
+    return split >= 0
+      ? identity.slice(0, split) + '@' + identity.slice(split + 1, split + 8)
+      : identity;
+  }
+  return release.upstreamVersion || release.sourceSha?.slice(0, 7) || release.releaseId;
 };
 
 // A short human label: the upstream version when the record has one.
@@ -385,4 +435,6 @@ export const aidlcReleasesService = {
     ),
   // The stable channel's release and catalog, or null (see above).
   stableCatalog: stableReleaseCatalog,
+  // One explicit release's catalog. Unlike stableCatalog, errors propagate.
+  catalog,
 };

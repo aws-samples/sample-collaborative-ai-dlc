@@ -142,9 +142,9 @@ variable "aidlc_custom_source_gitlab_token_secret_arn" {
   }
 }
 variable "aidlc_release_pinning" {
-  description = "Pin new intents to the immutable AI-DLC release published for the resolved ref (issue #482). \"on\" or \"off\"; existing intents are unaffected either way."
+  description = "Enable AI-DLC version selection for new intents. Standard deployment prepares the supported catalogs; an explicit \"off\" opts out. Until Stable is selected, the configured baseline remains in use. Existing intents are unaffected."
   type        = string
-  default     = "off"
+  default     = "on"
 
   validation {
     condition     = contains(["on", "off"], var.aidlc_release_pinning)

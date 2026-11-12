@@ -1,14 +1,15 @@
 // The block library and block editor with an AI-DLC release in play (#607).
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router';
 
 const list = vi.fn();
 const get = vi.fn();
 const getBody = vi.fn();
 const getScript = vi.fn();
 const stableCatalog = vi.fn();
+const catalogRequest = vi.fn();
 const contents = vi.fn();
 const releaseBlock = vi.fn();
 
@@ -33,6 +34,7 @@ vi.mock('@/services/aidlcReleases', async (importOriginal) => {
     ...original,
     aidlcReleasesService: {
       stableCatalog: (...a: unknown[]) => stableCatalog(...a),
+      catalog: (...a: unknown[]) => catalogRequest(...a),
       contents: (...a: unknown[]) => contents(...a),
       block: (...a: unknown[]) => releaseBlock(...a),
     },
@@ -103,6 +105,7 @@ beforeEach(() => {
   getBody.mockReset();
   getScript.mockReset();
   contents.mockReset();
+  catalogRequest.mockReset();
   releaseBlock.mockReset();
   stableCatalog.mockReset().mockResolvedValue(null);
 });
@@ -179,6 +182,28 @@ describe('BlockLibrary with a stable release', () => {
     expect(section).not.toHaveTextContent('(stable)');
   });
 
+  it('keeps an explicitly selected version when creating a custom stage', async () => {
+    contents.mockResolvedValue(
+      catalog(OTHER, '2.9.0', { stage: [fromRelease('old-stage', OTHER)] }),
+    );
+    catalogRequest.mockResolvedValue({
+      releaseId: OTHER,
+      release: { releaseId: OTHER, upstreamVersion: '2.9.0' },
+      contents: catalog(OTHER, '2.9.0', { stage: [fromRelease('old-stage', OTHER)] }),
+    });
+    const user = userEvent.setup();
+
+    renderAt(`/blocks/stage?libraryRelease=${encodeURIComponent(OTHER)}`);
+    const section = await screen.findByTestId('release-blocks');
+    expect(contents).toHaveBeenCalledWith(OTHER, ['stage']);
+    expect(section).toHaveTextContent('selected for authoring');
+    await user.click(screen.getByRole('button', { name: /create a stage with this version/i }));
+
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      `/blocks/stage/new?libraryRelease=${encodeURIComponent(OTHER)}`,
+    );
+  });
+
   it('opens a release block in the editor with its release', async () => {
     const user = userEvent.setup();
     stableCatalog.mockResolvedValue({
@@ -205,6 +230,42 @@ describe('BlockLibrary with a stable release', () => {
 });
 
 describe('BlockEditor', () => {
+  it('ignores a late release body after switching to another version', async () => {
+    let resolveOld!: (value: unknown) => void;
+    const oldResponse = new Promise((resolve) => {
+      resolveOld = resolve;
+    });
+    const detail = (releaseId: string, name: string) => ({
+      block: fromRelease('reviewer', releaseId, { name }),
+      body: name,
+      script: '',
+    });
+    releaseBlock.mockImplementation((releaseId) =>
+      releaseId === STABLE ? oldResponse : Promise.resolve(detail(OTHER, 'Current version')),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter
+        initialEntries={[`/blocks/agent/reviewer?release=${encodeURIComponent(STABLE)}`]}
+      >
+        <Link to={`/blocks/agent/reviewer?release=${encodeURIComponent(OTHER)}`}>
+          Switch version
+        </Link>
+        <Routes>
+          <Route path="/blocks/:type/:id" element={<BlockEditor />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(releaseBlock).toHaveBeenCalledWith(STABLE, 'agent', 'reviewer'));
+    await user.click(screen.getByRole('link', { name: 'Switch version' }));
+    expect(await screen.findByDisplayValue('Current version')).toBeDisabled();
+    await act(async () => {
+      resolveOld(detail(STABLE, 'Previous version'));
+    });
+    expect(screen.queryByDisplayValue('Previous version')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('Current version')).toBeDisabled();
+  });
+
   it('loads a ?release= block from the release, read-only, never from the library', async () => {
     releaseBlock.mockResolvedValue({
       block: fromRelease('security-reviewer', STABLE, { name: 'Security reviewer', hasBody: true }),
@@ -236,5 +297,54 @@ describe('BlockEditor', () => {
     expect(await screen.findByTestId('picker-release-note')).toHaveTextContent(
       'The pickers include AI-DLC 2.11.0, the stable release new intents pin.',
     );
+  });
+
+  it('keeps a stage editable when its reference lists fail without a selected version', async () => {
+    get.mockResolvedValue(block('my-stage', 'default', { blockType: 'STAGE', name: 'My stage' }));
+    stableCatalog.mockRejectedValue(new Error('Network error'));
+    const user = userEvent.setup();
+
+    renderAt('/blocks/stage/my-stage');
+    await user.click(await screen.findByRole('tab', { name: 'Configuration' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    expect(screen.queryByText(/before saving this stage/)).toBeNull();
+  });
+
+  it('keeps stage references on the newly selected version when the old catalog arrives late', async () => {
+    let resolveOld!: (value: unknown) => void;
+    const oldResponse = new Promise((resolve) => {
+      resolveOld = resolve;
+    });
+    const selected = (releaseId: string, version: string) => ({
+      releaseId,
+      release: { releaseId, upstreamVersion: version },
+      contents: catalog(releaseId, version, { agent: [] }),
+    });
+    get.mockResolvedValue(block('my-stage', 'default', { name: 'My stage' }));
+    catalogRequest.mockImplementation((releaseId) =>
+      releaseId === STABLE ? oldResponse : Promise.resolve(selected(OTHER, '2.11.3')),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter
+        initialEntries={[`/blocks/stage/my-stage?libraryRelease=${encodeURIComponent(STABLE)}`]}
+      >
+        <Link to={`/blocks/stage/my-stage?libraryRelease=${encodeURIComponent(OTHER)}`}>
+          Switch version
+        </Link>
+        <Routes>
+          <Route path="/blocks/:type/:id" element={<BlockEditor />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(catalogRequest).toHaveBeenCalledWith(STABLE, expect.any(Array)));
+    await user.click(screen.getByRole('link', { name: 'Switch version' }));
+    await user.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    expect(await screen.findByTestId('picker-release-note')).toHaveTextContent('AI-DLC 2.11.3');
+    await act(async () => {
+      resolveOld(selected(STABLE, '2.11.0'));
+    });
+    expect(screen.getByTestId('picker-release-note')).toHaveTextContent('AI-DLC 2.11.3');
   });
 });

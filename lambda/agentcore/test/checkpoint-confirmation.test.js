@@ -537,6 +537,31 @@ describe('rehydrateAuthorizations — what is NOT a human decision', () => {
   });
 });
 
+describe('2.11.3 optional plan review', () => {
+  it('parks at a recorded question when mandatory plan approval is off', async () => {
+    const policy = { summaryConfirmation: 'none', planApproval: null, learnings: 'off' };
+    const store = fakeStore();
+    const bridge = parkingBridge(store, { scope: { ...SCOPE, policy } });
+    await expect(
+      bridge.askQuestion({
+        questions: [
+          {
+            text: 'Plan: add OrderService. Tests: npm test.',
+            options: [{ label: 'Approve plan' }, { label: 'Request changes' }],
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ parked: true });
+    const [gate] = [...store.humanTasks.values()];
+    expect(JSON.parse(gate.questions)[0]).toMatchObject({
+      text: 'Plan: add OrderService. Tests: npm test.',
+    });
+    expect(gate.kind).toBe('question');
+    expect(store.receipts.size).toBe(0);
+    expect(policy.planApproval).toBeNull();
+  });
+});
+
 describe('request_plan_approval', () => {
   const PLAN_SCOPE = {
     ...SCOPE,

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
@@ -131,5 +132,24 @@ describe('ReleaseContentsDialog', () => {
     renderDialog();
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Release not found'));
+  });
+
+  it('returns keyboard focus to Browse contents when closed', async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <MemoryRouter>
+          <button onClick={() => setOpen(true)}>Browse contents</button>
+          {open && <ReleaseContentsDialog releaseId={RELEASE_ID} onClose={() => setOpen(false)} />}
+        </MemoryRouter>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Harness />);
+    const trigger = screen.getByRole('button', { name: 'Browse contents' });
+    await user.click(trigger);
+    await screen.findByText('Security reviewer');
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

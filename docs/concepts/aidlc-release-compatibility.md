@@ -88,7 +88,9 @@ loading the pinned catalog. A pinned run therefore resolves from its own
 immutable closure rather than from mutable system blocks or the newest upstream
 catalog.
 
-The `AIDLC_RELEASE_PINNING` deployment flag defaults to off. When off, new
+Standard deployments enable release selection by default after preparing the
+supported catalogs. An explicit `aidlc_release_pinning = "off"` (or the demo
+environment's `AIDLC_RELEASE_PINNING=off`) remains an opt-out. When off, new
 intents follow the existing platform-default path and do not receive an
 implicit release pin. The new-intent page only displays a version selector when
 the API confirms that pinning is enabled. If the flag changes while the page is
@@ -322,6 +324,45 @@ difference:
   Earlier releases do not, so such a record still reports two missing headings
   there.
 
+### AI-DLC 2.11.3
+
+2.11.3 imports from the pinned commit
+`63fd2901947ece8c5ad0cd831cdf5934a9666d47`, the preview commit the `v2.11.3`
+tag was promoted from; the promotion commit changes only release metadata. It
+keeps the 2.11 frontmatter dialect, scope settings, sensor declarations and the
+eleven compilable scope plans.
+Its Requirements Analysis `outputs` description has an unquoted colon that
+makes the upstream YAML invalid; importer revision 4 quotes that known scalar
+without changing its value.
+
+The 2.11.3 adapter keeps repository membership fixed and supports an optional
+human plan review. Administrators can inspect these differences before approval:
+
+| 2.11.3 behaviour             | Disposition | What the platform does                                                                                                                                                                                                                     |
+| ---------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `engine intent add-repo`     | refused     | Repository membership and credentials are fixed on the intent snapshot. Ask a human to add the repository to the project and start a new intent.                                                                                           |
+| `engine intent add-checkout` | refused     | The agent cannot add an arbitrary local checkout to the reviewed source manifest. Only repositories already bound to the intent are in scope.                                                                                              |
+| `engine plan first`          | adapted     | Use `request_plan_approval` when available, otherwise a recorded `ask_question` containing the plan and test instructions. The lead waits for the answer. This does not change the configured policy or reproduce the native one-off flag. |
+
+Two sensor behaviours change upstream in 2.11.3 and are not reproduced:
+
+- **`engine sensor-traceability --stage <stage> --output-path <path> --write-upstream`.**
+  Eight stages run it to write the stage's required upstream ids and an initial
+  `GAP` row for each into its traceability record. It is handled like any
+  sensor run on request: refused. The agent writes the record itself from the
+  artifacts it can read, labels it agent-derived rather than sensor-verified,
+  and records every id it cannot confirm as uncovered, so it surfaces at the
+  gate. The record is not initialized by the upstream tool.
+- **Dispatcher outcomes.** Upstream's sensor dispatcher now reports a script
+  error or unreadable output as `could-not-run` rather than a noted pass, and
+  can dispatch over a set of paths. The platform runs a stage's declared
+  sensors through its own runner, one matching file at a time, and maps their
+  exit codes itself, so these dispatcher outcomes do not apply.
+
+The 2.11.3 release is structurally valid and can be promoted after these
+limitations are reviewed. A workflow that requires any of the refused
+operations is not supported by this runtime.
+
 What these green tests do **not** prove, stated so the support claim stays
 bounded: real model behaviour under the truncated composer knowledge; live human
 reply, approval, edit and restore flows; reviewer and support prompts in a real
@@ -384,25 +425,88 @@ changing its source bytes, importer revision, or closure digest. The registry
 API exposes both the original fidelity gaps and the subset this build still
 cannot honour; the admin screen explains a refused promotion.
 
+### Admin version workflow
+
+The admin page shows Stable and Preview assignments immediately, with a compact
+table of five versions per page. Search covers every version, status and source
+repository, including versions on other pages. Stable is the default for new intents. Version links open the
+upstream GitHub release (or the pinned source for commit-only profiles). Dates
+are upstream GitHub publication dates; import and commit dates are never substituted.
+Select a version to expand its actions directly beneath the row. Only one row
+expands at a time, and the list stays usable. **Compatibility and contents**
+explains limitations and opens the pinned workflow and blocks. **Maintenance**
+contains visibility, retirement, import repair and admin notes.
+The entire version row opens its controls; an optional source link opens
+separately. Named versions without a source URL remain usable without a link.
+
+- **Test version** is optional. Compatibility is checked automatically if needed,
+  keeping an unapproved version unlisted, then the admin chooses a v2 space for
+  a normal workflow intent pinned to that exact release. The draft and results
+  follow the space's sharing permissions and use its runtime/model budget.
+  Platform-admin access is required to create and start a validation intent.
+- **Approve for use** checks compatibility and makes the version available to
+  users. Approval is an administrator's rollout decision, not a claim that an
+  automatic test ran. There is no completed-run prerequisite.
+- **Make stable** selects the default for new intents. **Use as preview** assigns
+  the preview channel. Existing intents keep their original version.
+- **Maintenance → Replace stable with** switches the default to another eligible
+  version, including an older approved release. Preview and Candidate labels can
+  also be removed here.
+- **Deprecate version** removes it from new-intent choices while existing intents
+  continue. Replace or remove channel assignments first. Approval can make a
+  deprecated version available again; raw import/support states remain under
+  **Import details and advanced state**.
+
+Validation intents persist an informational `methodologyReleaseTest` marker.
+Only an authenticated platform admin may request this mode, with an explicit
+release and release pinning enabled. It relaxes visibility at selection only:
+unqualified, non-runnable and existing-only releases are still refused, all
+closure and plan checks still run, and no runtime execution check is bypassed.
+
 ### Enable pinning and promote a release
 
-A deployment of this build can run 2.8.2, 2.9.0, 2.11.0, 2.11.1 or an admin-promoted
-fork as follows. Every step is explicit; none happens on its own.
+The standard installer and deployment scripts publish and register all eight
+supported official versions, including 2.11.3. Preparation is idempotent, runs
+after the baseline reseed (or after it is skipped with `--skip-seed`), and fails
+deployment if a catalog cannot be prepared; the error names the command to retry
+it. It preserves existing approvals, visibility, notes and channel choices, and
+does not approve new versions.
 
-1. Turn release pinning on. In the Terraform variables for the deployment, set
-   `aidlc_release_pinning = "on"` and apply. The demo deployment workflow reads
-   it from the optional `AIDLC_RELEASE_PINNING` GitHub environment variable.
-2. Publish the release bytes with the seed-blocks `importRelease` mode, for an
-   allowlisted profile or for a custom fork pinned to an exact SHA. A fork in a
-   private GitLab project needs the token secret described under
-   [Fork sources](#fork-sources).
-3. In the admin AI-DLC releases tab, register the published release. Check its
-   unhonoured values: a release with any cannot be promoted, and the list says
-   which behavior this build is missing.
-4. Set its support state to `selectable` (or `certified`), then make it
-   visible. Each step re-checks the release against this build.
-5. Optionally point a channel at it. `stable` makes it the default for new
-   intents; it requires `certified` unless the release is the platform baseline.
+When a deployment raises the importer revision, preparation moves each
+registered official version to the closure it just published, through the same
+checked upgrade an administrator runs. Intents already pinned keep the closure
+they started with; only new intents pin the new one. If the registry refuses an
+upgrade, for example because a channel would no longer be satisfied, the version
+stays on its older closure, the deployment prints a warning, and the releases
+tab shows **Upgrade needed** in its status.
+
+After deployment:
+
+1. Deploy normally. Version selection is enabled by default. If the deployment
+   explicitly opted out, remove that override or set `aidlc_release_pinning =
+   "on"`; the demo workflow also accepts `AIDLC_RELEASE_PINNING=on`. Preparation
+   never changes an existing Stable choice. If none is selected, the configured
+   platform baseline continues to serve new intents.
+2. In the admin AI-DLC releases tab, select the version and choose **Approve for
+   use**. Compatibility is checked automatically. **Test version** is optional.
+3. Choose **Make stable** for the default, or **Use as preview** for an opt-in
+   channel. Existing intents keep their original version.
+
+For direct Terraform applies, run the same preparation step from the repository
+root after deploying the seed Lambda:
+
+```bash
+AWS_REGION="<deployed region>" \
+SEED_BLOCKS_FUNCTION="<seed_blocks_lambda_name output>" \
+  node scripts/prepare-aidlc-releases.mjs
+```
+
+Custom forks still use the explicit `importRelease` mode and admin registration.
+A fork in a private GitLab project needs the token secret described under
+[Fork sources](#fork-sources).
+A custom fork, or an official version whose upgrade was refused, stays on its
+registered closure; opening it in the releases tab shows **Upgrade closure**,
+which adopts a newly published revision without changing existing intent pins.
 
 Existing intents keep the release they were created with. To stop offering a
 release, follow [Roll back a channel](#roll-back-a-channel).
@@ -413,14 +517,15 @@ A release's closure is browsable read-only, so authors can see what a pinned int
 
 - `GET /aidlc-releases/{releaseId}/blocks[?type=agent,stage]` lists the closure's blocks by type, in the `GET /blocks/{type}` shape with `source: "release"` and the `releaseId`, plus the release's workflow.
 - `GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}` returns one block with its body and script. Each object must be one the manifest lists, and its bytes must match the recorded digest, or the read is a `409`.
-- Both read the digest-verified closure and never the SYSTEM rows. An admin may read any registered release, including an import-only custom fork, so its contents can be reviewed before promotion; reading it doesn't make it runnable. Anybody else may read only a selectable release, and an unknown and a hidden release get the same `404`.
+- Both read the digest-verified closure and never the SYSTEM rows. An admin may read any registered release; anybody else only a selectable one, and an unknown and a hidden release get the same `404`.
 
 In the app:
 
 - **Admin → AI-DLC releases**: each registered release has a **Contents** view listing its workflow and its blocks by type.
 - **Block library**: with pinning on, the stable release's blocks of the current type appear below the library, read-only and labelled with the release id. `?release=<id>` shows another release instead. A release block opens read-only in the block editor. A library block with the same id is flagged, because it replaces the release's block in pinned intents.
 - **Workflows**: the stable release's workflow is listed, read-only.
-- **Stage editor**: the lead, support, reviewer, artifact, sensor and stage pickers include the stable release's blocks. Each id is listed once, in the order a pinned intent resolves it: the user library, then the release, then the SYSTEM baseline. Each option is labelled with its source. A typed id that no picker lists is still accepted.
+- **Stage editor**: the lead, support, reviewer, artifact, sensor and stage pickers include the stable release's blocks. Each id is listed once, in the order a pinned intent resolves it: the user library, then the release. A pinned intent never reads the SYSTEM rows, so a block only SYSTEM has is not offered while a release is in play; without a release the pickers list the library as before. Each option is labelled with its source. A typed id that no picker lists is still accepted.
+- **Workflow composer, adding a stage**: under a selected version, the stage palette offers library and release stages only. A placed stage the release does not have is still shown.
 - **Workflow composer**: for a user workflow, the plan check and compiled view pass `?libraryRelease=<stable>`. This previews the live workflow the way an intent created now would resolve it: the closure replaces the SYSTEM rows, the user library overlays it at `V#latest`, and SYSTEM placements resolve from the closure. So a custom stage that names an agent only the release ships checks clean, as it runs. `libraryRelease` cannot be combined with `release`, which previews a pinned intent's own closure and workflow snapshot.
 
 Copying a release agent into the `default` library to make it pickable is no longer needed. Such a copy replaces the release's agent in every pinned intent.
@@ -745,8 +850,9 @@ knowledge namespace for each persona. Identity checks apply through supported
 tool calls; they are workflow controls, not an isolation boundary against a
 compromised AgentCore runtime identity, which remains trusted.
 
-Persona sessions apply to release-pinned intents only; release pinning itself
-defaults to `off`. There is no separate switch for them: to stop running
+Persona sessions apply to release-pinned intents only. Standard deployments
+enable release selection by default, but do not approve or select a new version
+automatically. There is no separate switch for persona sessions: to stop running
 persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a

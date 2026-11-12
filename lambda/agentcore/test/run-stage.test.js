@@ -3206,6 +3206,90 @@ describe('runStage — resume mode', () => {
     return { spawnFn, get: () => captured };
   };
 
+  // The gate UI answers a single-choice question with an option index. The
+  // resumed agent must read the chosen label (and any note), not raw JSON: the
+  // 2.11.3 plan-review fallback asks Approve plan / Request changes this way and
+  // the agent revises and asks again only if it can tell which one was chosen.
+  it.each([
+    { pick: 0, label: 'Approve plan', note: undefined },
+    { pick: 1, label: 'Request changes', note: 'Split the migration into its own step.' },
+  ])(
+    'resumes an ordinary question with its chosen label: $label',
+    async ({ pick, label, note }) => {
+      const cap = captureArgv();
+      const deps = baseDeps({
+        spawnFn: cap.spawnFn,
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-1',
+            status: 'answered',
+            questions: JSON.stringify([
+              {
+                text: 'Review the plan before coding',
+                options: [{ label: 'Approve plan' }, { label: 'Request changes' }],
+              },
+            ]),
+            answer: { answers: [{ selectedOptions: [pick], ...(note ? { freeText: note } : {}) }] },
+          },
+          stage: { cli: 'claude', cliSessionId: 'sess-7' },
+        }),
+      });
+
+      const res = await runStage(
+        { ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) },
+        deps,
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const prompt = cap.get().prompt;
+      expect(prompt).toContain(`"${label}"`);
+      expect(prompt).not.toContain('selectedOptions');
+      if (note) expect(prompt).toContain(note);
+    },
+  );
+
+  // An ordinary question can carry several sub-questions, and a sub-question
+  // can allow several options. Every answer reaches the agent, each against its
+  // own question, with any note the human added.
+  it('resumes a multi-question answer with every choice and note', async () => {
+    const cap = captureArgv();
+    const deps = baseDeps({
+      spawnFn: cap.spawnFn,
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          questions: JSON.stringify([
+            { text: 'Which database?', options: [{ label: 'Postgres' }, { label: 'DynamoDB' }] },
+            {
+              text: 'Which regions?',
+              multiSelect: true,
+              options: [{ label: 'eu-west-1' }, { label: 'us-east-1' }, { label: 'ap-south-1' }],
+            },
+          ]),
+          answer: {
+            answers: [
+              { selectedOptions: [1] },
+              { selectedOptions: [0, 2], freeText: 'Keep latency under 50 ms.' },
+            ],
+          },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+
+    const prompt = cap.get().prompt;
+    expect(prompt).toContain('Which database?');
+    expect(prompt).toContain('"DynamoDB"');
+    expect(prompt).toContain('Which regions?');
+    expect(prompt).toContain('"eu-west-1"');
+    expect(prompt).toContain('"ap-south-1"');
+    expect(prompt).toContain('Keep latency under 50 ms.');
+    expect(prompt).not.toContain('selectedOptions');
+  });
+
   it('resumes the persisted Claude conversation with --resume + the answer, reaches SUCCEEDED', async () => {
     const cap = captureArgv();
     const deps = baseDeps({

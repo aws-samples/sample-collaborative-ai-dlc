@@ -111,6 +111,24 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.3 rolls up the 2.11.2 patch line. Its authored methodology keeps
+  // 2.11.1's frontmatter dialect, scope settings and sensor declarations; its
+  // sensor-on-request and dispatcher changes are not reproduced (see the
+  // compatibility guide). The compatibility matrix verifies its full imported
+  // catalog and command fidelity before administrators can promote it.
+  'v2.11.3': Object.freeze({
+    id: 'v2.11.3',
+    releaseId: 'aidlc:63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    fixtureDigest: '59636c597c6d96505ca89f94a6c76a9a24d2be48946d7c89b7a37febfb10366a',
+    label: 'AI-DLC 2.11.3',
+    upstreamVersion: '2.11.3',
+    upstreamRef: '63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {

@@ -710,6 +710,14 @@ const verifyPublishedBytes = async ({ s3, bucket, manifest, objects }) => {
 };
 
 /**
+ * Reads back every object and the catalog an already-published manifest names,
+ * and throws `release_verification_failed` naming any that is missing or holds
+ * other bytes. The same check publication runs before writing the manifest.
+ */
+const verifyPublishedRelease = ({ s3, bucket, manifest }) =>
+  verifyPublishedBytes({ s3, bucket, manifest, objects: manifest.objects ?? [] });
+
+/**
  * Writes the bundle in dependency order and only then the manifest. The
  * manifest is the publication marker: readers that find it can assume every
  * object and the catalog were already verified present with the exact bytes it
@@ -845,6 +853,7 @@ export {
   releaseManifestKey,
   runtimeObjectKey,
   validateReleaseManifest,
+  verifyPublishedRelease,
 };
 
 export default {
@@ -862,4 +871,5 @@ export default {
   releaseManifestKey,
   runtimeObjectKey,
   validateReleaseManifest,
+  verifyPublishedRelease,
 };

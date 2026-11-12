@@ -264,7 +264,7 @@ output "building_blocks_lambda_name" {
 }
 
 output "seed_blocks_lambda_name" {
-  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  description = "Name of the seed and release-preparation Lambda used by the post-deploy catalog preparation step."
   value       = module.seed_blocks_lambda.lambda_function_name
 }
 

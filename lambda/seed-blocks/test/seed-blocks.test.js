@@ -20,6 +20,12 @@ import {
 import { fetchCoreFiles } from '../../shared/repo-fetch.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
+const { registerReleaseMock, getReleaseMock, upgradeReleaseClosureMock } = vi.hoisted(() => ({
+  upgradeReleaseClosureMock: vi.fn(),
+  registerReleaseMock: vi.fn(),
+  getReleaseMock: vi.fn(),
+}));
+
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
 const REF = 'a'.repeat(40);
@@ -28,15 +34,23 @@ const REF = 'a'.repeat(40);
 vi.mock('../../shared/repo-fetch.js', () => ({
   fetchCoreFiles: vi.fn(async () => CORE_FILES),
 }));
+vi.mock('../../shared/release-registry.js', async (importOriginal) => ({
+  isAccessDenied: (await importOriginal()).isAccessDenied,
+  isReleaseRegistryError: (await importOriginal()).isReleaseRegistryError,
+  ReleaseRegistryError: (await importOriginal()).ReleaseRegistryError,
+  registerRelease: registerReleaseMock,
+  getRelease: getReleaseMock,
+  upgradeReleaseClosure: upgradeReleaseClosureMock,
+}));
 
 const RELEASE_PROFILE = 'current-stable';
-const releaseFiles = () =>
+const releaseFiles = (profileId = RELEASE_PROFILE) =>
   filesFromCompatibilityFixture({
-    profileId: RELEASE_PROFILE,
+    profileId,
     fixture: JSON.parse(
       readFileSync(
         new URL(
-          `../../shared/test/fixtures/aidlc-compatibility/${RELEASE_PROFILE}.json`,
+          `../../shared/test/fixtures/aidlc-compatibility/${profileId}.json`,
           import.meta.url,
         ),
         'utf8',
@@ -134,6 +148,12 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  getReleaseMock.mockReset().mockResolvedValue(null);
+  upgradeReleaseClosureMock.mockReset().mockResolvedValue({ status: 'upgraded' });
+  registerReleaseMock.mockReset().mockImplementation(async ({ profileId }) => ({
+    status: 'registered',
+    release: { profileId },
+  }));
   fetchCoreFiles.mockImplementation(async () => CORE_FILES);
   installFakes();
 });
@@ -431,6 +451,298 @@ describe('seed-blocks importRelease mode', () => {
   });
 });
 
+describe('seed-blocks prepareRelease mode', () => {
+  const profiles = Object.values(AIDLC_COMPATIBILITY_PROFILES);
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async (ref) =>
+      releaseFiles(profiles.find((profile) => profile.upstreamRef === ref).id),
+    );
+  });
+
+  it('prepares all eight versions through the actual deployment caller contract', async () => {
+    const { prepareSupportedReleases } =
+      await import('../../../scripts/prepare-aidlc-releases.mjs');
+    const results = await prepareSupportedReleases({
+      invoke: async (event) => ({
+        StatusCode: 200,
+        Payload: Buffer.from(JSON.stringify(await handler(event))),
+      }),
+    });
+    expect(results).toHaveLength(8);
+    expect(registerReleaseMock.mock.calls.map(([input]) => input.profileId)).toEqual(
+      profiles.map((profile) => profile.id),
+    );
+    expect(results.every((result) => result.registration === 'registered')).toBe(true);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-runtime/'))).toBe(false);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-catalogs/'))).toBe(false);
+  });
+
+  it('dry-runs preparation without publishing or accessing registry state', async () => {
+    const result = await handler({ prepareRelease: true, profile: RELEASE_PROFILE, dryRun: true });
+    expect(result).toMatchObject({
+      mode: 'prepareRelease',
+      status: 'dry-run',
+      registration: 'not-attempted',
+    });
+    expect(getReleaseMock).not.toHaveBeenCalled();
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(s3Store.size).toBe(0);
+  });
+
+  const olderRecord = (profile) => ({
+    releaseId: profile.releaseId,
+    sourceSha: profile.upstreamRef,
+    profileId: profile.id,
+    importerRevision: 1,
+    closureDigest: 'old-closure',
+    supportState: 'certified',
+    visible: true,
+    notes: 'keep',
+    revision: 7,
+  });
+
+  // A deployment that raises the importer revision moves every official
+  // record to the closure it just published, through the same guarded upgrade
+  // an admin uses: approval, visibility and notes stay, and intents already
+  // pinned keep the closure they started with.
+  it('upgrades an older registered closure to the published importer revision', async () => {
+    const profile = profiles[0];
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
+    const result = await handler({ prepareRelease: true, profile: profile.id });
+    expect(result.registration).toBe('upgraded');
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(upgradeReleaseClosureMock).toHaveBeenCalledTimes(1);
+    expect(upgradeReleaseClosureMock.mock.calls[0][0]).toMatchObject({
+      releaseId: profile.releaseId,
+      expectedRevision: 7,
+      importerRevision: result.importerRevision,
+      actor: 'deployment',
+    });
+  });
+
+  it('keeps the older closure and reports why when the upgrade is refused', async () => {
+    const profile = profiles[0];
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
+    const { ReleaseRegistryError } = await import('../../shared/release-registry.js');
+    upgradeReleaseClosureMock.mockRejectedValue(
+      new ReleaseRegistryError('release_channel_pinned', 'channel would break'),
+    );
+    const result = await handler({ prepareRelease: true, profile: profile.id });
+    expect(result).toMatchObject({
+      registration: 'upgrade-refused',
+      upgradeRefusal: 'release_channel_pinned',
+    });
+  });
+
+  it('fails preparation when the upgrade finds an inconsistent closure', async () => {
+    const profile = profiles[0];
+    getReleaseMock.mockResolvedValue(olderRecord(profile));
+    const { ReleaseRegistryError } = await import('../../shared/release-registry.js');
+    upgradeReleaseClosureMock.mockRejectedValue(
+      new ReleaseRegistryError('release_conflict', 'manifest does not describe the release'),
+    );
+    await expect(handler({ prepareRelease: true, profile: profile.id })).rejects.toThrow(
+      'manifest does not describe the release',
+    );
+  });
+
+  // A redeploy must not depend on the upstream archive for a catalog it has
+  // already published: the closure in object storage is read and verified
+  // instead. A catalog that is missing or no longer verifies is still built.
+  it('prepares an already-published release without fetching upstream', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    expect(first.registration).toBe('registered');
+    getReleaseMock.mockResolvedValue({
+      releaseId: first.releaseId,
+      sourceSha: first.sourceSha,
+      profileId: first.profile,
+      importerRevision: first.importerRevision,
+      closureDigest: first.closureDigest,
+    });
+    fetchCoreFiles.mockClear();
+    fetchCoreFiles.mockRejectedValue(new Error('upstream unavailable'));
+
+    const again = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+    expect(again).toMatchObject({
+      mode: 'prepareRelease',
+      registration: 'already-registered',
+      releaseId: first.releaseId,
+      sourceSha: first.sourceSha,
+      importerRevision: first.importerRevision,
+      closureDigest: first.closureDigest,
+    });
+  });
+
+  // The seed role holds no s3:ListBucket, so S3 answers a GET for an absent
+  // manifest with 403 AccessDenied rather than 404. That is "not published yet"
+  // for this probe, and the release is built.
+  it('builds a release whose manifest read is denied as absent', async () => {
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!s3Store.has(input.Key)) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+    });
+    fetchCoreFiles.mockClear();
+
+    const result = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(result.registration).toBe('registered');
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+  });
+
+  // The shortcut trusts a published release only when every object its manifest
+  // names is present with its recorded bytes. A missing object is restored by
+  // building the release again; an object holding different bytes cannot be
+  // overwritten, so preparation fails instead of reporting the release ready.
+  const publishedObject = (manifestKey, role) => {
+    const manifest = JSON.parse(s3Store.get(manifestKey));
+    const object = manifest.objects.find((entry) => entry.role === role);
+    expect(object, role).toBeDefined();
+    return object.key;
+  };
+
+  it.each(['body', 'runtime'])(
+    'restores a missing %s object before reporting the release prepared',
+    async (role) => {
+      const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+      const key = publishedObject(first.manifestKey, role);
+      const original = s3Store.get(key);
+      s3Store.delete(key);
+      fetchCoreFiles.mockClear();
+
+      await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+      expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+      expect(s3Store.get(key)).toBe(original);
+    },
+  );
+
+  // The seed role holds no s3:ListBucket, so a GET for a deleted object is
+  // answered with AccessDenied rather than NoSuchKey. That is still a missing
+  // object, and the release is built again.
+  it('restores an object S3 reports missing as AccessDenied', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    const key = publishedObject(first.manifestKey, 'body');
+    const original = s3Store.get(key);
+    s3Store.delete(key);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!s3Store.has(input.Key)) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+    });
+    fetchCoreFiles.mockClear();
+
+    await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+    expect(s3Store.get(key)).toBe(original);
+  });
+
+  it('fails instead of reporting prepared a release whose object holds other bytes', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    const key = publishedObject(first.manifestKey, 'body');
+    s3Store.set(key, 'replaced');
+
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      /verification/,
+    );
+  });
+
+  it('builds a release again when its published manifest is missing', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    s3Store.delete(first.manifestKey);
+    fetchCoreFiles.mockClear();
+
+    await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+    expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['NoSuchKey', 'AccessDenied'])(
+    'restores a missing catalog that S3 reports as %s',
+    async (name) => {
+      const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+      const original = s3Store.get(first.catalogKey);
+      s3Store.delete(first.catalogKey);
+      s3Mock.on(GetObjectCommand).callsFake((input) => {
+        if (!s3Store.has(input.Key)) {
+          const error = new Error(name);
+          error.name = name;
+          error.$metadata = { httpStatusCode: name === 'NoSuchKey' ? 404 : 403 };
+          throw error;
+        }
+        return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
+      });
+      fetchCoreFiles.mockClear();
+
+      await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+
+      expect(fetchCoreFiles).toHaveBeenCalledTimes(1);
+      expect(s3Store.get(first.catalogKey)).toBe(original);
+    },
+  );
+
+  it('fails instead of trusting a published catalog that no longer verifies', async () => {
+    const first = await handler({ prepareRelease: true, profile: RELEASE_PROFILE });
+    s3Store.set(first.catalogKey, '{"tampered":true}');
+    fetchCoreFiles.mockClear();
+
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow();
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+  });
+
+  it('does not swallow registration or upstream failures', async () => {
+    registerReleaseMock.mockRejectedValueOnce(new Error('registry unavailable'));
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'registry unavailable',
+    );
+    // The first call published the closure before registration failed; an
+    // upstream failure only matters for a release that is not published yet.
+    s3Store.clear();
+    fetchCoreFiles.mockRejectedValueOnce(new Error('upstream unavailable'));
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'upstream unavailable',
+    );
+  });
+
+  it('rejects an inconsistent existing identity instead of claiming it is prepared', async () => {
+    getReleaseMock.mockResolvedValue({ sourceSha: 'wrong' });
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'inconsistent',
+    );
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects mixed modes, unknown profiles and revision mismatches before writes', async () => {
+    for (const extra of [
+      { reseed: true },
+      { importRelease: true },
+      { ref: 'main' },
+      { custom: { repository: 'a/b' } },
+    ]) {
+      await expect(
+        handler({ prepareRelease: true, profile: RELEASE_PROFILE, ...extra }),
+      ).rejects.toThrow('cannot be combined');
+    }
+    await expect(handler({ prepareRelease: true, profile: 'unknown' })).rejects.toThrow('unknown');
+    await expect(
+      handler({ prepareRelease: true, profile: RELEASE_PROFILE, importerRevision: 0 }),
+    ).rejects.toThrow('publishes importer revision');
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(s3Store.size).toBe(0);
+  });
+});
+
 // Custom fork imports (issue #482 follow-up). The property under test: a fork is
 // fetched from its own repository at an exact SHA, lands on its own prefix, and
 // still cannot touch DynamoDB, aidlc-runtime/, or aidlc-catalogs/.
@@ -575,7 +887,7 @@ describe('seed-blocks importRelease at the current importer revision', () => {
   });
 
   it('publishes at the asserted current revision with the mapper fingerprint recorded', async () => {
-    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(3);
+    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(4);
     const result = await handler({
       importRelease: true,
       profile: RELEASE_PROFILE,

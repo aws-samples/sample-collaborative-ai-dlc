@@ -682,11 +682,16 @@ describe('annex reach, against the prompts the runtime really builds', () => {
 // off the ONE definition the promotion guard uses, never re-derived from a path,
 // so a body type no prompt builder annexes would fail here rather than be
 // quietly admitted.
-// 2.11.1 carries every 2.11.0 command plus one: build-and-test's cross-unit
-// coverage gate asks for a sensor run on request (`engine sensor-<id> --stage`).
+// 2.11.1 carries every 2.11.0 command plus a sensor run-on-request. 2.11.3 adds
+// explicit refusals for dynamic repository/checkout changes and one-off plan review.
 const RELEASE_211_ADDED_REFUSED = Object.freeze({
   'v2.11.0': [],
   'v2.11.1': ['engine sensor-traceability --stage'],
+  'v2.11.3': [
+    'engine intent add-checkout',
+    'engine intent add-repo',
+    'engine sensor-traceability --stage',
+  ],
 });
 for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
   describe(`AI-DLC 2.11 engine commands, in the real release (${PROFILE})`, () => {
@@ -741,22 +746,27 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
     ]);
     const reaching = pathsIn(annexReachingBlocks({ blocks: catalog.blocks }));
 
-    // The engine commands the real 2.11 prompt bodies invoke, verbatim: fourteen
-    // in 2.11.0, fifteen in 2.11.1.
-    const REFUSED = Object.freeze([
-      ...RELEASE_211_ADDED_REFUSED[PROFILE],
-      'engine config set',
-      'engine log answer',
-      'engine log decision',
-      'engine orchestrate next',
-      'engine state set-construction-execution',
-      'engine state set-construction-verification-command',
-      'engine testing-posture restore',
-      'engine worktree discard',
-      'engine worktree list',
-      'engine worktree purge',
-      'engine worktree restore',
-    ]);
+    // The engine commands the real 2.11 prompt bodies invoke, verbatim.
+    const REFUSED = Object.freeze(
+      [
+        ...RELEASE_211_ADDED_REFUSED[PROFILE],
+        'engine config set',
+        'engine log answer',
+        'engine log decision',
+        'engine orchestrate next',
+        'engine state set-construction-execution',
+        'engine state set-construction-verification-command',
+        'engine testing-posture restore',
+        'engine worktree discard',
+        'engine worktree list',
+        'engine worktree purge',
+        'engine worktree restore',
+      ].filter(
+        (command) =>
+          PROFILE !== 'v2.11.3' ||
+          !['engine recompose', 'engine testing-posture restore'].includes(command),
+      ),
+    );
     const APPROXIMATED = Object.freeze([
       'engine audit append-raw',
       'engine config get',
@@ -862,6 +872,9 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
           'engine orchestrate',
           'engine recompose',
           'engine state',
+          ...(PROFILE === 'v2.11.3'
+            ? ['engine plan first']
+            : ['engine intent add-checkout', 'engine intent add-repo', 'engine plan first']),
           // The honoured set names a family, the release the command it invokes.
           ...REFUSED.map((command) =>
             command === 'engine sensor-traceability --stage'
@@ -869,6 +882,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
               : command,
           ),
           ...(PROFILE === 'v2.11.0' ? ['engine sensor-<id> --stage'] : []),
+          ...(PROFILE === 'v2.11.3' ? ['engine testing-posture restore'] : []),
         ].toSorted(),
       );
     });

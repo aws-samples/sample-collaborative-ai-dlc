@@ -19,8 +19,10 @@ import {
   aidlcReleasesService,
   isReleaseSelectable,
   SHARED_CHANNELS_TTL_MS,
+  RELEASE_CONTENTS_TTL_MS,
   type AidlcRelease,
 } from './aidlcReleases';
+import { resetSessionExpiry } from './sessionExpiry';
 
 const release = (over: Partial<AidlcRelease> = {}): AidlcRelease => ({
   releaseId: 'aidlc:abc1234def',
@@ -154,6 +156,13 @@ describe('aidlcReleasesService.sharedChannels', () => {
 
     expect(get).toHaveBeenCalledTimes(3);
   });
+
+  it('refetches channels after signing in to a new session', async () => {
+    await aidlcReleasesService.sharedChannels();
+    resetSessionExpiry();
+    await aidlcReleasesService.sharedChannels();
+    expect(get).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('isReleaseSelectable', () => {
@@ -172,6 +181,7 @@ describe('isReleaseSelectable', () => {
 // mutually exclusive, and a fork is never selectable.
 describe('custom fork registration', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     post.mockReset().mockResolvedValue({});
   });
 
@@ -279,6 +289,38 @@ describe('aidlcReleasesService release contents', () => {
     await expect(aidlcReleasesService.contents('aidlc:abc1234def')).resolves.toMatchObject({
       workflow: null,
     });
+  });
+
+  it('bounds the catalog cache while retaining the most recently used entry', async () => {
+    get.mockResolvedValue(contentsBody());
+    for (let index = 0; index < 20; index++) await aidlcReleasesService.contents(`aidlc:${index}`);
+    await aidlcReleasesService.contents('aidlc:0');
+    await aidlcReleasesService.contents('aidlc:20');
+    await aidlcReleasesService.contents('aidlc:0');
+    expect(get).toHaveBeenCalledTimes(21);
+    await aidlcReleasesService.contents('aidlc:1');
+    expect(get).toHaveBeenCalledTimes(22);
+  });
+
+  it('refetches expired catalog entries', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(contentsBody());
+      await aidlcReleasesService.contents('aidlc:abc1234def');
+      vi.advanceTimersByTime(RELEASE_CONTENTS_TTL_MS + 1);
+      await aidlcReleasesService.contents('aidlc:abc1234def');
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not expose cached admin contents to the next login session', async () => {
+    get.mockResolvedValueOnce(contentsBody()).mockRejectedValueOnce(new Error('Forbidden'));
+    await aidlcReleasesService.contents('aidlc:private');
+    resetSessionExpiry();
+    await expect(aidlcReleasesService.contents('aidlc:private')).rejects.toThrow('Forbidden');
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it('drops cached contents after a closure upgrade', async () => {
