@@ -98,7 +98,7 @@ describe('catalog gateway — grant and op checks', () => {
     const handler = gatewayWith();
     for (const scope of [
       EXECUTION,
-      { ...EXECUTION, mode: 'conflict' },
+      { ...EXECUTION, mode: 'conflict', unitSlug: 'api', sectionIndex: 0 },
       { ...EXECUTION, mode: 'stage', stageId: 'build' },
     ]) {
       await expect(call(handler, 'listMergedBlocks', { type: 'SCOPE' }, scope)).resolves.toEqual({

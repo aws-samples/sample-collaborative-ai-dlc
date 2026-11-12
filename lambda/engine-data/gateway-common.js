@@ -81,11 +81,13 @@ export const sameAsGrant = (value, granted) =>
   value === undefined || (value ?? null) === (granted ?? null);
 
 // A conflict grant acts only as its signed unit lane: what it writes or
-// broadcasts names that unit and section, and no stage.
+// broadcasts names that unit and section, and no stage. Both are required, so
+// a record that omits its section is not attributed to the lane by default.
 export const onConflictLane = (grant, input) =>
   Boolean(grant.unitSlug) &&
+  Number.isInteger(grant.sectionIndex) &&
   input?.unitSlug === grant.unitSlug &&
-  sameAsGrant(input.sectionIndex, grant.sectionIndex) &&
+  input.sectionIndex === grant.sectionIndex &&
   (input.stageInstanceId ?? null) === null;
 
 export const grantAudit = (grant) => ({

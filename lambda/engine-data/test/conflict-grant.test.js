@@ -120,13 +120,19 @@ describe('engine-data conflict grants', () => {
       event({ unitSlug: 'web' }),
       event({ sectionIndex: 1 }),
       event({ unitSlug: undefined }),
+      event({ sectionIndex: undefined }),
+      event({ sectionIndex: null }),
       event({ stageInstanceId: 'si-1' }),
     ]) {
       const { store, result } = await storeCall('appendEvent', [input]);
       expect(result).toEqual(denied('scope_mismatch'));
       expect(store.appendEvent).not.toHaveBeenCalled();
     }
-    for (const input of [metric({ unitSlug: 'web' }), metric({ stageInstanceId: 'si-1' })]) {
+    for (const input of [
+      metric({ unitSlug: 'web' }),
+      metric({ sectionIndex: undefined }),
+      metric({ stageInstanceId: 'si-1' }),
+    ]) {
       const { store, result } = await storeCall('recordMetric', [input]);
       expect(result).toEqual(denied('scope_mismatch'));
       expect(store.recordMetric).not.toHaveBeenCalled();
@@ -192,6 +198,9 @@ describe('engine-data conflict grants', () => {
 
     await expect(
       broadcast({ action: 'agent.unit', unitSlug: 'web', sectionIndex: 0, state: 'RESOLVING' }),
+    ).resolves.toEqual(denied('scope_mismatch'));
+    await expect(
+      broadcast({ action: 'agent.unit', unitSlug: 'api', state: 'RESOLVING' }),
     ).resolves.toEqual(denied('scope_mismatch'));
     await expect(
       broadcast({ action: 'agent.metric', unitSlug: 'api', sectionIndex: 0, stageInstanceId: 's' }),

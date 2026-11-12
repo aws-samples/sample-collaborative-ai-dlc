@@ -91,6 +91,9 @@ export const normalizeGatewayScope = (input = {}) => {
   ) {
     throw invalid();
   }
+  // A conflict grant is one unit lane: the engine-data gateways bind its
+  // events, metrics and broadcasts to exactly that unit and section.
+  if (mode === 'conflict' && (!scope.unitSlug || scope.sectionIndex === null)) throw invalid();
   return scope;
 };
 

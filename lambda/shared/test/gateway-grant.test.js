@@ -106,6 +106,14 @@ describe('gateway grant', () => {
         signer,
       ),
     ).rejects.toThrow('Gateway grant is invalid');
+    for (const lane of [{ unitSlug: 'u' }, { sectionIndex: 1 }]) {
+      await expect(
+        issueGatewayGrant(
+          { mode: 'conflict', projectId: 'p', intentId: 'i', executionId: 'e', ...lane },
+          signer,
+        ),
+      ).rejects.toThrow('Gateway grant is invalid');
+    }
     await expect(
       issueGatewayGrant(
         {
