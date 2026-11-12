@@ -1,7 +1,8 @@
 // Transport retries of the remote process store: reads may be retried by the
-// SDK, mutations must reach engine-data exactly once. The default transports
+// SDK, mutations reach engine-data once unless Lambda refused the invoke
+// before running the function (throttling). The default transports
 // are exercised for real — a LambdaClient with its retry middleware, sending
-// to a local endpoint that answers with a retryable 500 — and, through
+// to a local endpoint that answers with a 500 or a throttle — and, through
 // aws-sdk-client-mock, every allowlisted method is checked for the client it
 // is sent with.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -83,6 +84,67 @@ describe('remote process store transport retries', () => {
     await expect(store.getExecution('e-1')).rejects.toThrow();
     expect(requests).toBeGreaterThan(1);
   }, 30_000);
+});
+
+describe('remote process store resends a refused mutation', () => {
+  let server;
+  let replies = [];
+  let requests = 0;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      requests += 1;
+      request.resume();
+      request.on('end', () => {
+        const [status, errorType, body] = replies.shift() ?? [500, 'ServiceException', {}];
+        response.writeHead(status, {
+          'content-type': 'application/json',
+          ...(errorType ? { 'x-amzn-errortype': errorType } : {}),
+        });
+        response.end(JSON.stringify(body));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  });
+
+  afterAll(async () => {
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  const remoteStore = async () => {
+    for (const [key, value] of Object.entries(ENV)) vi.stubEnv(key, value);
+    vi.stubEnv('AWS_ENDPOINT_URL_LAMBDA', `http://127.0.0.1:${server.address().port}`);
+    const { createRemoteProcessStore } = await freshClient();
+    return createRemoteProcessStore({ grant: () => 'grant' });
+  };
+
+  const throttled = [429, 'TooManyRequestsException', { message: 'Rate exceeded' }];
+
+  it('resends a mutation Lambda throttled before running it', async () => {
+    const store = await remoteStore();
+    requests = 0;
+    replies = [throttled, [200, null, { ok: true, result: { claimed: true } }]];
+    await expect(store.claimStageAttempt({})).resolves.toEqual({ claimed: true });
+    expect(requests).toBe(2);
+  });
+
+  it('gives up after three throttled attempts', async () => {
+    const store = await remoteStore();
+    requests = 0;
+    replies = [throttled, throttled, throttled, [200, null, { ok: true, result: null }]];
+    await expect(store.updateStageState({})).rejects.toMatchObject({
+      name: 'TooManyRequestsException',
+    });
+    expect(requests).toBe(3);
+  });
+
+  it('does not resend after an ambiguous failure', async () => {
+    const store = await remoteStore();
+    requests = 0;
+    replies = [[500, 'ServiceException', { message: 'transient' }]];
+    await expect(store.appendEvent({})).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
 });
 
 describe('remote process store clients', () => {

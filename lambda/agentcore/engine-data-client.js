@@ -76,10 +76,32 @@ const invokeWith = async (client, event, env) => {
 };
 
 const defaultInvoke = (event, env = process.env) => invokeWith(lambdaClient(), event, env);
-// A mutation is not safe to replay after an ambiguous failure (the Lambda may
-// have run it), so mutating store methods and graph calls never retry at the
-// transport.
-const singleAttemptInvoke = (event, env = process.env) => invokeWith(lambdaClient(1), event, env);
+
+// Lambda rejects these before the function runs, so resending cannot apply a
+// mutation twice.
+const NOT_INVOKED_ERRORS = new Set([
+  'TooManyRequestsException',
+  'EC2ThrottledException',
+  'ResourceNotReadyException',
+]);
+const NOT_INVOKED_ATTEMPTS = 3;
+const NOT_INVOKED_BASE_DELAY_MS = 50;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A mutation is not safe to replay after an ambiguous failure (a 5xx or a
+// network error: the Lambda may have run it), so mutating store methods, graph
+// calls and broadcasts are sent once, and resent only when Lambda refused the
+// invoke before running the function.
+const singleAttemptInvoke = async (event, env = process.env) => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await invokeWith(lambdaClient(1), event, env);
+    } catch (error) {
+      if (attempt >= NOT_INVOKED_ATTEMPTS || !NOT_INVOKED_ERRORS.has(error?.name)) throw error;
+      await sleep(Math.random() * NOT_INVOKED_BASE_DELAY_MS * 2 ** attempt);
+    }
+  }
+};
 const defaultGraphInvoke = singleAttemptInvoke;
 const STORE_READS = new Set(ENGINE_DATA_STORE_READ_METHODS);
 
@@ -277,7 +299,7 @@ export const createRemoteBlobs = ({ invoke = defaultInvoke, grant }) => {
 };
 
 // A broadcast is not replayed after an ambiguous failure (recipients may have
-// received it already), so it uses the no-retry transport like graph writes.
+// received it already), so it uses the mutation transport like graph writes.
 export const createRemoteRealtime = ({ invoke = defaultGraphInvoke, grant }) => {
   if (typeof grant !== 'function') throw new Error('createRemoteRealtime requires a grant source');
   return {
