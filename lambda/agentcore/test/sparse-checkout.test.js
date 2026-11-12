@@ -317,17 +317,24 @@ describe('sparse checkout', () => {
     const fullDir = path.join(target, 'owner/other');
     await mkdir(path.join(sparseDir, 'assets'));
     await writeFile(path.join(sparseDir, 'assets/large.txt'), 'rewritten');
+    await writeFile(path.join(sparseDir, 'services/api/index.js'), 'updated');
     await writeFile(path.join(fullDir, 'assets/large.txt'), 'full checkout edit');
-    const result = await commitAndPushAll({
-      repos: ['owner/repo', 'owner/other'],
-      workspaceDir: target,
-      branch: 'aidlc/test',
-      gitProvider: 'github',
-      message: 'stage',
-      urlsFor: (url) =>
-        url === 'owner/repo' ? { auth: remote, clean: remote } : { auth: other, clean: other },
-      log: () => {},
-    });
+    const refusedRef = 'refs/aidlc/refused/e1/code-generation';
+    const commitAndPush = (overrides = {}) =>
+      commitAndPushAll({
+        repos: ['owner/repo', 'owner/other'],
+        workspaceDir: target,
+        branch: 'aidlc/test',
+        gitProvider: 'github',
+        message: 'stage',
+        refusedRef,
+        urlsFor: (url) =>
+          url === 'owner/repo' ? { auth: remote, clean: remote } : { auth: other, clean: other },
+        log: () => {},
+        ...overrides,
+      });
+    const head = git(sparseDir, 'rev-parse', 'HEAD');
+    const result = await commitAndPush();
     expect(result.ok).toBe(false);
     const [refused, delivered] = result.results;
     expect(refused).toMatchObject({
@@ -344,6 +351,42 @@ describe('sparse checkout', () => {
       spawnSync('git', ['rev-parse', '--verify', 'refs/heads/aidlc/test'], { cwd: remote }).status,
     ).not.toBe(0);
     expect(git(other, 'show', 'aidlc/test:assets/large.txt')).toBe('full checkout edit');
+    // The refused state is durable on its remote, on top of the unchanged HEAD
+    // and under the side ref only: the work inside the selection and the
+    // refused file.
+    expect(refused.preserved).toEqual({
+      ref: refusedRef,
+      sha: git(remote, 'rev-parse', refusedRef),
+    });
+    expect(git(remote, 'rev-parse', `${refusedRef}^`)).toBe(head);
+    expect(git(remote, 'show', `${refusedRef}:services/api/index.js`)).toBe('updated');
+    expect(git(remote, 'show', `${refusedRef}:assets/large.txt`)).toBe('rewritten');
+    expect(git(remote, 'show', `${refusedRef}:services/web/index.js`)).toBe(
+      'services/web/index.js',
+    );
+    expect(git(remote, 'for-each-ref', '--format=%(refname)', 'refs/aidlc')).toBe(refusedRef);
+    expect(delivered.preserved).toBeUndefined();
+    expect(git(other, 'for-each-ref', 'refs/aidlc')).toBe('');
+    // The workspace keeps the evidence: nothing committed, everything staged.
+    expect(git(sparseDir, 'rev-parse', 'HEAD')).toBe(head);
+    expect(git(sparseDir, 'show', ':assets/large.txt')).toBe('rewritten');
+    expect(git(sparseDir, 'show', ':services/api/index.js')).toBe('updated');
+
+    // A later refusal of the same stage replaces the saved state.
+    await writeFile(path.join(sparseDir, 'services/api/index.js'), 'updated again');
+    const again = await commitAndPush();
+    expect(again.results[0].preserved.sha).not.toBe(refused.preserved.sha);
+    expect(git(remote, 'show', `${refusedRef}:services/api/index.js`)).toBe('updated again');
+
+    // A state that cannot be saved is reported, and the refusal stands.
+    const badRef = 'refs/aidlc/refused/e1/bad..name';
+    const unsaved = await commitAndPush({ refusedRef: badRef });
+    expect(unsaved.results[0]).toMatchObject({
+      committed: false,
+      reason: 'sparse_outside_selection',
+      preserved: { ref: badRef, error: expect.stringContaining('check-ref-format') },
+    });
+    expect(unsaved.results[0].preserved.sha).toBeUndefined();
   });
 
   // A unit lane (sparse: services/api) whose reverse merge of the intent

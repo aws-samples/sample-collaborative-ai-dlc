@@ -115,12 +115,19 @@ files outside the selection.
 Each stage prompt lists the selected directories. Agents read files outside the
 selection with `git show HEAD:<path>` and must not modify, delete, or recreate
 them, because an agent never saw their content. If a stage or conflict resolution
-changes such a file anyway, the engine refuses to commit it: nothing is committed
-or pushed for that repository, the stage (or conflict resolution) fails, and the
-activity feed names the files. A refused stage leaves its changes in the
-workspace, as long as session storage survives. When the failed stage is
-retried, the new attempt's prompt lists the refused files and asks the agent to
-restore them first. A stage resumed after answering a question gets only your
+changes such a file anyway, the engine refuses to commit it: nothing reaches the
+intent branch for that repository, the stage (or conflict resolution) fails, and
+the activity feed names the files. A refused stage leaves its changes in the
+workspace, as long as session storage survives. So that the work is not lost
+with the workspace, the engine also pushes the refused state, including the
+changes inside the selection, as one commit to
+`refs/aidlc/refused/<executionId>/<stage>` (`<stage>--<unit>` for a unit lane)
+in that repository; the activity feed names the ref, or says that it could not
+be pushed. The ref is not a branch and is not restored automatically: fetch it
+with `git fetch origin <ref>` to recover the work, and delete it when it is no
+longer needed. A later refusal of the same stage replaces it. When the failed
+stage is retried, the new attempt's prompt lists the refused files and asks the
+agent to restore them first. A stage resumed after answering a question gets only your
 answer, so it fails again until it is retried. A refused conflict resolution
 is aborted, as other failed resolutions are, and the agent's resolution is
 discarded. If changing those files is part of the work, create a new intent whose
