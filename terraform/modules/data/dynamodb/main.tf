@@ -6,6 +6,84 @@ locals {
   write_capacity = null
 }
 
+resource "aws_dynamodb_table" "access" {
+  name                        = "${var.project_name}-access-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "pk"
+  range_key                   = "sk"
+  deletion_protection_enabled = var.deletion_protection
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "by-user"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "userId"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "pk"
+      key_type       = "RANGE"
+    }
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
+resource "aws_dynamodb_table" "audit" {
+  name                        = "${var.project_name}-audit-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "pk"
+  range_key                   = "sk"
+  deletion_protection_enabled = var.deletion_protection
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
 resource "aws_dynamodb_table" "sessions" {
   name                        = "${var.project_name}-sessions-${var.environment}"
   billing_mode                = local.billing_mode

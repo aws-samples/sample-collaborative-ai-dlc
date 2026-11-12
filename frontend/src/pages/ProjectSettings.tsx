@@ -119,7 +119,7 @@ export default function ProjectSettings() {
     setProject((prev) => (prev ? { ...prev, ...updates } : prev));
 
   const userRole = project?.userRole;
-  const canEdit = userRole === 'owner' || userRole === 'admin';
+  const canEdit = userRole === 'owner';
 
   if (!projectId) return <div className="p-6">Space not found</div>;
 

@@ -26,6 +26,7 @@ import {
   resolveBindingCredential,
   verifyBindingCredential,
 } from '../shared/source-control-credentials.js';
+import { getMembershipRole } from '../shared/space-membership.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -92,17 +93,7 @@ const fetchProjectRepositories = async (g, projectId) => {
 
 const fetchMembershipRole = async (g, projectId, userId) => {
   if (!userId) return null;
-  const rows = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('membership')
-    .inV()
-    .has('User', 'id', userId)
-    .select('membership')
-    .by(__.values('role'))
-    .toList();
-  return rows[0] || null;
+  return getMembershipRole(ddb, projectId, userId);
 };
 
 const sameRepository = (a, b) => {

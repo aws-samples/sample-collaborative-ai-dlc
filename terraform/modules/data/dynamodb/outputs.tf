@@ -1,3 +1,19 @@
+output "access_table_name" {
+  value = aws_dynamodb_table.access.name
+}
+
+output "access_table_arn" {
+  value = aws_dynamodb_table.access.arn
+}
+
+output "audit_table_name" {
+  value = aws_dynamodb_table.audit.name
+}
+
+output "audit_table_arn" {
+  value = aws_dynamodb_table.audit.arn
+}
+
 output "sessions_table_name" {
   description = "Name of the sessions table"
   value       = aws_dynamodb_table.sessions.name

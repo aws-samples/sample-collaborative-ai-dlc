@@ -17,6 +17,10 @@ locals {
     discussions     = aws_iam_role.discussions.id
     v2_orchestrator = aws_iam_role.v2_orchestrator.id
   } : {}
+  membership_env = {
+    ACCESS_TABLE = var.access_table_name
+    AUDIT_TABLE  = var.audit_table_name
+  }
 
   partition            = data.aws_partition.current.partition
   dns_suffix           = data.aws_partition.current.dns_suffix
@@ -182,9 +186,21 @@ resource "aws_iam_role_policy" "users" {
     Statement = [
       local.neptune_statement,
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:Query", "dynamodb:UpdateItem"]
-        Resource = [var.source_control_bindings_table_arn]
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DeleteItem",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = [
+          var.access_table_arn,
+          "${var.access_table_arn}/index/*",
+          var.audit_table_arn,
+          var.source_control_bindings_table_arn
+        ]
       },
     ]
   })
@@ -1254,7 +1270,7 @@ module "source_control_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
@@ -1575,7 +1591,7 @@ module "users_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
-  }
+  }, local.membership_env)
 }
 
 # Sprints Lambda

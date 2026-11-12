@@ -65,6 +65,11 @@ import {
   DEFAULT_PR_STRATEGY,
   normalizeProjectPrStrategy,
 } from '../shared/pr-strategy.js';
+import {
+  deleteSpaceMemberships,
+  getMembershipRole,
+  saveMembershipChange,
+} from '../shared/space-membership.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -1681,13 +1686,13 @@ export const handler = async (event, context) => {
         }
 
         // Add the creator as project owner
-        await g
-          .V()
-          .has('Project', 'id', id)
-          .addE('HAS_MEMBER')
-          .property('role', 'owner')
-          .to(__.V().has('User', 'id', userId))
-          .next();
+        await saveMembershipChange(ddb, {
+          spaceId: id,
+          actorId: userId,
+          targetUserId: userId,
+          role: 'owner',
+          action: 'space_created',
+        });
 
         // Notification event for integrations (best-effort, never throws).
         await publishNotificationEvent('space.created', {
@@ -1933,14 +1938,7 @@ export const handler = async (event, context) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Only owners can delete projects
-        const canDelete = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .outE('HAS_MEMBER')
-          .has('role', 'owner')
-          .inV()
-          .has('User', 'id', userId)
-          .hasNext();
+        const canDelete = (await getMembershipRole(ddb, projectId, userId)) === 'owner';
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
 
         // Full cascade. A project owns many intents; each intent owns an entire
@@ -2053,8 +2051,9 @@ export const handler = async (event, context) => {
             .drop()
             .next();
 
-          // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
-          // drop with it).
+          await deleteSpaceMemberships(ddb, projectId);
+
+          // The Project vertex itself LAST.
           await g.V().has('Project', 'id', projectId).drop().next();
           logger.info('Project deleted', {
             projectId,

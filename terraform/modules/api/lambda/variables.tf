@@ -75,6 +75,22 @@ variable "dynamodb_table_arns" {
   type        = list(string)
 }
 
+variable "access_table_name" {
+  type = string
+}
+
+variable "access_table_arn" {
+  type = string
+}
+
+variable "audit_table_name" {
+  type = string
+}
+
+variable "audit_table_arn" {
+  type = string
+}
+
 variable "kms_key_arn" {
   description = "Customer-managed KMS key ARN for DynamoDB encryption. Empty uses the AWS-owned service default."
   type        = string

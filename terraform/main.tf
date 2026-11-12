@@ -533,12 +533,18 @@ module "lambda" {
   aidlc_custom_source_gitlab_token_secret_arn = var.aidlc_custom_source_gitlab_token_secret_arn
 
   dynamodb_table_arns = [
+    module.dynamodb.access_table_arn,
+    module.dynamodb.audit_table_arn,
     module.dynamodb.sessions_table_arn,
     module.dynamodb.notifications_table_arn,
     module.dynamodb.agent_questions_table_arn,
     module.dynamodb.yjs_documents_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
+  access_table_name                        = module.dynamodb.access_table_name
+  access_table_arn                         = module.dynamodb.access_table_arn
+  audit_table_name                         = module.dynamodb.audit_table_name
+  audit_table_arn                          = module.dynamodb.audit_table_arn
   kms_key_arn                              = var.kms_key_arn
   artifacts_bucket_name                    = module.s3.artifacts_bucket_name
   artifacts_bucket_arn                     = module.s3.artifacts_bucket_arn

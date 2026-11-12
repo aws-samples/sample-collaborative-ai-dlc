@@ -17,35 +17,15 @@
 // function is attached only to the workflows role for exactly that reason —
 // anything able to invoke it can ask about any user's intents.
 
-import gremlin from 'gremlin';
-import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
-
-const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
-const traversal = gremlin.process.AnonymousTraversalSource.traversal;
+import { getMembershipRole } from '../shared/space-membership.js';
 
 const logger = new Logger({ serviceName: process.env.POWERTOOLS_SERVICE_NAME });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const store = createProcessStore({ ddb });
-
-const getConnection = async () => {
-  const host = process.env.NEPTUNE_ENDPOINT;
-  const port = process.env.GREMLIN_PORT ?? '8182';
-  const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
-  if (protocol === 'ws') {
-    return new DriverRemoteConnection(`ws://${host}:${port}/gremlin`);
-  }
-  const credentials = await fromNodeProviderChain()();
-  credentials.region = process.env.AWS_REGION ?? 'us-east-1';
-  const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
-  return new DriverRemoteConnection(url, { headers });
-};
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim() !== '';
 
@@ -64,22 +44,10 @@ export const handler = async (event, context) => {
   const { sub, projectId, intentId } = event;
   logger.appendKeys({ projectId, intentId, userId: sub });
 
-  let conn;
   try {
-    conn = await getConnection();
-    let g = traversal().withRemote(conn);
-    if (process.env.GREMLIN_PARTITION) {
-      g = g.withStrategies(
-        new PartitionStrategy({
-          partitionKey: '_partition',
-          writePartition: process.env.GREMLIN_PARTITION,
-          readPartitions: [process.env.GREMLIN_PARTITION],
-        }),
-      );
-    }
     // Opaque 404 for both "not a member" and "intent is not in this project":
     // the caller must not learn whether an intent id exists.
-    if (!(await fetchMembershipRole(g, projectId, sub))) return { statusCode: 404 };
+    if (!(await getMembershipRole(ddb, projectId, sub))) return { statusCode: 404 };
     const meta = await store.getExecution(intentId);
     if (!meta || meta.projectId !== projectId) return { statusCode: 404 };
     return {
@@ -97,13 +65,5 @@ export const handler = async (event, context) => {
     // 5xx, so the caller reports a dependency failure rather than "not found".
     logger.error('intent pin lookup failed', error);
     return { statusCode: 500 };
-  } finally {
-    if (conn) {
-      try {
-        await conn.close();
-      } catch {
-        /* best-effort */
-      }
-    }
   }
 };

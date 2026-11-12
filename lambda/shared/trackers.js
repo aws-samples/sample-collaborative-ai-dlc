@@ -12,8 +12,12 @@
 // produce identical wire shapes and the projection logic doesn't drift.
 
 import gremlin from 'gremlin';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { getMembershipRole } from './space-membership.js';
 
 const __ = gremlin.process.statics;
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const getVal = (v, key) => {
   if (!v) return '';
@@ -91,20 +95,8 @@ const mapBinding = (m) => {
 // Returns the role string when the user is a member, or null otherwise.
 // Used by every /projects/{projectId}/... gate; pulling only `role`
 // avoids the cost of round-tripping a full valueMap on the edge.
-const fetchMembershipRole = async (g, projectId, userId) => {
-  const r = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .values('role')
-    .next();
-  if (r.done) return null;
-  return r.value || 'member';
-};
+const fetchMembershipRole = async (_g, projectId, userId) =>
+  getMembershipRole(ddb, projectId, userId);
 
 export {
   getVal,

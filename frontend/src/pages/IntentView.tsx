@@ -133,7 +133,7 @@ export default function IntentView() {
   // Role gate for the destructive delete (owner/admin — the API enforces it
   // too; hiding the button just avoids a guaranteed 403).
   const { project } = useProjectCache(projectId ?? null);
-  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const canDelete = project?.userRole === 'owner';
   const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);

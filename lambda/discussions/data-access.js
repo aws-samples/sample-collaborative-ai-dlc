@@ -355,13 +355,15 @@ export const updateAssistMessageVertex = async (
 };
 
 export const fetchProjectMemberIds = async (g, projectId) => {
-  return g
-    .V()
-    .has('Project', 'id', projectId)
-    .out('HAS_MEMBER')
-    .hasLabel('User')
-    .values('id')
-    .toList();
+  const { listSpaceMembers } = await import('../shared/space-membership.js');
+  const memberIds = [];
+  let token;
+  do {
+    const page = await listSpaceMembers(ddb, projectId, { token });
+    memberIds.push(...page.items.map((item) => item.userId));
+    token = page.nextToken;
+  } while (token);
+  return memberIds;
 };
 
 // ─── Message guard completion (DynamoDB) ───

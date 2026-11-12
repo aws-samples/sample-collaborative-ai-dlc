@@ -2,7 +2,8 @@ import { api } from './api';
 import type { GitProvider } from './gitProvider';
 import type { ProjectEnvironmentAssignment } from './environments';
 
-export type ProjectRole = 'owner' | 'admin' | 'member';
+export type ProjectRole = 'owner' | 'member';
+type LegacyProjectRole = ProjectRole | 'admin';
 export type AgentCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
@@ -153,6 +154,19 @@ export interface Member {
   role: ProjectRole;
 }
 
+const normalizeProjectRole = (role: LegacyProjectRole | undefined): ProjectRole | undefined =>
+  role === 'admin' ? 'owner' : role;
+
+const normalizeProject = (project: Project & { userRole?: LegacyProjectRole }): Project => ({
+  ...project,
+  userRole: normalizeProjectRole(project.userRole),
+});
+
+const normalizeMember = (member: Omit<Member, 'role'> & { role: LegacyProjectRole }): Member => ({
+  ...member,
+  role: normalizeProjectRole(member.role) ?? 'member',
+});
+
 export interface AddMemberInput {
   userId: string;
   email?: string;
@@ -181,8 +195,12 @@ export interface CustomRule {
 }
 
 export const projectsService = {
-  list: () => api.get<Project[]>('/projects'),
-  get: (id: string) => api.get<Project>(`/projects/${id}`),
+  list: async () =>
+    (await api.get<(Project & { userRole?: LegacyProjectRole })[]>('/projects')).map(
+      normalizeProject,
+    ),
+  get: async (id: string) =>
+    normalizeProject(await api.get<Project & { userRole?: LegacyProjectRole }>(`/projects/${id}`)),
   create: (input: CreateProjectInput) => api.post<Project>('/projects', input),
   update: (id: string, input: UpdateProjectInput) => api.put<Project>(`/projects/${id}`, input),
   delete: (id: string) => api.delete(`/projects/${id}`),
@@ -199,7 +217,17 @@ export const projectsService = {
     api.delete(`/projects/${projectId}/repos?url=${encodeURIComponent(repoUrl)}`),
 
   // Members
-  listMembers: (projectId: string) => api.get<Member[]>(`/projects/${projectId}/members`),
+  listMembers: async (projectId: string) => {
+    const response = await api.get<
+      | (Omit<Member, 'role'> & { role: LegacyProjectRole })[]
+      | {
+          members: (Omit<Member, 'role'> & { role: LegacyProjectRole })[];
+          nextToken?: string;
+        }
+    >(`/projects/${projectId}/members`);
+    const members = Array.isArray(response) ? response : response.members;
+    return members.map(normalizeMember);
+  },
   addMember: (projectId: string, input: AddMemberInput) =>
     api.post<Member>(`/projects/${projectId}/members`, input),
   updateMemberRole: (projectId: string, userId: string, role: ProjectRole) =>

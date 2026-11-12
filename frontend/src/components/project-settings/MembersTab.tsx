@@ -38,19 +38,16 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
-  admin: 'Admin',
   member: 'Member',
 };
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage space, members, and settings',
-  admin: 'Manage members and update the space repository',
   member: 'Collaborate on sprints and trigger agents',
 };
 
 const ROLE_BADGE: Record<ProjectRole, string> = {
   owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-  admin: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
   member: 'bg-muted text-muted-foreground border-transparent',
 };
 
@@ -72,7 +69,7 @@ interface Props {
 }
 
 export function MembersTab({ projectId, userRole }: Props) {
-  const canManageMembers = userRole === 'owner' || userRole === 'admin';
+  const canManageMembers = userRole === 'owner';
 
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -196,9 +193,7 @@ export function MembersTab({ projectId, userRole }: Props) {
   };
 
   const getAssignableRoles = (): ProjectRole[] => {
-    if (userRole === 'owner') return ['owner', 'admin', 'member'];
-    if (userRole === 'admin') return ['member'];
-    return [];
+    return userRole === 'owner' ? ['owner', 'member'] : [];
   };
 
   return (
@@ -216,7 +211,12 @@ export function MembersTab({ projectId, userRole }: Props) {
         description="Who can access this space and what they're allowed to do."
         headerAction={
           canManageMembers && (
-            <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={openAddMemberModal}>
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={openAddMemberModal}
+              data-testid="members-add-button"
+            >
               <Plus className="h-3.5 w-3.5" /> Add Member
             </Button>
           )
@@ -257,23 +257,18 @@ export function MembersTab({ projectId, userRole }: Props) {
                             setConfirmRoleChange({ userId: member.userId, newRole });
                           }
                         }}
-                        disabled={
-                          userRole === 'admin' &&
-                          (member.role === 'owner' || member.role === 'admin')
-                        }
+                        data-testid="members-role-select"
                         className={cn(
                           'h-7 rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60',
                           ROLE_BADGE[member.role],
                         )}
                       >
-                        {(userRole === 'owner' ? ['owner', 'admin', 'member'] : ['member']).map(
-                          (r) => (
-                            <option key={r} value={r}>
-                              {ROLE_LABELS[r as ProjectRole]}
-                            </option>
-                          ),
-                        )}
-                        {userRole !== 'owner' && member.role !== 'member' && (
+                        {(userRole === 'owner' ? ['owner', 'member'] : ['member']).map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_LABELS[r as ProjectRole]}
+                          </option>
+                        ))}
+                        {userRole !== 'owner' && member.role === 'owner' && (
                           <option value={member.role} disabled>
                             {ROLE_LABELS[member.role]}
                           </option>
@@ -287,21 +282,18 @@ export function MembersTab({ projectId, userRole }: Props) {
                         {ROLE_LABELS[member.role]}
                       </Badge>
                     )}
-                    {canManageMembers &&
-                      !(
-                        userRole === 'admin' &&
-                        (member.role === 'owner' || member.role === 'admin')
-                      ) && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => setConfirmRemove(member.userId)}
-                          title="Remove member"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
+                    {canManageMembers && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => setConfirmRemove(member.userId)}
+                        title="Remove member"
+                        data-testid="members-remove-button"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -373,6 +365,7 @@ export function MembersTab({ projectId, userRole }: Props) {
                         setUserSearch('');
                       }}
                       disabled={addingMember}
+                      data-testid="members-selected-user-clear-button"
                     >
                       <X className="h-3.5 w-3.5" />
                     </Button>
@@ -388,6 +381,7 @@ export function MembersTab({ projectId, userRole }: Props) {
                       onFocus={() => setShowUserDropdown(true)}
                       placeholder={loadingUsers ? 'Loading users...' : 'Search by email or name...'}
                       disabled={addingMember || loadingUsers}
+                      data-testid="members-user-search-input"
                     />
                     {showUserDropdown && !loadingUsers && (
                       <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
@@ -408,6 +402,7 @@ export function MembersTab({ projectId, userRole }: Props) {
                                 setShowUserDropdown(false);
                               }}
                               className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent"
+                              data-testid="members-user-option"
                             >
                               <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
                                 {(u.displayName || u.email).charAt(0).toUpperCase()}
@@ -443,6 +438,7 @@ export function MembersTab({ projectId, userRole }: Props) {
                   onChange={(e) => setNewMemberRole(e.target.value as ProjectRole)}
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                   disabled={addingMember}
+                  data-testid="members-add-role-select"
                 >
                   {getAssignableRoles().map((r) => (
                     <option key={r} value={r}>
@@ -458,10 +454,15 @@ export function MembersTab({ projectId, userRole }: Props) {
                 variant="outline"
                 onClick={() => setShowAddMember(false)}
                 disabled={addingMember}
+                data-testid="members-add-cancel-button"
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={addingMember || !selectedUser}>
+              <Button
+                type="submit"
+                disabled={addingMember || !selectedUser}
+                data-testid="members-add-submit-button"
+              >
                 {addingMember ? 'Adding...' : 'Add Member'}
               </Button>
             </DialogFooter>
