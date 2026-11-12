@@ -181,13 +181,19 @@ describe('MCP broker stage security matrix', () => {
     );
     expect(paths(overridden)).toEqual(['/app/dev/projects/p/mcp-secrets/PK']);
   });
+  // A conflict grant always names its unit lane.
+  const laneOf = (mode) => ({
+    mode,
+    stageId: null,
+    ...(mode === 'conflict' ? { unitSlug: 'auth', sectionIndex: 0 } : {}),
+  });
   it.each(['execution', 'conflict', 'discussion'])(
     'denies %s authority before META',
     async (mode) => {
       const deps = harness();
       await expect(
         authorizeMcpSecretRequest(
-          { action: 'resolve-mcp-secrets', gatewayGrant: await token({ mode, stageId: null }) },
+          { action: 'resolve-mcp-secrets', gatewayGrant: await token(laneOf(mode)) },
           deps,
         ),
       ).rejects.toMatchObject({ code: 'GATEWAY_GRANT_SCOPE_MISMATCH' });
