@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   activatedFlags,
   checkActiveExecutions,
+  deactivatedFlags,
   existingExecutionsTable,
 } from '../check-active-executions.mjs';
 
@@ -107,6 +108,43 @@ test('turning engine-data on later is an activation of its own', () => {
     'enable_engine_data',
   ]);
   assert.deepEqual(activatedFlags(plan(table(), runtime({ before: engineData }))), []);
+  assert.deepEqual(
+    activatedFlags(plan(table(), runtime({ before: engineData, after: gateway }))),
+    [],
+  );
+});
+
+test('the runtime losing the engine-data function turns engine-data off', () => {
+  const gateway = { ...BASE_ENV, ...GATEWAY_ENV };
+  const engineData = { ...gateway, ENGINE_DATA_FUNCTION: 'test-engine-data' };
+  assert.deepEqual(
+    deactivatedFlags(plan(table(), runtime({ before: engineData, after: gateway }))),
+    ['enable_engine_data'],
+  );
+  assert.deepEqual(deactivatedFlags(plan(table(), runtime({ before: engineData }))), []);
+  assert.deepEqual(
+    deactivatedFlags(
+      plan(
+        table(),
+        runtime({
+          before: engineData,
+          after: gateway,
+          unknown: { ENGINE_DATA_FUNCTION: true },
+        }),
+      ),
+    ),
+    [],
+  );
+  assert.deepEqual(deactivatedFlags(plan(table(), runtime({ after: engineData }))), []);
+  // Destroying the runtime strands no warm session.
+  const destroyed = runtime({ before: engineData, actions: ['delete'] });
+  destroyed.change.after = null;
+  assert.deepEqual(deactivatedFlags(plan(table(), destroyed)), []);
+  // Disabling the Gateway alone is not guarded.
+  assert.deepEqual(
+    deactivatedFlags(plan(table(), runtime({ before: gateway, after: BASE_ENV }))),
+    [],
+  );
 });
 
 test('reads the existing process table from the plan, not a fresh one', () => {
@@ -171,6 +209,43 @@ test('a table read failure fails the check', async () => {
     }),
     /AccessDenied/,
   );
+});
+
+const disabling = () =>
+  plan(
+    table(),
+    runtime({
+      before: { ...BASE_ENV, ...GATEWAY_ENV, ENGINE_DATA_FUNCTION: 'test-engine-data' },
+      after: { ...BASE_ENV, ...GATEWAY_ENV },
+    }),
+  );
+
+test('refuses turning engine-data off while executions are running, parked or queued', async () => {
+  const result = await checkActiveExecutions({
+    plan: disabling(),
+    listActiveExecutions: async () => rows,
+    env: {},
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.flags, []);
+  assert.deepEqual(result.deactivated, ['enable_engine_data']);
+  assert.deepEqual(
+    result.active.map((row) => row.executionId),
+    ['e-run', 'e-park', 'e-queued'],
+  );
+  const drained = await checkActiveExecutions({
+    plan: disabling(),
+    listActiveExecutions: async () => rows.filter((row) => row.status === 'DRAFT'),
+    env: {},
+  });
+  assert.equal(drained.ok, true);
+  const overridden = await checkActiveExecutions({
+    plan: disabling(),
+    listActiveExecutions: async () => rows,
+    env: { AIDLC_ALLOW_ACTIVE_EXECUTIONS: '1' },
+  });
+  assert.equal(overridden.ok, true);
+  assert.equal(overridden.overridden, true);
 });
 
 test('an explicit override applies anyway and still reports the executions', async () => {
