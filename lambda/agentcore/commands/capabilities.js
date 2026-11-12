@@ -29,6 +29,16 @@ import {
   runtimeCapabilityContributions,
 } from '../credential-material-registry.js';
 
+// parseKiroModels turns any output into a list; this tells a model list (which
+// may be empty) from output that is not one.
+const isKiroModelList = (stdout) => {
+  try {
+    return Array.isArray(JSON.parse(stdout ?? '')?.models);
+  } catch {
+    return false;
+  }
+};
+
 export const capabilities = async (_payload, deps = {}) => {
   const {
     discoverInstalledClis = defaultDiscover,
@@ -63,7 +73,11 @@ export const capabilities = async (_payload, deps = {}) => {
   });
 
   // Kiro models — only when kiro is installed (the binary must exist to ask it).
-  let kiroModels = { models: [], default: null };
+  // `source` tells the control plane whether the list is an answer (`catalog`,
+  // which includes "Kiro is not installed, so there are no models") or a failed
+  // lookup (`error`: the CLI could not be run, or printed something that is not
+  // a model list); without it an empty list could mean either.
+  let kiroModels = { models: [], default: null, source: 'catalog' };
   if (installed.includes('kiro')) {
     try {
       const list = buildKiroListModels();
@@ -72,9 +86,12 @@ export const capabilities = async (_payload, deps = {}) => {
         args: list.args,
         env: env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {},
       });
-      kiroModels = parseKiroModels(stdout ?? '');
+      kiroModels = {
+        ...parseKiroModels(stdout ?? ''),
+        source: isKiroModelList(stdout) ? 'catalog' : 'error',
+      };
     } catch {
-      kiroModels = { models: [], default: null };
+      kiroModels = { models: [], default: null, source: 'error' };
     }
   }
 

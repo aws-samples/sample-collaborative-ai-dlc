@@ -1,6 +1,7 @@
 import { loadMetaBeforeDelivery } from '../../v2-orchestrator/test/fixtures/load-meta-before-delivery.js';
 import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
+import { serializePriceTable } from '../../shared/model-pricing.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -4523,7 +4524,134 @@ describe('GET list + detail', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  // The table the agents lambda stores in SSM from the AWS Price List API.
+  const storePriceTable = () =>
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/model-pricing' }).resolves({
+      Parameter: {
+        Value: serializePriceTable({
+          version: 2,
+          region: 'us-east-1',
+          refreshedAt: '2026-11-11T00:00:00.000Z',
+          prices: {
+            'claude-sonnet-4-6': {
+              regional: { input: 3.3, output: 16.5, cacheRead: 0.33, cacheWrite: 4.125 },
+            },
+          },
+        }),
+      },
+    });
+
+  // Runs before any test stores a table: a table that was read is cached for the
+  // life of the module, a missing one is not.
+  it('reports cost as unavailable until a price table exists, then prices on the next read', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:00Z#m1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:00Z#m1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: 'si-unpriced',
+      metricId: 'm1',
+      resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000 },
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    const read = async () => {
+      const res = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).metrics[0];
+    };
+
+    // No parameter yet (first deployment, or the Price List refresh has not run).
+    expect((await read()).cost).toMatchObject({ priced: false, totalCost: 0 });
+
+    // A table from an earlier version carried static prices; it is not used.
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/model-pricing' }).resolves({
+      Parameter: { Value: JSON.stringify({ 'claude-sonnet-4-6': { input: 3, output: 15 } }) },
+    });
+    expect((await read()).cost).toMatchObject({ priced: false, totalCost: 0 });
+
+    storePriceTable();
+    const priced = await read();
+    expect(priced.cost.priced).toBe(true);
+    expect(priced.cost.totalCost).toBeCloseTo(3.3 + 16.5);
+    expect(priced.metrics.tokensInput).toBe(1_000_000);
+  });
+
+  it('keeps pricing with the table it read when a later SSM read fails', async () => {
+    storePriceTable();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:00Z#m1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:00Z#m1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: 'si-warm',
+      metricId: 'm1',
+      resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000 },
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    const read = async () => {
+      const res = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).metrics[0].cost;
+    };
+    const pricingReads = () =>
+      ssmMock
+        .commandCalls(GetParameterCommand)
+        .filter((call) => call.args[0].input.Name === '/collab/dev/model-pricing').length;
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      // Warm cache: the table is read and prices the sample.
+      clock.mockReturnValue(start + 60 * 60 * 1000);
+      expect(await read()).toMatchObject({ priced: true });
+
+      // Past the 15-minute time to live, SSM fails with a transient error.
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/model-pricing' })
+        .rejects(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 15 * 60 * 1000);
+      const before = pricingReads();
+      const kept = await read();
+      expect(pricingReads()).toBe(before + 1);
+      expect(kept.priced).toBe(true);
+      expect(kept.totalCost).toBeCloseTo(3.3 + 16.5);
+
+      // The failing parameter is not read again within the retry interval.
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 15 * 60 * 1000 + 59 * 1000);
+      expect(await read()).toMatchObject({ priced: true });
+      expect(pricingReads()).toBe(before + 1);
+
+      // After it, the read is retried; a parameter that was deleted is an answer.
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/model-pricing' })
+        .rejects(Object.assign(new Error('not found'), { name: 'ParameterNotFound' }));
+      clock.mockReturnValue(start + 60 * 60 * 1000 + 16 * 60 * 1000);
+      expect(await read()).toMatchObject({ priced: false, totalCost: 0 });
+      expect(pricingReads()).toBe(before + 2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('attaches per-sample cost to metrics, joining the stage-row model', async () => {
+    storePriceTable();
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
@@ -4583,14 +4711,15 @@ describe('GET list + detail', () => {
     expect(byId.m1.cost.priced).toBe(true);
     expect(byId.m1.metrics.tokensInput).toBe(3_100_000);
     expect(byId.m1.metrics.tokensCacheRead).toBe(2_000_000);
-    expect(byId.m1.cost.totalCost).toBeCloseTo(18 + 0.6 + 0.375);
-    // m2 joined the stage-row model and priced 0.5M input tokens at $3/1M = $1.5.
+    expect(byId.m1.cost.totalCost).toBeCloseTo(3.3 + 16.5 + 2 * 0.33 + 0.1 * 4.125);
+    // m2 joined the stage-row model and priced 0.5M input tokens at $3.30/1M.
     expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
-    expect(byId.m2.cost.totalCost).toBeCloseTo(1.5);
+    expect(byId.m2.cost.totalCost).toBeCloseTo(1.65);
     expect(byId.m2.metrics.tokensInput).toBe(500_000);
   });
 
   it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {
+    storePriceTable();
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const a = JSON.parse((await createIntent(sub, projectId)).body).id;
@@ -4624,7 +4753,7 @@ describe('GET list + detail', () => {
     expect(dto.project.metrics.tokensInput).toBe(3_000_000);
     expect(dto.project.metrics.contextWindowPct).toBe(80);
     // 2M uncached input plus 1M cache reads.
-    expect(dto.project.cost.totalCost).toBeCloseTo(6.3);
+    expect(dto.project.cost.totalCost).toBeCloseTo(2 * 3.3 + 0.33);
     expect(dto.project.cost.anyUnpriced).toBe(false);
   });
 

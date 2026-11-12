@@ -89,7 +89,12 @@ import {
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
-import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
+import {
+  makePriceResolver,
+  costForMetrics,
+  modelFamily,
+  parsePriceTable,
+} from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { qualifyAgentAuthRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -578,36 +583,54 @@ const getConnection = async () => {
   return new DriverRemoteConnection(url, { headers });
 };
 
-// Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, a
-// family→{input,output} JSON that the agents lambda refreshes from the AWS Price
-// List API — this lambda never calls Pricing, so it needs no extra SDK client).
-// We cache the built resolver for the container's life. The static fallback baked
-// into model-pricing.js means cost is always computable even before the first
-// refresh has populated SSM. Best-effort: any failure degrades to the seed and
-// never breaks the intent GET.
+// Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, the
+// table the agents lambda builds from the AWS Price List API — this lambda
+// never calls Pricing, so it needs no extra SDK client). There is no built-in
+// price: until the table exists cost is reported as unavailable (`priced:
+// false`), and the next read picks the table up. Best-effort: a failure never
+// breaks the intent GET.
 const MODEL_PRICING_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-const PRICING_TTL_MS = 6 * 60 * 60 * 1000; // re-read SSM at most every 6h
-let cachedPricing = null; // { resolver, at }
+const PRICING_TTL_MS = 15 * 60 * 1000; // re-read SSM at most every 15 minutes
+const PRICING_RETRY_MS = 60 * 1000; // wait this long after a failed read
+let cachedPricing = null; // { resolver, nextReadAt }
 
+// The stored table, or null when the parameter is missing or does not hold a
+// table of the current format. Throws when SSM could not be read.
 const loadPricingTable = async () => {
   const prefix = MODEL_PRICING_SSM_PREFIX();
-  if (!prefix) return {};
+  if (!prefix) return null;
   try {
     const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/model-pricing` }));
-    const parsed = JSON.parse(res.Parameter?.Value || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {}; // not yet populated / unreadable → static fallback prices this run
+    return parsePriceTable(res.Parameter?.Value ?? '');
+  } catch (error) {
+    if (error?.name === 'ParameterNotFound') return null;
+    throw error;
   }
 };
 
+// A read that succeeds is the truth: a table prices, and a missing, unreadable
+// or old-format parameter prices nothing (it is not cached, so the first
+// refresh after a deployment shows up on the next read). A read that FAILS says
+// nothing about the table: the resolver of the last successful read keeps being
+// used, the read is retried after PRICING_RETRY_MS, and with nothing read yet
+// cost is unavailable.
 const getPriceResolver = async () => {
-  if (cachedPricing && Date.now() - cachedPricing.at < PRICING_TTL_MS) {
+  if (cachedPricing && Date.now() < cachedPricing.nextReadAt) return cachedPricing.resolver;
+  let table;
+  try {
+    table = await loadPricingTable();
+  } catch (error) {
+    logger.warn('[pricing] price table read failed; keeping the last one read', {
+      error: error?.message,
+    });
+    cachedPricing = {
+      resolver: cachedPricing?.resolver ?? makePriceResolver(null),
+      nextReadAt: Date.now() + PRICING_RETRY_MS,
+    };
     return cachedPricing.resolver;
   }
-  const table = await loadPricingTable().catch(() => ({}));
   const resolver = makePriceResolver(table);
-  cachedPricing = { resolver, at: Date.now() };
+  cachedPricing = table ? { resolver, nextReadAt: Date.now() + PRICING_TTL_MS } : null;
   return resolver;
 };
 

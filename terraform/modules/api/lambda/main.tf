@@ -517,8 +517,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           # Global custom MCP servers injected into every agent session (merged
           # with project-level entries at intent-create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
-          # Token→USD price table, refreshed from the Price List API on model
-          # discovery and read by the intents lambda to compute cost.
+          # Token→USD price table, refreshed from the Price List API on a
+          # schedule and on model discovery, read by the intents lambda to
+          # compute cost.
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
@@ -589,7 +590,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = "*"
       },
       # Token→USD pricing: read published Bedrock model prices from the AWS Price
-      # List API on model discovery, to refresh the model-pricing SSM table.
+      # List API (hourly schedule and model discovery), to refresh the
+      # model-pricing SSM table.
       # pricing:GetProducts is not resource-scopable.
       {
         Effect   = "Allow"

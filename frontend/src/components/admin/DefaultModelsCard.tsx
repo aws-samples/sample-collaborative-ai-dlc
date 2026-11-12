@@ -15,12 +15,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronRight, Cpu, ExternalLink } from 'lucide-react';
-import { agentsService, type AgentModel } from '@/services/agents';
+import { agentsService, type AgentModel, type ModelListSources } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
-import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
+import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
+import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
+import { AGENT_CLIS, AGENT_CLI_METADATA, modelListSources } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
@@ -56,11 +58,11 @@ export function DefaultModelsCard() {
     {},
   );
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  // Why the Codex list is what it is (#674): the picker only calls a list
-  // regional when the runtime read it (`catalog`); anything else — a failed
-  // lookup or a runtime that answered without a catalogue — is the built-in
-  // fallback, and it says so instead of looking current.
-  const [codexSource, setCodexSource] = useState<'catalog' | 'error' | 'static'>();
+  // Why each list is what it is (#674): only `catalog` was read just now. A
+  // failed lookup shows the last list read (`cached`) or no list at all, and
+  // the field says so instead of looking current.
+  const [modelSources, setModelSources] = useState<ModelListSources>({});
+  const codexSource = modelSources.codex;
   // CLI whose field is in free-text mode while a catalog exists: the caller is
   // typing a model ID the catalog does not list.
   const [customEntry, setCustomEntry] = useState<Partial<Record<RuntimeModelCli, boolean>>>({});
@@ -82,7 +84,7 @@ export function DefaultModelsCard() {
       .getCapabilities(true)
       .then((c) => {
         if (c.models) setModelOptions(c.models);
-        setCodexSource(c.models?.codexSource);
+        setModelSources(modelListSources(c.models));
       })
       .catch(() => {
         /* non-fatal — fall back to Input fields when models unavailable */
@@ -230,14 +232,25 @@ export function DefaultModelsCard() {
                       )}
                     </>
                   )}
-                  {cli === 'codex' && codexSource !== 'catalog' && options.length > 0 && (
-                    <p
-                      data-testid="codex-catalog-unavailable"
-                      className="text-[11px] text-muted-foreground"
-                    >
-                      Could not read this region&apos;s Codex catalogue — showing the built-in list.
-                    </p>
-                  )}
+                  <UnpricedModelNote
+                    options={options}
+                    selected={current}
+                    data-testid={`default-model-unpriced-${cli}`}
+                  />
+                  <CachedModelListNote
+                    source={modelSources[cli]}
+                    data-testid={`default-model-source-${cli}`}
+                  />
+                  {cli === 'codex' &&
+                    modelsLoaded &&
+                    (codexSource === 'error' || codexSource === 'unavailable') && (
+                      <p
+                        data-testid="codex-catalog-unavailable"
+                        className="text-[11px] text-muted-foreground"
+                      >
+                        Could not read this region&apos;s Codex catalogue — enter a model ID.
+                      </p>
+                    )}
                 </div>
               );
             })}
@@ -273,6 +286,7 @@ export function DefaultModelsCard() {
                     onChange={setTierModels}
                     modelOptions={modelOptions}
                     modelsLoaded={modelsLoaded}
+                    modelSources={modelSources}
                     disabled={saving}
                     idPrefix="admin"
                     inheritedModels={cliModels}

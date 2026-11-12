@@ -6,7 +6,7 @@ import {
   machineCliModels,
   CODEX_DEFAULT_MODEL,
 } from '../model-resolver.js';
-import { costForMetrics } from '../../shared/model-pricing.js';
+import { costForMetrics, makePriceResolver } from '../../shared/model-pricing.js';
 import { getDriver } from '../cli/drivers.js';
 
 describe('resolveModelId', () => {
@@ -161,9 +161,18 @@ describe('resolveStageModel — Codex uses its OWN model namespace (openai.*)', 
     ).toBe('openai.gpt-6.1-sol');
   });
 
-  it('prices Codex usage recorded with no model configured', () => {
+  it('records a model the price table can price when no Codex model is configured', () => {
     const model = resolveStageModel({ cliModels: {}, cli: 'codex', env });
-    const cost = costForMetrics({ tokensInput: 1_000_000, tokensOutput: 1_000_000 }, model);
+    const priceFor = makePriceResolver({
+      version: 2,
+      region: 'us-east-1',
+      prices: { 'openai.gpt-6.1-sol': { regional: { input: 2.2, output: 11 } } },
+    });
+    const cost = costForMetrics(
+      { tokensInput: 1_000_000, tokensOutput: 1_000_000 },
+      model,
+      priceFor,
+    );
     expect(cost.priced).toBe(true);
     expect(cost.totalCost).toBeCloseTo(2.2 + 11);
   });

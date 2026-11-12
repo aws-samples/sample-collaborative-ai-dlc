@@ -1,8 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import bedrockModels from '../bedrock-models.js';
 
-const { listClaudeModels, listCodexModels, codexModelsFor, CODEX_BEDROCK_MODELS, regionPrefix } =
-  bedrockModels;
+const { listClaudeModels, listCodexModels, regionPrefix } = bedrockModels;
 
 const P = (id, extra = {}) => ({
   inferenceProfileId: id,
@@ -160,36 +159,5 @@ describe('listCodexModels (Mantle catalogue for the inference region)', () => {
     });
     expect(source).toBe('error');
     expect(models.map((m) => m.id)).toEqual(['openai.gpt-5.5']);
-  });
-});
-
-describe('codexModelsFor (what the picker offers)', () => {
-  it('keeps a regional catalogue that resolved to no compatible model empty', () => {
-    expect(codexModelsFor({ models: [], source: 'catalog' })).toEqual([]);
-  });
-
-  it('offers the regional catalogue as it was read', () => {
-    const models = [{ id: 'openai.gpt-6-sol', name: 'openai.gpt-6-sol', description: null }];
-    expect(codexModelsFor({ models, source: 'catalog' })).toBe(models);
-  });
-
-  it('falls back to the curated list when the lookup failed', () => {
-    expect(codexModelsFor({ models: [], source: 'error' })).toBe(CODEX_BEDROCK_MODELS);
-  });
-
-  it('falls back to the curated list when the runtime reported no catalogue at all', () => {
-    expect(codexModelsFor(undefined)).toBe(CODEX_BEDROCK_MODELS);
-  });
-});
-
-describe('CODEX_BEDROCK_MODELS (curated static list)', () => {
-  it('offers only exact openai.* ids — no geo or provider prefixes', () => {
-    expect(CODEX_BEDROCK_MODELS.length).toBeGreaterThan(0);
-    for (const m of CODEX_BEDROCK_MODELS) {
-      expect(m.id).toMatch(/^openai\./);
-      expect(m.id).not.toMatch(/^(us|eu|apac|global)\./);
-      expect(m.id).not.toContain('amazon-bedrock/');
-      expect(m.name).toBeTruthy();
-    }
   });
 });

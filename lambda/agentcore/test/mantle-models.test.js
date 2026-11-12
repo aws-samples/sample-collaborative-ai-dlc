@@ -65,6 +65,77 @@ describe('listMantleModels', () => {
     );
   });
 
+  const answer = (status, body = { data: [{ id: 'openai.gpt-6-sol' }] }) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
+  const list = (fetchImpl, options = {}) =>
+    listMantleModels({
+      region: 'us-east-1',
+      apiKey: 'test-key',
+      fetchImpl,
+      retryDelayMs: 0,
+      ...options,
+    });
+
+  it.each([
+    ['a throttled answer', () => answer(429)],
+    ['a server error', () => answer(503)],
+    [
+      'a network error',
+      () => {
+        throw new TypeError('fetch failed');
+      },
+    ],
+  ])('retries %s and returns the catalogue once the endpoint answers', async (_label, fail) => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async () => fail())
+      .mockImplementationOnce(async () => fail())
+      .mockResolvedValue(answer(200));
+
+    const payload = await list(fetchImpl);
+
+    expect(payload.data).toEqual([{ id: 'openai.gpt-6-sol' }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives up after three attempts', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(answer(503));
+
+    await expect(list(fetchImpl)).rejects.toThrow(/answered 503/);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([401, 403, 404])('does not retry a %i answer', async (status) => {
+    const fetchImpl = vi.fn().mockResolvedValue(answer(status));
+
+    await expect(list(fetchImpl)).rejects.toThrow(new RegExp(`answered ${status}`));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a request that timed out', async () => {
+    const fetchImpl = vi.fn(
+      (_url, { signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    );
+
+    await expect(list(fetchImpl, { timeoutMs: 5 })).rejects.toThrow(/aborted/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an answer that is not a model list', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(answer(200, { object: 'error' }));
+
+    await expect(list(fetchImpl)).rejects.toThrow(/did not return a model list/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('requires a region', async () => {
     await expect(listMantleModels({ apiKey: 'k' })).rejects.toThrow('region');
   });

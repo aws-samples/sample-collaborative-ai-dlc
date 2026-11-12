@@ -9,6 +9,8 @@
 #   - GET  /agents/{taskId}/questions          — recorded agent questions (read)
 #   - GET  /agents/capabilities                — CLI/model discovery (v2 model
 #     picker; probes the AgentCore runtime and refreshes model-pricing SSM)
+#   - scheduled `refresh-model-pricing`        — hourly Price List refresh of
+#     the model-pricing SSM table
 #   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 #     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 
@@ -72,6 +74,31 @@ module "agents_lambda" {
   }
 }
 
+
+# Rebuild the model-pricing SSM table from the AWS Price List API every hour, so
+# a price AWS publishes later is picked up without anyone opening a model
+# picker. The table has no built-in prices: until the first run after a
+# deployment, cost shows as unavailable.
+resource "aws_cloudwatch_event_rule" "agents_model_pricing_refresh" {
+  name                = "${var.project_name}-agents-model-pricing-refresh-${var.environment}"
+  description         = "Refresh the model price table from the AWS Price List API"
+  schedule_expression = "rate(1 hour)"
+}
+
+resource "aws_cloudwatch_event_target" "agents_model_pricing_refresh" {
+  rule      = aws_cloudwatch_event_rule.agents_model_pricing_refresh.name
+  target_id = "agents-model-pricing-refresh"
+  arn       = module.agents_lambda.lambda_function_arn
+  input     = jsonencode({ action = "refresh-model-pricing" })
+}
+
+resource "aws_lambda_permission" "agents_model_pricing_refresh" {
+  statement_id  = "AllowExecutionFromModelPricingRefresh"
+  action        = "lambda:InvokeFunction"
+  function_name = module.agents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.agents_model_pricing_refresh.arn
+}
 
 resource "aws_lambda_permission" "agents" {
   statement_id  = "AllowAPIGateway"

@@ -11,13 +11,20 @@ import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 //   - GET  /agents/{taskId}/questions          — recorded agent questions (read)
 //   - GET  /agents/capabilities                — CLI/model discovery for the v2
 //     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
+//   - `{ action: 'refresh-model-pricing' }`    — hourly schedule: rebuild the
+//     model-pricing SSM table from the AWS Price List API
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 //   - POST /agents/authentication-setup        — Admin setup steps of registered
 //     authentication providers (authentication-settings-providers.js)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  GetParameterCommand,
+  GetParametersCommand,
+  PutParameterCommand,
+} from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
 import {
@@ -43,8 +50,9 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole, getVal } from '../shared/trackers.js';
-import { listClaudeModels, codexModelsFor } from '../shared/bedrock-models.js';
-import { refreshPricing } from '../shared/model-pricing.js';
+import { listClaudeModels } from '../shared/bedrock-models.js';
+import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
+import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
 import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
@@ -86,14 +94,16 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // runtime (shared/runtime-session.js withDisposableSession).
 const sessionCleanupStore = createSessionCleanupStore({ ddb });
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
-// Model discovery must list the profiles of the region the CLIs invoke.
-const bedrock = new BedrockClient({
-  region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
-});
+// Model discovery must list the profiles of the region the CLIs invoke, and the
+// price table is built for that region. Both clients retry a throttled or
+// failed call up to three attempts in total.
+const inferenceRegion = () => process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1';
+const bedrock = new BedrockClient({ region: inferenceRegion(), maxAttempts: 3 });
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
 // The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
 const pricing = new PricingClient({
   region: (process.env.AWS_REGION || '').startsWith('ap-') ? 'ap-south-1' : 'us-east-1',
+  maxAttempts: 3,
 });
 
 const logger = new Logger({ persistentKeys: { component: 'agents' } });
@@ -424,47 +434,124 @@ function modelPricingPath() {
   return prefix ? `${prefix}/model-pricing` : '';
 }
 
-// Fetch all Anthropic-on-Bedrock token SKUs from the AWS Price List API.
-// Paginated; returns the flat PriceList array the shared parser expects.
+// Fetch the on-demand token SKUs of the inference region from the AWS Price List
+// API, one paginated query per provider. Returns the flat PriceList array the
+// shared parser expects; any failed page fails the whole fetch, so a partial
+// result is never turned into a price table.
 async function fetchBedrockProducts() {
   const products = [];
-  let token;
-  do {
-    const res = await pricing.send(
-      new GetProductsCommand({
-        ServiceCode: 'AmazonBedrock',
-        Filters: [{ Type: 'TERM_MATCH', Field: 'provider', Value: 'Anthropic' }],
-        NextToken: token,
-      }),
-    );
-    products.push(...(res.PriceList ?? []));
-    token = res.NextToken;
-  } while (token);
+  for (const provider of PRICE_LIST_PROVIDERS) {
+    let token;
+    do {
+      const res = await pricing.send(
+        new GetProductsCommand({
+          ServiceCode: PRICE_LIST_SERVICE_CODE,
+          Filters: [
+            { Type: 'TERM_MATCH', Field: 'provider', Value: provider },
+            { Type: 'TERM_MATCH', Field: 'regionCode', Value: inferenceRegion() },
+            { Type: 'TERM_MATCH', Field: 'feature', Value: 'On-demand Inference' },
+          ],
+          NextToken: token,
+        }),
+      );
+      products.push(...(res.PriceList ?? []));
+      token = res.NextToken;
+    } while (token);
+  }
   return products;
 }
 
-// Refresh the SSM model-pricing table from the Price List API. Best-effort: the
-// intents lambda reads this table (with a static fallback), so a failed refresh
-// just means cost is priced from the fallback until the next successful refresh.
-// Piggy-backs on the model-discovery call (GET /agents/capabilities?models=1) so
-// prices track whatever models the picker can select, without a separate cron.
-async function refreshModelPricing() {
-  const path = modelPricingPath();
-  if (!path) return;
-  try {
-    const table = await refreshPricing({ getProducts: fetchBedrockProducts });
+// The SSM price table the intents lambda reads. Refreshed by the hourly
+// schedule (`refresh-model-pricing`) and, at most once per interval and
+// container, when a picker loads its models. Best-effort: a failed refresh
+// keeps the stored table. Intelligent-Tiering lets the parameter outgrow the
+// 4 KB standard size without a deployment change.
+const modelPricing = createModelPricing({
+  region: inferenceRegion(),
+  getProducts: fetchBedrockProducts,
+  readTable: async () => {
+    const path = modelPricingPath();
+    if (!path) return null;
+    try {
+      const res = await ssm.send(new GetParameterCommand({ Name: path }));
+      return res.Parameter?.Value ?? null;
+    } catch (error) {
+      if (error?.name === 'ParameterNotFound') return null;
+      throw error;
+    }
+  },
+  writeTable: async (value) => {
+    const path = modelPricingPath();
+    if (!path) throw new Error('AGENT_SETTINGS_SSM_PREFIX is not set');
     await ssm.send(
       new PutParameterCommand({
         Name: path,
-        Value: JSON.stringify(table),
+        Value: value,
         Type: 'String',
+        Tier: 'Intelligent-Tiering',
         Overwrite: true,
       }),
     );
-  } catch (e) {
-    logger.error('[pricing] refresh failed', e);
+  },
+  logger,
+});
+
+const modelCatalog = createModelCatalog({ logger });
+
+// Claude / OpenCode models with API keys: every page of the region's inference
+// profiles (one page holds 100, and a region can list more).
+const loadKeyClaudeModels = () =>
+  modelCatalog.claudeModels(async () => {
+    const summaries = [];
+    let nextToken;
+    do {
+      const out = await bedrock.send(
+        new ListInferenceProfilesCommand({ maxResults: 100, ...(nextToken ? { nextToken } : {}) }),
+      );
+      summaries.push(...(out.inferenceProfileSummaries ?? []));
+      nextToken = out.nextToken;
+    } while (nextToken);
+    return listClaudeModels({
+      region: inferenceRegion(),
+      listInferenceProfiles: async () => summaries,
+    });
+  });
+
+// The `models` block of a capabilities response. Starts a price refresh without
+// waiting for it; the response is built from the table already stored.
+// `discover(loadKeyModels)` runs discoverAgentModels; it calls `loadKeyModels`
+// only when the Claude list comes from this Lambda (API keys), otherwise the
+// list is the runtime's.
+const pickerModels = async ({ runtimeTarget, projectId, userId, credentialBindings, discover }) => {
+  modelPricing.refresh().catch(() => {});
+  let keyClaude;
+  const [{ runtimeCaps }, priceFor] = await Promise.all([
+    discover(async () => {
+      keyClaude = await loadKeyClaudeModels();
+      return keyClaude.models ?? [];
+    }),
+    modelPricing.priceResolver(),
+  ]);
+  const lookups = runtimeLookups(runtimeCaps);
+  const models = modelCatalog.assemble({
+    key: JSON.stringify([
+      runtimeTarget?.agentRuntimeArn ?? null,
+      projectId ?? null,
+      userId ?? null,
+      credentialBindings,
+    ]),
+    ...lookups,
+    claude: keyClaude ?? lookups.claude,
+    priceFor,
+  });
+  const failed = Object.entries(models.sources).filter(
+    ([, source]) => source === 'error' || source === 'cached',
+  );
+  if (failed.length > 0) {
+    logger.warn('[capabilities] model list lookup failed', { sources: Object.fromEntries(failed) });
   }
-}
+  return { models, runtimeCaps };
+};
 
 const authenticationSettings = () =>
   createAuthenticationSettingsService({
@@ -492,13 +579,14 @@ const authChangeResponse = (response, error) =>
 
 // --- Handler ---
 
-// Codex models come from the runtime's regional Mantle catalogue (#674);
-// codexModelsFor in shared/bedrock-models.js decides when the curated list
-// stands in for it.
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
+  // Hourly EventBridge schedule (terraform: agents_model_pricing_refresh).
+  if (event?.action === 'refresh-model-pricing') {
+    return { refreshed: await modelPricing.refresh({ force: true }) };
+  }
   const response = buildResponse(event);
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;
@@ -671,20 +759,23 @@ export const handler = async (event, context) => {
         return response(500, { error: 'Failed to resolve agent credentials' });
       }
       const withModels = event.queryStringParameters?.models === '1';
-      if (withModels) refreshModelPricing().catch(() => {});
-      const { claudeModels, runtimeCaps } = await discoverAgentModels({
-        credentialBindings,
-        withModels,
-        loadKeyModels: () =>
-          listClaudeModels({
-            listInferenceProfiles: async () => {
-              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-              return out.inferenceProfileSummaries ?? [];
-            },
-          }),
-        loadRuntimeCapabilities: () =>
-          fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
-      });
+      const discover = (loadKeyModels) =>
+        discoverAgentModels({
+          credentialBindings,
+          withModels,
+          loadKeyModels,
+          loadRuntimeCapabilities: () =>
+            fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
+        });
+      const { models, runtimeCaps } = withModels
+        ? await pickerModels({
+            runtimeTarget: access.runtimeTarget,
+            projectId,
+            userId: credentialUserId,
+            credentialBindings,
+            discover,
+          })
+        : await discover();
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const { disabledClis, clis: runtimeClis } = await applyDisabledClis(
         (runtimeCaps?.clis ?? []).map((cli) => ({
@@ -693,32 +784,13 @@ export const handler = async (event, context) => {
         })),
       );
       const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
-      if (!withModels) {
-        return response(200, {
-          available,
-          runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
-          runtimeClis,
-          credentialSources,
-          disabledClis,
-        });
-      }
-      const opencodeModels = claudeModels.map((model) => ({
-        ...model,
-        id: `amazon-bedrock/${model.id}`,
-      }));
       return response(200, {
         available,
         runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
         runtimeClis,
         credentialSources,
         disabledClis,
-        models: {
-          claude: claudeModels,
-          opencode: opencodeModels,
-          kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: codexModelsFor(runtimeCaps?.codexModels),
-          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
-        },
+        ...(withModels ? { models } : {}),
       });
     }
 
@@ -825,7 +897,7 @@ export const handler = async (event, context) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
-          bedrockRegion: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
+          bedrockRegion: inferenceRegion(),
           ...(process.env.V2_PROCESS_TABLE
             ? {
                 authentication: await authenticationView({
@@ -1310,36 +1382,26 @@ export const handler = async (event, context) => {
         });
       }
 
-      // Piggy-back a pricing refresh on model discovery so the SSM price table
-      // tracks the selectable models. Fire-and-forget: never blocks or fails the
-      // models response (the intents read path has a static fallback regardless).
-      refreshModelPricing().catch(() => {});
-
-      // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
-      // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+      // Bedrock (claude/opencode) + runtime (kiro, codex + auth state) discovery,
+      // in parallel. Both are best-effort — a failure yields the last list this
+      // container read or an empty one, never a 500.
+      const { models, runtimeCaps } = await pickerModels({
+        runtimeTarget,
+        projectId: capabilitiesProjectId || null,
+        userId: credentialUserId,
         credentialBindings,
-        loadKeyModels: () =>
-          listClaudeModels({
-            listInferenceProfiles: async () => {
-              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-              return out.inferenceProfileSummaries ?? [];
-            },
-          }),
-        loadRuntimeCapabilities: () =>
-          fetchRuntimeCapabilities(
-            runtimeTarget,
+        discover: (loadKeyModels) =>
+          discoverAgentModels({
             credentialBindings,
-            capabilitiesProjectId || null,
-          ),
+            loadKeyModels,
+            loadRuntimeCapabilities: () =>
+              fetchRuntimeCapabilities(
+                runtimeTarget,
+                credentialBindings,
+                capabilitiesProjectId || null,
+              ),
+          }),
       });
-      const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
-      // OpenCode drives the SAME Bedrock profiles as claude but requires the
-      // `amazon-bedrock/` provider prefix (see cli-models validation).
-      const opencodeModels = claudeModels.map((m) => ({
-        ...m,
-        id: `amazon-bedrock/${m.id}`,
-      }));
       const { disabledClis, clis: markedClis } = await applyDisabledClis(runtimeCaps?.clis ?? []);
       const available = markedClis
         .filter((c) => c.available)
@@ -1352,15 +1414,8 @@ export const handler = async (event, context) => {
         // the Admin disabled-CLI set applied.
         runtimeClis: runtimeCaps?.clis ? markedClis : null,
         disabledClis,
-        models: {
-          claude: claudeModels,
-          opencode: opencodeModels,
-          kiro: kiroModels,
-          // Codex on Bedrock: the runtime's regional Mantle catalogue, falling
-          // back to the curated list (see shared/bedrock-models.js).
-          codex: codexModelsFor(runtimeCaps?.codexModels),
-          codexSource: runtimeCaps?.codexModels?.source ?? 'static',
-        },
+        // Per-CLI model lists; `priced: false` marks a model without a price.
+        models,
       });
     }
 
