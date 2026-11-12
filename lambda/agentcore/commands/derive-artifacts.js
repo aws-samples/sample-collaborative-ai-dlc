@@ -19,6 +19,12 @@ import {
   selectCurrentArtifactHeads,
 } from '../../shared/artifact-versioning.js';
 
+// An artifact that changed, vanished or became ambiguous between the listing
+// and its mirror is skipped: the next derive picks up its current head.
+const SKIPPED_ARTIFACT_CODES = new Set(['artifact_changed', 'not_found', 'artifact_ambiguous']);
+const isSkippedArtifact = (error) =>
+  error?.name === 'EngineGraphError' && SKIPPED_ARTIFACT_CODES.has(error.code);
+
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
 export const currentArtifacts = (rows = []) =>
   selectCurrentArtifactHeads(rows).toSorted(
@@ -185,24 +191,33 @@ export const deriveArtifacts = async (payload, deps) => {
     const enrichmentDeadline = Date.now() + ENRICHMENT_BUDGET_MS;
     for (const head of targets) {
       const logicalKey = artifactLogicalKeyFromRow(head, intentId);
-      const artifact = await graph.getArtifactContent({ artifactId: head.id, logicalKey });
-      const extraction = extractArtifactStructure({
-        artifactType: artifact.artifact_type,
-        artifactId: artifact.id,
-        content: artifact.content ?? '',
-      });
-      if (extraction.error) {
-        errors.push({ artifactId: artifact.id, error: extraction.error });
+      let artifact;
+      let extraction;
+      let mirrored;
+      try {
+        artifact = await graph.getArtifactContent({ artifactId: head.id, logicalKey });
+        extraction = extractArtifactStructure({
+          artifactType: artifact.artifact_type,
+          artifactId: artifact.id,
+          content: artifact.content ?? '',
+        });
+        if (extraction.error) {
+          errors.push({ artifactId: artifact.id, error: extraction.error });
+          continue;
+        }
+        // The graph re-reads and re-extracts the artifact itself and refuses a
+        // projection of content that changed since this read. The logical key
+        // names this lane's head when other lanes reuse the same artifact id.
+        mirrored = await graph.mirrorArtifactDerivations({
+          artifactId: artifact.id,
+          logicalKey,
+          sourceHash: extraction.contentHash,
+        });
+      } catch (error) {
+        if (!isSkippedArtifact(error)) throw error;
+        errors.push({ artifactId: head.id, error: error.code });
         continue;
       }
-      // The graph re-reads and re-extracts the artifact itself and refuses a
-      // projection of content that changed since this read. The logical key
-      // names this lane's head when other lanes reuse the same artifact id.
-      const mirrored = await graph.mirrorArtifactDerivations({
-        artifactId: artifact.id,
-        logicalKey,
-        sourceHash: extraction.contentHash,
-      });
       artifacts.push(mirrored.artifactId);
       sections += mirrored.sections;
       items += mirrored.items;

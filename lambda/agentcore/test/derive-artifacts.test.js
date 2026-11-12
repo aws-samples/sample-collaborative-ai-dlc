@@ -228,6 +228,71 @@ describe('deriveArtifacts', () => {
   });
 });
 
+describe('deriveArtifacts — artifacts that move under the derive', () => {
+  const mirror = vi.fn(async ({ artifact: a }) => ({
+    artifactId: a.id,
+    sections: 1,
+    items: 1,
+    citations: 0,
+    superseded: 0,
+  }));
+  const run = (writer) => {
+    const store = { appendEvent: vi.fn(async () => {}) };
+    const promise = deriveArtifacts(
+      { projectId: 'p', intentId: 'i', executionId: 'e' },
+      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+    );
+    return { store, promise };
+  };
+
+  it('skips an artifact that changed, vanished or became ambiguous and derives the rest', async () => {
+    // One logical artifact each: four different creating stages.
+    const rows = [
+      artifact({ id: 'changed', created_at: '1', created_by_stage_instance_id: 'si-changed' }),
+      artifact({ id: 'gone', created_at: '2', created_by_stage_instance_id: 'si-gone' }),
+      artifact({ id: 'twice', created_at: '3', created_by_stage_instance_id: 'si-twice' }),
+      artifact({ id: 'kept', created_at: '4', created_by_stage_instance_id: 'si-kept' }),
+    ];
+    let changedReads = 0;
+    const writer = {
+      getIntentGraph: vi.fn(async () => rows),
+      // The listing still names every row; the head lookups behind the
+      // per-artifact reads see what changed since.
+      getCurrentHeads: async ({ id }) => {
+        if (id === 'gone') return [];
+        const [row] = rows.filter((r) => r.id === id);
+        if (id === 'twice') return [row, { ...row }];
+        if (id === 'changed' && ++changedReads > 1) {
+          return [{ ...row, content: `${row.content}\n\nEdited meanwhile.` }];
+        }
+        return [row];
+      },
+      mirrorArtifactDerivations: mirror,
+    };
+    const { store, promise } = run(writer);
+    const out = await promise;
+    expect(out).toMatchObject({ ok: true, artifacts: ['kept'] });
+    expect(out.errors).toEqual([
+      { artifactId: 'changed', error: 'artifact_changed' },
+      { artifactId: 'gone', error: 'not_found' },
+      { artifactId: 'twice', error: 'artifact_ambiguous' },
+    ]);
+    expect(store.appendEvent.mock.calls.map(([e]) => e.type)).toEqual(['v2.derive.partial']);
+  });
+
+  it('still fails the derive on any other graph error', async () => {
+    const writer = withHeads({
+      getIntentGraph: vi.fn(async () => [artifact()]),
+      mirrorArtifactDerivations: vi.fn(async () => {
+        throw new Error('neptune down');
+      }),
+    });
+    const { store, promise } = run(writer);
+    expect(await promise).toEqual({ ok: false, reason: 'derive_failed', detail: 'neptune down' });
+    expect(store.appendEvent.mock.calls.map(([e]) => e.type)).toEqual(['v2.derive.failed']);
+  });
+});
+
 describe('deriveEnrichmentMode', () => {
   it('normalizes the payload toggle safely', () => {
     expect(deriveEnrichmentMode('llm')).toBe('llm');
