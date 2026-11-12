@@ -337,7 +337,10 @@ export const checkSparseSelection = async ({ dir, git = runGit, baseline, allowe
   if (cone.exitCode !== 0 || (cone.stdout ?? '').trim() !== 'true') {
     return unverifiable('sparse checkout is not in cone mode');
   }
-  const list = await git(['sparse-checkout', 'list'], { cwd: dir });
+  // Git quotes and escapes non-ASCII paths by default ("docs/caf\303\251"),
+  // which is not the stored selection. Paths it still quotes (", \, control
+  // characters) are never valid selections.
+  const list = await git(['-c', 'core.quotePath=false', 'sparse-checkout', 'list'], { cwd: dir });
   if (list.exitCode !== 0) return unverifiable('git sparse-checkout list failed');
   const listed = validateSparseDirectories(
     String(list.stdout ?? '')
