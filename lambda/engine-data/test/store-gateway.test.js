@@ -599,6 +599,53 @@ describe('remote process store shape', () => {
   });
 });
 
+describe('a result past the Invoke response limit', () => {
+  // Six 1 MiB events: a whole-partition read the 6 MB synchronous Invoke
+  // response could not carry.
+  const seedLargeHistory = () => {
+    seed();
+    const summary = 'x'.repeat(1024 * 1024);
+    ddb.on(QueryCommand).resolves({
+      Items: Array.from({ length: 6 }, (_, n) => ({
+        pk: 'EXEC#e-1',
+        sk: `EVENT#2026-10-18T12:00:0${n}.000Z#ev-${n}`,
+        executionId: 'e-1',
+        eventType: 'v2.stage.note',
+        summary,
+      })),
+    });
+  };
+
+  it('is refused with a named error the runtime recognises', async () => {
+    seedLargeHistory();
+    const audit = [];
+    const store = await remoteStore({ audit });
+    await expect(store.listEvents('e-1')).rejects.toMatchObject({
+      name: 'EngineStoreError',
+      code: 'response_too_large',
+    });
+    expect(audit.at(-1)).toMatchObject({
+      op: 'store.listEvents',
+      decision: 'allow',
+      outcome: 'response_too_large',
+    });
+    expect(audit.at(-1).bytes).toBeGreaterThan(5 * 1024 * 1024);
+  });
+
+  it('returns a result under the limit unchanged', async () => {
+    seedLargeHistory();
+    const token = await grantFor(EXECUTION);
+    const handler = createStoreGateway({
+      verifyGrant,
+      createStore: newStore,
+      maxResponseBytes: 7 * 1024 * 1024,
+    });
+    const response = await handler({ op: 'store.listEvents', args: ['e-1'], grant: token });
+    expect(response.ok).toBe(true);
+    expect(response.result).toHaveLength(6);
+  });
+});
+
 describe('stage grants act only as their own stage', () => {
   // run-stage resolves instance ids in the workflow-pin namespace.
   const PINNED = { ...META, workflowId: 'aidlc-v2', workflowVersion: 3 };

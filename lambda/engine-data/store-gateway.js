@@ -29,12 +29,17 @@
 // acting on its own execution, never outside it. The real store method then
 // runs unchanged (its CAS and transaction-conflict retries stay server-side),
 // and its errors travel back by name so CAS callers keep working.
-import { ENGINE_DATA_OP_PREFIX, ENGINE_DATA_STORE_METHODS } from '../shared/engine-data-ops.js';
+import {
+  ENGINE_DATA_OP_PREFIX,
+  ENGINE_DATA_RESPONSE_TOO_LARGE,
+  ENGINE_DATA_STORE_METHODS,
+} from '../shared/engine-data-ops.js';
 import { STAGE_ATTEMPT_METHODS } from '../shared/stage-attempt.js';
 import { RESERVED_ATTRIBUTES, STORE_OPS } from './store-schemas.js';
 import {
   ENGINE_GRANT_MODES,
   EngineDataAccessDenied,
+  MAX_RESPONSE_BYTES,
   denialResponse,
   deny,
   denyReplacedRun,
@@ -138,7 +143,12 @@ const parseArgs = (spec, args) => {
   return { parsed, stripped };
 };
 
-export const createStoreGateway = ({ verifyGrant, createStore, audit = () => {} }) => {
+export const createStoreGateway = ({
+  verifyGrant,
+  createStore,
+  audit = () => {},
+  maxResponseBytes = MAX_RESPONSE_BYTES,
+}) => {
   const authorize = async (event, record) => {
     const grant = await verifyGrantOrDeny(verifyGrant, event?.grant);
     Object.assign(record, grantAudit(grant));
@@ -269,6 +279,27 @@ export const createStoreGateway = ({ verifyGrant, createStore, audit = () => {} 
 
     try {
       const result = await store[authorized.method](...authorized.args);
+      // Whole-partition reads (listEvents, getExecutionRecords) have no page
+      // size; past the Invoke limit Lambda would answer with an opaque
+      // FunctionError, so the overflow is named here instead.
+      const bytes = Buffer.byteLength(JSON.stringify(result ?? null), 'utf8');
+      if (bytes > maxResponseBytes) {
+        audit({
+          ...record,
+          decision: 'allow',
+          outcome: ENGINE_DATA_RESPONSE_TOO_LARGE,
+          bytes,
+          ms: Date.now() - startedAt,
+        });
+        return {
+          error: {
+            name: 'EngineStoreError',
+            code: ENGINE_DATA_RESPONSE_TOO_LARGE,
+            message: 'Store result is too large to return',
+            conflict: false,
+          },
+        };
+      }
       audit({ ...record, decision: 'allow', outcome: 'ok', ms: Date.now() - startedAt });
       // `ok` marks success explicitly: a method that returns nothing has no
       // `result` key once the response is serialized.

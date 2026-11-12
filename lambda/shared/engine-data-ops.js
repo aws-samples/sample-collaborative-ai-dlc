@@ -65,6 +65,11 @@ export const ENGINE_DATA_STORE_READ_METHODS = Object.freeze([
 
 export const ENGINE_DATA_DENIED_ERROR = 'EngineDataAccessDenied';
 
+// The error code a gateway answers with when a result would not fit in the
+// synchronous Invoke response. The call is not retryable: the same read
+// returns the same rows.
+export const ENGINE_DATA_RESPONSE_TOO_LARGE = 'response_too_large';
+
 export const engineDataOp = (method) => `${ENGINE_DATA_OP_PREFIX}${method}`;
 
 // The engine's Neptune access, one semantic operation per call. Each request is

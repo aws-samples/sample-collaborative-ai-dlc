@@ -130,6 +130,7 @@ import {
   unknownChangedFileProvenance,
 } from '../../shared/changed-file-provenance.js';
 import { eventTypeOf } from '../../shared/v2-process-keys.js';
+import { ENGINE_DATA_RESPONSE_TOO_LARGE } from '../../shared/engine-data-ops.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });
@@ -1104,6 +1105,23 @@ const withPlanApprovalLineage = (receipts, events) => {
   );
 };
 
+// The execution's event history is read whole. Through engine-data a history
+// past the Invoke response cap fails the same way on every retry, so it is
+// never mistaken for "no events" (that would drop the plan-approval lineage
+// and the change-control dedup without a trace): the stage fails with a reason
+// an operator can act on. Any other read failure keeps the empty-history
+// fallback, which only ever covered a transient store error.
+const HISTORY_TOO_LARGE = Object.freeze({
+  code: 'execution_history_too_large',
+  detail:
+    'The execution event history exceeds the engine-data response limit, so this stage cannot evaluate it. Retrying or rewinding does not shrink the history.',
+});
+const historyTooLarge = (error) => error?.code === ENGINE_DATA_RESPONSE_TOO_LARGE;
+const emptyHistoryUnlessTooLarge = (error) => {
+  if (historyTooLarge(error)) throw error;
+  return [];
+};
+
 const readCheckpointFindings = async ({
   store,
   executionId,
@@ -1120,7 +1138,9 @@ const readCheckpointFindings = async ({
     typeof store.listReceipts === 'function'
       ? store.listReceipts(executionId, { stageInstanceId, attempt }).catch(() => [])
       : [],
-    typeof store.listEvents === 'function' ? store.listEvents(executionId).catch(() => []) : [],
+    typeof store.listEvents === 'function'
+      ? store.listEvents(executionId).catch(emptyHistoryUnlessTooLarge)
+      : [],
   ]);
   const events = allEvents.filter((event) => event.stageInstanceId === stageInstanceId);
   const { findings } = evaluateGatePreconditions({
@@ -2881,7 +2901,15 @@ const runStageAttempt = async (
       // Deduplicated on (artifactId, fromHash, toHash): the same change seen by
       // two consecutive stages is ONE accepted change, not two, and a re-drive of
       // this step must not add a third.
-      const priorEvents = await store.listEvents?.(executionId).catch(() => []);
+      let priorEvents;
+      try {
+        priorEvents = await store.listEvents?.(executionId);
+      } catch (error) {
+        if (historyTooLarge(error)) {
+          return fail(stageInstanceId, HISTORY_TOO_LARGE.code, HISTORY_TOO_LARGE.detail);
+        }
+        priorEvents = [];
+      }
       const already = new Set(
         (priorEvents ?? [])
           .filter((event) => eventTypeOf(event) === 'v2.change.accepted')
@@ -4776,6 +4804,9 @@ const runStageAttempt = async (
       pendingGate: () =>
         pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
       validationRound,
+    }).catch((error) => {
+      if (!historyTooLarge(error)) throw error;
+      return { findings: [], failure: HISTORY_TOO_LARGE };
     });
     if (ladder.parked) return parkStage(ladder.parked);
     if (repairGitFailure) {
