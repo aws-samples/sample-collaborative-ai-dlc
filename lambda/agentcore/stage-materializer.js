@@ -636,6 +636,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
             // on the verdict row instead of trusting the agent's self-reported name
             // (upstream §12a identity marker, enforced server-side). Empty → null.
             V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
+            // Written ONLY for a unit-lane reviewer when cross-unit findings are
+            // advisory, so submit_review offers crossUnitFindings. Absent elsewhere.
+            ...(scope.role === 'reviewer' && scope.crossUnitFindings === true
+              ? { V2_REVIEW_CROSS_UNIT: '1' }
+              : {}),
             // Trusted author identity (dispatched persona sessions, and the lead under
             // a resolved policy): graph-writer pins a `contribution`'s collaborator
             // to it. Absent on an unpinned/2.3.3 run, whose config must stay

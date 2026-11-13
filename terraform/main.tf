@@ -789,6 +789,8 @@ module "agentcore" {
   deletion_protection = var.deletion_protection
   enable_mcp_gateway  = var.enable_mcp_gateway
   enable_engine_data  = var.enable_engine_data
+  # Unit-lane reviewers record other units' findings apart when "advisory".
+  review_cross_unit_findings = var.review_cross_unit_findings
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

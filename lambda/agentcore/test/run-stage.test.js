@@ -6225,6 +6225,68 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
+  describe('cross-unit review findings (REVIEW_CROSS_UNIT_FINDINGS)', () => {
+    const laneReviewLibrary = () => {
+      const lib = unitLibrary();
+      lib.stagesById['code-generation'].reviewer = 'aidlc-reviewer-agent';
+      lib.stagesById['code-generation'].humanValidation = 'none';
+      lib.agentsById['aidlc-reviewer-agent'] = {
+        id: 'aidlc-reviewer-agent',
+        modelOverride: null,
+        bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+      };
+      return lib;
+    };
+    const run = async (env) => {
+      const scopes = [];
+      const prompts = [];
+      const store = spyStore({ unitPlan: UNIT_PLAN });
+      store.listSensorRuns = async () => [
+        {
+          sensorRunId: 'review-1',
+          sensorId: 'reviewer:aidlc-reviewer-agent',
+          kind: 'reviewer',
+          result: 'PASS',
+          detail: { verdict: 'READY', findings: 'ok' },
+        },
+      ];
+      await runStage(
+        unitArgs,
+        unitDeps({
+          store,
+          env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', ...env },
+          loadLibrary: async () => ({ workflow: unitWorkflow(), library: laneReviewLibrary() }),
+          materializeMcpConfig: async ({ scope }) => (scopes.push(scope), '/ws/.aidlc/mcp.json'),
+          spawnFn: (_command, cliArgs) => ({
+            on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+            stdin: { end: (text) => prompts.push(String(text ?? cliArgs.join(' '))) },
+          }),
+        }),
+      );
+      const reviewer = scopes.find((scope) => scope.role === 'reviewer');
+      return { reviewer, prompt: prompts.find((p) => p.includes('Clean-room review')) ?? '' };
+    };
+
+    it('lets a lane reviewer record other units\u2019 findings apart', async () => {
+      const { reviewer, prompt } = await run({ REVIEW_CROSS_UNIT_FINDINGS: 'advisory' });
+      expect(reviewer).toMatchObject({
+        role: 'reviewer',
+        unitSlug: 'billing',
+        crossUnitFindings: true,
+      });
+      expect(prompt).toContain('## Findings for other units');
+      expect(prompt).toContain('may change only the unit **billing**');
+      expect(prompt).toContain('(auth)');
+    });
+
+    it('keeps the reviewer as it was by default', async () => {
+      const { reviewer, prompt } = await run({});
+      expect(reviewer.crossUnitFindings).toBeUndefined();
+      expect(prompt).toContain('Clean-room review');
+      expect(prompt).not.toContain('## Findings for other units');
+    });
+  });
+
   it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {
     const messages = [];
     const deps = unitDeps({

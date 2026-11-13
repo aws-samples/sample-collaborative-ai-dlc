@@ -873,13 +873,23 @@ export const createProcessBridge = ({
     return { eventId: row.eventId, ...(reason ? { loopBackRecommended: true } : {}) };
   };
 
-  const submitReview = async ({ reviewer, verdict, findings = '', round = 0 }) => {
+  const submitReview = async ({
+    reviewer,
+    verdict,
+    findings = '',
+    round = 0,
+    crossUnitFindings = '',
+  }) => {
     const normalized = String(verdict ?? '')
       .trim()
       .toUpperCase();
     if (normalized !== 'READY' && normalized !== 'NOT-READY') {
       throw new Error('submit_review verdict must be READY or NOT-READY');
     }
+    // Findings owned by other units (REVIEW_CROSS_UNIT_FINDINGS=advisory, unit
+    // lanes only): recorded and shown to the human, never counted towards the
+    // verdict or sent to the author. Ignored when the scope doesn't offer them.
+    const crossUnit = scope.crossUnitFindings ? String(crossUnitFindings ?? '').trim() : '';
     const result = normalized === 'READY' ? 'PASS' : 'FAIL';
     // Identity: the TRUSTED scope identity (set by run-stage, upstream §12a's
     // identity marker enforced server-side) wins over the agent's self-report —
@@ -907,6 +917,7 @@ export const createProcessBridge = ({
         round,
         reviewer: identity,
         ...(identityMismatch ? { reportedReviewer: reported, identityMismatch: true } : {}),
+        ...(crossUnit ? { crossUnitFindings: crossUnit } : {}),
       },
     });
     await store
@@ -930,6 +941,30 @@ export const createProcessBridge = ({
       noteType: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
       summary: `Reviewer ${identity} returned ${normalized}`,
     });
+    if (crossUnit) {
+      const summary = `Reviewer ${identity} recorded findings for other units (not counted towards ${normalized}): ${crossUnit.slice(0, 4000)}`;
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.review.cross_unit',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: identity,
+          summary,
+        })
+        .catch(() => {});
+      await broadcast({
+        action: 'agent.note',
+        executionId,
+        intentId,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        noteType: 'v2.review.cross_unit',
+        summary: `Reviewer ${identity} recorded findings for other units`,
+      });
+    }
     return { sensorRunId: row.sensorRunId, verdict: normalized };
   };
 
