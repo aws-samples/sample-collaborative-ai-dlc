@@ -184,19 +184,40 @@ Workflow completion must follow the pinned methodology's effective plan,
 required checks, review outcomes and human gates. Native does not add a blanket
 final approval beyond the selected workflow's requirements.
 
-The current feature records published results and member selections, but it does
-not yet verify that the effective plan and required outcomes were applied to the
-final result. Completion is therefore shown as **not verified**. An agent stopping,
-a successful CLI exit, a published review document or an accepted approval answer
-is not sufficient evidence of workflow completion.
+Completion is reported per published revision as **complete**, **failed** or
+**not verified**. An agent stopping, a successful CLI exit, a published review
+document or an accepted approval answer is not sufficient evidence of workflow
+completion, and none of them changes that report.
 
-The NE-11 dependency check against the pinned **AI-DLC 2.11.1** release confirms
-that its local engine records are not an independent completion authority. Its
-public command guards remain useful, but the coding process can write the state
-and human-presence records those guards consume. Verified completion needs both
-a protected methodology interface and isolation of its state and evidence
-producer from the coding process. Ownership of that integration remains open;
-no additional final approval is proposed.
+For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
+protected workflow engine owned by this project is the completion authority
+(NE-11, implemented and validated on a development host; see the dated record
+below for what is not yet qualified). The pinned engine's own records are not an
+independent authority, because the coding process can write the state and
+human-presence files its guards read. The protected engine therefore runs the
+same pinned engine code in a separate service with its own workspace and state:
+
+- The coding runtime's `aidlc` command forwards workflow operations to that
+  service. It submits the workspace's files and receives the engine's result and
+  file changes. It cannot write the engine's state, journal or evidence.
+- The engine records the effective plan, each stage directive it issued, the
+  member decisions it applied, and the checks and reviews it observed. Project
+  checks and independent reviewers run as separate isolated jobs.
+- After each publication the engine writes one immutable evidence record bound
+  to that exact revision. **Complete** requires the engine's own terminal
+  completion, every required gate applied from an authenticated member decision,
+  every required check and review observed and still current, and result files
+  identical to those the engine saw at its terminal step. **Failed** is the
+  engine's own recorded failure for those files. Everything else, including a
+  turn stopped at an open gate, a later file change, a missing or stale
+  observation, or an unavailable engine, is **not verified**.
+
+The pinned workflow decides what blocks completion. If it completes with a failed
+advisory check or reviewer concerns, the revision is reported complete and the
+failed checks or concerns are shown beside it. Native adds no approval of its own.
+
+Executions started before this change, other packages and Kiro have no protected
+engine. Their results remain readable and remain **not verified**.
 
 Native Git delivery is not implemented. Source checkout, file comparison and
 result download do not create commits, branches or pull requests. The remaining
@@ -262,6 +283,7 @@ the deployment boundary are recorded below.
 | Responsibility                                          | Owner                                                      |
 | ------------------------------------------------------- | ---------------------------------------------------------- |
 | Methodology steps, workflow records and required gates  | The pinned AI-DLC engine and coding harness                |
+| Authoritative workflow state and completion evidence    | The protected workflow engine, for the reviewed package    |
 | Access, accepted commands and answers, execution state  | The platform's native authority                            |
 | Dispatch, status observation, cancellation and recovery | Native workers operating under current execution ownership |
 | Mutable project files and unfinished work               | The EFS workspace with one admitted writer                 |
@@ -4614,6 +4636,147 @@ permits changing the selected workflow's gates. Until that choice and its
 qualification are complete, retained and new results stay **not verified**;
 NE-11 remains open and NE-12 is not advanced.
 
+## NE-11 verified workflow completion — implementation and host validation, 2026-11-13
+
+**NE-11 is implemented and validated on a development host. It is not complete:
+the installed ARM64 image has not been rebuilt or qualified for this source, the
+container-backed test suites have not run, and nothing is deployed.** Docker
+Desktop refused every daemon request on 2026-11-13 with an administrator-enforced
+sign-in requirement, which blocks all three. No deployment handoff exists for
+this stage, because a handoff must bind a qualified image.
+
+Ownership follows the explicit “Own it here” decision: this project owns the
+protected methodology interface and the isolation of its producer. The selected
+workflow's gates are unchanged and no final approval is added.
+
+### What was built
+
+A separate **workflow engine** Lambda runs the pinned AI-DLC 2.11.1 engine from
+the qualified runtime image, in its own temporary workspace. Its state, command
+results and evidence are immutable S3 object versions under prefixes the coding
+runtime cannot write. Every command is journaled in the native authority table
+under the execution, attempt, cancellation epoch, writer generation, turn and
+configuration that issued it. Start captures the engine's published function
+version and the worker binds one immutable Lambda alias per execution; the
+runtime role may invoke only that alias.
+
+The five required properties from the dependency inspection are met as follows.
+
+1. **Applied methodology requirements.** Evidence carries the effective plan
+   read through the pinned engine's own plan resolution, including amendments and
+   each stage's executed or skipped state, plus the gate, check and reviewer
+   requirements of every stage directive the engine actually issued. A stage the
+   plan executes without a recorded directive leaves the result not verified.
+   Repository methodology settings are read by the source owner at the admitted
+   commit; settings submitted by the runtime are not used.
+2. **Applied member decisions.** The engine consumes the accepted reply from the
+   authority's response ledger, checks it against the question it issued for
+   that publication, and records the decision as applied only when the engine's
+   audit shows the resulting event. An accepted selection that the engine has not
+   applied stays `pending` and counts for nothing. A repeated request returns the
+   journaled result without running the command again.
+3. **Observed check and review outcomes.** Project checks and reviewers run in a
+   separate CodeBuild job per invocation, with one input and one output
+   capability. A check is recorded with its job, inspected file digest and the
+   engine's own sensor event; passed, failed, unavailable, over-budget, stale and
+   not recorded stay distinct. A review verdict is taken only from the isolated
+   reviewer's own output. A verdict supplied by the coding process is refused,
+   and one present in the audit without an observed invocation is not counted.
+   A job whose start is uncertain is never retried and never passes.
+4. **Immutable terminal binding.** Each admitted publication gets at most one
+   proof row, written in the same transaction as the journal entry, naming the
+   producer image and function version, execution and writer identity, captured
+   configuration, inputs, source commit, effective plan, decisions, checks,
+   reviews and the digest of the published files. The read API rejects a proof
+   that does not match the located revision in every one of those fields. Files
+   changed after the engine's terminal step produce a new revision reported as
+   not verified; the earlier revision keeps its own result. This is not NE-12's
+   Git-tree or delivery contract.
+5. **Protected producer.** The engine has its own role. The coding runtime can
+   invoke its alias, write its own input objects and read its own results by
+   exact version; it has no access to the authority table, engine state, evidence
+   or job objects. The check job's role can only pull the image. Reviewer roles
+   are created under a permissions boundary that allows the image and a
+   model-only alias of the credentials function; that alias returns no Git
+   credential. The engine re-checks the starter's membership, the accepting
+   member, source access, tracker inputs, captured configuration and image
+   approval before and after each operation.
+
+The result view shows complete, failed or not verified from this evidence, with
+the applied plan, checks, reviews and decisions available for inspection.
+
+### Defects found and corrected while finishing
+
+- A check's working directory was accepted by prefix, so `project/../home`
+  passed. Containment now uses the canonical path.
+- With a protected engine, `aidlc use <version>` and `aidlc project <command>`
+  were forwarded to the engine instead of the installed binary.
+- The runtime command validator imported an SDK module into the
+  preparation-only runtime server through the engine pin. The pin now lives in
+  a dependency-free module.
+- The engine's Lambda entry reaches two shared modules whose SDK clients were
+  not declared where the image resolves shared imports. It would have failed at
+  cold start. The runtime package now declares them, and a static import-closure
+  check covers the engine's image entry points.
+- A reviewer credential request on a turn started by workspace resume read a
+  reply that does not exist.
+- Two Terraform mock tests failed: the native module's new required image
+  manifest digest and the mocked image index were not supplied.
+- The interrupted work's red test was a fixture defect: it altered a package pin
+  in a way that invalidated the pin.
+
+### Validation on 2026-11-13
+
+All runs used the development host without operator AWS configuration.
+
+- Container-free backend suite: **6,741 passed, 10 skipped** in 164 files. The
+  skips and the rest of the backend suite need the Docker test services.
+- Frontend: **2,495 passed** in 165 files; the production build passes.
+- Release-script suite from a clean source snapshot: **514 passed**. In the main
+  checkout one release-metadata test fails on unrelated untracked worktrees, as
+  in earlier stages.
+- Lint, formatting, secret scan, dependency rules, AWS SDK alignment and the
+  architecture check pass, the last without a budget change.
+- Terraform 1.15.0 in an isolated snapshot: `fmt`, `validate`, TFLint and all
+  seven mock-provider test groups pass. The **28** native wiring guards pass.
+- The eight bundled control-plane Lambda entries build.
+
+The contract cases are covered at these levels: denied access (wrong alias,
+function version, binding, writer, turn or epoch; lost membership; changed
+source, configuration or draft), replay and lost acknowledgement (service and
+runtime client), stale writers and cancellation before commit, uncertain jobs,
+and changed results. The engine process itself is scripted in host tests,
+because the pinned engine and Bun exist only in the image.
+
+### Not qualified
+
+- **Installed image.** The Dockerfile changed, so the NE-10 image does not
+  represent this source. No image was built. The engine journey with the real
+  pinned engine, the job wrapper's privilege drop, loading the Lambda entry
+  under the installed dependencies, and the Claude Code, Codex and OpenCode
+  installed journeys have not run against this source. The retained probes of
+  2026-11-11 exercised an express-plan journey, with no sensors or reviewers,
+  on an earlier state of the source inside the NE-10 image.
+- **Container-backed tests.** The full backend suite, including the DynamoDB
+  journal test and the graph-backed suites, has not run for this stage.
+- **Deployed behaviour.** IAM enforcement, the Lambda container runtime, VPC
+  reachability of IAM and CodeBuild, CodeBuild capabilities for the job
+  observer, process containment inside a job, EFS and live models are
+  unqualified.
+
+### Known limits
+
+- An engine operation that does not finish, for example a Lambda timeout, a
+  cancelled request or an uncertain job, stays pending in the journal. It is
+  never taken over or run again. Later workflow commands in that attempt report
+  the engine as busy and its results stay not verified. Whether to add an
+  explicit, fenced abandonment of such an operation is an open decision.
+- Only the reviewed 2.11.1 package on Claude Code, Codex and OpenCode has a
+  protected engine. Kiro remains deferred to NE-18.
+- Evidence covers regular published files. Git delivery remains NE-12.
+
+Evidence is under `.native-evidence/ne11-2026-11-11-owned-adapter/`.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -4824,8 +4987,14 @@ the current contract for newly created executions.
       the workflow's own gates without adding blanket final approval. **Dependency
       inspected 2026-11-11:** the exact 2.11.1 package and qualified image reproduce
       the local human-presence/state authority gap. The protected methodology
-      interface and producer isolation still need an ownership decision and
-      implementation; no verified terminal outcome is claimed.
+      interface and producer isolation are owned here following the explicit
+      “Own it here” decision. **Implemented and host-validated 2026-11-13:** the
+      protected engine, isolated check and reviewer jobs, per-publication proof,
+      read API and result view are in place and meet the five required properties
+      in host tests, as recorded above. **Still open:** the ARM64 image for this
+      source has not been built or qualified, the container-backed suites have not
+      run, and there is no deployment handoff; Docker Desktop required a sign-in.
+      No verified outcome has been produced by a deployed or installed engine.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
