@@ -343,6 +343,29 @@ describe('stage attempt ownership transactions', () => {
       ),
     ).toBe(false);
   });
+  it('creates a lane gate under the run check without parking META', async () => {
+    const { ddb, store } = setup();
+    await store.createHumanTask({
+      executionId: 'e1',
+      humanTaskId: 'eg-lane-1',
+      unitSlug: 'billing',
+      orchestratorRunId: 'run1',
+      laneGate: true,
+    });
+    const tx = ddb.send.mock.calls.find(([cmd]) => cmd instanceof TransactWriteCommand)[0].input;
+    expect(tx.TransactItems).toHaveLength(2);
+    expect(tx.TransactItems[0].Put.Item).toMatchObject({
+      humanTaskId: 'eg-lane-1',
+      unitSlug: 'billing',
+      orchestratorRunId: 'run1',
+      laneGate: true,
+    });
+    const meta = tx.TransactItems[1].Update;
+    expect(meta.ConditionExpression).toContain('orchestratorRunId = :ifOrid');
+    expect(meta.ExpressionAttributeValues).toMatchObject({ ':ifOrid': 'run1' });
+    expect(meta.UpdateExpression).not.toContain('#status');
+    expect(meta.UpdateExpression).not.toContain('pendingHumanTaskId');
+  });
   it.each([false, true])(
     'conditions answers on the gate run and stage callback, and returns the committed row (steering: %s)',
     async (withSteering) => {

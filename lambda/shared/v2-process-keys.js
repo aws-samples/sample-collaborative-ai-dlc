@@ -856,6 +856,9 @@ const buildHumanTaskRow = ({
   // instead of showing nothing.
   loopBackStatus = undefined,
   loopBackNote = undefined,
+  // An engine gate owned by one unit lane, which leaves META running for the
+  // sibling lanes. Written only when set, so every other gate row is unchanged.
+  laneGate = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -881,6 +884,7 @@ const buildHumanTaskRow = ({
   ...(loopBackReason === undefined ? {} : { loopBackReason }),
   ...(loopBackStatus === undefined ? {} : { loopBackStatus }),
   ...(loopBackNote === undefined ? {} : { loopBackNote }),
+  ...(laneGate === undefined ? {} : { laneGate }),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

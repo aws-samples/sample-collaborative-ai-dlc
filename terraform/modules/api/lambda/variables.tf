@@ -38,6 +38,11 @@ variable "application_url" {
   type        = string
 }
 
+variable "lane_failure_policy" {
+  description = "What a unit lane does when a stage fails: \"halt\" or \"ask\""
+  type        = string
+  default     = "halt"
+}
 variable "pr_title_tracker_key" {
   description = "Prefix intent pull request titles with the intent's Jira issue key"
   type        = bool
