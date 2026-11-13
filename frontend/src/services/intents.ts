@@ -1197,8 +1197,9 @@ export interface IntentAudit {
 export const intentsService = {
   list: (projectId: string, status?: IntentStatus) =>
     api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
+  // Artifact bodies are paged separately (artifactContents).
   get: (projectId: string, intentId: string) =>
-    api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}`),
+    api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}?artifactContent=separate`),
   projectMetrics: (projectId: string) =>
     api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
   graph: (projectId: string, intentId: string) =>

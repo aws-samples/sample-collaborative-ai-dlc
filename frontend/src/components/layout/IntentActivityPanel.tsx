@@ -29,6 +29,7 @@ import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/Ar
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { ArtifactContent } from '@/components/intent/ArtifactContent';
+import { ArtifactBodyStatus } from '@/components/intent/ArtifactBodyStatus';
 import { type OpenArtifact } from '@/components/intent/ArtifactMarkdown';
 import { scrollToReference } from '@/components/layout/scrollToReference';
 import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
@@ -592,7 +593,9 @@ function PreviewTab() {
     clearPreviewAnchor,
     openArtifactPreview,
     openItemPreview,
+    reload,
   } = useIntent();
+  const retryContent = reload ? () => void reload() : undefined;
   const discussions = useDiscussions();
   const previewRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -655,6 +658,7 @@ function PreviewTab() {
             onDoneEditing={() => setEditingId(null)}
             onStartEdit={() => setEditingId(artifact.id)}
             onOpenOverlay={() => setOverlayOpen(true)}
+            onRetryContent={retryContent}
             discussions={discussions}
           />
         </div>
@@ -680,6 +684,7 @@ function PreviewTab() {
                 editing={editing}
                 onDoneEditing={() => setEditingId(null)}
                 onStartEdit={() => setEditingId(artifact.id)}
+                onRetryContent={retryContent}
                 discussions={discussions}
                 className="px-6 py-5"
                 contentClassName="prose-base"
@@ -703,6 +708,7 @@ function ArtifactPreviewContent({
   onStartEdit,
   discussions,
   onOpenOverlay,
+  onRetryContent,
   className,
   contentClassName,
 }: {
@@ -716,6 +722,7 @@ function ArtifactPreviewContent({
   onStartEdit: () => void;
   discussions: ReturnType<typeof useDiscussions>;
   onOpenOverlay?: () => void;
+  onRetryContent?: () => void;
   className?: string;
   contentClassName?: string;
 }) {
@@ -768,21 +775,21 @@ function ArtifactPreviewContent({
       </div>
       {editing ? (
         <ArtifactContentEditor artifact={artifact} onDone={onDoneEditing} />
+      ) : artifact.content ? (
+        <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
+          <ArtifactContent
+            artifactType={artifact.artifactType}
+            content={artifact.content}
+            artifactId={artifact.id}
+            title={title}
+            artifacts={artifacts}
+            derivedItems={derivedItems}
+            onOpenArtifact={onOpenArtifact}
+            onOpenItem={onOpenItem}
+          />
+        </div>
       ) : (
-        artifact.content && (
-          <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
-            <ArtifactContent
-              artifactType={artifact.artifactType}
-              content={artifact.content}
-              artifactId={artifact.id}
-              title={title}
-              artifacts={artifacts}
-              derivedItems={derivedItems}
-              onOpenArtifact={onOpenArtifact}
-              onOpenItem={onOpenItem}
-            />
-          </div>
-        )
+        <ArtifactBodyStatus artifact={artifact} onRetry={onRetryContent} />
       )}
     </div>
   );

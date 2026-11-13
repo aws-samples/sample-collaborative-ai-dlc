@@ -8303,11 +8303,12 @@ describe('GET /artifacts/{id}/impact', () => {
 });
 
 describe('GET /artifacts (paged artifact bodies)', () => {
-  const getDetail = (sub, projectId, intentId) =>
+  const getDetail = (sub, projectId, intentId, query = { artifactContent: 'separate' }) =>
     handler({
       httpMethod: 'GET',
       path: `/projects/${projectId}/intents/${intentId}`,
       pathParameters: { projectId, intentId },
+      queryStringParameters: query,
       ...claims(sub),
     });
   const getContents = (sub, projectId, intentId, cursor) =>
@@ -8355,6 +8356,27 @@ describe('GET /artifacts (paged artifact bodies)', () => {
     for (const entry of pages[0]) expect(keys.get(entry.contentKey)).toBe(entry.id);
   });
 
+  it('keeps bodies in the detail for a client that has not opted in', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    // A tab still running an older bundle never calls /artifacts: an empty body
+    // there would seed its editor and could be saved over the real one.
+    for (const query of [null, {}, { artifactContent: 'inline' }]) {
+      const detail = JSON.parse((await getDetail(sub, projectId, intent.id, query)).body);
+      expect(
+        detail.artifacts
+          .map(({ id, content }) => ({ id, content }))
+          .toSorted((a, b) => a.id.localeCompare(b.id)),
+      ).toEqual([
+        { id: 'bvb', content: '# x' },
+        { id: 'mr', content: '# x' },
+        { id: 'trends', content: '# x' },
+      ]);
+      for (const artifact of detail.artifacts)
+        expect(artifact.contentKey).toEqual(expect.any(String));
+    }
+  });
+
   it('pages bodies within the byte budget without gaps or repeats', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);
@@ -8373,11 +8395,35 @@ describe('GET /artifacts (paged artifact bodies)', () => {
     }
   });
 
-  it('marks a body larger than any page instead of failing the page', async () => {
+  it('gives a body over the page budget a page of its own', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const body = 'x'.repeat(250);
+    await seedArtifact(intent.id, 'big', { type: 'big-doc', content: body });
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '200');
+    vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', '1000');
+    try {
+      const pages = await readAll(sub, projectId, intent.id);
+      const bigPage = pages.find((page) => page.some((a) => a.id === 'big'));
+      expect(bigPage).toEqual([expect.objectContaining({ id: 'big', content: body })]);
+      expect(
+        pages
+          .flat()
+          .map((a) => a.id)
+          .toSorted(),
+      ).toEqual(['big', 'bvb', 'mr', 'trends']);
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+      vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', undefined);
+    }
+  });
+
+  it('marks a body too large for any response instead of failing the page', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);
     await seedArtifact(intent.id, 'big', { type: 'big-doc', content: 'x'.repeat(500) });
     vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '200');
+    vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', '300');
     try {
       const entries = (await readAll(sub, projectId, intent.id)).flat();
       expect(entries.find((a) => a.id === 'big')).toMatchObject({
@@ -8388,6 +8434,7 @@ describe('GET /artifacts (paged artifact bodies)', () => {
       expect(entries.find((a) => a.id === 'mr')).toMatchObject({ id: 'mr', content: '# x' });
     } finally {
       vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+      vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', undefined);
     }
   });
 

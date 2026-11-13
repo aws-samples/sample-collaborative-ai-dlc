@@ -5681,17 +5681,25 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
 // GET /projects/{projectId}/intents/{intentId}/artifacts — current artifact
 // bodies, paged so no response nears the 6 MB Lambda limit. Ordered by logical
 // key (unique per head; ids may repeat across lanes), returned as
-// `contentKey` to match the detail's artifacts; `cursor` is opaque. A body too
-// large for any page is returned as `content: null, contentOmitted`.
+// `contentKey` to match the detail's artifacts; `cursor` is opaque. A body over
+// the page budget gets a page to itself; only one too large for any response is
+// returned as `content: null, contentOmitted`.
 const DEFAULT_ARTIFACT_CONTENT_PAGE_BYTES = 4 * 1024 * 1024;
+// Below the 6 MB Lambda response limit, with room for the envelope's headers.
+const DEFAULT_ARTIFACT_CONTENT_ENTRY_BYTES = 5.75 * 1024 * 1024;
 const ARTIFACT_CONTENT_BATCH = 25;
 
-const artifactContentPageBytes = () => {
-  const configured = Number(process.env.ARTIFACT_CONTENT_PAGE_BYTES);
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : DEFAULT_ARTIFACT_CONTENT_PAGE_BYTES;
+const positiveEnvNumber = (name, fallback) => {
+  const configured = Number(process.env[name]);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
 };
+const artifactContentPageBytes = () =>
+  positiveEnvNumber('ARTIFACT_CONTENT_PAGE_BYTES', DEFAULT_ARTIFACT_CONTENT_PAGE_BYTES);
+const artifactContentEntryBytes = () =>
+  Math.max(
+    artifactContentPageBytes(),
+    positiveEnvNumber('ARTIFACT_CONTENT_ENTRY_BYTES', DEFAULT_ARTIFACT_CONTENT_ENTRY_BYTES),
+  );
 
 // Bytes an entry adds to the proxy envelope: the body is JSON inside a JSON
 // string, so its escapes are escaped again.
@@ -5709,6 +5717,7 @@ const handleIntentArtifactContents = async ({ event, projectId, intentId, g, res
     if (!after) return response(400, { error: 'cursor is invalid' });
   }
   const budget = artifactContentPageBytes();
+  const entryLimit = artifactContentEntryBytes();
   // Heads come without bodies; bodies are read in small batches, so a page
   // reads only (about) the bodies it returns.
   const heads = (await readArtifactHeads(g, intentId, { withContent: false }))
@@ -5728,17 +5737,22 @@ const handleIntentArtifactContents = async ({ event, projectId, intentId, g, res
       const content = contents.get(head.vertexId) ?? null;
       let entry = { id: head.id, contentKey: logicalKey, content };
       let size = envelopeBytes(entry);
-      if (size > budget) {
+      if (size > entryLimit) {
         entry = { id: head.id, contentKey: logicalKey, content: null, contentOmitted: 'too_large' };
         size = envelopeBytes(entry);
       }
-      if (artifacts.length > 0 && used + size > budget) {
+      const alone = size > budget;
+      if (artifacts.length > 0 && (alone || used + size > budget)) {
         full = true;
         break;
       }
       artifacts.push(entry);
       used += size;
       last = logicalKey;
+      if (alone) {
+        full = true;
+        break;
+      }
     }
   }
   const more = last !== null && heads.at(-1)?.logicalKey !== last;
@@ -5750,12 +5764,15 @@ const handleIntentArtifactContents = async ({ event, projectId, intentId, g, res
 
 const DETAIL_RESPONSE_WARN_BYTES = 4 * 1024 * 1024;
 
-const handleGetIntent = async ({ projectId, intentId, g, response }) => {
-  // GET single — assembled detail DTO. Outputs and artifact bodies are
-  // deliberately EXCLUDED: they dominate the payload and would push a large
-  // intent past the Lambda response limit. The UI fetches outputs lazily per
-  // pane (/outputs) and artifact bodies in pages (/artifacts). `outputs: []`
-  // keeps the DTO shape stable; artifacts carry no `content` key.
+const handleGetIntent = async ({ event, projectId, intentId, g, response }) => {
+  // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED: they
+  // dominate the payload; the UI fetches them lazily per pane (/outputs).
+  // `outputs: []` keeps the DTO shape stable. Artifact bodies are included
+  // unless the caller asks for `artifactContent=separate` and pages them from
+  // /artifacts instead, which keeps a large intent under the Lambda response
+  // limit. The default stays inline so a client that predates /artifacts never
+  // sees (and saves over) an empty body.
+  const separateContent = event?.queryStringParameters?.artifactContent === 'separate';
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
   if (!records.meta || records.meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
@@ -5765,10 +5782,12 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
     : unitCompletion(records);
   // `contentKey` pairs each head with its body from /artifacts: ids can repeat
   // across lanes, logical keys cannot.
-  const heads = await readArtifactHeads(g, intentId, { withContent: false });
+  const heads = await readArtifactHeads(g, intentId, { withContent: !separateContent });
   const artifacts = heads.map(({ logicalKey, group, head }) => {
-    const { content: _content, ...rest } = mapArtifactHead(head, group.length - 1);
-    return { ...rest, contentKey: logicalKey };
+    const { content, ...rest } = mapArtifactHead(head, group.length - 1);
+    return separateContent
+      ? { ...rest, contentKey: logicalKey }
+      : { ...rest, content, contentKey: logicalKey };
   });
   const pullRequests = await fetchPullRequests(g, intentId);
   const stagesByInstance = new Map(
@@ -6909,7 +6928,7 @@ export const handler = async (event, context) => {
       if (path?.endsWith('/artifacts')) {
         return await handleIntentArtifactContents({ event, projectId, intentId, g, response });
       }
-      return await handleGetIntent({ projectId, intentId, g, response });
+      return await handleGetIntent({ event, projectId, intentId, g, response });
     }
 
     if (httpMethod === 'GET' && !intentId && path?.endsWith('/intents/metrics')) {
