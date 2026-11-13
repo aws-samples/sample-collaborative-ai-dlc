@@ -467,3 +467,19 @@ variable "notification_event_source" {
   type        = string
   default     = "collaborative-ai-dlc"
 }
+
+variable "access_table_name" {
+  type = string
+}
+
+variable "access_table_arn" {
+  type = string
+}
+
+variable "audit_table_name" {
+  type = string
+}
+
+variable "audit_table_arn" {
+  type = string
+}

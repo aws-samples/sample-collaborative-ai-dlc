@@ -341,3 +341,12 @@ output "notification_event_bus_arn" {
   description = "Notification event bus ARN, or empty when notification events are disabled"
   value       = one(aws_cloudwatch_event_bus.notifications[*].arn) == null ? "" : one(aws_cloudwatch_event_bus.notifications[*].arn)
 }
+
+output "membership_access_table_name" {
+  value      = var.access_table_name
+  depends_on = [aws_lambda_invocation.membership_copy, aws_iam_role_policy.membership_read]
+}
+
+output "membership_migration_lambda_name" {
+  value = module.membership_migration_lambda.lambda_function_name
+}
