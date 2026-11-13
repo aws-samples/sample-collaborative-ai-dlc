@@ -43,6 +43,10 @@ export const completeNativeEngineReview = async ({
   sessionId,
   authorize,
 }) => {
+  // The pinned logger's own refusal (for example a request outside its
+  // iteration budget) is the engine's answer and is returned unchanged. It is
+  // not an unavailable reviewer, and no job is started for it.
+  if (requested.exitCode !== 0) return requested;
   const request = decoded(requested);
   if (request.emitted !== 'REVIEW_REQUESTED') return requested;
   const directive = workspace.state.directive;

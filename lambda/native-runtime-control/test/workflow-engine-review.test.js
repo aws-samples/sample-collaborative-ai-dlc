@@ -438,12 +438,21 @@ describe('a verdict only comes from the isolated review', () => {
     expect(f.workspace.state.observations).toEqual([]);
   });
 
+  it("returns the pinned engine's refusal of a review request unchanged and starts no reviewer", async () => {
+    // For example the engine requires the member's summary confirmation first.
+    // Its explanation is the answer; it is not an unavailable reviewer.
+    const f = await fixture();
+    const refusal = {
+      exitCode: 1,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.from('{"error":"Cannot start review for \\"requirements\\""}\n'),
+    };
+    expect(await f.run(refusal)).toBe(refusal);
+    expect(f.jobs.review).not.toHaveBeenCalled();
+    await untouched(f);
+  });
+
   it.each([
-    [
-      'the review request failed',
-      (f) => f.run(out(f.request, 1)),
-      'NATIVE_ENGINE_REVIEW_UNAVAILABLE',
-    ],
     [
       'the review request is not JSON',
       (f) => f.run(out('REVIEW_REQUESTED')),

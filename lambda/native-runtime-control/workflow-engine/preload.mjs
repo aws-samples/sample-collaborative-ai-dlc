@@ -2,8 +2,8 @@
 // into an agent CLI and never claims to isolate mutually hostile processes.
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
-import { extname } from 'node:path';
 import { spawnSync } from './process-port.mjs';
+import { nativeEngineModuleSource } from './module-source.mjs';
 
 const modules = JSON.parse(readFileSync(process.env.NATIVE_ENGINE_MODULES, 'utf8'));
 delete process.env.NATIVE_ENGINE_MODULES;
@@ -19,20 +19,7 @@ Bun.plugin({
       const contents = readFileSync(path);
       if (createHash('sha256').update(contents).digest('hex') !== modules[path])
         throw new Error('NATIVE_ENGINE_MODULE_CHANGED');
-      const extension = extname(path);
-      return {
-        contents: contents.toString('utf8'),
-        loader:
-          extension === '.ts'
-            ? 'ts'
-            : ['.js', '.mjs', '.cjs'].includes(extension)
-              ? 'js'
-              : extension === '.json'
-                ? 'json'
-                : extension === '.toml'
-                  ? 'toml'
-                  : 'text',
-      };
+      return nativeEngineModuleSource(path, contents);
     });
   },
 });

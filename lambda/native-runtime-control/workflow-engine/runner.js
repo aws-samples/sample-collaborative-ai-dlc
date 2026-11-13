@@ -85,7 +85,13 @@ export const createNativeEngineRunner = async ({
   )
     throw engineFailure();
   const modules = { ...engine.modules };
-  for (const name of ['preload.mjs', 'process-port.mjs', 'observe.mjs', 'member.mjs']) {
+  for (const name of [
+    'preload.mjs',
+    'module-source.mjs',
+    'process-port.mjs',
+    'observe.mjs',
+    'member.mjs',
+  ]) {
     const path = join(ADAPTER, name);
     modules[path] = engineDigest(await readFile(path));
   }
