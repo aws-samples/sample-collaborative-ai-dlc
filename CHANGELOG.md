@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-13
+
+Hotfix that keeps AgentCore microVM runtimes on platform V1 ([#758](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/758)).
+
+### Fixed
+
+- The Standard runtime and newly created managed microVM runtimes now explicitly select AgentCore platform `V1`. AWS is changing the default for new runtimes to V2, which the platform has not yet qualified ([#719](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/719)). Without the setting, new deployments and new managed environments would be created on V2 once that default changes. Instances environments keep their capacity-provider configuration.
+
+### Changed
+
+- Terraform requires AWSCC provider 1.103.0 or later, and the AWS SDK ranges move to 3.1133.0. These are the first versions that support the platform version setting.
+
+### Notes
+
+- **Upgrade from v2.3.0.** The next `terraform apply` applies the V1 setting to the existing Standard runtime. Existing managed environment revisions keep their runtime configuration. `deploy-terraform.sh` installs the new provider version from the lock file; direct Terraform deployments must run `terraform init` before the next plan or apply.
+
 ## [2.3.0] - 2026-11-13
 
 ### Added
