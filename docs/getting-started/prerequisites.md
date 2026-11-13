@@ -107,7 +107,7 @@ The following are optional. Set them up to enable additional features.
 
 Agents authenticate using API keys or a dedicated Bedrock IAM inference role configured through the platform UI. Platform administrators select **Keys** or **IAM** mode in **Admin → Agents → Platform Agent Credentials**; Kiro uses its own API key in either mode.
 
-An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback. For API keys, a user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Key resolution is independent per provider and follows `personal > space > platform`.
+An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback. For API keys, a user can provide a personal credential in **Account Settings**, a Space Owner can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Key resolution is independent per provider and follows `personal > space > platform`.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 

@@ -6,7 +6,7 @@ import { formatTimelineTimestamp } from '@/lib/timeAgo';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
 const projectCacheMock = vi.hoisted(() => ({
-  role: 'owner' as 'owner' | 'admin' | 'member',
+  role: 'owner' as 'owner' | 'member',
   name: 'Bookstore Tracker',
 }));
 

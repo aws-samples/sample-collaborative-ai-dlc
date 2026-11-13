@@ -304,7 +304,7 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
                         <p className="text-xs text-muted-foreground">
                           {b.status === 'active'
                             ? 'Shared with all space members'
-                            : 'Needs reconnection by a space owner or admin'}
+                            : 'Needs reconnection by a Space Owner'}
                         </p>
                       )}
                     </div>

@@ -130,10 +130,10 @@ export default function IntentView() {
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
-  // Role gate for the destructive delete (owner/admin — the API enforces it
+  // Role gate for the destructive delete (owner — the API enforces it
   // too; hiding the button just avoids a guaranteed 403).
   const { project } = useProjectCache(projectId ?? null);
-  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const canDelete = project?.userRole === 'owner';
   const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);
@@ -261,7 +261,7 @@ export default function IntentView() {
     }
   };
 
-  // Permanent delete (owner/admin): removes the intent's graph data, run
+  // Permanent delete (owner): removes the intent's graph data, run
   // history and realtime docs, then returns to the project page. Refused by
   // the API while RUNNING — the button hides for it.
   const handleDelete = async () => {
@@ -378,7 +378,7 @@ export default function IntentView() {
     (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
-  // Deletable (destructive): owner/admin, any status except mid-RUNNING.
+  // Deletable (destructive): owner, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
   const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
   const exportUnavailableReason = 'Not available before the workflow starts';

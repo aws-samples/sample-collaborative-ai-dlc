@@ -9,6 +9,13 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -27,7 +34,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Building2, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import {
   projectsService,
   type AssignableUser,
@@ -38,20 +44,12 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
-  admin: 'Admin',
   member: 'Member',
 };
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage space, members, and settings',
-  admin: 'Manage members and update the space repository',
-  member: 'Collaborate on sprints and trigger agents',
-};
-
-const ROLE_BADGE: Record<ProjectRole, string> = {
-  owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-  admin: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
-  member: 'bg-muted text-muted-foreground border-transparent',
+  member: 'Create intents, answer questions, and collaborate',
 };
 
 const initials = (m: { email?: string; userId: string }) => {
@@ -72,7 +70,7 @@ interface Props {
 }
 
 export function MembersTab({ projectId, userRole }: Props) {
-  const canManageMembers = userRole === 'owner' || userRole === 'admin';
+  const canManageMembers = userRole === 'owner';
 
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -195,12 +193,6 @@ export function MembersTab({ projectId, userRole }: Props) {
     }
   };
 
-  const getAssignableRoles = (): ProjectRole[] => {
-    if (userRole === 'owner') return ['owner', 'admin', 'member'];
-    if (userRole === 'admin') return ['member'];
-    return [];
-  };
-
   return (
     <>
       <SettingsCard
@@ -249,59 +241,48 @@ export function MembersTab({ projectId, userRole }: Props) {
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {canManageMembers ? (
-                      <select
+                      <Select
                         value={member.role}
-                        onChange={(e) => {
-                          const newRole = e.target.value as ProjectRole;
+                        onValueChange={(value) => {
+                          const newRole = value as ProjectRole;
                           if (newRole !== member.role) {
                             setConfirmRoleChange({ userId: member.userId, newRole });
                           }
                         }}
-                        disabled={
-                          userRole === 'admin' &&
-                          (member.role === 'owner' || member.role === 'admin')
-                        }
-                        className={cn(
-                          'h-7 rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60',
-                          ROLE_BADGE[member.role],
-                        )}
                       >
-                        {(userRole === 'owner' ? ['owner', 'admin', 'member'] : ['member']).map(
-                          (r) => (
-                            <option key={r} value={r}>
-                              {ROLE_LABELS[r as ProjectRole]}
-                            </option>
-                          ),
-                        )}
-                        {userRole !== 'owner' && member.role !== 'member' && (
-                          <option value={member.role} disabled>
-                            {ROLE_LABELS[member.role]}
-                          </option>
-                        )}
-                      </select>
+                        <SelectTrigger
+                          aria-label={`Space access for ${member.email || member.userId}`}
+                          className="h-8 w-28 bg-background text-xs"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(['owner', 'member'] as const).map((role) => (
+                            <SelectItem key={role} value={role}>
+                              {ROLE_LABELS[role]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     ) : (
                       <Badge
                         variant="outline"
-                        className={cn('text-[10px]', ROLE_BADGE[member.role])}
+                        className="border-transparent bg-muted text-[10px] text-muted-foreground"
                       >
                         {ROLE_LABELS[member.role]}
                       </Badge>
                     )}
-                    {canManageMembers &&
-                      !(
-                        userRole === 'admin' &&
-                        (member.role === 'owner' || member.role === 'admin')
-                      ) && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => setConfirmRemove(member.userId)}
-                          title="Remove member"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
+                    {canManageMembers && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => setConfirmRemove(member.userId)}
+                        title="Remove member"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -317,7 +298,7 @@ export function MembersTab({ projectId, userRole }: Props) {
               >
                 <Badge
                   variant="outline"
-                  className={cn('h-4 text-[10px]', ROLE_BADGE[role as ProjectRole])}
+                  className="h-4 border-transparent bg-muted text-[10px] text-muted-foreground"
                 >
                   {ROLE_LABELS[role as ProjectRole]}
                 </Badge>
@@ -437,19 +418,23 @@ export function MembersTab({ projectId, userRole }: Props) {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="add-member-role">Role</Label>
-                <select
-                  id="add-member-role"
+                <Select
                   value={newMemberRole}
-                  onChange={(e) => setNewMemberRole(e.target.value as ProjectRole)}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  onValueChange={(value) => setNewMemberRole(value as ProjectRole)}
                   disabled={addingMember}
                 >
-                  {getAssignableRoles().map((r) => (
-                    <option key={r} value={r}>
-                      {ROLE_LABELS[r]} - {ROLE_DESCRIPTIONS[r]}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="add-member-role" className="h-8 bg-background text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(['owner', 'member'] as const).map((role) => (
+                      <SelectItem key={role} value={role}>
+                        {ROLE_LABELS[role]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTIONS[newMemberRole]}</p>
               </div>
             </div>
             <DialogFooter>
@@ -506,8 +491,8 @@ export function MembersTab({ projectId, userRole }: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Member</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove this member from the space? They will lose access
-              immediately.
+              This member will lose access to the space; existing realtime connections expire within
+              ten minutes.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

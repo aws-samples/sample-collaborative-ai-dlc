@@ -169,7 +169,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       });
   }, [project.id]);
 
-  // MCP secrets are owner/admin-only on the backend, so only fetch when canEdit.
+  // MCP secrets are owner-only on the backend, so only fetch when canEdit.
   useEffect(() => {
     if (!canEdit) return;
     projectsService
@@ -528,7 +528,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         </div>
       </SettingsCard>
 
-      {/* Custom MCP servers — owner/admin get the full editor; members get a
+      {/* Custom MCP servers — owner get the full editor; members get a
           read-only list of server names (the raw config may carry secrets). */}
       {canEdit ? (
         <>
@@ -577,7 +577,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       )}
 
       {/* Custom rules (steering docs) — visible to all members read-only; only
-          owners/admins get upload/delete controls and download URLs. */}
+          owners get upload/delete controls and download URLs. */}
       <CustomRulesSection
         docs={customRules}
         onPresign={presignCustomRules}

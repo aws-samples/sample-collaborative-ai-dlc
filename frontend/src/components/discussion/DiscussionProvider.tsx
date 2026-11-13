@@ -58,7 +58,7 @@ interface DiscussionContextValue {
   /** Per-entity thread lookup (ongoing-discussion indicator). */
   discussionFor: (entityType: DiscussionEntityType, entityId?: string) => Discussion | null;
   members: Member[];
-  /** The caller's project role (redact is admin/owner only). */
+  /** The caller's project role (redact is owner only). */
   role: Member['role'] | null;
   /** Explicit CLI selected on the DRAFT compose page for Quorum assists. */
   assistAgentCli: AgentCli | null;
