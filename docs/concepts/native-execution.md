@@ -4989,21 +4989,43 @@ function, which could not be planned.
   no rule stops. The isolated job project is planned with exactly the published
   index digest and without privileged mode; the nine other engine resources are
   creates; all **150** replacements are local packaging helpers; both image
-  resources are unchanged after the publish; and function environment values
-  are readable in the plan, which the producer-identity rule depends on.
+  resources are unchanged after the publish.
+- The plan cannot show the engine's producer identity. The AWS provider reports
+  a function's whole environment as unknown when any one value is unknown: the
+  two functions in that plan with an unknown value have no readable environment
+  at all, and none is partly readable. The engine's environment names roles the
+  same plan creates, so the first handoff's rule on that value would have
+  stopped a correct plan. The review now accepts an environment that is unknown
+  until apply and says so; a readable one must still carry the published index.
+  The job project is pinned from the same module input, and the apply step
+  reads the value back from the deployed function before the frontend step.
 - The repository's protected-resource inspection passes on that plan.
 - The frontend script has no prompt. It installs dependencies, builds and
   publishes with the operator's environment, so its bytes are not pinned in
   advance as they were for NE-10.
 
+- The image meets Lambda's documented limits: an OCI image manifest for one
+  platform, gzip layers, about 3.1 GB uncompressed against a 10 GB limit.
+- The registry policy that lets Lambda retrieve the image now carries only the
+  condition Lambda documents, the function ARN in `aws:SourceArn`, for this
+  function and its qualifiers. It previously also required
+  `aws:SourceAccount` and matched the unqualified ARN only. Lambda's
+  documentation does not say that it sends the first or how a published version
+  presents the second, and a condition the service does not satisfy refuses
+  every retrieval. The ARN already names the account. A wiring guard pins the
+  form.
+
 Still unverifiable before a real run: the planned values of the engine
 function itself and of the authority function that captures its version; that
-the Lambda service starts this image with the configured entry point; the
-field names returned when the engine function is read back, where only the
-image URI can stop the step; whether the image repository already has a policy
-that the new one would replace, which the plan step now reads and shows to the
-reviewer; and every apply-time behaviour of the new IAM, CodeBuild and Lambda
-resources.
+the Lambda service accepts the registry policy and starts this image with the
+configured entry point; the field names returned when the engine function is
+read back, where only a different image or a different producer identity can
+stop the step; whether the image repository already has a policy that the new
+one would replace, which the plan step now reads and shows to the reviewer;
+and every apply-time behaviour of the new IAM, CodeBuild and Lambda resources.
+If Lambda finds the registry policy insufficient it adds a statement of its
+own with the operator's permissions; a later plan that changes the repository
+policy is the sign of that.
 
 ### Recovery handoff
 
