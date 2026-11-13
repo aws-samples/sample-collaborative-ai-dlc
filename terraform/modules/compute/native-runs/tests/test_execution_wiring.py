@@ -335,6 +335,26 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertIn('[local.workflow_engine_arn, "${local.workflow_engine_arn}:native_*"]', bind)
         self.assertFalse({"lambda:UpdateAlias", "lambda:DeleteAlias"} & actions(worker))
 
+    def test_engine_manifest_lookup_names_the_tag_and_the_index_digest(self):
+        # kreuzwerker/docker 3.9.0 requests `repo@sha256:<hex>` as repository
+        # `repo@sha256`, tag `<hex>` (404 from a real registry). Only
+        # `repo:tag@sha256:<hex>` is requested by digest.
+        agentcore = (TERRAFORM / "modules/compute/agentcore/main.tf").read_text()
+        lookup = block(agentcore, 'data "docker_registry_image_manifests" "native_engine"')
+        self.assertRegex(
+            lookup,
+            r'name\s*=\s*"\$\{aws_ecr_repository\.agentcore\.repository_url\}:\$\{local\.agentcore_image_tag\}'
+            r'@\$\{data\.aws_ecr_image\.agentcore\.image_digest\}"',
+        )
+        self.assertNotRegex(lookup, r'repository_url\}@')
+        # The tag in the reference is the tag the image was pushed and read with.
+        image = block(agentcore, 'data "aws_ecr_image" "agentcore"')
+        self.assertRegex(image, r"image_tag\s*=\s*local\.agentcore_image_tag")
+        self.assertEqual(agentcore.count('data "docker_registry_image_manifests"'), 1)
+        lock = (TERRAFORM / ".terraform.lock.hcl").read_text()
+        docker = lock.split('provider "registry.terraform.io/kreuzwerker/docker"', 1)[1].split("}", 1)[0]
+        self.assertRegex(docker, r'version\s*=\s*"3\.9\.0"')
+
     def test_members_read_protected_evidence_only_as_exact_versions(self):
         api = EXECUTION.split("execution_api_statements = [", 1)[1].split("execution_runtime_boundary_statements = [", 1)[0]
         evidence = api.split('Sid      = "ReadProtectedWorkflowEvidence"', 1)[1].split("},", 1)[0]

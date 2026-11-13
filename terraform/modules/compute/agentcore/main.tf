@@ -272,8 +272,15 @@ data "aws_ecr_image" "agentcore" {
 
 # Lambda requires one platform manifest, while the runtime's published pin is
 # the complete OCI image index. Resolve the child only from that exact index.
+#
+# The reference carries the tag as well as the digest on purpose. The Docker
+# provider (3.9.0) splits a reference at the first colon after the registry
+# host, so `repo@sha256:<hex>` is requested as repository `repo@sha256`, tag
+# `<hex>`, and the registry answers 404. With `repo:tag@sha256:<hex>` it drops
+# the tag and requests the manifest by digest, so the lookup stays pinned to
+# the exact index. Verified against a real registry; do not shorten it.
 data "docker_registry_image_manifests" "native_engine" {
-  name = "${aws_ecr_repository.agentcore.repository_url}@${data.aws_ecr_image.agentcore.image_digest}"
+  name = "${aws_ecr_repository.agentcore.repository_url}:${local.agentcore_image_tag}@${data.aws_ecr_image.agentcore.image_digest}"
   lifecycle {
     postcondition {
       condition = length([
