@@ -15,6 +15,15 @@ import { verifyRuntime } from '../status.js';
 import { createSessionCleanupStore } from '../../shared/session-cleanup-store.js';
 import { retryQueuedReleases } from '../../shared/runtime-session.js';
 
+// Qualification resolves the platform sandbox policy; the suite runs on the default.
+vi.mock('../../shared/sandbox-settings.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveInvocationSandbox: vi.fn(async () => structuredClone(actual.DEFAULT_SANDBOX_CONFIG)),
+  };
+});
+
 const TABLE = `env-registry-lease-${process.pid}-${Date.now()}`;
 const client = new DynamoDBClient({
   endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,

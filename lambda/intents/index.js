@@ -249,9 +249,9 @@ const attachmentCleanup = createAttachmentCleanupService({
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
 
-const issueInvocationAgentCredentialGrant = async (request) =>
-  (await prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm }))
-    .agentCredentialGrant;
+// The grant plus the sandbox policy the runtime applies to a DRAFT.
+const prepareInvocationAgentAuth = (request) =>
+  prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm });
 
 // Null unless the deployment enabled engine data: Terraform wires this
 // Lambda's GATEWAY_GRANT_KEY_ID only then.
@@ -2564,7 +2564,7 @@ const handleArtifactContentUpdate = async ({
     // response stands); one that cannot even be recorded answers 503.
     let deriveGrant = null;
     try {
-      const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+      const { agentCredentialGrant, agentSandbox } = await prepareInvocationAgentAuth({
         purpose: 'execution',
         projectId,
         executionId: intentId,
@@ -2586,6 +2586,7 @@ const handleArtifactContentUpdate = async ({
               intentId,
               executionId: intentId,
               artifactTypes: [artifact.artifactType],
+              agentSandbox,
               enrichment: records.meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
               ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
               ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
@@ -3392,7 +3393,10 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
       : meta.agentSandbox;
   if (agentSandbox?.enabled) {
     try {
-      await qualifyAgentAuthRuntime(meta.environment, { requireSandbox: true });
+      await qualifyAgentAuthRuntime(meta.environment, {
+        requireSandbox: true,
+        sandbox: agentSandbox,
+      });
     } catch (error) {
       return response(409, { error: error.message, code: error.code });
     }
@@ -4006,7 +4010,7 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
       { projectId, intentId },
       { ttlSeconds: COMPOSE_GRANT_TTL_SECONDS },
     );
-    const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+    const { agentCredentialGrant, agentSandbox } = await prepareInvocationAgentAuth({
       purpose: 'compose',
       projectId,
       executionId: intentId,
@@ -4040,6 +4044,7 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
             workflowVersion: meta.workflowVersion,
             prompt: intentText,
             requestedCli,
+            agentSandbox,
             ...(credentialBinding ? { credentialBinding } : {}),
             ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
             ...(instructions ? { instructions } : {}),
@@ -4537,7 +4542,7 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
   // unless the jti could not be recorded either: then 503.
   let deriveGrant = null;
   try {
-    const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+    const { agentCredentialGrant, agentSandbox } = await prepareInvocationAgentAuth({
       purpose: 'execution',
       projectId,
       executionId: intentId,
@@ -4555,6 +4560,7 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
         payload: Buffer.from(
           JSON.stringify({
             ...payload,
+            agentSandbox,
             ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
             ...deriveGrant.fields,
           }),

@@ -43,6 +43,16 @@ variable "registry_table_arn" {
   type        = string
 }
 
+variable "process_table_name" {
+  description = "v2 process table name; the status lambda reads the platform sandbox settings from it"
+  type        = string
+}
+
+variable "process_table_arn" {
+  description = "v2 process table ARN"
+  type        = string
+}
+
 variable "kms_key_arn" {
   description = "Customer-managed KMS key ARN for DynamoDB encryption. Empty uses the AWS-owned service default."
   type        = string

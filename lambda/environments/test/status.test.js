@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createStatusHandler, runtimeNameFor } from '../status.js';
 import { withVerificationLease } from './helpers/verification-lease.js';
+import { DEFAULT_SANDBOX_CONFIG, resolveInvocationSandbox } from '../../shared/sandbox-settings.js';
+
+// Qualification resolves the platform sandbox policy; each test sets the one it runs under.
+vi.mock('../../shared/sandbox-settings.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveInvocationSandbox: vi.fn(async () => structuredClone(actual.DEFAULT_SANDBOX_CONFIG)),
+  };
+});
 
 const environment = {
   environmentId: 'custom',
@@ -444,6 +454,11 @@ describe('managed environment status handler', () => {
         expect(result.results[0].revision.verification.sandboxEnforcement).toBe(true);
       else expect(result.results[0].revision.verification).not.toHaveProperty('sandboxEnforcement');
       expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
+      // The runtime may hold no settings access, so qualification sends the platform's.
+      expect(JSON.parse(runtimeClient.send.mock.calls[0][0].input.payload)).toEqual({
+        command: 'capabilities',
+        agentSandbox: DEFAULT_SANDBOX_CONFIG,
+      });
       expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
         'StopRuntimeSessionCommand',
       );
@@ -454,6 +469,74 @@ describe('managed environment status handler', () => {
       });
     },
   );
+
+  // capabilities spawns the image's CLIs (kiro-cli --list-models), so
+  // qualification must run them under the policy agent work would get.
+  describe('qualification sandbox policy', () => {
+    const verifying = {
+      ...revision,
+      status: 'VERIFYING',
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+      runtimeId: 'runtime-1',
+      runtimeVersion: '3',
+      runtimeEndpoint: 'revision_r_1',
+      runtimeEndpointArn:
+        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+    };
+    const reply = (body) => ({ response: { transformToString: async () => JSON.stringify(body) } });
+    const poll = (runtimeClient) =>
+      createStatusHandler({
+        cleanupStore: cleanupStoreStub(),
+        store: mutableStore(verifying),
+        ecrClient: { send: vi.fn() },
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+      })({ action: 'poll' });
+
+    it('sends the platform policy the settings enable', async () => {
+      const platform = { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 4 };
+      vi.mocked(resolveInvocationSandbox).mockResolvedValueOnce(platform);
+      const runtimeClient = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce(reply({ ok: true, clis: [], sandboxEnforcement: true }))
+          .mockResolvedValueOnce(
+            reply({ ok: true, nonce: 'check-r-1', compatibilityVersion: '1', nonRoot: true }),
+          )
+          .mockResolvedValue({}),
+      };
+
+      const result = await poll(runtimeClient);
+
+      expect(result.results[0].revision.status).toBe('READY');
+      expect(resolveInvocationSandbox).toHaveBeenLastCalledWith({ payload: {} });
+      expect(JSON.parse(runtimeClient.send.mock.calls[0][0].input.payload)).toEqual({
+        command: 'capabilities',
+        agentSandbox: platform,
+      });
+    });
+
+    it('fails closed without invoking the runtime when the policy cannot be read', async () => {
+      vi.mocked(resolveInvocationSandbox).mockRejectedValueOnce(
+        Object.assign(new Error('not authorized to perform: dynamodb:GetItem'), {
+          name: 'AccessDeniedException',
+        }),
+      );
+      const runtimeClient = { send: vi.fn().mockResolvedValue({}) };
+
+      const result = await poll(runtimeClient);
+
+      expect(result.results[0].revision).toMatchObject({
+        status: 'FAILED',
+        failure: { reason: 'runtime_validation_failed' },
+      });
+      expect(
+        runtimeClient.send.mock.calls.filter(
+          ([command]) => command.constructor.name === 'InvokeAgentRuntimeCommand',
+        ),
+      ).toEqual([]);
+    });
+  });
 
   it('rejects a runtime whose deterministic check reports root execution', async () => {
     const verifying = {

@@ -117,6 +117,7 @@ export const prepareAgentInvocation = async (
     sandbox.enabled || bindings.some((binding) => binding.version === 2)
       ? await qualifyRuntime(runtimeCapabilities, {
           ...(sandbox.enabled ? { requireSandbox: true } : {}),
+          sandbox,
           requiredModes: bindings
             .filter((binding) => binding.version === 2)
             .map((binding) => (binding.mode === 'kiro' ? 'keys' : binding.mode)),
@@ -131,6 +132,9 @@ export const prepareAgentInvocation = async (
   }
   return {
     credentialBindings: bindings,
+    // Sent as the payload's `agentSandbox`: the runtime applies it when the
+    // invocation has no captured policy (no execution, or a DRAFT).
+    agentSandbox: sandbox,
     agentCredentialGrant: bindings.length
       ? await issueGrant({ purpose, projectId, executionId, bindings })
       : null,

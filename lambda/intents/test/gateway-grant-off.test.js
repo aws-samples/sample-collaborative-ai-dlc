@@ -6,6 +6,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { KMSClient } from '@aws-sdk/client-kms';
+import { DEFAULT_SANDBOX_CONFIG } from '../../shared/sandbox-settings.js';
 
 // With the MCP Gateway off (no GATEWAY_GRANT_KEY_ID), runtime dispatches must be
 // byte-identical to the pre-grant payloads and never reach KMS. Graph
@@ -93,6 +94,7 @@ describe('runtime dispatch without the MCP Gateway', () => {
         executionId: 'i1',
         enrichment: 'llm',
         tierModels: { fast: 'm' },
+        agentSandbox: DEFAULT_SANDBOX_CONFIG,
       }),
     );
     expect(kms.calls()).toHaveLength(0);

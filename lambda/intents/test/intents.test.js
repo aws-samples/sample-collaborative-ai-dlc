@@ -3038,6 +3038,8 @@ describe('POST /compose — composer sessions', () => {
         methodologyPins,
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
+      // A DRAFT has no captured policy and the runtime may be unable to read one.
+      expect(payload.agentSandbox).toMatchObject({ enabled: false });
       expect(payload.prompt).toContain('Do something ambiguous');
       // A DRAFT compose is execution-scoped on the intent's own execution id.
       await expect(verifiedGatewayGrant(payload.gatewayGrant)).resolves.toMatchObject({
