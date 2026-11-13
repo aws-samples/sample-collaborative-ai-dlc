@@ -3,7 +3,7 @@
 // Both realtime fabrics historically verified only "valid Cognito JWT", which
 // let any signed-in user join any Yjs doc or app-WS scope. These short-lived
 // scope tokens close that gap: they are issued by `lambda/discussions` after a
-// membership check (Project -HAS_MEMBER-> User) and verified at connect time
+// consistent DynamoDB space-membership check and verified at connect time
 // by the Yjs server and `lambda/ws-connection`.
 //
 // Token format:

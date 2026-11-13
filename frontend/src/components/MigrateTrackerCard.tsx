@@ -61,9 +61,7 @@ export function MigrateTrackerCard({
             </Button>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">
-            Only owners and admins can run the migration.
-          </p>
+          <p className="text-xs text-muted-foreground">Only Space Owners can run the migration.</p>
         )}
       </CardContent>
     </Card>

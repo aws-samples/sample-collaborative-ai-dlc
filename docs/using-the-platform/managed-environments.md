@@ -54,7 +54,7 @@ The managed build views are under **Admin -> Environments** and require the
 - **Tools** imports, builds, verifies, publishes, and recommends tool versions.
 - **Environments** composes published tool versions into runtime images.
 
-Space Owners and Admins select a published environment under **Space
+Space Owners select a published environment under **Space
 Settings -> Environment**. Space Members can see the assignment but cannot
 change it.
 

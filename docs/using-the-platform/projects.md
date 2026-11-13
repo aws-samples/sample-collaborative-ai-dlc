@@ -23,15 +23,18 @@ Two independent layers govern access:
 
 ### Space roles
 
-Every space has members with one of three roles, managed in **Space Settings → Members**:
+Every space has members with one of two roles, managed in **Space Settings → Members**:
 
 | Role       | Can do                                                                           |
 | ---------- | -------------------------------------------------------------------------------- |
-| **Owner**  | Everything, including managing members, all settings, and deleting the space     |
-| **Admin**  | Manage members, settings, repositories, and trackers; delete non-running intents |
+| **Owner**  | Everything, including managing all members, all settings, and deleting the space |
 | **Member** | Create and start intents, answer gates, steer runs, participate in discussions   |
 
 Non-members have no access to a space's intents, discussions, or real-time channels.
+
+Existing space Admins become Owners during update. Space Owner and Platform Admin
+remain separate roles. Several Owners are allowed; removing or demoting an Owner
+requires another Owner in the space.
 
 ### The platform-admin role
 
@@ -44,7 +47,7 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 
 ## Space settings
 
-**Space Settings** (gear icon on the space page) is a tabbed page. Viewing is open to members; editing requires the Owner or Admin space role.
+**Space Settings** (gear icon on the space page) is a tabbed page. Viewing is open to members; editing requires the Owner space role.
 
 ### General
 
@@ -56,12 +59,16 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 
 ### Members
 
-Add or remove members and assign their space role (owner / admin / member).
+Add or remove members and assign their space access (Owner / Member).
 The picker includes enabled, confirmed Cognito accounts and enabled enterprise
 identities that pass their provider's access gate. An enterprise user appears
 after their first successful sign-in, when Cognito creates the broker identity.
 Entries are labeled **Cognito account** or with the enterprise provider name so
 separate identities that share an email address remain distinguishable.
+
+Removal revokes REST access and new realtime tokens immediately; an existing
+realtime session expires within ten minutes. Delegated integration access is
+removed and must be configured again if the person is re-added.
 
 ### Agent
 
@@ -102,5 +109,5 @@ in flight.
 
 ## Deleting
 
-- **Intents** can be deleted by space owners/admins when they are not running. Deletion cascades through the whole footprint: graph artifacts, process state, and collaboration threads.
+- **Intents** can be deleted by space owners when they are not running. Deletion cascades through the whole footprint: graph artifacts, process state, and collaboration threads.
 - **Spaces** support deep delete — the space and all of its intents and their data are removed. This cannot be undone.

@@ -29,7 +29,7 @@ vi.mock('gremlin', async (original) => {
     },
   };
 });
-vi.mock('../../shared/trackers.js', async (original) => ({
+vi.mock('../../shared/space-membership.js', async (original) => ({
   ...(await original()),
   fetchMembershipRole: async () => 'OWNER',
 }));

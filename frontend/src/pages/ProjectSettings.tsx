@@ -21,7 +21,6 @@ import {
   Users,
   XCircle,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { GeneralTab } from '@/components/project-settings/GeneralTab';
 import { MembersTab } from '@/components/project-settings/MembersTab';
 import { AgentTab } from '@/components/project-settings/AgentTab';
@@ -43,15 +42,8 @@ const DEFAULT_TAB: TabId = 'general';
 const isTabId = (value: string | null): value is TabId =>
   value !== null && (TAB_IDS as readonly string[]).includes(value);
 
-const ROLE_BADGE: Record<string, string> = {
-  owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-  admin: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
-  member: 'bg-muted text-muted-foreground border-transparent',
-};
-
 const ROLE_LABELS: Record<string, string> = {
   owner: 'Owner',
-  admin: 'Admin',
   member: 'Member',
 };
 
@@ -119,7 +111,7 @@ export default function ProjectSettings() {
     setProject((prev) => (prev ? { ...prev, ...updates } : prev));
 
   const userRole = project?.userRole;
-  const canEdit = userRole === 'owner' || userRole === 'admin';
+  const canEdit = userRole === 'owner';
 
   if (!projectId) return <div className="p-6">Space not found</div>;
 
@@ -144,12 +136,15 @@ export default function ProjectSettings() {
             </h1>
             {!canEdit && (
               <p className="mt-0.5 text-sm text-muted-foreground">
-                Only space owners or admins can modify settings.
+                Only Space Owners can modify settings.
               </p>
             )}
           </div>
           {userRole && (
-            <Badge variant="outline" className={cn('ml-auto text-[10px]', ROLE_BADGE[userRole])}>
+            <Badge
+              variant="outline"
+              className="ml-auto border-transparent bg-muted text-[10px] text-muted-foreground"
+            >
               {ROLE_LABELS[userRole]}
             </Badge>
           )}

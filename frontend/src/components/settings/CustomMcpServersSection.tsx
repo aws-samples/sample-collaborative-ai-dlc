@@ -80,7 +80,7 @@ interface Props {
   onChange: (next: string) => void;
   /** Persists the value. Throws on failure. */
   onSave: (value: string) => Promise<void>;
-  /** True when the user may edit (project admin/owner, or platform admin). */
+  /** True when the user may edit (project owner, or platform admin). */
   canEdit: boolean;
   /** One-line description under the title. */
   description: string;
@@ -439,7 +439,7 @@ export function CustomMcpServersSection({
           </div>
         ) : (
           <p className="text-[11px] text-muted-foreground">
-            Only owners and admins can change MCP servers.
+            Only Space Owners can change MCP servers.
           </p>
         )}
       </div>

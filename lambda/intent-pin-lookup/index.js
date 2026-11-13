@@ -6,10 +6,10 @@
 // it cannot check that the caller is a member of the intent's project.
 //
 // This function is that one read, and nothing else. It takes an already
-// authenticated subject, verifies project membership in Neptune, verifies the
+// authenticated subject, verifies membership in DynamoDB and project existence in Neptune, verifies the
 // intent belongs to that project, and returns a minimal projection of the
 // intent's methodology coordinates. It has no HTTP route, no write path, and a
-// role with read-only access to the process table and Neptune.
+// role with read-only access to the membership/process tables and Neptune.
 //
 // TRUST BOUNDARY: `sub` is supplied by the caller. The workflows Lambda takes
 // it from the API Gateway authorizer claims of the request it is serving, so it
@@ -25,7 +25,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;

@@ -26,6 +26,8 @@ const bundles = [
   ['intent-pin-lookup', 'lambda/intent-pin-lookup/.build/index.mjs'],
   ['user-stories', 'lambda/user-stories/.build/index.mjs'],
   ['users', 'lambda/users/.build/index.mjs'],
+  ['projects', 'lambda/projects/.build/index.mjs'],
+  ['migrate-memberships', 'lambda/migrate-memberships/.build/index.mjs'],
   ['v2-orchestrator', 'lambda/v2-orchestrator/.build/index.mjs'],
 ];
 

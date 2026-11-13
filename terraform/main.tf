@@ -503,7 +503,11 @@ module "neptune" {
 
 # Lambda CRUD Functions
 module "lambda" {
-  source = "./modules/api/lambda"
+  source            = "./modules/api/lambda"
+  access_table_name = module.dynamodb.access_table_name
+  access_table_arn  = module.dynamodb.access_table_arn
+  audit_table_name  = module.dynamodb.audit_table_name
+  audit_table_arn   = module.dynamodb.audit_table_arn
 
   notification_events_enabled = var.notification_events_enabled
   notification_event_bus_name = var.notification_event_bus_name
@@ -606,7 +610,8 @@ module "lambda" {
 
 # API Gateway
 module "api" {
-  source = "./modules/api"
+  source            = "./modules/api"
+  access_table_name = module.lambda.membership_access_table_name
 
   aws_sdk_ua_app_id                        = local.aws_sdk_ua_app_id
   credential_broker_role_arn               = module.lambda.credential_broker_role_arn

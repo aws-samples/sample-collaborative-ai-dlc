@@ -1,3 +1,4 @@
+import { membershipStore } from '../shared/space-membership.js';
 // lambda/discussions — data-access layer. Neptune graph reads/writes and the
 // DynamoDB locks / read-state access. No HTTP shapes here; callers pass plain
 // args and receive vertices or mapped DTOs.
@@ -355,13 +356,15 @@ export const updateAssistMessageVertex = async (
 };
 
 export const fetchProjectMemberIds = async (g, projectId) => {
-  return g
-    .V()
-    .has('Project', 'id', projectId)
-    .out('HAS_MEMBER')
-    .hasLabel('User')
-    .values('id')
-    .toList();
+  if (!(await g.V().has('Project', 'id', projectId).hasNext())) return [];
+  const ids = [];
+  let token;
+  do {
+    const page = await membershipStore.listMembers(projectId, token);
+    ids.push(...page.items.map((member) => member.userId));
+    token = page.nextToken;
+  } while (token);
+  return ids;
 };
 
 // ─── Message guard completion (DynamoDB) ───

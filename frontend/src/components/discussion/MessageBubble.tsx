@@ -18,7 +18,7 @@ import {
 // remark-gfm (no raw HTML — default-safe). Agent messages get distinct
 // styling + a "requested by {name} · {command}" caption (assist audit
 // visibility). Redacted: muted italic + audit caption. The redact action is
-// admin/owner only (role gate in the sheet; the server enforces it anyway).
+// owner only (role gate in the sheet; the server enforces it anyway).
 
 interface Props {
   group: MessageGroup;
