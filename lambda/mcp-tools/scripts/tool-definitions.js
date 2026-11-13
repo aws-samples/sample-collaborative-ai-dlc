@@ -39,7 +39,7 @@ const toGatewaySchema = (schema) => {
 const SUPERSET_POLICY = { loopBack: 'human-offered' };
 
 export const gatewayToolDefinitions = () => {
-  const schemas = toolSchemas(z, SUPERSET_POLICY);
+  const schemas = toolSchemas(z, SUPERSET_POLICY, { crossUnitFindings: true });
   return GATEWAY_TOOL_NAMES.map((name) => ({
     name,
     description: schemas[name].description,

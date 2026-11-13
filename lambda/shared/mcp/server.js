@@ -216,9 +216,15 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
       guard(() => bridge.describeChanges({ type, scope, summary, breaking, breakingChange })),
     emit_stage_note: ({ summary, type, loopBackRecommended }) =>
       guard(() => bridge.emitStageNote({ summary, type, loopBackRecommended })),
-    submit_review: ({ reviewer, verdict, findings, round }) =>
+    submit_review: ({ reviewer, verdict, findings, round, crossUnitFindings }) =>
       guard(() =>
-        bridge.submitReview({ reviewer, verdict, findings: findings ?? '', round: round ?? 0 }),
+        bridge.submitReview({
+          reviewer,
+          verdict,
+          findings: findings ?? '',
+          round: round ?? 0,
+          crossUnitFindings: crossUnitFindings ?? '',
+        }),
       ),
   };
 };
@@ -325,7 +331,7 @@ export const handlersForRole = (allHandlers, role, stageId = null, policy = null
 // Tool descriptions + zod arg shapes are attached in startMcpServer (where the
 // SDK + zod are present). Kept here as a single source so the catalog is
 // assertable and registration stays a thin loop.
-export const toolSchemas = (z, policy = null) => ({
+export const toolSchemas = (z, policy = null, options = {}) => ({
   get_artifact: {
     description:
       'Fetch one business artifact by id. Use mode "toc" or "summary" to avoid loading full markdown unless needed.',
@@ -513,13 +519,22 @@ export const toolSchemas = (z, policy = null) => ({
     },
   },
   submit_review: {
-    description:
+    description: [
       'Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`.',
+      // Offered ONLY to a unit-lane reviewer with cross-unit findings advisory, so
+      // every other reviewer sees exactly the tool it saw before.
+      ...(options.crossUnitFindings
+        ? [
+            'Put findings whose required action belongs to another unit or to a shared contract in `crossUnitFindings`, naming the owner of each; they are shown to the human, not counted towards your verdict and not sent to this unit\u2019s author.',
+          ]
+        : []),
+    ].join(' '),
     shape: {
       reviewer: z.string().optional(),
       verdict: z.enum(['READY', 'NOT-READY']),
       findings: z.string().optional(),
       round: z.number().optional(),
+      ...(options.crossUnitFindings ? { crossUnitFindings: z.string().optional() } : {}),
     },
   },
   emit_stage_note: {
@@ -580,11 +595,14 @@ export const registerTools = ({
   checkpointOwner = true,
   canAsk = true,
   describeChanges = false,
+  crossUnitFindings = false,
   z,
   env = process.env,
 }) => {
   const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk, describeChanges });
-  const schemas = toolSchemas(z, policy);
+  const schemas = toolSchemas(z, policy, {
+    crossUnitFindings: role === 'reviewer' && crossUnitFindings === true,
+  });
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];

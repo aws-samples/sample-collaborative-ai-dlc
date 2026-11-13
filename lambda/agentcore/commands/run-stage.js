@@ -460,13 +460,49 @@ const renderReviewerReadScope = ({ unit, contracts }) => {
   ].join('\n');
 };
 
+// REVIEW_CROSS_UNIT_FINDINGS: "blocking" (default) judges a unit lane on every
+// finding; "advisory" lets its reviewer record findings owned by other units
+// apart, so they reach the human without failing a lane that may not act on
+// them (the author's unit scope forbids modifying other units).
+export const reviewCrossUnitFindings = (env = process.env) =>
+  env?.REVIEW_CROSS_UNIT_FINDINGS === 'advisory' ? 'advisory' : 'blocking';
+
+// PURE — the brief block for an advisory cross-unit review, or '' when off or
+// outside a unit lane.
+const renderCrossUnitFindings = ({ unit, crossUnitFindings }) => {
+  if (!crossUnitFindings || !unit?.slug) return '';
+  const deps = Array.isArray(unit.dependsOn) && unit.dependsOn.length ? unit.dependsOn : null;
+  return [
+    '## Findings for other units',
+    '',
+    `The author of this stage may change only the unit **${unit.slug}**. Other units, including`,
+    `the ones it depends on${deps ? ` (${deps.join(', ')})` : ''}, and the shared contracts are read-only to it.`,
+    'Judge it on what it can change here:',
+    '',
+    `- Put in \`findings\` only what the author can fix within **${unit.slug}**, including`,
+    '  how the unit records, works around or depends on a gap elsewhere.',
+    '- Put a finding whose required action is a change to another unit or to a shared',
+    '  contract in `crossUnitFindings` instead, naming the owner (unit or contract) of each.',
+    '  These go to the human. They do not count towards your verdict and are not sent to',
+    '  the author.',
+    '- Decide READY or NOT-READY on `findings` alone. When every finding is for another',
+    '  unit, the verdict is READY.',
+  ].join('\n');
+};
+
 // Everything the reviewer prompt says EXCEPT the persona/knowledge tail —
 // that tail is generic across persona roles and lives in
 // composePersonaPrompt (persona-dispatch.js). Split out from
 // buildReviewerPrompt so runReviewer can hand this, alone, to dispatchPersona
 // as `brief` — the blindness seam (persona-dispatch.js) — while
 // buildReviewerPrompt keeps rendering the exact same full prompt below.
-const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
+const buildReviewerBrief = ({
+  stage,
+  unit = null,
+  reviewerAgent,
+  round,
+  crossUnitFindings = false,
+}) => {
   const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
   const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
   // `review_artifact` (≥2.7.0) names the ONE canonical output under review. The
@@ -483,6 +519,7 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
     unit,
     contracts: contracts.length ? contracts : inputs,
   });
+  const crossUnitBlock = renderCrossUnitFindings({ unit, crossUnitFindings });
   return [
     `# Clean-room review: ${stage.stageId}`,
     '',
@@ -523,6 +560,7 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
         ]
       : []),
     ...(readScope ? ['', readScope] : []),
+    ...(crossUnitBlock ? ['', crossUnitBlock] : []),
   ].join('\n');
 };
 
@@ -536,9 +574,10 @@ const buildReviewerPrompt = ({
   // Forwarded like runReviewer's dispatchPersona call does, so this renders
   // the exact prompt the reviewer runs with when a language is set (#784).
   conversationLanguage = null,
+  crossUnitFindings = false,
 }) =>
   composePersonaPrompt({
-    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
+    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round, crossUnitFindings }),
     persona: reviewerPersona,
     knowledge,
     conversationLanguage,
@@ -633,8 +672,10 @@ const runReviewer = async ({
   // Conversation language from the intent META (#784); review findings follow
   // it like every other persona's prose.
   conversationLanguage = null,
+  // Record other units' findings apart (REVIEW_CROSS_UNIT_FINDINGS=advisory).
+  crossUnitFindings = false,
 }) => {
-  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
+  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round, crossUnitFindings });
   await store
     .appendEvent({
       executionId,
@@ -654,7 +695,11 @@ const runReviewer = async ({
     // The stage's resolved policy travels with the reviewer too: the annex's
     // checkpoint mapping is capped by the reviewer role's own tool surface, and
     // the policy is what decides the rest of the row.
-    personaScope: { agentRef: reviewerAgent, policy: stage.policy ?? null },
+    personaScope: {
+      agentRef: reviewerAgent,
+      policy: stage.policy ?? null,
+      ...(crossUnitFindings ? { crossUnitFindings: true } : {}),
+    },
     agentBlock: reviewerBlock,
     persona: reviewerPersona,
     knowledge,
@@ -5103,6 +5148,7 @@ const runStageAttempt = async (
         sectionIndex,
         publish,
         ids,
+        crossUnitFindings: Boolean(unit?.slug) && reviewCrossUnitFindings(env) === 'advisory',
       }).catch(async (e) => {
         await store
           .appendEvent({

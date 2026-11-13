@@ -82,6 +82,7 @@ export const contextFromEnv = (env) => {
     checkpointOwner: env.V2_CHECKPOINT_OWNER !== '0',
     canAsk: env.V2_ASK_QUESTION !== '0',
     describeChanges: env.V2_DESCRIBE_CHANGES === '1',
+    crossUnitFindings: role === 'reviewer' && env.V2_REVIEW_CROSS_UNIT === '1',
     policy: policyFromEnv(env),
   });
   if (!scope.intentId || !scope.projectId) throw new Error('MCP requires intentId and projectId');

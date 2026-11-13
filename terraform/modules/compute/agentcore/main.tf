@@ -796,6 +796,7 @@ locals {
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    REVIEW_CROSS_UNIT_FINDINGS    = var.review_cross_unit_findings
     }, local.runtime_direct_data_access ? {
     # Only the direct clients read these; engine-data and the broker own them
     # once runtime grants are enforced.
