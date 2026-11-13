@@ -27,7 +27,7 @@ export default defineConfig({
       'lambda/agentcore/test/native-kiro-acp-turn.test.js',
       'lambda/agentcore/test/native-kiro-prompt.test.js',
       'lambda/agentcore/test/native-efs-workspace.test.js',
-      'lambda/agentcore/test/native-workflow-resume-state.test.js',
+      'lambda/agentcore/test/native-workflow-*.test.js',
       'lambda/agentcore/test/native-transport-instructions.test.js',
       'lambda/agentcore/test/auth-resolver.test.js',
       'lambda/shared/test/agent-credential-grants.test.js',

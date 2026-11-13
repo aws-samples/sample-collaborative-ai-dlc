@@ -1,6 +1,6 @@
 // Deploy as its OWN Lambda entry, never as a new legacy credential-broker
-// action. Only the trusted native dispatch worker receives InvokeFunction on
-// its exact ARN. No Function URL, API route, runtime grant or resource policy.
+// action. Dispatch uses its exact ARN; isolated reviewers use only their
+// binding-specific model-only alias. Coding and check roles have no grant.
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -53,11 +53,24 @@ export const createNativeExecutionCredentialsLambda =
     executionFactory = createNativeExecutionStore,
     facadeFactory = loadFacade,
   } = {}) =>
-  async (payload) => {
+  async (payload, context) => {
     let connection;
     let graph;
     let result;
     try {
+      const arn = context?.invokedFunctionArn;
+      let reviewerAlias = null;
+      if (arn) {
+        const base = `arn:${env.AWS_PARTITION || 'aws'}:lambda:${env.AWS_REGION}:${env.NATIVE_RUNTIME_ACCOUNT_ID}:function:${env.AWS_LAMBDA_FUNCTION_NAME}`;
+        if (arn !== base) {
+          if (
+            !arn.startsWith(`${base}:`) ||
+            !/^review_[a-f0-9]{32}$/.test(arn.slice(base.length + 1))
+          )
+            return { ok: false, code: 'NATIVE_EXECUTION_CREDENTIALS_FORBIDDEN' };
+          reviewerAlias = arn.slice(base.length + 1);
+        }
+      }
       const createFacade = await facadeFactory();
       const documentClient = ddb ?? DynamoDBDocumentClient.from(new DynamoDBClient({}));
       const preparationStore = preparationFactory({
@@ -91,6 +104,7 @@ export const createNativeExecutionCredentialsLambda =
         ssm: ssm ?? new SSMClient({}),
         secrets: secrets ?? new SecretsManagerClient({}),
         env,
+        reviewerAlias,
         getMembershipSnapshot,
         invokeTracker: (input) =>
           invokeNativeInputOwner(lambda ?? new LambdaClient({}), env.TRACKERS_FUNCTION, input),
@@ -110,4 +124,5 @@ export const createNativeExecutionCredentialsLambda =
     return result;
   };
 
-export const handler = (payload) => createNativeExecutionCredentialsLambda()(payload);
+export const handler = (payload, context) =>
+  createNativeExecutionCredentialsLambda()(payload, context);

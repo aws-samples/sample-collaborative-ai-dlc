@@ -311,7 +311,38 @@ const createTarFraming = (bounds) => {
   };
 };
 
-export const inspectNativeRuntimeArchive = async (archive, { version, limits = {} } = {}) => {
+const runtimeEntryCollector = ({ header, name, retainPrefix, bounds, metadata, retainedFiles }) => {
+  const metadataFile = /\/tools\/data\/aidlc-(stamp|projection)\.json$/.test(name);
+  const retained = header.type === 'file' && retainPrefix && name.startsWith(retainPrefix);
+  if (metadataFile && header.size > bounds.metadataBytes)
+    reject('Package projection metadata is too large');
+  const chunks = metadataFile || retained ? [] : null;
+  return {
+    append(chunk) {
+      chunks?.push(chunk);
+    },
+    finish() {
+      if (!chunks) return;
+      const bytes = Buffer.concat(chunks);
+      if (metadataFile) metadata.set(name, bytes);
+      if (retained) retainedFiles.set(name.slice(retainPrefix.length), bytes);
+    },
+  };
+};
+
+export const inspectNativeRuntimeArchive = async (
+  archive,
+  { version, limits = {}, retainPrefix } = {},
+) => {
+  // The protected engine uses the same complete archive validation as package
+  // admission. Bytes are returned only after framing, paths and every harness
+  // projection pass; no extraction callback can execute a partially read file.
+  if (
+    retainPrefix !== undefined &&
+    !NATIVE_HARNESSES.some((harness) => retainPrefix === `runtime/${harness}/`)
+  )
+    reject('Package retained layout is invalid');
+  const retainedFiles = new Map();
   const bounds = { ...NATIVE_PACKAGE_LIMITS, ...limits };
   for (const bound of Object.values(bounds)) {
     if (!Number.isSafeInteger(bound) || bound < 1)
@@ -376,10 +407,14 @@ export const inspectNativeRuntimeArchive = async (archive, { version, limits = {
         }
         files.add(name);
       }
-      const keep = /\/tools\/data\/aidlc-(stamp|projection)\.json$/.test(name);
-      if (keep && header.size > bounds.metadataBytes)
-        reject('Package projection metadata is too large');
-      const chunks = [];
+      const collector = runtimeEntryCollector({
+        header,
+        name,
+        retainPrefix,
+        bounds,
+        metadata,
+        retainedFiles,
+      });
       let size = 0;
       for await (const chunk of stream) {
         size += chunk.length;
@@ -387,10 +422,10 @@ export const inspectNativeRuntimeArchive = async (archive, { version, limits = {
         if (size > header.size || expandedBytes > bounds.expandedBytes) {
           reject('Package archive exceeds its declared size');
         }
-        if (keep) chunks.push(chunk);
+        collector.append(chunk);
       }
       if (size !== header.size) reject('Package archive entry is truncated');
-      if (keep) metadata.set(name, Buffer.concat(chunks));
+      collector.finish();
       next();
     })().catch((error) => extract.destroy(error));
   });
@@ -428,7 +463,12 @@ export const inspectNativeRuntimeArchive = async (archive, { version, limits = {
   const projections = NATIVE_HARNESSES.map((harness) =>
     validateProjection({ harness, version, metadata, files, directories }),
   );
-  return { fileCount: files.size, expandedBytes, projections };
+  return {
+    fileCount: files.size,
+    expandedBytes,
+    projections,
+    ...(retainPrefix ? { retainedFiles } : {}),
+  };
 };
 
 const readReleaseFile = async (root, name, maxBytes, { retain = true } = {}) => {

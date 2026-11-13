@@ -446,6 +446,14 @@ const getTree = async (ctx, repoId, branch = 'main') => {
   return files;
 };
 
+const getCommitIdentity = async (ctx, repoId, commit) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const response = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/commit/${encodeURIComponent(commit)}`,
+  );
+  return (await response.json()).hash;
+};
 const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
   const res = await bbFetch(
@@ -1059,6 +1067,7 @@ export {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -1093,6 +1102,7 @@ export default {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,

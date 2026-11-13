@@ -320,6 +320,13 @@ const getTree = async (ctx, repoId, branch = 'main') => {
     .map((item) => ({ path: item.path, sha: item.id, size: 0 }));
 };
 
+const getCommitIdentity = async (ctx, repoId, commit) => {
+  const response = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${encodeProject(repoId)}/repository/commits/${encodeURIComponent(commit)}`,
+  );
+  return (await response.json()).id;
+};
 const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
   const project = encodeProject(repoId);
   const res = await glFetch(
@@ -1109,6 +1116,7 @@ export {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listIssues,
   getIssue,
   listIssueComments,
@@ -1149,6 +1157,7 @@ export default {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listIssues,
   getIssue,
   listIssueComments,

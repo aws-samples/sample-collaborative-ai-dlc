@@ -1816,3 +1816,104 @@ describe('created-workflow requirement for EFS fresh sessions', () => {
     expect(successor.ports.publish).not.toHaveBeenCalled();
   });
 });
+
+describe('protected workflow engine wiring', () => {
+  const pin = {
+    profileId: 'aidlc-2.11.1-native-1',
+    producerSha256: 'a'.repeat(64),
+    functionArn: 'arn:aws:lambda:us-east-1:123456789012:function:native-workflow',
+    version: '7',
+  };
+  const pinned = () => {
+    const request = payload();
+    request.configuration.workflowEngine = structuredClone(pin);
+    return request;
+  };
+  const engine = (overrides = {}) => {
+    const order = [];
+    const command = vi.fn(async (args, options) => {
+      order.push(options.action);
+      return (await overrides.command?.(args, options)) ?? { exitCode: 0 };
+    });
+    const prepareWorkflowEngine = vi.fn(async ({ control }) => ({
+      client: { command },
+      contextPath: join(control, 'workflow-engine/context.json'),
+    }));
+    return { order, command, prepareWorkflowEngine };
+  };
+  const titles = async (executor, request) =>
+    JSON.stringify(await executor.activity({ ...request, after: 0 }));
+
+  it('leaves an execution without a captured engine untouched', async () => {
+    const e = engine();
+    const { executor, request, ports } = make({
+      ports: { prepareWorkflowEngine: e.prepareWorkflowEngine },
+    });
+    await executor.start(request);
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready' });
+    expect(e.prepareWorkflowEngine).not.toHaveBeenCalled();
+    const harness = ports.commandRunner.mock.calls.find(([input]) => input.timeoutMs === null)[0];
+    expect(harness.env).not.toHaveProperty('NATIVE_WORKFLOW_CONTEXT');
+  });
+
+  it('routes the harness through the engine, mirrors before capture and finalizes the published receipt', async () => {
+    const e = engine();
+    const request = pinned();
+    const { executor, ports } = make({
+      request,
+      ports: { prepareWorkflowEngine: e.prepareWorkflowEngine },
+    });
+    await executor.start(request);
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready' });
+    expect(e.prepareWorkflowEngine).toHaveBeenCalledTimes(1);
+    expect(e.prepareWorkflowEngine.mock.calls[0][0]).toMatchObject({
+      payload: { configuration: { workflowEngine: pin } },
+      project: expect.stringContaining(root),
+      control: expect.stringContaining('.native-control'),
+      forbiddenBytes: expect.arrayContaining(['known-model-credential']),
+    });
+    const harness = ports.commandRunner.mock.calls.find(([input]) => input.timeoutMs === null)[0];
+    expect(harness.env.NATIVE_WORKFLOW_CONTEXT).toMatch(/workflow-engine\/context\.json$/);
+    expect(harness.env.PATH.startsWith('/usr/local/bin:')).toBe(true);
+    expect(e.order).toEqual(['mirror', 'finalize']);
+    const [mirrored, finalized] = e.command.mock.invocationCallOrder;
+    expect(mirrored).toBeLessThan(ports.publish.mock.invocationCallOrder[0]);
+    expect(finalized).toBeGreaterThan(ports.publishInteraction.mock.invocationCallOrder[0]);
+    const [, finalize] = e.command.mock.calls.at(-1);
+    expect(finalize.publication).toEqual((await ports.publish.mock.results[0].value).receipt);
+    expect(finalize.interaction).toEqual(await ports.publishInteraction.mock.results[0].value);
+  });
+
+  it.each([
+    ['no engine port', () => undefined],
+    ['a port that returns no client', () => vi.fn(async () => ({ contextPath: '/x' }))],
+    ['a port that returns no context', () => vi.fn(async () => ({ client: { command() {} } }))],
+  ])('fails closed before the harness starts with %s', async (_label, port) => {
+    const request = pinned();
+    const { executor, ports } = make({ request, ports: { prepareWorkflowEngine: port() } });
+    await executor.start(request);
+    expect(await executor.settle()).toMatchObject({
+      status: 'failed',
+      code: 'native_execution_preparation_invalid',
+    });
+    expect(ports.commandRunner.mock.calls.some(([input]) => input.timeoutMs === null)).toBe(false);
+    expect(ports.publish).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['throws', () => Promise.reject(new Error('engine unavailable'))],
+    ['reports a failure', async () => ({ exitCode: 1 })],
+  ])('still publishes without proof when the engine %s', async (_label, outcome) => {
+    const e = engine({ command: outcome });
+    const request = pinned();
+    const { executor, ports } = make({
+      request,
+      ports: { prepareWorkflowEngine: e.prepareWorkflowEngine },
+    });
+    await executor.start(request);
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready' });
+    expect(ports.publish).toHaveBeenCalledTimes(1);
+    expect(e.order).toEqual(['mirror', 'finalize']);
+    expect(await titles(executor, request)).toContain('Workflow evidence unavailable');
+  });
+});

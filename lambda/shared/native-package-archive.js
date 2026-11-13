@@ -430,6 +430,46 @@ export const createNativePackageArchive = ({
   };
 
   return Object.freeze({
+    // Protected engine services execute the reviewed runtime layout only.
+    // Read the same committed manifest and exact asset version as restore,
+    // without downloading an executable the service will never run.
+    async readRuntime({
+      projectId,
+      sourceId,
+      pin: expectedPin,
+      attestation,
+      materializationId,
+      receipt,
+      beforeReturn,
+    } = {}) {
+      try {
+        if (typeof beforeReturn !== 'function') fail('invalid');
+        const pin = describe(expectedPin, attestation);
+        const scope = scopeFor(projectId, sourceId, pin);
+        const pinnedReceipt = describeNativePackageArchiveReceipt(receipt, materializationId);
+        if (materializationId !== pin.materializationId) fail('invalid');
+        const committed = await get(
+          `${scope.prefix}manifest.json`,
+          { ...pinnedReceipt.manifest, limit: RECORD_BYTES },
+          { versionId: pinnedReceipt.manifest.versionId, missing: 'not_found' },
+        );
+        const manifest = parseManifest(committed.bytes, scope, pin);
+        const index = manifest.files.findIndex(
+          (file) => file.name === pin.identity.assets.runtime.name,
+        );
+        if (index < 0) fail('corrupt');
+        const file = manifest.files[index];
+        const runtime = await get(
+          `${scope.prefix}files/${file.name}`,
+          { ...pin.files[index], bytes: file.bytes },
+          { versionId: file.versionId },
+        );
+        await authorize(beforeReturn);
+        return runtime.bytes;
+      } catch (error) {
+        throw safeFailure(error);
+      }
+    },
     async publish({ projectId, sourceId, materialization, beforeCommit } = {}) {
       let stage;
       try {

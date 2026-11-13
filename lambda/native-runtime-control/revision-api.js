@@ -6,6 +6,7 @@ import {
   nativeVerificationSummary,
   nativeWorkflowDefinition,
 } from '../shared/native-completion-evidence.js';
+import { nativeEngineVerificationSummary } from './workflow-engine/proof-reader.js';
 
 const invalid = () => {
   throw Object.assign(new Error('The named publication could not be verified'), {
@@ -15,7 +16,13 @@ const invalid = () => {
 
 // Reads use admitted bytes and structured authority receipts only. No runtime,
 // projection, image-policy or mutable project configuration is consulted.
-export const createNativeRevisionApi = ({ read, revisions, interactions, store }) => {
+export const createNativeRevisionApi = ({
+  read,
+  revisions,
+  interactions,
+  store,
+  completionProof,
+}) => {
   const locate = async (draft, target, recheck) => {
     const row = await read(draft, recheck);
     if (!row?.publication || !revisions) invalid();
@@ -67,6 +74,9 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
     },
     async revision(draft, target, recheck) {
       const { row, found, manifest } = await locate(draft, target, recheck);
+      const protectedEvidence = completionProof
+        ? await completionProof({ row, found, manifest })
+        : null;
       if (target.evidence) {
         const { interaction, facts } = await decision(row, found, manifest);
         const memberDecision = nativeMemberDecision(interaction, facts?.response);
@@ -79,16 +89,27 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
             packageId: manifest.packageId,
             harness: row.configuration.harness,
           },
-          ...nativeVerificationSummary(
-            found.receipt.id,
-            manifest.sequence,
-            manifest.packageId,
-            row.configuration.harness,
-          ),
+          ...(protectedEvidence
+            ? nativeEngineVerificationSummary(protectedEvidence)
+            : nativeVerificationSummary(
+                found.receipt.id,
+                manifest.sequence,
+                manifest.packageId,
+                row.configuration.harness,
+              )),
           definition: nativeWorkflowDefinition(manifest.packageId, row.configuration.harness),
-          effectivePlan: 'not_recorded',
-          engineApplication: 'not_recorded',
-          terminalOutcome: 'not_recorded',
+          effectivePlan: protectedEvidence?.effectivePlan ?? 'not_recorded',
+          engineApplication: protectedEvidence?.engineApplication ?? 'not_recorded',
+          terminalOutcome: protectedEvidence?.terminalOutcome ?? 'not_recorded',
+          ...(protectedEvidence
+            ? {
+                producer: protectedEvidence.producer,
+                filesSha256: protectedEvidence.filesSha256,
+                checks: protectedEvidence.checks,
+                reviews: protectedEvidence.reviews,
+                gates: protectedEvidence.gates,
+              }
+            : {}),
           memberDecision,
           // Delivery is an independent transport observation, never application.
           decisionDelivery: !memberDecision
@@ -126,12 +147,14 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
         context: { ...found.identity, packageId: manifest.packageId },
         outcome: manifest.outcome,
         interactionId: found.interaction?.id ?? null,
-        verification: nativeVerificationSummary(
-          found.receipt.id,
-          manifest.sequence,
-          manifest.packageId,
-          row.configuration.harness,
-        ),
+        verification: protectedEvidence
+          ? nativeEngineVerificationSummary(protectedEvidence)
+          : nativeVerificationSummary(
+              found.receipt.id,
+              manifest.sequence,
+              manifest.packageId,
+              row.configuration.harness,
+            ),
       };
     },
     async revisionFile(draft, target, recheck) {

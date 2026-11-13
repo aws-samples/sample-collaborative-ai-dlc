@@ -247,6 +247,22 @@ const askSpec = (spec) => {
   return { version: 2, questions: [{ prompt: ask.question, header: null, options }] };
 };
 
+// The protected adapter uses the same typed intake mapping as display. A
+// command is returned only when the pinned engine supplied it for that option;
+// choices requesting another question deliberately have no executable command.
+export const nativeTypedChoiceCommands = (ask) => {
+  const spec = askSpec({ version: 3, ask });
+  return spec.questions[0].options.map((option, index) => ({
+    label: option.label,
+    command:
+      ask.ask_type === 'compose-offer'
+        ? index === 0
+          ? ask.compose_command
+          : ask.scope_commands[index - 1].command
+        : (ask.choices[index].command ?? null),
+  }));
+};
+
 export const NATIVE_PRESENTATION_REASONS = Object.freeze([
   'absent',
   'invalid_json',

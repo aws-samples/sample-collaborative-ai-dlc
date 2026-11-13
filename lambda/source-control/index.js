@@ -430,7 +430,11 @@ const reviewNumberFromPath = (path) =>
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  if (['native-source-snapshot', 'native-source-access'].includes(event?.action)) {
+  if (
+    ['native-source-snapshot', 'native-source-access', 'native-workflow-settings'].includes(
+      event?.action,
+    )
+  ) {
     let conn;
     try {
       conn = await getConnection();
@@ -438,6 +442,7 @@ export const handler = async (event, context) => {
       const source = await captureNativeSource({
         input: event,
         metadataOnly: event.action === 'native-source-access',
+        workflowSettings: event.action === 'native-workflow-settings',
         ddb,
         ssm,
         secrets,

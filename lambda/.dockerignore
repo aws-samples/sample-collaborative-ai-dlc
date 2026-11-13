@@ -3,6 +3,7 @@ node_modules
 **/node_modules
 package-lock.json
 **/package-lock.json
+!native-runtime-control/runtime-interface/package-lock.json
 .git
 .gitignore
 test

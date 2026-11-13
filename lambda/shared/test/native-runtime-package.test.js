@@ -66,6 +66,33 @@ const archiveFor = async (entries, transform = (bytes) => bytes) => {
   return gzipSync(transform(Buffer.concat(chunks)));
 };
 
+it('retains only the selected validated harness and refuses a later invalid entry', async () => {
+  const entries = projectionEntries();
+  const result = await inspectNativeRuntimeArchive(await archiveFor(entries), {
+    version,
+    retainPrefix: 'runtime/codex/',
+  });
+  expect([...result.retainedFiles.keys()].sort()).toEqual([
+    '.codex/tools/data/aidlc-projection.json',
+    '.codex/tools/data/aidlc-stamp.json',
+    '.codex/tools/native.js',
+    'AGENTS.md',
+  ]);
+  expect(result.retainedFiles.get('.codex/tools/native.js').toString()).toBe('// never executed\n');
+  await expect(
+    inspectNativeRuntimeArchive(
+      await archiveFor([...entries, { name: 'runtime/claude/../../unsafe', body: 'rejected' }]),
+      { version, retainPrefix: 'runtime/codex/' },
+    ),
+  ).rejects.toMatchObject({ code: 'native_package_invalid' });
+  await expect(
+    inspectNativeRuntimeArchive(await archiveFor(entries), {
+      version,
+      retainPrefix: 'runtime/',
+    }),
+  ).rejects.toMatchObject({ code: 'native_package_invalid' });
+});
+
 const withClaudeDescriptor = (configure) => {
   const entries = projectionEntries();
   const entry = entries.find(

@@ -16,6 +16,7 @@ import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { loadNativePackage } from './package-loader.js';
+import { prepareNativeEngineClient } from './workflow-client.js';
 import { runNativeCommand } from './command-runner.js';
 import { withGitCredential } from '../git-auth.js';
 import { isValidRepoPath } from '../../shared/repo-validation.js';
@@ -116,6 +117,7 @@ export const createNativeExecutionPorts = ({
       fail('native_execution_recovery_unconfirmed');
   };
   return {
+    prepareWorkflowEngine: (input) => prepareNativeEngineClient({ ...input, env, s3 }),
     async prepareInputs({ payload, project, signal }) {
       checkIdentity(env, payload);
       checkAbort(signal);

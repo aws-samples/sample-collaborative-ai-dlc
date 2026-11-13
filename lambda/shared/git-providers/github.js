@@ -214,6 +214,14 @@ const getTree = async (ctx, repoId, branch = 'main') => {
     .map((item) => ({ path: item.path, sha: item.sha, size: item.size }));
 };
 
+const getCommitIdentity = async (ctx, repoId, commit) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const response = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/git/commits/${encodeURIComponent(commit)}`,
+  );
+  return (await response.json()).sha;
+};
 const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(
@@ -1065,6 +1073,7 @@ export {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listIssues,
   getIssue,
   listIssueComments,
@@ -1105,6 +1114,7 @@ export default {
   getRepositoryAccess,
   getTree,
   getFileContents,
+  getCommitIdentity,
   listIssues,
   getIssue,
   listIssueComments,

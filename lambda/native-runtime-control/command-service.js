@@ -27,6 +27,8 @@ import { createNativeActivityStore } from './activity-store.js';
 import { nativeProjectionStatus } from './projection-store.js';
 import { createNativeResultStore, resultFailure } from './result-store.js';
 import { createNativeResultStorage } from './result-storage.js';
+import { createNativeEngineObjects } from '../shared/native-workflow-objects.js';
+import { createNativeEngineProofReader } from './workflow-engine/proof-reader.js';
 
 const defaultDdb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const defaultSqs = new SQSClient({});
@@ -131,6 +133,15 @@ export const createNativeRuntimeLambda =
             }),
         }),
         publications,
+        completionProof: createNativeEngineProofReader({
+          ddb,
+          tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+          objects: createNativeEngineObjects({
+            s3,
+            bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
+            accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+          }),
+        }),
         revisions: createNativeArtifactRevisions({
           ddb,
           nativeTable: env.NATIVE_RUNTIME_BINDINGS_TABLE,

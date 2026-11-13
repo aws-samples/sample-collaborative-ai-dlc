@@ -5,6 +5,7 @@ import { resolveBindingCredential } from '../shared/source-control-credentials.j
 import { workflowSourceIdentity } from '../shared/workflow-source-bindings.js';
 import { resolveNativeSourceCommit } from '../shared/native-application-source.js';
 import { sourceCredentialIdentity } from '../shared/source-credential-identity.js';
+import { readNativeWorkflowSettings } from '../shared/native-workflow-settings.js';
 
 const denied = () =>
   Object.assign(new Error('Source selection changed or is unavailable'), {
@@ -21,6 +22,8 @@ export const captureNativeSource = async ({
   repositories,
   resolveCommit = resolveNativeSourceCommit,
   metadataOnly = false,
+  workflowSettings = false,
+  readSettings = readNativeWorkflowSettings,
 }) => {
   const { projectId, userId, provider, repository, bindingRevision } = input;
   workflowSourceIdentity(provider, repository);
@@ -56,9 +59,18 @@ export const captureNativeSource = async ({
     binding,
     requiredAccess: 'read',
   });
-  const source = metadataOnly
-    ? {}
-    : await resolveCommit({ provider, repository, token: credential.token });
+  const source = workflowSettings
+    ? {
+        settings: await readSettings({
+          provider,
+          repository,
+          commit: input.commit,
+          token: credential.token,
+        }),
+      }
+    : metadataOnly
+      ? {}
+      : await resolveCommit({ provider, repository, token: credential.token });
   await assertAccess();
   if (oauth) {
     if (!['owner', 'admin', 'member'].includes(await membership(binding.connectionUserId)))

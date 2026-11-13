@@ -88,18 +88,34 @@ export const executionFixture = ({
   rows.set(key(prepared), clone(prepared));
   const hooks = {};
   const read = (k) => clone(rows.get(key(k)));
+  // Attribute paths may be nested (`pending.#token`), as the protected engine's
+  // journal conditions are.
+  const attribute = (operation, item, expression) =>
+    expression
+      .split('.')
+      .map((part) => operation.ExpressionAttributeNames?.[part] ?? part)
+      .reduce(
+        (value, part) => (value === null || value === undefined ? undefined : value[part]),
+        item,
+      );
   const condition = (operation) => {
     const existing = read(operation.Key ?? operation.Item);
     return operation.ConditionExpression.split(' AND ').every((clause) => {
-      const absent = /^attribute_not_exists\((#[A-Za-z0-9]+|pk|sk)\)$/.exec(clause);
-      if (absent)
-        return !Object.hasOwn(
-          existing ?? {},
-          operation.ExpressionAttributeNames?.[absent[1]] ?? absent[1],
-        );
-      const match = /^(#?[A-Za-z0-9]+) (=|>|<=) (:[A-Za-z0-9]+)$/.exec(clause);
+      const absent = /^attribute_not_exists\(([#A-Za-z0-9.]+)\)$/.exec(clause);
+      if (absent) return attribute(operation, existing, absent[1]) === undefined;
+      const member = /^([#A-Za-z0-9.]+) IN \(([:A-Za-z0-9, ]+)\)$/.exec(clause);
+      if (member)
+        return member[2]
+          .split(', ')
+          .some((name) =>
+            isDeepStrictEqual(
+              attribute(operation, existing, member[1]),
+              operation.ExpressionAttributeValues[name],
+            ),
+          );
+      const match = /^([#A-Za-z0-9.]+) (=|>|<=) (:[A-Za-z0-9]+)$/.exec(clause);
       if (!match) throw new Error(`Unknown test condition ${clause}`);
-      const left = existing?.[operation.ExpressionAttributeNames?.[match[1]] ?? match[1]];
+      const left = attribute(operation, existing, match[1]);
       const right = operation.ExpressionAttributeValues[match[3]];
       return match[2] === '='
         ? isDeepStrictEqual(left, right)
@@ -107,6 +123,17 @@ export const executionFixture = ({
           ? left > right
           : left <= right;
     });
+  };
+  const update = (operation) => {
+    const set = /^SET ([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(operation.UpdateExpression);
+    if (!set) throw new Error(`Unknown test update ${operation.UpdateExpression}`);
+    const item = read(operation.Key);
+    const parts = set[1]
+      .split('.')
+      .map((part) => operation.ExpressionAttributeNames?.[part] ?? part);
+    const parent = parts.slice(0, -1).reduce((value, part) => value[part], item);
+    parent[parts.at(-1)] = clone(operation.ExpressionAttributeValues[set[2]]);
+    rows.set(key(item), item);
   };
   const ddb = {
     async send(command) {
@@ -146,14 +173,18 @@ export const executionFixture = ({
       }
       if (!isCommand(command, TransactWriteCommand, 'TransactWriteCommand'))
         throw new Error('Unexpected authority operation');
-      const operations = command.input.TransactItems.map((v) => v.Put ?? v.ConditionCheck);
+      const operations = command.input.TransactItems.map(
+        (v) => v.Put ?? v.ConditionCheck ?? v.Update,
+      );
       if (!operations.every(condition))
         throw Object.assign(new Error('conditional conflict'), {
           name: 'TransactionCanceledException',
           CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
         });
-      for (const action of command.input.TransactItems)
+      for (const action of command.input.TransactItems) {
         if (action.Put) rows.set(key(action.Put.Item), clone(action.Put.Item));
+        if (action.Update) update(action.Update);
+      }
       await hooks.after?.(command);
       return {};
     },

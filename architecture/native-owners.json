@@ -48,6 +48,13 @@
       "partition": "NATIVE_RUNTIME_IMAGE#*",
       "role": "operator only"
     },
+    "ENGINE#HEAD/OP/JOB/PUBLICATION": {
+      "owner": "protected native workflow engine",
+      "kind": "private command journal, isolated job observations and exact publication proofs",
+      "role": "workflow_engine",
+      "observations": ["begin/finish/recordJob fenced by native execution identity and writer"],
+      "limit": "no runtime table access; no elapsed-time replay of uncertain jobs"
+    },
     "DiscussionMessage": {
       "owner": "discussions",
       "observations": ["assist-result:request/attempt-bound completion"],
@@ -82,26 +89,31 @@
     "lambda/native-runtime-control/execution-store.js",
     "lambda/native-runtime-control/activity-store.js",
     "lambda/native-runtime-control/projection-store.js",
-    "lambda/native-runtime-control/result-store.js"
+    "lambda/native-runtime-control/result-store.js",
+    "lambda/native-runtime-control/workflow-engine/store.js"
   ],
   "mutatorModules": {
     "lambda/native-runtime-control/store.js": "createNativeRuntimeStore",
     "lambda/native-runtime-control/execution-store.js": "createNativeExecutionStore",
     "lambda/native-runtime-control/activity-store.js": "createNativeActivityStore",
     "lambda/native-runtime-control/projection-store.js": "createNativeProjectionStore",
-    "lambda/native-runtime-control/result-store.js": "createNativeResultStore"
+    "lambda/native-runtime-control/result-store.js": "createNativeResultStore",
+    "lambda/native-runtime-control/workflow-engine/store.js": "createNativeEngineStore"
   },
   "mutatorFactories": {
     "createNativeRuntimeStore": [
       "lambda/native-runtime-control/authority.js",
       "lambda/native-runtime-control/command-service.js",
-      "lambda/native-runtime-control/execution-credentials-entry.js"
+      "lambda/native-runtime-control/execution-credentials-entry.js",
+      "lambda/native-runtime-control/workflow-engine-entry.js"
     ],
     "createNativeExecutionStore": [
       "lambda/native-runtime-control/authority.js",
       "lambda/native-runtime-control/command-service.js",
-      "lambda/native-runtime-control/execution-credentials-entry.js"
+      "lambda/native-runtime-control/execution-credentials-entry.js",
+      "lambda/native-runtime-control/workflow-engine-entry.js"
     ],
+    "createNativeEngineStore": ["lambda/native-runtime-control/workflow-engine-entry.js"],
     "createNativeActivityStore": [
       "lambda/native-runtime-control/authority.js",
       "lambda/native-runtime-control/command-service.js"

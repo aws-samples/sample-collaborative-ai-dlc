@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
 import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
+import { nativeEnginePin } from '../shared/native-workflow-protocol.js';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
   nativeRuntimeBindingKey,
@@ -175,22 +176,30 @@ const branch = (value) =>
       .every((part) => part !== '' && !part.startsWith('.') && !part.endsWith('.lock')));
 
 export const nativeExecutionConfiguration = (value) => {
-  shape(value, [
-    'harness',
-    'model',
-    'promptSha256',
-    'packageId',
-    'materializationId',
-    'source',
-    'repository',
-    'credentialBinding',
-    'image',
-    'publicationBucket',
-    'packageBucket',
-    'accountId',
-    'recoveryMode',
-    'inputs',
-  ]);
+  shape(
+    value,
+    [
+      'harness',
+      'model',
+      'promptSha256',
+      'packageId',
+      'materializationId',
+      'source',
+      'repository',
+      'credentialBinding',
+      'image',
+      'publicationBucket',
+      'packageBucket',
+      'accountId',
+      'recoveryMode',
+      'inputs',
+    ],
+    ['workflowEngine'],
+  );
+  if (value.workflowEngine) {
+    nativeEnginePin(value.workflowEngine, value);
+    check(value.workflowEngine.producerSha256 === value.image?.digest?.slice(7));
+  }
   nativeExecutionInputs(value.inputs);
   check(
     nativeWorkspaceRecovery(value) &&
@@ -361,6 +370,30 @@ export const nativeTurnSequence = (row) => row.turnSequence;
 // Runtime replacement is independent of both cancellation epoch and the
 // supervisor's short-lived lease fence. Historical records keep their identity.
 export const nativeWriterGeneration = (row) => row.writerGeneration;
+
+// Shared admission for private execution services during an explicitly
+// confirmed workspace resume. FENCING has not admitted the replacement writer.
+export const nativeConfirmedWorkspaceResume = (row) =>
+  nativeWorkspaceRecovery(row?.configuration) &&
+  row.status === 'RECOVERING' &&
+  row.recovery?.phase === 'RESTORING' &&
+  row.recovery.canRecover === false &&
+  matches(row.recovery.id, UUID) &&
+  nativeWriterGeneration(row) >= 2 &&
+  row.recovery.previousGeneration === nativeWriterGeneration(row) - 1 &&
+  row.recovery.writerGeneration === nativeWriterGeneration(row) &&
+  row.workspaceResume?.id === row.recovery.id &&
+  row.workspaceResume?.sequence === nativeTurnSequence(row) &&
+  row.workspaceResume?.writerGeneration === nativeWriterGeneration(row) &&
+  row.stopConfirmation?.writerGeneration === row.recovery.previousGeneration &&
+  row.stopConfirmation?.runtimeSessionId === row.runtimeSessionId &&
+  Number.isSafeInteger(row.stopConfirmation?.confirmedAt) &&
+  row.stopConfirmation.confirmedAt >= row.startedAt &&
+  row.stopConfirmation.confirmedAt <= row.updatedAt &&
+  row.response === undefined &&
+  row.dispatch === undefined &&
+  row.recoveryCheckpoint === undefined &&
+  row.recovery.checkpointId === undefined;
 const RECOVERY_REASONS = [
   'SESSION_LOST',
   'RESTORE_FAILED',

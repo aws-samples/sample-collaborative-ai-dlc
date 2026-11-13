@@ -431,6 +431,9 @@ const canonicalConfig = (configuration) => {
     prompt,
     packageVersion,
     inputs,
+    ...(configuration.workflowEngine
+      ? { workflowEngine: structuredClone(configuration.workflowEngine) }
+      : {}),
     repository: Object.fromEntries(
       ['provider', 'repository', 'branch', 'commit'].map((key) => [key, repository[key]]),
     ),
@@ -575,6 +578,7 @@ export const createNativeExecutor = ({
   prepare,
   prepareContinuation,
   prepareInputs,
+  prepareWorkflowEngine,
   publish,
   publishInteraction,
   assertActive,
@@ -930,11 +934,28 @@ export const createNativeExecutor = ({
     }
     timing(turn, 'installationCompleted');
     await ensureTurnInputs(turn);
-    return { pkg, forbiddenBytes, auth, baseEnv };
+    const workflowEngine = await attachWorkflowEngine({ payload, forbiddenBytes, signal, baseEnv });
+    return { pkg, forbiddenBytes, auth, baseEnv, workflowEngine };
+  };
+
+  const attachWorkflowEngine = async ({ payload, forbiddenBytes, signal, baseEnv }) => {
+    if (!payload.configuration.workflowEngine) return null;
+    if (typeof prepareWorkflowEngine !== 'function') fail('native_execution_preparation_invalid');
+    const engine = await prepareWorkflowEngine({
+      payload,
+      project,
+      control,
+      forbiddenBytes,
+      signal,
+    });
+    if (!engine?.client || !engine.contextPath) fail('native_execution_preparation_invalid');
+    baseEnv.PATH = `/usr/local/bin:${baseEnv.PATH}`;
+    baseEnv.NATIVE_WORKFLOW_CONTEXT = engine.contextPath;
+    return engine;
   };
 
   // One turn returns quiescent output. No publication or recovery head is admitted here.
-  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv }) => {
+  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv, workflowEngine }) => {
     const { owner, payload, signal, activity: activityTurn } = turn;
     const configuration = payload.configuration;
     const continuing = payload.command === 'native-continue';
@@ -982,6 +1003,16 @@ export const createNativeExecutor = ({
       instructions: [
         nativeTransportInstructions(configuration),
         attachmentPromptManifest(attachmentReferences(configuration.inputs.attachments)),
+        ...(workflowEngine
+          ? [
+              'Use the aidlc command on PATH for workflow operations. It preserves the protected workflow state across turns. ' +
+                'At the beginning of a turn run aidlc next; it consumes a newly accepted member selection using its original proposal. ' +
+                'An aidlc engine log review request runs the required independent reviewer and records its result. ' +
+                'Follow the returned review step; do not supply a verdict, impersonate a reviewer, or duplicate that invocation. ' +
+                'Do not use a direct installed binary or rewrite workflow state, audit, review receipts or policy files. ' +
+                'Write only the application files and artifacts the current workflow step asks for.',
+            ]
+          : []),
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -1038,6 +1069,15 @@ export const createNativeExecutor = ({
     );
     timing(turn, 'harnessCompleted');
     const completed = output.finish();
+    if (workflowEngine) {
+      try {
+        const synchronized = await workflowEngine.client.command([], { action: 'mirror' });
+        if (synchronized.exitCode !== 0)
+          activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+      } catch {
+        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+      }
+    }
     activityTurn.lifecycle({ title: 'Checking completed workspace' });
     await checkDirectories(owner);
     const formDiagnostic = (details) => {
@@ -1098,7 +1138,7 @@ export const createNativeExecutor = ({
   // Public receipts complete before the local head moves.
   const publishNativeTurn = async (
     turn,
-    { pkg },
+    { pkg, workflowEngine },
     { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
     const { owner, signal, activity: activityTurn } = turn;
@@ -1189,6 +1229,23 @@ export const createNativeExecutor = ({
     )
       fail('native_execution_interaction_unconfirmed');
     timing(turn, 'interactionUploadCompleted');
+    if (workflowEngine) {
+      activityTurn.lifecycle({ title: 'Recording workflow evidence' });
+      try {
+        const finalized = await workflowEngine.client.command([], {
+          action: 'finalize',
+          publication: receipt,
+          interaction,
+        });
+        if (finalized.exitCode !== 0)
+          activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+      } catch {
+        // Publication is independently useful. Only the protected service
+        // can add verified completion; missing proof remains not verified.
+        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+      }
+      checkCancelled(turn);
+    }
     const continuation = {
       promptEvidence: nextPromptEvidence ?? null,
       priorAssistantSha256: kiroAssistantHash(

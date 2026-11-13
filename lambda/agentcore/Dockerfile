@@ -7,6 +7,13 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
+FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS native-lambda-interface
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ make cmake libcurl4-openssl-dev python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY native-runtime-control/runtime-interface/package*.json /opt/native-lambda-interface/
+RUN cd /opt/native-lambda-interface && npm ci --omit=dev && npm cache clean --force
+
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
@@ -14,7 +21,7 @@ FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps tini python3 \
+    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps tini python3 util-linux \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
@@ -118,6 +125,7 @@ RUN uv venv --python /usr/bin/python3 /opt/markitdown \
 RUN install -d -o node -g node -m 0755 \
     /opt/agentcore \
     /opt/shared \
+    /opt/native-runtime-control \
     /mnt/workspace \
     /home/node/.codex-state \
     /home/node/.codex-runs
@@ -129,8 +137,12 @@ RUN cd /opt/agentcore \
     && npm cache clean --force
 
 # App code: the agentcore package + the shared/ helpers it imports via ../shared.
-COPY --chown=node:node agentcore/ /opt/agentcore/
-COPY --chown=node:node shared/ /opt/shared/
+COPY agentcore/ /opt/agentcore/
+COPY shared/ /opt/shared/
+COPY native-runtime-control/package.json /opt/native-runtime-control/package.json
+RUN cd /opt/native-runtime-control && npm install --omit=dev && npm cache clean --force
+COPY native-runtime-control/ /opt/native-runtime-control/
+COPY --from=native-lambda-interface /opt/native-lambda-interface /opt/native-lambda-interface
 
 # The shared/ helpers are CommonJS loaded from /opt/shared, so Node resolves their
 # @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules
@@ -161,6 +173,13 @@ RUN install -m 0755 /opt/agentcore/native/aidlc-launcher.sh /usr/local/bin/aidlc
 ARG ENABLE_NATIVE_INTERACTION_PROBE=false
 RUN ENABLE_NATIVE_INTERACTION_PROBE="${ENABLE_NATIVE_INTERACTION_PROBE}" \
     node /opt/agentcore/native/install-probe-fixture.mjs
+
+# CodeBuild's observer runs as root and drops project/reviewer children to node.
+# A child must not replace code that a later observer phase imports as root.
+# Native/managed runtime state belongs under HOME or the workspace, not /opt.
+RUN test "$(id -u node)" = 1000 && test "$(id -g node)" = 1000 \
+    && chown -R root:root /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface \
+    && chmod -R go-w /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface
 
 WORKDIR /mnt/workspace
 USER node
