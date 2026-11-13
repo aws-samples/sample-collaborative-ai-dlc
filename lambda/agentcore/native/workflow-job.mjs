@@ -198,7 +198,10 @@ export const createNativeEngineJobRunner = ({
     // Sticky project ownership also prevents replacing the root-owned sensors.
     await mkdir(project, { mode: 0o1777 });
     await chmod(project, 0o1777);
-    for (const path of [home, join(root, 'tmp'), join(root, 'review-output')])
+    // The home stays private to the observer until `run` has written a
+    // reviewer's instruction transport into it; only then is it handed over.
+    await mkdir(home, { mode: 0o700 });
+    for (const path of [join(root, 'tmp'), join(root, 'review-output')])
       await workerDirectory(path);
     await writeFile(join(root, 'input.json.gz'), bytes, { flag: 'wx', mode: 0o600 });
     if (job.kind === 'check' && job.command.pinnedTool) {
@@ -258,6 +261,7 @@ export const createNativeEngineJobRunner = ({
           ...args,
         ];
       }
+      await handOverInstructions(home);
       result = await run(
         isolatedInvocation({
           command: await executable(command.command),

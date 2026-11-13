@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeEngineJobRunner } from '../native/workflow-job.mjs';
 import {
@@ -347,4 +349,60 @@ describe('native workflow job result contract', () => {
   ])('rejects a successful review with %s', (_name, overrides) => {
     invalid(reviewed(overrides), review);
   });
+});
+
+// The remaining contract needs a real observer: Linux, root and the four
+// capabilities the wrapper checks for. It runs wherever the suite is executed
+// that way and is exercised in the built image by the installed qualification.
+const observer = (() => {
+  if (process.platform !== 'linux' || process.getuid?.() !== 0) return false;
+  const effective = /CapEff:\s*([a-f0-9]+)/.exec(readFileSync('/proc/self/status', 'utf8'))?.[1];
+  const required = 1n | (1n << 6n) | (1n << 7n) | (1n << 8n);
+  return Boolean(effective) && (BigInt(`0x${effective}`) & required) === required;
+})();
+
+describe.runIf(observer)('isolated reviewer on a Linux observer', () => {
+  // Codex and OpenCode take their instructions from files in the reviewer's
+  // home. Those files are written by the observer and require the home to be
+  // observer-private at that moment; it is handed to the worker afterwards.
+  it.each(['codex', 'opencode'])(
+    'writes the %s instruction transport before handing the home to the worker',
+    async (harness) => {
+      const job = { ...reviewJob(), harness };
+      const input = gzipSync(Buffer.from(JSON.stringify(job)));
+      const fetcher = vi.fn(async () => new Response(input));
+      const lambda = {
+        send: vi.fn(async () => ({
+          Payload: Buffer.from(
+            JSON.stringify({
+              ok: true,
+              ...job.credentialScope,
+              model: { provider: 'bedrock', value: 'unit-test-model-credential' },
+            }),
+          ),
+        })),
+      };
+      const seen = {};
+      const run = vi.fn(async (invocation) => {
+        const home = `${NATIVE_ENGINE_JOB_ROOT}/home`;
+        seen.home = statSync(home);
+        seen.files = readdirSync(home, { recursive: true });
+        seen.drop = invocation.command;
+        return { exitCode: 1, timedOut: false, cleanupComplete: true, stdout: '', stderr: '' };
+      });
+      const runner = createNativeEngineJobRunner({ run, lambda, fetcher });
+      await runner.prepare({
+        NATIVE_WORKFLOW_JOB_INPUT: 'https://fixture.invalid/input',
+        NATIVE_WORKFLOW_JOB_INPUT_SHA256: sha(input),
+      });
+      const prepared = statSync(`${NATIVE_ENGINE_JOB_ROOT}/home`);
+      expect([prepared.uid, prepared.mode & 0o777]).toEqual([0, 0o700]);
+      const result = await runner.run();
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(seen.drop).toBe('/usr/bin/setpriv');
+      expect(seen.home.uid).toBe(1000);
+      expect(seen.files.length).toBeGreaterThan(0);
+      expect(result).toMatchObject({ kind: 'review', exitCode: 1, stdout: '', stderr: '' });
+    },
+  );
 });
