@@ -174,7 +174,14 @@ export const normalizeSsoConfig = (
 
 export const loadAndNormalizeSsoConfig = (path, mode, options = {}) => {
   const absolute = resolve(path);
-  const input = JSON.parse(readFileSync(absolute, 'utf8'));
+  const contents = readFileSync(absolute, 'utf8');
+  let input;
+  try {
+    input = JSON.parse(contents);
+  } catch {
+    // Parser errors may contain input fragments that whole-secret masking misses.
+    throw new Error('Configuration must contain valid JSON');
+  }
   return normalizeSsoConfig(input, { ...options, mode, baseDir: dirname(absolute) });
 };
 

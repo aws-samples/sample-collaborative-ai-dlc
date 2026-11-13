@@ -10,6 +10,15 @@ the same reusable workflow. It uses an immutable commit SHA, a separate GitHub
 Environment, Terraform state key, AWS region, and project namespace so it can
 coexist with the release demo in the same AWS account.
 
+The release caller explicitly forwards its domain and SSO secrets, declared
+under `workflow_call.secrets` in **Deploy Demo**. Selecting an environment in
+the reusable workflow does not forward its secrets by itself. Without the
+caller mappings, these settings resolve to empty strings even when configured
+in the environment. The called job's protected environment supplies their
+values. When adding a deployment configuration secret, update both the reusable
+workflow declaration and the release caller; the release tests check this
+contract. Direct manual runs do not exercise the caller mappings.
+
 The release GitHub deployment environment is named `demo-release`. Its existing
 Terraform logical environment remains `prod`; changing it would rename or
 replace resources already recorded in the remote state. The main demo also
@@ -202,7 +211,11 @@ separate.
 After a successful `main` deployment, the workflow can ask a release-testing
 setup in the deployment account to test the deployed revision, for example an
 AWS DevOps Agent release test. The request is sent only when both environment
-secrets below exist in `demo-main`. With neither secret the step exits without
+secrets below exist in `demo-main` and the caller forwards them. To enable it,
+add explicit `POST_DEPLOY_TEST_ROLE_ARN` and `POST_DEPLOY_TEST_FUNCTION` mappings
+under `jobs.deploy-main.secrets`, referencing the same names in `secrets`.
+These optional secrets are declared by **Deploy Demo**, but `deploy-main.yml`
+does not forward them by default. With neither secret the step exits without
 doing anything; with only one it fails with a warning. It runs
 after `Verify deployment` and uses `continue-on-error`, so a failed request
 never fails the deployment. The step assumes the role through a web-identity
