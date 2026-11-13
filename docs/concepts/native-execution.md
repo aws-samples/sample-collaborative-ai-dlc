@@ -4939,6 +4939,88 @@ bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/n
 Each step is a single attempt. Independent verification of the deployed
 artifacts and live acceptance remain separate, as for earlier stages.
 
+The first of these steps was run and stopped; see the next record. The commands
+above must not be run again.
+
+## NE-11 deployment handoff — stopped at the full plan, repaired, 2026-11-13
+
+**The operator ran the first handoff step. It published the qualified image
+and then stopped while planning. Nothing else was applied, and a recovery
+handoff replaces the remaining steps.** The stopped attempt is preserved under
+`.native-evidence/ne11-2026-11-11-owned-adapter/handoff/` and must not be
+repeated.
+
+### What the stopped attempt did
+
+The image phase changed only the two image build resources and pushed the
+image. The registry check passed: tag `3ea5a39747e3adc8` names index
+`sha256:5f37ba722700661753c3af1c1739a3e8184deb97cfe3d56f9469c2a10ba49d5d`,
+whose ARM64 platform manifest and configuration are the qualified ones.
+Terraform state therefore already holds the new image resources. The full plan
+then failed with a 404 from the registry while reading the image index, before
+any review or apply. Running services still use the NE-10 image.
+
+### Cause and repair
+
+The Docker provider (3.9.0) splits an image reference at the first colon after
+the registry host. The engine's manifest lookup named the index by digest only,
+`repo@sha256:<hex>`, which the provider requests as repository `repo@sha256`
+with tag `<hex>`. The lookup had only ever run against mocks. It now names
+`repo:tag@sha256:<hex>`; the provider then drops the tag and requests the
+manifest by digest, so the lookup stays pinned to the exact index.
+
+This was confirmed in the provider's source and reproduced with the locked
+provider against a local registry holding an OCI index of the same shape: the
+old form fails with the same error text, the new form passes the production
+postcondition and selects the ARM64 platform manifest, a different tag with the
+same digest gives the same result, and a wrong digest fails. A wiring guard
+pins the reference form and the provider version it was verified against.
+The change is Terraform-only: all **372** runtime inputs and the image tag are
+unchanged, so the qualified image stands without a rebuild.
+
+### What else was checked against real values
+
+The stopped attempt left its saved plan, which decodes locally without
+credentials. It gave real planned values for everything except the engine
+function, which could not be planned.
+
+- The mechanical review, run over that plan, raises one stop only: the missing
+  engine function. With that function added as the configuration defines it,
+  no rule stops. The isolated job project is planned with exactly the published
+  index digest and without privileged mode; the nine other engine resources are
+  creates; all **150** replacements are local packaging helpers; both image
+  resources are unchanged after the publish; and function environment values
+  are readable in the plan, which the producer-identity rule depends on.
+- The repository's protected-resource inspection passes on that plan.
+- The frontend script has no prompt. It installs dependencies, builds and
+  publishes with the operator's environment, so its bytes are not pinned in
+  advance as they were for NE-10.
+
+Still unverifiable before a real run: the planned values of the engine
+function itself and of the authority function that captures its version; that
+the Lambda service starts this image with the configured entry point; the
+field names returned when the engine function is read back, where only the
+image URI can stop the step; whether the image repository already has a policy
+that the new one would replace, which the plan step now reads and shows to the
+reviewer; and every apply-time behaviour of the new IAM, CodeBuild and Lambda
+resources.
+
+### Recovery handoff
+
+The recovery handoff is under
+`.native-evidence/ne11-2026-11-13-plan-recovery/handoff/`. It builds and pushes
+nothing. Its first step verifies that the registry still holds the published
+index, platform manifest and configuration, saves the full plan with the
+mechanical review and stops; a plan that would change the image again is
+refused. The second step applies exactly the saved plan the reviewer names.
+Its credential-free check also verifies that the stopped attempt is unchanged.
+
+```bash
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-13-plan-recovery/handoff/deploy-ne11-recovery.sh' --check-only
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-13-plan-recovery/handoff/deploy-ne11-recovery.sh'
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-13-plan-recovery/handoff/deploy-ne11-recovery.sh' --apply-reviewed <saved-plan-sha256>
+```
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5159,6 +5241,9 @@ the current contract for newly created executions.
       verified completion, observed sensors in a plan with sensors and a reviewer,
       and isolated checks and reviewers through the production job path pass; six
       defects found on the way are corrected. A deployment-only handoff exists.
+      **Deployment started 2026-11-13:** the qualified image is published; the
+      first full plan stopped on an image lookup defect, which is repaired, and
+      a recovery handoff covers the remaining steps.
       **Still open:** a review completed through the real engine, a reviewer with
       a model, a verified completion of a plan with sensors and reviewers, an
       installed CLI driving the engine, and everything deployed. An engine
