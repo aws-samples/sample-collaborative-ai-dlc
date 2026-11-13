@@ -1,3 +1,4 @@
+import { seedMembership, removeMembership } from '../../../test/seed-membership.js';
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { randomUUID } from 'node:crypto';
@@ -185,13 +186,8 @@ const seedProjectAndBinding = async ({
     .property('created_at', NOW.toISOString())
     .next();
   // Owner edge
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .addE('HAS_MEMBER')
-    .property('role', 'owner')
-    .to(gremlin.process.statics.V().has('User', 'id', userId))
-    .next();
+
+  await seedMembership(projectId, userId, 'owner');
   // Binding
   await g
     .V()
@@ -227,13 +223,8 @@ const seedProjectWithRole = async (role, { gitRepo = 'acme/widgets' } = {}) => {
     .property('git_repo', gitRepo)
     .property('created_at', NOW.toISOString())
     .next();
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .addE('HAS_MEMBER')
-    .property('role', role)
-    .to(gremlin.process.statics.V().has('User', 'id', userId))
-    .next();
+
+  await seedMembership(projectId, userId, role);
   return projectId;
 };
 
@@ -256,13 +247,8 @@ const seedLegacyProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .property('issue_integration_enabled', 'true')
     .property('created_at', NOW.toISOString())
     .next();
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .addE('HAS_MEMBER')
-    .property('role', 'owner')
-    .to(gremlin.process.statics.V().has('User', 'id', userId))
-    .next();
+
+  await seedMembership(projectId, userId, 'owner');
   return projectId;
 };
 
@@ -1627,6 +1613,7 @@ describe('Jira space delegation', () => {
       .property('role', 'member')
       .to('u')
       .toList();
+    await seedMembership(ids.projectId, member, 'member');
     return { ...ids, member };
   };
   const request = ({ projectId, bindingId, member }, suffix = '', method = 'GET', extra = {}) =>
@@ -1735,14 +1722,7 @@ describe('Jira space delegation', () => {
     'requires reconnection for %s bindings without falling back to the caller',
     async (reason) => {
       const ids = await seed({ legacy: reason === 'legacy' });
-      if (reason === 'removed')
-        await g
-          .V()
-          .has('Project', 'id', ids.projectId)
-          .outE('HAS_MEMBER')
-          .where(gremlin.process.statics.inV().has('id', 'user-1'))
-          .drop()
-          .toList();
+      if (reason === 'removed') await removeMembership(ids.projectId, 'user-1');
       if (reason === 'disconnected')
         ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({});
       if (reason === 'site-changed')
@@ -1846,13 +1826,7 @@ describe('Jira space delegation', () => {
         delegatedAt: NOW.toISOString(),
       },
     });
-    await g
-      .V()
-      .has('Project', 'id', ids.projectId)
-      .outE('HAS_MEMBER')
-      .where(gremlin.process.statics.inV().has('id', ids.member))
-      .property('role', 'admin')
-      .toList();
+    await seedMembership(ids.projectId, ids.member, 'owner');
     // Explicitly seed set-valued properties: stock TinkerGraph otherwise hides
     // the old Neptune behavior by defaulting to single cardinality.
     await g

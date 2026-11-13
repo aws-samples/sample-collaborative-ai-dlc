@@ -87,36 +87,10 @@ const mapBinding = (m) => {
   };
 };
 
-// Fetch a project member's role with a single-property traversal.
-// Returns the role string when the user is a member, or null otherwise.
-// Used by every /projects/{projectId}/... gate; pulling only `role`
-// avoids the cost of round-tripping a full valueMap on the edge.
-const fetchMembershipRole = async (g, projectId, userId) => {
-  const r = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .values('role')
-    .next();
-  if (r.done) return null;
-  return r.value || 'member';
-};
-
-export {
-  getVal,
-  trackerBindingProjectionStep,
-  projectTrackersFoldStep,
-  mapBinding,
-  fetchMembershipRole,
-};
+export { getVal, trackerBindingProjectionStep, projectTrackersFoldStep, mapBinding };
 export default {
   getVal,
   trackerBindingProjectionStep,
   projectTrackersFoldStep,
   mapBinding,
-  fetchMembershipRole,
 };

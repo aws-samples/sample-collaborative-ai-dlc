@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { signRealtimeToken } from '../shared/realtime-token.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import {
   resolveSelectedAgentCredential,
@@ -1050,8 +1050,8 @@ export const redactMessage = async (event, res) => {
   const caller = getCaller(event);
   const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
-  if (auth.role !== 'admin' && auth.role !== 'owner') {
-    return res(403, { error: 'Only project admins or owners can redact messages' });
+  if (auth.role !== 'owner') {
+    return res(403, { error: 'Only project owners can redact messages' });
   }
 
   const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));

@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, beforeEach, it, expect, vi } from 'vitest';
 import gremlin from 'gremlin';
@@ -81,6 +82,7 @@ beforeEach(async () => {
     .from_('p')
     .property('role', 'owner')
     .next();
+  await seedMembership(projectId, userId, 'owner');
   const executionId = randomUUID();
   await store.createExecution({
     executionId,
@@ -162,14 +164,9 @@ it('enforces authentication, membership, project scope, and recovery roles', asy
       )
     ).statusCode,
   ).toBe(403);
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .property('role', 'member')
-    .toList();
+  await seedMembership(projectId, userId, 'member');
   expect((await request({ preview: true })).statusCode).toBe(403);
-  await g.V().has('Project', 'id', projectId).outE('HAS_MEMBER').property('role', 'admin').toList();
+  await seedMembership(projectId, userId, 'admin');
   expect((await request({ preview: true })).statusCode).toBe(200);
   expect(
     (await request({ preview: true }, { pathParameters: { projectId, intentId: 'foreign' } }))

@@ -1,3 +1,4 @@
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { inspectDelivery } from '../shared/delivery-provider.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -88,21 +89,6 @@ const fetchProjectRepositories = async (g, projectId) => {
     repo: graphValue(row, 'repo'),
     provider: graphValue(row, 'provider') || 'github',
   }));
-};
-
-const fetchMembershipRole = async (g, projectId, userId) => {
-  if (!userId) return null;
-  const rows = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('membership')
-    .inV()
-    .has('User', 'id', userId)
-    .select('membership')
-    .by(__.values('role'))
-    .toList();
-  return rows[0] || null;
 };
 
 const sameRepository = (a, b) => {
@@ -480,7 +466,7 @@ export const handler = async (event, context) => {
       fetchProjectRepositories(g, projectId),
     ]);
     if (!role) return response(403, { error: 'Access denied' });
-    const privileged = role === 'owner' || role === 'admin';
+    const privileged = role === 'owner';
     if (path.endsWith('/source-control')) {
       if (event.httpMethod === 'GET') {
         const bindings = await listProjectBindings(ddb, projectId);
@@ -488,7 +474,7 @@ export const handler = async (event, context) => {
       }
       if (!privileged) {
         return response(403, {
-          error: 'Only project owners and admins can configure source control',
+          error: 'Only project owners can configure source control',
         });
       }
       if (event.httpMethod === 'DELETE') {
@@ -638,7 +624,6 @@ export const handler = async (event, context) => {
 export {
   SOURCE_CONTROL_OPERATIONS,
   fetchProjectRepositories,
-  fetchMembershipRole,
   normalizeProviderSelections,
   isSupportedProvider,
   bindingStatusForProject,

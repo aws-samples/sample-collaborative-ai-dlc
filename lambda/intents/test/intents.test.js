@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { loadMetaBeforeDelivery } from '../../v2-orchestrator/test/fixtures/load-meta-before-delivery.js';
 import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
@@ -586,13 +587,8 @@ const seedV2Project = async (sub) => {
     .to('r')
     .next();
   await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .addE('HAS_MEMBER')
-    .property('role', 'owner')
-    .to(gremlin.process.statics.V().has('User', 'id', sub))
-    .next();
+
+  await seedMembership(projectId, sub, 'owner');
   // Workflow META row (latest version) so create can pin it, plus a version-4
   // snapshot with a single 'feature' scope ref so scope validation passes.
   procStore.set(keyOf('WF#default#aidlc-v2', 'META'), {
@@ -1665,13 +1661,8 @@ describe('POST /projects/{id}/intents', () => {
       .property('kind', 'v1')
       .next();
     await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .addE('HAS_MEMBER')
-      .property('role', 'owner')
-      .to(gremlin.process.statics.V().has('User', 'id', sub))
-      .next();
+
+    await seedMembership(projectId, sub, 'owner');
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
   });
@@ -6159,13 +6150,8 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
 
   const addMember = async (projectId, sub, role) => {
     await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .addE('HAS_MEMBER')
-      .property('role', role)
-      .to(gremlin.process.statics.V().has('User', 'id', sub))
-      .next();
+
+    await seedMembership(projectId, sub, role);
   };
 
   it('does not dispatch unknown nested DELETE routes as intent deletion', async () => {
@@ -7273,13 +7259,8 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
 
   const addProjectMember = async (projectId, sub, role) => {
     await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .addE('HAS_MEMBER')
-      .property('role', role)
-      .to(gremlin.process.statics.V().has('User', 'id', sub))
-      .next();
+
+    await seedMembership(projectId, sub, role);
   };
 
   const repair = (sub, projectId, intentId, input = {}) =>
@@ -11479,13 +11460,8 @@ describe('per-intent AI-DLC settings', () => {
 
   const addProjectMember = async (projectId, sub, role = 'member') => {
     await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .addE('HAS_MEMBER')
-      .property('role', role)
-      .to(gremlin.process.statics.V().has('User', 'id', sub))
-      .next();
+
+    await seedMembership(projectId, sub, role);
   };
 
   const settingsFixture = async () => {

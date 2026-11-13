@@ -11,7 +11,7 @@ import { InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { isTokenLive } from '../shared/realtime-token.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import { agentcore, ddb, ssm, query } from './clients.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
 import { discussionSessionIdFor } from '../shared/runtime-session-ids.js';

@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../../test/seed-membership.js';
 // Test helper: the agents handler over a fresh DynamoDB Local control table per test, with the
 // SSM, metadata-broker Lambda and AgentCore clients mocked. Call useSettingsHarness() once per
 // file; vi.mock any composition root in the test file itself so the handler loads with it.
@@ -107,18 +108,8 @@ export const addSpace = async (projectId, { callerRole } = {}) => {
   if (!callerRole) return;
   callerVertex ??= g.addV('User').property('id', CALLER_ID).next();
   await callerVertex;
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .as('p')
-    .V()
-    .has('User', 'id', CALLER_ID)
-    .as('u')
-    .addE('HAS_MEMBER')
-    .from_('p')
-    .to('u')
-    .property('role', callerRole)
-    .next();
+
+  await seedMembership(projectId, CALLER_ID, callerRole);
 };
 
 export const useSettingsHarness = () => {

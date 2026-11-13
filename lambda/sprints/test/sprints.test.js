@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
@@ -63,6 +64,7 @@ const seedProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .to('u')
     .property('role', 'owner')
     .next();
+  await seedMembership(id, USER_ID, 'owner');
   return id;
 };
 
