@@ -11,7 +11,7 @@ FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8
 RUN apt-get update \
     && apt-get install -y --no-install-recommends g++ make cmake libcurl4-openssl-dev python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY native-runtime-control/runtime-interface/package*.json /opt/native-lambda-interface/
+COPY --chown=root:root --chmod=0644 native-runtime-control/runtime-interface/package*.json /opt/native-lambda-interface/
 RUN cd /opt/native-lambda-interface && npm ci --omit=dev && npm cache clean --force
 
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
@@ -122,27 +122,36 @@ RUN uv venv --python /usr/bin/python3 /opt/markitdown \
 # making /opt/agentcore non-traversable. Create the local workspace fallback and
 # ephemeral CLI-state directories here too, with their final ownership, so no
 # recursive chown layer is needed later.
-RUN install -d -o node -g node -m 0755 \
+#
+# Runtime code under /opt is owned by root and readable by everyone. The node
+# runtime user and the engine Lambda's sandbox user only read it. An isolated
+# check or reviewer job runs its child as node between two phases of a root
+# observer that imports this code, so node must never be able to replace it.
+RUN install -d -o root -g root -m 0755 \
     /opt/agentcore \
     /opt/shared \
     /opt/native-runtime-control \
+    && install -d -o node -g node -m 0755 \
     /mnt/workspace \
     /home/node/.codex-state \
     /home/node/.codex-runs
 
 # Install the agentcore package deps (its own package.json — isolated).
-COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json
+COPY --chown=root:root --chmod=0644 agentcore/package.json /opt/agentcore/package.json
 RUN cd /opt/agentcore \
     && npm install --omit=dev \
     && npm cache clean --force
 
-# App code: the agentcore package + the shared/ helpers it imports via ../shared.
-COPY agentcore/ /opt/agentcore/
-COPY shared/ /opt/shared/
-COPY native-runtime-control/package.json /opt/native-runtime-control/package.json
+# App code: the agentcore package + the shared/ helpers it imports via ../shared,
+# and the protected workflow engine with its own dependency install. The
+# symbolic mode keeps a restrictive checkout (0600 files, 0700 directories)
+# readable by the runtime user without a recursive chown or chmod layer.
+COPY --chown=root:root --chmod=u=rwX,go=rX agentcore/ /opt/agentcore/
+COPY --chown=root:root --chmod=u=rwX,go=rX shared/ /opt/shared/
+COPY --chown=root:root --chmod=0644 native-runtime-control/package.json /opt/native-runtime-control/package.json
 RUN cd /opt/native-runtime-control && npm install --omit=dev && npm cache clean --force
-COPY native-runtime-control/ /opt/native-runtime-control/
-COPY --from=native-lambda-interface /opt/native-lambda-interface /opt/native-lambda-interface
+COPY --chown=root:root --chmod=u=rwX,go=rX native-runtime-control/ /opt/native-runtime-control/
+COPY --from=native-lambda-interface --chown=root:root /opt/native-lambda-interface /opt/native-lambda-interface
 
 # The shared/ helpers are CommonJS loaded from /opt/shared, so Node resolves their
 # @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules
@@ -174,12 +183,12 @@ ARG ENABLE_NATIVE_INTERACTION_PROBE=false
 RUN ENABLE_NATIVE_INTERACTION_PROBE="${ENABLE_NATIVE_INTERACTION_PROBE}" \
     node /opt/agentcore/native/install-probe-fixture.mjs
 
-# CodeBuild's observer runs as root and drops project/reviewer children to node.
-# A child must not replace code that a later observer phase imports as root.
-# Native/managed runtime state belongs under HOME or the workspace, not /opt.
+# CodeBuild's observer runs as root and drops project/reviewer children to node
+# (uid/gid 1000). Fail the build if any runtime code is owned by, or writable
+# for, that user. Runtime state belongs under HOME or the workspace, not /opt.
 RUN test "$(id -u node)" = 1000 && test "$(id -g node)" = 1000 \
-    && chown -R root:root /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface \
-    && chmod -R go-w /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface
+    && test -z "$(find /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface \
+        ! -type l \( -user node -o -group node -o -perm /022 \) -print -quit)"
 
 WORKDIR /mnt/workspace
 USER node

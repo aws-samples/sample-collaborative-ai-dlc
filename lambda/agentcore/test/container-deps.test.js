@@ -144,21 +144,50 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
 });
 
 describe('container runtime file ownership', () => {
-  it('makes restrictive managed-checkout files readable by the node runtime user', () => {
-    const createDirs = dockerfile.indexOf('RUN install -d -o node -g node -m 0755');
+  // Two requirements meet here. Runtime code must stay readable by the node
+  // user even when the checkout is restrictive (0600 files), and it must not
+  // be replaceable by that user: an isolated check or reviewer child runs as
+  // node between phases of a root observer that imports this code. Neither may
+  // cost a recursive ownership layer, which once was a third of the image.
+  const roots = ['agentcore', 'shared', 'native-runtime-control'];
+
+  it('copies runtime code readable by the node user but owned by root', () => {
+    const createDirs = dockerfile.indexOf('RUN install -d -o root -g root -m 0755');
     const copyManifest = dockerfile.indexOf(
-      'COPY --chown=node:node --chmod=0644 agentcore/package.json',
+      'COPY --chown=root:root --chmod=0644 agentcore/package.json /opt/agentcore/package.json',
     );
     expect(createDirs).toBeGreaterThan(-1);
-    expect(createDirs).toBeLessThan(copyManifest);
+    expect(copyManifest).toBeGreaterThan(createDirs);
     expect(dockerfile).toMatch(
-      /RUN install -d -o node -g node -m 0755 \\\n\s+\/opt\/agentcore \\\n\s+\/opt\/shared/,
+      /RUN install -d -o root -g root -m 0755 \\\n\s+\/opt\/agentcore \\\n\s+\/opt\/shared \\\n\s+\/opt\/native-runtime-control \\\n/,
     );
+    for (const root of roots)
+      expect(dockerfile).toContain(
+        `COPY --chown=root:root --chmod=u=rwX,go=rX ${root}/ /opt/${root}/`,
+      );
     expect(dockerfile).toContain(
-      'COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json',
+      'COPY --from=native-lambda-interface --chown=root:root /opt/native-lambda-interface',
     );
-    expect(dockerfile).toContain('COPY --chown=node:node agentcore/ /opt/agentcore/');
-    expect(dockerfile).toContain('COPY --chown=node:node shared/ /opt/shared/');
-    expect(dockerfile).not.toMatch(/chown -R .*\/opt\/(?:agentcore|shared)/);
+    // The writable runtime locations keep the node user.
+    expect(dockerfile).toMatch(
+      /install -d -o node -g node -m 0755 \\\n\s+\/mnt\/workspace \\\n\s+\/home\/node\/\.codex-state/,
+    );
+  });
+
+  it('never gives the node user the runtime code and adds no recursive ownership layer', () => {
+    const copies = dockerfile.split('\n').filter((line) => /^COPY\b.*\s\/opt\//.test(line));
+    expect(copies.length).toBeGreaterThanOrEqual(6);
+    for (const line of copies) {
+      expect(line).toContain('--chown=root:root');
+      expect(line).not.toContain('node:node');
+    }
+    expect(dockerfile).not.toMatch(/ch(?:own|mod) -R [^\n]*\/opt\//);
+    expect(dockerfile).not.toMatch(/install -d -o node[^\n]*\\\n(?:\s+\S+ \\\n)*\s+\/opt\//);
+    // The build itself refuses node-owned or group/world-writable runtime code.
+    expect(dockerfile).toMatch(
+      /find \/opt\/agentcore \/opt\/shared \/opt\/native-runtime-control \/opt\/native-lambda-interface \\\n\s+! -type l \\\( -user node -o -group node -o -perm \/022 \\\) -print -quit/,
+    );
+    const user = dockerfile.lastIndexOf('\nUSER node');
+    expect(user).toBeGreaterThan(dockerfile.indexOf('-perm /022'));
   });
 });
