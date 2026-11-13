@@ -4767,10 +4767,16 @@ because the pinned engine and Bun exist only in the image.
 ### Known limits
 
 - An engine operation that does not finish, for example a Lambda timeout, a
-  cancelled request or an uncertain job, stays pending in the journal. It is
-  never taken over or run again. Later workflow commands in that attempt report
-  the engine as busy and its results stay not verified. Whether to add an
-  explicit, fenced abandonment of such an operation is an open decision.
+  cancelled request or an uncertain job start, stays pending in the journal. It
+  is never taken over or run again. Later workflow commands in that attempt
+  report the engine as busy, its results stay not verified, and workspace resume
+  cannot recover the attempt. **NE-11 ships with this behaviour.** Explicit,
+  fenced abandonment is tracked as NE-23.
+- **Chosen behaviour for failed checks and reviewer concerns.** The pinned
+  workflow's own gates decide completion. When the engine completes a workflow
+  that has a failed advisory check or a NOT-READY review, the revision is
+  reported complete and the failed check or the concerns are shown beside it.
+  Native does not downgrade that result and adds no gate of its own.
 - Only the reviewed 2.11.1 package on Claude Code, Codex and OpenCode has a
   protected engine. Kiro remains deferred to NE-18.
 - Evidence covers regular published files. Git delivery remains NE-12.
@@ -5037,7 +5043,8 @@ the current contract for newly created executions.
       authorization, with no automatic replay of earlier answers. **Done when:**
       users can stop, inspect, export and close abandoned work; stop confirmation,
       hiding an item and deleting data are distinct; cleanup releases only eligible
-      resources and the documented EFS-loss behavior is clear.
+      resources and the documented EFS-loss behavior is clear. Abandoning a
+      protected engine operation that never finishes is a separate item, NE-23.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
@@ -5081,3 +5088,19 @@ the current contract for newly created executions.
       matches the shipped behavior, supported combinations and recovery limits, and
       the work list accurately records completed release work and any explicitly
       deferred follow-ups.
+- [ ] **NE-23 — Abandon an engine operation that never finishes.** A protected
+      engine operation interrupted by a Lambda timeout, an uncertain job start or a
+      cancelled request stays pending in its journal. Later workflow commands in
+      that attempt are refused as busy forever and workspace resume cannot recover
+      the attempt (NE-11 ships with this behaviour). Add an explicit abandonment of
+      such an operation, fenced by the current execution, writer and journal token
+      in the same conditional write that a late finish would need. Abandonment must
+      never turn an uncertain operation or job into a pass, never let a stale
+      writer or the original invocation commit afterwards, and never rerun the
+      operation; its partial state is discarded and stays recorded as abandoned.
+      **Done when:** after each of the three interruptions a current writer can
+      abandon the pending operation and continue the workflow in the same attempt,
+      including after a confirmed workspace resume; a late finish, a stale writer
+      and a replayed request for the abandoned operation are refused; no proof is
+      written for it and affected revisions stay not verified; and the journal
+      shows who abandoned what and when.
