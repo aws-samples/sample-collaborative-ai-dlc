@@ -8,11 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.3.1] - 2026-11-13
 
-Hotfix that keeps AgentCore microVM runtimes on platform V1 ([#758](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/758)).
+Hotfix that keeps AgentCore microVM runtimes on platform V1 ([#758](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/758)) and passes domain and SSO settings to release deployments ([#769](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/769)).
 
 ### Fixed
 
 - The Standard runtime and newly created managed microVM runtimes now explicitly select AgentCore platform `V1`. AWS is changing the default for new runtimes to V2, which the platform has not yet qualified ([#719](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/719)). Without the setting, new deployments and new managed environments would be created on V2 once that default changes. Instances environments keep their capacity-provider configuration.
+- Release deployments now receive their custom domain and SSO settings. The release workflow forwards these secrets by name to the reusable **Deploy Demo** workflow; without that they resolved to empty strings even when set in the deployment environment. Invalid SSO configuration JSON is reported without quoting its contents ([#769](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/769)).
 
 ### Changed
 
