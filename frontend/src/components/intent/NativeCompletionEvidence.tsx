@@ -91,7 +91,14 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
       aria-label="Workflow completion evidence"
       className="space-y-2 rounded-md border p-3 text-sm"
     >
-      <h3 className="font-medium">Workflow completion: not verified</h3>
+      <h3 className="font-medium">
+        Workflow completion:{' '}
+        {evidence?.workflowCompletion === 'complete'
+          ? 'complete'
+          : evidence?.workflowCompletion === 'failed'
+            ? 'failed'
+            : 'not verified'}
+      </h3>
       <p>
         Human approval is required only where the pinned AI-DLC workflow and selected plan define
         it. There is no additional platform approval gate.
@@ -115,19 +122,26 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
         <p>Loading evidence for publication {target.publicationSequence}…</p>
       ) : (
         <>
-          <p>
-            The effective selected plan, amendments and applicable requirements are not
-            independently recorded.
-            {evidence.policyStatus === 'unsupported' &&
-              ' This pinned package has no supported definition profile.'}{' '}
-            Missing policy evidence does not mean approval is unnecessary.
-          </p>
-          <p>
-            Required check and review outcomes, engine application of human decisions and a terminal
-            workflow outcome are not independently recorded for these exact result bytes. Published
-            logs, failures and review files remain agent-reported; their applicability and freshness
-            are unverified. A stopped or cancelled runtime does not prove completion.
-          </p>
+          {evidence.policyStatus === 'protected_engine' ? (
+            <ProtectedEvidence evidence={evidence} />
+          ) : (
+            <>
+              <p>
+                The effective selected plan, amendments and applicable requirements are not
+                independently recorded.
+                {evidence.policyStatus === 'unsupported' &&
+                  ' This pinned package has no supported definition profile.'}{' '}
+                Missing policy evidence does not mean approval is unnecessary.
+              </p>
+              <p>
+                Required check and review outcomes, engine application of human decisions and a
+                terminal workflow outcome are not independently recorded for these exact result
+                bytes. Published logs, failures and review files remain agent-reported; their
+                applicability and freshness are unverified. A stopped or cancelled runtime does not
+                prove completion.
+              </p>
+            </>
+          )}
           {decision ? (
             <div className="space-y-1">
               <h4 className="font-medium">Recorded member choice for this proposal</h4>
@@ -168,6 +182,79 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
         </>
       )}
     </section>
+  );
+}
+
+function ProtectedEvidence({ evidence }: { evidence: Evidence }) {
+  const plan = evidence.effectivePlan === 'not_recorded' ? null : evidence.effectivePlan;
+  const decisions = evidence.engineApplication === 'not_recorded' ? [] : evidence.engineApplication;
+  return (
+    <div className="space-y-2">
+      <p>
+        Evidence is bound to publication {evidence.publicationSequence} and its exact files.
+        {evidence.workflowCompletion === 'complete'
+          ? evidence.requiredChecks === 'failed' || evidence.finalReview === 'concerns'
+            ? ' The protected workflow engine recorded completion under the applied plan, with the failed checks or reviewer concerns shown below. The pinned workflow decides whether those block completion.'
+            : ' The protected workflow engine recorded completion with the applied plan and its required evidence.'
+          : evidence.workflowCompletion === 'failed'
+            ? ' The protected workflow engine recorded a failed outcome.'
+            : ' Verified workflow completion has not been established for this revision.'}
+      </p>
+      <p>
+        Checks: {evidence.requiredChecks.replaceAll('_', ' ')}. Reviews:{' '}
+        {evidence.finalReview.replaceAll('_', ' ')}. Human gates:{' '}
+        {evidence.humanApproval.replaceAll('_', ' ')}.
+      </p>
+      <details className="space-y-2">
+        <summary>Inspect applied plan and outcomes</summary>
+        {plan ? (
+          <>
+            <p>Selected plan: {plan.name ?? plan.scope}</p>
+            <ul className="space-y-1">
+              {plan.stages.map((stage) => (
+                <li key={stage.id}>
+                  {stage.id}: {stage.action.toLowerCase()} · {stage.state}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p>The engine has not recorded an effective plan yet.</p>
+        )}
+        {!!evidence.checks?.length && (
+          <ul className="space-y-1" aria-label="Observed checks">
+            {evidence.checks.map((check, index) => (
+              <li key={`${check.stage}-${check.sensor}-${index}`}>
+                {check.stage}
+                {check.unit ? ` / ${check.unit}` : ''} · {check.sensor}:{' '}
+                {check.status.replaceAll('_', ' ')}
+              </li>
+            ))}
+          </ul>
+        )}
+        {!!evidence.reviews?.length && (
+          <ul className="space-y-1" aria-label="Independent reviews">
+            {evidence.reviews.map((review, index) => (
+              <li key={`${review.stage}-${index}`}>
+                {review.stage}
+                {review.unit ? ` / ${review.unit}` : ''} · {review.reviewer}:{' '}
+                {review.status.replaceAll('_', ' ')} ({review.class})
+              </li>
+            ))}
+          </ul>
+        )}
+        {!!decisions.length && (
+          <ul className="space-y-1" aria-label="Applied member decisions">
+            {decisions.map((decision) => (
+              <li key={decision.commandId}>
+                {decision.stage ?? 'Plan selection'} · {decision.actorId}: {decision.application}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="break-all text-xs">Files: {evidence.filesSha256}</p>
+      </details>
+    </div>
   );
 }
 
