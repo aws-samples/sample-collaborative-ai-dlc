@@ -158,6 +158,15 @@ variable "pr_title_tracker_key" {
   default     = false
 }
 
+variable "review_cross_unit_findings" {
+  description = "How a unit lane's stage reviewer treats findings whose required action belongs to another unit or a shared contract: \"blocking\" (counted towards its verdict, as for any finding) or \"advisory\" (recorded apart and shown on the timeline, not counted towards the verdict and not sent to the lane's author, which may not modify other units)."
+  type        = string
+  default     = "blocking"
+  validation {
+    condition     = contains(["blocking", "advisory"], var.review_cross_unit_findings)
+    error_message = "review_cross_unit_findings must be \"blocking\" or \"advisory\"."
+  }
+}
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

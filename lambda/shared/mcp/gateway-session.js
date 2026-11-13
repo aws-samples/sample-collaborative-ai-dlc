@@ -27,6 +27,7 @@ const SESSION_FIELDS = Object.freeze([
   'checkpointOwner',
   'canAsk',
   'describeChanges',
+  'crossUnitFindings',
   'policy',
 ]);
 
@@ -109,6 +110,7 @@ export const scopeFromGrantAndSession = (grant, session, { processTable }) => {
     V2_CHECKPOINT_OWNER: session.checkpointOwner === true ? '' : '0',
     V2_ASK_QUESTION: session.canAsk === true ? '' : '0',
     V2_DESCRIBE_CHANGES: session.describeChanges === true ? '1' : '',
+    V2_REVIEW_CROSS_UNIT: session.crossUnitFindings === true ? '1' : '',
     V2_STAGE_POLICY: session.policy ? JSON.stringify(session.policy) : '',
     V2_PROCESS_TABLE: envValue(processTable),
   };
