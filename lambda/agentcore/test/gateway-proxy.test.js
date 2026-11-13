@@ -72,6 +72,18 @@ describe('gateway MCP proxy', () => {
     expect(tools.map((t) => t.name)).toContain('describe_changes');
   });
 
+  it('offers crossUnitFindings on submit_review to a lane reviewer, as the local server does', async () => {
+    const schemaOf = async (sessionScope) => {
+      const cli = await connect({ listTools: vi.fn() }, 'reviewer', sessionScope);
+      const { tools } = await cli.listTools();
+      return tools.find((t) => t.name === 'submit_review').inputSchema.properties;
+    };
+    expect(await schemaOf({ ...scope, crossUnitFindings: true })).toHaveProperty(
+      'crossUnitFindings',
+    );
+    expect(await schemaOf(scope)).not.toHaveProperty('crossUnitFindings');
+  });
+
   it('forwards calls with the target prefix and unwraps the Lambda envelope', async () => {
     const envelope = { content: [{ type: 'text', text: '{"id":"a-1"}' }] };
     const gateway = {

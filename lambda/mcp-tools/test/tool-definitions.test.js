@@ -24,6 +24,12 @@ describe('Gateway tool definitions', () => {
     }
   });
 
+  it('accept crossUnitFindings on the target, which a lane reviewer may send', () => {
+    const review = committed.find((tool) => tool.name === 'submit_review');
+    expect(review.inputSchema.properties).toHaveProperty('crossUnitFindings');
+    expect(review.inputSchema.required).not.toContain('crossUnitFindings');
+  });
+
   it('register describe_changes on the target for stage owner sessions', () => {
     const owner = toolsForRole('author', null, null, { describeChanges: true });
     expect(owner).toContain('describe_changes');

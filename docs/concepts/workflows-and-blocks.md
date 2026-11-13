@@ -66,6 +66,7 @@ Every stage carries three independent safety nets:
 
 1. **Sensors** — deterministic checks (advisory or blocking) run by the engine after the stage exits. A blocking sensor failure fails the stage.
 2. **Reviewer** — an LLM-judged reviewer agent that renders a READY / NOT-READY verdict in a clean-room pass, with a bounded iteration count.
+   In a unit lane the reviewer is bounded to that unit, but by default every finding counts towards its verdict, including one whose required action is a change to another unit or a shared contract, which the lane's author may not make. Set the Terraform variable `review_cross_unit_findings = "advisory"` to have a lane's reviewer put those findings in a separate `crossUnitFindings` field of `submit_review`, naming the owner of each. They are recorded on the review and on the timeline (`v2.review.cross_unit`) for the human, and are not counted towards the verdict or sent to the author in a repair round. Reviews outside a lane are unchanged.
 3. **Human validation** — an approval gate, required by default on every non-init stage. The run parks at zero compute until a human answers.
 
 Sensors receive explicit changed-file provenance. Known changes are normalized to

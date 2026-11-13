@@ -153,6 +153,7 @@ export const createGatewayProxyServer = ({ client, target, role, scope, env = pr
     checkpointOwner: scope.checkpointOwner,
     canAsk: scope.canAsk,
     describeChanges: scope.describeChanges,
+    crossUnitFindings: scope.crossUnitFindings,
     z,
     env,
   });

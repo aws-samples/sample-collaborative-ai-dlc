@@ -70,6 +70,7 @@ export const startMcpServer = async ({ env = process.env, store: injectedStore }
     checkpointOwner: scope.checkpointOwner,
     canAsk: scope.canAsk,
     describeChanges: scope.describeChanges,
+    crossUnitFindings: scope.crossUnitFindings,
     z,
     env,
   });

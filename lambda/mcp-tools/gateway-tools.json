@@ -361,7 +361,7 @@
   },
   {
     "name": "submit_review",
-    "description": "Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`.",
+    "description": "Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`. Put findings whose required action belongs to another unit or to a shared contract in `crossUnitFindings`, naming the owner of each; they are shown to the human, not counted towards your verdict and not sent to this unit’s author.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -376,6 +376,9 @@
         },
         "round": {
           "type": "number"
+        },
+        "crossUnitFindings": {
+          "type": "string"
         }
       },
       "required": ["verdict"]
