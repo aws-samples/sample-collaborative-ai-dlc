@@ -335,6 +335,22 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertIn('[local.workflow_engine_arn, "${local.workflow_engine_arn}:native_*"]', bind)
         self.assertFalse({"lambda:UpdateAlias", "lambda:DeleteAlias"} & actions(worker))
 
+    def test_engine_image_policy_admits_only_this_function_as_lambda_documents(self):
+        policy = block(WORKFLOW, 'resource "aws_ecr_repository_policy" "workflow_engine"')
+        self.assertRegex(policy, r'Principal\s*=\s*\{ Service = "lambda\.amazonaws\.com" \}')
+        self.assertEqual(actions(policy), {"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"})
+        # The documented condition is the function ARN in aws:SourceArn. A
+        # condition key the service may not send would refuse every retrieval.
+        condition = policy.split("Condition = {", 1)[1]
+        self.assertRegex(
+            condition,
+            r'ArnLike\s*=\s*\{ "aws:SourceArn" = \[local\.workflow_engine_arn, "\$\{local\.workflow_engine_arn\}:\*"\] \}',
+        )
+        self.assertNotIn("SourceAccount", condition)
+        self.assertEqual(condition.count("aws:"), 1)
+        function = block(WORKFLOW, 'resource "aws_lambda_function" "workflow_engine"')
+        self.assertIn("aws_ecr_repository_policy.workflow_engine", function.split("depends_on", 1)[1])
+
     def test_engine_manifest_lookup_names_the_tag_and_the_index_digest(self):
         # kreuzwerker/docker 3.9.0 requests `repo@sha256:<hex>` as repository
         # `repo@sha256`, tag `<hex>` (404 from a real registry). Only

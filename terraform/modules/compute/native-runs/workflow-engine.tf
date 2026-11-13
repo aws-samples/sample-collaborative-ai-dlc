@@ -235,9 +235,13 @@ resource "aws_ecr_repository_policy" "workflow_engine" {
       Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
       Action    = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      # Lambda documents one condition for its image retrieval: the function
+      # ARN in aws:SourceArn (its example admits `function:*`). It does not say
+      # whether a published version presents a qualified ARN, or that it sends
+      # aws:SourceAccount. Admit this function and its qualifiers only; the ARN
+      # already names the account.
       Condition = {
-        StringEquals = { "aws:SourceAccount" = local.account_id }
-        ArnLike      = { "aws:SourceArn" = local.workflow_engine_arn }
+        ArnLike = { "aws:SourceArn" = [local.workflow_engine_arn, "${local.workflow_engine_arn}:*"] }
       }
     }]
   })
