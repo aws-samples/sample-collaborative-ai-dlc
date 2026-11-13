@@ -36,6 +36,8 @@ export const createMicrovmsBackend = ({ architecture = 'arm64' } = {}) => ({
       pending: false,
       capacityProviderArn: null,
       runtimeParams: {
+        // Keep microVMs on V1 until snapshot restore is qualified (#719).
+        platformVersion: 'V1',
         networkConfiguration: {
           networkMode,
           ...(networkMode === 'VPC' ? { networkModeConfig: { subnets, securityGroups } } : {}),

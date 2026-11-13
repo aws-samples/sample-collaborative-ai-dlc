@@ -576,6 +576,15 @@ run:
   per session, account-level controls (Savings Plans, ODCRs, data stays
   in-account) and sessions of up to 14 days.
 
+Standard and newly created managed microVM runtimes explicitly select AgentCore
+platform `V1` while [V2 qualification](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/719)
+is pending. This keeps new runtimes on V1 when AWS changes its creation default
+to V2. Existing managed environment revisions retain their runtime configuration;
+updating the Terraform-managed Standard runtime applies the V1 setting. This
+platform version is separate from the application's v2 intent execution model
+and the numeric AgentCore runtime configuration version. Instances environments
+continue to use their capacity-provider configuration.
+
 The **architecture** (`arm64` or `x86_64`) is a separate choice: it decides
 which image is built and which catalog tool builds apply, independently of
 where the image runs.

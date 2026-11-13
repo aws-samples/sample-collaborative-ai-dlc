@@ -74,6 +74,10 @@ run "create_runtime" {
     condition     = output.runtime_version == "47"
     error_message = "The runtime version output must report the created runtime version."
   }
+  assert {
+    condition     = awscc_bedrockagentcore_runtime.stage_executor.platform_version == "V1"
+    error_message = "Standard runtime creation must explicitly select V1 until V2 is qualified."
+  }
 }
 
 run "runtime_update_reports_the_new_version_in_the_same_apply" {
@@ -91,5 +95,9 @@ run "runtime_update_reports_the_new_version_in_the_same_apply" {
   assert {
     condition     = output.runtime_version == "48"
     error_message = "A runtime update must surface its new version in the same apply (issue #710)."
+  }
+  assert {
+    condition     = awscc_bedrockagentcore_runtime.stage_executor.platform_version == "V1"
+    error_message = "Standard runtime updates must retain the explicit V1 platform version."
   }
 }
