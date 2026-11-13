@@ -85,7 +85,20 @@ override_data {
     }
   }
 }
-mock_provider "docker" {}
+# The protected native engine runs the single ARM64 platform manifest of the
+# runtime image index; an index without exactly one is refused at plan time.
+mock_provider "docker" {
+  mock_data "docker_registry_image_manifests" {
+    defaults = {
+      manifests = [{
+        architecture  = "arm64"
+        os            = "linux"
+        media_type    = "application/vnd.oci.image.manifest.v1+json"
+        sha256_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }]
+    }
+  }
+}
 
 variables {
   aws_sdk_ua_app_id           = "Collaborative_AI-DLC-test"

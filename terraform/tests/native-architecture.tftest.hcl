@@ -17,6 +17,10 @@ mock_provider "aws" {
   mock_resource "aws_s3_bucket" {
     defaults = { arn = "arn:aws:s3:::test-native-publications" }
   }
+  # CodeBuild validates its service role ARN at plan time.
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::123456789012:role/test-native" }
+  }
 }
 
 variables {
@@ -41,6 +45,7 @@ variables {
   image_repository_url                   = "123456789012.dkr.ecr.us-east-1.amazonaws.com/test"
   image_repository_arn                   = "arn:aws:ecr:us-east-1:123456789012:repository/test"
   image_digest                           = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  image_arm64_manifest_digest            = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   tags                                   = {}
   native_packages_bucket_name            = "test-native-packages-bucket-name"
   native_packages_bucket_arn             = "arn:aws:dynamodb:us-east-1:123456789012:table/test"
@@ -147,6 +152,22 @@ run "admission_closed_retains_services_and_owners" {
   assert {
     condition     = length(aws_sqs_queue.execution) == 1 && length(aws_iam_role.execution_worker) == 1 && length(aws_iam_role.execution_credentials) == 1
     error_message = "Admission shutdown must retain existing-run execution and credential resources."
+  }
+  assert {
+    condition     = aws_lambda_function.workflow_engine.package_type == "Image" && aws_lambda_function.workflow_engine.publish && aws_lambda_function.workflow_engine.image_uri == "123456789012.dkr.ecr.us-east-1.amazonaws.com/test@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    error_message = "The protected workflow engine must run the qualified ARM64 manifest as a published version."
+  }
+  assert {
+    condition     = aws_lambda_function.workflow_engine.environment[0].variables.NATIVE_WORKFLOW_ENGINE_SHA256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    error_message = "The producer identity recorded in evidence must be the runtime image index that executions pin."
+  }
+  assert {
+    condition     = aws_codebuild_project.workflow.environment[0].privileged_mode == false && aws_codebuild_project.workflow.source[0].type == "NO_SOURCE" && aws_codebuild_project.workflow.artifacts[0].type == "NO_ARTIFACTS" && aws_codebuild_project.workflow.environment[0].image == "123456789012.dkr.ecr.us-east-1.amazonaws.com/test@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    error_message = "Isolated check and reviewer jobs must run the pinned image without source, artifacts or privileged mode."
+  }
+  assert {
+    condition     = aws_iam_role.workflow_engine.name != aws_iam_role.workflow_check.name && length(regexall("dynamodb:|lambda:Invoke|s3:", aws_iam_role_policy.workflow_check.policy)) == 0
+    error_message = "The check job role must hold no table, storage or invocation authority."
   }
   assert {
     condition     = toset(keys(aws_lambda_alias.authority)) == toset(["commands", "execution", "preparation", "projection", "results"])
