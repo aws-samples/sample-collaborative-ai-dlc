@@ -7546,7 +7546,8 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
 // rewind), and the run must still be parked on that gate: either META points
 // at it (an engine gate or a once-per-workflow question) or the stage that
 // asked it is WAITING_FOR_HUMAN on it (a unit-lane question parks only its own
-// stage, while META stays RUNNING for the sibling lanes).
+// stage, while META stays RUNNING for the sibling lanes), or it is a lane gate
+// of the current run (it parks only its unit).
 const resumeOwed = ({ meta, gate, stageRow = null }) =>
   Boolean(
     gate &&
@@ -7555,6 +7556,7 @@ const resumeOwed = ({ meta, gate, stageRow = null }) =>
     !gate.callbackConsumedAt &&
     ['RUNNING', 'WAITING'].includes(meta?.status) &&
     (meta.pendingHumanTaskId === gate.humanTaskId ||
+      (gate.laneGate === true && gate.orchestratorRunId === meta.orchestratorRunId) ||
       (stageRow?.state === 'WAITING_FOR_HUMAN' &&
         stageRow.pendingHumanTaskId === gate.humanTaskId)),
   );

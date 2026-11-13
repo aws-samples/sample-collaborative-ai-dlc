@@ -164,6 +164,11 @@ const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
 // Prefix intent pull request titles with the intent's Jira issue key.
 const PR_TITLE_TRACKER_KEY = () => process.env.PR_TITLE_TRACKER_KEY === 'true';
+// What a unit lane does when one of its stages fails: 'halt' (end the lane; the
+// section's halt-and-ask gate decides once every lane has settled) or 'ask'
+// (ask straight away whether to retry that stage). Snapshotted into the run's
+// load-meta checkpoint, so a run in progress keeps the behaviour it started with.
+const LANE_FAILURE_POLICY = () => (process.env.LANE_FAILURE_POLICY === 'ask' ? 'ask' : 'halt');
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -542,6 +547,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // marker and retain their operation sequence; repair creates a new history.
     // laneWaitPolicyVersion 1: lanes read their integration turn in durable
     // steps (section.js waitForIntegrationTurn).
+    // laneFailurePolicy: the platform setting when this history began; older
+    // histories have none and keep halting (section.js runLaneBody).
     return loaded
       ? {
           ...loaded,
@@ -549,6 +556,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           laneWaitPolicyVersion: 1,
           autonomousLoopBackVersion: 1,
           deliveryPolicyVersion: 1,
+          laneFailurePolicy: LANE_FAILURE_POLICY(),
         }
       : null;
   });
@@ -1023,6 +1031,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     //   cloneInputs  — branch inputs (a lane's unit branch, or the intent's)
     //   suffix       — durable-identity suffix for halt-and-ask / validation rounds
     //   initialResumeFrom — answered gate id to inject into the first attempt
+    //   retry        — the failure and guidance a lane retry hands the first
+    //                  attempt (section.js askLaneRetry; run-stage `retry`)
     // Every durable identity (callback names, step names) carries the unit
     // dimension + suffix so lanes and rounds never collide. Outcomes (the
     // caller owns terminal META writes + lane bookkeeping):
@@ -1038,6 +1048,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cloneInputs: stageCloneInputs = cloneInputs,
         suffix = '',
         initialResumeFrom = null,
+        retry = null,
         reviewFeedback = null,
         validationRound = 0,
         validationGateId = null,
@@ -1089,6 +1100,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
         resumeFrom: initialResumeFrom,
+        ...(retry ? { retry } : {}),
       });
 
       // Park loop (D3): the stage may open more than one gate across resumes. Each
@@ -1346,6 +1358,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       runId: null, // stamped below once minted
       completionPolicyVersion: meta.completionPolicyVersion ?? 0,
       laneWaitPolicyVersion: meta.laneWaitPolicyVersion ?? 0,
+      laneFailurePolicy: meta.laneFailurePolicy === 'ask' ? 'ask' : 'halt',
       intentBranch: meta.branch,
       cloneBase: {
         repos: meta.repos ?? [],
@@ -3078,6 +3091,7 @@ const runStage = async (
     sessionId,
     cloneInputs,
     resumeFrom,
+    retry = null,
     reviewFeedback = null,
     validationRound = 0,
     validationGateId = null,
@@ -3161,6 +3175,7 @@ const runStage = async (
         // changes; naming the validation gate is what keeps the personas on the
         // real feedback.
         ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
+        ...(retry ? { retry } : {}),
         reviewFeedback: reviewFeedback
           ? {
               batchId: reviewFeedback.batchId ?? null,

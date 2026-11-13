@@ -622,6 +622,9 @@ export const aheadFiles = async ({ dir, branch, baseBranch = null, git = runGit 
 //                                       matched; a mismatch/unreadable ls-remote
 //                                       still counts as pushed, like v1)
 //   { pushed: false, reason, detail } — real failure after retries
+// How much of a rejected push's stderr is kept for the retry's agent.
+const PUSH_OUTPUT_MAX = 4000;
+
 export const pushBranch = async ({
   dir,
   repo,
@@ -658,6 +661,7 @@ export const pushBranch = async ({
       },
       async (env) => {
         let lastDetail = '';
+        let lastOutput = '';
         for (let attempt = 1; attempt <= attempts; attempt++) {
           // Push HEAD explicitly to the remote refspec so it works even if the
           // local branch name diverged (v1 semantics).
@@ -684,11 +688,14 @@ export const pushBranch = async ({
             log(`ls-remote failed for ${repo}#${branch}; trusting push exit code`);
             return { pushed: true, sha: localHead, verified: false };
           }
-          lastDetail = (push.stderr || '').trim().slice(-500);
+          lastOutput = (push.stderr || '').trim().slice(-PUSH_OUTPUT_MAX);
+          lastDetail = lastOutput.slice(-500);
           log(`push attempt ${attempt}/${attempts} failed for ${repo}#${branch}`);
           if (attempt < attempts) await sleep(attempt * 2000);
         }
-        return { pushed: false, reason: 'push_failed', detail: lastDetail };
+        // `output` keeps more of git's stderr than `detail`: a remote's
+        // rejection names the offending files and lines before its trailer.
+        return { pushed: false, reason: 'push_failed', detail: lastDetail, output: lastOutput };
       },
     );
   } catch (error) {
@@ -1533,6 +1540,104 @@ export const commitAndPushAll = async ({
   );
   const committed = results.some((r) => r.committed === true);
   return { ok, committed, results };
+};
+
+// Undo the branch's unpushed commits, keeping their changes in the working
+// tree (`git reset --mixed` onto the fetched remote branch), so the next
+// engine commit replaces them. Used before retrying a stage whose push was
+// rejected for its content: committing on top would keep the rejected
+// content in the history the push carries. Never throws. Per repository:
+//   { discarded: true, shas }            — commits undone (oldest first)
+//   { discarded: 'none' }                — nothing unpushed
+//   { discarded: false, reason, detail } — fetch failed, or no remote branch
+//                                          or a diverged one to reset onto
+export const discardUnpushedCommits = async ({
+  repos = [],
+  workspaceDir,
+  branch,
+  gitProvider,
+  repoProviders = null,
+  projectId,
+  executionId,
+  urlsFor = null,
+  git = runGit,
+  withGitCredential = defaultWithGitCredential,
+}) => {
+  const results = [];
+  const multi = repos.length > 1;
+  for (const repo of repos) {
+    const url = typeof repo === 'string' ? repo : repo.url;
+    const provider =
+      (typeof repo === 'object' && repo?.provider) ||
+      repoProviders?.[url] ||
+      gitProvider ||
+      'github';
+    const dir = repoTargetDir({ url, workspaceDir, multi });
+    try {
+      const fetch = await fetchOrigin({
+        dir,
+        repo: url,
+        gitProvider: provider,
+        projectId,
+        executionId,
+        urls: urlsFor ? urlsFor(url) : {},
+        git,
+        withGitCredential,
+      });
+      if (!fetch.fetched) {
+        results.push({ repo: url, discarded: false, reason: fetch.reason, detail: fetch.detail });
+        continue;
+      }
+      const remoteRef = `refs/remotes/origin/${branch}`;
+      const remote = await git(['rev-parse', '--verify', remoteRef], { cwd: dir });
+      if (remote.exitCode !== 0) {
+        results.push({
+          repo: url,
+          discarded: false,
+          reason: 'remote_branch_missing',
+          detail: branch,
+        });
+        continue;
+      }
+      const ancestor = await git(['merge-base', '--is-ancestor', remoteRef, 'HEAD'], { cwd: dir });
+      if (ancestor.exitCode !== 0) {
+        results.push({ repo: url, discarded: false, reason: 'diverged', detail: branch });
+        continue;
+      }
+      const list = await git(['rev-list', '--reverse', `${remoteRef}..HEAD`], { cwd: dir });
+      if (list.exitCode !== 0) {
+        results.push({
+          repo: url,
+          discarded: false,
+          reason: 'rev_list_failed',
+          detail: list.stderr.trim(),
+        });
+        continue;
+      }
+      const shas = list.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (shas.length === 0) {
+        results.push({ repo: url, discarded: 'none' });
+        continue;
+      }
+      const reset = await git(['reset', '--mixed', '--quiet', remoteRef], { cwd: dir });
+      if (reset.exitCode !== 0) {
+        results.push({
+          repo: url,
+          discarded: false,
+          reason: 'reset_failed',
+          detail: reset.stderr.trim(),
+        });
+        continue;
+      }
+      results.push({ repo: url, discarded: true, shas });
+    } catch (err) {
+      results.push({ repo: url, discarded: false, reason: 'engine_crashed', detail: err?.message });
+    }
+  }
+  return { results };
 };
 
 // Rehydrate the complete file set for a stage that committed across one or

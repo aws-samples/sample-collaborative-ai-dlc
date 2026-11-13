@@ -522,6 +522,7 @@ module "lambda" {
   aidlc_repo_ref              = var.aidlc_repo_ref
   aidlc_release_pinning       = var.aidlc_release_pinning
   pr_title_tracker_key        = var.pr_title_tracker_key
+  lane_failure_policy         = var.lane_failure_policy
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids

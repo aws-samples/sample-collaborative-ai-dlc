@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StepError } from '@aws/durable-execution-sdk-js';
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { promoteUnits } from '../../agentcore/commands/promote-units.js';
@@ -3224,6 +3224,266 @@ describe('WP5 — engine-gate decisions', () => {
     expect(revive.fromStates).toContain('FAILED');
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('retry');
+  });
+
+  describe('LANE_FAILURE_POLICY=ask: retry a failed lane stage straight away', () => {
+    const previous = process.env.LANE_FAILURE_POLICY;
+    beforeEach(() => {
+      process.env.LANE_FAILURE_POLICY = 'ask';
+    });
+    afterEach(() => {
+      if (previous === undefined) delete process.env.LANE_FAILURE_POLICY;
+      else process.env.LANE_FAILURE_POLICY = previous;
+    });
+    // billing's cg fails `failures` times, then succeeds.
+    const failingBilling = (failures) => {
+      let attempts = 0;
+      return makeRuntime(ctx, (payload) => {
+        if (payload.command === 'init-ws-start') return { ok: true };
+        if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+        if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
+          attempts += 1;
+          if (attempts <= failures) return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+        }
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+    };
+    const gatesCreated = () =>
+      deps.store.createHumanTask.mock.calls.map(([gate]) => gate.humanTaskId);
+    // Engine gates open first (no row yet), then read back answered.
+    const answers = (byPrefix) => {
+      const answered = gateReads(byPrefix);
+      return vi.fn(async (executionId, id) => {
+        if (
+          String(id).startsWith('eg-') &&
+          !deps.store.createHumanTask.mock.calls.some(([gate]) => gate.humanTaskId === id)
+        )
+          return null;
+        return answered(executionId, id);
+      });
+    };
+    const events = () => deps.store.appendEvent.mock.calls.map(([event]) => event);
+
+    it('asks on a gate owned by the unit and retries the stage without halt-and-ask', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
+      expect(cgBilling.map((p) => p.stageCallbackId)).toEqual([
+        'cb-stage-cb-cg-s1-u-billing',
+        'cb-stage-cb-cg-s1-u-billing-a1',
+      ]);
+      const gate = deps.store.createHumanTask.mock.calls
+        .map(([g]) => g)
+        .find((g) => g.humanTaskId.startsWith('eg-lane-retry'));
+      expect(gate).toMatchObject({ unitSlug: 'billing', sectionIndex: 1, laneGate: true });
+      // Sibling lanes need META RUNNING (credentials, pushes): the lane gate
+      // never parks it or takes its pointer, opening or unparking.
+      const metaWrites = deps.store.updateExecution.mock.calls.map(([input]) => input);
+      const laneRetry = (id) => String(id).startsWith('eg-lane-retry');
+      expect(
+        metaWrites.some(
+          (w) => laneRetry(w.pendingHumanTaskId) || laneRetry(w.ifPendingHumanTaskId),
+        ),
+      ).toBe(false);
+      expect(gate.prompt).toContain('Unit billing failed at cg: sensor_blocked');
+      expect(gate.options).toEqual(['retry', 'request-changes', 'leave-failed']);
+      expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(false);
+      const billing = unitStates.filter((u) => u.slug === 'billing').map((u) => u.state);
+      expect(billing).toEqual(['RUNNING', 'FAILED', 'RUNNING', 'MERGING', 'MERGED']);
+      const waiting = unitStates.find((u) => u.slug === 'billing' && u.state === 'FAILED');
+      expect(waiting.fields.blockedReason).toContain(
+        'retry this stage, request changes, or leave it failed',
+      );
+      const revived = unitStates.filter((u) => u.slug === 'billing' && u.state === 'RUNNING')[1];
+      expect(revived).toMatchObject({
+        fromStates: ['FAILED'],
+        fields: { failureReason: null, blockedReason: null },
+      });
+      expect(events().find((e) => e.type === 'v2.unit.retry')?.summary).toContain(
+        'retrying cg (attempt 1)',
+      );
+      // The waiting lane gave up its runtime session before the retry ran.
+      const billingSessionId = 'aidlc-intent-i1-s1-billing'.padEnd(33, '0');
+      expect(deps.stopSession.mock.calls.some(([id]) => id === billingSessionId)).toBe(true);
+    });
+
+    it('asks again with a new identity when the retry fails too', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+        'eg-lane-retry-s1-billing-cg-a1': { answer: { decision: 'retry' } },
+      });
+      deps.invokeRuntime = failingBilling(2);
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
+      expect(cgBilling.map((p) => p.stageCallbackId)).toEqual([
+        'cb-stage-cb-cg-s1-u-billing',
+        'cb-stage-cb-cg-s1-u-billing-a1',
+        'cb-stage-cb-cg-s1-u-billing-a2',
+      ]);
+      const retryGates = gatesCreated().filter((id) => id.startsWith('eg-lane-retry'));
+      expect(retryGates).toHaveLength(2);
+      expect(
+        deps.store.createHumanTask.mock.calls
+          .map(([g]) => g)
+          .find((g) => g.humanTaskId.startsWith('eg-lane-retry-s1-billing-cg-a1')).prompt,
+      ).toContain('(retry 1)');
+    });
+
+    it('leave-failed ends the lane as before, so halt-and-ask still decides', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'leave-failed' } },
+        'eg-halt': { answer: { decision: 'abort' } },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+      expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(true);
+      expect(events().some((e) => e.type === 'v2.unit.retry_declined')).toBe(true);
+      expect(events().some((e) => e.type === 'v2.unit.failed' && e.unitSlug === 'billing')).toBe(
+        true,
+      );
+      const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
+      expect(cgBilling).toHaveLength(1);
+    });
+
+    it('re-asks an answer that is neither option', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0-q1': { answer: { decision: 'retry' } },
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'maybe' } },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const retryGates = gatesCreated().filter((id) => id.startsWith('eg-lane-retry'));
+      expect(retryGates).toHaveLength(2);
+      expect(
+        deps.store.createHumanTask.mock.calls
+          .map(([g]) => g)
+          .find((g) => g.humanTaskId.startsWith('eg-lane-retry-s1-billing-cg-a0-q1')).prompt,
+      ).toContain('was not retry, request-changes or leave-failed');
+    });
+
+    it('tells the retried stage why it failed, without guidance on a plain retry', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      await start();
+      const [first, second] = stageStarts().filter(
+        (p) => p.stageId === 'cg' && p.unitSlug === 'billing',
+      );
+      expect(first.retry).toBeUndefined();
+      expect(second.retry).toEqual({
+        reason: 'sensor_blocked',
+        detail: null,
+        output: null,
+        guidance: null,
+        discardUnpushed: false,
+      });
+    });
+
+    it('request-changes retries with the human guidance', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': {
+          answer: { decision: 'request-changes', feedback: 'Use the fixture helper instead' },
+        },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
+      expect(cgBilling).toHaveLength(2);
+      expect(cgBilling[1].retry).toMatchObject({ guidance: 'Use the fixture helper instead' });
+      expect(events().find((e) => e.type === 'v2.unit.retry')?.summary).toContain('with guidance');
+    });
+
+    it('a failed undo keeps the undo, and the rejection output, for the next retry', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+        'eg-lane-retry-s1-billing-cg-a1': { answer: { decision: 'retry' } },
+      });
+      const failures = [
+        { reason: 'push_failed', detail: 'rejected', output: 'remote: secret in a.js:1' },
+        { reason: 'discard_unpushed_failed', detail: 'acme/api: fetch_failed' },
+      ];
+      deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+        if (payload.command === 'init-ws-start') return { ok: true };
+        if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+        if (payload.stageId === 'cg' && payload.unitSlug === 'billing' && failures.length) {
+          return { ok: false, state: 'FAILED', ...failures.shift() };
+        }
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const third = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing')[2];
+      expect(third.retry).toMatchObject({
+        reason: 'discard_unpushed_failed',
+        output: 'remote: secret in a.js:1',
+        discardUnpushed: true,
+      });
+      const secondGate = deps.store.createHumanTask.mock.calls
+        .map(([g]) => g)
+        .find((g) => g.humanTaskId.startsWith('eg-lane-retry-s1-billing-cg-a1'));
+      expect(secondGate.prompt).toContain('undo the unpushed commits');
+    });
+
+    it('a rejected push retries with its output and its unpushed commits undone', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+      });
+      let attempts = 0;
+      deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+        if (payload.command === 'init-ws-start') return { ok: true };
+        if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+        if (payload.stageId === 'cg' && payload.unitSlug === 'billing' && ++attempts === 1) {
+          return {
+            ok: false,
+            state: 'FAILED',
+            reason: 'push_failed',
+            detail: 'repo: push_failed — rejected',
+            output: 'remote: secret found in src/config.js:3',
+          };
+        }
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+      const res = await start();
+      expect(res.ok).toBe(true);
+      const gate = deps.store.createHumanTask.mock.calls
+        .map(([g]) => g)
+        .find((g) => g.humanTaskId.startsWith('eg-lane-retry'));
+      expect(gate.prompt).toContain('undo the unpushed commits');
+      const second = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing')[1];
+      expect(second.retry).toMatchObject({
+        reason: 'push_failed',
+        output: 'remote: secret found in src/config.js:3',
+        discardUnpushed: true,
+      });
+    });
+
+    it('retires the run when the retry gate is superseded', async () => {
+      deps.store.getHumanTask = answers({
+        'eg-lane-retry-s1-billing-cg-a0': { status: 'superseded' },
+      });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res).toMatchObject({ ok: false, reason: 'retired' });
+      expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(false);
+    });
+
+    it('is off by default: a failed stage goes straight to halt-and-ask', async () => {
+      delete process.env.LANE_FAILURE_POLICY;
+      deps.store.getHumanTask = answers({ 'eg-halt': { answer: { decision: 'abort' } } });
+      deps.invokeRuntime = failingBilling(1);
+      const res = await start();
+      expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+      expect(gatesCreated().some((id) => id.startsWith('eg-lane-retry'))).toBe(false);
+    });
   });
 
   it.each([

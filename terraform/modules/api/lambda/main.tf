@@ -3530,6 +3530,7 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
+    LANE_FAILURE_POLICY                  = var.lane_failure_policy
     },
     var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
     # Execution-scoped grants authorize engine-data calls only; without engine

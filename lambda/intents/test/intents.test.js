@@ -11320,6 +11320,54 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'h-lane');
     expect(gate.resumeAvailable).toBe(false);
   });
+
+  // An engine gate owned by one lane: META keeps running with no pointer, and
+  // no stage row is parked on it.
+  it.each([
+    ['the current run', 'run-old', true],
+    ['a retired run', 'run-retired', false],
+  ])('owes the resume of a lane engine gate of %s: %s', async (_label, runId, owed) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      orchestratorRunId: 'run-old',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#eg-lane'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#eg-lane',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'eg-lane',
+      stageInstanceId: null,
+      unitSlug: 'billing',
+      sectionIndex: 1,
+      kind: 'approval',
+      status: 'answered',
+      answer: { decision: 'retry' },
+      callbackId: 'cb-eg-lane',
+      orchestratorRunId: runId,
+      laneGate: true,
+    });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'eg-lane');
+    expect(gate.resumeAvailable).toBe(owed);
+
+    const sentBefore = sentCallbackIds().length;
+    const resumed = await resume(sub, projectId, intent.id);
+    expect(JSON.parse(resumed.body)).toMatchObject({ resumed: owed });
+    expect(sentCallbackIds().slice(sentBefore)).toEqual(owed ? ['cb-eg-lane'] : []);
+  });
 });
 
 describe('GET intent — timeline event fields', () => {
