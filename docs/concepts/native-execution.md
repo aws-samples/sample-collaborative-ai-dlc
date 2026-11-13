@@ -191,8 +191,8 @@ completion, and none of them changes that report.
 
 For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
 protected workflow engine owned by this project is the completion authority
-(NE-11, implemented and validated on a development host; see the dated record
-below for what is not yet qualified). The pinned engine's own records are not an
+(NE-11, implemented and qualified locally and in the installed image, not
+deployed; see the dated records below for what is not yet qualified). The pinned engine's own records are not an
 independent authority, because the coding process can write the state and
 human-presence files its guards read. The protected engine therefore runs the
 same pinned engine code in a separate service with its own workspace and state:
@@ -4638,6 +4638,9 @@ NE-11 remains open and NE-12 is not advanced.
 
 ## NE-11 verified workflow completion — implementation and host validation, 2026-11-13
 
+_The installed qualification record that follows this one supersedes the
+statements here about the missing image, container-backed suites and handoff._
+
 **NE-11 is implemented and validated on a development host. It is not complete:
 the installed ARM64 image has not been rebuilt or qualified for this source, the
 container-backed test suites have not run, and nothing is deployed.** Docker
@@ -4782,6 +4785,159 @@ because the pinned engine and Bun exist only in the image.
 - Evidence covers regular published files. Git delivery remains NE-12.
 
 Evidence is under `.native-evidence/ne11-2026-11-11-owned-adapter/`.
+
+## NE-11 installed-image qualification and deployment handoff — 2026-11-13
+
+**NE-11 is qualified locally and in the installed ARM64 image within the limits
+listed below, and has a deployment-only handoff. Nothing is deployed.** This
+record continues the host-validation record above, which was written while
+Docker Desktop was unavailable; its statements about the missing image,
+container-backed suites and handoff are superseded here.
+
+### Defects found once the container-backed checks could run
+
+Each was found by a failing run that is retained, and corrected with a test.
+
+- **Image ownership contract.** The full backend suite failed one test: the
+  image must keep runtime code readable by the `node` user from a restrictive
+  checkout and must not use a recursive `chown`, while the protected engine's
+  isolated jobs need that code not to be replaceable by `node`. Runtime code is
+  now copied root-owned with a symbolic mode, with no recursive layer, and the
+  build fails if any of it is owned by or writable for `node`.
+- **Lambda interface build.** The first image build failed. The runtime
+  interface client compiles bundled sources and needs `xz`, `autoconf`,
+  `automake` and `libtool`.
+- **Engine function start.** The installed runtime interface client (4.0.2)
+  reads its handler and task root from the environment, not from its argument
+  or working directory. The function's entry point now sets both.
+- **Reviewer home.** An isolated Codex or OpenCode reviewer could not start:
+  the job gave the reviewer's home to the unprivileged worker before the
+  observer wrote the instruction files that must be written privately.
+- **Sensors in the protected engine.** Every sensor crashed at load. The
+  pinned sensor tool imports its manifests as text, which the engine's module
+  loader passed to Bun in a form Bun rejects. The express plan has no sensors,
+  so earlier probes could not see this.
+- **Review refusal.** When the pinned engine refuses a review request, for
+  example until the member confirms the stage summary, the refusal was reported
+  as an unavailable reviewer. The engine's own answer is now returned.
+
+Image attempts one to three are retained with their evidence: a failed build,
+an image whose reviewer path was defective, and an image whose sensors crashed.
+
+### Qualified image
+
+The final image was built from commit
+`a7d347e11281e238bb00018a2421ec65227415f4` with the default builder for
+`linux/arm64`, the interaction probe enabled and **no AWS credentials**; the
+digest-pinned public base image was pulled anonymously. It has **372** runtime
+inputs, runtime source SHA-1 `f76063e2f5e1cb4bc76160705034b55e16789b35`, tag
+`3ea5a39747e3adc8` and local image ID
+`sha256:f590acd089d4046dd9c27e52d188d4e5918ffb75023ac6e4564c7c405aaa2aee`.
+Its ARM64 platform manifest, which the engine Lambda runs, is
+`sha256:b7cc7c1d678e424296c6a1d1c6c2b4e66dc1699da70ad77c1c688612df359aa0`;
+its configuration is
+`sha256:80108117e28e3d91d3b1799267ee73e08f5c54f7d4dac86a42572ac57bec8fdd`,
+with **28** layers. Claude Code **2.1.296**, Codex **0.162.1** and OpenCode
+**1.19.0** are unchanged from NE-10.
+
+### Validation at the qualified source
+
+- Full backend suite with Gremlin and DynamoDB Local: **12,461 passed, 10
+  skipped**, including the DynamoDB journal test. Two of the skips need a Linux
+  root observer and ran in the image.
+- Frontend: **2,495 passed**; the production build passes.
+- Release-script suite from a clean snapshot: **514 passed**.
+- Lint, formatting, secret scan, dependency rules, AWS SDK alignment and the
+  architecture check pass without a budget change. The **28** wiring guards pass.
+- Terraform 1.15.0: `fmt`, `validate`, TFLint and all seven mock-provider test
+  groups pass.
+- The pre-commit hook's checks were run against the content of the five
+  commits made while Docker was unavailable and pass. Later commits went
+  through the hook.
+
+### Installed qualification
+
+All runs used the final image offline, with a read-only root filesystem unless
+stated, and no candidate source mounted over the image.
+
+- **Existing journeys.** The tracked Linux tier passes **181** tests in seven
+  files. Claude Code, Codex and OpenCode each pass the installed workflow and
+  resume journey with its failure, incomplete-output and cancellation cases.
+  These journeys run without a captured engine, so they qualify the existing
+  path on the new image, not a CLI driving the protected engine.
+- **Installed layout.** As an unprivileged user, as in the Lambda sandbox: all
+  runtime code is readable, none is owned by or writable for `node`, and the
+  engine entry and job modules load from the installed dependencies.
+- **Engine function start.** The function's configured entry point, command
+  and working directory start the handler under the installed runtime
+  interface client against an emulated Lambda Runtime API and answer
+  invocations. No AWS service is reached.
+- **Express journey.** With the real pinned engine and the real runtime
+  client: a stopped proposal and each open gate are not verified, the applied
+  plan completes, and a later file change is not verified while the completed
+  revision keeps its proof.
+- **Plan with sensors and a reviewer.** In the pinned `poc` plan the real
+  engine issues the first stage with three sensors and an advisory reviewer.
+  All three sensors fire through the protected engine and appear in the
+  evidence with their fire IDs, one failed and two passed; a later edit to the
+  inspected artifact makes them stale. A verdict supplied by the coding side
+  is refused. The result is not verified.
+- **Isolated jobs.** The engine side runs unprivileged and uses the production
+  job code. A harness stands in for CodeBuild: it accepts only the fixed build
+  specification and runs its own phase commands as root in a private mount
+  namespace. A passing check and a failing check are observed as such, with the
+  child as UID 1000 without capabilities and unable to forge the result or
+  replace observer code, on read-only and on writable root filesystems. Each
+  installed CLI starts as an isolated reviewer through the production wrapper;
+  with no reachable model it produces no review and nothing is recorded. With a
+  scripted process in place of the CLI binary and model, the reviewer path
+  completes: model-only credential alias, privilege drop, and a review bound
+  to the reviewer's own output file.
+
+### Not qualified locally
+
+- A review requested and completed through the real pinned engine. The engine
+  first requires the member's summary confirmation, which belongs to a full
+  multi-turn dialogue that was not driven. The gate of that stage and the later
+  stages of a plan with sensors and reviewers were not reached, so no such plan
+  was taken to a verified completion.
+- An isolated reviewer producing a review with an installed CLI and a model.
+- The linter and type-check sensors, which run as isolated jobs with the pinned
+  tool, and a project's own check commands.
+- An installed CLI driving the protected engine through the `aidlc` command.
+- Everything deployed: IAM enforcement, how the Lambda service starts this
+  image, VPC reachability of IAM and CodeBuild, CodeBuild's capabilities for
+  the job observer, process containment in a real build, EFS and live models.
+- One Bun diagnostic line about its configuration override appears on standard
+  error when a sensor runs. It does not change the result and was not removed.
+
+### Deployment handoff
+
+Deployment is required: a new Lambda function, a CodeBuild project, IAM roles
+and a boundary policy, an ECR repository policy, changed role policies, the
+rebuilt runtime image and the frontend. The handoff is under
+`.native-evidence/ne11-2026-11-11-owned-adapter/handoff/`. It differs from the
+NE-09 and NE-10 handoffs in one respect, on purpose: the full plan creates
+resource types that have never been planned for this stack, so it is not
+applied automatically. The first operator step publishes the qualified image,
+verifies the registry bytes against the qualified platform manifest and
+configuration, saves the full plan with a mechanical review and stops. The
+second step applies exactly the saved plan whose SHA-256 the reviewer names,
+reads the engine function back and publishes the frontend. Hard stops cover
+deletions or replacements of durable resources, any second image change, the
+engine's image and producer pins and the presence of the engine resources; the
+IAM, alias, runtime and environment changes are for the reviewer to read. The
+plan review and the operator sequence are tested with inert commands, and the
+credential-free check passes at the final commit.
+
+```bash
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-11-owned-adapter/handoff/deploy-ne11.sh' --check-only
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-11-owned-adapter/handoff/deploy-ne11.sh'
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-11-owned-adapter/handoff/deploy-ne11.sh' --apply-reviewed <saved-plan-sha256>
+```
+
+Each step is a single attempt. Independent verification of the deployed
+artifacts and live acceptance remain separate, as for earlier stages.
 
 ## Integration and simplification checklist
 
@@ -4997,10 +5153,16 @@ the current contract for newly created executions.
       “Own it here” decision. **Implemented and host-validated 2026-11-13:** the
       protected engine, isolated check and reviewer jobs, per-publication proof,
       read API and result view are in place and meet the five required properties
-      in host tests, as recorded above. **Still open:** the ARM64 image for this
-      source has not been built or qualified, the container-backed suites have not
-      run, and there is no deployment handoff; Docker Desktop required a sign-in.
-      No verified outcome has been produced by a deployed or installed engine.
+      in host tests, as recorded above. **Qualified in the installed image
+      2026-11-13:** the full backend suite, the rebuilt ARM64 image, the three
+      installed CLI journeys, the engine function start, an express journey to a
+      verified completion, observed sensors in a plan with sensors and a reviewer,
+      and isolated checks and reviewers through the production job path pass; six
+      defects found on the way are corrected. A deployment-only handoff exists.
+      **Still open:** a review completed through the real engine, a reviewer with
+      a model, a verified completion of a plan with sensors and reviewers, an
+      installed CLI driving the engine, and everything deployed. An engine
+      operation that never finishes stays pending; see NE-23.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
