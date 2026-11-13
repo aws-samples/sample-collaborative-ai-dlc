@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMembershipStore, fetchMembershipRole } from '../space-membership.js';
 import { createTestMembershipStore } from '../../../test/membership-store.js';
-import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  GetCommand,
+  QueryCommand,
+  TransactWriteCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
+import { BUSINESS_ROLES } from '../business-roles.js';
 
 let fixture;
 beforeAll(async () => {
@@ -21,6 +27,212 @@ const add = (spaceId, userId, role = 'owner') =>
   });
 
 describe('authoritative membership and history', () => {
+  it('updates sorted local roles without changing access or other role sources, and audits the values', async () => {
+    await add('business', 'owner');
+    const before = await add('business', 'member', 'member');
+    await add('other-business', 'member', 'member');
+    await fixture.ddb.send(
+      new UpdateCommand({
+        TableName: fixture.accessTable,
+        Key: { pk: before.pk, sk: before.sk },
+        UpdateExpression: 'SET companyRoles = :roles',
+        ExpressionAttributeValues: { ':roles': ['business-analyst'] },
+      }),
+    );
+    const after = await fixture.store.changeLocalRoles({
+      spaceId: 'business',
+      userId: 'member',
+      actorId: 'owner',
+      localRoles: ['developer', 'architect', 'developer'],
+    });
+    expect(after).toMatchObject({
+      membershipRole: 'member',
+      createdAt: before.createdAt,
+      companyRoles: ['business-analyst'],
+      localRoles: ['architect', 'developer'],
+    });
+    expect(
+      (await fixture.store.listMembers('business')).items.find((m) => m.userId === 'member'),
+    ).toEqual(after);
+    expect((await fixture.store.get('other-business', 'member')).localRoles).toBeUndefined();
+    expect(
+      (await fixture.store.listHistory('business')).items.find(
+        (e) => e.action === 'local-roles-changed',
+      ),
+    ).toMatchObject({
+      spaceId: 'business',
+      actorId: 'owner',
+      targetUserId: 'member',
+      before: [],
+      after: ['architect', 'developer'],
+      timestamp: after.updatedAt,
+    });
+    const promoted = await fixture.store.change({
+      spaceId: 'business',
+      userId: 'member',
+      actorId: 'owner',
+      before: after,
+      role: 'owner',
+      action: 'role-changed',
+    });
+    expect(promoted).toMatchObject({
+      localRoles: after.localRoles,
+      companyRoles: ['business-analyst'],
+    });
+    const cleared = await fixture.store.changeLocalRoles({
+      spaceId: 'business',
+      userId: 'member',
+      actorId: 'owner',
+      localRoles: [],
+    });
+    expect(cleared.localRoles).toEqual([]);
+    expect(
+      (await fixture.store.listHistory('business')).items.find(
+        (e) => e.action === 'local-roles-changed' && e.after.length === 0,
+      ),
+    ).toMatchObject({ before: ['architect', 'developer'], after: [] });
+  });
+
+  it.each([
+    undefined,
+    null,
+    'developer',
+    ['unknown'],
+    ['owner'],
+    [42],
+    Array(10).fill('developer'),
+  ])('rejects invalid local role input %j without writing', async (localRoles) => {
+    const ddb = { send: vi.fn() };
+    const store = createMembershipStore({ ddb });
+    await expect(
+      store.changeLocalRoles({
+        spaceId: 'invalid',
+        userId: 'member',
+        actorId: 'owner',
+        localRoles,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+
+  it('allows an Owner to assign all nine roles to themselves but denies Member self-editing and outsiders', async () => {
+    await add('self-roles', 'owner');
+    await add('self-roles', 'member', 'member');
+    const after = await fixture.store.changeLocalRoles({
+      spaceId: 'self-roles',
+      userId: 'owner',
+      actorId: 'owner',
+      localRoles: BUSINESS_ROLES.map(({ id }) => id),
+    });
+    expect(after.localRoles).toHaveLength(9);
+    for (const actorId of ['member', 'outsider']) {
+      await expect(
+        fixture.store.changeLocalRoles({
+          spaceId: 'self-roles',
+          userId: 'member',
+          actorId,
+          localRoles: ['product-owner'],
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+    }
+    await expect(
+      fixture.store.changeLocalRoles({
+        spaceId: 'self-roles',
+        userId: 'outsider',
+        actorId: 'owner',
+        localRoles: ['developer'],
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect((await fixture.store.listHistory('self-roles')).items).toHaveLength(3);
+  });
+
+  it.each(['revoke-actor', 'remove-target', 'edit-target'])(
+    'atomically rejects a role save racing with %s',
+    async (race) => {
+      const spaceId = `role-race-${race}`;
+      await add(spaceId, 'owner');
+      const before = await add(spaceId, 'member', 'member');
+      const racingDdb = {
+        send: async (command) => {
+          if (command instanceof TransactWriteCommand) {
+            if (race === 'revoke-actor') {
+              await fixture.store.change({
+                spaceId,
+                userId: 'owner',
+                actorId: 'owner',
+                before: await fixture.store.get(spaceId, 'owner'),
+                role: null,
+                action: 'member-removed',
+              });
+            } else if (race === 'remove-target') {
+              await fixture.store.change({
+                spaceId,
+                userId: 'member',
+                actorId: 'owner',
+                before,
+                role: null,
+                action: 'member-removed',
+              });
+            } else {
+              await fixture.store.changeLocalRoles({
+                spaceId,
+                userId: 'member',
+                actorId: 'owner',
+                localRoles: ['architect'],
+              });
+            }
+          }
+          return fixture.ddb.send(command);
+        },
+      };
+      const store = createMembershipStore({
+        ddb: racingDdb,
+        accessTable: fixture.accessTable,
+        auditTable: fixture.auditTable,
+      });
+      await expect(
+        store.changeLocalRoles({
+          spaceId,
+          userId: 'member',
+          actorId: 'owner',
+          localRoles: ['developer'],
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect((await fixture.store.listHistory(spaceId)).items).toHaveLength(3);
+      const member = await fixture.store.get(spaceId, 'member');
+      if (race === 'remove-target') expect(member).toBeNull();
+      else expect(member.localRoles || []).toEqual(race === 'edit-target' ? ['architect'] : []);
+    },
+  );
+
+  it('rolls back a role update when its audit write fails', async () => {
+    const store = createMembershipStore({
+      ddb: fixture.ddb,
+      accessTable: fixture.accessTable,
+      auditTable: fixture.auditTable,
+      now: () => '2026-11-13T12:00:00.000Z',
+    });
+    const before = await store.change({
+      spaceId: 'role-audit-failure',
+      userId: 'owner',
+      actorId: 'owner',
+      role: 'owner',
+      action: 'space-created',
+      changeId: 'duplicate',
+    });
+    await expect(
+      store.changeLocalRoles({
+        spaceId: 'role-audit-failure',
+        userId: 'owner',
+        actorId: 'owner',
+        localRoles: ['developer'],
+        changeId: 'duplicate',
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(await store.get('role-audit-failure', 'owner')).toEqual(before);
+    expect((await store.listHistory('role-audit-failure')).items).toHaveLength(1);
+  });
+
   it('stores one membership, projects every attribute, and pages user-space lists', async () => {
     for (let i = 0; i < 53; i++)
       await add(`many-${String(i).padStart(2, '0')}`, 'multi-user', i % 2 ? 'member' : 'owner');

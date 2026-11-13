@@ -39,6 +39,22 @@ describe('projectsService v2 create/update payloads', () => {
     expect(put).toHaveBeenCalledWith('/projects/p1', { parkReleaseSeconds: 300 });
   });
 
+  it('reads the scoped catalog and updates only local business roles by stable IDs', async () => {
+    get.mockResolvedValue([{ id: 'architect', name: 'Architect' }]);
+    expect(await projectsService.listBusinessRoles('p1')).toEqual([
+      { id: 'architect', name: 'Architect' },
+    ]);
+    expect(get).toHaveBeenCalledWith('/projects/p1/business-roles');
+    await projectsService.updateMemberBusinessRoles('p1', 'u1', ['architect', 'developer']);
+    expect(put).toHaveBeenCalledWith('/projects/p1/members/u1/business-roles', {
+      localRoles: ['architect', 'developer'],
+    });
+    await projectsService.updateMemberBusinessRoles('p1', 'u1', []);
+    expect(put).toHaveBeenLastCalledWith('/projects/p1/members/u1/business-roles', {
+      localRoles: [],
+    });
+  });
+
   it('update can set maxParallelUnits + prStrategy (WP5/WP6 settings)', async () => {
     await projectsService.update('p1', { maxParallelUnits: 3, prStrategy: 'intent-pr' });
     expect(put).toHaveBeenCalledWith('/projects/p1', {

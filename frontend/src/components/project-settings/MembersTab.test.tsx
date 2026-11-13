@@ -6,6 +6,8 @@ const listMembers = vi.hoisted(() => vi.fn());
 const listAssignableUsers = vi.hoisted(() => vi.fn());
 const addMember = vi.hoisted(() => vi.fn());
 const removeMember = vi.hoisted(() => vi.fn());
+const listBusinessRoles = vi.hoisted(() => vi.fn());
+const updateMemberBusinessRoles = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/projects', () => ({
   projectsService: {
@@ -14,6 +16,8 @@ vi.mock('@/services/projects', () => ({
     addMember: (...args: unknown[]) => addMember(...args),
     updateMemberRole: vi.fn(),
     removeMember: (...args: unknown[]) => removeMember(...args),
+    listBusinessRoles: (...args: unknown[]) => listBusinessRoles(...args),
+    updateMemberBusinessRoles: (...args: unknown[]) => updateMemberBusinessRoles(...args),
   },
 }));
 
@@ -59,6 +63,116 @@ beforeEach(() => {
   ]);
   addMember.mockReset().mockResolvedValue({});
   removeMember.mockReset().mockResolvedValue({});
+  listBusinessRoles.mockReset().mockResolvedValue([
+    { id: 'architect', name: 'Architect' },
+    { id: 'developer', name: 'Developer' },
+    { id: 'product-owner', name: 'Product Owner / Product Manager' },
+  ]);
+  updateMemberBusinessRoles
+    .mockReset()
+    .mockImplementation(async (_projectId, userId, localRoles) => ({
+      userId,
+      role: 'member',
+      localRoles,
+    }));
+});
+
+describe('space business roles', () => {
+  it('lets an Owner add multiple roles, save chips, and clear assignments', async () => {
+    const user = userEvent.setup();
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit business roles for existing@example.com' }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit business roles' });
+    for (const name of ['Developer', 'Architect']) {
+      await user.click(within(dialog).getByRole('combobox', { name: 'Add a business role' }));
+      await user.click(screen.getByRole('option', { name }));
+    }
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(updateMemberBusinessRoles).toHaveBeenCalledWith('project-1', 'existing-sub', [
+        'architect',
+        'developer',
+      ]),
+    );
+    expect(screen.getByText('Architect')).toBeInTheDocument();
+    expect(screen.getByText('Developer')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Edit business roles for existing@example.com' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Remove Architect' }));
+    await user.click(screen.getByRole('button', { name: 'Remove Developer' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(updateMemberBusinessRoles).toHaveBeenLastCalledWith('project-1', 'existing-sub', []),
+    );
+    expect(screen.getByText('No business roles')).toBeInTheDocument();
+  });
+
+  it('cancels without saving and retains the draft when a save is denied', async () => {
+    const user = userEvent.setup();
+    listMembers.mockResolvedValue([
+      { userId: 'member', role: 'member', localRoles: ['architect'] },
+    ]);
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(await screen.findByRole('button', { name: 'Edit business roles for member' }));
+    await user.click(screen.getByRole('button', { name: 'Remove Architect' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(updateMemberBusinessRoles).not.toHaveBeenCalled();
+    expect(screen.getByText('Architect')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit business roles for member' }));
+    await user.click(screen.getByRole('button', { name: 'Remove Architect' }));
+    updateMemberBusinessRoles.mockRejectedValue(new Error('Space Owner access required'));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Space Owner access required');
+    expect(screen.getByText('No business roles assigned.')).toBeInTheDocument();
+    expect(screen.getByText('Architect')).toBeInTheDocument();
+  });
+
+  it('shows business-role chips to Members without edit controls or management rights', async () => {
+    listMembers.mockResolvedValue([
+      {
+        userId: 'member',
+        role: 'member',
+        localRoles: ['product-owner', 'developer'],
+      },
+    ]);
+    render(<MembersTab projectId="project-1" userRole="member" />);
+    expect(await screen.findByText('Product Owner / Product Manager')).toBeInTheDocument();
+    expect(screen.getByText('Developer')).toBeInTheDocument();
+    const icon = (text: string) => screen.getByText(text).querySelector('svg[aria-hidden="true"]');
+    expect(icon('Product Owner / Product Manager')).toHaveClass('lucide-lightbulb');
+    expect(icon('Developer')).toHaveClass('lucide-code-xml');
+    expect(screen.queryByRole('button', { name: /Edit business roles/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Member' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Business roles describe responsibilities for now/),
+    ).toBeInTheDocument();
+  });
+
+  it('clears the role editor and ignores old member loads when switching spaces', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(await screen.findByRole('button', { name: /Edit business roles/ }));
+    let finishOldLoad!: (value: unknown) => void;
+    listMembers.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOldLoad = resolve;
+        }),
+    );
+    rerender(<MembersTab projectId="slow-space" userRole="owner" />);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    listMembers.mockResolvedValue([
+      { userId: 'new-member', role: 'member', localRoles: ['developer'] },
+    ]);
+    rerender(<MembersTab projectId="new-space" userRole="owner" />);
+    expect(await screen.findByText('Developer')).toBeInTheDocument();
+    finishOldLoad([{ userId: 'old-member', role: 'member', localRoles: ['architect'] }]);
+    await waitFor(() => expect(screen.queryByText('old-member')).not.toBeInTheDocument());
+    expect(screen.queryByText('Architect')).not.toBeInTheDocument();
+  });
 });
 
 describe('MembersTab assignable identity picker', () => {
