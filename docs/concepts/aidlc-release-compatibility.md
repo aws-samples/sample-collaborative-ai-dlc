@@ -70,6 +70,23 @@ release bundle to S3. The manifest records the source SHA, importer revision,
 catalog digest, object digests, and compatibility evidence. Conditional writes
 prevent an import from replacing existing bytes.
 
+A custom fork may also ship native harness distributions at `dist/<harness>/`
+(`claude`, `codex`, `kiro`, `kiro-ide`, `opencode`), which a
+[native export](../using-the-platform/exporting-workspaces.md#intents-on-a-custom-fork-release)
+of an intent on the release ships instead of the official one. The import reads
+them in the same archive download as `core/` and stores each one beside the
+closure, at `<release prefix>/dist/<harness>.tar.gz` with a checksummed
+`<harness>.manifest.json`. They are not part of the closure: the manifest, its
+digest and the compatibility evidence are the same with or without them, so
+capturing them never changes what a pinned intent runs or what was certified.
+The import summary lists them under `distributions`.
+
+A distribution is optional. One the import cannot store (an unsafe path, or more
+than 1,000 files or 20 MiB) is listed with status `unavailable` and its reason,
+and the release still imports: a dry run reports the same result before anything
+is written. The same files always build the same archive bytes, so importing a
+commit twice, even at the same time, stores matching archives and manifests.
+
 The importer revision includes a fingerprint of the block mapper. Mapper keys
 and frontmatter normalization are defined for the supported profile set. A
 mapping change alters the importer fingerprint and catalog goldens, so it

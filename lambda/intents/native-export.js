@@ -12,6 +12,7 @@ import {
 import { projectNativeWorkspace } from '../shared/native-workspace-projector.js';
 import { fetchRepoFiles } from '../shared/repo-fetch.js';
 import { isCommitSha } from '../shared/aidlc-ref.js';
+import { releaseDistributionKeys } from '../shared/release-distributions.js';
 
 const MAX_EXPORT_BYTES = 100 * 1024 * 1024;
 const DOWNLOAD_TTL_SECONDS = 15 * 60;
@@ -319,6 +320,26 @@ const loadDistribution = async ({ s3, bucket, upstreamRef, harness }) => {
   return fetchAndCacheDistribution({ s3, bucket, upstreamRef, harness });
 };
 
+// A custom fork release's own distribution, captured at import beside its
+// closure (shared/release-distributions.js). Read-only: nothing is fetched or
+// written here. Returns null when the release does not ship this harness, or
+// was imported before distributions were captured.
+const loadReleaseDistribution = async ({ s3, bucket, keyArgs, harness }) => {
+  if (!HARNESS_DATA_DIRS[harness]) {
+    throw new Error(`native-export: unsupported harness ${harness}`);
+  }
+  const keys = releaseDistributionKeys(keyArgs, harness);
+  const manifestBody = await readObjectIfPresent({ s3, bucket, key: keys.manifest });
+  if (!manifestBody) return null;
+  const archive = await readObjectIfPresent({ s3, bucket, key: keys.archive });
+  if (!archive) return null;
+  return validateDistribution({
+    archive,
+    manifest: JSON.parse(manifestBody.toString('utf8')),
+    upstreamRef: keyArgs.sha,
+    harness,
+  });
+};
 const loadHarnessMetadata = ({ distributionFiles, harness }) => {
   const dataDir = HARNESS_DATA_DIRS[harness];
   const body = dataDir ? distributionFiles.get(`${dataDir}/harness.json`) : null;
@@ -528,7 +549,16 @@ const registerNativeScope = ({ distributionFiles, harness, stages, scope }) => {
   return { files, registered: true, scope: nativeScope };
 };
 
-const alignProjectionToDistribution = ({ projection, distributionFiles, harness }) => {
+// `omitStagesNotInDistribution` is for a custom release exported onto the
+// official distribution it is based on: a stage only the release defines is
+// left out, as long as no work was recorded for it. A stage with recorded work
+// still refuses, because the official distribution cannot resume it.
+const alignProjectionToDistribution = ({
+  projection,
+  distributionFiles,
+  harness,
+  omitStagesNotInDistribution = false,
+}) => {
   const dataDir = HARNESS_DATA_DIRS[harness];
   const graphBody = distributionFiles.get(`${dataDir}/stage-graph.json`);
   if (!graphBody) throw new Error(`native-export: ${harness} distribution has no stage graph`);
@@ -536,15 +566,28 @@ const alignProjectionToDistribution = ({ projection, distributionFiles, harness 
   if (!Array.isArray(graph) || graph.length === 0) {
     throw new Error(`native-export: ${harness} distribution stage graph is invalid`);
   }
-  const requested = new Map(projection.stages.map((stage) => [stage.stageId, stage]));
   const nativeIds = new Set(graph.map((stage) => stage.slug));
-  const unknown = [...requested.keys()].filter((stageId) => !nativeIds.has(stageId));
+  const unknown = projection.stages
+    .map((stage) => stage.stageId)
+    .filter((stageId) => !nativeIds.has(stageId));
+  let projectedStages = projection.stages;
   if (unknown.length > 0) {
-    throw new Error(
-      `native-export: stages are not present in the native harness: ${unknown.join(', ')}`,
-    );
+    if (!omitStagesNotInDistribution) {
+      throw new Error(
+        `native-export: stages are not present in the native harness: ${unknown.join(', ')}`,
+      );
+    }
+    const worked = new Set((projection.stageRows ?? []).map((row) => row?.stageId).filter(Boolean));
+    const blocking = unknown.filter((stageId) => worked.has(stageId));
+    if (blocking.length > 0) {
+      throw new Error(
+        `native-export: stages with recorded work are not present in the native harness: ${blocking.join(', ')}`,
+      );
+    }
+    projectedStages = projection.stages.filter((stage) => nativeIds.has(stage.stageId));
   }
-  const requestedOrder = projection.stages
+  const requested = new Map(projectedStages.map((stage) => [stage.stageId, stage]));
+  const requestedOrder = projectedStages
     .filter((stage) => !stage.excluded)
     .map((stage) => stage.stageId);
   const nativeOrder = graph
@@ -570,7 +613,7 @@ const alignProjectionToDistribution = ({ projection, distributionFiles, harness 
     };
   });
   const nativeScope = assertNativeScopeName(projection.intent?.scope);
-  return { ...projection, stages, nativeScope };
+  return { ...projection, stages, nativeScope, omittedStages: unknown };
 };
 
 const buildZip = async (files) => {
@@ -609,20 +652,27 @@ const createNativeExport = async ({
   warnings = [],
   sourceCheckpoint = null,
   validateSnapshot = null,
+  omitStagesNotInDistribution = false,
+  // A distribution the caller already loaded (a custom release's own, from
+  // loadReleaseDistribution); otherwise the official one at upstreamRef.
+  preloadedDistribution = null,
 }) => {
   if (!bucket) throw misconfigured('native-export: artifacts bucket is not configured');
   if (!upstreamRef) throw misconfigured('native-export: upstream ref is not configured');
 
-  const distribution = await loadDistribution({
-    s3,
-    bucket,
-    upstreamRef,
-    harness,
-  });
+  const distribution =
+    preloadedDistribution ??
+    (await loadDistribution({
+      s3,
+      bucket,
+      upstreamRef,
+      harness,
+    }));
   const alignedProjection = alignProjectionToDistribution({
     projection,
     distributionFiles: distribution.files,
     harness,
+    omitStagesNotInDistribution,
   });
   const registeredScope = registerNativeScope({
     distributionFiles: distribution.files,
@@ -651,7 +701,15 @@ const createNativeExport = async ({
     now,
   });
   const nextUnit = projected.manifest.construction?.nextUnit ?? null;
-  const effectiveWarnings = [...new Set([...warnings, ...(projected.warnings ?? [])])];
+  const omittedStageWarnings =
+    alignedProjection.omittedStages.length > 0
+      ? [
+          `Stages that the AI-DLC ${upstreamRef.slice(0, 8)} distribution does not have were left out: ${alignedProjection.omittedStages.join(', ')}.`,
+        ]
+      : [];
+  const effectiveWarnings = [
+    ...new Set([...warnings, ...omittedStageWarnings, ...(projected.warnings ?? [])]),
+  ];
   if (nextUnit && !constructionCapabilities.perUnitIteration) {
     effectiveWarnings.push(
       `This pinned AI-DLC runtime predates deterministic per-unit Construction iteration. ` +
@@ -765,6 +823,7 @@ export {
   detectWorkspaceLayout,
   fetchAndCacheDistribution,
   loadDistribution,
+  loadReleaseDistribution,
   loadCustomRules,
   registerNativeScope,
   resolveRulesDir,

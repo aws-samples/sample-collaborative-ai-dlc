@@ -107,7 +107,19 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
-import { fetchCoreFiles } from '../shared/repo-fetch.js';
+import {
+  MAX_REPO_FILES,
+  MAX_REPO_RETAINED_BYTES,
+  fetchCoreFiles,
+  fetchRepoFiles,
+} from '../shared/repo-fetch.js';
+import { MAX_DISTRIBUTION_BYTES, MAX_DISTRIBUTION_FILES } from '../shared/distribution-archive.js';
+import {
+  NATIVE_DISTRIBUTION_HARNESSES,
+  describeReleaseDistributions,
+  planReleaseDistributions,
+  publishReleaseDistributions,
+} from '../shared/release-distributions.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
@@ -389,16 +401,8 @@ const putObject = (key, body, contentType) =>
     }),
   );
 
-// Stages one release commit into immutable release storage. This path
-// deliberately shares nothing with the SYSTEM seed below: no DynamoDB access,
-// no SYSTEM partition clear, and no aidlc-runtime/ or aidlc-catalogs/ writes,
-// so an import can never change what a running intent resolves to.
-//
-// Two mutually exclusive sources: an allowlisted official `profile` id, or a
-// `custom` fork pinned to an exact SHA. A custom import lands on its own
-// `custom/<owner>/<name>/` (or `custom/gitlab/<path>/`) prefix and is recorded T0 and import-only; only an
-// admin promotion through the fidelity guard makes it runnable.
-const importRelease = async ({ event, dryRun, reseed }) => {
+// The request options importRelease refuses whatever release it names.
+const assertImportOptions = ({ event, reseed }) => {
   if (reseed) {
     throw new Error('seed-blocks: importRelease cannot be combined with reseed');
   }
@@ -420,37 +424,85 @@ const importRelease = async ({ event, dryRun, reseed }) => {
       `seed-blocks: importRelease publishes importer revision ${AIDLC_RELEASE_IMPORTER_REVISION}, not ${String(event.importerRevision)}`,
     );
   }
-  const requested = event?.profile;
-  const requestedCustom = event?.custom ?? null;
-  if (requested != null && requestedCustom != null) {
+  if (event?.profile != null && event?.custom != null) {
     throw new Error('seed-blocks: importRelease takes either "profile" or "custom", not both');
   }
-
-  let profile = null;
-  let source = null;
-  if (requestedCustom != null) {
-    if (typeof requestedCustom !== 'object' || Array.isArray(requestedCustom)) {
-      throw new Error(
-        'seed-blocks: importRelease "custom" must be an object { repository, sha, baseProfile }',
-      );
-    }
-    profile = customProfile({
-      repository: requestedCustom.repository,
-      sha: requestedCustom.sha,
-      baseProfileId: requestedCustom.baseProfile,
-    });
-    source = await customFetchSource(profile.sourceRepository);
-  } else {
+};
+// The release an importRelease request names, validated: an allowlisted
+// official `profile` id, or a `custom` fork pinned to an exact SHA together with
+// the credentials its source needs (`source` is null for an official profile).
+const resolveImportRequest = async ({ event, reseed }) => {
+  assertImportOptions({ event, reseed });
+  const requested = event?.profile;
+  const requestedCustom = event?.custom ?? null;
+  if (requestedCustom == null) {
     // Profile id only (never a raw SHA) so the invoke payload is self-describing.
-    profile = typeof requested === 'string' ? profileFor(requested) : null;
+    const profile = typeof requested === 'string' ? profileFor(requested) : null;
     if (!profile || profile.id !== requested) {
       throw new Error(`seed-blocks: unknown AI-DLC release profile "${String(requested)}"`);
     }
+    return { profile, source: null };
   }
-
-  const files = source
-    ? await fetchCoreFiles(profile.upstreamRef, source)
-    : await fetchCoreFiles(profile.upstreamRef);
+  if (typeof requestedCustom !== 'object' || Array.isArray(requestedCustom)) {
+    throw new Error(
+      'seed-blocks: importRelease "custom" must be an object { repository, sha, baseProfile }',
+    );
+  }
+  const profile = customProfile({
+    repository: requestedCustom.repository,
+    sha: requestedCustom.sha,
+    baseProfileId: requestedCustom.baseProfile,
+  });
+  return { profile, source: await customFetchSource(profile.sourceRepository) };
+};
+// A custom fork's `core/` files and the native harness distributions
+// (`dist/<harness>/`) it may ship for the native export, which cannot fetch them
+// from the official repository at the fork's commit. Both come from one archive
+// download (a second download of the same commit can hit the source's rate
+// limit).
+const fetchCustomReleaseFiles = async ({ profile, source }) => {
+  const fetched = await fetchRepoFiles(profile.upstreamRef, {
+    ...source,
+    prefixes: ['core/', ...NATIVE_DISTRIBUTION_HARNESSES.map((harness) => `dist/${harness}/`)],
+    maxFiles: MAX_REPO_FILES + NATIVE_DISTRIBUTION_HARNESSES.length * MAX_DISTRIBUTION_FILES,
+    maxRetainedBytes:
+      MAX_REPO_RETAINED_BYTES + NATIVE_DISTRIBUTION_HARNESSES.length * MAX_DISTRIBUTION_BYTES,
+  });
+  const files = new Map();
+  const distributionFiles = new Map();
+  for (const [path, body] of fetched) {
+    // The fetch returns only the requested prefixes: core/ or dist/<harness>/.
+    if (path.startsWith('core/')) files.set(path, body.toString('utf8'));
+    else distributionFiles.set(path, body);
+  }
+  if (files.size === 0) {
+    throw new Error(
+      `seed-blocks: ${profile.sourceRepository} has no core/ files at ${profile.upstreamRef}`,
+    );
+  }
+  return { files, distributionFiles };
+};
+// Stages one release commit into immutable release storage. This path
+// deliberately shares nothing with the SYSTEM seed below: no DynamoDB access,
+// no SYSTEM partition clear, and no aidlc-runtime/ or aidlc-catalogs/ writes,
+// so an import can never change what a running intent resolves to.
+//
+// Two mutually exclusive sources: an allowlisted official `profile` id, or a
+// `custom` fork pinned to an exact SHA. A custom import lands on its own
+// `custom/<owner>/<name>/` (or `custom/gitlab/<path>/`) prefix and is recorded T0 and import-only; only an
+// admin promotion through the fidelity guard makes it runnable.
+//
+// A fork's native distributions are stored beside the closure after it is
+// published. They are not part of the closure, so its digest and compatibility
+// record are unchanged, and they are optional: one that cannot be stored is
+// reported as unavailable, decided before anything is written, and never fails
+// the import.
+const importRelease = async ({ event, dryRun, reseed }) => {
+  const { profile, source } = await resolveImportRequest({ event, reseed });
+  const { files, distributionFiles } = source
+    ? await fetchCustomReleaseFiles({ profile, source })
+    : { files: await fetchCoreFiles(profile.upstreamRef), distributionFiles: new Map() };
+  const distributionPlan = planReleaseDistributions(distributionFiles);
   const bundle = buildReleaseBundle({ profile, files });
   const { manifest, objects } = bundle;
   const summary = {
@@ -471,17 +523,38 @@ const importRelease = async ({ event, dryRun, reseed }) => {
     runtimeFileCount: manifest.runtimeFiles.length,
     compatibility: manifest.compatibility,
   };
-
-  if (dryRun) {
-    logger.info('seed-blocks importRelease dry-run', summary);
-    return { ...summary, status: 'dry-run' };
+  if (distributionPlan.unavailable.length > 0) {
+    logger.warn('seed-blocks importRelease leaves out distributions it cannot store', {
+      releaseId: manifest.releaseId,
+      unavailable: distributionPlan.unavailable,
+    });
   }
-
+  if (dryRun) {
+    const result = {
+      ...summary,
+      status: 'dry-run',
+      distributions: describeReleaseDistributions(distributionPlan),
+    };
+    logger.info('seed-blocks importRelease dry-run', result);
+    return result;
+  }
   const published = await publishReleaseBundle({ s3, bucket: artifactsBucket(), bundle });
-  logger.info('seed-blocks importRelease result', { ...summary, status: published.status });
-  return { ...summary, status: published.status };
+  const stored = await publishReleaseDistributions({
+    s3,
+    bucket: artifactsBucket(),
+    keyArgs: releaseKeyArgs(manifest),
+    distributions: distributionPlan.usable,
+  });
+  const result = {
+    ...summary,
+    status: published.status,
+    distributions: [...stored, ...distributionPlan.unavailable].toSorted((a, b) =>
+      a.harness.localeCompare(b.harness),
+    ),
+  };
+  logger.info('seed-blocks importRelease result', result);
+  return result;
 };
-
 // The current importer's closure for an official profile, when a previous
 // deployment already published it. It is read and verified from object storage
 // rather than rebuilt, so a redeploy does not depend on the upstream archive. A
