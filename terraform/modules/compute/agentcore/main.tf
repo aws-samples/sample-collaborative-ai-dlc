@@ -23,7 +23,7 @@ terraform {
     }
     awscc = {
       source  = "hashicorp/awscc"
-      version = "~> 1.0"
+      version = "~> 1.0, >= 1.103.0"
     }
   }
 }
@@ -805,6 +805,9 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   role_arn           = aws_iam_role.agentcore.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).
   protocol_configuration = "HTTP"
+
+  # Keep microVMs on V1 until the snapshot restore qualification in #719 passes.
+  platform_version = "V1"
 
   agent_runtime_artifact = {
     container_configuration = {

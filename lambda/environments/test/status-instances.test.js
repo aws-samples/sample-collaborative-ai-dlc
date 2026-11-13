@@ -111,6 +111,7 @@ describe('createRuntimeForRevision on the Instances compute type', () => {
     });
     // Instances runtimes inherit networking from the capacity provider.
     expect(createInput.networkConfiguration).toBeUndefined();
+    expect(createInput.platformVersion).toBeUndefined();
     expect(createInput.filesystemConfigurations).toEqual([
       { capacityProviderVolume: { volumeName: 'workspace', mountPath: '/mnt/workspace' } },
     ]);

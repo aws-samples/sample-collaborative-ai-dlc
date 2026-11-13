@@ -157,6 +157,7 @@ describe('managed environment status handler', () => {
       runtimeEndpointArn: null,
     });
     const runtimeInput = controlClient.send.mock.calls[0][0].input;
+    expect(runtimeInput.platformVersion).toBe('V1');
     expect(runtimeInput.protocolConfiguration).toEqual({
       serverProtocol: 'HTTP',
     });
@@ -281,6 +282,7 @@ describe('managed environment status handler', () => {
       }),
     );
     expect(controlClient.send.mock.calls[0][0].constructor.name).toBe('CreateAgentRuntimeCommand');
+    expect(controlClient.send.mock.calls[0][0].input.platformVersion).toBe('V1');
   });
 
   it('reopens legacy Critical scan failures without rebuilding the image', async () => {
