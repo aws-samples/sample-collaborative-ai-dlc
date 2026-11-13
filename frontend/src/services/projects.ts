@@ -151,6 +151,12 @@ export interface Member {
   userId: string;
   email?: string;
   role: ProjectRole;
+  localRoles?: string[];
+}
+
+export interface BusinessRole {
+  id: string;
+  name: string;
 }
 
 export interface AddMemberInput {
@@ -217,6 +223,10 @@ export const projectsService = {
 
   // Members
   listMembers: (projectId: string) => listPages<Member>(`/projects/${projectId}/members`),
+  listBusinessRoles: (projectId: string) =>
+    api.get<BusinessRole[]>(`/projects/${projectId}/business-roles`),
+  updateMemberBusinessRoles: (projectId: string, userId: string, localRoles: string[]) =>
+    api.put<Member>(`/projects/${projectId}/members/${userId}/business-roles`, { localRoles }),
   addMember: (projectId: string, input: AddMemberInput) =>
     api.post<Member>(`/projects/${projectId}/members`, input),
   updateMemberRole: (projectId: string, userId: string, role: ProjectRole) =>

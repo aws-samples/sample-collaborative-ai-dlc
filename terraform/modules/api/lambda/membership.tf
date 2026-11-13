@@ -40,8 +40,11 @@ resource "aws_iam_role_policy" "membership_write" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"]
+        Effect = "Allow"
+        Action = concat(
+          ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
+          each.key == "users" ? ["dynamodb:UpdateItem"] : []
+        )
         Resource = [var.access_table_arn]
       },
       {

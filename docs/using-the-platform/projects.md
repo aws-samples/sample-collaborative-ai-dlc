@@ -70,6 +70,23 @@ Removal revokes REST access and new realtime tokens immediately; an existing
 realtime session expires within ten minutes. Delegated integration access is
 removed and must be configured again if the person is re-added.
 
+#### Business roles
+
+Each member can hold one or more business roles in a space: Product Owner /
+Product Manager, Business Analyst, Architect, UX/UI Designer, Developer,
+QA / Tester, Security / Compliance, Operations / DevOps, and Delivery Manager.
+Roles are assigned per space, so the same person can be Architect in one space
+and Developer in another.
+
+Every member can see the role chips in the member list. Only Owners can change
+them: select a member's roles to open the editor, add or remove roles, and save.
+Business roles are separate from space access. **Product Owner** does not make
+someone a space Owner, and a business role never grants access to a space.
+Removing a member clears their roles; a re-added member starts with none.
+
+Business roles currently describe responsibilities only. Gates and execution do
+not check them yet.
+
 ### Agent
 
 - **Space Agent Credentials** — optional shared Bedrock and Kiro credentials for members without personal credentials. Personal credentials take precedence; platform credentials remain the fallback.

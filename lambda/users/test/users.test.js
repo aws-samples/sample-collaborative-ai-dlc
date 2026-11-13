@@ -48,10 +48,10 @@ beforeEach(async () => {
   cleanup.trackers.mockReset().mockResolvedValue(undefined);
   cleanup.sourceControl.mockReset().mockResolvedValue(undefined);
 });
-const request = (method, { actor = 'owner', userId, data, query } = {}) =>
+const request = (method, { actor = 'owner', userId, data, query, route = 'members' } = {}) =>
   handler({
     httpMethod: method,
-    path: `/projects/${projectId}/members`,
+    path: `/projects/${projectId}/${route}`,
     pathParameters: { projectId, userId },
     queryStringParameters: query,
     requestContext: { authorizer: { claims: { sub: actor } } },
@@ -59,6 +59,98 @@ const request = (method, { actor = 'owner', userId, data, query } = {}) =>
   });
 
 describe('space member API', () => {
+  it('lists the shared catalog and assignments for Members but only allows Owners to change them', async () => {
+    await seedMembership(projectId, 'member', 'member');
+    const route = 'members/member/business-roles';
+    const catalog = JSON.parse(
+      (await request('GET', { actor: 'member', route: 'business-roles' })).body,
+    );
+    expect(catalog).toHaveLength(9);
+    expect(catalog.find((role) => role.id === 'product-owner').name).toBe(
+      'Product Owner / Product Manager',
+    );
+    expect(
+      (
+        await request('PUT', {
+          route,
+          userId: 'member',
+          data: { localRoles: ['developer', 'product-owner'] },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const page = JSON.parse(
+      (await request('GET', { actor: 'member', query: { paged: '1' } })).body,
+    );
+    expect(page.items.find((member) => member.userId === 'member')).toMatchObject({
+      role: 'member',
+      localRoles: ['developer', 'product-owner'],
+    });
+    for (const actor of ['member', 'outsider']) {
+      expect(
+        (await request('PUT', { actor, route, userId: 'member', data: { localRoles: [] } }))
+          .statusCode,
+      ).toBe(403);
+      expect((await request('POST', { actor, data: { userId: 'new' } })).statusCode).toBe(403);
+    }
+    expect((await request('GET', { actor: 'outsider', route: 'business-roles' })).statusCode).toBe(
+      403,
+    );
+    expect(
+      (await request('PUT', { route, userId: 'member', data: { localRoles: [] } })).statusCode,
+    ).toBe(200);
+    expect((await membershipStore.get(projectId, 'member')).localRoles).toEqual([]);
+    for (const localRoles of [['made-up'], null, 'developer']) {
+      expect(
+        (await request('PUT', { route, userId: 'member', data: { localRoles } })).statusCode,
+      ).toBe(400);
+    }
+    expect(
+      (await request('PUT', { route, userId: 'missing', data: { localRoles: ['developer'] } }))
+        .statusCode,
+    ).toBe(404);
+  });
+
+  it('does not restore local assignments after removing and re-adding membership', async () => {
+    await seedMembership(projectId, 'returning', 'member');
+    await request('PUT', {
+      route: 'members/returning/business-roles',
+      userId: 'returning',
+      data: { localRoles: ['architect'] },
+    });
+    expect((await request('DELETE', { userId: 'returning' })).statusCode).toBe(204);
+    expect(
+      (await request('POST', { data: { userId: 'returning', role: 'member' } })).statusCode,
+    ).toBe(201);
+    const member = JSON.parse((await request('GET')).body).find((m) => m.userId === 'returning');
+    expect(member.localRoles).toEqual([]);
+  });
+
+  it('authorizes history reads and bounds timestamp-range results to 50 entries', async () => {
+    await seedMembership(projectId, 'member', 'member');
+    for (let i = 0; i < 51; i++)
+      await membershipStore.changeLocalRoles({
+        spaceId: projectId,
+        userId: 'member',
+        actorId: 'owner',
+        localRoles: i % 2 ? [] : ['architect'],
+      });
+    const route = 'membership-history';
+    const first = JSON.parse((await request('GET', { actor: 'member', route })).body);
+    expect(first.items).toHaveLength(50);
+    const second = JSON.parse(
+      (await request('GET', { route, query: { nextToken: first.nextToken } })).body,
+    );
+    expect(second.items).toHaveLength(3);
+    const timestamp = first.items[0].timestamp;
+    const ranged = JSON.parse(
+      (await request('GET', { route, query: { from: timestamp, to: timestamp } })).body,
+    );
+    expect(ranged.items.length).toBeGreaterThan(0);
+    expect(ranged.items.every((entry) => entry.timestamp === timestamp)).toBe(true);
+    expect((await request('GET', { route, query: { from: 'invalid' } })).statusCode).toBe(400);
+    expect((await request('GET', { actor: 'outsider', route })).statusCode).toBe(403);
+  });
+
   it('accepts legacy admin input as Owner and lets the resulting Owner manage other Owners', async () => {
     expect(
       (
