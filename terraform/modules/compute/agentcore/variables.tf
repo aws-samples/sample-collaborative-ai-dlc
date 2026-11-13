@@ -107,6 +107,11 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "lane_sync_policy" {
+  description = "When the engine merges the intent branch into a unit lane: \"none\" or \"before-stage\""
+  type        = string
+  default     = "none"
+}
 variable "bedrock_model" {
   description = "Default Bedrock inference profile id for stage agents"
   type        = string

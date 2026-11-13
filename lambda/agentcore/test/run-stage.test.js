@@ -6225,6 +6225,177 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
+  describe('lane sync (LANE_SYNC_POLICY)', () => {
+    const laneArgs = {
+      ...unitArgs,
+      repos: ['acme/api'],
+      branch: 'aidlc/i1--s1-unit-billing',
+      baseBranch: 'aidlc/i1',
+      gitProvider: 'gitlab',
+    };
+    const syncEnv = {
+      BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+      LANE_SYNC_POLICY: 'before-stage',
+    };
+    const syncDeps = (syncLaneWithIntent, overrides = {}) =>
+      unitDeps({
+        env: syncEnv,
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        syncLaneWithIntent,
+        ...overrides,
+      });
+    const eventsOf = (deps) =>
+      deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+
+    it('merges the intent branch into the lane before a fresh stage', async () => {
+      const calls = [];
+      let spawnedAfterSync = false;
+      const deps = syncDeps(
+        async (input) => {
+          calls.push(input);
+          return { synced: true, results: [{ repo: 'acme/api', outcome: 'merged', sha: 'abc' }] };
+        },
+        {
+          spawnFn: () => {
+            spawnedAfterSync = calls.length === 1;
+            return okSpawn();
+          },
+        },
+      );
+      const res = await runStage(laneArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(calls).toEqual([
+        expect.objectContaining({
+          unitSlug: 'billing',
+          repos: ['acme/api'],
+          unitBranch: 'aidlc/i1--s1-unit-billing',
+          intentBranch: 'aidlc/i1',
+          gitProvider: 'gitlab',
+          workspaceDir: '/ws',
+        }),
+      ]);
+      expect(spawnedAfterSync).toBe(true);
+      expect(eventsOf(deps)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'v2.lane.synced',
+            unitSlug: 'billing',
+            summary: 'Lane billing synced with aidlc/i1: acme/api (abc)',
+          }),
+        ]),
+      );
+    });
+
+    it('runs the stage on the current branch after a conflict, and records it', async () => {
+      const deps = syncDeps(async () => ({
+        synced: false,
+        results: [
+          {
+            repo: 'acme/api',
+            outcome: 'conflict',
+            reason: 'merge_conflict',
+            conflicts: ['src/a.js'],
+          },
+        ],
+      }));
+      const res = await runStage(laneArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(eventsOf(deps).map((e) => e.type)).toContain('v2.lane.sync_conflict');
+    });
+
+    it('runs the stage when the sync throws', async () => {
+      const deps = syncDeps(async () => {
+        throw new Error('boom');
+      });
+      const res = await runStage(laneArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(eventsOf(deps)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'v2.lane.sync_failed' })]),
+      );
+    });
+
+    it('syncs inside the stage invocation credential session', async () => {
+      let seen = null;
+      await runStage(
+        laneArgs,
+        syncDeps(async () => {
+          const session = currentCredentialSession();
+          let available = false;
+          try {
+            session?.assertAvailable();
+            available = Boolean(session);
+          } catch {
+            available = false;
+          }
+          seen = { session, available };
+          return { synced: false, results: [] };
+        }),
+      );
+      expect(seen.session).not.toBeNull();
+      expect(seen.available).toBe(true);
+    });
+
+    it('runs the stage when the sync event cannot be recorded', async () => {
+      const deps = syncDeps(async () => ({
+        synced: true,
+        results: [{ repo: 'acme/api', outcome: 'merged', sha: 'abc' }],
+      }));
+      const append = deps.store.appendEvent;
+      deps.store.appendEvent = async (event) => {
+        if (event.type?.startsWith('v2.lane.')) throw new Error('throttled');
+        return append(event);
+      };
+      deps.broadcast = async (payload) => {
+        if (payload.action === 'agent.workspace') throw new Error('socket closed');
+      };
+      const res = await runStage(laneArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+
+    it('records nothing when the lane is already up to date', async () => {
+      const deps = syncDeps(async () => ({
+        synced: false,
+        results: [{ repo: 'acme/api', outcome: 'up_to_date' }],
+      }));
+      await runStage(laneArgs, deps);
+      expect(eventsOf(deps).some((e) => e.type.startsWith('v2.lane.'))).toBe(false);
+    });
+
+    it('does not sync with the default policy', async () => {
+      const sync = vi.fn();
+      await runStage(laneArgs, syncDeps(sync, { env: { BEDROCK_MODEL: 'm' } }));
+      expect(sync).not.toHaveBeenCalled();
+    });
+
+    it('does not sync a resumed conversation', async () => {
+      const sync = vi.fn();
+      const deps = syncDeps(sync, {
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          humanTask: {
+            humanTaskId: 'q-1',
+            status: 'answered',
+            answer: { freeText: 'go' },
+            unitSlug: 'billing',
+          },
+          stage: { cli: 'claude', cliSessionId: 'sess-7' },
+        }),
+      });
+      await runStage({ ...laneArgs, resumeFrom: 'q-1' }, deps);
+      expect(sync).not.toHaveBeenCalled();
+    });
+
+    it('does not sync outside a lane', async () => {
+      const sync = vi.fn();
+      await runStage(
+        { ...laneArgs, unitSlug: null, stageId: 'requirements-analysis' },
+        syncDeps(sync),
+      );
+      await runStage({ ...laneArgs, branch: 'aidlc/i1' }, syncDeps(sync));
+      expect(sync).not.toHaveBeenCalled();
+    });
+  });
+
   it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {
     const messages = [];
     const deps = unitDeps({
