@@ -143,6 +143,36 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
   });
 });
 
+describe('protected engine Lambda interface stage', () => {
+  it('installs the runtime interface client from its lockfile with its documented build tools', () => {
+    const stage = dockerfile.slice(
+      dockerfile.indexOf(' AS native-lambda-interface'),
+      dockerfile.indexOf('\nFROM ', dockerfile.indexOf(' AS native-lambda-interface')),
+    );
+    for (const tool of [
+      'autoconf',
+      'automake',
+      'cmake',
+      'g++',
+      'gcc',
+      'libtool',
+      'make',
+      'xz-utils',
+    ])
+      expect(stage).toMatch(new RegExp(`apt-get install[^&]*\\s${tool.replace('+', '\\+')}\\s`));
+    expect(stage).toContain('npm ci --omit=dev');
+    expect(stage).not.toContain('npm install');
+    const lock = JSON.parse(
+      readFileSync(
+        path.join(agentcoreDir, '..', 'native-runtime-control/runtime-interface/package-lock.json'),
+        'utf8',
+      ),
+    );
+    expect(lock.packages['node_modules/aws-lambda-ric'].version).toBe('4.0.2');
+    expect(lock.packages['node_modules/aws-lambda-ric'].integrity).toMatch(/^sha512-/);
+  });
+});
+
 describe('container runtime file ownership', () => {
   // Two requirements meet here. Runtime code must stay readable by the node
   // user even when the checkout is restrictive (0600 files), and it must not

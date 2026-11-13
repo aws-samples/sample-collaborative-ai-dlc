@@ -8,8 +8,12 @@
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS native-lambda-interface
+# aws-lambda-ric compiles its bundled curl and aws-lambda-cpp sources during
+# npm ci. These are the build dependencies its documentation lists; only the
+# installed result is copied into the runtime stage.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends g++ make cmake libcurl4-openssl-dev python3 ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        autoconf automake cmake g++ gcc libtool make python3 xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=root:root --chmod=0644 native-runtime-control/runtime-interface/package*.json /opt/native-lambda-interface/
 RUN cd /opt/native-lambda-interface && npm ci --omit=dev && npm cache clean --force
