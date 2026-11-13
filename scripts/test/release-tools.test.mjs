@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import yaml from 'js-yaml';
 import { stubPublicEcr } from './helpers/public-ecr.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -94,6 +95,83 @@ test('current release metadata is internally consistent', () => {
   const version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
   const checked = run('node', ['scripts/release.mjs', 'check', version]);
   assert.equal(checked.status, 0, checked.stderr);
+});
+
+test('release forwards every deployment configuration secret through the reusable workflow contract', () => {
+  const release = yaml.load(readFileSync(releaseWorkflow, 'utf8')).jobs['deploy-demo'];
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8'));
+  const configurationSecrets = Object.values(deployment.jobs.deploy.env)
+    .flatMap((value) =>
+      [...String(value).matchAll(/\bsecrets\.([A-Z_][A-Z0-9_]*)/g)].map((match) => match[1]),
+    )
+    .sort();
+
+  assert.ok(configurationSecrets.includes('APP_DOMAIN'));
+  assert.ok(configurationSecrets.includes('SSO_CONFIG'));
+  assert.equal(typeof release.secrets, 'object', 'release must use explicit secret mappings');
+  assert.deepEqual(
+    Object.keys(release.secrets ?? {}).sort(),
+    configurationSecrets,
+    'release must forward all deployment configuration secrets, without unrelated secrets',
+  );
+  for (const name of configurationSecrets) {
+    assert.equal(release.secrets[name], '${{ secrets.' + name + ' }}');
+    assert.ok(
+      Object.hasOwn(deployment.on.workflow_call.secrets, name),
+      `${name} must be declared by the reusable workflow`,
+    );
+  }
+});
+
+test('release secret forwarding does not activate optional main deployment secrets', () => {
+  const main = yaml.load(readFileSync(mainDemoWorkflow, 'utf8')).jobs['deploy-main'];
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8'));
+  assert.equal(main.secrets, undefined);
+  for (const [name, secret] of Object.entries(deployment.on.workflow_call.secrets)) {
+    assert.equal(secret.required, false, `${name} must remain optional for main deployments`);
+  }
+});
+
+test('release configuration rejects missing domain or SSO settings before AWS credentials', () => {
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8')).jobs.deploy;
+  const validationIndex = deployment.steps.findIndex(
+    (step) => step.name === 'Validate deployment configuration',
+  );
+  const credentialsIndex = deployment.steps.findIndex(
+    (step) => step.name === 'Configure AWS credentials',
+  );
+  assert.ok(validationIndex >= 0 && validationIndex < credentialsIndex);
+  const env = Object.fromEntries(Object.keys(deployment.env).map((name) => [name, '']));
+  Object.assign(env, {
+    AWS_ACCOUNT_ID: '123456789012',
+    AWS_REGION: 'us-east-1',
+    AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/deploy',
+    BEDROCK_MODEL: 'test-model',
+    TF_STATE_BUCKET: 'test-state',
+    TF_STATE_KEY: 'terraform.tfstate',
+    TF_STATE_REGION: 'us-east-1',
+    GITHUB_ENVIRONMENT: 'demo-release',
+    REQUIRE_CUSTOM_DOMAIN: 'true',
+    APP_DOMAIN: 'localhost',
+    APP_DOMAIN_ALIASES: '[]',
+    ACM_CERTIFICATE_ARN: 'arn:aws:acm:us-east-1:123456789012:certificate/test',
+    AUTH_MODE: 'hybrid',
+    SSO_CONFIG: '{}',
+  });
+  const validate = (overrides = {}) =>
+    run('bash', ['-e', '-c', deployment.steps[validationIndex].run], {
+      env: { ...env, ...overrides },
+    });
+  const valid = validate();
+  assert.equal(valid.status, 0, valid.stderr);
+
+  const missingDomain = validate({ APP_DOMAIN: '', ACM_CERTIFICATE_ARN: '' });
+  assert.notEqual(missingDomain.status, 0);
+  assert.match(missingDomain.stderr, /Custom-domain configuration is required/);
+
+  const missingSso = validate({ SSO_CONFIG: '' });
+  assert.notEqual(missingSso.status, 0);
+  assert.match(missingSso.stderr, /AUTH_MODE hybrid requires the SSO_CONFIG secret/);
 });
 
 test('release and main deployments use isolated protected environments and GitHub OIDC', () => {

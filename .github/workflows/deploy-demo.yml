@@ -32,6 +32,28 @@ on:
         required: false
         default: collaborative-ai-dlc
         type: string
+    # Optional for main deployments; release forwards its configuration by name.
+    # The protected environment supplies values, and runtime validation checks
+    # the settings required by the selected deployment target and auth mode.
+    secrets:
+      ACM_CERTIFICATE_ARN:
+        required: false
+      APP_DOMAIN:
+        required: false
+      APP_DOMAIN_ALIASES:
+        required: false
+      AUTH_CERTIFICATE_ARN:
+        required: false
+      AUTH_DOMAIN:
+        required: false
+      AUTH_ROUTE53_ZONE_ID:
+        required: false
+      SSO_CONFIG:
+        required: false
+      POST_DEPLOY_TEST_ROLE_ARN:
+        required: false
+      POST_DEPLOY_TEST_FUNCTION:
+        required: false
   workflow_dispatch:
     inputs:
       ref:
