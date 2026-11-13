@@ -220,18 +220,18 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
   it('skips the repair turn when the stage budget refuses it, and says so', async () => {
     const store = fakeStore();
     const messages = [];
-    let skipped = 0;
+    const skipped = [];
 
     const result = await ladder(store, {
       runRepairTurn: async (m) => messages.push(m),
       repairAllowed: () => false,
-      onRepairSkipped: async () => {
-        skipped += 1;
+      onRepairSkipped: async (reason) => {
+        skipped.push(reason);
       },
     });
 
     expect(messages).toEqual([]);
-    expect(skipped).toBe(1);
+    expect(skipped).toEqual(['stage_budget_exhausted']);
     expect(store.counters.summaryRepairAttempts).toBeUndefined();
     expect(result.findings.map((finding) => finding.code)).toEqual([
       'summary_confirmation_missing',
@@ -338,11 +338,18 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     ]);
   });
 
-  it('skips the repair rung when no resumable session exists', async () => {
+  it('skips the repair rung when no resumable session exists, and says so', async () => {
     const store = fakeStore();
+    const skipped = [];
 
-    const result = await ladder(store, { runRepairTurn: null });
+    const result = await ladder(store, {
+      runRepairTurn: null,
+      onRepairSkipped: async (reason) => {
+        skipped.push(reason);
+      },
+    });
 
+    expect(skipped).toEqual(['no_resumable_session']);
     expect(store.counters.summaryRepairAttempts).toBeUndefined();
     expect(types(store)).toEqual(['v2.summary.noncompliant']);
     expect(result.findings.map((finding) => finding.code)).toEqual([

@@ -474,12 +474,26 @@ describe('adversarial reviewer loop — a lead repair turn between rounds', () =
     expect(eventsOfType(store, 'v2.stage.repair_skipped')).toEqual([]);
   });
 
-  it('skips the repair for codex, which has no session to re-enter here', async () => {
+  // Without a repair turn a second round would re-review the same bytes, so the
+  // loop ends on round 1's verdict and the timeline says why (#752).
+  it.each([
+    ['codex, whose session cannot be re-entered here', 'codex'],
+    ['a CLI run that reported no session id', 'opencode'],
+  ])('ends the loop without re-reviewing for %s', async (_label, cli) => {
     const store = spyStore({ sensorRuns: [notReadyRun('not ready')] });
-    const { deps } = harness({ libraryArgs: reviewerLibrary, store, cli: 'codex' });
-    await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+    const { deps, commits } = harness({ libraryArgs: reviewerLibrary, store, cli });
+    const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+    expect(res).toMatchObject({ ok: true });
     expect(eventsOfType(store, 'v2.review.repair_requested')).toEqual([]);
-    expect(eventsOfType(store, 'v2.review.running')).toHaveLength(2);
+    expect(eventsOfType(store, 'v2.review.running')).toHaveLength(1);
+    const [skipped] = eventsOfType(store, 'v2.stage.repair_skipped');
+    expect(skipped.detail).toMatchObject({
+      reason: 'no_resumable_session',
+      round: 1,
+      reviewerAgent: REVIEWER,
+    });
+    expect(skipped.summary).toContain('no resumable CLI session');
+    expect(commits.some((message) => message.includes('review repair'))).toBe(false);
   });
 });
 

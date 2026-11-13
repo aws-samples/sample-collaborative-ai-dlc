@@ -1258,7 +1258,8 @@ const runCheckpointLadder = async ({
   runRepairTurn = null,
   // Whether a repair turn may START now (the stage wall-clock budget). A refusal
   // takes the same path as "no resumable session": straight to the gate/fail rung,
-  // with `onRepairSkipped` recording why.
+  // with `onRepairSkipped(reason)` recording why (`stage_budget_exhausted` or
+  // `no_resumable_session`).
   repairAllowed = () => true,
   onRepairSkipped = async () => {},
   pendingGate = null,
@@ -1297,7 +1298,8 @@ const runCheckpointLadder = async ({
     (counter) => Number(stageRow?.[counter] ?? 0) >= repairBudget,
   );
   const budgetAllowsRepair = runRepairTurn && !alreadyRepaired ? repairAllowed() : true;
-  if (!budgetAllowsRepair) await onRepairSkipped();
+  if (!runRepairTurn && !alreadyRepaired) await onRepairSkipped('no_resumable_session');
+  else if (!budgetAllowsRepair) await onRepairSkipped('stage_budget_exhausted');
   if (runRepairTurn && !alreadyRepaired && budgetAllowsRepair) {
     const parkedBeforeRepair = await pendingGate?.();
     if (parkedBeforeRepair) return { findings, parked: parkedBeforeRepair };
@@ -4773,9 +4775,15 @@ const runStageAttempt = async (
   // the agent (and its commit, which Plan Approval's lineage check reads) and
   // BEFORE the sensor pass, so a stage that never obtained its authorization never
   // burns a reviewer session. Inert without a resolved release policy.
-  // Records that a repair turn was skipped because the stage budget is spent, so
-  // the timeline says why the lead was not re-entered.
-  const noteRepairSkipped = async (what, detail = {}) => {
+  // Records that a repair turn was skipped, so the timeline says why the lead was
+  // not re-entered: the stage budget is spent, or the lead has no resumable CLI
+  // session (Codex, whose CODEX_HOME is already cleaned up, or a CLI run that
+  // returned no session id).
+  const REPAIR_SKIP_REASONS = {
+    stage_budget_exhausted: 'the stage wall-clock budget is spent',
+    no_resumable_session: 'the lead has no resumable CLI session',
+  };
+  const noteRepairSkipped = async (what, detail = {}, reason = 'stage_budget_exhausted') => {
     await store
       .appendEvent({
         executionId,
@@ -4784,8 +4792,8 @@ const runStageAttempt = async (
         unitSlug,
         sectionIndex,
         actor: 'agentcore',
-        summary: `Skipped the ${what} for ${stageLabel}: the stage wall-clock budget is spent`,
-        detail: { reason: 'stage_budget_exhausted', what, ...detail },
+        summary: `Skipped the ${what} for ${stageLabel}: ${REPAIR_SKIP_REASONS[reason] ?? reason}`,
+        detail: { reason, what, ...detail },
       })
       .catch(() => {});
   };
@@ -4801,7 +4809,7 @@ const runStageAttempt = async (
       stageLabel,
       runRepairTurn,
       repairAllowed: repairBudgetLeft,
-      onRepairSkipped: () => noteRepairSkipped('checkpoint repair turn'),
+      onRepairSkipped: (reason) => noteRepairSkipped('checkpoint repair turn', {}, reason),
       pendingGate: () =>
         pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
       validationRound,
@@ -4966,8 +4974,18 @@ const runStageAttempt = async (
       // committed, and only then is the reviewer re-dispatched. Bounded by the same
       // `maxIterations` as the loop itself (no repair after the final round), and
       // inert for an unpinned/2.3.3 run, whose loop stays byte-identical.
-      if (!methodologyRelease || !stage.policy || !runRepairTurn || round >= maxIterations) {
+      if (!methodologyRelease || !stage.policy || round >= maxIterations) {
         continue;
+      }
+      // No resumable lead session: nothing can answer the findings, so a further
+      // round would re-review the same bytes. End with this round's NOT-READY.
+      if (!runRepairTurn) {
+        await noteRepairSkipped(
+          `review repair turn after round ${round}`,
+          { round, reviewerAgent },
+          'no_resumable_session',
+        );
+        break;
       }
       // Out of budget: re-reviewing unrepaired bytes can only repeat this verdict,
       // so the loop ends here with this round's NOT-READY as the result.
