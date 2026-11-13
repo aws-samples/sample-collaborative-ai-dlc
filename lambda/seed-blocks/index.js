@@ -110,7 +110,13 @@ import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
-import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
+import {
+  AIDLC_COMPATIBILITY_PROFILES,
+  customProfile,
+  profileFor,
+} from '../shared/aidlc-compatibility-profiles.js';
+import { normalizeAidlcFrontmatter } from '../shared/aidlc-compatibility.js';
+import { parseFrontmatterStrict } from '../shared/frontmatter.js';
 import {
   getRelease,
   isAccessDenied,
@@ -163,6 +169,49 @@ const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
 const defaultRef = () => process.env.AIDLC_REPO_REF;
 
 const isConditionalCheckFailed = (err) => err?.name === 'ConditionalCheckFailedException';
+
+// The baseline seed maps blocks with the legacy frontmatter parser, which
+// reads invalid YAML as empty frontmatter. Some releases only parse after the
+// dialect normalization the release importer applies (2.11.3's
+// requirements-analysis `outputs` carries an unquoted ": "), so the seed applies
+// it first. A ref with no compatibility profile (a release tag pinned under a
+// different commit, or a commit between releases) is read in the newest
+// profile's dialect; each normalization matches only the upstream text it
+// repairs, so a dialect that does not need it leaves the file as it is.
+const versionParts = (profile) => String(profile.upstreamVersion).split('.').map(Number);
+const compareVersions = (left, right) => {
+  const [a, b] = [versionParts(left), versionParts(right)];
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const delta = (a[i] ?? 0) - (b[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+};
+const seedProfileFor = (ref) =>
+  profileFor(ref) ?? Object.values(AIDLC_COMPATIBILITY_PROFILES).toSorted(compareVersions).at(-1);
+
+const SEED_STAGES_DIR = 'core/aidlc-common/stages/';
+
+const normalizeSeedFiles = (ref, files) => {
+  const profile = seedProfileFor(ref);
+  const normalized = new Map();
+  for (const [path, content] of files) {
+    normalized.set(
+      path,
+      path.endsWith('.md')
+        ? normalizeAidlcFrontmatter({ profile, path, content }).content
+        : content,
+    );
+  }
+  // A stage whose frontmatter still does not parse would map to a block with no
+  // id and fail later without naming the file. Fail here and name it.
+  for (const [path, content] of normalized) {
+    if (path.startsWith(SEED_STAGES_DIR) && path.endsWith('.md')) {
+      parseFrontmatterStrict(content, { path });
+    }
+  }
+  return normalized;
+};
 
 // A `gitlab:` custom source is read from AIDLC_GITLAB_URL (default gitlab.com)
 // with the read token in the Secrets Manager secret AIDLC_GITLAB_TOKEN_SECRET_ARN,
@@ -672,7 +721,7 @@ export const handler = async (event, context) => {
 
   // Fetch + parse the pinned repo. Hard-fails (no fallback) — a partial or
   // stale seed is worse than a clear failure the operator retries.
-  const files = await fetchCoreFiles(ref);
+  const files = normalizeSeedFiles(ref, await fetchCoreFiles(ref));
   const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(files);
   const methodologyCatalog = buildMethodologyCatalog({
     ref,
