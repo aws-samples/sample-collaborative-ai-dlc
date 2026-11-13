@@ -788,6 +788,7 @@ locals {
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
     AIDLC_REPO_REF                = var.aidlc_repo_ref
+    LANE_SYNC_POLICY              = var.lane_sync_policy
     BEDROCK_MODEL                 = var.bedrock_model
     BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region
