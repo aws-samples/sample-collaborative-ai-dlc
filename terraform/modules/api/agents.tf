@@ -51,7 +51,7 @@ module "agents_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = var.lambda_security_group_ids
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
@@ -71,7 +71,9 @@ module "agents_lambda" {
     BEDROCK_REGION                = var.bedrock_region
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
-  }
+    }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
+    # Set only in the strict profile (lambda/shared/runtime-mcp-policy.js).
+  var.runtime_mcp_credentials == "gateway_only" ? { RUNTIME_MCP_CREDENTIALS = "gateway_only" } : {})
 }
 
 

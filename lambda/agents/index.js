@@ -49,6 +49,14 @@ import {
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+  gatewayOnlyMcp,
+} from '../shared/runtime-mcp-policy.js';
 import { fetchMembershipRole, getVal } from '../shared/trackers.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
@@ -82,6 +90,7 @@ import {
 } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
+import { issueMcpSecretVerificationGrant } from '../shared/mcp-secret-verification-grant.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -225,6 +234,7 @@ export const verifyMcpServers = async ({
   mcpServersByTier,
   projectId,
   unsavedSecrets,
+  verificationGrant,
   runtimeTarget = coreRuntimeTarget(),
 }) => {
   if (!runtimeTarget.agentRuntimeArn) {
@@ -268,6 +278,7 @@ export const verifyMcpServers = async ({
                 mcpServersByTier,
                 ...(projectId ? { projectId } : {}),
                 ...(unsavedSecrets ? { unsavedSecrets } : {}),
+                ...(verificationGrant ? { verificationGrant } : {}),
               }),
             ),
           }),
@@ -277,6 +288,10 @@ export const verifyMcpServers = async ({
     );
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
+    if (process.env.ENGINE_DATA_ENABLED === 'true') {
+      logger.error('[verify-mcp] runtime invoke failed');
+      return { error: 'MCP verification runtime invocation failed' };
+    }
     logger.error('[verify-mcp] runtime invoke failed', e);
     return { error: `Runtime invoke failed: ${e.message}` };
   }
@@ -924,6 +939,8 @@ export const handler = async (event, context) => {
                 ),
               }
             : {}),
+          // Only in the strict profile, so the default response is unchanged.
+          ...(gatewayOnlyMcp() ? { runtimeMcpCredentials: 'gateway_only' } : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -991,6 +1008,25 @@ export const handler = async (event, context) => {
           }
           throw error;
         }
+      }
+
+      // gateway_only: refuse direct MCP servers and secret values before ANY
+      // setting in this request is written. An invalid config is left to the
+      // validation below.
+      try {
+        if (input.customMcpServers !== undefined) {
+          const raw =
+            typeof input.customMcpServers === 'string'
+              ? input.customMcpServers
+              : JSON.stringify(input.customMcpServers ?? {});
+          if (validateMcpServersJson(raw || '{}').valid) {
+            assertDirectMcpConfigAllowed(JSON.parse(raw || '{}'));
+          }
+        }
+        if (input.mcpSecrets !== undefined) assertMcpSecretWritesAllowed(input.mcpSecrets);
+      } catch (error) {
+        if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+        return response(400, { error: error.message, code: error.code });
       }
 
       if (input.authenticationChange) {
@@ -1295,6 +1331,16 @@ export const handler = async (event, context) => {
         }
       }
 
+      // gateway_only: the probe would connect from the runtime and resolve the
+      // config's secrets (saved or just typed) into it. Refused before any
+      // grant is issued or the runtime is invoked.
+      if (gatewayOnlyMcp()) {
+        return response(400, {
+          error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+          code: RUNTIME_MCP_GATEWAY_ONLY,
+        });
+      }
+
       const raw =
         typeof input.mcpServers === 'string'
           ? input.mcpServers
@@ -1323,15 +1369,36 @@ export const handler = async (event, context) => {
       // are tier-scoped to the caller by the runtime resolver: a project verify's
       // unsavedSecrets bind to project refs only (never a global-named ref). Never
       // logged (see below).
-      const unsavedSecrets =
+      let unsavedSecrets =
         input.unsavedSecrets && typeof input.unsavedSecrets === 'object'
           ? input.unsavedSecrets
           : undefined;
+
+      let verificationGrant;
+      if (process.env.ENGINE_DATA_ENABLED === 'true') {
+        try {
+          verificationGrant = await issueMcpSecretVerificationGrant(ssm, {
+            projectId: verifyProjectId || null,
+            mcpServersByTier,
+          });
+          // The editor retains drafts for renamed/removed refs; only current editable refs travel.
+          if (unsavedSecrets) {
+            const editableRefs = extractSecretRefs(editedConfig).refs;
+            unsavedSecrets = Object.fromEntries(
+              Object.entries(unsavedSecrets).filter(([ref]) => editableRefs.has(ref)),
+            );
+          }
+        } catch {
+          logger.error('[verify-mcp] authorization failed');
+          return response(502, { error: 'MCP verification authorization failed' });
+        }
+      }
 
       const result = await verifyMcpServers({
         mcpServersByTier,
         projectId: verifyProjectId,
         unsavedSecrets,
+        ...(verificationGrant ? { verificationGrant } : {}),
         runtimeTarget,
       });
       if (result.error) return response(502, result);

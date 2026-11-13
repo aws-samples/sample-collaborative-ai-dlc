@@ -439,9 +439,26 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda, with review operations through the source-control runtime alias; the intents Lambda then signs execution grants (static, for plan-time counts)"
   type        = bool
   default     = false
+}
+
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes (only with enable_engine_data); otherwise it serves them the legacy way and logs LEGACY_RUNTIME_REQUEST"
+  type        = bool
+  default     = false
+}
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the credential broker, projects, intents and orchestrator Lambdas keep direct custom MCP servers and their secrets out of the runtime"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
 }
 
 variable "gateway_grant_key_arn" {
@@ -466,4 +483,16 @@ variable "notification_event_source" {
   description = "EventBridge source of the notification events"
   type        = string
   default     = "collaborative-ai-dlc"
+}
+
+variable "gateway_grant_retirement_table_name" {
+  description = "Table the orchestrator, intents and projects Lambdas record retired Gateway grants and executions in and grant consumers check (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "gateway_grant_retirement_table_arn" {
+  description = "ARN of the retired Gateway grant table (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
 }

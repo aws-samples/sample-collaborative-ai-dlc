@@ -132,6 +132,13 @@ run "interceptor_guards_the_gateway" {
     ])
     error_message = "The interceptor is read-only: grant public key, intent ownership and the execution/stage rows."
   }
+  assert {
+    condition = (
+      aws_iam_role_policy.mcp_interceptor_read_gateway_grant_retirements[0].role == aws_iam_role.mcp_interceptor[0].id &&
+      toset(flatten([for s in jsondecode(aws_iam_role_policy.mcp_interceptor_read_gateway_grant_retirements[0].policy).Statement : s.Action])) == toset(["dynamodb:GetItem"])
+    )
+    error_message = "The interceptor rejects retired grants, so it (and not the tools Lambda) reads the retirement table, read-only."
+  }
 }
 
 run "nothing_exists_without_the_gateway" {

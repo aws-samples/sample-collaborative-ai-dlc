@@ -7,7 +7,8 @@
 #      Neptune
 #
 # The engine's process-store, graph, catalog, owned-blob and realtime calls go
-# through it. The runtime role keeps its own permissions until the final strip.
+# through it; provider review operations go to the source-control `runtime`
+# alias. The runtime role keeps its own permissions until the final strip.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -47,6 +48,9 @@ locals {
       Resource = "${var.websocket_execution_arn}/*/POST/@connections/*"
     }] : [],
   )
+
+  # The grant-only source-control entry point the runtime calls in this mode.
+  source_control_runtime_alias_arn = "${local.source_control_function_arn}:runtime"
 }
 
 resource "terraform_data" "engine_data_requires_gateway" {
@@ -168,7 +172,9 @@ module "engine_data_lambda" {
   vpc_subnet_ids         = aws_subnet.agentcore[*].id
   vpc_security_group_ids = [aws_security_group.mcp_tools[0].id]
 
-  environment_variables = {
+  # runtime_mcp_credentials = gateway_only: responses carrying execution META
+  # omit its stored direct MCP configuration (lambda/shared/runtime-mcp-policy.js).
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
@@ -179,7 +185,11 @@ module "engine_data_lambda" {
     BLOCKS_TABLE            = var.blocks_table_name
     CONNECTIONS_TABLE       = var.connections_table_name
     WEBSOCKET_ENDPOINT      = var.websocket_endpoint
-  }
+
+    GATEWAY_GRANT_RETIREMENT_TABLE = aws_dynamodb_table.gateway_grant_retirements[0].name
+    }, var.runtime_mcp_credentials == "gateway_only" ? {
+    RUNTIME_MCP_CREDENTIALS = "gateway_only"
+  } : {})
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
@@ -199,9 +209,12 @@ resource "aws_iam_role_policy" "agentcore_invoke_engine_data" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunction"]
-      Resource = module.engine_data_lambda[0].lambda_function_arn
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [
+        module.engine_data_lambda[0].lambda_function_arn,
+        local.source_control_runtime_alias_arn,
+      ]
     }]
   })
 }

@@ -23,8 +23,11 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['agent.max-turns@v1']
 
 // The MCP server name we register under in mcp-config (see stage-materializer).
 import { BEDROCK_BACKEND } from './backend-adapters.js';
+import { gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
 
 export const MCP_SERVER_NAME = 'aidlc';
+// The runtime-owned entry relaying the customer MCP targets behind the Gateway.
+export const GATEWAY_TOOLS_SERVER_NAME = 'aidlc-gateway-tools';
 
 // ── Claude Code (headless) ──
 // `claude -p --mcp-config <file> --permission-mode bypassPermissions
@@ -64,11 +67,15 @@ const claudeDriver = {
     allowedTools = [],
     sessionId = null,
     maxTurns = null,
+    exclusiveMcp = gatewayOnlyMcp(),
   }) {
     const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
     // enrichment) runs without any tool surface.
     if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
+    // gateway_only (cli/exclusive-mcp.js): no project, user or plugin server
+    // loads beside `--mcp-config` — none at all without it.
+    if (exclusiveMcp) args.push('--strict-mcp-config');
     args.push('--permission-mode', 'bypassPermissions');
     // Force the conversation id up front so the orchestrator persists it without
     // scraping it back. `--session-id` is NEW-session-only — resume uses --resume.
@@ -84,16 +91,16 @@ const claudeDriver = {
   // servers (--mcp-config) so the parked tool surface is live again. Never reuse
   // --session-id here (it errors "already in use") — only --resume <uuid>.
   // Answer piped on STDIN too, for the same ARG_MAX reason as the fresh run.
-  buildResumeInvocation({ sessionId, answerMessage, mcpConfigPath, model }) {
-    const args = [
-      '--resume',
-      sessionId,
-      '-p',
-      '--mcp-config',
-      mcpConfigPath,
-      '--permission-mode',
-      'bypassPermissions',
-    ];
+  buildResumeInvocation({
+    sessionId,
+    answerMessage,
+    mcpConfigPath,
+    model,
+    exclusiveMcp = gatewayOnlyMcp(),
+  }) {
+    const args = ['--resume', sessionId, '-p', '--mcp-config', mcpConfigPath];
+    if (exclusiveMcp) args.push('--strict-mcp-config');
+    args.push('--permission-mode', 'bypassPermissions');
     if (model) args.push('--model', model);
     args.push('--output-format', 'stream-json', '--verbose');
     return { command: 'claude', args, env: {}, prompt: answerMessage, promptViaStdin: true };
@@ -173,17 +180,32 @@ const kiroDriver = {
 // `opencode run --format json --auto --model amazon-bedrock/<id>` emits JSONL
 // and reads the prompt from stdin. OpenCode chooses the session id; the runtime
 // captures the first `sessionID` event and resumes it with `--session`.
+// gateway_only (cli/exclusive-mcp.js): OPENCODE_PURE=1 loads no external plugin
+// — neither `.opencode/plugin(s)/` files nor any config `plugin` entry — since a
+// plugin's `config` hook could re-enable the servers the inline config disables.
+// OpenCode's built-in plugins still load.
+const opencodeEnvironment = (opencodeConfigContent, exclusiveMcp) => ({
+  ...(opencodeConfigContent ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent } : {}),
+  ...(exclusiveMcp ? { OPENCODE_PURE: '1' } : {}),
+});
+
 const opencodeDriver = {
   name: 'opencode',
   contextKey: 'opencodeConfigContent',
-  buildInvocation({ prompt, model, opencodeConfigContent = null, backend = BEDROCK_BACKEND }) {
+  buildInvocation({
+    prompt,
+    model,
+    opencodeConfigContent = null,
+    backend = BEDROCK_BACKEND,
+    exclusiveMcp = gatewayOnlyMcp(),
+  }) {
     const args = ['run', '--format', 'json', '--auto'];
     const resolvedModel = backend.model('opencode', model);
     if (resolvedModel) args.push('--model', resolvedModel);
     return {
       command: 'opencode',
       args,
-      env: opencodeConfigContent ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent } : {},
+      env: opencodeEnvironment(opencodeConfigContent, exclusiveMcp),
       prompt,
       promptViaStdin: true,
     };
@@ -194,6 +216,7 @@ const opencodeDriver = {
     model,
     opencodeConfigContent = null,
     backend = BEDROCK_BACKEND,
+    exclusiveMcp = gatewayOnlyMcp(),
   }) {
     const args = ['run', '--format', 'json', '--auto', '--session', sessionId];
     const resolvedModel = backend.model('opencode', model);
@@ -201,7 +224,7 @@ const opencodeDriver = {
     return {
       command: 'opencode',
       args,
-      env: opencodeConfigContent ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent } : {},
+      env: opencodeEnvironment(opencodeConfigContent, exclusiveMcp),
       prompt: answerMessage,
       promptViaStdin: true,
     };

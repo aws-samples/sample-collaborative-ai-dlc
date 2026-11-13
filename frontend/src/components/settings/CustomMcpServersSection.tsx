@@ -102,6 +102,10 @@ interface Props {
    *  overrides by name does NOT survive) and run the same cross-tier collision
    *  check the backend does. Omit at the global tier. */
   globalServerSecretRefs?: Record<string, string[]>;
+  /** The deployment serves custom MCP servers only as AgentCore Gateway targets
+   *  (runtime_mcp_credentials = gateway_only): saving servers is refused by the
+   *  API, whose error the editor shows. */
+  gatewayOnly?: boolean;
 }
 
 const PLACEHOLDER =
@@ -119,6 +123,7 @@ export function CustomMcpServersSection({
   mcpSecretsSet = {},
   onSaveSecrets,
   globalServerSecretRefs = {},
+  gatewayOnly = false,
 }: Props) {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<SaveResult>(null);
@@ -297,6 +302,16 @@ export function CustomMcpServersSection({
   return (
     <SettingsCard icon={<Plug />} title={title} description={fullDescription}>
       <div className="space-y-3">
+        {gatewayOnly && (
+          <p className="text-[11px] text-muted-foreground flex items-start gap-1" role="note">
+            <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+            <span>
+              This deployment serves custom MCP servers only through the AgentCore Gateway. Servers
+              cannot be added here; a platform administrator adds them as Gateway targets. Existing
+              entries can be removed.
+            </span>
+          </p>
+        )}
         <Textarea
           value={value}
           onChange={(e) => {

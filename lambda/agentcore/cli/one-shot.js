@@ -36,6 +36,12 @@ import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
 import { claudeUsageMetrics } from './claude-usage.js';
 import { captureKiroCreditRate } from './kiro-usage.js';
+import { exclusiveOpenCodeConfig } from './exclusive-mcp.js';
+import {
+  materializeIsolatedCodexHome,
+  materializeIsolatedKiroAgent,
+} from '../stage-materializer.js';
+import { RUNTIME_MCP_GATEWAY_ONLY, gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -93,6 +99,32 @@ const sampleOf = (raw = '') => String(raw ?? '').slice(0, SAMPLE_BYTES);
 // handed to `defer` for the caller to await instead of delaying the result.
 export const DEFAULT_ONE_SHOT_TIMEOUT_MS = 120_000;
 
+// gateway_only (cli/exclusive-mcp.js): whatever MCP context the caller passed,
+// or none, is the only one the CLI loads. Claude's driver adds
+// `--strict-mcp-config`; the others get an MCP-free context when the caller
+// brought none, and OpenCode's inline config disables every server another
+// layer defines for this working directory.
+const exclusiveContext = async ({ cli, cwd, env, context }) => {
+  if (cli === 'opencode') {
+    const config = context.opencodeConfigContent ? JSON.parse(context.opencodeConfigContent) : {};
+    return {
+      ...context,
+      opencodeConfigContent: JSON.stringify(await exclusiveOpenCodeConfig({ config, cwd, env })),
+    };
+  }
+  if (cli === 'kiro' && !context.agentName) {
+    const { agentName, remove } = await materializeIsolatedKiroAgent({ workspaceDir: cwd });
+    return { ...context, agentName, remove };
+  }
+  if (cli === 'codex' && !context.codexHome) {
+    return {
+      ...context,
+      codexHome: await materializeIsolatedCodexHome({ workspaceDir: cwd, env }),
+    };
+  }
+  return context;
+};
+
 export const runOneShotPrompt = async ({
   prompt,
   requestedCli = null,
@@ -115,19 +147,21 @@ export const runOneShotPrompt = async ({
   withOpenCodeStore = defaultWithOpenCodeStore,
   cleanupCodexHome = defaultCleanupCodexHome,
   makeDirectory = mkdir,
+  exclusiveMcp = gatewayOnlyMcp(),
 } = {}) => {
   const cli = selectCli({ requested: requestedCli, availableClis });
   if (!cli) return { ok: false, reason: 'no_cli', text: '', cli: null, model: null, metrics: null };
 
   const model = resolveStageModel({ cliModels, agentBlock: null, cli, env });
   const driver = getDriver(cli);
-  const invocation = driver.buildInvocation({
-    prompt,
-    model,
-    mcpConfigPath,
-    agentName,
-    opencodeConfigContent,
-    codexHome,
+  const notRun = (reason) => ({
+    ok: false,
+    reason,
+    text: '',
+    cli,
+    model: model ?? null,
+    exitCode: null,
+    metrics: null,
   });
   // Callers pass fresh per-invocation directories. Node reports a missing cwd
   // only as a child 'error' with no output, so create it before anything runs.
@@ -135,16 +169,26 @@ export const runOneShotPrompt = async ({
     await makeDirectory(cwd, { recursive: true });
   } catch {
     if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
-    return {
-      ok: false,
-      reason: 'cli_failed',
-      text: '',
-      cli,
-      model: model ?? null,
-      exitCode: null,
-      metrics: null,
-    };
+    return notRun('cli_failed');
   }
+  let context = { mcpConfigPath, agentName, opencodeConfigContent, codexHome };
+  if (exclusiveMcp) {
+    try {
+      context = await exclusiveContext({ cli, cwd, env, context });
+    } catch {
+      if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+      return notRun(RUNTIME_MCP_GATEWAY_ONLY);
+    }
+  }
+  const invocation = driver.buildInvocation({
+    prompt,
+    model,
+    mcpConfigPath: context.mcpConfigPath,
+    agentName: context.agentName,
+    opencodeConfigContent: context.opencodeConfigContent,
+    codexHome: context.codexHome,
+    exclusiveMcp,
+  });
   // Kiro's conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the
@@ -185,7 +229,10 @@ export const runOneShotPrompt = async ({
     if (error?.code !== OPENCODE_STORE_WAIT_EXPIRED) throw error;
   } finally {
     if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
-    if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+    if (cli === 'codex') {
+      await cleanupCodexHome({ codexHome: context.codexHome, env }).catch(() => false);
+    }
+    await context.remove?.().catch(() => false);
   }
   if (!capture) {
     return {
