@@ -5368,6 +5368,45 @@ describe('renderSteering — the course-correction block', () => {
   });
 });
 
+describe('renderRetry — the retry block', () => {
+  const { renderRetry } = __test;
+
+  it('is empty without a retry', () => {
+    expect(renderRetry(null)).toBe('');
+  });
+
+  it('names the failure, its output and the guidance, and keeps git with the engine', () => {
+    const text = renderRetry(
+      {
+        reason: 'push_failed',
+        detail: 'r: rejected',
+        output: 'remote: blocked',
+        guidance: 'Use a placeholder',
+        discardUnpushed: true,
+      },
+      { undone: 2 },
+    );
+    expect(text).toContain('failed: push_failed — r: rejected');
+    expect(text).toContain('remote: blocked');
+    expect(text).toContain('the engine has undone its 2');
+    expect(text).toContain('Use a placeholder');
+    expect(text).toContain('do NOT run git');
+  });
+
+  it('does not claim an undo that undid nothing', () => {
+    const text = renderRetry({ reason: 'push_failed', discardUnpushed: true });
+    expect(text).toContain('The remote rejected the previous attempt');
+    expect(text).not.toContain('undone');
+  });
+
+  it('leaves out what does not apply', () => {
+    const text = renderRetry({ reason: 'sensor_blocked' });
+    expect(text).not.toContain('Output from that failure');
+    expect(text).not.toContain('undone');
+    expect(text).not.toContain('guidance');
+  });
+});
+
 describe('consumePendingSteering — CAS delivery at the injection point', () => {
   const { consumePendingSteering } = __test;
 
@@ -5774,12 +5813,15 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
             pushed: false,
             reason: 'push_failed',
             detail: 'remote rejected',
+            output: 'remote: blocked -- a.txt:1\nremote rejected',
           },
         ],
       }),
     });
     const res = await runStage(gitArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'push_failed' });
+    // The fuller output rides the failure for a retry's agent.
+    expect(res.output).toBe('remote: blocked -- a.txt:1\nremote rejected');
     expect(res.detail).toContain('owner/repo');
     expect(res.detail).toContain('remote rejected');
     // Both the failure event and the push_failed git event are recorded.
@@ -6223,6 +6265,94 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     await runStage(unitArgs, deps);
     expect(seen.unit).toEqual({ slug: 'billing', dependsOn: ['auth'] });
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
+  });
+
+  describe('lane retry (the lane retry gate)', () => {
+    const laneArgs = {
+      ...unitArgs,
+      repos: ['acme/api'],
+      branch: 'aidlc/i1--s1-unit-billing',
+      baseBranch: 'aidlc/i1',
+      gitProvider: 'gitlab',
+    };
+    const pushRetry = {
+      reason: 'push_failed',
+      detail: 'acme/api: push_failed — rejected',
+      output: 'remote: secret found -- creds.txt:1',
+      guidance: 'Read the token from the environment',
+      discardUnpushed: true,
+    };
+    const retryDeps = (discardUnpushedCommits, overrides = {}) => {
+      const sink = {};
+      const deps = unitDeps({
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        discardUnpushedCommits,
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => (sink.prompt = text) } }),
+        ...overrides,
+      });
+      return { deps, sink };
+    };
+
+    it('undoes the rejected commits, then tells the agent why and what to do', async () => {
+      const discard = vi.fn(async () => ({
+        results: [{ repo: 'acme/api', discarded: true, shas: ['a'.repeat(40)] }],
+      }));
+      const { deps, sink } = retryDeps(discard, {
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          stage: {
+            state: 'FAILED',
+            pendingCodeCommitRefs: [
+              { repo: 'acme/api', sha: 'a'.repeat(40) },
+              { repo: 'acme/api', sha: 'b'.repeat(40) },
+            ],
+          },
+        }),
+      });
+      const res = await runStage({ ...laneArgs, retry: pushRetry }, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(discard).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repos: ['acme/api'],
+          branch: 'aidlc/i1--s1-unit-billing',
+          workspaceDir: '/ws',
+        }),
+      );
+      expect(sink.prompt).toContain('## RETRY after a failed attempt');
+      expect(sink.prompt).toContain('the engine has undone its 1');
+      expect(sink.prompt).toContain('remote: secret found -- creds.txt:1');
+      expect(sink.prompt).toContain('Read the token from the environment');
+      const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+      expect(events).toContain('v2.git.unpushed_discarded');
+      // The undone commit no longer counts as this stage's work.
+      const running = deps.store.calls.find((c) => c[0] === 'putStage' && c[1].state === 'RUNNING');
+      expect(running[1].pendingCodeCommitRefs).toEqual([{ repo: 'acme/api', sha: 'b'.repeat(40) }]);
+    });
+
+    it('fails the stage before the agent runs when the commits cannot be undone', async () => {
+      const spawn = vi.fn(okSpawn);
+      const { deps } = retryDeps(
+        async () => ({
+          results: [{ repo: 'acme/api', discarded: false, reason: 'diverged', detail: 'b' }],
+        }),
+        { spawnFn: spawn },
+      );
+      const res = await runStage({ ...laneArgs, retry: pushRetry }, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'discard_unpushed_failed' });
+      expect(res.detail).toContain('acme/api: diverged');
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('leaves the commits alone on a retry of any other failure', async () => {
+      const discard = vi.fn();
+      const { deps, sink } = retryDeps(discard);
+      await runStage(
+        { ...laneArgs, retry: { reason: 'sensor_blocked', discardUnpushed: false } },
+        deps,
+      );
+      expect(discard).not.toHaveBeenCalled();
+      expect(sink.prompt).toContain('The previous attempt of this stage failed: sensor_blocked');
+    });
   });
 
   it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {

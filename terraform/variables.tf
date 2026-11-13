@@ -158,6 +158,15 @@ variable "pr_title_tracker_key" {
   default     = false
 }
 
+variable "lane_failure_policy" {
+  description = "What a parallel unit lane does when one of its stages fails: \"halt\" (the lane ends, and the section asks retry, skip or abort once every lane has finished) or \"ask\" (the lane asks straight away, on a gate for that unit, whether to retry the failed stage; leaving it failed falls back to \"halt\"). Applies to runs started after the change."
+  type        = string
+  default     = "halt"
+  validation {
+    condition     = contains(["halt", "ask"], var.lane_failure_policy)
+    error_message = "lane_failure_policy must be \"halt\" or \"ask\"."
+  }
+}
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

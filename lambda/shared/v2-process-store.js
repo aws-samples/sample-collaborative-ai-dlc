@@ -1371,6 +1371,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     ownership = null,
     orchestratorRunId = null,
     ifOrchestratorRunId = null,
+    laneGate = false,
   }) => {
     const id = humanTaskId ?? nextId();
     const item = buildHumanTaskRow({
@@ -1393,6 +1394,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       loopBackReason,
       loopBackStatus,
       loopBackNote,
+      ...(laneGate ? { laneGate: true } : {}),
       now: now(),
     });
     if (ownership) {
@@ -1463,10 +1465,11 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
     if (orchestratorRunId) {
       item.orchestratorRunId = orchestratorRunId;
+      // A lane gate parks only its unit: sibling lanes keep running on META's
+      // RUNNING status, so it checks run ownership without parking META.
       await updateExecution({
         executionId,
-        status: 'WAITING',
-        pendingHumanTaskId: id,
+        ...(laneGate ? {} : { status: 'WAITING', pendingHumanTaskId: id }),
         ifOrchestratorRunId: orchestratorRunId,
         additionalWrites: [
           {

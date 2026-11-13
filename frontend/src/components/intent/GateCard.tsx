@@ -241,7 +241,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                 id={`gate-feedback-${gate.humanTaskId}`}
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
-                placeholder="What should change before you can approve? Sent with 'request-changes' — the engine revises the increment with this feedback and asks again."
+                placeholder="What should change? Sent with 'request-changes' — the engine runs the work again with this feedback."
                 rows={2}
                 className="text-xs"
               />
