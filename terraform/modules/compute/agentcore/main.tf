@@ -63,15 +63,16 @@ locals {
   # agentcore package and the shared/ helpers it imports via ../shared.
   agentcore_source_path = abspath("${path.module}/../../../../lambda")
 
-  # Both include roots and exclude patterns are ROOTED at agentcore/ + shared/.
+  # Include the protected native engine and its isolated Lambda interface as
+  # production image inputs. Keep every include/exclude rooted at its package.
   # Rooting the excludes keeps `fileset` from walking sibling lambda packages
   # (e.g. agents/node_modules), whose .bin/* symlinks trigger fileset's
   # "inconsistent result" bug when a `**` glob traverses a symlink. The include
   # set is already scoped to these two roots, so the resulting file set (and thus
   # the image hash) is unchanged.
-  path_include = ["agentcore/**", "shared/**"]
+  path_include = ["agentcore/**", "shared/**", "native-runtime-control/**"]
   path_exclude = flatten([
-    for root in ["agentcore", "shared"] : [
+    for root in ["agentcore", "shared", "native-runtime-control"] : [
       "${root}/**/node_modules/**",
       "${root}/**/.git/**",
       "${root}/**/test/**",
@@ -267,6 +268,22 @@ data "aws_ecr_image" "agentcore" {
   image_tag       = local.agentcore_image_tag
 
   depends_on = [module.agentcore_image_build]
+}
+
+# Lambda requires one platform manifest, while the runtime's published pin is
+# the complete OCI image index. Resolve the child only from that exact index.
+data "docker_registry_image_manifests" "native_engine" {
+  name = "${aws_ecr_repository.agentcore.repository_url}@${data.aws_ecr_image.agentcore.image_digest}"
+  lifecycle {
+    postcondition {
+      condition = length([
+        for manifest in self.manifests : manifest.sha256_digest
+        if manifest.os == "linux" && manifest.architecture == "arm64" &&
+        contains(["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"], manifest.media_type)
+      ]) == 1
+      error_message = "The qualified runtime image must contain exactly one Linux ARM64 platform manifest."
+    }
+  }
 }
 
 # Optional amd64 build of the same core image. AgentCore microVMs are

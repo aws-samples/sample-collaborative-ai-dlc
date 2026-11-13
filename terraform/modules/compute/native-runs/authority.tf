@@ -49,7 +49,7 @@ module "authority" {
   vpc_security_group_ids = var.api_security_group_ids
   create_package         = false
   local_existing_package = module.packages["authority"].local_filename
-  environment_variables = merge(local.base_environment, local.execution_environment, {
+  environment_variables = merge(local.base_environment, local.execution_environment, local.workflow_capture_environment, {
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
     WORKFLOW_SOURCE_BINDINGS_TABLE     = var.workflow_source_bindings_table_name
     NATIVE_PACKAGE_JOBS_TABLE          = var.package_jobs_table_name

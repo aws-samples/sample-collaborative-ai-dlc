@@ -12,6 +12,12 @@ locals {
   }
   execution_api_statements = [
     {
+      Sid      = "ReadProtectedWorkflowEvidence"
+      Effect   = "Allow"
+      Action   = ["s3:GetObjectVersion"]
+      Resource = "${aws_s3_bucket.publications.arn}/native-workflow-output/v1/*"
+    },
+    {
       Sid      = "ResolveNativeInputSources"
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
@@ -91,6 +97,24 @@ locals {
   # nativeExecutionPolicy narrows bytes and the read-only cancellation fence to
   # exact attempt pins. Runtime writes cannot match the separate control prefix.
   execution_runtime_boundary_statements = [
+    {
+      Sid      = "InvokeOwnWorkflowEngine"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = "${local.workflow_engine_arn}:native_*"
+    },
+    {
+      Sid      = "SubmitOwnWorkflowInputs"
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObjectVersion"]
+      Resource = "${aws_s3_bucket.publications.arn}/native-workflow-input/v1/*"
+    },
+    {
+      Sid      = "ReadOwnWorkflowResults"
+      Effect   = "Allow"
+      Action   = ["s3:GetObjectVersion"]
+      Resource = "${aws_s3_bucket.publications.arn}/native-workflow-output/v1/*"
+    },
     {
       Sid      = "ReadNativeInputVersions"
       Effect   = "Allow"
@@ -194,6 +218,12 @@ resource "aws_iam_role_policy" "execution_worker" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Sid      = "BindCapturedWorkflowEngineVersion"
+        Effect   = "Allow"
+        Action   = ["lambda:GetAlias", "lambda:CreateAlias"]
+        Resource = [local.workflow_engine_arn, "${local.workflow_engine_arn}:native_*"]
+      },
       { Sid = "SubmitFencedObservations", Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = "${local.base_environment.NATIVE_AUTHORITY_FUNCTION}:execution" },
       {
         Sid      = "NativeExecutionAuthority"
@@ -405,6 +435,7 @@ module "execution_credentials" {
   architectures          = ["arm64"]
   memory_size            = 512
   timeout                = 60
+  publish                = true
   create_role            = false
   lambda_role            = aws_iam_role.execution_credentials[0].arn
   vpc_subnet_ids         = var.api_subnet_ids

@@ -13,6 +13,14 @@ variable "package_jobs_table_arn" { type = string }
 variable "image_repository_url" { type = string }
 variable "image_repository_arn" { type = string }
 variable "image_digest" { type = string }
+variable "image_arm64_manifest_digest" {
+  type        = string
+  description = "Qualified ARM64 child manifest of image_digest, used by the protected engine Lambda"
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.image_arm64_manifest_digest))
+    error_message = "The protected workflow engine requires an immutable ARM64 image manifest."
+  }
+}
 variable "tags" { type = map(string) }
 
 variable "execution_enabled" {

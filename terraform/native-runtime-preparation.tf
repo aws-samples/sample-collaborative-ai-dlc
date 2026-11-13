@@ -79,6 +79,7 @@ module "native_runs" {
   image_repository_url                = module.agentcore.ecr_repository_url
   image_repository_arn                = module.agentcore.ecr_repository_arn
   image_digest                        = module.agentcore.image_digest
+  image_arm64_manifest_digest         = module.agentcore.image_arm64_manifest_digest
   connections_table_name              = module.dynamodb.connections_table_name
   connections_table_arn               = module.dynamodb.connections_table_arn
   websocket_endpoint                  = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
