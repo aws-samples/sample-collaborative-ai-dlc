@@ -302,6 +302,16 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertRegex(function, r"publish\s*=\s*true")
         self.assertRegex(function, r'architectures\s*=\s*\["arm64"\]')
         self.assertRegex(function, r'command\s*=\s*\["workflow-engine-entry\.handler"\]')
+        # The runtime interface client reads both from its environment.
+        entry = re.findall(r'"([^"]+)"', function.split("entry_point = [", 1)[1].split("]", 1)[0])
+        self.assertEqual(entry, [
+            "/usr/bin/env",
+            "LAMBDA_TASK_ROOT=/opt/native-runtime-control",
+            "_HANDLER=workflow-engine-entry.handler",
+            "/usr/local/bin/node",
+            "/opt/native-lambda-interface/node_modules/aws-lambda-ric/index.mjs",
+        ])
+        self.assertRegex(function, r'working_directory\s*=\s*"/opt/native-runtime-control"')
         self.assertRegex(function, r'NATIVE_WORKFLOW_ENGINE_SHA256\s*=\s*trimprefix\(var\.image_digest, "sha256:"\)')
         self.assertRegex(
             function,

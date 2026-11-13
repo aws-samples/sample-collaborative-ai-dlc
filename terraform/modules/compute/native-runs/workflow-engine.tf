@@ -252,8 +252,18 @@ resource "aws_lambda_function" "workflow_engine" {
   timeout       = 900
   publish       = true
   ephemeral_storage { size = 2048 }
+  # aws-lambda-ric 4 reads the handler and task root from the environment, not
+  # from its arguments or working directory. Set both in the entry point so the
+  # function does not depend on what the service provides for a non-AWS base
+  # image. The installed qualification runs exactly this entry point and command.
   image_config {
-    entry_point       = ["/usr/local/bin/node", "/opt/native-lambda-interface/node_modules/aws-lambda-ric/index.mjs"]
+    entry_point = [
+      "/usr/bin/env",
+      "LAMBDA_TASK_ROOT=/opt/native-runtime-control",
+      "_HANDLER=workflow-engine-entry.handler",
+      "/usr/local/bin/node",
+      "/opt/native-lambda-interface/node_modules/aws-lambda-ric/index.mjs",
+    ]
     command           = ["workflow-engine-entry.handler"]
     working_directory = "/opt/native-runtime-control"
   }
