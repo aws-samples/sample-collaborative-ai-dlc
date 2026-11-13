@@ -5637,7 +5637,12 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
   if (!records.meta || records.meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
-  return response(200, buildIntentAudit({ records }));
+  return response(200, {
+    ...buildIntentAudit({ records }),
+    completion: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
+      ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
+      : null,
+  });
 };
 
 // GET /projects/{projectId}/intents/{intentId}/outputs — the agent
