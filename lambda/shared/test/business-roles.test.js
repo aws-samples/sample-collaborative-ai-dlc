@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  businessRoleMappingView,
   combineMemberRoles,
   computeSsoBusinessRoles,
   normalizeExcludedRoles,
@@ -7,6 +8,39 @@ import {
 } from '../business-roles.js';
 
 describe('business-role calculation', () => {
+  it('unions both sources without losing provenance or granting platform roles', () => {
+    const provider = {
+      roleMappings: {
+        'platform-admin': ['Admins'],
+        developer: ['Engineering', 'Engineering'],
+        architect: ['Engineering'],
+        'qa-tester': [],
+      },
+    };
+    const additions = { developer: ['Engineering', 'Contractors'] };
+    const view = businessRoleMappingView(provider, additions);
+    expect(view).toEqual({
+      roleMappings: additions,
+      terraformRoleMappings: { architect: ['Engineering'], developer: ['Engineering'] },
+      effectiveRoleMappings: {
+        architect: ['Engineering'],
+        developer: ['Contractors', 'Engineering'],
+      },
+    });
+    expect(computeSsoBusinessRoles(['Admins'], view.effectiveRoleMappings)).toEqual([]);
+    expect(computeSsoBusinessRoles(['Engineering'], view.effectiveRoleMappings)).toEqual([
+      'architect',
+      'developer',
+    ]);
+    expect(businessRoleMappingView(provider, {}).effectiveRoleMappings).toEqual(
+      view.terraformRoleMappings,
+    );
+    expect(businessRoleMappingView({}, additions).effectiveRoleMappings).toEqual({
+      developer: ['Contractors', 'Engineering'],
+    });
+    expect(additions).toEqual({ developer: ['Engineering', 'Contractors'] });
+  });
+
   it('grants a role when any mapped value matches and combines values across roles', () => {
     const roleMappings = {
       developer: ['Engineering', 'Contractors'],

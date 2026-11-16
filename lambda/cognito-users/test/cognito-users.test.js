@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 
 import { handler } from '../index.js';
+import { membershipStore } from '../../shared/space-membership.js';
 
 const cognitoMock = mockClient(CognitoIdentityProviderClient);
 
@@ -618,6 +619,8 @@ describe('/admin/sso-mappings (business-role mappings)', () => {
     expect(savedBody).toEqual({
       providerId: 'Entra',
       roleMappings: { developer: ['Contractors', 'Engineering'] },
+      terraformRoleMappings: {},
+      effectiveRoleMappings: { developer: ['Contractors', 'Engineering'] },
       revision: expect.any(String),
     });
 
@@ -629,6 +632,8 @@ describe('/admin/sso-mappings (business-role mappings)', () => {
         displayName: 'Entra ID',
         sourceAttribute: 'groups',
         roleMappings: { developer: ['Contractors', 'Engineering'] },
+        terraformRoleMappings: {},
+        effectiveRoleMappings: { developer: ['Contractors', 'Engineering'] },
         revision: savedBody.revision,
       },
       {
@@ -636,6 +641,8 @@ describe('/admin/sso-mappings (business-role mappings)', () => {
         displayName: 'Legacy SAML',
         sourceAttribute: '',
         roleMappings: {},
+        terraformRoleMappings: {},
+        effectiveRoleMappings: {},
         revision: null,
       },
     ]);
@@ -666,7 +673,12 @@ describe('/admin/sso-mappings (business-role mappings)', () => {
     );
     expect(incomplete.statusCode).toBe(409);
     expect(JSON.parse(incomplete.body).code).toBe('SOURCE_ATTRIBUTE_MISSING');
-    for (const roleMappings of [{ 'made-up': ['x'] }, { developer: [''] }, 'nope']) {
+    for (const roleMappings of [
+      { 'platform-admin': ['x'] },
+      { 'made-up': ['x'] },
+      { developer: [''] },
+      'nope',
+    ]) {
       expect(
         (await handler(mappingEvent('PUT', { providerId: 'Entra', body: { roleMappings } })))
           .statusCode,
@@ -676,5 +688,47 @@ describe('/admin/sso-mappings (business-role mappings)', () => {
       (await handler(mappingEvent('PUT', { providerId: 'Entra', body: null }))).statusCode,
     ).toBe(400);
     expect((await handler(mappingEvent('DELETE'))).statusCode).toBe(405);
+  });
+
+  it('preserves saved additions and revisions across baseline changes, and cannot suppress Terraform values', async () => {
+    const original = await membershipStore.getRoleMappingRecord('Entra');
+    const config = JSON.parse(CONFIG);
+    config.providers.Entra.roleMappings.developer = ['Engineering'];
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const save = async (roleMappings, expectedRevision) => {
+      const result = await handler(
+        mappingEvent('PUT', {
+          providerId: 'Entra',
+          body: { roleMappings, expectedRevision },
+        }),
+      );
+      expect(result.statusCode).toBe(200);
+      return JSON.parse(result.body);
+    };
+    const saved = await save({ developer: ['Engineering', 'Contractors'] }, original.revision);
+    expect(saved.terraformRoleMappings).toEqual({ developer: ['Engineering'] });
+    expect(saved.effectiveRoleMappings).toEqual({ developer: ['Contractors', 'Engineering'] });
+    expect(saved.effectiveRoleMappings).not.toHaveProperty('platform-admin');
+
+    // A deployment changes only the baseline. Existing additions and revision survive.
+    config.providers.Entra.roleMappings.developer = ['NewBaseline'];
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const listed = JSON.parse((await handler(mappingEvent('GET'))).body).providers[0];
+    expect(listed.revision).toBe(saved.revision);
+    expect(listed.roleMappings).toEqual(saved.roleMappings);
+    expect(listed.effectiveRoleMappings).toEqual({
+      developer: ['Contractors', 'Engineering', 'NewBaseline'],
+    });
+    const cleared = await save({}, saved.revision);
+    expect(cleared.roleMappings).toEqual({});
+    expect(cleared.effectiveRoleMappings).toEqual({ developer: ['NewBaseline'] });
+    expect(await membershipStore.getRoleMappings('Entra')).toEqual({});
+    const stale = await handler(
+      mappingEvent('PUT', {
+        providerId: 'Entra',
+        body: { roleMappings: saved.roleMappings, expectedRevision: saved.revision },
+      }),
+    );
+    expect(stale.statusCode).toBe(409);
   });
 });

@@ -342,54 +342,61 @@ describe('space member API', () => {
     ).toBe(400);
   });
 
-  it('computes per-space SSO roles with independent exclusions (the Alice example)', async () => {
-    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
-    await saveEntraMappings({
-      developer: ['Engineering'],
-      architect: ['Engineering', 'Architects'],
-    });
-    mockDirectory({ alice: federatedAttributes('alice', '[Engineering]') });
-    await seedMembership(projectId, 'alice', 'member');
-    const listed = JSON.parse((await request('GET')).body).find((m) => m.userId === 'alice');
-    expect(listed).toMatchObject({
-      ssoRoles: ['architect', 'developer'],
-      excludedRoles: [],
-      effectiveRoles: ['architect', 'developer'],
-    });
-    // Identity lookups are bounded by the requested members (owner + alice),
-    // not by the size of the rest of the directory.
-    expect(cognitoMock.commandCalls(ListUsersCommand).length).toBeLessThanOrEqual(2);
-    const spaceA = JSON.parse(
-      (
-        await request('PUT', {
-          route: 'members/alice/excluded-roles',
-          userId: 'alice',
-          data: { excludedRoles: ['developer'] },
-        })
-      ).body,
-    );
-    expect(spaceA).toMatchObject({
-      excludedRoles: ['developer'],
-      effectiveRoles: ['architect'],
-    });
-    // Space B excludes Architect instead; Space A's exclusion is untouched.
-    const spaceAId = projectId;
-    projectId = randomUUID();
-    await g.addV('Project').property('id', projectId).next();
-    await seedMembership(projectId, 'owner');
-    await seedMembership(projectId, 'alice', 'member');
-    const spaceB = JSON.parse(
-      (
-        await request('PUT', {
-          route: 'members/alice/excluded-roles',
-          userId: 'alice',
-          data: { excludedRoles: ['architect'] },
-        })
-      ).body,
-    );
-    expect(spaceB).toMatchObject({ effectiveRoles: ['developer'] });
-    expect((await membershipStore.get(spaceAId, 'alice')).excludedRoles).toEqual(['developer']);
-  });
+  it.each(['ui', 'terraform'])(
+    'computes per-space SSO roles from %s with independent exclusions',
+    async (source) => {
+      const config = JSON.parse(SSO_CONFIG);
+      if (source === 'terraform') {
+        config.providers.Entra.roleMappings = { developer: ['Engineering'] };
+      }
+      vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+      await saveEntraMappings({
+        ...(source === 'ui' ? { developer: ['Engineering'] } : {}),
+        architect: ['Engineering', 'Architects'],
+      });
+      mockDirectory({ alice: federatedAttributes('alice', '[Engineering]') });
+      await seedMembership(projectId, 'alice', 'member');
+      const listed = JSON.parse((await request('GET')).body).find((m) => m.userId === 'alice');
+      expect(listed).toMatchObject({
+        ssoRoles: ['architect', 'developer'],
+        excludedRoles: [],
+        effectiveRoles: ['architect', 'developer'],
+      });
+      // Identity lookups are bounded by the requested members (owner + alice),
+      // not by the size of the rest of the directory.
+      expect(cognitoMock.commandCalls(ListUsersCommand).length).toBeLessThanOrEqual(2);
+      const spaceA = JSON.parse(
+        (
+          await request('PUT', {
+            route: 'members/alice/excluded-roles',
+            userId: 'alice',
+            data: { excludedRoles: ['developer'] },
+          })
+        ).body,
+      );
+      expect(spaceA).toMatchObject({
+        excludedRoles: ['developer'],
+        effectiveRoles: ['architect'],
+      });
+      // Space B excludes Architect instead; Space A's exclusion is untouched.
+      const spaceAId = projectId;
+      projectId = randomUUID();
+      await g.addV('Project').property('id', projectId).next();
+      await seedMembership(projectId, 'owner');
+      await seedMembership(projectId, 'alice', 'member');
+      const spaceB = JSON.parse(
+        (
+          await request('PUT', {
+            route: 'members/alice/excluded-roles',
+            userId: 'alice',
+            data: { excludedRoles: ['architect'] },
+          })
+        ).body,
+      );
+      expect(spaceB).toMatchObject({ effectiveRoles: ['developer'] });
+      expect((await membershipStore.get(spaceAId, 'alice')).excludedRoles).toEqual(['developer']);
+    },
+  );
 
   it('keeps a local assignment active when the same SSO role is excluded, then removes it independently', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);

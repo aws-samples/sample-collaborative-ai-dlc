@@ -31,7 +31,7 @@ import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin, PLATFORM_ADMIN_GROUP } from '../shared/authz.js';
 import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
-import { BUSINESS_ROLES } from '../shared/business-roles.js';
+import { BUSINESS_ROLES, businessRoleMappingView } from '../shared/business-roles.js';
 import { membershipStore } from '../shared/space-membership.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -139,13 +139,16 @@ export const handler = async (event, context) => {
 
       if (event.httpMethod === 'GET') {
         const providers = await Promise.all(
-          providerEntries.map(async ([providerId, provider]) => ({
-            providerId,
-            displayName: provider.displayName || providerId,
-            sourceAttribute: provider.roleClaim || '',
-            // roleMappings plus the revision the editor must echo back on save.
-            ...(await membershipStore.getRoleMappingRecord(providerId)),
-          })),
+          providerEntries.map(async ([providerId, provider]) => {
+            const saved = await membershipStore.getRoleMappingRecord(providerId);
+            return {
+              providerId,
+              displayName: provider.displayName || providerId,
+              sourceAttribute: provider.roleClaim || '',
+              revision: saved.revision,
+              ...businessRoleMappingView(provider, saved.roleMappings),
+            };
+          }),
         );
         return response(200, { providers, businessRoles: BUSINESS_ROLES });
       }
@@ -179,7 +182,11 @@ export const handler = async (event, context) => {
           providerId,
           by: requestingUserId,
         });
-        return response(200, { providerId, ...saved });
+        return response(200, {
+          providerId,
+          revision: saved.revision,
+          ...businessRoleMappingView(provider, saved.roleMappings),
+        });
       }
 
       return response(405, { error: 'Method not allowed' });

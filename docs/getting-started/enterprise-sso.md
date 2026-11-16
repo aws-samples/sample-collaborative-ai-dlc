@@ -46,8 +46,8 @@ account-switch/sign-out flow or an isolated browser profile.
 ## Role and access mapping
 
 Provider configuration can map exact, case-sensitive values from one external
-claim to platform roles. This release supports `platform-admin`; future roles
-are added centrally in `config/platform-roles.json`.
+claim to `platform-admin` and the fixed business-role catalog. Only
+`platform-admin` becomes a Cognito platform group.
 
 ### The source attribute (`claims.roles`)
 
@@ -60,13 +60,34 @@ attributes, choose the one to use. The selected attribute supplies Cognito's
 `custom:sso_roles` on every federated sign-in and feeds both platform-role
 mappings (below) and business-role mappings (next section).
 
-### Business-role mappings (Platform admin UI)
+### Business-role mappings
 
 Business roles (Developer, Architect, QA / Tester, …) describe delivery
 responsibilities in spaces. Platform Admins map IdP values to business roles in
-**Platform Admin → Users → Business role mappings** — not in the provider file.
-These mappings are stored in the application database, so saving them needs no
-Terraform change or deployment, and redeploying never replaces them:
+**Platform Admin → Users → Business role mappings**. You can also define a
+baseline in each provider's Terraform `role_mappings`:
+
+```hcl
+role_mappings = {
+  "platform-admin" = ["<ADMIN_GROUP_OBJECT_ID>"]
+  developer        = ["<DEVELOPER_GROUP_OBJECT_ID>"]
+  architect        = ["<ARCHITECT_GROUP_OBJECT_ID>"]
+  "qa-tester"      = []
+}
+```
+
+Use stable IDs: `product-owner`, `business-analyst`, `architect`, `ux-ui-designer`,
+`developer`, `qa-tester`, `security-compliance`, `operations-devops`, and
+`delivery-manager`. In the installer provider JSON, the same map is named
+`roleMappings`. An empty business-role list grants nothing from Terraform.
+
+For each role, the effective values are the deduplicated union of Terraform
+values and UI additions. The UI labels their sources and displays Terraform
+values as read-only. Admins can add or remove UI values; removing an addition
+that also exists in Terraform leaves the Terraform value active. The database
+stores only UI additions. Existing saved mappings become additions without a
+migration. A deployment updates the Terraform baseline without replacing them.
+With no baseline, mappings remain fully managed through the UI:
 
 - Enter the exact values received from SSO, including case — a group name, a
   role value, or a group ID (for example an Entra group object ID). The
@@ -86,7 +107,7 @@ space (see [the spaces guide](../using-the-platform/projects.md)).
 For a federated user:
 
 - The external claim is authoritative on every fresh federated sign-in.
-- Cognito group membership is replaced in the issued token by the mapped roles.
+- Cognito group membership is replaced in the issued token by mapped platform roles.
   Manually adding a federated user to `platform-admin` does not grant that role.
 - Cognito requires mapped claims to use app-client-writable attributes. Hosted
   SSO sessions omit Cognito's self-service scope, so federated users cannot

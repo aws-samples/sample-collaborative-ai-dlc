@@ -100,6 +100,32 @@ describe('SSO role evaluation', () => {
 });
 
 describe('pre-token handler', () => {
+  it.each(['OIDC', 'SAML'])(
+    'never injects business roles into %s tokens or bypasses admission',
+    async (providerType) => {
+      const mixed = structuredClone(config);
+      mixed.providers.EnterpriseOIDC.roleMappings.developer = ['Engineers'];
+      mixed.providers.EnterpriseOIDC.roleMappings.architect = ['Engineers'];
+      vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(mixed));
+      const attributes = {
+        identities: JSON.stringify([{ providerName: 'EnterpriseOIDC', providerType }]),
+        'custom:sso_roles': '[aidlc-user,Engineers]',
+      };
+      const event = { request: { userAttributes: attributes }, response: {} };
+      await handler(event);
+      expect(event.response.claimsOverrideDetails.groupOverrideDetails.groupsToOverride).toEqual(
+        [],
+      );
+      attributes['custom:sso_roles'] = '[aidlc-user,Engineers,aidlc-admin]';
+      await handler(event);
+      expect(event.response.claimsOverrideDetails.groupOverrideDetails.groupsToOverride).toEqual([
+        'platform-admin',
+      ]);
+      attributes['custom:sso_roles'] = 'Engineers';
+      await expect(handler(event)).rejects.toThrow('SSO_ACCESS_DENIED');
+    },
+  );
+
   it('preserves a local token unchanged', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
     const event = { request: { userAttributes: { email: 'local@example.com' } }, response: {} };

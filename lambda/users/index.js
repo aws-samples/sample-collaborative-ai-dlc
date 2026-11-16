@@ -1,6 +1,7 @@
 import gremlin from 'gremlin';
 import {
   BUSINESS_ROLES,
+  businessRoleMappingView,
   combineMemberRoles,
   computeSsoBusinessRoles,
 } from '../shared/business-roles.js';
@@ -56,8 +57,8 @@ const getAttrsForSub = async (userId) => {
   return attrsToMap(result.Users?.[0]?.Attributes);
 };
 
-// SSO business roles come from trusted Cognito attributes plus the saved
-// mapping for the member's provider. Identity and mapping reads are memoized
+// SSO business roles come from trusted Cognito attributes plus the infrastructure
+// baseline and saved additions for the provider. Identity and mapping reads are memoized
 // across members within one request; read failures propagate as errors instead
 // of degrading to empty role lists.
 const createSsoRoleResolver = () => {
@@ -67,7 +68,11 @@ const createSsoRoleResolver = () => {
   const attributes = new Map();
   const mappingFor = async (providerId) => {
     if (!mappings.has(providerId)) {
-      mappings.set(providerId, await membershipStore.getRoleMappings(providerId));
+      const additions = await membershipStore.getRoleMappings(providerId);
+      mappings.set(
+        providerId,
+        businessRoleMappingView(config.providers[providerId], additions).effectiveRoleMappings,
+      );
     }
     return mappings.get(providerId);
   };

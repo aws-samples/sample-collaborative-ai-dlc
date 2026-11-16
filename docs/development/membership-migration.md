@@ -137,14 +137,24 @@ and the current mapping at read time.
 
 Business-role mappings for SSO are one item per configured connection at
 `PLATFORM` / `SSO#<providerId>` in the access table, holding `roleMappings`
-(business-role ID → exact IdP values). Saves from the Platform admin UI write
+(business-role ID → exact IdP values added through the UI). Saves from the Platform admin UI write
 the item and a `sso-role-mappings-changed` audit item (`PLATFORM` /
 `AUDIT#<time>#<changeId>`, with `providerId` and before/after mappings) in one
 `TransactWriteItems` call. Each save echoes the `revision` the editor loaded
 (null before the first save) and is rejected with 409 when the stored revision
 differs, so a stale editor cannot silently overwrite a newer mapping. The item has no `userId`, so the `by-user` GSI skips
-it. This item is the only editable copy; Terraform's `roleMappings` remain
-platform roles (`platform-admin`) for admission, not business roles.
+it. Existing items retain their values and revisions without a migration.
+
+Business-role calculations combine these additions with the provider's Terraform
+`role_mappings` baseline from `SSO_ROLE_CONFIG`. The mapping API returns
+`roleMappings` (editable additions), `terraformRoleMappings` (read-only), and
+`effectiveRoleMappings` (their deduplicated union). PUT still accepts only the
+additions as `roleMappings`, with the loaded revision; audit before/after values
+also contain only additions. The union is never persisted. Redeploying changes
+only the baseline, and removing a UI addition cannot suppress a Terraform value.
+Deploy the backend and frontend together to expose the source fields in the UI.
+`platform-admin` stays infrastructure-only and is excluded from business roles;
+Cognito group overrides use platform roles only.
 
 Each change records its actor, space, target user, timestamp, change ID, and
 before/after membership. Revision conditions reject stale changes. Actor

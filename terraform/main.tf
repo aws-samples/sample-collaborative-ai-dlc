@@ -129,10 +129,8 @@ locals {
 
   sso_enabled = var.auth_mode != "local"
 
-  # Admission and platform-role mappings for the token/admission path, plus the
-  # connection metadata (display name, source attribute) the Platform admin
-  # business-role mapping UI shows. Business-role mappings themselves live in
-  # DynamoDB and are saved from the UI, not here.
+  # Infrastructure mappings and connection metadata. Business roles combine this
+  # read-only baseline with UI additions stored independently in DynamoDB.
   sso_role_config = {
     providers = {
       for name, provider in var.sso_providers : name => {
@@ -197,10 +195,24 @@ resource "terraform_data" "sso_preconditions" {
       condition = alltrue(flatten([
         for provider in values(var.sso_providers) : [
           for role in keys(provider.role_mappings) :
-          contains(jsondecode(file("${path.module}/../config/platform-roles.json")), role)
+          contains(concat(
+            jsondecode(file("${path.module}/../config/platform-roles.json")),
+            [for entry in jsondecode(file("${path.module}/../lambda/shared/business-role-catalog.json")) : entry.id]
+          ), role)
         ]
       ]))
       error_message = "SSO role mappings may only target roles implemented by this release."
+    }
+
+    precondition {
+      condition = alltrue(flatten([
+        for provider in values(var.sso_providers) : [
+          for claims in values(provider.role_mappings) : [
+            for value in claims : (trimspace(value) != "")
+          ]
+        ]
+      ]))
+      error_message = "SSO role mapping values must not be empty or whitespace-only."
     }
 
     precondition {

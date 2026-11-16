@@ -14,7 +14,12 @@ export interface SsoMappingProvider {
   displayName: string;
   /** The OIDC claim / SAML attribute the connection reads (claims.roles). Empty when SSO setup is incomplete. */
   sourceAttribute: string;
+  /** UI-managed additions only. Existing saved mappings retain this meaning. */
   roleMappings: Record<string, string[]>;
+  /** Read-only baseline supplied by the provider's Terraform role_mappings. */
+  terraformRoleMappings: Record<string, string[]>;
+  /** Deduplicated union of the baseline and UI additions. Never sent on save. */
+  effectiveRoleMappings: Record<string, string[]>;
   /** Revision of the loaded mapping; echoed back on save so a stale save is rejected instead of overwriting newer edits. Null before the first save. */
   revision: string | null;
 }
@@ -31,8 +36,10 @@ export const ssoRoleMappingsService = {
     roleMappings: Record<string, string[]>,
     expectedRevision: string | null,
   ) =>
-    api.put<{ providerId: string; roleMappings: Record<string, string[]>; revision: string }>(
-      `/admin/sso-mappings/${encodeURIComponent(providerId)}`,
-      { roleMappings, expectedRevision },
-    ),
+    api.put<
+      Pick<
+        SsoMappingProvider,
+        'providerId' | 'roleMappings' | 'terraformRoleMappings' | 'effectiveRoleMappings'
+      > & { revision: string }
+    >(`/admin/sso-mappings/${encodeURIComponent(providerId)}`, { roleMappings, expectedRevision }),
 };

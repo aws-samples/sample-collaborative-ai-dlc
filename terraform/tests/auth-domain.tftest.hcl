@@ -114,13 +114,17 @@ run "preserve_existing_hybrid_login" {
         client_secret_arn = "arn:aws:secretsmanager:eu-central-1:111122223333:secret:test-client-AbCdEf"
         email_claim       = "email"
         role_claim        = "groups"
-        role_mappings     = { platform-admin = ["admins"] }
+        role_mappings     = { platform-admin = ["admins"], developer = ["engineers"], architect = ["engineers"] }
       }
     }
   }
   assert {
     condition     = output.hosted_ui_domain == run.provision_without_cutover.hosted_ui_domain
     error_message = "Provisioning must not change an existing hybrid login origin."
+  }
+  assert {
+    condition     = jsonencode(local.role_config.providers.CorporateOIDC.roleMappings) == jsonencode({ platform-admin = ["admins"] })
+    error_message = "Business-role mappings must never enter the token group override configuration."
   }
 }
 

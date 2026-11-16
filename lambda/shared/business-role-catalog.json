@@ -1,0 +1,11 @@
+[
+  { "id": "product-owner", "name": "Product Owner / Product Manager" },
+  { "id": "business-analyst", "name": "Business Analyst" },
+  { "id": "architect", "name": "Architect" },
+  { "id": "ux-ui-designer", "name": "UX/UI Designer" },
+  { "id": "developer", "name": "Developer" },
+  { "id": "qa-tester", "name": "QA / Tester" },
+  { "id": "security-compliance", "name": "Security / Compliance" },
+  { "id": "operations-devops", "name": "Operations / DevOps" },
+  { "id": "delivery-manager", "name": "Delivery Manager" }
+]
