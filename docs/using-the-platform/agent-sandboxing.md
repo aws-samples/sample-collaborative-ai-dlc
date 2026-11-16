@@ -158,6 +158,7 @@ filesystem denials.
 | Claude Code on Bedrock  | `bedrock-runtime.<bedrock_region>.amazonaws.com`, `bedrock.<bedrock_region>.amazonaws.com`               |
 | OpenCode on Bedrock     | `bedrock-runtime.<bedrock_region>.amazonaws.com`, `bedrock.<bedrock_region>.amazonaws.com`, `models.dev` |
 | Codex on Bedrock Mantle | `bedrock-mantle.<bedrock_region>.api.aws`                                                                |
+| Claude Code via gateway | The host of `bedrock_gateway_url`                                                                        |
 
 Replace `<bedrock_region>` with the **inference region**, for example
 `bedrock-runtime.eu-central-1.amazonaws.com` or
@@ -166,6 +167,11 @@ The API key and model must be usable in that inference region. Global/cross-regi
 inference profiles route within Bedrock; the harness does not need every destination
 region in its allowlist. SRT accepts a leading `*.` wildcard, but not a wildcard
 in the middle: `bedrock-runtime.*.amazonaws.com` is invalid.
+
+With a [Bedrock gateway](bedrock-gateway.md), a Claude Code run that uses a key
+calls the gateway host and no Amazon Bedrock endpoint; a stand-in gateway test
+recorded no other destination. **Network access help** shows that host as its
+own example.
 
 The Kiro list worked in the deployed tests; each domain has not been tested
 independently. The Claude Code and OpenCode examples retain

@@ -23,6 +23,7 @@ import { closeGraphSource } from '../mcp/graph-writer.js';
 import { ensureIntentVertex } from '../commands/init-ws.js';
 import { ensureRuntimeExcludes } from '../git-engine.js';
 import { LOCAL_E2E_CLIS, localE2eModelFor } from './local-e2e-config.js';
+import { BEDROCK_GATEWAY_TOKEN_ENV, bedrockGatewayUrl } from '../cli/backend-adapters.js';
 
 const execFileAsync = promisify(execFile);
 const command = process.argv[2];
@@ -43,6 +44,12 @@ const loadSecretFile = async () => {
   }
   if (!process.env.AWS_BEARER_TOKEN_BEDROCK && process.env.BEDROCK_API_KEY) {
     process.env.AWS_BEARER_TOKEN_BEDROCK = process.env.BEDROCK_API_KEY;
+  }
+  // No broker runs here, so the key is placed where the Keys adapter puts it: with a Bedrock
+  // gateway (BEDROCK_GATEWAY_URL) it is the gateway token and never keeps the AWS name.
+  if (bedrockGatewayUrl(process.env) && process.env.AWS_BEARER_TOKEN_BEDROCK) {
+    process.env[BEDROCK_GATEWAY_TOKEN_ENV] = process.env.AWS_BEARER_TOKEN_BEDROCK;
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
   }
 };
 

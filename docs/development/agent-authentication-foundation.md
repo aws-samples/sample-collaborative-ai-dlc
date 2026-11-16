@@ -158,6 +158,15 @@ Custom MCP servers keep their explicitly configured secrets. Reserved inference,
 application credential and runtime control variables cannot be used as custom
 secret references; custom child configurations also scrub credential inheritance.
 
+With a Bedrock gateway configured (`BEDROCK_GATEWAY_URL`, see
+[Bedrock gateway](../using-the-platform/bedrock-gateway.md)), the Keys material
+adapter delivers a Bedrock key as `AIDLC_BEDROCK_GATEWAY_TOKEN` and never as
+`AWS_BEARER_TOKEN_BEDROCK`. Only the Claude driver reads that name. It points
+Claude Code at the gateway and presents the key as a Bearer token. OpenCode,
+Codex and the Mantle model lookup read the AWS name, so they cannot send a
+gateway key to AWS, and both CLIs are reported unavailable for that invocation.
+The owner of these rules is `lambda/agentcore/cli/backend-adapters.js`.
+
 This is a credential-delivery boundary, not a host sandbox. Arbitrary same-UID
 native code is not isolated from the host by environment sanitation or socket
 permissions alone.
@@ -374,8 +383,10 @@ names out of those files as well.
 3. **Runtime provider** (`lambda/agentcore/<id>-runtime-provider.js`). It declares an
    `id`, the `modes` it serves and `materials` keyed by material type, and optionally
    `controlledEnv`, `capabilities`, `verify` and `verificationFailures`. A material
-   adapter maps `{ binding, material }` to `{ env?, credentialEnvironment? }` and may
-   expose `createSession` to own a renewing session. Root:
+   adapter maps `{ binding, material, env }` to `{ env?, credentialEnvironment? }`, where
+   the `env` it receives is the invocation's base environment with the deployment
+   settings an adapter may route by, and may expose `createSession` to own a renewing
+   session. Root:
    `runtime-auth-providers.js`, with a static import so `container-deps.test.js`
    checks the provider's packages against the image manifest. It cannot reach key
    storage, connection records or grant signing, even through a shared module

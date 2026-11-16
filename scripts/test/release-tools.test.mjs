@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -2351,6 +2352,65 @@ test('installer safely rewrites sed-sensitive managed tfvars values', () => {
   assert.match(installed.stderr, /updating 'environment'.*to match installer configuration/);
   assert.match(installed.stderr, /updating 'aws_region'.*to match installer configuration/);
   assert.equal(existsSync(`${tfvarsPath}.bak`), false);
+});
+
+test('installer deploys an unchanged release again only with --reapply', () => {
+  const repository = createReleaseRepository();
+  // Record every deployment and whether it read the edited variables file.
+  writeFileSync(
+    join(repository, 'scripts/deploy-terraform.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'printf "%s %s\\n" "$3" "$(grep -c bedrock_gateway_url "$AIDLC_CONFIG_DIR/environments/$1.tfvars")" >> "$AIDLC_DEPLOY_LOG"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  writeJson(join(repository, 'package.json'), { name: 'aidlc', version: '2.2.0', private: true });
+  execFileSync('git', ['add', '.'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'v2.2'], { cwd: repository });
+  execFileSync('git', ['tag', 'v2.2.0'], { cwd: repository });
+
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-reapply-'));
+  const env = { ...mockedCommandEnv(dir, repository), AIDLC_DEPLOY_LOG: join(dir, 'deploy.log') };
+  const deployments = () => readFileSync(env.AIDLC_DEPLOY_LOG, 'utf8').trim().split('\n');
+  const currentLink = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
+
+  const installed = run('bash', [installer, 'install'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  const checkout = readlinkSync(currentLink);
+  assert.match(checkout, /releases\/v2\.2\.0$/);
+  assert.deepEqual(deployments(), ['plan 0', 'apply 0']);
+
+  appendFileSync(
+    join(env.XDG_CONFIG_HOME, 'collaborative-ai-dlc/terraform/environments/dev.tfvars'),
+    'bedrock_gateway_url = "https://gateway.example.com"\n',
+  );
+
+  const unchanged = run('bash', [installer, 'update'], { env });
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.match(unchanged.stdout, /Already on AI-DLC v2\.2\.0\. .*update --reapply/);
+  assert.deepEqual(deployments(), ['plan 0', 'apply 0']);
+
+  const reapplied = run('bash', [installer, 'update', '--reapply'], { env });
+  assert.equal(reapplied.status, 0, reapplied.stderr);
+  assert.match(reapplied.stdout, /Update from AI-DLC v2\.2\.0 complete/);
+  assert.deepEqual(deployments(), ['plan 0', 'apply 0', 'plan 1', 'apply 1']);
+  assert.equal(readlinkSync(currentLink), checkout);
+
+  // A tracked branch whose commit has not moved behaves the same way.
+  const refEnv = managedEnv(mkdtempSync(join(tmpdir(), 'aidlc-reapply-ref-')), repository);
+  const tracked = run('bash', [installer, 'install', '--ref', 'aidlc-v2'], { env: refEnv });
+  assert.equal(tracked.status, 0, tracked.stderr);
+  const sameCommit = run('bash', [installer, 'update'], { env: refEnv });
+  assert.equal(sameCommit.status, 0, sameCommit.stderr);
+  assert.match(
+    sameCommit.stdout,
+    /Already on AI-DLC v2\.0\.0 from aidlc-v2@[0-9a-f]{12}\. .*update --reapply/,
+  );
+  const reappliedRef = run('bash', [installer, 'update', '--reapply'], { env: refEnv });
+  assert.equal(reappliedRef.status, 0, reappliedRef.stderr);
+  assert.match(reappliedRef.stdout, /Update from AI-DLC v2\.0\.0 complete/);
 });
 
 test('installer carries the custom domain across an update and can remove it', () => {

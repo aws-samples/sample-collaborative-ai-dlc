@@ -56,7 +56,8 @@ export const prepareCredentialLeases = async ({
           'AGENT_AUTH_RUNTIME_UNSUPPORTED',
           'Credential material is unsupported by this runtime',
         );
-      const prepared = adapter({ binding, material: lease.material });
+      // The deployment settings in baseEnv let an adapter route its material.
+      const prepared = adapter({ binding, material: lease.material, env: baseEnv });
       assertProviderEnv(
         lease.material.type,
         controlledEnv,

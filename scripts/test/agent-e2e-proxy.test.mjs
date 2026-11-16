@@ -118,3 +118,36 @@ test('sandbox mode returns failure if a test fails, and still runs the remaining
   assert.ok(log.includes('sandbox-integration.mjs\ttrue\tstream\trestrictive\n'));
   assert.match(log, /^ps\t-aq\t--filter\tlabel=aidlc\.e2e=/m);
 });
+
+test('a Bedrock gateway reaches the runtime containers, with the key only in the secret file', () => {
+  const log = runHarness({
+    E2E_CLIS: 'claude',
+    BEDROCK_API_KEY: 'gateway-test-key',
+    BEDROCK_GATEWAY_URL: 'https://gateway.example.com',
+    BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD: 'true',
+  });
+
+  assert.match(log, /\t--env\tBEDROCK_GATEWAY_URL=https:\/\/gateway\.example\.com(?:\t|\n)/);
+  assert.match(log, /\t--env\tBEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD=true(?:\t|\n)/);
+  assert.match(log, /local-e2e-harness\.mjs/);
+  assert.doesNotMatch(log, /gateway-test-key/);
+});
+
+test('a Bedrock gateway run refuses OpenCode and Codex before any container starts', () => {
+  for (const E2E_CLIS of ['claude,opencode', 'codex']) {
+    const log = runHarness(
+      {
+        E2E_CLIS,
+        BEDROCK_API_KEY: 'gateway-test-key',
+        BEDROCK_GATEWAY_URL: 'https://gateway.example.com',
+      },
+      { expectedStatus: 1 },
+    );
+    assert.doesNotMatch(log, /^run\t/m);
+  }
+});
+
+test('no gateway setting reaches the containers without BEDROCK_GATEWAY_URL', () => {
+  const log = runHarness({ BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD: 'true' });
+  assert.doesNotMatch(log, /BEDROCK_GATEWAY/);
+});

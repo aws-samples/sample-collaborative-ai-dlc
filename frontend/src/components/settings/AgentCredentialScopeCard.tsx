@@ -24,6 +24,7 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { agentCredentialFormatWarning } from '@/lib/agentCredentialFormat';
+import { bedrockGatewayHost } from '@/lib/bedrockGateway';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -305,6 +306,8 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       : settings?.bedrockBearerTokenSet
         ? 'Using your own Bedrock key'
         : 'Using your own Kiro key';
+  // With a Bedrock gateway the same field holds a gateway key, which only Claude Code can use.
+  const gatewayHost = bedrockGatewayHost(settings?.bedrockGatewayUrl);
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
     const available =
@@ -422,7 +425,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
           ) : (
             <SecretField
               id={`${scope}-bedrock-bearer-token`}
-              label="Bedrock Bearer Token"
+              label={gatewayHost ? 'Bedrock Gateway Key' : 'Bedrock Bearer Token'}
               isSet={Boolean(settings?.bedrockBearerTokenSet)}
               value={bearerToken}
               onChange={(value) => {
@@ -430,13 +433,27 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
                 setPendingReview(null);
                 setNote(null);
               }}
-              emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
-              rotatePlaceholder="Enter a new token to rotate, or leave blank"
+              emptyPlaceholder={
+                gatewayHost ? 'Enter the gateway key' : 'Enter AWS_BEARER_TOKEN_BEDROCK value'
+              }
+              rotatePlaceholder={
+                gatewayHost
+                  ? 'Enter a new key to rotate, or leave blank'
+                  : 'Enter a new token to rotate, or leave blank'
+              }
               onClear={() => clearSecret('bedrockBearerToken')}
               clearing={clearingSecret === 'bedrockBearerToken'}
               disabled={saving || clearingSecret !== null}
-              helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
-              warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
+              helpText={
+                gatewayHost
+                  ? `Sent to the Bedrock gateway at ${gatewayHost}. Enables Claude Code; OpenCode and Codex cannot use a gateway.${fallbackText('bedrock') ?? ''}`
+                  : `Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`
+              }
+              warningText={agentCredentialFormatWarning(
+                'bedrockBearerToken',
+                bearerToken,
+                Boolean(gatewayHost),
+              )}
             />
           )}
           <SecretField
@@ -455,7 +472,11 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             clearing={clearingSecret === 'kiroApiKey'}
             disabled={saving || clearingSecret !== null}
             helpText={`Enables the Kiro CLI.${fallbackText('kiro') ?? ''}`}
-            warningText={agentCredentialFormatWarning('kiroApiKey', kiroApiKey)}
+            warningText={agentCredentialFormatWarning(
+              'kiroApiKey',
+              kiroApiKey,
+              Boolean(gatewayHost),
+            )}
           />
           {pendingReview ? (
             <div className="space-y-2">

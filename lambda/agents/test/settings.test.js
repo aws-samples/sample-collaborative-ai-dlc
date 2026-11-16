@@ -66,6 +66,32 @@ describe('Bedrock inference region', () => {
   });
 });
 
+describe('Bedrock gateway', () => {
+  const personal = { ...event('GET'), path: '/users/me/agent-credentials' };
+
+  it('tells the platform and personal credential views that Bedrock keys are gateway keys', async () => {
+    vi.stubEnv('BEDROCK_GATEWAY_URL', 'https://gateway.example.com');
+    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+
+    for (const request of [event('GET'), personal]) {
+      const response = await handler(request);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).bedrockGatewayUrl).toBe('https://gateway.example.com');
+    }
+  });
+
+  it.each([undefined, ''])('reports no gateway when the deployment sets %j', async (url) => {
+    vi.stubEnv('BEDROCK_GATEWAY_URL', url);
+    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+
+    for (const request of [event('GET'), personal]) {
+      const response = await handler(request);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).not.toHaveProperty('bedrockGatewayUrl');
+    }
+  });
+});
+
 describe('platform PR strategy settings', () => {
   it('reads pr-per-unit and fails safely to intent-pr for an unknown value', async () => {
     ssmMock.on(GetParametersCommand).resolves({

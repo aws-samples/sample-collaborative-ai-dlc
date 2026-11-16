@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Code, Copy, ExternalLink, Shield, ShieldCheck } from 'lucide-react';
 import { agentsService, type SandboxSettings } from '@/services/agents';
 import { ApiError } from '@/services/api';
+import { bedrockGatewayHost } from '@/lib/bedrockGateway';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const harnessDomains = (region: string) => [
+// With a Bedrock gateway, a Claude Code run that uses a key calls only the gateway.
+const harnessDomains = (region: string, gatewayHost: string | null) => [
   {
     name: 'Kiro',
     domains: ['*.kiro.dev', 'q.us-east-1.amazonaws.com', 'codewhisperer.us-east-1.amazonaws.com'],
@@ -16,6 +18,7 @@ const harnessDomains = (region: string) => [
     name: 'Claude Code',
     domains: [`bedrock-runtime.${region}.amazonaws.com`, `bedrock.${region}.amazonaws.com`],
   },
+  ...(gatewayHost ? [{ name: 'Claude Code with a gateway key', domains: [gatewayHost] }] : []),
   {
     name: 'OpenCode',
     domains: [
@@ -62,6 +65,7 @@ export function AgentSandboxingCard() {
   const [requestError, setRequestError] = useState('');
   const [conflict, setConflict] = useState(false);
   const [bedrockRegion, setBedrockRegion] = useState<string | null>(null);
+  const [gatewayHost, setGatewayHost] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const help = useRef<HTMLDetailsElement>(null);
   const current = useRef(settings);
@@ -80,6 +84,7 @@ export function AgentSandboxingCard() {
       current.current = result;
       setSettings(result);
       setBedrockRegion(response.bedrockRegion ?? null);
+      setGatewayHost(bedrockGatewayHost(response.bedrockGatewayUrl));
       setText(format(result.draft ?? result.applied?.settings ?? result.defaultSettings));
       setEditorError(null);
       setConflict(false);
@@ -362,7 +367,7 @@ export function AgentSandboxingCard() {
                     access for your harnesses.
                   </p>
                   <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                    {harnessDomains(bedrockRegion ?? '<bedrock_region>').map(
+                    {harnessDomains(bedrockRegion ?? '<bedrock_region>', gatewayHost).map(
                       ({ name, domains }) => {
                         const example = `"allowedDomains": ${JSON.stringify(domains, null, 2)}`;
                         return (
