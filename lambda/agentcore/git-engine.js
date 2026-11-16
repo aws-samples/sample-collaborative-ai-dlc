@@ -1580,14 +1580,16 @@ export const concludeConflictMerge = async ({
 // A refused sparse commit leaves the stage's work for that repository only in
 // the session workspace, which a wiped mount loses. Make it durable without
 // touching the intent branch: snapshot the staged index (commitAll staged
-// everything before refusing) as a commit on top of HEAD and push it to `ref`,
-// replacing an earlier refusal of the same stage. The index and the working
-// tree stay exactly as they are. Never throws; returns { ref, sha } or
-// { ref, error }.
+// everything before refusing) as a commit on top of HEAD and push it to
+// `<prefix>/<sha>`. Naming the ref after its own commit means a later refusal
+// (another leg, re-drive or attempt, possibly from a fresh clone that never
+// saw this snapshot) cannot replace it, so the push is not forced. The index
+// and the working tree stay exactly as they are. Never throws; returns
+// { ref, sha } or { ref, error }.
 const preserveRefusedState = async ({
   dir,
   repo,
-  ref,
+  prefix,
   message,
   author,
   committer,
@@ -1598,12 +1600,11 @@ const preserveRefusedState = async ({
   git,
   withGitCredential,
 }) => {
+  let ref = prefix;
   const failed = (step, result) => ({
     ref,
     error: `${step} failed${result?.stderr?.trim() ? `: ${result.stderr.trim().slice(-300)}` : ''}`,
   });
-  const valid = await git(['check-ref-format', ref], { cwd: dir });
-  if (valid.exitCode !== 0) return failed('check-ref-format', valid);
   const tree = await git(['write-tree'], { cwd: dir });
   if (tree.exitCode !== 0) return failed('write-tree', tree);
   const head = await git(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], { cwd: dir });
@@ -1621,6 +1622,9 @@ const preserveRefusedState = async ({
   );
   if (commit.exitCode !== 0) return failed('commit-tree', commit);
   const sha = commit.stdout.trim();
+  ref = `${prefix}/${sha}`;
+  const valid = await git(['check-ref-format', ref], { cwd: dir });
+  if (valid.exitCode !== 0) return failed('check-ref-format', valid);
   try {
     const push = await withAuthenticatedRemote(
       {
@@ -1634,7 +1638,7 @@ const preserveRefusedState = async ({
         git,
         withGitCredential,
       },
-      (env) => git(['push', 'origin', `+${sha}:${ref}`], { cwd: dir, env }),
+      (env) => git(['push', 'origin', `${sha}:${ref}`], { cwd: dir, env }),
     );
     return push.exitCode === 0 ? { ref, sha } : failed('push', push);
   } catch (error) {
@@ -1651,8 +1655,9 @@ const preserveRefusedState = async ({
 //               up-to-date remotes are neutral, mirroring v1's aggregation)
 //   committed — at least one repo got a new commit from THIS call (the caller
 //               uses this to decide whether a push failure risks new work)
-// `refusedRef` names the side ref a refused sparse commit is preserved under
-// (preserveRefusedState); the result row then carries `preserved`.
+// `refusedRefPrefix` is where a refused sparse commit is preserved, one ref per
+// snapshot below it (preserveRefusedState); the result row then carries
+// `preserved`.
 export const commitAndPushAll = async ({
   repos = [],
   workspaceDir,
@@ -1666,7 +1671,7 @@ export const commitAndPushAll = async ({
   message,
   messages = null, // { [repoUrl]: message } — overrides `message` for those repos
   author = null,
-  refusedRef = null,
+  refusedRefPrefix = null,
   urlsFor = null, // (repoUrl) => { clean, auth } — test seam for file:// remotes
   git = runGit,
   withGitCredential = defaultWithGitCredential,
@@ -1716,11 +1721,11 @@ export const commitAndPushAll = async ({
         const provenance = toWorkspaceProvenance(commit.provenance);
         const files = provenance.state === 'known' ? provenance.files : null;
         const preserved =
-          refusedRef && SPARSE_REJECTIONS.has(commit.reason)
+          refusedRefPrefix && SPARSE_REJECTIONS.has(commit.reason)
             ? await preserveRefusedState({
                 dir,
                 repo: url,
-                ref: refusedRef,
+                prefix: refusedRefPrefix,
                 message: messages?.[url] ?? message,
                 author,
                 committer,

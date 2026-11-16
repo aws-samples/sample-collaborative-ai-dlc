@@ -325,7 +325,7 @@ describe('sparse checkout', () => {
     await writeFile(path.join(sparseDir, 'assets/large.txt'), 'rewritten');
     await writeFile(path.join(sparseDir, 'services/api/index.js'), 'updated');
     await writeFile(path.join(fullDir, 'assets/large.txt'), 'full checkout edit');
-    const refusedRef = 'refs/aidlc/refused/e1/code-generation';
+    const refusedRefPrefix = 'refs/aidlc/refused/e1/code-generation/attempt-0';
     const commitAndPush = (overrides = {}) =>
       commitAndPushAll({
         repos: ['owner/repo', 'owner/other'],
@@ -333,7 +333,7 @@ describe('sparse checkout', () => {
         branch: 'aidlc/test',
         gitProvider: 'github',
         message: 'stage',
-        refusedRef,
+        refusedRefPrefix,
         urlsFor: (url) =>
           url === 'owner/repo' ? { auth: remote, clean: remote } : { auth: other, clean: other },
         log: () => {},
@@ -359,8 +359,9 @@ describe('sparse checkout', () => {
     ).not.toBe(0);
     expect(git(other, 'show', 'aidlc/test:assets/large.txt')).toBe('full checkout edit');
     // The refused state is durable on its remote, on top of the unchanged HEAD
-    // and under the side ref only: the work inside the selection and the
+    // and under its own side ref only: the work inside the selection and the
     // refused file.
+    const refusedRef = `${refusedRefPrefix}/${refused.preserved.sha}`;
     expect(refused.preserved).toEqual({
       ref: refusedRef,
       sha: git(remote, 'rev-parse', refusedRef),
@@ -379,21 +380,137 @@ describe('sparse checkout', () => {
     expect(git(sparseDir, 'show', ':assets/large.txt')).toBe('rewritten');
     expect(git(sparseDir, 'show', ':services/api/index.js')).toBe('updated');
 
-    // A later refusal of the same stage replaces the saved state.
+    // A later refusal under the same prefix gets its own ref; the first stays.
     await writeFile(path.join(sparseDir, 'services/api/index.js'), 'updated again');
     const again = await commitAndPush();
+    expect(again.results[0].preserved.ref).toBe(
+      `${refusedRefPrefix}/${again.results[0].preserved.sha}`,
+    );
     expect(again.results[0].preserved.sha).not.toBe(refused.preserved.sha);
-    expect(git(remote, 'show', `${refusedRef}:services/api/index.js`)).toBe('updated again');
+    expect(git(remote, 'show', `${again.results[0].preserved.ref}:services/api/index.js`)).toBe(
+      'updated again',
+    );
+    expect(git(remote, 'show', `${refusedRef}:services/api/index.js`)).toBe('updated');
 
-    // A state that cannot be saved is reported, and the refusal stands.
-    const badRef = 'refs/aidlc/refused/e1/bad..name';
-    const unsaved = await commitAndPush({ refusedRef: badRef });
+    // A state that cannot be saved is reported, pushes nothing, and the refusal stands.
+    const refsBefore = git(remote, 'for-each-ref', '--format=%(refname) %(objectname)');
+    const unsaved = await commitAndPush({ refusedRefPrefix: 'refs/aidlc/refused/e1/bad..name' });
     expect(unsaved.results[0]).toMatchObject({
       committed: false,
       reason: 'sparse_outside_selection',
-      preserved: { ref: badRef, error: expect.stringContaining('check-ref-format') },
+      preserved: {
+        ref: expect.stringMatching(/^refs\/aidlc\/refused\/e1\/bad\.\.name\/[0-9a-f]{40}$/),
+        error: expect.stringContaining('check-ref-format'),
+      },
     });
     expect(unsaved.results[0].preserved.sha).toBeUndefined();
+    expect(git(remote, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore);
+  });
+
+  // Review of #450: a retry after the workspace was lost starts from a fresh
+  // clone that never saw the first attempt's snapshot. Its refusal must not
+  // replace that snapshot, and neither save may move the intent branch.
+  it("keeps every attempt's refused work when a retry starts from a fresh clone", async () => {
+    git(source, 'branch', 'aidlc/test');
+    const remote = path.join(root, 'remote.git');
+    git(root, 'clone', '--bare', source, remote);
+    source = remote;
+    const intentHead = git(remote, 'rev-parse', 'refs/heads/aidlc/test');
+    const branches = () =>
+      git(remote, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads');
+    const branchesBefore = branches();
+    const refuse = (dir, attempt) =>
+      commitAndPushAll({
+        repos: ['owner/repo'],
+        workspaceDir: dir,
+        branch: 'aidlc/test',
+        gitProvider: 'github',
+        message: `stage attempt ${attempt}`,
+        refusedRefPrefix: `refs/aidlc/refused/e1/code-generation--unit-a/attempt-${attempt}`,
+        urlsFor: () => ({ auth: remote, clean: remote }),
+        log: () => {},
+      });
+    const sparseClone = async (dir) => {
+      const result = await checkoutRepo({
+        ...inputs(),
+        targetDir: dir,
+        sparseDirectories: ['services/api'],
+      });
+      expect(result.branchOk).toBe(true);
+      expect(await exists(path.join(dir, 'assets'))).toBe(false);
+      expect(git(dir, 'rev-parse', 'HEAD')).toBe(intentHead);
+    };
+    // Snapshot of what a refusal leaves in a workspace.
+    const workspaceState = (dir) => ({
+      head: git(dir, 'rev-parse', 'HEAD'),
+      index: git(dir, 'ls-files', '--stage', '--sparse'),
+      status: git(dir, 'status', '--porcelain=v1', '--untracked-files=all'),
+    });
+
+    // Attempt 0 refuses and saves its work.
+    const first = path.join(root, 'attempt-0');
+    await sparseClone(first);
+    await mkdir(path.join(first, 'assets'));
+    await writeFile(path.join(first, 'assets/large.txt'), 'attempt 0 rewrite');
+    await writeFile(path.join(first, 'services/api/index.js'), 'attempt 0 work');
+    const saved0 = (await refuse(first, 0)).results[0];
+    expect(saved0).toMatchObject({ committed: false, reason: 'sparse_outside_selection' });
+    expect(saved0.preserved.sha).toMatch(/^[0-9a-f]{40}$/);
+
+    // The workspace is lost; the retry (attempt 1) starts from a fresh clone
+    // with no trace of attempt 0, and is refused again with different work.
+    await rm(first, { recursive: true, force: true });
+    const second = path.join(root, 'attempt-1');
+    await sparseClone(second);
+    expect(git(second, 'status', '--porcelain')).toBe('');
+    await mkdir(path.join(second, 'assets'));
+    await writeFile(path.join(second, 'assets/large.txt'), 'attempt 1 rewrite');
+    await writeFile(path.join(second, 'services/api/index.js'), 'attempt 1 work');
+    // Saving changes nothing in the workspace beyond what the refusal itself leaves.
+    const unsaved = await commitAndPushAll({
+      repos: ['owner/repo'],
+      workspaceDir: second,
+      branch: 'aidlc/test',
+      gitProvider: 'github',
+      message: 'stage attempt 1',
+      urlsFor: () => ({ auth: remote, clean: remote }),
+      log: () => {},
+    });
+    expect(unsaved.results[0].preserved).toBeUndefined();
+    const refusedState = workspaceState(second);
+    const saved1 = (await refuse(second, 1)).results[0];
+    expect(saved1).toMatchObject({ committed: false, reason: 'sparse_outside_selection' });
+    expect(workspaceState(second)).toEqual(refusedState);
+
+    // Both snapshots are retrievable, each with its own attempt's edits.
+    expect(saved0.preserved.ref).toBe(
+      `refs/aidlc/refused/e1/code-generation--unit-a/attempt-0/${saved0.preserved.sha}`,
+    );
+    expect(saved1.preserved.ref).toBe(
+      `refs/aidlc/refused/e1/code-generation--unit-a/attempt-1/${saved1.preserved.sha}`,
+    );
+    expect(git(remote, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/aidlc')).toBe(
+      [saved0, saved1].map((r) => `${r.preserved.ref} ${r.preserved.sha}`).join('\n'),
+    );
+    for (const [saved, attempt] of [
+      [saved0, 0],
+      [saved1, 1],
+    ]) {
+      const { ref } = saved.preserved;
+      expect(git(remote, 'rev-parse', `${ref}^`)).toBe(intentHead);
+      expect(git(remote, 'show', `${ref}:services/api/index.js`)).toBe(`attempt ${attempt} work`);
+      expect(git(remote, 'show', `${ref}:assets/large.txt`)).toBe(`attempt ${attempt} rewrite`);
+      expect(git(remote, 'show', `${ref}:services/web/index.js`)).toBe('services/web/index.js');
+    }
+    // A clone that fetches the saved refs recovers attempt 0's work.
+    const recovery = path.join(root, 'recovery');
+    git(root, 'clone', '-q', remote, recovery);
+    git(recovery, 'fetch', '-q', 'origin', saved0.preserved.ref);
+    expect(git(recovery, 'show', 'FETCH_HEAD:services/api/index.js')).toBe('attempt 0 work');
+
+    // The intent branch never moved, and no other branch appeared.
+    expect(git(remote, 'rev-parse', 'refs/heads/aidlc/test')).toBe(intentHead);
+    expect(branches()).toBe(branchesBefore);
   });
 
   // A unit lane (sparse: services/api) whose reverse merge of the intent

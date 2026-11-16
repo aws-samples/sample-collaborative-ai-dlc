@@ -5945,8 +5945,13 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     const sparseCheckout = { 'owner/repo': ['services/api'] };
     const materialized = [];
     const base = baseDeps();
+    let refusedRefPrefix = null;
     const deps = baseDeps({
       ...sourcePresent,
+      // A retried stage: its row was reset to PENDING with the attempt bumped.
+      store: spyStore({
+        stage: { stageInstanceId: BASE_STAGE_INSTANCE_ID, state: 'PENDING', attempt: 2 },
+      }),
       spawnFn: okSpawn,
       materializeStage: async (args) => {
         materialized.push(args);
@@ -5957,23 +5962,26 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       // commitAll's refusal as commitAndPushAll reports it (real-Git coverage
       // lives in sparse-checkout.test.js): nothing committed, nothing pushed.
       // The engine saved the refused state under the side ref it was given.
-      commitAndPushAll: async ({ refusedRef }) => ({
-        ok: false,
-        committed: false,
-        results: [
-          {
-            repo: 'owner/repo',
-            committed: false,
-            pushed: false,
-            reason: 'sparse_outside_selection',
-            detail:
-              'tracked files outside the sparse checkout selection were changed: docs/usage.md',
-            outsideSelection: ['docs/usage.md'],
-            dirty: true,
-            preserved: { ref: refusedRef, sha: 'abc1234567890' },
-          },
-        ],
-      }),
+      commitAndPushAll: async (args) => {
+        refusedRefPrefix = args.refusedRefPrefix;
+        return {
+          ok: false,
+          committed: false,
+          results: [
+            {
+              repo: 'owner/repo',
+              committed: false,
+              pushed: false,
+              reason: 'sparse_outside_selection',
+              detail:
+                'tracked files outside the sparse checkout selection were changed: docs/usage.md',
+              outsideSelection: ['docs/usage.md'],
+              dirty: true,
+              preserved: { ref: `${refusedRefPrefix}/abc1234567890`, sha: 'abc1234567890' },
+            },
+          ],
+        };
+      },
     });
     const res = await runStage({ ...gitArgs, sparseCheckout }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'git_commit_failed' });
@@ -5986,10 +5994,12 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
     const types = events.map((event) => event.type);
     expect(types).toContain('v2.git.sparse_outside_selection');
-    // The timeline names where the refused state was saved.
+    // The side ref is scoped to the stage row's durable attempt, and the
+    // timeline names the exact ref the refused state was saved to.
+    expect(refusedRefPrefix).toBe('refs/aidlc/refused/e1/requirements-analysis/attempt-2');
     expect(
       events.find((event) => event.type === 'v2.git.sparse_outside_selection').summary,
-    ).toMatch(/saved to refs\/aidlc\/refused\/[^/\s]+\/[^/\s]+@abc12345\)/);
+    ).toContain(`saved to ${refusedRefPrefix}/abc1234567890)`);
     expect(types).toContain('v2.git.push_failed');
     expect(types).not.toContain('v2.git.pushed');
     const states = deps.store.calls

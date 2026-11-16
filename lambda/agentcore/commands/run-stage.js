@@ -2222,10 +2222,6 @@ const runStageAttempt = async (
   // Human-readable stage label for event summaries — carries the lane so the
   // activity feed stays attributable when N instances of a stage exist.
   const stageLabel = unitSlug ? `${stageId} [unit ${unitSlug}]` : stageId;
-  // Where the engine preserves a refused sparse commit (git-engine.js
-  // preserveRefusedState): per execution, stage and lane, outside refs/heads.
-  const refusedRef = `refs/aidlc/refused/${executionId}/${stageId}${unitSlug ? `--${unitSlug}` : ''}`;
-
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
 
   // Stored configs may predate current validation. Check both tiers, as verify-mcp
@@ -2723,6 +2719,11 @@ const runStageAttempt = async (
       `stage ${stageInstanceId} started with ${priorStageRow.aidlcRepoRef}, received ${aidlcRepoRef}`,
     );
   }
+  // Where the engine preserves a refused sparse commit (git-engine.js
+  // preserveRefusedState), outside refs/heads: per execution, stage, lane and
+  // the stage row's durable attempt (bumped by every retry and rewind), with
+  // one ref per snapshot below it so no later refusal replaces an earlier one.
+  const refusedRefPrefix = `refs/aidlc/refused/${executionId}/${stageId}${unitSlug ? `--${unitSlug}` : ''}/attempt-${Number(priorStageRow?.attempt ?? 0)}`;
   const stageScope = {
     executionId,
     intentId,
@@ -3952,13 +3953,13 @@ const runStageAttempt = async (
     if (refused.length === 0) return;
     const scope = label ? `${stageLabel} (${label})` : stageLabel;
     const preservation = (r) => {
-      if (r.preserved?.sha) return ` (saved to ${r.preserved.ref}@${r.preserved.sha.slice(0, 8)})`;
+      if (r.preserved?.sha) return ` (saved to ${r.preserved.ref})`;
       return r.preserved ? ` (not saved to ${r.preserved.ref}: ${r.preserved.error})` : '';
     };
     const detail = refused
       .map((r) => `${r.repo}: ${r.detail ?? r.reason}${preservation(r)}`)
       .join('; ');
-    const summary = `Engine refused to commit ${scope}: ${detail}. The changes are left uncommitted in the workspace; the next attempt is told to restore them.`;
+    const summary = `Engine refused to commit ${scope}: ${detail}. The changes are left uncommitted in the workspace; while it survives, a retry is told to restore them.`;
     await store
       .appendEvent({
         executionId,
@@ -4111,7 +4112,7 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        refusedRef,
+        refusedRefPrefix,
         ...(await stageCommitMessages({
           messageFor: engineCommitMessage,
           stageId,
@@ -4458,7 +4459,7 @@ const runStageAttempt = async (
     projectId,
     executionId,
     author: gitAuthor,
-    refusedRef,
+    refusedRefPrefix,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
     ...(await stageCommitMessages({
@@ -4839,7 +4840,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          refusedRef,
+          refusedRefPrefix,
           message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,

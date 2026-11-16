@@ -121,14 +121,21 @@ the activity feed names the files. A refused stage leaves its changes in the
 workspace, as long as session storage survives. So that the work is not lost
 with the workspace, the engine also pushes the refused state, including the
 changes inside the selection, as one commit to
-`refs/aidlc/refused/<executionId>/<stage>` (`<stage>--<unit>` for a unit lane)
-in that repository; the activity feed names the ref, or says that it could not
-be pushed. The ref is not a branch and is not restored automatically: fetch it
-with `git fetch origin <ref>` to recover the work, and delete it when it is no
-longer needed. A later refusal of the same stage replaces it. When the failed
-stage is retried, the new attempt's prompt lists the refused files and asks the
-agent to restore them first. A stage resumed after answering a question gets only your
-answer, so it fails again until it is retried. A refused conflict resolution
+`refs/aidlc/refused/<executionId>/<stage>/attempt-<n>/<commit>` in that
+repository (`<stage>--<unit>` for a unit lane; `<n>` is the stage's attempt
+counter, which starts at 0 and increases with every retry or rewind). The
+activity feed names the ref, or says that it could not be pushed. Every refusal
+gets its own ref, so a later refusal never replaces an earlier one, including
+when the retry started from a fresh clone. List an intent's saved refusals with
+`git ls-remote origin 'refs/aidlc/refused/<executionId>/*'`. The refs are not
+branches and are not restored automatically: fetch one with
+`git fetch origin <ref>` to recover its work, and delete the refs when they are
+no longer needed. When the failed stage is retried in a workspace that still
+holds the refused changes, the new attempt's prompt lists the refused files and
+asks the agent to restore them first; after the workspace is lost, the retry
+starts from a fresh checkout and the refused work exists only in the saved
+refs. A stage resumed after answering a question gets only your answer, so it
+fails again until it is retried. A refused conflict resolution
 is aborted, as other failed resolutions are, and the agent's resolution is
 discarded. If changing those files is part of the work, create a new intent whose
 selection includes their directories. In a multi-repository intent, other
