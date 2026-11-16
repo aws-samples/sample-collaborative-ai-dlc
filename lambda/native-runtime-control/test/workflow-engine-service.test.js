@@ -651,6 +651,98 @@ describe('protected workflow engine service', () => {
     }
   });
 
+  it('applies a gate only from the answer to a recorded question, never from an approval typed as a written reply', async () => {
+    const t = await setup();
+    try {
+      expect(JSON.parse((await t.command([])).result.stdout)).toMatchObject({ kind: 'run-stage' });
+      t.project.set('src/app.js', Buffer.from('export const answer = 42;\n'));
+      expect(
+        (await t.command(['engine', 'sensor', 'fire', '--stage', 'build'])).result.exitCode,
+      ).toBe(0);
+      const report = (result, ...rest) => [
+        'engine',
+        'orchestrate',
+        'report',
+        '--stage',
+        'build',
+        '--result',
+        result,
+        ...rest,
+      ];
+      expect((await t.command(report('awaiting-approval'))).result.exitCode).toBe(0);
+      // The agent ends its turn at the gate in prose: no question was recorded.
+      const prose = await t.publish();
+      expect(prose.body.pendingInput).toBeUndefined();
+      expect((await t.proof(prose)).workflowCompletion).toBe('not_verified');
+      await t.admit(prose);
+      // The application still accepts a written reply to that turn.
+      const accepted = await t.f.api.respond(
+        t.f.prepared,
+        'responding-member',
+        {
+          requestId: randomUUID(),
+          interactionId: prose.interactionReceipt.id,
+          contentSha256: prose.body.contentSha256,
+          text: 'Approve',
+        },
+        t.f.recheck,
+      );
+      expect(accepted.response).toMatchObject({ kind: 'user_reply', text: 'Approve' });
+      const deliver = async () => {
+        const claim = await t.execution.claim(t.f.bindingIdentity);
+        await t.execution.release({ row: await t.execution.dispatched({ row: claim.row }) });
+      };
+      await deliver();
+      // It names no question the engine recorded, so it approves nothing.
+      const typed = await t.command(report('approved', '--user-input', 'Approve'));
+      expect(typed.result.exitCode).toBe(1);
+      expect(typed.result.failure).toMatch(/^NATIVE_ENGINE_(DECISION_MISMATCH|COMMAND_DENIED)$/);
+      expect(t.calls.some((call) => call.includes('approved'))).toBe(false);
+      // The refusal is a finished operation: nothing is left pending.
+      const status = await t.handler(
+        { schemaVersion: 1, identity: await t.identity(), action: 'status' },
+        await t.context(),
+      );
+      expect(status.pending).toBeNull();
+      const refused = await t.publish();
+      expect(await t.proof(refused)).toMatchObject({
+        workflowCompletion: 'not_verified',
+        humanApproval: 'incomplete',
+        engineApplication: [],
+      });
+
+      // Presented again as a question, the same gate is applied from its answer.
+      await t.admit(refused);
+      await t.execution.respond({
+        ...t.f.bindingIdentity,
+        actorId: 'responding-member',
+        request: {
+          requestId: randomUUID(),
+          interactionId: refused.interactionReceipt.id,
+          contentSha256: refused.body.contentSha256,
+          text: 'Show the approval as a question.',
+        },
+      });
+      await deliver();
+      const opened = await t.publish(gate());
+      expect(opened.finalized.result.exitCode).toBe(0);
+      await approve(t, opened);
+      expect(JSON.parse((await t.command(['next'])).result.stdout)).toEqual({ kind: 'done' });
+      const evidence = await t.proof(await t.publish());
+      expect(evidence).toMatchObject({
+        workflowCompletion: 'complete',
+        humanApproval: 'applied',
+        gates: [{ stage: 'build', status: 'applied' }],
+      });
+      // Only the answer to the recorded question is a member decision.
+      expect(evidence.engineApplication).toMatchObject([
+        { actorId: 'responding-member', application: 'applied', effect: 'GATE_APPROVED' },
+      ]);
+    } finally {
+      await t.close();
+    }
+  });
+
   it('refuses callers outside the current binding, writer and membership before any journal write', async () => {
     const t = await setup();
     try {
