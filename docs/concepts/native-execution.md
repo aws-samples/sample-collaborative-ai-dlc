@@ -5143,6 +5143,120 @@ bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/n
 bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --apply-reviewed <saved-plan-sha256>
 ```
 
+The inspection, the restore and the plan step were run on 2026-11-16; the plan
+stopped. See the next section. These commands must not be run again, and the
+plan saved by that step must never be applied.
+
+## NE-11 deployment — state restored, plan stopped on a create-first replacement, 2026-11-16
+
+**The state is restored and the stack is unchanged since 2026-11-13. The plan
+made afterwards would have replaced the engine function by first creating a
+second function of the same name, which cannot succeed; its review stopped it.
+The engine function is active on the qualified image and is kept: a
+continuation handoff removes its taint and finishes the apply.** The attempts
+are preserved under `.native-evidence/ne11-2026-11-16-apply-recovery/handoff/`
+(`inspect-001*`, `restore-state*`, `plan*`).
+
+### What the steps found
+
+- **Inspection.** The lock was the stopped apply's. The backend held serial
+  1507, an intermediate snapshot. No function was still changing. The engine
+  function existed, active, with version 1 and no alias. The registry policy
+  was as the apply created it; Lambda had added nothing.
+- **Restore.** The lock was released and the errored state pushed. The backend
+  reads serial **1523**, the same lineage, 2193 resources, the engine function
+  as its one tainted resource, no lock. The state bucket keeps no versions, so
+  the replaced snapshot is gone; `terraform/errored.tfstate` remains.
+- **Plan.** Terraform planned the engine function as `create replacement and
+  then destroy`. The review accepted only a destroy-first replacement and
+  stopped, naming the unexpected order rather than the consequence.
+
+### Why the replacement was create-first, and why it would have failed
+
+`workflow-engine.tf` sets no `create_before_destroy`. Terraform forces that
+order on every resource that a create-before-destroy resource depends on, and
+records it in the state. The Lambda module marks its permission resources
+create-before-destroy, which makes every module function so; the authority
+function depends on the engine function through the version it captures. The
+errored state shows the flag on the engine function and on all 52 functions.
+
+With that order Terraform first creates the replacement. The function name is
+fixed, Lambda refuses a second function of that name, and the provider retries
+the conflict for its propagation timeout and then fails. A local reproduction
+with Terraform 1.17.0 shows the same: a tainted resource with a fixed name and
+a create-before-destroy dependant is planned `create, delete`, the create
+fails on the existing name, and the state is left with a second, deposed
+object. The earlier local proof replaced a tainted resource that had no such
+dependant, so it did not show this.
+
+This holds for any forced replacement of a function in this stack, not only
+for this one: a failed create, `-replace`, or a changed name. It is rare and
+is recorded here rather than changed in NE-11. The remedy is the one used now
+where the function is sound, or deleting the function before the apply where
+it is not.
+
+### Decision: keep the function, remove the taint
+
+Terraform taints a resource whose create did not return. Here the create call
+was accepted and only the wait failed. The stopped plan holds Terraform's own
+refresh of the live function, and every configured attribute in it already
+equals the configuration: the qualified ARM64 platform digest, all 29
+environment values including the producer identity, the entry point, memory,
+timeout, role, storage and tags, with version 1 published and its log group
+attached. After the wait the provider only sets reserved concurrency, which
+is not configured, and reads the function. Nothing is missing.
+
+`terraform untaint` changes that one status in the state and nothing in the
+stack. The next plan should leave the engine function unchanged, keep version
+1, and need no exception from the repository's plan inspection. The review of
+that plan accepts the engine function only unchanged or updated in place.
+
+### The other planned changes
+
+The stopped plan also held 18 function updates, six alias updates and two role
+policy updates, none outside the plan applied on 2026-11-13:
+
+- Ten functions, the orchestrator alias and the execution role policy were in
+  flight when the network dropped; four functions, the five authority aliases
+  and the authority role policy had not started.
+- Four functions that finished on 2026-11-13 are planned once more, with two
+  of the in-flight ones under a new package name. The Lambda module hashes a
+  function's whole source directory, which holds the previous bundle. The
+  apply rebuilt the bundles that contain shared code NE-11 changed, so the next
+  plan names a new package for exactly those functions. The package holds the
+  bundle already deployed, and the plan after that is stable. Functions whose
+  bundle a test had already rebuilt, or whose packaging excludes the bundle,
+  are not affected. Excluding the bundle from the hash would remove this second
+  pass; it is not part of NE-11.
+
+### Continuation handoff
+
+1. **Untaint.** Verifies that the backend is still the restored state at
+   serial 1523 with no lock, and that the engine function is still the one
+   inspected: active, unmodified, on the qualified image. Then removes the
+   taint and reads the state back at serial 1524 with nothing tainted.
+2. **Plan, save and stop for review.** Any replacement or creation of the
+   engine function stops the plan, as does any other deletion, replacement or
+   creation outside packaging helpers, or an image change. Changes that were
+   not in the stopped plan are listed for the reviewer.
+3. **Apply the reviewed plan** by its SHA-256, read the engine function back,
+   publish the frontend. The stopped plan's SHA-256 is refused.
+
+The sleep guard, the credential, mains-power and local-image checks before
+each step, and the single-attempt guards are as in the previous handoff.
+
+Still unverifiable until the run: that the plan after the untaint leaves the
+engine function unchanged; that the in-flight and unstarted updates apply; and
+that the engine function, which Lambda reports active, starts with its
+configured entry point when invoked.
+
+```bash
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-engine-untaint/handoff/deploy-ne11-continuation.sh' --check-only
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-engine-untaint/handoff/deploy-ne11-continuation.sh' --untaint
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-engine-untaint/handoff/deploy-ne11-continuation.sh' --plan
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-engine-untaint/handoff/deploy-ne11-continuation.sh' --apply-reviewed <saved-plan-sha256>
+```
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5365,8 +5479,10 @@ the current contract for newly created executions.
       defects found on the way are corrected. A deployment-only handoff exists.
       **Deployment started 2026-11-13:** the qualified image is published; the
       first full plan stopped on an image lookup defect, which is repaired.
-      The recovery apply then lost its network part-way: the stack is partly
-      updated and a second handoff restores Terraform's state and finishes it.
+      The recovery apply then lost its network part-way and left the stack
+      partly updated. Terraform's state is restored; the plan that followed
+      would have replaced the engine function create-first and was stopped. A
+      continuation handoff keeps the function and finishes the apply.
       **Still open:** a review completed through the real engine, a reviewer with
       a model, a verified completion of a plan with sensors and reviewers, an
       installed CLI driving the engine, and everything deployed. An engine
