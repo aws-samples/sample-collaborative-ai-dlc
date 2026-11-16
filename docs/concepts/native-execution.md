@@ -99,6 +99,10 @@ is shown as uncertain or unavailable.
 If a structured form cannot be captured, the response remains available for
 inspection and an eligible turn can accept a written reply. The platform does not
 invent missing options, answer questions automatically or advance a human gate.
+In a native execution with the protected engine, that acceptance is the
+application's only: the engine applies a reply only to a question it recorded,
+and after any other reply it refuses the workflow commands of the next turn
+until a form is presented and answered (known limit, NE-24).
 Current forms support up to 32 questions and 16 options per question, with written
 answers where required. Unsupported forms must remain explicit rather than lose
 questions or choices.
@@ -5611,7 +5615,10 @@ the current contract for newly created executions.
       engine, a reviewer with a model, a verified completion of a plan with
       sensors and reviewers, an installed CLI driving the engine, and how the
       deployed parts behave, since nothing has run on the deployed stack. An
-      engine operation that never finishes stays pending; see NE-23.
+      engine operation that never finishes stays pending; see NE-23. **Known
+      limit, reproduced locally 2026-11-16:** a written reply to a turn without
+      a recorded question makes the engine refuse the workflow commands of the
+      next turn; see NE-24.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
@@ -5715,3 +5722,33 @@ the current contract for newly created executions.
       and a replayed request for the abandoned operation are refused; no proof is
       written for it and affected revisions stay not verified; and the journal
       shows who abandoned what and when.
+- [ ] **NE-24 — Keep a turn usable after a reply the engine cannot bind.** A
+      structured form exists only when the agent writes its question file. When
+      a turn ends without one, the application accepts any written reply, but
+      the protected engine applies a reply only to a question it recorded: in
+      the next turn it refuses every workflow command with
+      `NATIVE_ENGINE_DECISION_MISMATCH`, including commands that need no member,
+      and every further written reply repeats the refusal. The same refusal
+      follows a structured answer to a form that was not the engine's question,
+      such as a paraphrased plan offer. Nothing stays pending and no approval is
+      implied (NE-11 ships with this behaviour; this is not the NE-23 case), but
+      the run continues only if the agent happens to end a turn with a form the
+      engine can record, and nothing tells the agent or the member what the
+      refusal means. **Reproduced locally 2026-11-16** through reply admission,
+      the execution store and the engine service with a scripted pinned engine;
+      the reproduction is kept in
+      `.native-evidence/ne11-2026-11-16-free-text-reply/`, and the intended part
+      (a typed approval approves nothing; the gate applies once it is presented
+      as a question and answered) is tested. Treat an accepted reply without a
+      recorded question as carrying no member authority instead of refusing the
+      turn, tell the agent to present the open question as a form, and let it
+      read that question again from the engine. The change is in the workflow
+      engine's command application, which ships in the runtime image, so it
+      needs a new image, installed qualification and a full deployment. **Done
+      when:** after such a reply the next turn's commands that need no member
+      are applied and the agent is told why no decision was taken; answers and
+      gate approvals without a recorded question are still refused and never
+      implied; the member sees that the reply was not applied as a decision;
+      the open question is presented again as a form, from the engine's record
+      where it holds one, and the run then reaches a verified completion in the
+      same attempt; and revisions in between stay not verified.
