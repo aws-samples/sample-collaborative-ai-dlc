@@ -6,9 +6,9 @@
 // runtime off engine-data while executions are active: a warm session keeps
 // the runtime version it started with, and so keeps calling the engine-data
 // function the plan destroys. Also refuses a plan that sets, changes or
-// removes the Bedrock gateway while executions are active: a session sends the
-// saved Bedrock key to the endpoint it started with, so sessions on either
-// side of the apply send the same key to different endpoints.
+// removes the Bedrock gateway while executions are active: a session accepts
+// a saved Bedrock key only for the endpoint it started with, so a session from
+// before the apply is refused the key and its run fails.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -30,8 +30,8 @@ const ACTIVATIONS = [
 // sessions still call.
 const DEACTIVATIONS = [{ flag: 'enable_engine_data', variable: 'ENGINE_DATA_FUNCTION' }];
 
-// The runtime environment variable that decides where a saved credential is
-// sent. Setting, changing and removing it all count.
+// The runtime environment variable that decides which endpoint a saved
+// credential is accepted for. Setting, changing and removing it all count.
 const REROUTES = [{ flag: 'bedrock_gateway_url', variable: 'BEDROCK_GATEWAY_URL' }];
 
 const isRuntime = (change) =>
@@ -138,12 +138,12 @@ const report = ({ flags, deactivated, rerouted, active, overridden }) => {
     deactivated.length && `turns off ${deactivated.join(', ')}`,
     rerouted.length && `changes ${rerouted.join(', ')}`,
   ].filter(Boolean);
-  // Executions without grants, or on a removed function, fail outright; a
-  // gateway change alone leaves them running against either endpoint.
+  // Executions without grants, or on a removed function, fail outright; after
+  // a gateway change alone, only those that reach a session from before it do.
   const stranded = flags.length > 0 || deactivated.length > 0;
   const consequence = stranded
     ? 'will fail when they next invoke the runtime'
-    : 'can send a saved Bedrock key to the wrong endpoint';
+    : 'can fail when they next invoke the runtime';
   log(
     `${overridden ? 'Warning' : 'Refusing Terraform plan'}: it ${changes.join(' and ')} ` +
       `while ${active.length} execution(s) are running or parked:`,
@@ -172,12 +172,11 @@ const report = ({ flags, deactivated, rerouted, active, overridden }) => {
   }
   if (rerouted.length) {
     log(
-      'A runtime session sends the saved Bedrock key to the endpoint it started with: the gateway ' +
-        'with bedrock_gateway_url, Amazon Bedrock without it. A session from before the apply ' +
-        'keeps its endpoint until it ends, and a managed environment keeps it in every revision ' +
-        'built before the apply. Finish or cancel these executions, re-plan and apply, then ' +
-        'replace the saved Bedrock keys in the order given in ' +
-        'docs/using-the-platform/bedrock-gateway.md.',
+      'A runtime session accepts a saved Bedrock key only for the endpoint it started with: the ' +
+        'gateway with bedrock_gateway_url, Amazon Bedrock without it. After the apply, a session ' +
+        'from before it is refused the key until it ends, and so is every managed environment ' +
+        'revision built before the apply. Finish or cancel these executions, re-plan and apply, ' +
+        'then follow docs/using-the-platform/bedrock-gateway.md.',
     );
   }
   log(`To apply anyway, set ${OVERRIDE}=1; the executions listed ${consequence}.`);

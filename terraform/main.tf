@@ -636,6 +636,7 @@ module "lambda" {
   realtime_doc_secret_param_name           = module.realtime.realtime_doc_secret_param_name
   agent_credential_grant_secret_param_arn  = aws_ssm_parameter.agent_credential_grant_secret.arn
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
+  bedrock_gateway_url                      = var.bedrock_gateway_url
 
   # Discussions feature
   discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name

@@ -23,7 +23,8 @@ import { closeGraphSource } from '../mcp/graph-writer.js';
 import { ensureIntentVertex } from '../commands/init-ws.js';
 import { ensureRuntimeExcludes } from '../git-engine.js';
 import { LOCAL_E2E_CLIS, localE2eModelFor } from './local-e2e-config.js';
-import { BEDROCK_GATEWAY_TOKEN_ENV, bedrockGatewayUrl } from '../cli/backend-adapters.js';
+import { BEDROCK_GATEWAY_TOKEN_ENV } from '../cli/backend-adapters.js';
+import { bedrockGatewayUrl } from '../../shared/agent-credential-lease.js';
 
 const execFileAsync = promisify(execFile);
 const command = process.argv[2];

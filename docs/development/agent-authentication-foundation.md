@@ -159,13 +159,25 @@ application credential and runtime control variables cannot be used as custom
 secret references; custom child configurations also scrub credential inheritance.
 
 With a Bedrock gateway configured (`BEDROCK_GATEWAY_URL`, see
-[Bedrock gateway](../using-the-platform/bedrock-gateway.md)), the Keys material
-adapter delivers a Bedrock key as `AIDLC_BEDROCK_GATEWAY_TOKEN` and never as
-`AWS_BEARER_TOKEN_BEDROCK`. Only the Claude driver reads that name. It points
-Claude Code at the gateway and presents the key as a Bearer token. OpenCode,
-Codex and the Mantle model lookup read the AWS name, so they cannot send a
-gateway key to AWS, and both CLIs are reported unavailable for that invocation.
-The owner of these rules is `lambda/agentcore/cli/backend-adapters.js`.
+[Bedrock gateway](../using-the-platform/bedrock-gateway.md)), the lease says
+what a Bedrock key is for. The credential broker leases it as
+`bedrock-gateway-key` material that names the gateway, without the legacy
+`value` field, and never as `api-key` material (`redeemAgentBinding`). The Keys
+material adapter delivers that material as `AIDLC_BEDROCK_GATEWAY_TOKEN`, never
+as `AWS_BEARER_TOKEN_BEDROCK`, and only when the runtime's own
+`BEDROCK_GATEWAY_URL` names the same gateway. A runtime that is configured for a
+gateway refuses a Bedrock `api-key` lease. A runtime whose code or configuration
+is from before a gateway change therefore fails the invocation instead of
+sending the key to its former endpoint: an image without the material type
+refuses the lease as unsupported material, and one that reads only `value`
+gets no key.
+
+Only the Claude driver reads the gateway token. It points Claude Code at the
+gateway and presents the key as a Bearer token. OpenCode, Codex and the Mantle
+model lookup read the AWS name, so they cannot send a gateway key to AWS, and
+both CLIs are reported unavailable for that invocation. The runtime rules live
+in `lambda/agentcore/cli/backend-adapters.js`, the material in
+`lambda/shared/agent-credential-lease.js`.
 
 This is a credential-delivery boundary, not a host sandbox. Arbitrary same-UID
 native code is not isolated from the host by environment sanitation or socket

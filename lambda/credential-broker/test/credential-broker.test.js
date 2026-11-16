@@ -1,4 +1,4 @@
-import { apiKeyLease } from '../../shared/agent-credential-lease.js';
+import { apiKeyLease, bedrockGatewayKeyLease } from '../../shared/agent-credential-lease.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -287,6 +287,97 @@ describe('agent credential grant authorization', () => {
         ],
       }),
     );
+  });
+
+  // With a Bedrock gateway a runtime from before the gateway must not be able to use the
+  // key: it reads `value` or adapts api-key material, and would send either to Amazon Bedrock.
+  describe('with a Bedrock gateway', () => {
+    const GATEWAY = 'https://gateway.example.com';
+    const gatewayLease = (value) => bedrockGatewayKeyLease(apiKeyLease(value), GATEWAY);
+    const redeem = (bindings, env = { BEDROCK_GATEWAY_URL: `${GATEWAY}/` }) =>
+      authorizeAgentCredentialRequest(
+        {
+          grant: signAgentCredentialGrant(
+            { purpose: 'capabilities', projectId: 'p-1', bindings },
+            SECRET,
+            { now: () => NOW, randomId: () => 'grant-1234567890' },
+          ),
+        },
+        {
+          ssmClient: ssm,
+          secret: SECRET,
+          env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev', ...env },
+          now: () => NOW,
+        },
+      );
+    const stored = (values) =>
+      ssmMock.on(GetParameterCommand).callsFake((input) => {
+        if (Object.hasOwn(values, input.Name))
+          return { Parameter: { Name: input.Name, Value: values[input.Name] } };
+        throw Object.assign(new Error('missing'), { name: 'ParameterNotFound' });
+      });
+
+    it('leases a Bedrock key as gateway-key material without the v1 value, and a Kiro key as before', async () => {
+      const bedrock = { provider: 'bedrock', source: 'platform' };
+      const kiro = { provider: 'kiro', source: 'user', userId: 'u-1' };
+      stored({
+        '/app/dev/bedrock-bearer-token': 'gateway-test-key',
+        '/app/dev/users/u-1/agent-credentials/kiro-api-key': 'kiro-user',
+      });
+
+      const result = await redeem([bedrock, kiro]);
+
+      expect(result.credentials).toEqual([
+        { binding: bedrock, lease: gatewayLease('gateway-test-key') },
+        { binding: kiro, value: 'kiro-user', lease: apiKeyLease('kiro-user') },
+      ]);
+      expect(result.credentials[0].lease.material).toEqual({
+        type: 'bedrock-gateway-key',
+        value: 'gateway-test-key',
+        endpoint: GATEWAY,
+      });
+      // The key appears once in the response: in the material an older runtime cannot adapt.
+      expect(JSON.stringify(result).split('gateway-test-key')).toHaveLength(2);
+    });
+
+    it('does the same for the keys of a connection', async () => {
+      const bedrock = connectionBinding(legacyConnection('legacy-space-bedrock-p-1'), 2);
+      const kiro = connectionBinding(legacyConnection('legacy-user-kiro-u-1'), 2);
+      stored({
+        '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token': 'gateway-test-key',
+        '/app/dev/users/u-1/agent-credentials/kiro-api-key': 'kiro-user',
+      });
+
+      const result = await redeem([kiro, bedrock]);
+
+      expect(result.credentials).toEqual([
+        { binding: bedrock, lease: gatewayLease('gateway-test-key') },
+        { binding: kiro, lease: apiKeyLease('kiro-user'), value: 'kiro-user' },
+      ]);
+      expect(JSON.stringify(result).split('gateway-test-key')).toHaveLength(2);
+    });
+
+    it('reports a missing Bedrock key as before', async () => {
+      const bedrock = { provider: 'bedrock', source: 'platform' };
+      stored({});
+
+      const result = await redeem([bedrock]);
+
+      expect(result.credentials).toEqual([
+        { binding: bedrock, value: null, lease: apiKeyLease(null) },
+      ]);
+    });
+
+    it('refuses an invalid gateway URL before reading any key', async () => {
+      stored({ '/app/dev/bedrock-bearer-token': 'gateway-test-key' });
+
+      await expect(
+        redeem([{ provider: 'bedrock', source: 'platform' }], {
+          BEDROCK_GATEWAY_URL: 'http://gateway.example.com',
+        }),
+      ).rejects.toMatchObject({ code: 'AGENT_AUTH_INVALID' });
+      expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
+    });
   });
 
   it('requires a grant before loading the signing key', async () => {

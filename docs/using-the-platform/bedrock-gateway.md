@@ -36,7 +36,7 @@ When it starts, Claude Code also sends an unauthenticated `GET /inference-profil
 
 ## Set it up
 
-Step 2 and the waiting in step 5 apply only to a deployment that is already in use.
+Step 2 applies only to a deployment that is already in use.
 
 ### Step 1: Check the gateway
 
@@ -59,19 +59,19 @@ A JSON message whose `content` holds the reply means that the URL, the key and t
 
 Skip this step on a deployment without saved Bedrock keys and without agent work.
 
-Two facts decide the order of the remaining steps:
+Two facts decide what to prepare:
 
-- A runtime that has the gateway setting sends the saved Bedrock key to the gateway. A runtime without it sends the same key to Amazon Bedrock. Neither can tell an Amazon Bedrock API key from a gateway key.
-- Not every runtime gets the setting with the deployment. A runtime session that was started before the deployment keeps running without it until it ends: after 15 minutes without activity, at the latest after 8 hours. A [managed environment](managed-environments.md) uses it only in a revision that is built after the deployment as step 4 describes, and an intent keeps the revision it was created with, also when it is resumed or rewound.
+- From the deployment on, every saved Bedrock key is used as a gateway key. The platform cannot tell an Amazon Bedrock API key from a gateway key, so an Amazon Bedrock API key that is still saved is sent to the gateway.
+- A runtime gets a Bedrock key only when its own gateway setting matches the deployment's, and not every runtime gets the setting with the deployment. A runtime session that was started before the deployment keeps running without it until it ends: after 15 minutes without activity, at the latest after 8 hours. A [managed environment](managed-environments.md) has it only in a revision that is built after the deployment as step 4 describes, and an intent keeps the revision it was created with, also when it is resumed or rewound.
 
-So a gateway key that is saved too early can be sent to Amazon Bedrock, and an Amazon Bedrock API key that is still saved after the deployment is sent to the gateway.
+A runtime without the matching setting is refused the key. Its agent runs fail, and the key is sent nowhere. So agent work that is under way during the deployment can fail until its runtime session has ended, and intents in a managed environment cannot continue.
 
 **The deployment refuses while intents are started.** `deploy-terraform.sh`, which the managed installer also runs, stops before it changes anything if the plan sets, changes or removes `bedrock_gateway_url` while an intent is started, running or parked. It lists each one with its execution ID, its space (`project`) and its status. Drafts and finished, failed or cancelled intents do not count.
 
 Pick a window without agent work and tell your users [what changes for them](#what-changes-for-users). An intent keeps the CLI, the models and the environment revision it was created with, so before the window:
 
 - Finish or cancel intents that run OpenCode or Codex with a Bedrock key. They cannot continue after the deployment.
-- Finish intents in a managed environment, or cancel them and create new ones after step 4. They never use the gateway.
+- Finish intents in a managed environment, or cancel them and create new ones after step 4. They keep their revision from before the deployment, which is refused the key.
 - Finish intents whose models the gateway does not serve.
 - Intents that run Claude Code in the Standard environment can continue with the gateway. Cancel them and [restart them from their current stage](intent-observability.md#steering-and-rewind) after step 5, or leave them parked as described next.
 
@@ -79,8 +79,8 @@ Pick a window without agent work and tell your users [what changes for them](#wh
 
 The check does not cover everything:
 
-- It sees intents only. **Compose with AI** and discussion assists also start runtime sessions, which is why step 5 has a waiting time.
-- It does not see an intent that finished in a managed environment and is restarted later. That intent still runs in its revision from before the deployment.
+- It sees intents only. **Compose with AI** and discussion assists also use runtime sessions. One that was started before the deployment fails until it has ended.
+- It does not see an intent that finished in a managed environment and is restarted later. That intent still runs in its revision from before the deployment and is refused the key.
 - It is part of the deploy script. A direct `terraform apply` skips it.
 
 **Amazon Bedrock API keys.** After the deployment, a saved Amazon Bedrock API key is presented to the gateway whenever its owner runs Claude Code, and the gateway rejects it. To prevent that, clear the keys before the deployment with **Clear** next to the key: the platform key in **Admin → Agents**, space keys in **Space Settings → Agent**, and personal keys in each user's **Account Settings**. Otherwise their owners replace them in step 5. With the keys cleared, Claude Code, OpenCode and Codex have no Bedrock key until step 5.
@@ -137,7 +137,7 @@ It moves the deployment to the newest release, or deploys the installed release 
 
 If the deployment stops with `Refusing Terraform plan: it changes bedrock_gateway_url`, intents are still started: go back to step 2.
 
-**Confirm that the setting is live.** Open **Admin → Agents → Platform Agent Credentials**. The key field is labelled **Bedrock Gateway Key** and the text below it names the gateway host. If the field still reads **Bedrock Bearer Token**, the setting is not deployed: do not save a gateway key.
+**Confirm that the setting is live.** Open **Admin → Agents → Platform Agent Credentials**. The key field is labelled **Bedrock Gateway Key** and the text below it names the gateway host. If the field still reads **Bedrock Bearer Token**, the setting is not deployed: do not save a gateway key. Until the setting is deployed, a saved key is used as an Amazon Bedrock API key and sent to Amazon Bedrock.
 
 ### Step 4: Rebuild managed environments
 
@@ -146,20 +146,22 @@ Skip this step if every space uses **Standard**. The deployment updates the Stan
 Every other environment uses the gateway only in a revision that meets two conditions:
 
 - It is built after the deployment. Only then does its runtime have the setting.
-- It is built on a Standard revision from a platform release that supports the gateway. A revision takes its runtime code from the Standard revision that is published when it is built, and a platform update does not publish Standard's new revision for you. A revision built on an earlier Standard revision has the setting but ignores it, and sends the saved key to Amazon Bedrock.
+- It is built on a Standard revision from a platform release that supports the gateway. A revision takes its runtime code from the Standard revision that is published when it is built, and a platform update does not publish Standard's new revision for you. A revision built on an earlier Standard revision has the setting but cannot use it.
+
+A revision that misses either condition is refused the Bedrock key, and agent runs in it fail; see [Troubleshooting](#troubleshooting).
 
 In **Admin → Environments**:
 
 1. Open **Standard** and its **Revisions** tab. If a revision with the status `READY` is newer than the published one, publish it. Platform updates add such a revision, so check this also when this deployment changed only the gateway settings: the revision may be left from an earlier update.
 2. For each environment, choose **Rebuild on latest base**, then build, review and publish the new revision. See [Use a newer base revision](managed-environments.md#use-a-newer-base-revision). Rebuild an environment that is based on another environment after that one is published.
 
-**Rebuild on latest base** is offered only when the base's published revision changed. It is missing when Standard was already up to date in the first step and you changed only the gateway settings. Then create the revision yourself: open the environment's **Definition**, change it (for example its description), choose **Save as new revision**, then build and publish it. Do not use this in place of the first step: the revision would then be built on the earlier Standard revision.
+**Rebuild on latest base** is offered only when the base's published revision changed. It is missing when Standard was already up to date in the first step and you changed only the gateway settings. Then create the revision yourself: open the environment's **Definition**, change it (for example its description), choose **Save as new revision**, then build and publish it. Do not use this in place of the first step: the revision would then be built on the earlier Standard revision, and agent runs in it would fail.
 
 New intents in the environment's spaces use the published revision. Intents created earlier keep theirs.
 
 ### Step 5: Save the gateway keys
 
-On a deployment that is in use, first wait until the runtime sessions from before the deployment have ended. Without agent work, that is 15 minutes after the last agent activity, which includes **Compose with AI** and discussion assists.
+Save the keys once step 3 shows that the setting is live. On a deployment that is in use, a runtime session from before the deployment cannot use them: agent work in it fails until the session has ended. Without agent work, that is 15 minutes after the last agent activity, which includes **Compose with AI** and discussion assists.
 
 The key goes where a Bedrock API key goes, with the same [credential hierarchy](platform-settings.md#credential-hierarchy):
 
@@ -208,30 +210,32 @@ Claude Code's own targets depend on its version. It calls the `haiku` target in 
 
 The gateway decides whether a key, a model or a budget is accepted. In tests against a stand-in gateway, Claude Code 2.1.296 retried responses with HTTP status 401, 403 and 429 for about three minutes before the stage failed.
 
-| What you see                                                                                              | Cause                                                                                                                                                                                               | What to do                                                                                                                                  |
-| --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| The deployment stops with `Refusing Terraform plan: it changes bedrock_gateway_url`                       | Intents are started, running or parked                                                                                                                                                              | Finish or cancel the listed intents, or see **Deploying with parked intents** in step 2                                                     |
-| The key field reads **Bedrock Bearer Token**                                                              | The setting is not deployed                                                                                                                                                                         | Check the `.tfvars` file and deploy again (step 3)                                                                                          |
-| A stage fails with "The pinned agent credential was rejected; rotate it at the selected credential scope" | The gateway answered 401 or 403: a wrong or expired key, an Amazon Bedrock API key that was not replaced, or a model the key may not use. Claude Code reports both the same way                     | Repeat the check from step 1 with that key and model                                                                                        |
-| A stage fails with the gateway's own message                                                              | 429: a budget or rate limit was reached. It is not recognized as an exhausted credential unless the gateway's wording says so                                                                       | Check the account's limits in the gateway                                                                                                   |
-| `Bedrock streaming response has content-type "..."; expected "application/vnd.amazon.eventstream"`        | The gateway changes the `Content-Type` of streamed responses                                                                                                                                        | Fix the gateway, or set `bedrock_gateway_disable_content_type_guard = true` and deploy                                                      |
-| The check from step 1 passes, but agent runs fail to connect                                              | The runtime cannot reach the gateway, or `bedrock_gateway_url` differs from the URL you checked                                                                                                     | Compare the URL and its path prefix, the gateway's address allow-list (see [Before you start](#before-you-start)) and the sandbox allowlist |
-| A run is rejected, but the gateway recorded no request with that key                                      | A runtime that does not use the gateway sent the key to Amazon Bedrock: a session from before the deployment, an environment revision built before it, or one built on an earlier Standard revision | Replace the key in the gateway, then repeat steps 4 and 5                                                                                   |
+| What you see                                                                                                                                   | Cause                                                                                                                                                                                               | What to do                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| The deployment stops with `Refusing Terraform plan: it changes bedrock_gateway_url`                                                            | Intents are started, running or parked                                                                                                                                                              | Finish or cancel the listed intents, or see **Deploying with parked intents** in step 2                                                     |
+| The key field reads **Bedrock Bearer Token**                                                                                                   | The setting is not deployed                                                                                                                                                                         | Check the `.tfvars` file and deploy again (step 3)                                                                                          |
+| A stage fails with "The pinned agent credential was rejected; rotate it at the selected credential scope"                                      | The gateway answered 401 or 403: a wrong or expired key, an Amazon Bedrock API key that was not replaced, or a model the key may not use. Claude Code reports both the same way                     | Repeat the check from step 1 with that key and model                                                                                        |
+| A stage fails with the gateway's own message                                                                                                   | 429: a budget or rate limit was reached. It is not recognized as an exhausted credential unless the gateway's wording says so                                                                       | Check the account's limits in the gateway                                                                                                   |
+| `Bedrock streaming response has content-type "..."; expected "application/vnd.amazon.eventstream"`                                             | The gateway changes the `Content-Type` of streamed responses                                                                                                                                        | Fix the gateway, or set `bedrock_gateway_disable_content_type_guard = true` and deploy                                                      |
+| The check from step 1 passes, but agent runs fail to connect                                                                                   | The runtime cannot reach the gateway, or `bedrock_gateway_url` differs from the URL you checked                                                                                                     | Compare the URL and its path prefix, the gateway's address allow-list (see [Before you start](#before-you-start)) and the sandbox allowlist |
+| An agent run fails, and its error or the logs name `Credential material is unsupported by this runtime`                                        | The runtime's code is from before this platform release: an environment revision built on an earlier Standard revision, or a Standard runtime session from before the update. It is refused the key | Publish Standard's newest revision and rebuild the environment (step 4). In Standard, try again after 15 minutes without agent activity     |
+| An agent run fails, and its error or the logs name `This runtime is not configured for the Bedrock gateway that the key belongs to`            | The runtime does not have the deployment's `bedrock_gateway_url`: a runtime session from before the deployment, or an environment revision built before it. It is refused the key                   | Rebuild the environment (step 4). In Standard, try again after 15 minutes without agent activity                                            |
+| An agent run fails, and its error or the logs name `This runtime is configured for a Bedrock gateway and cannot use an Amazon Bedrock API key` | The gateway was removed from the deployment, and this runtime session or environment revision is from before that                                                                                   | Rebuild the environment as in [Turn it off](#turn-it-off). In Standard, try again after 15 minutes without agent activity                   |
 
 ## Turn it off
 
-The same two facts apply in reverse: after the change, a runtime without the setting sends the saved key to Amazon Bedrock.
+The same two facts apply in reverse: from the deployment on, every saved Bedrock key is used as an Amazon Bedrock API key, and a runtime that still has the gateway setting is refused it.
 
 1. Prepare as in step 2: the deployment refuses this change, too, while intents are started. Clear the gateway keys, or accept that each one is presented to Amazon Bedrock and rejected until its owner replaces it.
 2. Remove `bedrock_gateway_url` from the `.tfvars` file and deploy as in step 3. The key field reads **Bedrock Bearer Token** again.
-3. Rebuild the managed environments as in step 4. A revision that was built with the gateway keeps it, and so do the intents created on it.
-4. Wait as in step 5, then save Amazon Bedrock API keys and select models that your account serves. OpenCode and Codex are available with a key again.
+3. Rebuild the managed environments as in step 4. A revision that was built with the gateway keeps the setting and is refused the key, and so are the intents created on it.
+4. Save Amazon Bedrock API keys and select models that your account serves. OpenCode and Codex are available with a key again.
 
 ## Limits
 
 - The gateway is a deployment setting, like the inference region. Every Bedrock key at every scope is a gateway key; a single space cannot keep calling Amazon Bedrock with a key.
 - The setting applies to Keys mode. In [IAM mode](bedrock-iam.md) all three CLIs keep calling Amazon Bedrock with the inference role.
-- The gateway URL is not pinned to an intent. An intent in the Standard environment uses the gateway in every runtime session started after the deployment. An intent in a managed environment follows the revision it was created with.
+- The gateway URL is not pinned to an intent. An intent in the Standard environment uses the gateway in every runtime session started after the deployment. An intent in a managed environment follows the revision it was created with, and runs only while that revision's gateway setting matches the deployment's.
 
 ## Test a gateway locally
 
