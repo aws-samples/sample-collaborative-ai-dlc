@@ -1,9 +1,52 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
+import { mockClient } from 'aws-sdk-client-mock';
+import {
+  CognitoIdentityProviderClient,
+  ListUsersCommand,
+} from '@aws-sdk/client-cognito-identity-provider';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { membershipStore } from '../../shared/space-membership.js';
 import { seedMembership } from '../../../test/seed-membership.js';
+
+const cognitoMock = mockClient(CognitoIdentityProviderClient);
+
+const SSO_CONFIG = JSON.stringify({
+  providers: {
+    Entra: {
+      roleMappings: {},
+      requiredClaimValues: [],
+      roleClaim: 'groups',
+      displayName: 'Entra ID',
+    },
+  },
+});
+
+const federatedAttributes = (sub, claimValues, providerName = 'Entra') => [
+  { Name: 'sub', Value: sub },
+  { Name: 'email', Value: `${sub}@example.com` },
+  {
+    Name: 'identities',
+    Value: JSON.stringify([{ providerName, providerType: 'OIDC', userId: sub }]),
+  },
+  { Name: 'custom:sso_roles', Value: claimValues },
+];
+
+// Lookups are per-sub filtered ListUsers calls; answer only the requested sub.
+const mockDirectory = (usersBySub) =>
+  cognitoMock.on(ListUsersCommand).callsFake(({ Filter }) => {
+    const match = Object.entries(usersBySub).find(([sub]) => Filter?.includes(`"${sub}"`));
+    return { Users: match ? [{ Attributes: match[1] }] : [] };
+  });
+
+const saveEntraMappings = async (roleMappings) =>
+  membershipStore.saveRoleMappings({
+    providerId: 'Entra',
+    actorId: 'admin',
+    roleMappings,
+    expectedRevision: (await membershipStore.getRoleMappingRecord('Entra')).revision,
+  });
 
 const cleanup = vi.hoisted(() => ({ trackers: vi.fn(), sourceControl: vi.fn() }));
 vi.mock('../../shared/tracker-binding-delegation.js', () => ({
@@ -47,6 +90,9 @@ beforeEach(async () => {
   await seedMembership(projectId, 'owner');
   cleanup.trackers.mockReset().mockResolvedValue(undefined);
   cleanup.sourceControl.mockReset().mockResolvedValue(undefined);
+  cognitoMock.reset();
+  vi.stubEnv('COGNITO_USER_POOL_ID', 'eu-central-1_testpool');
+  vi.stubEnv('SSO_ROLE_CONFIG', '{}');
 });
 const request = (method, { actor = 'owner', userId, data, query, route = 'members' } = {}) =>
   handler({
@@ -267,5 +313,184 @@ describe('space member API', () => {
     expect(
       (await request('GET', { query: { paged: '1', nextToken: first.nextToken } })).statusCode,
     ).toBe(400);
+  });
+
+  it('keeps local sign-in behavior without SSO and never contacts Cognito', async () => {
+    await seedMembership(projectId, 'member', 'member');
+    await request('PUT', {
+      route: 'members/member/business-roles',
+      userId: 'member',
+      data: { localRoles: ['developer'] },
+    });
+    const members = JSON.parse((await request('GET')).body);
+    expect(members.find((m) => m.userId === 'member')).toMatchObject({
+      ssoRoles: [],
+      excludedRoles: [],
+      localRoles: ['developer'],
+      effectiveRoles: ['developer'],
+    });
+    expect(cognitoMock.calls()).toHaveLength(0);
+    // Without SSO there is nothing inherited, so new exclusions are rejected.
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/excluded-roles',
+          userId: 'member',
+          data: { excludedRoles: ['developer'] },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it('computes per-space SSO roles with independent exclusions (the Alice example)', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    await saveEntraMappings({
+      developer: ['Engineering'],
+      architect: ['Engineering', 'Architects'],
+    });
+    mockDirectory({ alice: federatedAttributes('alice', '[Engineering]') });
+    await seedMembership(projectId, 'alice', 'member');
+    const listed = JSON.parse((await request('GET')).body).find((m) => m.userId === 'alice');
+    expect(listed).toMatchObject({
+      ssoRoles: ['architect', 'developer'],
+      excludedRoles: [],
+      effectiveRoles: ['architect', 'developer'],
+    });
+    // Identity lookups are bounded by the requested members (owner + alice),
+    // not by the size of the rest of the directory.
+    expect(cognitoMock.commandCalls(ListUsersCommand).length).toBeLessThanOrEqual(2);
+    const spaceA = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/alice/excluded-roles',
+          userId: 'alice',
+          data: { excludedRoles: ['developer'] },
+        })
+      ).body,
+    );
+    expect(spaceA).toMatchObject({
+      excludedRoles: ['developer'],
+      effectiveRoles: ['architect'],
+    });
+    // Space B excludes Architect instead; Space A's exclusion is untouched.
+    const spaceAId = projectId;
+    projectId = randomUUID();
+    await g.addV('Project').property('id', projectId).next();
+    await seedMembership(projectId, 'owner');
+    await seedMembership(projectId, 'alice', 'member');
+    const spaceB = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/alice/excluded-roles',
+          userId: 'alice',
+          data: { excludedRoles: ['architect'] },
+        })
+      ).body,
+    );
+    expect(spaceB).toMatchObject({ effectiveRoles: ['developer'] });
+    expect((await membershipStore.get(spaceAId, 'alice')).excludedRoles).toEqual(['developer']);
+  });
+
+  it('keeps a local assignment active when the same SSO role is excluded, then removes it independently', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    await saveEntraMappings({ developer: ['Engineering'] });
+    mockDirectory({ leo: federatedAttributes('leo', '[Engineering]') });
+    await seedMembership(projectId, 'leo', 'member');
+    await request('PUT', {
+      route: 'members/leo/business-roles',
+      userId: 'leo',
+      data: { localRoles: ['developer'] },
+    });
+    const excluded = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/leo/excluded-roles',
+          userId: 'leo',
+          data: { excludedRoles: ['developer'] },
+        })
+      ).body,
+    );
+    expect(excluded).toMatchObject({
+      localRoles: ['developer'],
+      excludedRoles: ['developer'],
+      effectiveRoles: ['developer'],
+    });
+    const removedLocal = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/leo/business-roles',
+          userId: 'leo',
+          data: { localRoles: [] },
+        })
+      ).body,
+    );
+    expect(removedLocal).toMatchObject({
+      localRoles: [],
+      excludedRoles: ['developer'],
+      effectiveRoles: [],
+    });
+  });
+
+  it('denies exclusion changes to Members and outsiders and rejects non-inherited roles', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    mockDirectory({ member: federatedAttributes('member', '[Quality]') });
+    await seedMembership(projectId, 'member', 'member');
+    for (const actor of ['member', 'outsider']) {
+      expect(
+        (
+          await request('PUT', {
+            actor,
+            route: 'members/member/excluded-roles',
+            userId: 'member',
+            data: { excludedRoles: [] },
+          })
+        ).statusCode,
+      ).toBe(403);
+    }
+    // 'Quality' maps to nothing, so no role is inherited and the exclusion fails.
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/excluded-roles',
+          userId: 'member',
+          data: { excludedRoles: ['qa-tester'] },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (await request('GET', { route: 'members/member/excluded-roles', userId: 'member' }))
+        .statusCode,
+    ).toBe(405);
+  });
+
+  it('fails member reads when identity or mapping lookups fail instead of returning empty roles', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    cognitoMock.on(ListUsersCommand).rejects(new Error('Cognito unavailable'));
+    expect((await request('GET')).statusCode).toBe(500);
+    mockDirectory({ owner: federatedAttributes('owner', '[Engineering]') });
+    vi.spyOn(membershipStore, 'getRoleMappings').mockRejectedValue(new Error('Unavailable'));
+    expect((await request('GET')).statusCode).toBe(500);
+  });
+
+  it('does not commit a local-role change when the identity lookup fails', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    cognitoMock.on(ListUsersCommand).rejects(new Error('Cognito unavailable'));
+    await seedMembership(projectId, 'member', 'member');
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/business-roles',
+          userId: 'member',
+          data: { localRoles: ['developer'] },
+        })
+      ).statusCode,
+    ).toBe(500);
+    // The reported failure means nothing changed: roles and history are intact.
+    expect((await membershipStore.get(projectId, 'member')).localRoles).toBeUndefined();
+    expect(
+      (await membershipStore.listHistory(projectId)).items.filter(
+        (entry) => entry.action === 'local-roles-changed',
+      ),
+    ).toHaveLength(0);
   });
 });

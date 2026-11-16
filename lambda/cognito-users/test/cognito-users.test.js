@@ -555,3 +555,126 @@ describe('PUT /admin/users/{username}/platform-admin', () => {
     expect(calls[0].args[0].input.Username).toBe('user@example.com');
   });
 });
+
+describe('/admin/sso-mappings (business-role mappings)', () => {
+  const CONFIG = JSON.stringify({
+    providers: {
+      Entra: {
+        roleMappings: { 'platform-admin': ['aidlc-admin'] },
+        requiredClaimValues: [],
+        roleClaim: 'groups',
+        displayName: 'Entra ID',
+      },
+      Legacy: {
+        roleMappings: {},
+        requiredClaimValues: [],
+        roleClaim: '',
+        displayName: 'Legacy SAML',
+      },
+    },
+  });
+
+  const mappingEvent = (httpMethod, { admin = true, providerId, body } = {}) => ({
+    httpMethod,
+    path: providerId ? `/admin/sso-mappings/${providerId}` : '/admin/sso-mappings',
+    headers: { origin: 'https://app.example.com' },
+    pathParameters: providerId ? { providerId } : null,
+    requestContext: {
+      authorizer: {
+        claims: {
+          sub: 'admin-sub',
+          'cognito:username': 'admin',
+          ...(admin ? { 'cognito:groups': 'platform-admin' } : {}),
+        },
+      },
+    },
+    body: body ? JSON.stringify(body) : null,
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('SSO_ROLE_CONFIG', CONFIG);
+  });
+
+  it('denies non-admins both routes', async () => {
+    for (const event of [
+      mappingEvent('GET', { admin: false }),
+      mappingEvent('PUT', { admin: false, providerId: 'Entra', body: { roleMappings: {} } }),
+    ]) {
+      const res = await handler(event);
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+    }
+  });
+
+  it('saves a mapping, audits it, and returns it on the next read without a deployment', async () => {
+    const saved = await handler(
+      mappingEvent('PUT', {
+        providerId: 'Entra',
+        body: { roleMappings: { developer: ['Engineering', 'Contractors'] } },
+      }),
+    );
+    expect(saved.statusCode).toBe(200);
+    const savedBody = JSON.parse(saved.body);
+    expect(savedBody).toEqual({
+      providerId: 'Entra',
+      roleMappings: { developer: ['Contractors', 'Engineering'] },
+      revision: expect.any(String),
+    });
+
+    const listed = JSON.parse((await handler(mappingEvent('GET'))).body);
+    expect(listed.businessRoles).toHaveLength(9);
+    expect(listed.providers).toEqual([
+      {
+        providerId: 'Entra',
+        displayName: 'Entra ID',
+        sourceAttribute: 'groups',
+        roleMappings: { developer: ['Contractors', 'Engineering'] },
+        revision: savedBody.revision,
+      },
+      {
+        providerId: 'Legacy',
+        displayName: 'Legacy SAML',
+        sourceAttribute: '',
+        roleMappings: {},
+        revision: null,
+      },
+    ]);
+
+    // A save against a stale revision (here: a missing one) is rejected and
+    // leaves the newer mapping in place.
+    const stale = await handler(
+      mappingEvent('PUT', { providerId: 'Entra', body: { roleMappings: { architect: ['Old'] } } }),
+    );
+    expect(stale.statusCode).toBe(409);
+    const fresh = await handler(
+      mappingEvent('PUT', {
+        providerId: 'Entra',
+        body: { roleMappings: { architect: ['New'] }, expectedRevision: savedBody.revision },
+      }),
+    );
+    expect(fresh.statusCode).toBe(200);
+    expect(JSON.parse(fresh.body).roleMappings).toEqual({ architect: ['New'] });
+  });
+
+  it('rejects unknown providers, incomplete SSO setup, and invalid mappings', async () => {
+    expect(
+      (await handler(mappingEvent('PUT', { providerId: 'Nope', body: { roleMappings: {} } })))
+        .statusCode,
+    ).toBe(404);
+    const incomplete = await handler(
+      mappingEvent('PUT', { providerId: 'Legacy', body: { roleMappings: {} } }),
+    );
+    expect(incomplete.statusCode).toBe(409);
+    expect(JSON.parse(incomplete.body).code).toBe('SOURCE_ATTRIBUTE_MISSING');
+    for (const roleMappings of [{ 'made-up': ['x'] }, { developer: [''] }, 'nope']) {
+      expect(
+        (await handler(mappingEvent('PUT', { providerId: 'Entra', body: { roleMappings } })))
+          .statusCode,
+      ).toBe(400);
+    }
+    expect(
+      (await handler(mappingEvent('PUT', { providerId: 'Entra', body: null }))).statusCode,
+    ).toBe(400);
+    expect((await handler(mappingEvent('DELETE'))).statusCode).toBe(405);
+  });
+});

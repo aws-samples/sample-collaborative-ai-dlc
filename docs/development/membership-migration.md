@@ -127,6 +127,25 @@ sorted list of unique IDs from the shared catalog in
 the same transaction. That item's `before` and `after` hold the old and new role
 lists.
 
+Exclusions of SSO-inherited roles are stored the same way as `excludedRoles`
+(absent or empty means none) with an `excluded-roles-changed` audit item. Only
+roles the member currently inherits through SSO can be newly excluded; existing
+exclusions may always be kept or restored. Exclusions ride the membership item,
+so role changes carry them forward and removal deletes them with the item.
+Calculated SSO roles are never stored: they come from trusted Cognito attributes
+and the current mapping at read time.
+
+Business-role mappings for SSO are one item per configured connection at
+`PLATFORM` / `SSO#<providerId>` in the access table, holding `roleMappings`
+(business-role ID → exact IdP values). Saves from the Platform admin UI write
+the item and a `sso-role-mappings-changed` audit item (`PLATFORM` /
+`AUDIT#<time>#<changeId>`, with `providerId` and before/after mappings) in one
+`TransactWriteItems` call. Each save echoes the `revision` the editor loaded
+(null before the first save) and is rejected with 409 when the stored revision
+differs, so a stale editor cannot silently overwrite a newer mapping. The item has no `userId`, so the `by-user` GSI skips
+it. This item is the only editable copy; Terraform's `roleMappings` remain
+platform roles (`platform-admin`) for admission, not business roles.
+
 Each change records its actor, space, target user, timestamp, change ID, and
 before/after membership. Revision conditions reject stale changes. Actor
 authority is checked with the mutation transaction. The last-owner safeguard

@@ -84,6 +84,23 @@ Business roles are separate from space access. **Product Owner** does not make
 someone a space Owner, and a business role never grants access to a space.
 Removing a member clears their roles; a re-added member starts with none.
 
+With enterprise SSO, members can also inherit business roles from the central
+mapping a Platform Admin configures (see
+[enterprise SSO](../getting-started/enterprise-sso.md)). The role editor shows
+three groups: company roles received through SSO, roles added in this space, and
+the resulting roles. In a space:
+
+`roles in this space = (SSO roles − excluded SSO roles) + roles added in this space`
+
+- Owners can **Exclude** an inherited company role in their space and **Restore**
+  it later. Exclusions are per space: excluding Developer in Space A leaves the
+  person a Developer in Space B, and the company groups and central mapping stay
+  unchanged. Exclusions survive the member signing in again.
+- Roles added in the space have a **Remove** action instead; a local assignment
+  stays active even when the same role is excluded from SSO.
+- A company group never grants space membership by itself; membership is still
+  managed in this screen.
+
 Business roles currently describe responsibilities only. Gates and execution do
 not check them yet.
 
