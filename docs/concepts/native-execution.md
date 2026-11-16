@@ -5043,6 +5043,106 @@ bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/n
 bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-13-plan-recovery/handoff/deploy-ne11-recovery.sh' --apply-reviewed <saved-plan-sha256>
 ```
 
+Both steps were run on 2026-11-13 and the apply stopped part-way; see the next
+section. These commands must not be run again.
+
+## NE-11 deployment — apply stopped by a lost network, 2026-11-13; state recovery prepared 2026-11-16
+
+**The recovery plan passed its review and was applied. The apply lost its
+network after about thirteen minutes and stopped part-way. The stack is partly
+updated, Terraform's record of it is in a local file, and a second recovery
+handoff restores that record and finishes the apply.** The stopped attempt is
+preserved under `.native-evidence/ne11-2026-11-13-plan-recovery/handoff/`
+(`recovery-plan*`, `recovery-apply*`) and must not be repeated.
+
+### What the stopped apply did
+
+The saved plan held what the recovery expected and nothing else: the changes of
+the first stopped plan plus exactly the seven addresses that plan never reached,
+no deletion or replacement outside local packaging helpers, no image change,
+policy changes that only add statements, and no earlier repository policy.
+
+The apply finished **9** of 10 creates, **35** of 58 updates and **93** of 150
+helper replacements:
+
+- **Finished:** the engine's log group, registry policy, review boundary, two
+  roles with their policies and the isolated job project; the runtime boundary
+  policy; the AgentCore runtime, which now runs the NE-11 image; and 33
+  functions.
+- **In flight, outcome unknown:** the engine function, eleven function updates,
+  the orchestrator alias and the execution role policy. For the engine function
+  the create call was accepted and only the wait failed, so it probably exists.
+- **Never started:** the authority function, its five aliases and its role
+  policy, and the intents, cancellation and execution worker functions.
+
+The machine went to sleep at about 17:13 UTC: one request signed then reached
+AWS nine minutes late and was refused as expired, and every later call failed to
+resolve its host. Terraform could not save its state or release its lock. It
+wrote the state to `terraform/errored.tfstate`: serial **1522**, the same
+lineage, with the engine function as its only tainted resource. The plan was
+made at serial 1498 and the log shows fifteen failed uploads, so the backend
+holds an intermediate snapshot from before the sleep, not the starting state.
+
+**Until the apply is finished the stack is a combination that was not
+qualified:** the runtime and most functions are NE-11, while the authority
+function, its aliases and the execution worker are the earlier versions. No
+native execution should be started on it.
+
+### Recovery sequence
+
+Terraform 1.17.0 wrote the state and the saved plan, so the same version is
+required; the repository only requires 1.7 or later, and CI validates with
+1.15.0. The sequence follows that version's source and was reproduced with it
+against a local state backend whose network was cut during an apply: the
+errored state is ahead of the backend, the lock stays held, plan and push are
+refused while it is, a push without force refuses another lineage or an older
+serial and leaves the backend one serial above the pushed file, and the next
+plan replaces the tainted resource.
+
+1. **Inspect, read-only and repeatable.** Shows who holds the state lock and
+   when it was taken, what the backend holds, and that the errored state is the
+   one this handoff was prepared for. It stops unless the lock is this apply's
+   and the backend is an earlier snapshot of the same lineage written no later
+   than the stopped apply.
+2. **Restore the state.** Releases that lock by the ID the operator names,
+   pushes the errored state without force, and reads the backend back: the same
+   resources, one resource tainted.
+3. **Plan, save and stop for review.** The tainted engine function may be
+   replaced. Any other deletion, replacement or creation outside packaging
+   helpers stops the plan, as does an image change; a planned create of
+   something the restored state holds means state and stack have diverged.
+   Changes the stopped apply does not explain are listed for the reviewer.
+4. **Apply the reviewed plan** by its SHA-256, read the engine function back,
+   publish the frontend.
+
+The repository's plan inspection refuses every deletion under the native module
+unless a decommission was verified, and so refuses the replacement of the
+tainted engine function. The handoff runs that inspection over the plan without
+this one entry, which its own review authorises, and records that it did.
+
+Each step runs under `caffeinate`, so the machine cannot idle to sleep while it
+runs. Before a step starts, the handoff checks the account, the credential
+lifetime, that the local image is present and, for the apply, mains power; a
+refusal there leaves the step unattempted, so it can be run again. The apply is
+expected to take about thirty minutes.
+
+### What stays unverifiable until the run
+
+What the backend and its lock hold; which in-flight updates AWS received; the
+condition of the engine function and whether its replacement succeeds at once
+under the same name; whether Lambda added a statement of its own to the
+registry policy, which the inspection reads and the plan would show as a
+change; and the lock and push commands against S3 itself, which were read in
+Terraform's source and exercised against a local backend only.
+
+```bash
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --check-only
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --inspect
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --restore-state <lock-id shown by the inspection>
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --plan
+bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-apply-recovery/handoff/deploy-ne11-apply-recovery.sh' --apply-reviewed <saved-plan-sha256>
+```
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5264,8 +5364,9 @@ the current contract for newly created executions.
       and isolated checks and reviewers through the production job path pass; six
       defects found on the way are corrected. A deployment-only handoff exists.
       **Deployment started 2026-11-13:** the qualified image is published; the
-      first full plan stopped on an image lookup defect, which is repaired, and
-      a recovery handoff covers the remaining steps.
+      first full plan stopped on an image lookup defect, which is repaired.
+      The recovery apply then lost its network part-way: the stack is partly
+      updated and a second handoff restores Terraform's state and finishes it.
       **Still open:** a review completed through the real engine, a reviewer with
       a model, a verified completion of a plan with sensors and reviewers, an
       installed CLI driving the engine, and everything deployed. An engine
