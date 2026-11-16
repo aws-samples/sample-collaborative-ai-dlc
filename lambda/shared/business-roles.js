@@ -1,17 +1,7 @@
-// Stable IDs are shared by assignments, the UI catalog, and future permission policies.
-export const BUSINESS_ROLES = Object.freeze(
-  [
-    { id: 'product-owner', name: 'Product Owner / Product Manager' },
-    { id: 'business-analyst', name: 'Business Analyst' },
-    { id: 'architect', name: 'Architect' },
-    { id: 'ux-ui-designer', name: 'UX/UI Designer' },
-    { id: 'developer', name: 'Developer' },
-    { id: 'qa-tester', name: 'QA / Tester' },
-    { id: 'security-compliance', name: 'Security / Compliance' },
-    { id: 'operations-devops', name: 'Operations / DevOps' },
-    { id: 'delivery-manager', name: 'Delivery Manager' },
-  ].map(Object.freeze),
-);
+import catalog from './business-role-catalog.json' with { type: 'json' };
+
+// Also read by Terraform and the SSO setup script to validate infrastructure mappings.
+export const BUSINESS_ROLES = Object.freeze(catalog.map(Object.freeze));
 
 const roleIds = new Set(BUSINESS_ROLES.map(({ id }) => id));
 
@@ -67,7 +57,28 @@ export const normalizeRoleMappings = (mappings) => {
   return result;
 };
 
-/** Business roles granted by the IdP claim values under the saved mapping (OR across values). */
+/**
+ * Keep the infrastructure baseline and UI additions distinct, even when a value
+ * belongs to both. Only roleMappings is persisted; the union is calculated on read.
+ */
+export const businessRoleMappingView = (provider, roleMappings = {}) => {
+  const terraformRoleMappings = normalizeRoleMappings(
+    Object.fromEntries(
+      Object.entries(provider?.roleMappings || {}).filter(([roleId]) => roleIds.has(roleId)),
+    ),
+  );
+  const effectiveRoleMappings = normalizeRoleMappings(
+    Object.fromEntries(
+      BUSINESS_ROLES.map(({ id }) => [
+        id,
+        [...(terraformRoleMappings[id] || []), ...(roleMappings[id] || [])],
+      ]),
+    ),
+  );
+  return { roleMappings, terraformRoleMappings, effectiveRoleMappings };
+};
+
+/** Business roles granted by IdP claim values under the effective mapping (OR across values). */
 export const computeSsoBusinessRoles = (claimValues, roleMappings) => {
   const claims = new Set(claimValues || []);
   return Object.entries(roleMappings || {})

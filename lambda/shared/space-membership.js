@@ -291,8 +291,8 @@ export const createMembershipStore = ({
       changeId,
     });
   };
-  // Business-role mapping for one configured SSO connection. A missing item means
-  // no mappings; read errors propagate so callers never treat a failed read as
+  // UI business-role additions for one SSO connection. A missing item means
+  // no additions; read errors propagate so callers never treat a failed read as
   // an empty role list.
   const readRoleMappingItem = async (providerId) => {
     if (!providerId) throw Object.assign(new Error('providerId is required'), { statusCode: 400 });

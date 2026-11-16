@@ -115,9 +115,7 @@ export function SsoRoleMappingsCard() {
           ? {
               ...current,
               providers: current.providers.map((p) =>
-                p.providerId === saved.providerId
-                  ? { ...p, roleMappings: saved.roleMappings, revision: saved.revision }
-                  : p,
+                p.providerId === saved.providerId ? { ...p, ...saved } : p,
               ),
             }
           : current,
@@ -219,7 +217,7 @@ export function SsoRoleMappingsCard() {
                   </thead>
                   <tbody className="divide-y">
                     {data.businessRoles.map((role) => {
-                      const values = provider.roleMappings[role.id] || [];
+                      const values = provider.effectiveRoleMappings[role.id] || [];
                       const chips = values.length ? (
                         values.map((value) => (
                           <Badge
@@ -228,6 +226,9 @@ export function SsoRoleMappingsCard() {
                             className="gap-1 bg-background font-mono text-[11px] font-normal"
                           >
                             {value}
+                            {provider.terraformRoleMappings[role.id]?.includes(value) && (
+                              <span className="font-sans text-muted-foreground">Read-only</span>
+                            )}
                           </Badge>
                         ))
                       ) : (
@@ -287,6 +288,27 @@ export function SsoRoleMappingsCard() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
+            {!!editingRoleId && !!provider?.terraformRoleMappings[editingRoleId]?.length && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Read-only values. Change these in the infrastructure configuration (Terraform).
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {provider.terraformRoleMappings[editingRoleId].map((value) => (
+                    <Badge
+                      key={value}
+                      variant="outline"
+                      className="font-mono text-[11px] font-normal"
+                    >
+                      {value}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Additional values. Removing an addition leaves any matching read-only value active.
+            </p>
             <div className="flex gap-2">
               <Input
                 value={newValue}
@@ -335,7 +357,7 @@ export function SsoRoleMappingsCard() {
                 ))
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  No values mapped. Saving removes this role from the mapping.
+                  No additional values. Saving keeps any read-only values.
                 </p>
               )}
             </div>

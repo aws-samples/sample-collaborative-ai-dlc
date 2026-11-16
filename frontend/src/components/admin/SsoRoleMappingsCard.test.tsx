@@ -25,6 +25,48 @@ beforeEach(() => {
 });
 
 describe('SsoRoleMappingsCard', () => {
+  it('keeps Terraform values read-only and saves only additions, including values present in both sources', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'Entra',
+          displayName: 'Entra ID',
+          sourceAttribute: 'groups',
+          roleMappings: { developer: ['Shared', 'Contractors'] },
+          terraformRoleMappings: { developer: ['Engineering', 'Shared'] },
+          effectiveRoleMappings: { developer: ['Contractors', 'Engineering', 'Shared'] },
+          revision: 'rev-1',
+        },
+      ],
+      businessRoles,
+    });
+    save.mockResolvedValue({
+      providerId: 'Entra',
+      roleMappings: {},
+      terraformRoleMappings: { developer: ['Engineering', 'Shared'] },
+      effectiveRoleMappings: { developer: ['Engineering', 'Shared'] },
+      revision: 'rev-2',
+    });
+    render(<SsoRoleMappingsCard />);
+    const editButton = await screen.findByRole('button', { name: 'Edit IdP values for Developer' });
+    expect(within(screen.getByRole('table')).getAllByText('Read-only')).toHaveLength(2);
+    await user.click(editButton);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/Read-only values. Change these/)).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: 'Remove Engineering' }),
+    ).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Remove Shared' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Remove Contractors' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith('Entra', {}, 'rev-1'));
+    expect(screen.getByText('Engineering')).toBeInTheDocument();
+    expect(screen.getByText('Shared')).toBeInTheDocument();
+    expect(screen.queryByText('Contractors')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('table')).getAllByText('Read-only')).toHaveLength(2);
+  });
+
   it('shows a single connection directly with its source attribute and saves edited values', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue({
@@ -34,6 +76,8 @@ describe('SsoRoleMappingsCard', () => {
           displayName: 'Entra ID',
           sourceAttribute: 'groups',
           roleMappings: { developer: ['Engineering'] },
+          terraformRoleMappings: {},
+          effectiveRoleMappings: { developer: ['Engineering'] },
           revision: 'rev-1',
         },
       ],
@@ -42,6 +86,8 @@ describe('SsoRoleMappingsCard', () => {
     save.mockResolvedValue({
       providerId: 'Entra',
       roleMappings: { developer: ['Contractors', 'Engineering'] },
+      terraformRoleMappings: {},
+      effectiveRoleMappings: { developer: ['Contractors', 'Engineering'] },
       revision: 'rev-2',
     });
     render(<SsoRoleMappingsCard />);
@@ -76,6 +122,8 @@ describe('SsoRoleMappingsCard', () => {
           displayName: 'Entra ID',
           sourceAttribute: 'groups',
           roleMappings: { developer: ['Engineering'] },
+          terraformRoleMappings: {},
+          effectiveRoleMappings: { developer: ['Engineering'] },
         },
       ],
       businessRoles,
@@ -100,10 +148,8 @@ describe('SsoRoleMappingsCard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Platform administrator access required',
     );
-    // Removing every value tells the admin the role will be unmapped.
-    expect(
-      within(dialog).getByText(/Saving removes this role from the mapping/),
-    ).toBeInTheDocument();
+    // Removing additions preserves the infrastructure baseline.
+    expect(within(dialog).getByText(/Saving keeps any read-only values/)).toBeInTheDocument();
   });
 
   it('shows a selector only with several connections and blocks editing without a source attribute', async () => {
@@ -119,6 +165,8 @@ describe('SsoRoleMappingsCard', () => {
           displayName: 'Entra ID',
           sourceAttribute: 'groups',
           roleMappings: {},
+          terraformRoleMappings: {},
+          effectiveRoleMappings: {},
           revision: null,
         },
         {
@@ -126,6 +174,8 @@ describe('SsoRoleMappingsCard', () => {
           displayName: 'Legacy SAML',
           sourceAttribute: '',
           roleMappings: {},
+          terraformRoleMappings: {},
+          effectiveRoleMappings: {},
           revision: null,
         },
       ],

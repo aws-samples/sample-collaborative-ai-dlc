@@ -111,7 +111,10 @@ export const evaluateSsoRoles = (attributes, config = parseRoleConfig()) => {
   const claimValues = parseClaimValues(attributes?.['custom:sso_roles']);
   const claimSet = new Set(claimValues);
   const roles = Object.entries(provider.roleMappings || {})
-    .filter(([, values]) => values.some((value) => claimSet.has(value)))
+    // Business roles are calculated per space, never injected into Cognito groups.
+    .filter(
+      ([role, values]) => role === 'platform-admin' && values.some((value) => claimSet.has(value)),
+    )
     .map(([role]) => role)
     .toSorted();
   const required = provider.requiredClaimValues || [];

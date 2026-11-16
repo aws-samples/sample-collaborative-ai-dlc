@@ -20,7 +20,10 @@ locals {
   role_config = {
     providers = {
       for name, provider in var.sso_providers : name => {
-        roleMappings        = provider.role_mappings
+        roleMappings = {
+          for role, values in provider.role_mappings : role => values
+          if contains(jsondecode(file("${path.module}/../../../config/platform-roles.json")), role)
+        }
         requiredClaimValues = provider.required_claim_values
       }
     }

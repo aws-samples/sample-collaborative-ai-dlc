@@ -85,7 +85,7 @@ someone a space Owner, and a business role never grants access to a space.
 Removing a member clears their roles; a re-added member starts with none.
 
 With enterprise SSO, members can also inherit business roles from the central
-mapping a Platform Admin configures (see
+mapping configured through Terraform and Platform admin (see
 [enterprise SSO](../getting-started/enterprise-sso.md)). The role editor shows
 three groups: company roles received through SSO, roles added in this space, and
 the resulting roles. In a space:
