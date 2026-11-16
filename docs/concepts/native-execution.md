@@ -191,8 +191,10 @@ completion, and none of them changes that report.
 
 For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
 protected workflow engine owned by this project is the completion authority
-(NE-11, implemented and qualified locally and in the installed image, not
-deployed; see the dated records below for what is not yet qualified). The pinned engine's own records are not an
+(NE-11, implemented, qualified locally and in the installed image, and deployed
+to the development stack, where its artifacts were independently verified on
+2026-11-16; no native execution has run there yet, see the dated records below
+for what is not yet qualified). The pinned engine's own records are not an
 independent authority, because the coding process can write the state and
 human-presence files its guards read. The protected engine therefore runs the
 same pinned engine code in a separate service with its own workspace and state:
@@ -5257,6 +5259,124 @@ bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/n
 bash '/Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne11-2026-11-16-engine-untaint/handoff/deploy-ne11-continuation.sh' --apply-reviewed <saved-plan-sha256>
 ```
 
+All four steps were run on 2026-11-16 and the apply completed; see the next
+section. These commands must not be run again.
+
+## NE-11 deployed artifact verification — 2026-11-16
+
+**The NE-11 deployment at `f1db0896cd77bf9b7c655cda8862a536315ae965` is
+independently verified as deployed artifacts and configuration. The interrupted
+apply left nothing behind, and no further deployment is needed for this
+candidate. NE-11 stays open: nothing has run on the deployed stack.** The
+operator ran the continuation steps on 2026-11-16; the apply ran from 10:29 to
+10:33 UTC. Verification used the separate `solution-read` role with fresh
+evidence under `.native-evidence/ne11-2026-11-16-deployed-f1db0896/`. It made
+no cloud mutation and invoked no function, runtime, build or API.
+
+### What the verification established
+
+- **Two candidates, one source.** The stack was applied from `f6f70b3b` on
+  2026-11-13 and from `f1db0896` on 2026-11-16. Only this document differs
+  between them. Both saved plans are the reviewed ones, and decoding them again
+  reproduces the retained plan JSON byte for byte. The plan stopped on
+  2026-11-16 was never applied.
+- **Terraform state.** The backend holds serial **1529** of the same lineage,
+  last written during the apply, with no lock object. All **2,193** resources
+  are held exactly once, none is tainted, and none of the **54** deposed helper
+  objects remains. Every resource the three plans intended is present. The
+  apply log counts 73 destroyed objects where the plan had 76: for three
+  helpers of the source control function two old objects of one address were
+  destroyed at the same moment and the log records one completion for each.
+  The state holds neither.
+- **Nothing left behind.** AWS and the state hold the same **52** functions,
+  **6** aliases, **6** event source mappings, **64** permission statements,
+  **47** roles with **60** inline policies and **53** attachments, **2**
+  managed policies, **3** CodeBuild projects, **4** repositories with one
+  repository policy, **58** log groups and the runtime. Nothing is orphaned,
+  duplicated, pending or failed. Three groups of resources are outside the
+  state and older than this deployment: 33 roles of the `review` environment,
+  two inline policies that the application's Bedrock access setup wrote on the
+  credential broker role, and eight service-created log groups.
+- **Engine function.** It is active, its last update succeeded, and it is
+  unmodified since its interrupted create on 2026-11-13. Checked attribute by
+  attribute against the source, the applied plan and the state: the qualified
+  ARM64 platform digest, entry point, command, working directory, memory,
+  timeout, storage, network, role, logging and tags. All **29** environment
+  values equal the plan, the state and an independent expectation: 19 derived
+  from the source and from what AWS returns now, 10 equal to the same variable
+  on functions verified in NE-10. The producer identity is the published
+  index. Versions `$LATEST` and 1 are identical. It has no alias, resource
+  policy, event source, URL or EventBridge rule. Its log group keeps seven days
+  and is empty, which indicates that the function has not been invoked.
+- **Image access.** The registry policy is the single statement in the source:
+  the Lambda service, with this function and its qualifiers in
+  `aws:SourceArn`. Lambda added nothing. Tag `3ea5a39747e3adc8` names index
+  `sha256:5f37ba722700661753c3af1c1739a3e8184deb97cfe3d56f9469c2a10ba49d5d`.
+  The platform manifest and the configuration, read back from the registry,
+  equal the installed qualification byte for byte; all **28** layers are
+  present with the qualified identities.
+- **Runtime.** The runtime and its `DEFAULT` endpoint are **READY at version
+  148** on the published index, with no pending target. Role, all 22
+  environment values, network, protocol and lifecycle equal the plans and are
+  unchanged from NE-10, as planned. Version 147 ran the NE-10 image.
+- **Check job project.** It is pinned to the published index, unprivileged,
+  uses the check role, has no source other than the fixed build specification
+  and no logs. No build has run.
+- **Functions.** All **51** deployed ZIP archives equal the archive the
+  applied plan names, byte for byte, and their entries equal a rebuild from
+  the applied commit in a clean copy. Configuration equals the plan;
+  environment equals the plan and the state. Code changed in 15 functions
+  since NE-10. The **39** environment differences from NE-10 are the new image
+  identity and runtime version, and the three engine values on the authority
+  function. The four functions deployed on both days carry one bundle under
+  two package names. The five authority aliases name version **30**, the
+  orchestrator's `live` alias version **120**; all are unweighted and name the
+  newest version, whose code and environment equal `$LATEST`. Version 30
+  captures the engine's ARN, the published index and engine version 1.
+- **IAM.** All roles, inline policies, attachments and managed policies equal
+  the plan and the state. The differences from NE-10 are the ones the source
+  intends and no other: the engine role, the check role, their two policies,
+  one attachment and the review boundary are new; the authority policy gained
+  `ReadProtectedWorkflowEvidence`, the execution worker policy
+  `BindCapturedWorkflowEngineVersion`, and the runtime boundary
+  `InvokeOwnWorkflowEngine`, `SubmitOwnWorkflowInputs` and
+  `ReadOwnWorkflowResults`. The 14 other policies verified in NE-10 are
+  unchanged.
+- **API and frontend.** All **412** methods, the authorizers and the stage
+  equal what NE-10 verified; deployment `n7mhg1` is unchanged. The frontend
+  was not pinned in advance, so it was rebuilt from the applied commit with
+  the client configuration the deployment generated: the rebuild reproduces
+  all **629** uploaded files, and all 629 match S3 and the public CDN with the
+  intended cache policies. Invalidation `I8QQZF8ZDD4Z1VIKGMEP05UF2G` is
+  complete.
+- **Evidence.** The four NE-11 evidence folders and the NE-10 folders match
+  their integrity manifests. `terraform/errored.tfstate` and its copy are
+  unchanged. The backend state supersedes them: the same lineage, a later
+  serial, every resource of the file, and different identifiers only for the
+  22 helpers the last plan replaced. They hold secrets in plain text and are
+  no longer needed for recovery.
+
+### Noted, not caused by this deployment
+
+- The runtime boundary policy holds five versions, the most IAM keeps. Its
+  next change has to remove one first.
+- The state bucket keeps no versions, as recorded above.
+
+### Not established
+
+Read-only verification cannot show how the deployed parts behave: that the
+Lambda service starts the engine image with its entry point and may retrieve
+it under the registry policy, IAM enforcement, network reachability of IAM and
+CodeBuild from the function, CodeBuild's capabilities for the job observer,
+process containment in a real build, EFS and live models.
+
+**Live acceptance still required before NE-11 can be completed:** an installed
+CLI driving the protected engine through the `aidlc` command on the deployed
+stack; a review requested and completed through the real engine by a reviewer
+with a model; and a plan with sensors and reviewers reaching a verified
+completion, with the result view reporting complete, failed or not verified
+from those outcomes.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5482,11 +5602,16 @@ the current contract for newly created executions.
       The recovery apply then lost its network part-way and left the stack
       partly updated. Terraform's state is restored; the plan that followed
       would have replaced the engine function create-first and was stopped. A
-      continuation handoff keeps the function and finishes the apply.
-      **Still open:** a review completed through the real engine, a reviewer with
-      a model, a verified completion of a plan with sensors and reviewers, an
-      installed CLI driving the engine, and everything deployed. An engine
-      operation that never finishes stays pending; see NE-23.
+      continuation handoff kept the function and finished the apply on
+      2026-11-16. **Deployed artifacts independently verified 2026-11-16** at
+      `f1db0896cd77bf9b7c655cda8862a536315ae965`: Terraform state, the engine
+      function and its image access, runtime, check job project, packages,
+      aliases, IAM, routes and frontend bytes, with nothing left behind by the
+      interrupted apply. **Still open:** a review completed through the real
+      engine, a reviewer with a model, a verified completion of a plan with
+      sensors and reviewers, an installed CLI driving the engine, and how the
+      deployed parts behave, since nothing has run on the deployed stack. An
+      engine operation that never finishes stays pending; see NE-23.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
