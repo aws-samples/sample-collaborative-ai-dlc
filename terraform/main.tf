@@ -129,11 +129,17 @@ locals {
 
   sso_enabled = var.auth_mode != "local"
 
+  # Admission and platform-role mappings for the token/admission path, plus the
+  # connection metadata (display name, source attribute) the Platform admin
+  # business-role mapping UI shows. Business-role mappings themselves live in
+  # DynamoDB and are saved from the UI, not here.
   sso_role_config = {
     providers = {
       for name, provider in var.sso_providers : name => {
         roleMappings        = provider.role_mappings
         requiredClaimValues = provider.required_claim_values
+        roleClaim           = provider.role_claim
+        displayName         = provider.display_name
       }
     }
   }

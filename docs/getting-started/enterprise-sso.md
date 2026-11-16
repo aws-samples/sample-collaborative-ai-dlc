@@ -49,6 +49,40 @@ Provider configuration can map exact, case-sensitive values from one external
 claim to platform roles. This release supports `platform-admin`; future roles
 are added centrally in `config/platform-roles.json`.
 
+### The source attribute (`claims.roles`)
+
+`claims.roles` names the OIDC claim or SAML attribute the application reads —
+it does not restrict the values to IdP "roles". Use `groups`, `roles`, or any
+exact custom attribute name (for SAML this can be a full attribute URI), and
+configure the IdP to send that attribute to this application. One source
+attribute is read per provider; if the IdP sends groups and roles in separate
+attributes, choose the one to use. The selected attribute supplies Cognito's
+`custom:sso_roles` on every federated sign-in and feeds both platform-role
+mappings (below) and business-role mappings (next section).
+
+### Business-role mappings (Platform admin UI)
+
+Business roles (Developer, Architect, QA / Tester, …) describe delivery
+responsibilities in spaces. Platform Admins map IdP values to business roles in
+**Platform Admin → Users → Business role mappings** — not in the provider file.
+These mappings are stored in the application database, so saving them needs no
+Terraform change or deployment, and redeploying never replaces them:
+
+- Enter the exact values received from SSO, including case — a group name, a
+  role value, or a group ID (for example an Entra group object ID). The
+  application does not verify the value exists in the IdP.
+- One business role can match several values (any match grants the role), and
+  the same value may map to several business roles.
+- A saved mapping affects the next role calculation immediately. A change to a
+  user's company groups becomes visible after their next federated sign-in
+  refreshes the Cognito attributes.
+- Business roles never grant sign-in access, space membership, or platform
+  management rights. The `platform-admin` mapping and `requiredClaimValues`
+  stay in the provider file and cannot be changed from this UI.
+
+Space Owners can add business roles locally and exclude inherited SSO roles per
+space (see [the spaces guide](../using-the-platform/projects.md)).
+
 For a federated user:
 
 - The external claim is authoritative on every fresh federated sign-in.

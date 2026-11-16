@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@aws-lambda-powertools/logger": "^2.35.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1133.0",
     "@aws-sdk/client-dynamodb": "^3.1133.0",
     "@aws-sdk/credential-providers": "^3.1133.0",
     "@aws-sdk/lib-dynamodb": "^3.1133.0",

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { normalizeLocalRoles } from './business-roles.js';
+import {
+  normalizeExcludedRoles,
+  normalizeLocalRoles,
+  normalizeRoleMappings,
+} from './business-roles.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
@@ -12,6 +16,14 @@ export const membershipKey = (spaceId, userId) => ({
   pk: `SPACE#${spaceId}`,
   sk: `MEMBER#${userId}`,
 });
+
+// Business-role mappings saved from the Platform admin UI: one item per
+// configured SSO connection. No userId field, so the by-user GSI skips it.
+export const ssoMappingKey = (providerId) => ({ pk: 'PLATFORM', sk: `SSO#${providerId}` });
+
+// Stay clearly below DynamoDB's 400 KB item limit for the mapping and its audit
+// record; the serialized form approximates the stored item size.
+const MAX_ITEM_BYTES = 350_000;
 
 // Accepted only at the API/migration boundary. Persisted access roles have two values.
 export const normalizeMembershipRole = (role) => (role === 'admin' ? 'owner' : role);
@@ -129,10 +141,16 @@ export const createMembershipStore = ({
     changeId = randomUUID(),
     migration = false,
     localRoles,
+    excludedRoles,
   }) => {
     if (role !== null && !validRole(role)) throw new Error('Invalid membership role');
-    const changingLocalRoles = localRoles !== undefined;
-    if (changingLocalRoles) localRoles = normalizeLocalRoles(localRoles);
+    // Role-list updates change exactly one field and leave membership intact.
+    const roleField =
+      localRoles !== undefined
+        ? { name: 'localRoles', roles: normalizeLocalRoles(localRoles) }
+        : excludedRoles !== undefined
+          ? { name: 'excludedRoles', roles: normalizeExcludedRoles(excludedRoles) }
+          : null;
     const timestamp = now();
     const key = membershipKey(spaceId, userId);
     const after =
@@ -146,7 +164,7 @@ export const createMembershipStore = ({
             createdAt: before?.createdAt || timestamp,
             updatedAt: timestamp,
             revision: changeId,
-            ...(changingLocalRoles ? { localRoles } : {}),
+            ...(roleField ? { [roleField.name]: roleField.roles } : {}),
           };
     const condition =
       before && !migration
@@ -163,16 +181,16 @@ export const createMembershipStore = ({
       };
     }
     const writes = [
-      changingLocalRoles
+      roleField
         ? {
             Update: {
               TableName: accessTable,
               Key: key,
               ...condition,
-              UpdateExpression: 'SET localRoles = :roles, updatedAt = :timestamp, revision = :next',
+              UpdateExpression: `SET ${roleField.name} = :roles, updatedAt = :timestamp, revision = :next`,
               ExpressionAttributeValues: {
                 ...condition.ExpressionAttributeValues,
-                ':roles': localRoles,
+                ':roles': roleField.roles,
                 ':timestamp': timestamp,
                 ':next': changeId,
               },
@@ -191,8 +209,8 @@ export const createMembershipStore = ({
             actorId,
             action,
             targetUserId: userId,
-            before: changingLocalRoles ? before.localRoles || [] : before,
-            after: changingLocalRoles ? localRoles : after,
+            before: roleField ? before[roleField.name] || [] : before,
+            after: roleField ? roleField.roles : after,
             timestamp,
             changeId,
           },
@@ -238,6 +256,134 @@ export const createMembershipStore = ({
       action: 'local-roles-changed',
       changeId,
     });
+  };
+  // Exclusions apply to roles inherited through SSO. A new exclusion must target
+  // a role the member currently inherits; existing exclusions may always be kept
+  // or restored, so a company-group change never locks an exclusion in place.
+  const changeExcludedRoles = async ({
+    spaceId,
+    userId,
+    actorId,
+    excludedRoles,
+    inheritedSsoRoles = [],
+    changeId,
+  }) => {
+    const roles = normalizeExcludedRoles(excludedRoles);
+    const before = await get(spaceId, userId);
+    if (!before) throw Object.assign(new Error('Member not found'), { statusCode: 404 });
+    const existing = new Set(before.excludedRoles || []);
+    const inherited = new Set(inheritedSsoRoles);
+    const invalid = roles.filter((role) => !existing.has(role) && !inherited.has(role));
+    if (invalid.length > 0) {
+      throw Object.assign(
+        new Error(`Only roles inherited through SSO can be excluded: ${invalid.join(', ')}`),
+        { statusCode: 400 },
+      );
+    }
+    return change({
+      spaceId,
+      userId,
+      actorId,
+      before,
+      role: before.membershipRole,
+      excludedRoles: roles,
+      action: 'excluded-roles-changed',
+      changeId,
+    });
+  };
+  // Business-role mapping for one configured SSO connection. A missing item means
+  // no mappings; read errors propagate so callers never treat a failed read as
+  // an empty role list.
+  const readRoleMappingItem = async (providerId) => {
+    if (!providerId) throw Object.assign(new Error('providerId is required'), { statusCode: 400 });
+    const result = await ddb.send(
+      new GetCommand({
+        TableName: accessTable,
+        Key: ssoMappingKey(providerId),
+        ConsistentRead: true,
+      }),
+    );
+    return result.Item || null;
+  };
+  const getRoleMappings = async (providerId) =>
+    (await readRoleMappingItem(providerId))?.roleMappings || {};
+  // The editable record: the revision fences UI saves against lost updates.
+  const getRoleMappingRecord = async (providerId) => {
+    const item = await readRoleMappingItem(providerId);
+    return { roleMappings: item?.roleMappings || {}, revision: item?.revision || null };
+  };
+  // `expectedRevision` is the revision the editor loaded (null for a first
+  // save). Saving the whole mapping over a newer revision would silently undo
+  // the other editor's change, so stale saves are rejected instead.
+  const saveRoleMappings = async ({
+    providerId,
+    actorId,
+    roleMappings,
+    expectedRevision = null,
+    changeId = randomUUID(),
+  }) => {
+    const mappings = normalizeRoleMappings(roleMappings);
+    const timestamp = now();
+    const existing = await readRoleMappingItem(providerId);
+    if ((existing?.revision || null) !== expectedRevision) throw conflict();
+    const item = {
+      ...ssoMappingKey(providerId),
+      providerId,
+      roleMappings: mappings,
+      createdAt: existing?.createdAt || timestamp,
+      updatedAt: timestamp,
+      revision: changeId,
+    };
+    const audit = {
+      pk: 'PLATFORM',
+      sk: `AUDIT#${timestamp}#${changeId}`,
+      actorId,
+      action: 'sso-role-mappings-changed',
+      providerId,
+      before: existing?.roleMappings || {},
+      after: mappings,
+      timestamp,
+      changeId,
+    };
+    for (const record of [item, audit]) {
+      if (Buffer.byteLength(JSON.stringify(record), 'utf8') > MAX_ITEM_BYTES) {
+        throw Object.assign(new Error('Role mapping exceeds the storage size limit'), {
+          statusCode: 400,
+        });
+      }
+    }
+    const writes = [
+      {
+        Put: {
+          TableName: accessTable,
+          Item: item,
+          ...(expectedRevision
+            ? {
+                ConditionExpression: 'revision = :revision',
+                ExpressionAttributeValues: { ':revision': expectedRevision },
+              }
+            : { ConditionExpression: 'attribute_not_exists(pk)' }),
+        },
+      },
+      {
+        Put: {
+          TableName: auditTable,
+          Item: audit,
+          ConditionExpression: 'attribute_not_exists(pk)',
+        },
+      },
+    ];
+    try {
+      await ddb.send(new TransactWriteCommand({ TransactItems: writes }));
+    } catch (error) {
+      if (
+        error.name === 'TransactionCanceledException' &&
+        error.CancellationReasons?.some((r) => r.Code === 'ConditionalCheckFailed')
+      )
+        throw conflict();
+      throw error;
+    }
+    return { roleMappings: mappings, revision: changeId };
   };
   // Keep the deleting owner until every other page has drained. A failed batch
   // leaves that owner's permission intact so the existing delete can be retried.
@@ -286,6 +432,10 @@ export const createMembershipStore = ({
     hasOtherOwner,
     change,
     changeLocalRoles,
+    changeExcludedRoles,
+    getRoleMappings,
+    getRoleMappingRecord,
+    saveRoleMappings,
     deleteSpaceMembers,
   };
 };

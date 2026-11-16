@@ -10,6 +10,12 @@
 //     Platform-admin only — grants/revokes the `platform-admin` group.
 //     Self-demotion is rejected so an admin can never lock the platform out
 //     of its last administrator by accident.
+//   GET /admin/sso-mappings
+//     Platform-admin only — configured SSO connections with their source
+//     attribute and saved business-role mappings, plus the role catalog.
+//   PUT /admin/sso-mappings/{providerId}   body: { roleMappings: { roleId: [values] } }
+//     Platform-admin only — saves the mapping and its audit entry in one
+//     transaction. The next role calculation uses it without a deployment.
 //
 // Group membership rides on the ID token, so a change takes effect when the
 // affected user's token refreshes (typically at next sign-in).
@@ -25,6 +31,8 @@ import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin, PLATFORM_ADMIN_GROUP } from '../shared/authz.js';
 import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
+import { BUSINESS_ROLES } from '../shared/business-roles.js';
+import { membershipStore } from '../shared/space-membership.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
 const client = new CognitoIdentityProviderClient({});
@@ -118,8 +126,65 @@ export const handler = async (event, context) => {
 
   const path = event.path || '';
   const isAdminRoute = path.includes('/admin/users');
+  const isSsoMappingsRoute = path.includes('/admin/sso-mappings');
 
   try {
+    // ── Platform-admin: SSO business-role mappings ────────────────────────
+    if (isSsoMappingsRoute) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+
+      const config = parseRoleConfig();
+      const providerEntries = Object.entries(config.providers || {});
+
+      if (event.httpMethod === 'GET') {
+        const providers = await Promise.all(
+          providerEntries.map(async ([providerId, provider]) => ({
+            providerId,
+            displayName: provider.displayName || providerId,
+            sourceAttribute: provider.roleClaim || '',
+            // roleMappings plus the revision the editor must echo back on save.
+            ...(await membershipStore.getRoleMappingRecord(providerId)),
+          })),
+        );
+        return response(200, { providers, businessRoles: BUSINESS_ROLES });
+      }
+
+      if (event.httpMethod === 'PUT') {
+        const providerId = decodeURIComponent(event.pathParameters?.providerId || '');
+        const provider = config.providers?.[providerId];
+        if (!providerId || !provider) {
+          return response(404, { error: `SSO connection "${providerId}" is not configured` });
+        }
+        if (!provider.roleClaim) {
+          return response(409, {
+            error:
+              'Complete SSO setup first: this connection has no source attribute (claims.roles) configured, so no IdP values reach the application.',
+            code: 'SOURCE_ATTRIBUTE_MISSING',
+          });
+        }
+        let data;
+        try {
+          data = event.body ? JSON.parse(event.body) : {};
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+        const saved = await membershipStore.saveRoleMappings({
+          providerId,
+          actorId: requestingUserId,
+          roleMappings: data?.roleMappings,
+          expectedRevision: data?.expectedRevision ?? null,
+        });
+        logger.info('sso business-role mappings changed', {
+          providerId,
+          by: requestingUserId,
+        });
+        return response(200, { providerId, ...saved });
+      }
+
+      return response(405, { error: 'Method not allowed' });
+    }
+
     // ── Platform-admin routes ─────────────────────────────────────────────
     if (isAdminRoute) {
       const denied = requirePlatformAdmin(event);
@@ -239,6 +304,8 @@ export const handler = async (event, context) => {
     );
   } catch (err) {
     logger.error('Error handling users request', err);
-    return response(500, { error: 'Internal server error' });
+    return response(err.statusCode || 500, {
+      error: err.statusCode ? err.message : 'Internal server error',
+    });
   }
 };

@@ -36,7 +36,9 @@ describe('projectsService v2 create/update payloads', () => {
 
   it('update can set parkReleaseSeconds', async () => {
     await projectsService.update('p1', { parkReleaseSeconds: 300 });
-    expect(put).toHaveBeenCalledWith('/projects/p1', { parkReleaseSeconds: 300 });
+    expect(put).toHaveBeenCalledWith('/projects/p1', {
+      parkReleaseSeconds: 300,
+    });
   });
 
   it('reads the scoped catalog and updates only local business roles by stable IDs', async () => {
@@ -53,10 +55,17 @@ describe('projectsService v2 create/update payloads', () => {
     expect(put).toHaveBeenLastCalledWith('/projects/p1/members/u1/business-roles', {
       localRoles: [],
     });
+    await projectsService.updateMemberExcludedRoles('p1', 'u1', ['developer']);
+    expect(put).toHaveBeenLastCalledWith('/projects/p1/members/u1/excluded-roles', {
+      excludedRoles: ['developer'],
+    });
   });
 
   it('update can set maxParallelUnits + prStrategy (WP5/WP6 settings)', async () => {
-    await projectsService.update('p1', { maxParallelUnits: 3, prStrategy: 'intent-pr' });
+    await projectsService.update('p1', {
+      maxParallelUnits: 3,
+      prStrategy: 'intent-pr',
+    });
     expect(put).toHaveBeenCalledWith('/projects/p1', {
       maxParallelUnits: 3,
       prStrategy: 'intent-pr',
@@ -64,9 +73,10 @@ describe('projectsService v2 create/update payloads', () => {
   });
 
   it('follows a user-space continuation token even when the first page is empty', async () => {
-    get
-      .mockResolvedValueOnce({ items: [], nextToken: 'next/page' })
-      .mockResolvedValueOnce({ items: [{ id: 'p1', userRole: 'member' }], nextToken: null });
+    get.mockResolvedValueOnce({ items: [], nextToken: 'next/page' }).mockResolvedValueOnce({
+      items: [{ id: 'p1', userRole: 'member' }],
+      nextToken: null,
+    });
     expect(await projectsService.list()).toEqual([{ id: 'p1', userRole: 'member' }]);
     expect(get.mock.calls).toEqual([
       ['/projects?paged=1'],
@@ -76,8 +86,14 @@ describe('projectsService v2 create/update payloads', () => {
 
   it('loads all member pages and propagates a failed continuation request', async () => {
     get
-      .mockResolvedValueOnce({ items: [{ userId: 'u1', role: 'owner' }], nextToken: 'next' })
-      .mockResolvedValueOnce({ items: [{ userId: 'u2', role: 'member' }], nextToken: null });
+      .mockResolvedValueOnce({
+        items: [{ userId: 'u1', role: 'owner' }],
+        nextToken: 'next',
+      })
+      .mockResolvedValueOnce({
+        items: [{ userId: 'u2', role: 'member' }],
+        nextToken: null,
+      });
     expect(await projectsService.listMembers('p1')).toEqual([
       { userId: 'u1', role: 'owner' },
       { userId: 'u2', role: 'member' },
