@@ -55,19 +55,19 @@ Before application deployment, Neptune remains the source for the old applicatio
 After deployment, DynamoDB is the only authority. **Membership changes and space
 creation/deletion made in the old application during copying and deployment may
 not carry over.** This tradeoff is accepted for this migration; there is no write
-blocking or synchronization. Avoid administrative membership changes during the
-update when possible. This window includes Lambda builds and uploads after the
-copy, not just the time needed to update function configurations. **Re-apply
-immediately after a partial failure.** The window lasts until the remaining
-application Lambdas deploy; it can last hours or days if the update is left
-unfinished. New code already deployed uses DynamoDB while old code still writes
-Neptune. Re-applying after a successful copy does not repeat it, so old-app
-revocations can leave an active DynamoDB grant and new-space creators can lack a
-DynamoDB grant.
+blocking or synchronization. The window normally lasts a few minutes: from the
+copy until the remaining application Lambdas finish deploying, including their
+builds and uploads. Run the update outside working hours, and make no membership
+changes or space creation/deletion while it runs. New code already deployed uses
+DynamoDB while old code still writes Neptune. Re-applying after a successful copy
+does not repeat it, so an old-app revocation made in this window can leave an
+active DynamoDB grant and a space created in it can lack a DynamoDB grant for its
+creator. **If the apply fails partway, re-apply immediately**; the window stays
+open until every Lambda is deployed.
 
 After the update, inspect the migration Lambda logs and the `membership_report`
-result. Its counts are `missingDestination`, `missingSource`, and `roleMismatches`;
-warnings identify each affected space/user and the observed roles. Reconcile
+result right away to catch revocations or new spaces that did not carry over. Its
+counts are `missingDestination`, `missingSource`, and `roleMismatches`; warnings identify each affected space/user and the observed roles. Reconcile
 differences against membership history before correcting access. A difference
 can also reflect a legitimate DynamoDB change after cutover, because graph edges
 are no longer synchronized. The report describes the observed mismatch and does
