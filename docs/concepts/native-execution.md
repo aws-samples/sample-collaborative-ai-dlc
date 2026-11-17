@@ -5651,9 +5651,11 @@ from the record the build writes.
 Fresh short and long journeys, and one added journey on the express plan that
 answers a turn without a form in writing once, as the only live proof of
 NE-24. It depends on the coding agent following one sentence of the request.
-The journey over an execution without an engine has no target any more, since
-the store rejects every execution started before 2026-11-11; what replaces it
-is open.
+The journey over an execution without an engine is dropped and not replaced
+(user's decision, 2026-11-17): the store rejects every execution started
+before 2026-11-11, those runs exist only on this development deployment, its
+one user needs nothing from them, and they are neither deleted nor migrated.
+That criterion stays covered by tests and is reported as not exercised.
 
 ### Not established
 
@@ -6069,7 +6071,8 @@ the current contract for newly created executions.
       work. The guarded purge step and the measurements are in
       `.native-evidence/ne11-2026-11-17-queue-retry-loop/`. An execution the
       store can no longer read still opens as "Invalid native execution
-      request"; a clearer answer is proposed there and not implemented.
+      request". That stays as it is (user's decision, 2026-11-17): such
+      executions exist only on the development deployment and need no care.
       **Done when:** the corrected consumers and queue settings are deployed,
       the backlog is purged once, both queues and their dead-letter queues are
       measured empty apart from the sweep's pointers in transit, and an
