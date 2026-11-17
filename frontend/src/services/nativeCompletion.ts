@@ -75,6 +75,14 @@ export interface NativeCompletionEvidence extends NativeRevisionTarget {
     buildId: string | null;
   }[];
   gates?: { stage: string; unit: string | null; status: string; commandId: string | null }[];
+  /** Accepted replies that named no question the engine recorded. Not decisions. */
+  unappliedReplies?: {
+    commandId: string;
+    interactionId: string;
+    actorId: string;
+    sequence: number;
+    reason: 'no_recorded_question';
+  }[];
   definition: NativeWorkflowDefinition | null;
   memberDecision: {
     commandId: string;
@@ -191,6 +199,23 @@ function protectedEvidence(value: Record<string, unknown>): boolean {
     )
       invalid();
   }
+  // Absent in evidence written before the engine recorded such replies.
+  const unapplied = value.unappliedReplies;
+  if (
+    unapplied !== undefined &&
+    (!Array.isArray(unapplied) ||
+      unapplied.length > 2000 ||
+      unapplied.some(
+        (reply) =>
+          !record(reply) ||
+          !uuid(reply.commandId) ||
+          !sha(reply.interactionId) ||
+          !text(reply.actorId) ||
+          !positive(reply.sequence) ||
+          reply.reason !== 'no_recorded_question',
+      ))
+  )
+    invalid();
   const terminal = value.terminalOutcome;
   if (
     terminal !== 'not_recorded' &&

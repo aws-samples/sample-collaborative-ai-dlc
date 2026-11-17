@@ -291,6 +291,40 @@ it('names a composed plan and omits empty outcome lists', async () => {
   expect(screen.queryByRole('list', { name: 'Independent reviews', hidden: true })).toBeNull();
   expect(screen.queryByRole('list', { name: 'Applied member decisions', hidden: true })).toBeNull();
 });
+it('tells the member that a reply was not applied as a decision', async () => {
+  mocks.read.mockResolvedValue(
+    engine({
+      ...openGate(),
+      engineApplication: [],
+      unappliedReplies: [
+        {
+          commandId: '22222222-2222-4222-8222-222222222222',
+          interactionId: 'c'.repeat(64),
+          actorId: 'member-one',
+          sequence: 2,
+          reason: 'no_recorded_question',
+        },
+      ],
+    }),
+  );
+  render(<NativeCompletionEvidence {...props} />);
+  const notice = await screen.findByRole('note', { name: 'Replies not applied as decisions' });
+  expect(notice).toHaveTextContent(
+    'A reply was accepted but not applied as a workflow decision: it did not answer a question the workflow engine had recorded.',
+  );
+  expect(notice).toHaveTextContent('It answered, approved and selected nothing.');
+  expect(notice).toHaveTextContent('Turn 2 · member-one');
+  // It is shown without opening the details and is not a member decision.
+  expect(notice.closest('details')).toBeNull();
+  expect(heading()).toHaveTextContent('Workflow completion: not verified');
+  expect(screen.queryByRole('list', { name: 'Applied member decisions', hidden: true })).toBeNull();
+});
+it('shows no such notice when every accepted reply answered a recorded question', async () => {
+  mocks.read.mockResolvedValue(engine({ unappliedReplies: [] }));
+  render(<NativeCompletionEvidence {...props} />);
+  await screen.findByText(completed);
+  expect(screen.queryByRole('note', { name: 'Replies not applied as decisions' })).toBeNull();
+});
 it('reports a protected failed outcome as failed, never as complete', async () => {
   mocks.read.mockResolvedValue(
     engine({

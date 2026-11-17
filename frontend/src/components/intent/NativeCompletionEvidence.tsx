@@ -188,6 +188,7 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
 function ProtectedEvidence({ evidence }: { evidence: Evidence }) {
   const plan = evidence.effectivePlan === 'not_recorded' ? null : evidence.effectivePlan;
   const decisions = evidence.engineApplication === 'not_recorded' ? [] : evidence.engineApplication;
+  const unapplied = evidence.unappliedReplies ?? [];
   return (
     <div className="space-y-2">
       <p>
@@ -205,6 +206,23 @@ function ProtectedEvidence({ evidence }: { evidence: Evidence }) {
         {evidence.finalReview.replaceAll('_', ' ')}. Human gates:{' '}
         {evidence.humanApproval.replaceAll('_', ' ')}.
       </p>
+      {!!unapplied.length && (
+        <div role="note" aria-label="Replies not applied as decisions" className="space-y-1">
+          <p>
+            {unapplied.length === 1
+              ? 'A reply was accepted but not applied as a workflow decision: it did not answer a question the workflow engine had recorded. It answered, approved and selected nothing.'
+              : `${unapplied.length} replies were accepted but not applied as workflow decisions: they did not answer a question the workflow engine had recorded. They answered, approved and selected nothing.`}{' '}
+            Answer the question when it is shown as a form.
+          </p>
+          <ul className="space-y-1">
+            {unapplied.map((reply) => (
+              <li key={reply.commandId}>
+                Turn {reply.sequence} · {reply.actorId}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <details className="space-y-2">
         <summary>Inspect applied plan and outcomes</summary>
         {plan ? (

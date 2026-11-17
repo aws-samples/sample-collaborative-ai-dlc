@@ -353,6 +353,37 @@ it.each<[string, Patch]>([
   get.mockResolvedValue(engine({ workflowCompletion: 'not_verified', ...patch }));
   expect((await read()).workflowCompletion).toBe('not_verified');
 });
+const unapplied = () => ({
+  commandId: attemptId,
+  interactionId: hex('c'),
+  actorId: 'member-one',
+  sequence: 2,
+  reason: 'no_recorded_question',
+});
+it('decodes replies the engine did not apply as decisions, and evidence written before they were recorded', async () => {
+  get.mockResolvedValue(
+    engine({ ...openGate(), engineApplication: [], unappliedReplies: [unapplied()] }),
+  );
+  const evidence = await read();
+  expect(evidence.workflowCompletion).toBe('not_verified');
+  expect(evidence.unappliedReplies).toEqual([unapplied()]);
+  // They are never counted among the member decisions.
+  expect(evidence.engineApplication).toEqual([]);
+  get.mockResolvedValue(engine());
+  expect((await read()).unappliedReplies).toBeUndefined();
+});
+it.each<[string, unknown]>([
+  ['not a list', 'none'],
+  ['an unknown reason', [{ ...unapplied(), reason: 'applied' }]],
+  ['no actor', [{ ...unapplied(), actorId: '' }]],
+  ['a malformed command', [{ ...unapplied(), commandId: 'x' }]],
+  ['a malformed proposal', [{ ...unapplied(), interactionId: 'x' }]],
+  ['no turn', [{ ...unapplied(), sequence: 0 }]],
+  ['too many rows', Array.from({ length: 2001 }, unapplied)],
+])('rejects unapplied replies with %s', async (_case, unappliedReplies) => {
+  get.mockResolvedValue(engine({ ...openGate(), unappliedReplies }));
+  await expect(read()).rejects.toThrow('Completion evidence is unavailable');
+});
 it('accepts every stage state and row outcome the protected engine reports', async () => {
   const states = [
     'pending',
