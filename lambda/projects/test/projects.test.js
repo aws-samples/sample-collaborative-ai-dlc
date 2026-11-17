@@ -236,6 +236,7 @@ describe('POST /projects', () => {
     maxParallelUnits: 0,
     prStrategy: 'default',
     stageSkipping: 'default',
+    laneSyncPolicy: 'default',
   };
 
   it('applies defaults when only name is supplied', async () => {
@@ -421,6 +422,21 @@ describe('POST /projects', () => {
       ...claims(sub),
     });
     expect(removed.statusCode).toBe(400);
+  });
+
+  it('defaults lane sync to platform inheritance and validates overrides', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'Lanes' });
+    expect(created.laneSyncPolicy).toBe('default');
+    const explicit = await createProject(sub, { name: 'Synced', laneSyncPolicy: 'before-stage' });
+    expect(explicit.laneSyncPolicy).toBe('before-stage');
+    const unknown = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', laneSyncPolicy: 'always' }),
+      ...claims(sub),
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(JSON.parse(unknown.body).error).toContain('laneSyncPolicy must be one of');
   });
 
   it('creates a v2 project when kind is omitted (v2 is the only kind)', async () => {
@@ -629,6 +645,28 @@ describe('PUT /projects/:id', () => {
     expect(JSON.parse(listed.body)).toContainEqual(
       expect.objectContaining({ url: 'g2-org/g2', provider: 'gitlab' }),
     );
+  });
+
+  it('updates and round-trips the lane sync override', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Lanes' });
+    const put = (laneSyncPolicy) =>
+      handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ laneSyncPolicy }),
+        ...claims(sub),
+      });
+    const res = await put('before-stage');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).laneSyncPolicy).toBe('before-stage');
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).laneSyncPolicy).toBe('before-stage');
+    expect((await put('sometimes')).statusCode).toBe(400);
   });
 
   it('returns 400 when gitRepo is not a safe repository path', async () => {

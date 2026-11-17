@@ -108,7 +108,7 @@ variable "aidlc_repo_ref" {
 }
 
 variable "lane_sync_policy" {
-  description = "When the engine merges the intent branch into a unit lane: \"none\" or \"before-stage\""
+  description = "Initial platform lane sync policy (\"none\" or \"before-stage\"); the Admin UI manages it afterwards"
   type        = string
   default     = "none"
 }

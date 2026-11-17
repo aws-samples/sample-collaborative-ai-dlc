@@ -12,6 +12,7 @@ import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
 import { CodeCommitSourceControlCard } from '../CodeCommitSourceControlCard';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
 import { PrStrategyCard } from '../PrStrategyCard';
+import { LaneSyncPolicyCard } from '../LaneSyncPolicyCard';
 
 interface Props {
   providers: TrackerProviderStatus[];
@@ -40,6 +41,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
   return (
     <div className="space-y-6">
       <PrStrategyCard />
+      <LaneSyncPolicyCard />
       <GitHubSourceControlCard
         oauthConfigured={isConfigured(providers, 'github-issues')}
         onOAuthSaved={onProvidersChanged}

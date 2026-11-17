@@ -153,7 +153,7 @@ variable "aidlc_release_pinning" {
 }
 
 variable "lane_sync_policy" {
-  description = "When the engine brings the intent branch's latest head into a unit lane: \"none\" (only at merge-back or reconciliation) or \"before-stage\" (merged into the unit branch before each fresh stage of the lane, so the lane sees units merged since it was cut and changes merged into the intent branch directly; a conflict leaves the lane as it was)."
+  description = "Initial platform default for when the engine brings the intent branch's latest head into a unit lane: \"none\" (only at merge-back or reconciliation) or \"before-stage\" (merged into the unit branch before each fresh stage of the lane; a conflict leaves the lane as it was). Applied when the setting is first created; afterwards it is managed in Admin settings, and each space may override it."
   type        = string
   default     = "none"
   validation {

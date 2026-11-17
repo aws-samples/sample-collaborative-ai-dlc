@@ -139,6 +139,8 @@ export interface Intent {
   // field above, which is the unit-lane ladder's per-section decision.
   constructionGateAutonomy?: 'gated' | 'autonomous' | null;
   prStrategy?: 'intent-pr' | 'pr-per-unit' | null;
+  // Effective lane sync policy snapshotted at create (shared/lane-sync-policy.js).
+  laneSyncPolicy?: 'none' | 'before-stage' | null;
   // Per-intent stage skipping (shared/stage-skip.js): the effective mode
   // snapshotted at create and the CONDITIONAL stages deselected at create.
   stageSkipping?: 'enabled' | 'disabled' | null;

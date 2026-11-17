@@ -6432,21 +6432,18 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
-  describe('lane sync (LANE_SYNC_POLICY)', () => {
+  describe('lane sync (laneSyncPolicy)', () => {
     const laneArgs = {
       ...unitArgs,
       repos: ['acme/api'],
       branch: 'aidlc/i1--s1-unit-billing',
       baseBranch: 'aidlc/i1',
       gitProvider: 'gitlab',
-    };
-    const syncEnv = {
-      BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
-      LANE_SYNC_POLICY: 'before-stage',
+      laneSyncPolicy: 'before-stage',
     };
     const syncDeps = (syncLaneWithIntent, overrides = {}) =>
       unitDeps({
-        env: syncEnv,
+        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
         ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
         syncLaneWithIntent,
         ...overrides,
@@ -6568,11 +6565,14 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       expect(eventsOf(deps).some((e) => e.type.startsWith('v2.lane.'))).toBe(false);
     });
 
-    it('does not sync with the default policy', async () => {
-      const sync = vi.fn();
-      await runStage(laneArgs, syncDeps(sync, { env: { BEDROCK_MODEL: 'm' } }));
-      expect(sync).not.toHaveBeenCalled();
-    });
+    it.each([undefined, null, 'none', 'always'])(
+      'does not sync with policy %j',
+      async (laneSyncPolicy) => {
+        const sync = vi.fn();
+        await runStage({ ...laneArgs, laneSyncPolicy }, syncDeps(sync));
+        expect(sync).not.toHaveBeenCalled();
+      },
+    );
 
     it('does not sync a resumed conversation', async () => {
       const sync = vi.fn();
