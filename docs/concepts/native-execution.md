@@ -5381,6 +5381,127 @@ with a model; and a plan with sensors and reviewers reaching a verified
 completion, with the result view reporting complete, failed or not verified
 from those outcomes.
 
+## NE-11 first live run — refused by the engine, corrected in source, 2026-11-17
+
+**The first run on the deployed NE-11 stack reached the protected engine and
+was refused on every request. The cause is reproduced in the deployed image and
+corrected in the source. A new image has to be built, qualified and deployed
+before the live acceptance can continue. NE-11 stays open.** Evidence is under
+`.native-evidence/ne11-2026-11-17-engine-unavailable/`. The investigation made
+read-only reads with the `solution-read` role and ran the deployed image
+locally; it invoked no deployed function, changed nothing in the stack and
+built no image.
+
+### What happened
+
+A member drove the short acceptance journey by hand: a new native intent with
+Claude Code and the `express` plan. Creation, preparation, Start, delivery to
+the runtime and the start of the CLI worked. The agent's first workflow command
+through `aidlc` ended with `NATIVE_ENGINE_UNAVAILABLE`, and so did a second
+attempt and the two engine calls that close a publication. The turn ended
+without a question, publication 1 is not verified, and the engine recorded
+nothing for the execution.
+
+The engine function's log held only the service's own lines: an init phase
+stopped at the 10 second limit, then four invocations of 1342, 132, 116 and
+104 ms. The engine answers every failure with a closed code and wrote no line
+of its own, so the refusals could not be told apart from outside.
+
+### Cause
+
+The image gave the engine an install of its own under
+`/opt/native-runtime-control`, while the shared helpers it imports resolve
+their packages from `/opt/agentcore/node_modules`. The engine opens the graph
+connection with its copy of the graph library and hands the traversal source
+to the shared membership lookup, which builds the nested steps of its query
+with the other copy. The two copies do not recognise each other's objects: the
+writer of the first sends the steps of the second as plain maps. The graph
+rejects the query, the lookup reports the membership as unavailable, and the
+engine refuses the request. Every engine request checks the starter's
+membership first, so no request could succeed, for any plan or harness.
+
+Reproduced in the deployed image against a real Gremlin server on a network
+without a route out, with one project, one member and one membership edge:
+
+| Layout                                         | Engine's answer             | Membership query                                      |
+| ---------------------------------------------- | --------------------------- | ----------------------------------------------------- |
+| As deployed, two installs                      | `NATIVE_ENGINE_UNAVAILABLE` | Rejected by the server: no method `by(LinkedHashMap)` |
+| Same query from one copy of the library        | accepted                    | Returns the member                                    |
+| One install, arranged in a throwaway container | accepted                    | Returns the member                                    |
+
+A replay of the real entry on the developer machine against the deployed rows,
+with stand-ins for the graph and the two owner functions and every write
+refused, answers the same status request successfully. The execution's rows,
+its pins, the preparation and the methodology source binding are therefore not
+the cause.
+
+### Why no earlier check saw it
+
+- A checkout has one install, so host tests load one copy of the library.
+- The other native functions are single-file bundles.
+- The installed qualification of 2026-11-13 ran the engine in the image with
+  in-memory AWS ports and a stand-in for the graph. The one place where the two
+  installs meet was not exercised.
+- The read-only verification of the deployment cannot look into an image.
+
+### Correction
+
+- **One install in the image.** The engine has no install of its own and links
+  to the tree the shared helpers use. `lambda/agentcore/package.json` is again
+  the only manifest the image installs and declares the three packages only the
+  engine needs. The build fails if the engine or the shared helpers could load
+  a second copy of a package, or if the engine entry does not load. The
+  dependency guard in `lambda/agentcore/test/container-deps.test.js` walks the
+  engine entry as well and fails on the previous layout.
+- **The engine says why it refuses.** It writes one line per refused request to
+  its function log: the step that failed, the error's class and code, a status
+  number when the error carries one, and the code the caller received. An
+  operation that ends failed is reported the same way. The line holds no error
+  message, request value, identity or stored content; a value that is not a
+  plain identifier is dropped. The answer to the caller is unchanged. For the
+  failure above the line reads `step: membership`, `errorName:
+  WorkflowSourceError`, `errorCode: WORKFLOW_SOURCE_UNAVAILABLE`.
+
+  | Step                                                         | Meaning                                                                                               |
+  | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+  | `setup`, `service`                                           | Building the request's ports; the service's own decision, for example an identity that does not match |
+  | `execution`, `preparation`, `journal`, `objects`             | The execution row, the prepared draft, the engine's journal, its stored objects                       |
+  | `graph-connection`, `membership`, `reply`                    | Opening the graph, the membership lookup, the accepted reply                                          |
+  | `source-binding`, `source-access`, `tracker-access`, `image` | The methodology source, the repository owner, the tracker owner, the image policy                     |
+  | `access`                                                     | A refusal the access check decides itself                                                             |
+  | `archive`, `settings`, `operation`                           | The runtime package, methodology settings, anything else inside an operation                          |
+
+### Cold start
+
+The engine's first start hit the service's 10 second init limit. The service
+then repeats the init inside the first invocation under the function's own
+limit of 15 minutes: here that took about 0.75 s and the handler 0.6 s, so the
+first caller waited about 11.4 s and later calls took 0.10 to 0.13 s. The
+`aidlc` client sets no time limit on the call, so a slow start alone does not
+fail a first call. Loading the entry in the same image locally takes 0.15 s, so
+the time is the service loading a 3 GB image for the first time, not the
+engine's code. With one install the entry reads 280 module files (4.3 MB)
+instead of 434 (6.8 MB). **Known limit:** a first start of a new image version
+can exceed 10 seconds and answer after about 11; whether later cold starts of
+the same version are faster is not measured, because only one has happened.
+
+### Effect on the live acceptance
+
+The long journey would have failed in the same way at its first workflow
+command. The acceptance preflight now runs the deployed image's engine entry
+locally against a graph server and reports the deployed image as not ready.
+
+### Not established
+
+- That the corrected layout works in a built image. It was arranged in a
+  throwaway container of the deployed image; the next image has to pass its
+  build check and the membership probe.
+- The deployed call itself. It could not be repeated without invoking the
+  function, and the graph's own error text is not known.
+- Everything after the membership lookup on the deployed stack: the engine
+  role's reads, the owner functions, the journal, objects, jobs and reviewer
+  roles have still never run there.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5618,7 +5739,13 @@ the current contract for newly created executions.
       engine operation that never finishes stays pending; see NE-23. **Known
       limit, reproduced locally 2026-11-16:** a written reply to a turn without
       a recorded question makes the engine refuse the workflow commands of the
-      next turn; see NE-24.
+      next turn; see NE-24. **First live run 2026-11-17:** the engine refused
+      every request at its membership lookup, because the image gave it a
+      second copy of the graph library. Corrected in source with one install,
+      a build check and a line that records why a request is refused; not yet
+      built or deployed. **Known limit:** the engine's first start of a new
+      image version can exceed the 10 second init limit and answer after about
+      11 seconds.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
