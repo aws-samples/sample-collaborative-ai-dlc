@@ -5455,7 +5455,8 @@ each time, and the graph rejected what it was sent.
   to the tree the shared helpers use. `lambda/agentcore/package.json` is again
   the only manifest the image installs and declares the three packages only the
   engine needs. The build fails if the engine or the shared helpers could load
-  a second copy of a package, or if the engine entry does not load. The
+  a second copy of a package, if more than one copy of the graph library is
+  installed inside the one tree, or if the engine entry does not load. The
   dependency guard in `lambda/agentcore/test/container-deps.test.js` walks the
   engine entry as well and fails on the previous layout.
 - **The engine says why it refuses.** It writes one line per refused request to
@@ -5507,6 +5508,77 @@ locally against a graph server and reports the deployed image as not ready.
 - Everything after the membership lookup on the deployed stack: the engine
   role's reads, the owner functions, the journal, objects, jobs and reviewer
   roles have still never run there.
+
+## NE-24 a reply the engine cannot bind — implemented in source, 2026-11-17
+
+**A reply that names no question the protected engine recorded now decides
+nothing instead of making the engine refuse the next turn. The change is in the
+source for the next image and is not built or deployed. NE-24 stays open until
+the live acceptance has shown a run continuing after such a reply.** Evidence
+is under `.native-evidence/ne24-2026-11-17-unbound-reply/`.
+
+### Behaviour
+
+The application accepts a written reply to a turn that ended without a
+structured question, and a structured answer to a form the engine did not
+record, for example a paraphrased plan offer. The engine applies a reply only
+as the answer to a question it recorded when that question was presented.
+
+|                                                                                               | Before                                     | Now                                                                                                                         |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Commands of the next turn that need no member (`next`, a check, reporting a stage as waiting) | Refused, `NATIVE_ENGINE_DECISION_MISMATCH` | Applied                                                                                                                     |
+| An answer, a gate approval or a plan selection in that turn                                   | Refused, same code                         | Refused by the command rules, `NATIVE_ENGINE_COMMAND_DENIED`; the reply never reaches the pinned engine as a person's words |
+| What the coding process learns                                                                | The code only                              | A notice on stderr beside every command result of that turn                                                                 |
+| What the member learns                                                                        | Nothing                                    | A notice in the completion report                                                                                           |
+| A reply record that does not match its turn (other command, turn or words)                    | Refused, `NATIVE_ENGINE_DECISION_MISMATCH` | Unchanged                                                                                                                   |
+
+The notice begins with `NATIVE_ENGINE_REPLY_NOT_APPLIED`. It says that the
+reply was not applied as a decision and why, that answers and approvals stay
+refused until the member answers a recorded question, and that the open
+question has to be written to the question file and the turn ended. It names
+what the engine holds: the open `ask` of a plan offer, to be copied unchanged,
+or the stage that waits at its approval gate. The engine's own record is the
+only source for both. Asked again with `next`, the pinned engine answers with
+an error before a workflow exists and with the stage's work at a gate. The
+notice never repeats the member's words, and the transport instructions are
+unchanged.
+
+The reply is kept in the protected state, also when the turn runs no workflow
+command, and the evidence of every later revision lists it as
+`unappliedReplies`. It is not among the member decisions. The completion
+report shows one line for it, outside the details: the reply answered,
+approved and selected nothing, with its turn and member. A revision whose form
+the engine refused has no evidence, as before, so the line appears with the
+next revision that has evidence.
+
+### Shown locally
+
+- **Service tests** through reply admission, the production execution store,
+  the engine service, journal, objects, proof reader and revision API, with a
+  scripted pinned engine: commands that need no member are applied with the
+  notice; an answer, an approval and a plan selection are refused and none is
+  implied; the reply is recorded with and without a command in the turn; a
+  paraphrased plan offer behaves the same and the refusal carries the held
+  offer; the question presented again as a form is answered and the run
+  completes verified in the same attempt; revisions in between are not
+  verified. Five of these tests fail without the change.
+- **The real pinned engine** in the deployed image, offline, with the changed
+  engine mounted over the image's copy and AWS transports in memory: an
+  express run with a paraphrased plan offer and a first gate asked in prose
+  reaches a verified completion with six applied gates in one attempt, and
+  both replies are listed as not applied. The same run on the deployed engine
+  stops at the first command after the reply with
+  `NATIVE_ENGINE_DECISION_MISMATCH`.
+- The test of 2026-11-16 that a typed approval approves nothing passes
+  unchanged.
+
+### Left to the live acceptance
+
+A coding CLI with a model reading the notice, writing the question file and
+ending its turn; the member seeing the notice and the form in the deployed
+application; and a verified completion after such a reply on the deployed
+stack. A protected question whose wording the engine holds only as a digest is
+not handed back: the agent has to present it from its own context.
 
 ## Integration and simplification checklist
 
@@ -5743,9 +5815,11 @@ the current contract for newly created executions.
       sensors and reviewers, an installed CLI driving the engine, and how the
       deployed parts behave, since nothing has run on the deployed stack. An
       engine operation that never finishes stays pending; see NE-23. **Known
-      limit, reproduced locally 2026-11-16:** a written reply to a turn without
-      a recorded question makes the engine refuse the workflow commands of the
-      next turn; see NE-24. **First live run 2026-11-17:** the engine refused
+      limit of the deployed image, reproduced locally 2026-11-16:** a written
+      reply to a turn without a recorded question makes the engine refuse the
+      workflow commands of the next turn. Corrected in source for the next
+      image: such a reply decides nothing and the turn stays usable; see
+      NE-24. **First live run 2026-11-17:** the engine refused
       every request at its membership lookup, because the image gave it a
       second copy of the graph library. Corrected in source with one install,
       a build check and a line that records why a request is refused; not yet
@@ -5859,7 +5933,7 @@ the current contract for newly created executions.
       structured form exists only when the agent writes its question file. When
       a turn ends without one, the application accepts any written reply, but
       the protected engine applies a reply only to a question it recorded: in
-      the next turn it refuses every workflow command with
+      the next turn the deployed image refuses every workflow command with
       `NATIVE_ENGINE_DECISION_MISMATCH`, including commands that need no member,
       and every further written reply repeats the refusal. The same refusal
       follows a structured answer to a form that was not the engine's question,
@@ -5884,4 +5958,13 @@ the current contract for newly created executions.
       implied; the member sees that the reply was not applied as a decision;
       the open question is presented again as a form, from the engine's record
       where it holds one, and the run then reaches a verified completion in the
-      same attempt; and revisions in between stay not verified.
+      same attempt; and revisions in between stay not verified. **Implemented in
+      source 2026-11-17:** the engine gives such a reply no member authority,
+      applies the commands that need no member, tells the coding process beside
+      every command result of that turn why nothing was decided and which
+      question it holds, and records the reply for the completion report.
+      Shown by service tests and, with the real pinned engine in the deployed
+      image and the changed engine mounted over it, by an express run that
+      reaches a verified completion in the same attempt after two such replies;
+      recorded above. Not built or deployed. **Still open:** the same on the
+      deployed stack with a coding CLI and a model.
