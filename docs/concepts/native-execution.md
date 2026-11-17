@@ -5435,6 +5435,11 @@ refused, answers the same status request successfully. The execution's rows,
 its pins, the preparation and the methodology source binding are therefore not
 the cause.
 
+The deployed graph agrees. Its error counter rose by exactly four in the
+minute of the four engine calls, as server errors, and did not change in the
+six hours around them. So the engine did read its two rows and reach the graph
+each time, and the graph rejected what it was sent.
+
 ### Why no earlier check saw it
 
 - A checkout has one install, so host tests load one copy of the library.
@@ -5497,7 +5502,8 @@ locally against a graph server and reports the deployed image as not ready.
   throwaway container of the deployed image; the next image has to pass its
   build check and the membership probe.
 - The deployed call itself. It could not be repeated without invoking the
-  function, and the graph's own error text is not known.
+  function. The graph keeps no query log here, so its error text is not known;
+  only its error counter is.
 - Everything after the membership lookup on the deployed stack: the engine
   role's reads, the owner functions, the journal, objects, jobs and reviewer
   roles have still never run there.
