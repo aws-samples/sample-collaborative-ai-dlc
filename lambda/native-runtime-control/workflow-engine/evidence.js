@@ -5,6 +5,7 @@ import {
   nativeEngineAuthoredPath,
   NATIVE_ENGINE_PROFILE,
 } from '../../shared/native-workflow-protocol.js';
+import { nativeEngineUnappliedReplies } from './reply-binding.js';
 
 const latest = (items, predicate) => items.findLast(predicate);
 const sameUnit = (a, b) => (a ?? null) === (b ?? null);
@@ -269,6 +270,8 @@ export const nativeEngineCompletionEvidence = ({
     policyStatus: 'protected_engine',
     effectivePlan: plan ? { ...plan, sha256: engineDigest(canonicalJson(plan)) } : null,
     engineApplication: decisions,
+    // Accepted replies that named no recorded question. They are not decisions.
+    unappliedReplies: nativeEngineUnappliedReplies(state),
     terminalOutcome: terminal
       ? {
           event: terminal.event,

@@ -28,6 +28,9 @@ export const NATIVE_PENDING_INPUT_LIMITS = Object.freeze({
   specBytes: 64 * 1024,
 });
 
+// Where the coding process leaves its question for the form renderer, relative
+// to the project directory. Display transport only, cleared for each turn.
+export const NATIVE_PENDING_SPEC_PATH = '.native-control/pending-question.json';
 export const NATIVE_AIDLC_INTERACTION_CONTRACT = 'aidlc-2.11.1';
 // Select only after the package loader verifies this pinned identity and bytes.
 // A version string or a structurally similar fork does not establish support.

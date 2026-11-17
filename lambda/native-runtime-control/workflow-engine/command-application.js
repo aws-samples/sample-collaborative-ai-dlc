@@ -12,6 +12,7 @@ import {
   nativeEngineSelectedCommand,
 } from './commands.js';
 import { assertNativeEnginePresentedQuestion } from './presentation.js';
+import { bindNativeEngineReply, noteNativeEngineOpenGate } from './reply-binding.js';
 import { completeNativeEngineReview } from './review.js';
 
 const decode = (result) => {
@@ -47,8 +48,7 @@ const recordDirective = (state, directive, filesSha256) => {
   }
 };
 const selectCommand = async (context, before) => {
-  const { state, row, draft, identity, executionStore, runner, sessionId, request, workspace } =
-    context;
+  const { state, row, draft, identity, runner, sessionId, request, workspace } = context;
   let selected;
   let member = null;
   if (!state.initialMessage) {
@@ -65,24 +65,12 @@ const selectCommand = async (context, before) => {
     // later from a command attached to the engine's protected proposal.
     selected = { args: ['engine', 'orchestrate', 'next', '--', text], member: true };
   } else {
-    if (
-      row.response &&
-      !state.decisions.some((item) => item.commandId === row.response.commandId)
-    ) {
-      const response = await executionStore.response(row, row.response.interactionId);
-      const presented = state.presentations.find(
-        (item) =>
-          item.interactionId === response?.interactionId &&
-          item.contentSha256 === response.contentSha256,
-      );
-      if (
-        !response ||
-        !presented ||
-        response.commandId !== row.response.commandId ||
-        response.sequence !== identity.sequence ||
-        engineDigest(response.text) !== response.textSha256
-      )
-        throw engineFailure('NATIVE_ENGINE_DECISION_MISMATCH');
+    // Only the answer to a recorded question reaches the pinned engine as a
+    // person's words. Any other accepted reply leaves this command without a
+    // member: it is applied if it needs none and refused if it needs one.
+    const bound = await bindNativeEngineReply(context);
+    if (bound) {
+      const { response, presented } = bound;
       assertNativeEnginePresentedQuestion(before, presented);
       const recorded = decode(
         await runner.member({
@@ -184,6 +172,7 @@ export const applyNativeEngineCommand = async (context) => {
   // The real human hook can consume a protected engine challenge.
   // Include that application in the before/after observation.
   const before = decode(await runner.observe());
+  noteNativeEngineOpenGate(state, before);
   const { selected, member } = await selectCommand(context, before);
   let result;
   result = selected.creation
@@ -199,6 +188,7 @@ export const applyNativeEngineCommand = async (context) => {
       authorize,
     });
   const observed = decode(await runner.observe());
+  noteNativeEngineOpenGate(state, observed);
   const previous = new Set((before.audit ?? []).map((event) => event.sha256));
   const added = (observed.audit ?? []).filter((event) => !previous.has(event.sha256));
   const directive = directiveValue(result);

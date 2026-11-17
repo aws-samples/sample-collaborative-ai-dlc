@@ -16,6 +16,7 @@ import { createNativeEngineRunner } from './runner.js';
 import { applyNativeEngineCommand } from './command-application.js';
 import { nativeEngineCompletionEvidence } from './evidence.js';
 import { nativeEnginePresentation } from './presentation.js';
+import { bindNativeEngineReply, nativeEngineReplyNotice } from './reply-binding.js';
 
 const same = isDeepStrictEqual;
 const decode = (result) => {
@@ -70,6 +71,9 @@ const patches = (before, after) => {
     ];
   });
 };
+// The pinned engine writes to stderr too. The notice starts on its own line.
+const withNotice = (stderr, notice) =>
+  notice && stderr && !stderr.endsWith('\n') ? `${stderr}\n${notice}` : stderr + notice;
 // One accepted command against the protected workspace. The returned patches
 // are the only bytes that flow back to the coding workspace.
 const runNativeEngineCommand = async (context) => {
@@ -93,7 +97,10 @@ const runNativeEngineCommand = async (context) => {
     requestId: request.requestId,
     exitCode: result.exitCode,
     stdout: result.stdout.toString('utf8'),
-    stderr: result.stderr.toString('utf8'),
+    stderr: withNotice(
+      result.stderr.toString('utf8'),
+      request.action === 'execute' ? nativeEngineReplyNotice(workspace.state, identity) : '',
+    ),
     inputSha256: nativeEngineFileDigest(files),
     filesSha256: nativeEngineFileDigest(outputFiles),
     patches: patches(files, outputFiles),
@@ -148,6 +155,9 @@ const finalizeNativeEnginePublication = async (context) => {
   const state = workspace.state;
   const observed = decode(await runner.observe());
   const outputFiles = await workspace.publicFiles();
+  // A turn may end without any workflow command. Its reply is still recorded
+  // as one that decided nothing, so the evidence does not depend on a command.
+  await bindNativeEngineReply({ ...context, state }, { strict: false });
   if (request.interaction) {
     const issued = nativeEnginePresentation(
       state,
@@ -334,7 +344,13 @@ export const createNativeWorkflowEngine =
         requestId: request.requestId,
         exitCode: 1,
         stdout: '',
-        stderr: `${failure}\n`,
+        // A refused command of a turn whose reply decided nothing says so too.
+        stderr: withNotice(
+          `${failure}\n`,
+          workspace && request.action === 'execute'
+            ? nativeEngineReplyNotice(workspace.state, identity)
+            : '',
+        ),
         patches: [],
         failure,
       };

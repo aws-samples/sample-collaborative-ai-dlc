@@ -23,6 +23,7 @@ import {
   nativeEngineFiles,
 } from '../../shared/native-workflow-protocol.js';
 import { buildNativePendingInput, nativeAnswerText } from '../../shared/native-pending-input.js';
+import { proposedPlanSpec } from '../../shared/test/fixtures/native-plan-ask.js';
 import { serialFixture } from './execution-serial-fixtures.js';
 import { TABLE } from './fixtures.js';
 
@@ -166,6 +167,8 @@ const setup = async () => {
     const engine = state.engine;
     const observations = [];
     const orchestrate = async (args) => {
+      const scripted = await hooks.orchestrate?.(args);
+      if (scripted) return json(scripted);
       if (args[0] === 'next' && args[1] === '--') {
         engine.status = 'In Progress';
         engine.box = 'in-progress';
@@ -287,7 +290,14 @@ const setup = async () => {
   const jobs = { check: async () => ({ exitCode: 0 }) };
   const failures = [];
   const handler = createNativeWorkflowEngine({
-    executionStore: execution,
+    // The production store; a test may alter what the reply ledger returns.
+    executionStore: {
+      ...execution,
+      response: async (...input) => {
+        const value = await execution.response(...input);
+        return hooks.response ? hooks.response(value) : value;
+      },
+    },
     preparationStore: f.preparationStore,
     journal,
     objects,
@@ -469,6 +479,8 @@ const setup = async () => {
     access,
     jobs,
     failures,
+    // How often the pinned engine's member hook has recorded a person's words.
+    memberMessages: () => current.state.engine.messages,
     project,
     row,
     identity,
@@ -745,6 +757,325 @@ describe('protected workflow engine service', () => {
       expect(evidence.engineApplication).toMatchObject([
         { actorId: 'responding-member', application: 'applied', effect: 'GATE_APPROVED' },
       ]);
+    } finally {
+      await t.close();
+    }
+  });
+
+  // NE-24. A reply that names no question the engine recorded carries no
+  // member authority. It no longer makes the engine refuse the turn.
+  const NOT_APPLIED = 'NATIVE_ENGINE_REPLY_NOT_APPLIED';
+  const reply = async (t, produced, text, selection) => {
+    const accepted = await t.f.api.respond(
+      t.f.prepared,
+      'responding-member',
+      {
+        requestId: randomUUID(),
+        interactionId: produced.interactionReceipt.id,
+        contentSha256: produced.body.contentSha256,
+        text,
+        ...(selection ? { selection } : {}),
+      },
+      t.f.recheck,
+    );
+    const claim = await t.execution.claim(t.f.bindingIdentity);
+    await t.execution.release({ row: await t.execution.dispatched({ row: claim.row }) });
+    // The accepted reply as the application shows it, with the command the row names.
+    return { ...accepted.response, commandId: (await t.row()).response.commandId };
+  };
+  const report = (result, ...rest) => [
+    'engine',
+    'orchestrate',
+    'report',
+    '--stage',
+    'build',
+    '--result',
+    result,
+    ...rest,
+  ];
+
+  it('applies the commands that need no member after a reply to a turn without a question, tells the agent why nothing was decided, and completes verified in the same attempt', async () => {
+    const t = await setup();
+    try {
+      expect(JSON.parse((await t.command([])).result.stdout)).toMatchObject({ kind: 'run-stage' });
+      t.project.set('src/app.js', Buffer.from('export const answer = 42;\n'));
+      // The agent ends its turn with a question in prose: no question file, no form.
+      const prose = await t.publish();
+      expect(prose.body.pendingInput).toBeUndefined();
+      await t.admit(prose);
+      const attempt = (await t.row()).attemptId;
+      const written = await reply(t, prose, 'Yes, go ahead and approve the build.');
+      expect(written).toMatchObject({ kind: 'user_reply', deliveryStatus: 'pending' });
+      const spoken = t.memberMessages();
+      const before = t.calls.length;
+
+      // Asking for the directive again, running a check and reporting the stage
+      // as waiting need no member. They reach the pinned engine and succeed.
+      const again = await t.command(['next']);
+      expect(again.response.status).toBe('completed');
+      expect(again.result.exitCode).toBe(0);
+      expect(JSON.parse(again.result.stdout)).toMatchObject({ kind: 'run-stage', stage: 'build' });
+      // The agent is told why no decision was taken and what to do instead.
+      expect(again.result.stderr.split('\n')[0]).toBe(NOT_APPLIED);
+      expect(again.result.stderr).toContain('was not applied as a workflow decision');
+      expect(again.result.stderr).toContain('.native-control/pending-question.json');
+      expect(again.result.stderr).toContain('run aidlc next to read the current directive again');
+      // Nothing of the member's words is repeated to the agent by the engine.
+      expect(again.result.stderr).not.toContain('go ahead');
+      let applied;
+      for (const args of [
+        ['engine', 'sensor', 'fire', '--stage', 'build'],
+        report('awaiting-approval'),
+      ]) {
+        applied = await t.command(args);
+        expect(applied.response.status).toBe('completed');
+        expect(applied.result.exitCode).toBe(0);
+        expect(applied.result.stderr.split('\n')[0]).toBe(NOT_APPLIED);
+      }
+      // Once the stage waits at its gate, the engine names the approval it holds.
+      expect(applied.result.stderr).toContain('The engine holds an open approval for stage build.');
+      expect(t.calls.length).toBe(before + 3);
+      // The reply never reached the pinned engine as a person's words.
+      expect(t.memberMessages()).toBe(spoken);
+      expect(t.failures).toEqual([]);
+
+      // The revision in between is not verified, decides nothing, and says so.
+      const between = await t.publish(gate());
+      expect(between.finalized.result.exitCode).toBe(0);
+      const unapplied = [
+        {
+          commandId: written.commandId,
+          interactionId: prose.interactionReceipt.id,
+          actorId: 'responding-member',
+          sequence: 2,
+          reason: 'no_recorded_question',
+        },
+      ];
+      expect(await t.proof(between)).toMatchObject({
+        workflowCompletion: 'not_verified',
+        humanApproval: 'incomplete',
+        engineApplication: [],
+        unappliedReplies: unapplied,
+      });
+      // The open question was presented again as a form the engine recorded.
+      // Its answer is a decision, and the run completes in the same attempt.
+      await approve(t, between);
+      // The member reads in that revision's completion report that the written
+      // reply was not applied as a decision.
+      expect(await t.view(between)).toMatchObject({
+        workflowCompletion: 'not_verified',
+        engineApplication: [],
+        unappliedReplies: unapplied,
+      });
+      const done = await t.command(['next']);
+      expect(JSON.parse(done.result.stdout)).toEqual({ kind: 'done' });
+      // A turn that starts with an answer to a recorded question carries no notice.
+      expect(done.result.stderr).toBe('');
+      const evidence = await t.proof(await t.publish());
+      expect(evidence).toMatchObject({
+        workflowCompletion: 'complete',
+        humanApproval: 'applied',
+        gates: [{ stage: 'build', status: 'applied' }],
+        unappliedReplies: unapplied,
+      });
+      expect(evidence.engineApplication).toMatchObject([
+        { actorId: 'responding-member', application: 'applied', effect: 'GATE_APPROVED' },
+      ]);
+      expect((await t.row()).attemptId).toBe(attempt);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('still refuses an answer, an approval and a plan selection after such a reply, with the reason, and implies none of them', async () => {
+    const t = await setup();
+    try {
+      await toGate(t);
+      const prose = await t.publish();
+      await t.admit(prose);
+      await reply(t, prose, 'Approve');
+      const spoken = t.memberMessages();
+      const before = t.calls.length;
+      for (const args of [
+        report('approved', '--user-input', 'Approve'),
+        report('approved'),
+        ['engine', 'log', 'answer', '--stage', 'build', '--details', 'Approve'],
+        [
+          'engine',
+          'intent',
+          'create',
+          '--scope',
+          'express',
+          '--request',
+          'abcd1234',
+          '--label',
+          'x',
+        ],
+      ]) {
+        const refused = await t.command(args);
+        expect(refused.response.status).toBe('failed');
+        expect(refused.result).toMatchObject({
+          exitCode: 1,
+          stdout: '',
+          failure: 'NATIVE_ENGINE_COMMAND_DENIED',
+          patches: [],
+        });
+        // The refusal names its code first, then why the reply decided nothing
+        // and which approval the engine holds open.
+        expect(refused.result.stderr.split('\n').slice(0, 2)).toEqual([
+          'NATIVE_ENGINE_COMMAND_DENIED',
+          NOT_APPLIED,
+        ]);
+        expect(refused.result.stderr).toContain(
+          'The engine holds an open approval for stage build.',
+        );
+      }
+      // The pinned engine saw neither a command nor a person's words.
+      expect(t.calls.length).toBe(before);
+      expect(t.memberMessages()).toBe(spoken);
+      const status = await t.handler(
+        { schemaVersion: 1, identity: await t.identity(), action: 'status' },
+        await t.context(),
+      );
+      expect(status.pending).toBeNull();
+      expect(await t.proof(await t.publish())).toMatchObject({
+        workflowCompletion: 'not_verified',
+        humanApproval: 'incomplete',
+        gates: [{ stage: 'build', status: 'not_recorded' }],
+        engineApplication: [],
+        unappliedReplies: [{ actorId: 'responding-member', reason: 'no_recorded_question' }],
+      });
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('records such a reply when the turn runs no workflow command at all', async () => {
+    const t = await setup();
+    try {
+      await toGate(t);
+      const prose = await t.publish();
+      await t.admit(prose);
+      const written = await reply(t, prose, 'Show the approval as a question.');
+      // The agent only presents the gate as a form and ends its turn.
+      const opened = await t.publish(gate());
+      expect(opened.finalized.result.exitCode).toBe(0);
+      expect(await t.proof(opened)).toMatchObject({
+        workflowCompletion: 'not_verified',
+        engineApplication: [],
+        unappliedReplies: [{ commandId: written.commandId, sequence: 2 }],
+      });
+      // The same reply is recorded once, however often the turn is observed.
+      await approve(t, opened);
+      expect(JSON.parse((await t.command(['next'])).result.stdout)).toEqual({ kind: 'done' });
+      const evidence = await t.proof(await t.publish());
+      expect(evidence.unappliedReplies).toHaveLength(1);
+      expect(evidence.workflowCompletion).toBe('complete');
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('treats an answer to a form that was not the engine’s question the same way and hands the agent the question it holds', async () => {
+    const t = await setup();
+    try {
+      // The pinned engine offers a plan before any workflow state exists and
+      // repeats that offer whenever it is asked again.
+      const offer = proposedPlanSpec.ask;
+      t.hooks.orchestrate = (args) =>
+        args.includes('--scope') ? null : args[0] === 'next' ? offer : null;
+      expect(JSON.parse((await t.command([])).result.stdout)).toEqual(offer);
+      // The agent paraphrases the offer. The engine does not record that form.
+      const paraphrased = buildNativePendingInput({
+        spec: {
+          version: 2,
+          questions: [
+            {
+              prompt: 'Which plan would you like?',
+              options: [{ label: 'The bugfix plan' }, { label: 'Something else' }],
+            },
+          ],
+        },
+      });
+      const shown = await t.publish(paraphrased);
+      expect(shown.finalized.result.failure).toBe('NATIVE_ENGINE_PRESENTATION_MISMATCH');
+      await t.admit(shown);
+      const selection = { answers: [{ selectedOptions: [0] }] };
+      const picked = await reply(t, shown, nativeAnswerText(paraphrased, selection), selection);
+      const spoken = t.memberMessages();
+
+      // The offer can be read again from the engine.
+      const again = await t.command(['next']);
+      expect(again.result.exitCode).toBe(0);
+      expect(JSON.parse(again.result.stdout)).toEqual(offer);
+      expect(again.result.stderr.split('\n')[0]).toBe(NOT_APPLIED);
+      // Choosing the plan on the member's behalf stays refused, and the refusal
+      // carries the question the engine holds, to be presented unchanged.
+      const forged = await t.command([
+        'engine',
+        'orchestrate',
+        'next',
+        '--scope',
+        'bugfix',
+        '--request',
+        'fixture-request',
+      ]);
+      expect(forged.result).toMatchObject({ exitCode: 1, failure: 'NATIVE_ENGINE_COMMAND_DENIED' });
+      expect(forged.result.stderr).toContain(NOT_APPLIED);
+      const lines = forged.result.stderr.split('\n');
+      const held = lines.findIndex((line) => line.includes('{"version":3,"ask":<this object>}'));
+      expect(JSON.parse(lines[held + 1])).toEqual(offer);
+      expect(t.memberMessages()).toBe(spoken);
+
+      // Presented unchanged, the offer is a question the engine records, and
+      // the member's selection of it is applied.
+      const form = buildNativePendingInput({ spec: proposedPlanSpec });
+      const asked = await t.publish(form);
+      expect(asked.finalized.result.exitCode).toBe(0);
+      expect(await t.proof(asked)).toMatchObject({
+        workflowCompletion: 'not_verified',
+        engineApplication: [],
+        unappliedReplies: [{ commandId: picked.commandId, reason: 'no_recorded_question' }],
+      });
+      await t.admit(asked);
+      await reply(t, asked, nativeAnswerText(form, selection), selection);
+      const chosen = await t.command(['next']);
+      expect(chosen.result.exitCode).toBe(0);
+      expect(chosen.result.stderr).toBe('');
+      expect(t.calls.at(-1)).toEqual([
+        'aidlc-orchestrate.ts',
+        'next',
+        '--scope',
+        'bugfix',
+        '--request',
+        'fixture-request',
+      ]);
+      expect(t.memberMessages()).toBe(spoken + 1);
+      expect((await t.proof(await t.publish())).engineApplication).toMatchObject([
+        { application: 'applied', effect: 'PLAN_PROPOSAL_APPLIED' },
+      ]);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('keeps refusing a reply whose record does not match the turn it is delivered to', async () => {
+    const t = await setup();
+    try {
+      await toGate(t);
+      const prose = await t.publish();
+      await t.admit(prose);
+      await reply(t, prose, 'Approve');
+      // The stored reply no longer has the words the member's digest names.
+      t.hooks.response = (value) => ({ ...value, text: 'Approve everything' });
+      const refused = await t.command(['next']);
+      expect(refused.result).toMatchObject({
+        exitCode: 1,
+        failure: 'NATIVE_ENGINE_DECISION_MISMATCH',
+        stderr: 'NATIVE_ENGINE_DECISION_MISMATCH\n',
+      });
+      // Nor is it recorded as a reply that merely decided nothing.
+      expect((await t.proof(await t.publish())).unappliedReplies).toEqual([]);
     } finally {
       await t.close();
     }

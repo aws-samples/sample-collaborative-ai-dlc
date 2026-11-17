@@ -92,6 +92,8 @@ export const openNativeEngineWorkspace = async ({
         authored: [],
         initialMessage: null,
         presentations: [],
+        unappliedReplies: [],
+        awaitingApproval: null,
         requirements: [],
         unownedPublic: [],
         sourceSettings: null,
@@ -218,6 +220,7 @@ export const openNativeEngineWorkspace = async ({
       if (
         state.operations.length > 2_000 ||
         state.decisions.length > 2_000 ||
+        (state.unappliedReplies?.length ?? 0) > 2_000 ||
         state.observations.length > 4_000
       )
         throw engineFailure('NATIVE_ENGINE_WORKSPACE_LIMIT');

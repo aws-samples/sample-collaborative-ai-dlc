@@ -108,6 +108,9 @@ export const createNativeRevisionApi = ({
                 checks: protectedEvidence.checks,
                 reviews: protectedEvidence.reviews,
                 gates: protectedEvidence.gates,
+                // Accepted replies the engine did not apply as decisions.
+                // Evidence written before they were recorded has none.
+                unappliedReplies: protectedEvidence.unappliedReplies ?? [],
               }
             : {}),
           memberDecision,

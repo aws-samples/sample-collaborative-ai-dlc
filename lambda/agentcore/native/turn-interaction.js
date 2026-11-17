@@ -8,6 +8,7 @@ import {
   buildNativePendingInput,
   NATIVE_AIDLC_INTERACTION_CONTRACT,
   NATIVE_PENDING_INPUT_LIMITS,
+  NATIVE_PENDING_SPEC_PATH,
   NATIVE_TYPED_ASK_TYPES,
 } from '../../shared/native-pending-input.js';
 
@@ -20,7 +21,7 @@ const sameNode = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const fileRef = (file) => ({ path: file.path, sha256: file.sha256 });
 
 // Optional display transport, cleared for each turn and never public file data.
-export const NATIVE_PENDING_SPEC_PATH = '.native-control/pending-question.json';
+export { NATIVE_PENDING_SPEC_PATH };
 
 const unavailable = (reason, bytes = 0) => ({
   spec: null,
