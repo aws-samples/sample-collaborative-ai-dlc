@@ -2738,6 +2738,13 @@ The preceding disposition proposal records the question at the close of that
 investigation. The user decision below answers it and supersedes its proposed
 preservation and retirement prerequisites.
 
+**Update 2026-11-17.** The retry loop described above is corrected in code and
+awaits deployment and one purge of the two queues (NE-25). Until then the
+queues stay as measured that day: about 100,900 projection and 6,070 execution
+pointers. Since NE-09 the store also requires the pinned inputs and repository
+commit, so it now rejects all 35 development executions started before its
+deployment on 2026-11-11.
+
 ### Development-data decision and NE-06 — 2026-11-04
 
 The user has resolved the preceding investigation's disposition question:
@@ -5885,3 +5892,26 @@ the current contract for newly created executions.
       the open question is presented again as a form, from the engine's record
       where it holds one, and the run then reaches a verified completion in the
       same attempt; and revisions in between stay not verified.
+- [ ] **NE-25 — Stop retrying queue pointers that can never be served.** The
+      execution, cancellation and projection consumers reported every thrown
+      error as a batch item failure and their queues had no receive-count
+      cutoff. A pointer to an execution the current contract rejects was
+      therefore redelivered every 720 seconds for 14 days, while the repair
+      sweep added another pointer for it every five minutes: about 24 million
+      invocations a day on the development stack by 2026-11-16 (cause in the
+      NE-05 invalid-scope investigation). **Corrected locally 2026-11-17:** a
+      consumer acknowledges a pointer, with one log line, when its first
+      protected read of the execution answers `NATIVE_EXECUTION_INVALID` or the
+      message is not an execution identity. Every other failure retries as
+      before, pending work still gets a fresh pointer, and the sweep is
+      unchanged, so it keeps offering a record that a later release can read
+      again. As a backstop the execution and projection queues move a pointer
+      to a dead-letter queue after ten deliveries; the sweep re-sends live
+      work. The guarded purge step and the measurements are in
+      `.native-evidence/ne11-2026-11-17-queue-retry-loop/`. An execution the
+      store can no longer read still opens as "Invalid native execution
+      request"; a clearer answer is proposed there and not implemented.
+      **Done when:** the corrected consumers and queue settings are deployed,
+      the backlog is purged once, both queues and their dead-letter queues are
+      measured empty apart from the sweep's pointers in transit, and an
+      execution that was open during the purge is still readable and continues.
