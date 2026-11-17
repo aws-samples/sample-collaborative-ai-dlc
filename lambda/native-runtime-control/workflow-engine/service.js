@@ -203,6 +203,7 @@ export const createNativeWorkflowEngine =
     loadSettings,
     jobsFactory,
     env,
+    reportFailure = () => {},
     workspaceFactory = openNativeEngineWorkspace,
     runnerFactory = createNativeEngineRunner,
     gitFactory = createNativeInspectionGit,
@@ -323,7 +324,9 @@ export const createNativeWorkflowEngine =
         throw engineFailure(failure);
       }
       // Persist partial protected state with its failure; never rerun this
-      // operation or label an incomplete job/check as passing.
+      // operation or label an incomplete job/check as passing. The caller sees
+      // only the code; the entry records which step raised what.
+      reportFailure(error, failure);
       proof = null;
       result = {
         schemaVersion: 1,

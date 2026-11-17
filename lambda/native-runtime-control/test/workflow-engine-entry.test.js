@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNativeWorkflowEngineLambda } from '../workflow-engine-entry.js';
 import { nativePreparedConfigurationPins } from '../execution-config.js';
 import { nativeInputSnapshot } from '../../shared/native-inputs.js';
+import { WorkflowSourceError } from '../../shared/workflow-source-bindings.js';
 import {
   ACTOR,
   DEPLOYMENT,
@@ -139,8 +140,9 @@ const setup = async () => {
   };
   const preparationFactory = vi.fn(() => f.preparationStore);
   const executionFactory = vi.fn(() => f.store);
+  const refusals = [];
   // Stand in for the service: exercise the entry's authority ports directly.
-  const invoke = (use) =>
+  const invoke = (use, payload = { schemaVersion: 1 }, overrides = {}) =>
     createNativeWorkflowEngineLambda({
       ddb,
       s3: { send: vi.fn() },
@@ -148,18 +150,23 @@ const setup = async () => {
       iam: { send: vi.fn() },
       codebuild: { send: vi.fn() },
       env,
-      openConnection: async () => connection,
+      openConnection: async () => {
+        if (state.connectionFailure) throw state.connectionFailure;
+        return connection;
+      },
       membershipSnapshot,
       // The shared execution fixture supplies the validated stores, as the
       // credentials entry test does; their wiring is asserted below.
       preparationFactory,
       executionFactory,
+      logRefusal: (line) => refusals.push(line),
       serviceFactory: (ports) => async () => {
         const row = await ports.executionStore.get(f.identity);
         const draft = await ports.preparationStore.get(f.identity);
         return use({ ports, row, draft });
       },
-    })({ schemaVersion: 1 }, {});
+      ...overrides,
+    })(payload, {});
   const authorize = (alter = (value) => value) =>
     invoke(async ({ ports, row, draft }) => {
       await ports.authorizeAccess(alter({ row, draft }));
@@ -174,6 +181,8 @@ const setup = async () => {
     membershipSnapshot,
     preparationFactory,
     executionFactory,
+    refusals,
+    failConnection: (error) => (state.connectionFailure = error),
     invoke,
     authorize,
   };
@@ -183,6 +192,7 @@ describe('protected workflow engine entry', () => {
   it('admits the current starter with unchanged source, configuration and image, then closes its graph connection', async () => {
     const t = await setup();
     expect(await t.authorize()).toEqual({ ok: true });
+    expect(t.refusals).toEqual([]);
     expect(t.membershipSnapshot).toHaveBeenCalled();
     expect(t.lambda.send).toHaveBeenCalledTimes(1);
     expect(JSON.parse(t.lambda.send.mock.calls[0][0].input.Payload)).toMatchObject({
@@ -314,5 +324,149 @@ describe('protected workflow engine entry', () => {
         throw Object.assign(new Error('private'), { code: 'NATIVE_ENGINE_WRITER_CHANGED' });
       }),
     ).toEqual({ ok: false, code: 'NATIVE_ENGINE_WRITER_CHANGED' });
+  });
+
+  it('says in one line which step refused a request, with the same code for the caller', async () => {
+    // The first live run: the membership lookup failed and every request was
+    // answered "unavailable" with nothing recorded about why.
+    const t = await setup();
+    t.membershipSnapshot.mockRejectedValueOnce(
+      new WorkflowSourceError(
+        'WORKFLOW_SOURCE_UNAVAILABLE',
+        'Project membership lookup is unavailable',
+      ),
+    );
+    expect(
+      await t.invoke(
+        async ({ ports, row, draft }) => {
+          await ports.authorizeAccess({ row, draft });
+          return { ok: true };
+        },
+        { schemaVersion: 1, action: 'status' },
+      ),
+    ).toEqual({ ok: false, code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    expect(t.refusals).toEqual([
+      {
+        event: 'native_engine_refused',
+        action: 'status',
+        step: 'membership',
+        code: 'NATIVE_ENGINE_UNAVAILABLE',
+        errorName: 'WorkflowSourceError',
+        errorCode: 'WORKFLOW_SOURCE_UNAVAILABLE',
+        status: null,
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      'the graph connection',
+      (t) => t.failConnection(Object.assign(new Error('socket'), { code: 'ECONNREFUSED' })),
+      { step: 'graph-connection', errorName: 'Error', errorCode: 'ECONNREFUSED', status: null },
+    ],
+    [
+      'the source owner call',
+      (t) =>
+        t.lambda.send.mockRejectedValueOnce(
+          Object.assign(new Error('not authorized'), {
+            name: 'AccessDeniedException',
+            $metadata: { httpStatusCode: 403 },
+          }),
+        ),
+      { step: 'source-access', errorName: 'AccessDeniedException', errorCode: null, status: 403 },
+    ],
+    [
+      'the execution row',
+      (t) =>
+        t.f.store.get.mockRejectedValueOnce(
+          Object.assign(new Error('throttled'), { name: 'ProvisionedThroughputExceededException' }),
+        ),
+      {
+        step: 'execution',
+        errorName: 'ProvisionedThroughputExceededException',
+        errorCode: null,
+        status: null,
+      },
+    ],
+  ])('names %s as the failing step', async (_label, fail, expected) => {
+    const t = await setup();
+    fail(t);
+    expect(await t.authorize()).toEqual({ ok: false, code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    expect(t.refusals).toEqual([
+      {
+        event: 'native_engine_refused',
+        action: null,
+        code: 'NATIVE_ENGINE_UNAVAILABLE',
+        ...expected,
+      },
+    ]);
+  });
+
+  it('records a refusal the access check decides, and one an operation ends with', async () => {
+    const t = await setup();
+    t.state.members[t.f.row().startedBy] = null;
+    expect(await t.authorize()).toEqual({ ok: false, code: 'NATIVE_ENGINE_FORBIDDEN' });
+    expect(t.refusals).toMatchObject([
+      { step: 'access', code: 'NATIVE_ENGINE_FORBIDDEN', errorCode: 'NATIVE_ENGINE_FORBIDDEN' },
+    ]);
+    // The service answers a failed operation as recorded and reports what raised it.
+    const other = await setup();
+    expect(
+      await other.invoke(async ({ ports }) => {
+        const error = Object.assign(new Error('no'), { code: 'NATIVE_ENGINE_DECISION_MISMATCH' });
+        ports.reportFailure(error, error.code);
+        return { ok: true, status: 'failed' };
+      }),
+    ).toEqual({ ok: true, status: 'failed' });
+    expect(other.refusals).toMatchObject([
+      { step: 'operation', code: 'NATIVE_ENGINE_DECISION_MISMATCH', errorName: 'Error' },
+    ]);
+    // A line that cannot be written leaves the answer as it is.
+    const silent = await setup();
+    expect(
+      await silent.invoke(
+        async () => {
+          throw new Error('unexpected');
+        },
+        undefined,
+        {
+          logRefusal: () => {
+            throw new Error('log stream closed');
+          },
+        },
+      ),
+    ).toEqual({ ok: false, code: 'NATIVE_ENGINE_UNAVAILABLE' });
+  });
+
+  it('never writes an error message, a request value or anything that is not a plain identifier', async () => {
+    const secret = 'ghp_0123456789 the prompt and a file body';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The default writer: one JSON line.
+      const t = await setup();
+      const result = await t.invoke(
+        async () => {
+          throw Object.assign(new Error(secret), { name: secret, code: `${secret}\n{"x":1}` });
+        },
+        { schemaVersion: 1, action: secret, identity: { projectId: secret }, args: [secret] },
+        { logRefusal: undefined },
+      );
+      expect(result).toEqual({ ok: false, code: 'NATIVE_ENGINE_UNAVAILABLE' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [line] = warn.mock.calls[0];
+      expect(line).not.toContain('ghp_');
+      expect(line).not.toContain('prompt');
+      expect(JSON.parse(line)).toEqual({
+        event: 'native_engine_refused',
+        action: null,
+        step: 'service',
+        code: 'NATIVE_ENGINE_UNAVAILABLE',
+        errorName: null,
+        errorCode: null,
+        status: null,
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

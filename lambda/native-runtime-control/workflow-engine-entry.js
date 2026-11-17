@@ -36,6 +36,17 @@ const openNeptune = async (env) => {
   );
   return new gremlin.driver.DriverRemoteConnection(url, { headers });
 };
+// The one line this function writes: why a request was refused. It names the
+// step that failed and the error's class and code, never the error's message,
+// the request, an identity or any stored content. A value that is not a plain
+// identifier is dropped rather than printed.
+const identifier = (value) =>
+  typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/.test(value) ? value : null;
+const statusOf = (error) => {
+  const status = error?.statusCode ?? error?.$metadata?.httpStatusCode;
+  return Number.isInteger(status) && status >= 100 && status <= 999 ? status : null;
+};
+const writeRefusal = (refusal) => console.warn(JSON.stringify(refusal));
 export const createNativeWorkflowEngineLambda =
   ({
     ddb = DynamoDBDocumentClient.from(new DynamoDBClient({})),
@@ -49,19 +60,64 @@ export const createNativeWorkflowEngineLambda =
     preparationFactory = createNativeRuntimeStore,
     executionFactory = createNativeExecutionStore,
     serviceFactory = createNativeWorkflowEngine,
+    logRefusal = writeRefusal,
   } = {}) =>
   async (payload, context) => {
     let connection;
     let graph;
+    // The innermost step that raised an error, kept beside the error so that
+    // concurrent steps of one request cannot mislabel each other.
+    const failedAt = new WeakMap();
+    const mark = (step, error) => {
+      if (error !== null && typeof error === 'object' && !failedAt.has(error))
+        failedAt.set(error, step);
+      throw error;
+    };
+    const during = (step, action) => {
+      try {
+        const value = action();
+        return typeof value?.then === 'function'
+          ? value.then(undefined, (error) => mark(step, error))
+          : value;
+      } catch (error) {
+        return mark(step, error);
+      }
+    };
+    const stepped = (step, port) =>
+      Object.fromEntries(
+        Object.entries(port).map(([name, value]) => [
+          name,
+          typeof value === 'function' ? (...input) => during(step, () => value(...input)) : value,
+        ]),
+      );
+    const refused = (error, code, fallback) => {
+      try {
+        logRefusal({
+          event: 'native_engine_refused',
+          action: identifier(payload?.action),
+          step: failedAt.get(error) ?? fallback,
+          code,
+          errorName: identifier(error?.name),
+          errorCode: identifier(error?.code),
+          status: statusOf(error),
+        });
+      } catch {
+        // Recording a refusal never changes its answer.
+      }
+    };
+    let phase = 'setup';
     try {
       const membership = async (projectId, actorId) => {
-        graph ??= Promise.resolve()
-          .then(() => openConnection(env))
-          .then((opened) => {
-            connection = opened;
-            return gremlin.process.AnonymousTraversalSource.traversal().withRemote(connection);
-          });
-        return membershipSnapshot(await graph, projectId, actorId);
+        graph ??= during('graph-connection', () =>
+          Promise.resolve()
+            .then(() => openConnection(env))
+            .then((opened) => {
+              connection = opened;
+              return gremlin.process.AnonymousTraversalSource.traversal().withRemote(connection);
+            }),
+        );
+        const source = await graph;
+        return during('membership', () => membershipSnapshot(source, projectId, actorId));
       };
       const preparationStore = preparationFactory({
         ddb,
@@ -78,16 +134,22 @@ export const createNativeWorkflowEngineLambda =
         tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
         preparationStore,
       });
-      const journal = createNativeEngineStore({
-        ddb,
-        tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
-        readExecution: executionStore.get,
-      });
-      const objects = createNativeEngineObjects({
-        s3,
-        bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
-        accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
-      });
+      const journal = stepped(
+        'journal',
+        createNativeEngineStore({
+          ddb,
+          tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+          readExecution: executionStore.get,
+        }),
+      );
+      const objects = stepped(
+        'objects',
+        createNativeEngineObjects({
+          s3,
+          bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
+          accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+        }),
+      );
       const sources = createWorkflowSourceService({ ddb, getMembershipSnapshot: membership });
       const images = createNativeRuntimeImagePolicy({
         ddb,
@@ -95,7 +157,7 @@ export const createNativeWorkflowEngineLambda =
         env,
       });
       const invokeTracker = (input) => invokeNativeInputOwner(lambda, env.TRACKERS_FUNCTION, input);
-      const authorizeAccess = async ({ row, draft }) => {
+      const checkAccess = async ({ row, draft }) => {
         const member = await membership(row.scope.projectId, row.startedBy);
         if (
           !draft ||
@@ -105,7 +167,9 @@ export const createNativeWorkflowEngineLambda =
         )
           throw engineFailure('NATIVE_ENGINE_FORBIDDEN');
         if (row.response) {
-          const answer = await executionStore.response(row, row.response.interactionId);
+          const answer = await during('reply', () =>
+            executionStore.response(row, row.response.interactionId),
+          );
           const respondent = await membership(row.scope.projectId, row.response.actorId);
           if (
             !answer ||
@@ -115,7 +179,7 @@ export const createNativeWorkflowEngineLambda =
           )
             throw engineFailure('NATIVE_ENGINE_FORBIDDEN');
         }
-        const currentDraft = await preparationStore.get(row.scope);
+        const currentDraft = await during('preparation', () => preparationStore.get(row.scope));
         if (
           !currentDraft ||
           currentDraft.bindingId !== row.bindingId ||
@@ -132,39 +196,49 @@ export const createNativeWorkflowEngineLambda =
           )
         )
           throw engineFailure('NATIVE_ENGINE_CONFIGURATION_CHANGED');
-        await sources.getAuthorizedBinding({
-          projectId: draft.projectId,
-          actorId: row.startedBy,
-          sourceId: draft.request.sourceId,
-          expectedRevision: draft.request.bindingRevision,
-        });
+        await during('source-binding', () =>
+          sources.getAuthorizedBinding({
+            projectId: draft.projectId,
+            actorId: row.startedBy,
+            sourceId: draft.request.sourceId,
+            expectedRevision: draft.request.bindingRevision,
+          }),
+        );
         const repository = row.configuration.repository;
-        const access = await invokeNativeInputOwner(lambda, env.SOURCE_CONTROL_FUNCTION, {
-          action: 'native-source-access',
-          projectId: draft.projectId,
-          userId: row.startedBy,
-          provider: repository.provider,
-          repository: repository.repository,
-          bindingRevision: repository.bindingRevision,
-        });
+        const access = await during('source-access', () =>
+          invokeNativeInputOwner(lambda, env.SOURCE_CONTROL_FUNCTION, {
+            action: 'native-source-access',
+            projectId: draft.projectId,
+            userId: row.startedBy,
+            provider: repository.provider,
+            repository: repository.repository,
+            bindingRevision: repository.bindingRevision,
+          }),
+        );
         if (
           access.ok !== true ||
           access.source?.bindingRevision !== repository.bindingRevision ||
           access.source?.credentialIdentity !== repository.credentialIdentity
         )
           throw engineFailure('NATIVE_ENGINE_SOURCE_CHANGED');
-        await verifyNativeInputAccess({
-          inputs: row.configuration.inputs,
-          projectId: draft.projectId,
-          userId: row.startedBy,
-          invokeTracker,
-        });
-        await images.authorize({
-          image: row.configuration.image,
-          row,
-          deployment: nativeExecutionDeployment(env),
-        });
+        await during('tracker-access', () =>
+          verifyNativeInputAccess({
+            inputs: row.configuration.inputs,
+            projectId: draft.projectId,
+            userId: row.startedBy,
+            invokeTracker,
+          }),
+        );
+        await during('image', () =>
+          images.authorize({
+            image: row.configuration.image,
+            row,
+            deployment: nativeExecutionDeployment(env),
+          }),
+        );
       };
+      // A refusal the check itself decides (membership, pins, source) is its own.
+      const authorizeAccess = (input) => during('access', () => checkAccess(input));
       const archives = createNativePackageArchive({
         s3,
         bucket: env.NATIVE_PACKAGES_BUCKET,
@@ -177,11 +251,13 @@ export const createNativeWorkflowEngineLambda =
         },
       });
       const handler = serviceFactory({
-        executionStore,
-        preparationStore,
+        executionStore: stepped('execution', executionStore),
+        preparationStore: stepped('preparation', preparationStore),
         journal,
         objects,
         authorizeAccess,
+        // An operation that ends failed is answered as recorded, not thrown.
+        reportFailure: (error, code) => refused(error, code, 'operation'),
         env,
         publications: createNativePublications({
           s3,
@@ -194,26 +270,30 @@ export const createNativeWorkflowEngineLambda =
           accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
         }),
         loadArchive: ({ draft, authorize }) =>
-          archives.readRuntime({
-            projectId: draft.projectId,
-            sourceId: draft.request.sourceId,
-            pin: draft.candidate.packagePin,
-            attestation: draft.candidate.attestation,
-            materializationId: draft.candidate.materializationId,
-            receipt: draft.archiveReceipt,
-            beforeReturn: authorize,
-          }),
+          during('archive', () =>
+            archives.readRuntime({
+              projectId: draft.projectId,
+              sourceId: draft.request.sourceId,
+              pin: draft.candidate.packagePin,
+              attestation: draft.candidate.attestation,
+              materializationId: draft.candidate.materializationId,
+              receipt: draft.archiveReceipt,
+              beforeReturn: authorize,
+            }),
+          ),
         loadSettings: async ({ row, authorize }) => {
           const repository = row.configuration.repository;
-          const result = await invokeNativeInputOwner(lambda, env.SOURCE_CONTROL_FUNCTION, {
-            action: 'native-workflow-settings',
-            projectId: row.scope.projectId,
-            userId: row.startedBy,
-            provider: repository.provider,
-            repository: repository.repository,
-            bindingRevision: repository.bindingRevision,
-            commit: repository.commit,
-          });
+          const result = await during('settings', () =>
+            invokeNativeInputOwner(lambda, env.SOURCE_CONTROL_FUNCTION, {
+              action: 'native-workflow-settings',
+              projectId: row.scope.projectId,
+              userId: row.startedBy,
+              provider: repository.provider,
+              repository: repository.repository,
+              bindingRevision: repository.bindingRevision,
+              commit: repository.commit,
+            }),
+          );
           if (
             result.ok !== true ||
             result.source?.bindingRevision !== repository.bindingRevision ||
@@ -234,14 +314,14 @@ export const createNativeWorkflowEngineLambda =
             reviewRole: createNativeReviewRole({ iam, lambda, env, authorize: input.authorize }),
           }),
       });
+      phase = 'service';
       return await handler(payload, context);
     } catch (error) {
-      return {
-        ok: false,
-        code: /^NATIVE_[A-Z0-9_]+$/.test(error?.code ?? '')
-          ? error.code
-          : 'NATIVE_ENGINE_UNAVAILABLE',
-      };
+      const code = /^NATIVE_[A-Z0-9_]+$/.test(error?.code ?? '')
+        ? error.code
+        : 'NATIVE_ENGINE_UNAVAILABLE';
+      refused(error, code, phase);
+      return { ok: false, code };
     } finally {
       if (connection) await connection.close().catch(() => {});
     }

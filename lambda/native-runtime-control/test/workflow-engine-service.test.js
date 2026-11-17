@@ -285,6 +285,7 @@ const setup = async () => {
     };
   };
   const jobs = { check: async () => ({ exitCode: 0 }) };
+  const failures = [];
   const handler = createNativeWorkflowEngine({
     executionStore: execution,
     preparationStore: f.preparationStore,
@@ -295,6 +296,7 @@ const setup = async () => {
     authorizeAccess: async () => {
       if (!access.allowed) throw engineFailure('NATIVE_ENGINE_FORBIDDEN');
     },
+    reportFailure: (error, code) => failures.push({ thrown: error?.code ?? error?.name, code }),
     loadArchive: async () => Buffer.from('pinned archive'),
     loadSettings: async ({ row }) => ({
       schemaVersion: 1,
@@ -466,6 +468,7 @@ const setup = async () => {
     hooks,
     access,
     jobs,
+    failures,
     project,
     row,
     identity,
@@ -558,6 +561,10 @@ describe('protected workflow engine service', () => {
         'approved',
       ]);
       expect(forged.result).toMatchObject({ exitCode: 1, failure: 'NATIVE_ENGINE_COMMAND_DENIED' });
+      // The operation is answered as recorded; what raised it is reported once, beside it.
+      expect(t.failures).toEqual([
+        { thrown: 'NATIVE_ENGINE_COMMAND_DENIED', code: 'NATIVE_ENGINE_COMMAND_DENIED' },
+      ]);
 
       await approve(t, opened);
       // An accepted selection alone changes nothing until the engine applies it.
