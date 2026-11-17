@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
@@ -133,7 +134,8 @@ export default function IntentView() {
   // Role gate for the destructive delete (owner — the API enforces it
   // too; hiding the button just avoids a guaranteed 403).
   const { project } = useProjectCache(projectId ?? null);
-  const canDelete = project?.userRole === 'owner';
+  const { readOnly, canManage } = useSpacePermissions();
+  const canDelete = canManage ?? project?.userRole === 'owner';
   const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);
@@ -375,14 +377,16 @@ export default function IntentView() {
   // which covers a unit lane while the intent keeps running.
   const resumeRequired = gates.some((gate) => gate.resumeAvailable === true);
   const canReshape =
-    (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
+    !readOnly &&
+    (intent.status === 'WAITING' || isFailed) &&
+    intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
-  const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
+  const isCancellable = !readOnly && ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
   const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
   const exportUnavailableReason = 'Not available before the workflow starts';
-  const exportDisabled = exporting || !isExportable;
+  const exportDisabled = readOnly || exporting || !isExportable;
   const defaultExportHarness = intent.agentCli ?? undefined;
   const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
   const exportCli =
@@ -708,7 +712,7 @@ export default function IntentView() {
               size="sm"
               variant="outline"
               className="shrink-0 gap-1.5"
-              disabled={resuming}
+              disabled={readOnly || resuming}
               onClick={handleResume}
             >
               {resuming ? (
@@ -791,7 +795,7 @@ export default function IntentView() {
               )}
               <Button
                 onClick={handleRecovery}
-                disabled={starting}
+                disabled={readOnly || starting}
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"

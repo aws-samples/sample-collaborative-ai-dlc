@@ -3,6 +3,7 @@ import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { readConfig } from './config.js';
 import { createCollaborationServer } from './service.js';
 import { ClusterCoordinator } from './cluster.js';
+import { createPermissionLookup, createMembershipLookup } from './permissions.js';
 
 const structuredLogger = new Logger({ persistentKeys: { component: 'yjs-server' } });
 // Embedded metrics must remain a top-level JSON object for CloudWatch EMF.
@@ -50,6 +51,8 @@ const service = createCollaborationServer({
   config,
   cluster,
   verifyJwt: (token) => verifier.verify(token),
+  authorize: createPermissionLookup(),
+  authorizeMessage: createMembershipLookup(),
   secret: process.env.REALTIME_DOC_SECRET,
   enforceScope: process.env.DOC_TOKEN_ENFORCE !== 'false',
 });

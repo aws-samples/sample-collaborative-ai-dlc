@@ -4,11 +4,12 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 
 export const SYNC = 0;
 export const AWARENESS = 1;
-// Extension ignored by older clients: capability, flush request, flush receipt.
+// Extension ignored by older clients: capability, flush request/receipt, permissions.
 export const PERSISTENCE = 4;
 export const CAPABILITY = 0;
 export const FLUSH = 1;
 export const SAVED = 2;
+export const PERMISSIONS = 3;
 
 export const persistenceMessage = (subtype, value) => {
   const encoder = encoding.createEncoder();

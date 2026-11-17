@@ -1,3 +1,4 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -881,6 +882,8 @@ export const handler = async (event, context) => {
       bindingId ? fetchBinding(g, projectId, bindingId) : Promise.resolve(null),
     ]);
     if (!role) return response(403, { error: 'Access denied' });
+    if (event.httpMethod !== 'GET' && !spacePermissions(role).write)
+      return response(403, VIEWER_DENIED);
 
     // GET /projects/{id}/trackers
     if (httpMethod === 'GET' && !bindingId) {

@@ -1,3 +1,4 @@
+import { spacePermissions } from '../shared/space-permissions.js';
 import gremlin from 'gremlin';
 import {
   BUSINESS_ROLES,
@@ -185,7 +186,8 @@ export const handler = async (event, context) => {
     }
     if (!['POST', 'PUT', 'DELETE'].includes(httpMethod))
       return response(405, { error: 'Method not allowed' });
-    if (actorRole !== 'owner') return response(403, { error: 'Space Owner access required' });
+    if (!spacePermissions(actorRole).manage)
+      return response(403, { error: 'Space Owner access required' });
     let data = {};
     if (httpMethod !== 'DELETE') {
       try {
@@ -228,8 +230,8 @@ export const handler = async (event, context) => {
       httpMethod === 'DELETE'
         ? null
         : normalizeMembershipRole(data.role || (httpMethod === 'POST' ? 'member' : undefined));
-    if (role !== null && !['owner', 'member'].includes(role))
-      return response(400, { error: 'Invalid role. Must be owner or member' });
+    if (role !== null && !['owner', 'member', 'viewer'].includes(role))
+      return response(400, { error: 'Invalid role. Must be owner, member, or viewer' });
     const before = await membershipStore.get(projectId, userId);
     if (httpMethod === 'POST' && before)
       return response(409, { error: 'User is already a member of this space' });

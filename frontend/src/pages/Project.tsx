@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { cn } from '@/lib/utils';
@@ -394,7 +395,8 @@ function IntentsView({
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
   const [showAll, setShowAll] = useState(false);
-  const isOwnerOrAdmin = project.userRole === 'owner';
+  const { readOnly, canManage } = useSpacePermissions();
+  const isOwnerOrAdmin = canManage ?? project.userRole === 'owner';
   const canDeleteIntents = isOwnerOrAdmin;
   const canEditSettings = isOwnerOrAdmin;
 
@@ -559,6 +561,7 @@ function IntentsView({
                 </Select>
               )}
               <Button
+                disabled={readOnly}
                 onClick={() => onNavigate(`/space/${projectId}/intent/new`)}
                 size="sm"
                 className="gap-1.5 h-7"

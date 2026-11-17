@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { GateAnswer, IntentGate } from '@/services/intents';
@@ -42,6 +43,7 @@ export interface GateCardProps {
 
 export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
   const navigate = useNavigate();
+  const { readOnly } = useSpacePermissions();
   const {
     stageNameOf: gateStageNameOf,
     detail,
@@ -162,6 +164,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             {options.length > 0 ? (
               options.map((opt) => (
                 <Button
+                  disabled={readOnly}
                   key={opt}
                   size="sm"
                   variant="outline"
@@ -178,12 +181,14 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             ) : (
               <>
                 <Button
+                  disabled={readOnly}
                   size="sm"
                   onClick={() => onAnswer(gate, { answer: 'approve', status: 'approved' })}
                 >
                   Approve
                 </Button>
                 <Button
+                  disabled={readOnly}
                   size="sm"
                   variant="outline"
                   onClick={() => onAnswer(gate, { answer: 'reject', status: 'rejected' })}
@@ -238,6 +243,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                 Request-changes feedback (optional)
               </Label>
               <Textarea
+                disabled={readOnly}
                 id={`gate-feedback-${gate.humanTaskId}`}
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
@@ -251,6 +257,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             {options.length > 0 ? (
               options.map((opt) => (
                 <Button
+                  disabled={readOnly}
                   key={opt}
                   size="sm"
                   variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
@@ -271,6 +278,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               ))
             ) : (
               <Button
+                disabled={readOnly}
                 size="sm"
                 onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
               >
@@ -305,6 +313,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
           Add a note to the agent (optional)
         </summary>
         <Textarea
+          disabled={readOnly}
           value={steering}
           onChange={(e) => setSteering(e.target.value)}
           placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."

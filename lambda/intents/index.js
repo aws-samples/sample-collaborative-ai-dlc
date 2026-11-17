@@ -1,3 +1,4 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
 import { validateSparseCheckout } from '../shared/sparse-checkout.js';
 import gremlin from 'gremlin';
@@ -7235,6 +7236,15 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+    // Token issuance is a read capability; every other non-GET route mutates
+    // intent state or invokes an agent (including workspace export).
+    if (
+      httpMethod !== 'GET' &&
+      !(httpMethod === 'POST' && path?.endsWith('/realtime-token')) &&
+      !spacePermissions(auth.role).write
+    ) {
+      return response(403, VIEWER_DENIED);
+    }
     if (
       intentId &&
       (httpMethod === 'DELETE' ||

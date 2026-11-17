@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Check,
@@ -182,6 +183,7 @@ function QuorumEditProgress({ editId }: { editId: string }) {
 
 function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
   const { projectId, intentId, openArtifactPreview, reload } = useIntent();
+  const { readOnly } = useSpacePermissions();
   const items = useMemo(() => edit.plan?.items ?? [], [edit.plan]);
   // Everything starts included: updates apply, verify-unaffected clears the
   // drift marker with Quorum's rationale. Excluded items stay marked stale.
@@ -190,6 +192,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
   const [error, setError] = useState<string | null>(null);
 
   const toggle = (id: string) =>
+    !readOnly &&
     setExcluded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -247,7 +250,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
         <Button
           size="sm"
           className="h-7 shrink-0 gap-1.5"
-          disabled={submitting != null}
+          disabled={readOnly || submitting != null}
           onClick={() => decide('approve')}
         >
           {submitting === 'approve' ? (
@@ -261,7 +264,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
           size="sm"
           variant="outline"
           className="h-7 shrink-0 gap-1.5"
-          disabled={submitting != null}
+          disabled={readOnly || submitting != null}
           onClick={() => decide('reject')}
         >
           {submitting === 'reject' ? (

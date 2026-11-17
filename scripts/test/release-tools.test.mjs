@@ -369,28 +369,38 @@ test('deployment scripts enforce locked dependencies without install hooks', () 
   assert.match(frontendDeployment, /npm ci --ignore-scripts/);
 });
 
-test('Yjs image pins readable ownership and modes for non-root runtime files', () => {
+test('Yjs image ships the canonical membership store and Cedar policy for its non-root runtime', () => {
   const dockerfile = readFileSync(yjsDockerfile, 'utf8');
-
   assert.match(
     dockerfile,
-    /COPY --chown=node:node --chmod=0644 package\.json package-lock\.json \.\//,
+    /COPY --chown=node:node --chmod=0644 yjs-server\/package\.json yjs-server\/package-lock\.json \.\//,
   );
-  const runtimeCopy = dockerfile.match(
-    /^COPY --chown=node:node --chmod=0644 (server\.js .+) \.\/$/m,
+  assert.match(
+    dockerfile,
+    /COPY --chown=node:node --chmod=0644 yjs-server\/\*\.js \.\/yjs-server\//,
   );
-  assert.ok(runtimeCopy, 'runtime sources must be readable by the non-root user');
-  const runtimeFiles = new Set(runtimeCopy[1].split(/\s+/));
-  for (const file of runtimeFiles) {
-    const source = readFileSync(join(dirname(yjsDockerfile), file), 'utf8');
-    for (const [, dependency] of source.matchAll(/['"]\.\/([^'"]+\.js)['"]/g)) {
-      assert.ok(runtimeFiles.has(dependency), `${file} imports unpackaged ${dependency}`);
+  const shared = dockerfile.match(
+    /^COPY --chown=node:node --chmod=0644 (shared\/.+) \.\/shared\/$/m,
+  );
+  assert.ok(shared, 'canonical membership and policy sources must be in the image');
+  const files = new Set(shared[1].split(/\s+/));
+  for (const file of files) {
+    const source = readFileSync(join(dirname(yjsDockerfile), '..', file), 'utf8');
+    for (const [, dependency] of source.matchAll(/['"]\.\/([^'"]+\.(?:js|json))['"]/g)) {
+      assert.ok(files.has(`shared/${dependency}`), `${file} imports unpackaged ${dependency}`);
     }
   }
-  assert.ok(
-    dockerfile.indexOf('--chmod=0644 server.js') < dockerfile.indexOf('USER node'),
-    'runtime source permissions must be fixed before dropping privileges',
+  assert.match(
+    dockerfile,
+    /RUN chmod 0755 \/app\/shared \/app\/shared\/policies \/app\/yjs-server/,
   );
+  assert.match(
+    dockerfile,
+    /^COPY --chown=node:node --chmod=0644 shared\/policies\/space\.cedar \.\/shared\/policies\/$/m,
+  );
+  assert.ok(files.has('shared/space-permissions.js'));
+  assert.ok(files.has('shared/space-membership.js'));
+  assert.ok(dockerfile.indexOf('--chmod=0644 yjs-server/*.js') < dockerfile.indexOf('USER node'));
 });
 
 test('baseline seeding waits for Lambda without retrying the invocation', () => {

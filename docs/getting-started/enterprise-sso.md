@@ -51,14 +51,10 @@ claim to `platform-admin` and the fixed business-role catalog. Only
 
 ### The source attribute (`claims.roles`)
 
-`claims.roles` names the OIDC claim or SAML attribute the application reads —
-it does not restrict the values to IdP "roles". Use `groups`, `roles`, or any
-exact custom attribute name (for SAML this can be a full attribute URI), and
-configure the IdP to send that attribute to this application. One source
-attribute is read per provider; if the IdP sends groups and roles in separate
-attributes, choose the one to use. The selected attribute supplies Cognito's
-`custom:sso_roles` on every federated sign-in and feeds both platform-role
-mappings (below) and business-role mappings (next section).
+Set `claims.roles` to the exact OIDC claim or SAML attribute containing your
+groups or roles, and configure the IdP to send it. Only one attribute is read per
+provider. Cognito stores its values in `custom:sso_roles` at federated sign-in;
+both platform and business-role mappings use those values.
 
 ### Business-role mappings
 
@@ -81,43 +77,34 @@ Use stable IDs: `product-owner`, `business-analyst`, `architect`, `ux-ui-designe
 `delivery-manager`. In the installer provider JSON, the same map is named
 `roleMappings`. An empty business-role list grants nothing from Terraform.
 
-For each role, the effective values are the deduplicated union of Terraform
-values and UI additions. The UI labels their sources and displays Terraform
-values as read-only. Admins can add or remove UI values; removing an addition
-that also exists in Terraform leaves the Terraform value active. The database
-stores only UI additions. Existing saved mappings become additions without a
-migration. A deployment updates the Terraform baseline without replacing them.
-With no baseline, mappings remain fully managed through the UI:
+Terraform values and UI additions combine. Terraform values appear read-only;
+change them in configuration. Redeploying preserves UI additions, and removing a
+UI addition does not remove a value also defined in Terraform.
 
-- Enter the exact values received from SSO, including case — a group name, a
-  role value, or a group ID (for example an Entra group object ID). The
-  application does not verify the value exists in the IdP.
-- One business role can match several values (any match grants the role), and
-  the same value may map to several business roles.
-- A saved mapping affects the next role calculation immediately. A change to a
-  user's company groups becomes visible after their next federated sign-in.
-- **Configure the IdP to always send the source attribute, even when it is
-  empty.** Cognito keeps the stored value when a sign-in omits the attribute,
-  so a user removed from their last group would keep that group, and with it
-  their platform roles, business roles, and `requiredClaimValues` access,
-  until the attribute is sent again. Some IdPs omit a group claim when the
-  user has no group; check this before relying on group removal.
-- Each federated sign-in records the user's provider and raw values in the
-  access table (never the calculated roles). Business roles, including those
-  of members who are not signed in, are calculated from that copy with the
-  current mappings and `requiredClaimValues`, without reading Cognito. A user
-  who no longer has a required value keeps no SSO business roles. Token
-  refreshes do not update the copy; if it cannot be saved, the sign-in fails.
-- Changing or removing a provider's source attribute (`claims.roles`)
-  invalidates the recorded values, so members get no SSO business roles until
-  they sign in again with the new attribute. Mapping changes for the same
-  attribute apply immediately.
-- The first deployment of this behavior copies the values Cognito holds for
-  existing federated users before the member APIs use them. A copy saved by a
-  sign-in is never replaced by that backfill.
-- Business roles never grant sign-in access, space membership, or platform
-  management rights. The `platform-admin` mapping and `requiredClaimValues`
-  stay in the provider file and cannot be changed from this UI.
+Enter exact, case-sensitive IdP values, such as Entra group object IDs. The app
+does not validate them against the IdP. Any matching value grants the business
+role; a value can map to several roles. Saved mappings take effect on the next
+role calculation; changes to a user's IdP groups require a new federated sign-in.
+
+**Configure the IdP to always send the source attribute, even when it is empty.**
+Cognito keeps the stored value when a sign-in omits the attribute, so a user
+removed from their last group would keep that group, and with it their platform
+roles, business roles, and `requiredClaimValues` access, until the attribute is
+sent again. Some IdPs omit a group claim when the user has no group; check this
+before relying on group removal.
+
+Each federated sign-in records the user's raw values in the access table, and
+roles are calculated from that copy, including for members who are not signed
+in. A user who no longer has a required value keeps no SSO business roles. Token
+refreshes do not update the copy; if it cannot be saved, the sign-in fails. The
+first deployment of this behavior copies existing users' values from Cognito.
+Changing or removing a provider's source attribute (`claims.roles`) invalidates
+the recorded values until each member signs in again; mapping changes for the
+same attribute apply immediately.
+
+Business roles grant no sign-in, membership, administration, or editing rights.
+The `platform-admin` mapping and `requiredClaimValues` access gate remain in the
+provider file.
 
 Space Owners can add business roles locally and exclude inherited SSO roles per
 space (see [the spaces guide](../using-the-platform/projects.md)).

@@ -1,3 +1,4 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { inspectDelivery } from '../shared/delivery-provider.js';
@@ -499,6 +500,8 @@ export const handler = async (event, context) => {
       fetchProjectRepositories(g, projectId),
     ]);
     if (!role) return response(403, { error: 'Access denied' });
+    if (event.httpMethod !== 'GET' && !spacePermissions(role).write)
+      return response(403, VIEWER_DENIED);
     const privileged = role === 'owner';
     if (path.endsWith('/source-control')) {
       if (event.httpMethod === 'GET') {

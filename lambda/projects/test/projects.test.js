@@ -225,6 +225,54 @@ describe('OPTIONS', () => {
   });
 });
 
+describe('Viewer permissions', () => {
+  it('returns current permissions and rejects all space settings mutations', async () => {
+    const sub = `viewer-${randomUUID()}`;
+    const { id } = await createProject(`owner-${randomUUID()}`, { name: 'Readable' });
+    const request = (httpMethod, suffix = '', body = {}) =>
+      handler({
+        httpMethod,
+        path: `/projects/${id}${suffix}`,
+        pathParameters: { projectId: id },
+        body: JSON.stringify(body),
+        ...adminClaims(sub),
+      });
+    await seedMembership(id, sub, 'viewer');
+    const before = await request('GET');
+    expect(before.statusCode).toBe(200);
+    expect(JSON.parse(before.body)).toMatchObject({
+      name: 'Readable',
+      userRole: 'viewer',
+      permissions: { read: true, write: false, manage: false },
+    });
+    for (const [method, suffix, body] of [
+      ['PUT', '', { name: 'Changed' }],
+      ['DELETE', '', {}],
+      ['POST', '/repos', { url: 'owner/repo' }],
+      ['PUT', '/custom-mcp-servers', { servers: [] }],
+      ['PUT', '/custom-rules', { rules: 'Change' }],
+      ['PUT', '/environment', {}],
+    ]) {
+      const result = await request(method, suffix, body);
+      expect(result.statusCode).toBe(403);
+      expect(JSON.parse(result.body).code).toBe('SPACE_WRITE_FORBIDDEN');
+    }
+    expect(JSON.parse((await request('GET')).body)).toEqual(JSON.parse(before.body));
+    expect(await handler({ action: 'realtime-permissions', sub, scope: `project:${id}` })).toEqual({
+      spaceId: id,
+      read: true,
+      write: false,
+      manage: false,
+    });
+    await removeMembership(id, sub);
+    expect(await handler({ action: 'realtime-permissions', sub, scope: `project:${id}` })).toEqual({
+      read: false,
+      write: false,
+      manage: false,
+    });
+  });
+});
+
 describe('POST /projects', () => {
   // Every created project is v2 now, so the response always carries the v2
   // settings block with its defaults.
