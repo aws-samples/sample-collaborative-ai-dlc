@@ -140,7 +140,10 @@ methodology version.
 ## Compatibility evidence and runtime support
 
 The analyzer reports structural validity, dependency closure, sensor command
-compatibility, mapped frontmatter values, and runtime-command fidelity. Each
+compatibility, mapped frontmatter values, and runtime-command fidelity. The
+dependency closure follows a sensor script's relative imports the way Bun
+resolves them, including a TypeScript-style `./lib.js` specifier for a published
+`lib.ts`. Each
 authored value is classified as `native`, `approximated`, `unsupported`, or
 `packaging-only`. The report includes the specific source values that the
 current runtime does not honour.

@@ -23,10 +23,27 @@ const relativeImportCandidate = (path, relativePath) => {
   return parts.join('/');
 };
 
+// TypeScript sources may name a sibling module by its emitted extension
+// (`./lib.js` for `lib.ts`). Bun, the release sensor runtime, resolves these to
+// the source file; this mirrors its substitutions.
+const TS_SOURCE_EXTENSIONS = Object.freeze({
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.tsx'],
+  '.mjs': ['.mts'],
+});
+
+const typeScriptSourceFor = (candidate) => {
+  const extension = Object.keys(TS_SOURCE_EXTENSIONS).find((item) => candidate.endsWith(item));
+  if (!extension) return [];
+  const stem = candidate.slice(0, -extension.length);
+  return TS_SOURCE_EXTENSIONS[extension].map((source) => `${stem}${source}`);
+};
+
 const resolveRelativeImport = (files, path, relativePath) => {
   const candidate = relativeImportCandidate(path, relativePath);
   const candidates = [
     candidate,
+    ...typeScriptSourceFor(candidate),
     `${candidate}.ts`,
     `${candidate}.js`,
     `${candidate}.mjs`,
