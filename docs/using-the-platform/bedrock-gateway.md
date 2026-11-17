@@ -87,7 +87,7 @@ The check does not cover everything:
 
 ### Step 3: Configure and deploy
 
-Add the gateway to the deployment's `.tfvars` file:
+Set the gateway in the deployment's `.tfvars` file:
 
 | Installation      | File                                                                                             |
 | ----------------- | ------------------------------------------------------------------------------------------------ |
@@ -108,6 +108,8 @@ bedrock_model_aliases = {
 # Only when the gateway changes the Content-Type of streamed responses.
 # bedrock_gateway_disable_content_type_guard = true
 ```
+
+A variable may be set only once in the file. `bedrock_model` is usually set there already, and `bedrock_region` may be: change those lines instead of adding second ones. Otherwise the deployment stops with `Attribute redefined` before it changes anything.
 
 | Variable                                     | Meaning                                                                                                                                                                                                                                                                   |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -213,6 +215,7 @@ The gateway decides whether a key, a model or a budget is accepted. In tests aga
 | What you see                                                                                                                                   | Cause                                                                                                                                                                                               | What to do                                                                                                                                  |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | The deployment stops with `Refusing Terraform plan: it changes bedrock_gateway_url`                                                            | Intents are started, running or parked                                                                                                                                                              | Finish or cancel the listed intents, or see **Deploying with parked intents** in step 2                                                     |
+| The deployment stops with `Error: Attribute redefined`                                                                                         | The `.tfvars` file sets a variable twice, for example `bedrock_model`                                                                                                                               | Keep one line for each variable (step 3)                                                                                                    |
 | The key field reads **Bedrock Bearer Token**                                                                                                   | The setting is not deployed                                                                                                                                                                         | Check the `.tfvars` file and deploy again (step 3)                                                                                          |
 | A stage fails with "The pinned agent credential was rejected; rotate it at the selected credential scope"                                      | The gateway answered 401 or 403: a wrong or expired key, an Amazon Bedrock API key that was not replaced, or a model the key may not use. Claude Code reports both the same way                     | Repeat the check from step 1 with that key and model                                                                                        |
 | A stage fails with the gateway's own message                                                                                                   | 429: a budget or rate limit was reached. It is not recognized as an exhausted credential unless the gateway's wording says so                                                                       | Check the account's limits in the gateway                                                                                                   |
