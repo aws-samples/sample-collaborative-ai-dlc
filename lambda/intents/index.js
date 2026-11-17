@@ -911,7 +911,8 @@ const fetchPlatformLaneSyncPolicy = async () => {
   try {
     const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/lane-sync-policy` }));
     return normalizePlatformLaneSyncPolicy(res.Parameter?.Value);
-  } catch {
+  } catch (error) {
+    logger.warn('lane sync policy unreadable; snapshotting none', { error: error?.message });
     return 'none';
   }
 };

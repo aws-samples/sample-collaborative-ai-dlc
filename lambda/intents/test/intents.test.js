@@ -1287,6 +1287,22 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.laneSyncPolicy).toBe('none');
   });
 
+  it('snapshots no lane sync when the platform setting cannot be read', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/lane-sync-policy' })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body).laneSyncPolicy).toBe('none');
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
   it('refuses PR per unit for a CodeCommit space before creating the intent', async () => {
     vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
     ssmMock
