@@ -8,11 +8,17 @@ import { createNativeInteractions } from '../shared/native-interaction.js';
 import { executionIdentity } from './execution-runtime.js';
 import { projectNativePublication, readNativePublicationInteraction } from './publication-graph.js';
 import { readNativePublicationTrace } from './publication-trace.js';
+import {
+  logNativePointerRejected,
+  nativePointerRejected,
+  rejectNativePointer,
+} from './pointer-rejection.js';
 
 export const createNativeProjector =
   ({ store, publications, interactions, authorize, project }) =>
   async (scope) => {
-    const claim = await store.claim(scope);
+    // The claim reads the protected execution before any projection state.
+    const claim = await store.claim(scope).catch(rejectNativePointer);
     if (claim.kind !== 'claimed') return { pending: claim.kind === 'busy' };
     const { row, draft } = claim;
     try {
@@ -55,6 +61,52 @@ export const createNativeProjector =
     }
   };
 
+const POINTER_REJECTED = 'native_projection_pointer_rejected';
+
+export const createNativeProjectionWorker =
+  ({ reconcile, sqs, queueUrl, logger = console }) =>
+  async (event) => {
+    const batchItemFailures = [];
+    for (const record of event.Records ?? []) {
+      let scope;
+      try {
+        scope = JSON.parse(record.body);
+      } catch {
+        // No redelivery can repair the body of a message.
+        logNativePointerRejected(logger, POINTER_REJECTED, 'NATIVE_POINTER_MALFORMED');
+        continue;
+      }
+      try {
+        const result = await reconcile(scope);
+        if (result.pending) {
+          const sent = await sqs.send(
+            new SendMessageCommand({
+              QueueUrl: queueUrl,
+              MessageBody: JSON.stringify(scope),
+              DelaySeconds: 5,
+            }),
+          );
+          if (!sent.MessageId) throw new Error('Native projection wakeup unacknowledged');
+        }
+      } catch (error) {
+        if (nativePointerRejected(error)) {
+          logNativePointerRejected(logger, POINTER_REJECTED, error.code, scope);
+          continue;
+        }
+        logger.warn(
+          JSON.stringify({
+            event: 'native_projection_retry',
+            code: /^NATIVE_[A-Z_]+$/.test(error?.code ?? '')
+              ? error.code
+              : 'NATIVE_PROJECTION_RETRY',
+          }),
+        );
+        batchItemFailures.push({ itemIdentifier: record.messageId });
+      }
+    }
+    return { batchItemFailures };
+  };
+
 export const handler = async (event) => {
   const env = process.env;
   const graph = await openNativeGraph(env);
@@ -93,36 +145,13 @@ export const handler = async (event) => {
     },
     project: (input) => projectNativePublication({ ...input, g: graph.g }),
   });
-  const batchItemFailures = [];
   try {
-    for (const record of event.Records ?? []) {
-      try {
-        const scope = JSON.parse(record.body);
-        const result = await reconcile(scope);
-        if (result.pending) {
-          const sent = await sqs.send(
-            new SendMessageCommand({
-              QueueUrl: env.NATIVE_PROJECTION_QUEUE_URL,
-              MessageBody: JSON.stringify(scope),
-              DelaySeconds: 5,
-            }),
-          );
-          if (!sent.MessageId) throw new Error('Native projection wakeup unacknowledged');
-        }
-      } catch (error) {
-        console.warn(
-          JSON.stringify({
-            event: 'native_projection_retry',
-            code: /^NATIVE_[A-Z_]+$/.test(error?.code ?? '')
-              ? error.code
-              : 'NATIVE_PROJECTION_RETRY',
-          }),
-        );
-        batchItemFailures.push({ itemIdentifier: record.messageId });
-      }
-    }
+    return await createNativeProjectionWorker({
+      reconcile,
+      sqs,
+      queueUrl: env.NATIVE_PROJECTION_QUEUE_URL,
+    })(event);
   } finally {
     await graph.close();
   }
-  return { batchItemFailures };
 };

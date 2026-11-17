@@ -4,11 +4,23 @@ resource "aws_sqs_queue" "cancellation" {
   message_retention_seconds  = 1209600
   sqs_managed_sse_enabled    = true
 }
+# Same backstop as the execution queue: a pending projection re-enqueues a
+# fresh pointer and the sweep re-sends one for every published execution.
+# The queue-lag alarm below already reports a pointer that keeps failing.
+resource "aws_sqs_queue" "projection_dead_letter" {
+  name                      = "${local.name}-projection-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
 resource "aws_sqs_queue" "projection" {
   name                       = "${local.name}-projection"
   visibility_timeout_seconds = 720
   message_retention_seconds  = 1209600
   sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.projection_dead_letter.arn
+    maxReceiveCount     = local.pointer_max_receive_count
+  })
 }
 resource "aws_iam_role" "wakeup" {
   path                 = var.iam_role_path

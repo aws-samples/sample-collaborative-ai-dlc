@@ -59,6 +59,11 @@ import {
   nativeDiagnosticReport,
   nativeDiagnosticResponse,
 } from './execution-diagnostics.js';
+import {
+  logNativePointerRejected,
+  nativePointerRejected,
+  rejectNativePointer,
+} from './pointer-rejection.js';
 
 export const createNativeExecutionSupervisor =
   ({
@@ -84,15 +89,17 @@ export const createNativeExecutionSupervisor =
       try {
         return await call();
       } catch (error) {
-        observe({
-          phase: state.row?.status === 'RECOVERING' ? 'recover' : 'unknown',
-          stage: 'call',
-          code: 'CALL_FAILED',
-          operation,
-          controlStatus: state.row?.status,
-          writerGeneration: state.row?.writerGeneration,
-          ...nativeDiagnosticError(error),
-        });
+        // The consumer reports an acknowledged pointer once, by itself.
+        if (!nativePointerRejected(error))
+          observe({
+            phase: state.row?.status === 'RECOVERING' ? 'recover' : 'unknown',
+            stage: 'call',
+            code: 'CALL_FAILED',
+            operation,
+            controlStatus: state.row?.status,
+            writerGeneration: state.row?.writerGeneration,
+            ...nativeDiagnosticError(error),
+          });
         throw error;
       }
     };
@@ -305,9 +312,18 @@ export const createNativeExecutionSupervisor =
       return { kind: 'reported', report };
     };
     try {
-      const initial = await controlCall('authority-read', () => store.get(identity));
+      // This first read decides whether the pointer can ever be served. The
+      // recovery mode is part of the immutable pinned configuration.
+      const initial = await controlCall('authority-read', async () => {
+        try {
+          const row = await store.get(identity);
+          if (row && !nativeWorkspaceRecovery(row.configuration)) fail('NATIVE_EXECUTION_INVALID');
+          return row;
+        } catch (error) {
+          return rejectNativePointer(error);
+        }
+      });
       if (!initial) return { pending: false, status: 'missing' };
-      if (!nativeWorkspaceRecovery(initial.configuration)) fail('NATIVE_EXECUTION_INVALID');
       const claim = await controlCall('authority-claim', () =>
         store.claim({ ...identity, bindingId: initial.bindingId }),
       );
@@ -713,6 +729,8 @@ export const stopNativeExecutionSession = async ({
   }
 };
 
+const POINTER_REJECTED = 'native_execution_pointer_rejected';
+
 export const createNativeExecutionWorker =
   ({
     env = process.env,
@@ -741,14 +759,21 @@ export const createNativeExecutionWorker =
           if (remaining < 1000) fail('NATIVE_EXECUTION_RETRY');
           return AbortSignal.timeout(remaining);
         };
-        identity = JSON.parse(record.body);
+        try {
+          identity = JSON.parse(record.body);
+        } catch {
+          identity = undefined;
+        }
         if (
           !identity ||
           Object.keys(identity).toSorted().join(',') !== 'executionId,projectId' ||
           !matches(identity.projectId, ID) ||
           !matches(identity.executionId, UUID_V4)
-        )
+        ) {
+          // No redelivery can repair the body of a message.
+          logNativePointerRejected(logger, POINTER_REJECTED, 'NATIVE_POINTER_MALFORMED');
           continue;
+        }
         const diagnostics = createNativeExecutionDiagnostics({ logger, scope: identity });
         const deployment = nativeDeploymentFromEnv(env);
         const authorityOptions = { lambda, functionName: env.NATIVE_AUTHORITY_FUNCTION };
@@ -760,7 +785,13 @@ export const createNativeExecutionWorker =
         );
         const store = executionObservationPort(authorityOptions);
         if (env.NATIVE_CANCELLATION_ONLY === 'true') {
-          const row = await store.observeRevocation(identity);
+          const row = await store.observeRevocation(identity).catch(async (error) => {
+            // This observation reads and may cancel. Only its read rejects the
+            // pointer, so repeat that read alone before acknowledging anything.
+            if (error?.code === 'NATIVE_EXECUTION_INVALID')
+              await store.get(identity).catch(rejectNativePointer);
+            throw error;
+          });
           if (!row?.cancelRequested) continue;
         }
         let graphPromise;
@@ -893,13 +924,19 @@ export const createNativeExecutionWorker =
       } catch (error) {
         // No event, payload, environment, provider response or error message is
         // logged on a path which can hold model/source-control credentials.
-        logger.warn(
-          JSON.stringify({
-            event: 'native_execution_retry',
-            code: /^[A-Z_]{1,80}$/.test(error?.code ?? '') ? error.code : 'NATIVE_EXECUTION_RETRY',
-          }),
-        );
-        failures.push({ itemIdentifier: record.messageId });
+        if (nativePointerRejected(error)) {
+          logNativePointerRejected(logger, POINTER_REJECTED, error.code, identity);
+        } else {
+          logger.warn(
+            JSON.stringify({
+              event: 'native_execution_retry',
+              code: /^[A-Z_]{1,80}$/.test(error?.code ?? '')
+                ? error.code
+                : 'NATIVE_EXECUTION_RETRY',
+            }),
+          );
+          failures.push({ itemIdentifier: record.messageId });
+        }
       } finally {
         if (connection) await connection.close().catch(() => {});
       }
