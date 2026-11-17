@@ -187,14 +187,34 @@ resource "aws_s3_bucket_policy" "publications" {
   })
 }
 
+# Pointers hold no state. Reconciliation of pending work acknowledges its
+# message and enqueues a fresh pointer with DelaySeconds=5, so a long model
+# turn never accumulates receives. Only a failing delivery is received again,
+# and the repair sweep sends a new pointer for every active execution each
+# cycle. The cutoff therefore bounds a failure nobody classified to a few
+# deliveries instead of the retention period, without ending a live run.
+locals {
+  # Ten deliveries at the 720-second visibility are two hours of retries.
+  pointer_max_receive_count = 10
+}
+
+resource "aws_sqs_queue" "execution_dead_letter" {
+  name                      = "${local.name}-execution-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+  tags                      = var.tags
+}
+
 resource "aws_sqs_queue" "execution" {
   count                      = 1
   name                       = "${local.name}-execution"
   visibility_timeout_seconds = 720
   message_retention_seconds  = 1209600
   sqs_managed_sse_enabled    = true
-  # No receive-count cutoff. Successful reconciliation re-enqueues a fresh
-  # pointer with DelaySeconds=5 and acknowledges this message; failures retry.
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.execution_dead_letter.arn
+    maxReceiveCount     = local.pointer_max_receive_count
+  })
   tags = var.tags
 }
 

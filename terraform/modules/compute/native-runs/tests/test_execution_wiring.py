@@ -130,6 +130,24 @@ class NativeExecutionWiring(unittest.TestCase):
             with self.subTest(module=header):
                 self.assertNotRegex(block(source, header), r'\brecursive_loop\s*=\s*"Allow"')
 
+    def test_pointer_queues_stop_redelivering_a_failing_pointer(self):
+        # Without a cutoff a pointer nobody can serve was redelivered every
+        # visibility period for the whole retention. Nothing consumes the
+        # dead letters: the repair sweep, not a redrive, restores live work.
+        wakeup = (MODULE / "wakeup.tf").read_text()
+        sources = EXECUTION + wakeup + MAIN + (MODULE / "projection.tf").read_text()
+        for source, queue in [(EXECUTION, "execution"), (wakeup, "projection")]:
+            with self.subTest(queue=queue):
+                policy = block(source, f'resource "aws_sqs_queue" "{queue}"')
+                self.assertIn(f"deadLetterTargetArn = aws_sqs_queue.{queue}_dead_letter.arn", policy)
+                self.assertRegex(policy, r"maxReceiveCount\s*=\s*local\.pointer_max_receive_count")
+                dead_letter = block(source, f'resource "aws_sqs_queue" "{queue}_dead_letter"')
+                self.assertNotIn("redrive_policy", dead_letter)
+                self.assertNotRegex(sources, rf"event_source_arn\s*=\s*aws_sqs_queue\.{queue}_dead_letter")
+        cutoff = int(re.search(r"pointer_max_receive_count\s*=\s*(\d+)", EXECUTION).group(1))
+        # Lambda can return a throttled delivery unprocessed; keep some margin.
+        self.assertGreaterEqual(cutoff, 5)
+
     def test_root_admission_requires_native_services_and_package_prerequisites(self):
         switch = block(ROOT, 'variable "enable_native_execution"')
         self.assertRegex(switch, r"default\s*=\s*false")
@@ -583,10 +601,11 @@ class NativeExecutionWiring(unittest.TestCase):
                     self.assertRegex(function, pattern)
                 self.assertIn(f"aws_iam_role.{name}[0].arn", function)
 
-    def test_queue_has_no_receive_count_cutoff_and_preserves_preparation_queue(self):
+    def test_queue_visibility_and_mapping_preserve_preparation_queue(self):
+        # The receive-count cutoff is checked with the projection queue in
+        # test_pointer_queues_stop_redelivering_a_failing_pointer.
         queue = block(EXECUTION, 'resource "aws_sqs_queue" "execution"')
         self.assertRegex(queue, r"visibility_timeout_seconds\s*=\s*720")
-        self.assertNotRegex(queue, r"\b(redrive_policy|maxReceiveCount)\b")
         self.assertRegex(queue, r"sqs_managed_sse_enabled\s*=\s*true")
         mapping = block(EXECUTION, 'resource "aws_lambda_event_source_mapping" "execution"')
         self.assertRegex(mapping, r"batch_size\s*=\s*1")
