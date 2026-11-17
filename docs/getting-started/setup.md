@@ -816,18 +816,21 @@ Run the commands from the repository root with the same AWS credentials (profile
 ```bash
 ENVIRONMENT=dev
 BACKEND_FILE="${AIDLC_BACKEND_FILE:-${AIDLC_CONFIG_DIR:-$PWD/terraform}/environments/${ENVIRONMENT}.s3.tfbackend}"
-terraform -chdir=terraform init -reconfigure -backend-config="$BACKEND_FILE"
-VPC_ORIGIN_ID=$(terraform -chdir=terraform state show -no-color 'module.frontend.aws_cloudfront_vpc_origin.yjs_alb[0]' | awk '$1 == "id" { gsub(/"/, "", $3); print $3 }')
-if [ -z "$VPC_ORIGIN_ID" ]; then
-  echo "No VPC origin in the ${ENVIRONMENT} state; nothing to delete." >&2
-elif ! USED_BY=$(aws cloudfront list-distributions --output text \
-    --query "(DistributionList.Items || \`[]\`)[?Origins.Items[?VpcOriginConfig.VpcOriginId=='${VPC_ORIGIN_ID}']].Id | join(' ', @)"); then
-  echo "Could not list CloudFront distributions; not deleting ${VPC_ORIGIN_ID}." >&2
-elif [ -n "$USED_BY" ]; then
-  echo "VPC origin ${VPC_ORIGIN_ID} is still used by distribution ${USED_BY}; not deleting it." >&2
+if ! terraform -chdir=terraform init -reconfigure -backend-config="$BACKEND_FILE"; then
+  echo "terraform init failed for ${ENVIRONMENT}; not looking up or deleting anything." >&2
 else
-  ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text) &&
-    aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
+  VPC_ORIGIN_ID=$(terraform -chdir=terraform state show -no-color 'module.frontend.aws_cloudfront_vpc_origin.yjs_alb[0]' | awk '$1 == "id" { gsub(/"/, "", $3); print $3 }')
+  if [ -z "$VPC_ORIGIN_ID" ]; then
+    echo "No VPC origin in the ${ENVIRONMENT} state; nothing to delete." >&2
+  elif ! USED_BY=$(aws cloudfront list-distributions --output text \
+      --query "(DistributionList.Items || \`[]\`)[?Origins.Items[?VpcOriginConfig.VpcOriginId=='${VPC_ORIGIN_ID}']].Id | join(' ', @)"); then
+    echo "Could not list CloudFront distributions; not deleting ${VPC_ORIGIN_ID}." >&2
+  elif [ -n "$USED_BY" ]; then
+    echo "VPC origin ${VPC_ORIGIN_ID} is still used by distribution ${USED_BY}; not deleting it." >&2
+  else
+    ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text) &&
+      aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
+  fi
 fi
 ```
 
