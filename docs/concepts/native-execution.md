@@ -5587,6 +5587,82 @@ application; and a verified completion after such a reply on the deployed
 stack. A protected question whose wording the engine holds only as a digest is
 not handed back: the agent has to present it from its own context.
 
+## NE-11 redeployment prepared — 2026-11-17
+
+**The redeployment of the corrected engine image (one install, refusal line,
+NE-24) and of the corrected queue consumers with their dead-letter queues
+(NE-25) is prepared up to the image build. Nothing is built, published, planned
+or applied.** The handoff, its tests, the build plan and the read-only
+observations are under `.native-evidence/ne11-2026-11-17-redeployment/`.
+
+### Validation of the merged source
+
+At `6885a33b`, each suite run alone: backend suite with containers 436 files
+and 12,503 tests passed; frontend 165 files and 2,505 tests passed and the
+build passes; release tests 514 passed from a clean snapshot; lint, format,
+dependency, SDK, architecture and wiring checks and the documentation build
+pass; Terraform 1.17.0 `fmt`, `validate` and the native mock-provider tests and
+TFLint 0.65.0 pass.
+
+### What the deployment changes
+
+- **Image.** One new runtime image; the engine function is updated in place to
+  its ARM64 manifest and publishes a new version. Version 1 and the per-run
+  aliases stay: executions are pinned to them.
+- **Function archives.** All eight native archives are rebuilt, because their
+  hash covers the source directory, the shared modules and the lockfile. Six
+  change in content: preparation worker, execution worker (execution and
+  cancellation functions), credentials, authority, projection worker and
+  result worker. The API facade and the wakeup bridge are byte-identical
+  bundles. The revision API runs in the authority function. Every other Lambda
+  packaged with the shared-module hash is repackaged as well.
+- **Queues.** Two dead-letter queues are created; the execution and projection
+  queues receive a redrive policy and nothing else.
+- **Frontend.** The completion report's notice for a reply that was not applied.
+
+### Recursion detection and the dead-letter queues
+
+The execution, cancellation and projection functions re-enqueue their own
+pointer and are configured to allow recursive loops, in the source and as
+deployed. Lambda therefore does not stop them, and its loop detection sends
+nothing to the new dead-letter queues. With detection on, Lambda would refuse
+the pointer after about 16 hops, the receive count would rise with every
+refusal, and the queue would dead-letter a live pointer after ten deliveries;
+the wiring test that keeps the setting on these three functions protects the
+queues as well.
+
+### The handoff
+
+Same shape as before. Step 1 runs the built image's engine against a graph
+server, publishes the image only if it reads a membership, verifies the
+registry bytes, saves the full plan with its review and stops. Step 2 applies
+the reviewed plan by SHA-256, reads the stack back and publishes the frontend.
+The plan review stops on any replacement, creation or deletion of the engine
+function, any destroy or replacement outside packaging helpers, any create
+except the two dead-letter queues, any change to the two pointer queues other
+than their redrive policy, a change to the runtime boundary policy while it
+holds five versions, and a second image change. After the apply: the guarded
+queue purge with the retry-loop script unchanged, and the acceptance
+preflight's pins written from the read-back. The candidate identity comes only
+from the record the build writes.
+
+### The acceptance rerun
+
+Fresh short and long journeys, and one added journey on the express plan that
+answers a turn without a form in writing once, as the only live proof of
+NE-24. It depends on the coding agent following one sentence of the request.
+The journey over an execution without an engine has no target any more, since
+the store rejects every execution started before 2026-11-11; what replaces it
+is open.
+
+### Not established
+
+- The plan itself: no Terraform plan was run.
+- That the image builds: the single install was only arranged in a throwaway
+  container of the deployed image, where the engine's journeys pass.
+- Whether an organization policy restricts the queue purge for the operator's
+  role. Its own policy allows it and the queues have no resource policy.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
