@@ -526,3 +526,58 @@ describe('space member API', () => {
     ).toHaveLength(0);
   });
 });
+
+describe('Viewer membership', () => {
+  it('preserves business roles and audits demotion; Viewers can read but cannot manage members', async () => {
+    await seedMembership(projectId, 'reader', 'member');
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId: 'reader',
+      actorId: 'owner',
+      localRoles: ['developer'],
+    });
+    expect((await request('PUT', { userId: 'reader', data: { role: 'viewer' } })).statusCode).toBe(
+      200,
+    );
+    const member = await membershipStore.get(projectId, 'reader');
+    expect(member).toMatchObject({ membershipRole: 'viewer', localRoles: ['developer'] });
+    const history = await membershipStore.listHistory(projectId);
+    expect(history.items.find((item) => item.action === 'role-changed')).toMatchObject({
+      before: { membershipRole: 'member', localRoles: ['developer'] },
+      after: { membershipRole: 'viewer', localRoles: ['developer'] },
+    });
+    expect((await request('GET', { actor: 'reader' })).statusCode).toBe(200);
+    expect(
+      (await request('GET', { actor: 'reader', route: 'membership-history' })).statusCode,
+    ).toBe(200);
+    expect(
+      (await request('PUT', { actor: 'reader', userId: 'reader', data: { role: 'owner' } }))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await request('PUT', {
+          actor: 'reader',
+          userId: 'reader',
+          route: 'members/reader/business-roles',
+          data: { localRoles: ['architect'] },
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+
+  it('does not demote the last Owner to Viewer, including when owner pagination fails', async () => {
+    expect((await request('PUT', { userId: 'owner', data: { role: 'viewer' } })).statusCode).toBe(
+      400,
+    );
+    vi.spyOn(membershipStore, 'hasOtherOwner').mockRejectedValueOnce(new Error('Read failed'));
+    expect((await request('PUT', { userId: 'owner', data: { role: 'viewer' } })).statusCode).toBe(
+      500,
+    );
+    expect((await membershipStore.get(projectId, 'owner')).membershipRole).toBe('owner');
+    await seedMembership(projectId, 'another-owner', 'owner');
+    expect((await request('PUT', { userId: 'owner', data: { role: 'viewer' } })).statusCode).toBe(
+      200,
+    );
+  });
+});

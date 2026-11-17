@@ -5,6 +5,7 @@
 // between tabs.
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useParams, useNavigate, useSearchParams } from 'react-router';
 import { projectsService, type Project } from '@/services/projects';
 import { Button } from '@/components/ui/button';
@@ -45,6 +46,7 @@ const isTabId = (value: string | null): value is TabId =>
 const ROLE_LABELS: Record<string, string> = {
   owner: 'Owner',
   member: 'Member',
+  viewer: 'Viewer',
 };
 
 interface SettingsCacheEntry {
@@ -60,6 +62,7 @@ export function clearSettingsCacheForTests() {
 }
 
 export default function ProjectSettings() {
+  const { canManage } = useSpacePermissions();
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
 
@@ -111,7 +114,7 @@ export default function ProjectSettings() {
     setProject((prev) => (prev ? { ...prev, ...updates } : prev));
 
   const userRole = project?.userRole;
-  const canEdit = userRole === 'owner';
+  const canEdit = canManage ?? userRole === 'owner';
 
   if (!projectId) return <div className="p-6">Space not found</div>;
 

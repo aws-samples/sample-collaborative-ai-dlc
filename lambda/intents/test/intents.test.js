@@ -14508,3 +14508,68 @@ describe('unused intent branch cleanup (opt-in)', () => {
     ]);
   });
 });
+
+describe('Viewer intent access', () => {
+  it('reads an intent but rejects every mutation family before side effects, regardless of SSO claims', async () => {
+    const sub = `viewer-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { id: intentId } = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedMembership(projectId, sub, 'viewer');
+    const event = {
+      pathParameters: {
+        projectId,
+        intentId,
+        artifactId: 'artifact',
+        humanTaskId: 'gate',
+        editId: 'edit',
+      },
+      requestContext: {
+        authorizer: { claims: { sub, 'cognito:groups': '[platform-admin developer architect]' } },
+      },
+    };
+    expect(
+      (
+        await handler({
+          ...event,
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intentId}`,
+          pathParameters: { projectId, intentId },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const before = structuredClone([...procStore]);
+    for (const [method, suffix] of [
+      ['POST', '/start'],
+      ['POST', '/compose'],
+      ['POST', '/cancel'],
+      ['POST', '/resume'],
+      ['POST', '/rewind'],
+      ['POST', '/recompose'],
+      ['POST', '/repair'],
+      ['POST', '/delivery'],
+      ['POST', '/answer'],
+      ['POST', '/revise'],
+      ['PUT', '/content'],
+      ['POST', '/quorum-edit'],
+      ['POST', '/decision'],
+      ['POST', '/verify'],
+      ['POST', '/derive'],
+      ['POST', '/attachments/upload'],
+      ['POST', '/attachments/import'],
+      ['POST', '/export'],
+      ['PATCH', ''],
+      ['DELETE', ''],
+    ]) {
+      const result = await handler({
+        ...event,
+        httpMethod: method,
+        path: `/projects/${projectId}/intents/${intentId}${suffix}`,
+        body: '{}',
+      });
+      expect(result.statusCode, `${method} ${suffix}`).toBe(403);
+      expect(JSON.parse(result.body).code).toBe('SPACE_WRITE_FORBIDDEN');
+    }
+    expect([...procStore]).toEqual(before);
+    expect((await createIntent(sub, projectId)).statusCode).toBe(403);
+  });
+});

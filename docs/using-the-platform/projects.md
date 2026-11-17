@@ -23,14 +23,17 @@ Two independent layers govern access:
 
 ### Space roles
 
-Every space has members with one of two roles, managed in **Space Settings → Members**:
+Every space has members with one of three roles, managed in **Space Settings → Members**:
 
-| Role       | Can do                                                                           |
-| ---------- | -------------------------------------------------------------------------------- |
-| **Owner**  | Everything, including managing all members, all settings, and deleting the space |
-| **Member** | Create and start intents, answer gates, steer runs, participate in discussions   |
+| Role       | Can do                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| **Owner**  | Everything, including managing all members, all settings, and deleting the space           |
+| **Member** | Create and start intents, answer gates, steer runs, participate in discussions             |
+| **Viewer** | Read content, questions, reviews, discussions, and history; cannot change work or settings |
 
 Non-members have no access to a space's intents, discussions, or real-time channels.
+Viewers see “You have view-only access to this space.” Editing and execution
+controls are disabled.
 
 Existing space Admins become Owners during update. Space Owner and Platform Admin
 remain separate roles. Several Owners are allowed; removing or demoting an Owner
@@ -59,50 +62,30 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 
 ### Members
 
-Add or remove members and assign their space access (Owner / Member).
-The picker includes enabled, confirmed Cognito accounts and enabled enterprise
-identities that pass their provider's access gate. An enterprise user appears
-after their first successful sign-in, when Cognito creates the broker identity.
-Entries are labeled **Cognito account** or with the enterprise provider name so
-separate identities that share an email address remain distinguishable.
+Add or remove members and assign their space access (Owner / Member / Viewer).
+Enterprise users appear after their first successful sign-in. The picker labels
+accounts by provider and includes only enabled accounts that can sign in.
 
-Removal revokes REST access and new realtime tokens immediately; an existing
-realtime session expires within ten minutes. Delegated integration access is
-removed and must be configured again if the person is re-added.
+Removing a member revokes API access and further collaborative edits immediately.
+Existing notification sessions expire within ten minutes. Re-adding someone does
+not restore their locally assigned roles or delegated integration access.
 
 #### Business roles
 
-Each member can hold one or more business roles in a space: Product Owner /
-Product Manager, Business Analyst, Architect, UX/UI Designer, Developer,
-QA / Tester, Security / Compliance, Operations / DevOps, and Delivery Manager.
-Roles are assigned per space, so the same person can be Architect in one space
-and Developer in another.
+Business roles describe responsibilities, such as Developer, Architect, or
+Product Owner. They do not grant access or override Viewer restrictions;
+gates and execution do not check them yet. The same person can have different
+roles in each space.
 
-Every member can see the role chips in the member list. Only Owners can change
-them: select a member's roles to open the editor, add or remove roles, and save.
-Business roles are separate from space access. **Product Owner** does not make
-someone a space Owner, and a business role never grants access to a space.
-Removing a member clears their roles; a re-added member starts with none.
+Everyone can see roles in the member list. Owners can select a member's roles
+to edit them:
 
-With enterprise SSO, members can also inherit business roles from the central
-mapping configured through Terraform and Platform admin (see
-[enterprise SSO](../getting-started/enterprise-sso.md)). The role editor shows
-three groups: company roles received through SSO, roles added in this space, and
-the resulting roles. In a space:
+- Add or **Remove** roles assigned in this space.
+- **Exclude** a role inherited from [enterprise SSO](../getting-started/enterprise-sso.md#business-role-mappings),
+  or **Restore** it later. Exclusions apply only to this space and survive sign-in.
+  A role added locally stays active even if the same SSO role is excluded.
 
-`roles in this space = (SSO roles − excluded SSO roles) + roles added in this space`
-
-- Owners can **Exclude** an inherited company role in their space and **Restore**
-  it later. Exclusions are per space: excluding Developer in Space A leaves the
-  person a Developer in Space B, and the company groups and central mapping stay
-  unchanged. Exclusions survive the member signing in again.
-- Roles added in the space have a **Remove** action instead; a local assignment
-  stays active even when the same role is excluded from SSO.
-- A company group never grants space membership by itself; membership is still
-  managed in this screen.
-
-Business roles currently describe responsibilities only. Gates and execution do
-not check them yet.
+The editor shows inherited roles, local assignments, and the resulting roles.
 
 ### Agent
 

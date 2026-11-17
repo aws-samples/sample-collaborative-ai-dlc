@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import {
   createContext,
   useCallback,
@@ -104,6 +105,7 @@ export function DiscussionProvider({
     return null;
   }, [sprintId, intentId, projectId]);
   const { user } = useAuth();
+  const { readOnly } = useSpacePermissions();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -213,7 +215,7 @@ export function DiscussionProvider({
       setDiscussion(null);
       setPendingTitle(args.entityTitle || '');
       onDiscussionOpen?.();
-      if (scope.kind === 'sprint') {
+      if (readOnly || scope.kind === 'sprint') {
         // v1 sprint discussions are read-only — thread creation is gone from
         // the backend, so only an EXISTING thread can be opened for viewing.
         discussionsService
@@ -224,7 +226,8 @@ export function DiscussionProvider({
                 d.entityType === args.entityType &&
                 (args.entityId === undefined || d.entityId === args.entityId),
             );
-            if (!existing) throw new Error('v1 discussions are read-only.');
+            if (!existing)
+              throw new Error('No discussion yet. You have view-only access to this space.');
             setDiscussion(existing);
             setDiscussions(all);
           })
@@ -251,7 +254,7 @@ export function DiscussionProvider({
         })
         .finally(() => setLoading(false));
     },
-    [scope, reloadDiscussions, onDiscussionOpen],
+    [scope, reloadDiscussions, onDiscussionOpen, readOnly],
   );
 
   const openDiscussionById = useCallback(

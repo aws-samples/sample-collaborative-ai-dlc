@@ -178,3 +178,18 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "space_permissions_function_arn" {
+  description = "Projects Lambda ARN used to resolve resource scope and permissions at connection time."
+  type        = string
+}
+
+variable "access_table_name" {
+  description = "Canonical space membership table for consistent per-frame authorization"
+  type        = string
+}
+
+variable "access_table_arn" {
+  description = "Canonical space membership table ARN; Yjs needs GetItem only"
+  type        = string
+}

@@ -1,0 +1,12 @@
+**
+!yjs-server/
+!yjs-server/package.json
+!yjs-server/package-lock.json
+!yjs-server/*.js
+!shared/
+!shared/space-permissions.js
+!shared/space-membership.js
+!shared/business-roles.js
+!shared/business-role-catalog.json
+!shared/policies/
+!shared/policies/space.cedar

@@ -2,7 +2,12 @@ import { api } from './api';
 import type { GitProvider } from './gitProvider';
 import type { ProjectEnvironmentAssignment } from './environments';
 
-export type ProjectRole = 'owner' | 'member';
+export type ProjectRole = 'owner' | 'member' | 'viewer';
+export interface SpacePermissions {
+  read: boolean;
+  write: boolean;
+  manage: boolean;
+}
 export type AgentCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
@@ -71,6 +76,7 @@ export interface Project {
   // projectLastActivityAt (useProjectsCache) for an activity-based recency.
   updatedAt?: string | null;
   userRole?: ProjectRole;
+  permissions?: SpacePermissions;
   trackers: TrackerBinding[];
   repos?: ProjectRepo[];
   // v2 discriminator + settings (absent/`'v1'` for v1 projects).
