@@ -147,20 +147,31 @@ RUN cd /opt/agentcore \
     && npm cache clean --force
 
 # App code: the agentcore package + the shared/ helpers it imports via ../shared,
-# and the protected workflow engine with its own dependency install. The
-# symbolic mode keeps a restrictive checkout (0600 files, 0700 directories)
+# and the protected workflow engine, which imports the same shared/ helpers.
+# The symbolic mode keeps a restrictive checkout (0600 files, 0700 directories)
 # readable by the runtime user without a recursive chown or chmod layer.
 COPY --chown=root:root --chmod=u=rwX,go=rX agentcore/ /opt/agentcore/
 COPY --chown=root:root --chmod=u=rwX,go=rX shared/ /opt/shared/
-COPY --chown=root:root --chmod=0644 native-runtime-control/package.json /opt/native-runtime-control/package.json
-RUN cd /opt/native-runtime-control && npm install --omit=dev && npm cache clean --force
 COPY --chown=root:root --chmod=u=rwX,go=rX native-runtime-control/ /opt/native-runtime-control/
 COPY --from=native-lambda-interface --chown=root:root /opt/native-lambda-interface /opt/native-lambda-interface
 
-# The shared/ helpers are CommonJS loaded from /opt/shared, so Node resolves their
-# @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules
-# where they are installed. Symlink so the shared helpers see the same deps.
-RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
+# One dependency tree. Node resolves packages upward from the importing file,
+# so /opt/shared and /opt/native-runtime-control never reach
+# /opt/agentcore/node_modules by themselves; both link to that one install.
+# The engine must not get an install of its own: it hands objects of the graph
+# library to shared/ helpers, and two copies of that library do not recognise
+# each other's objects. With two installs the engine's membership query reached
+# the graph malformed and every engine request was refused. The engine's
+# packages are therefore declared in lambda/agentcore/package.json.
+RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules \
+    && ln -s /opt/agentcore/node_modules /opt/native-runtime-control/node_modules
+
+# Fail the build if the engine or the shared helpers could load a second copy of
+# a package, or if the engine entry does not load from the one tree.
+RUN test "$(readlink -f /opt/shared/node_modules)" = /opt/agentcore/node_modules \
+    && test "$(readlink -f /opt/native-runtime-control/node_modules)" = /opt/agentcore/node_modules \
+    && test -z "$(find /opt/shared /opt/native-runtime-control -mindepth 2 -name node_modules -print -quit)" \
+    && node -e "import('/opt/native-runtime-control/workflow-engine-entry.js').then((entry) => process.exit(typeof entry.handler === 'function' ? 0 : 1))"
 
 # gh verifies native upstream provenance, including the installer's offline
 # package path. Native runs are ARM64 only; the optional platform amd64 image

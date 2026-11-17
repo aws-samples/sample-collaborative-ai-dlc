@@ -143,6 +143,74 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
   });
 });
 
+describe('protected engine dependency closure (same image, same single install)', () => {
+  // The first live engine run was refused on every request: the image gave the
+  // engine an install of its own beside the one the shared/ helpers resolve
+  // from. The engine's graph connection and the shared membership lookup then
+  // came from two copies of the graph library, which do not recognise each
+  // other's objects, and the query reached the graph malformed. One checkout
+  // has one copy, so no host test saw it. The image therefore has one install,
+  // and this is its only manifest.
+  const engineEntry = path.join(
+    agentcoreDir,
+    '..',
+    'native-runtime-control',
+    'workflow-engine-entry.js',
+  );
+
+  it('every external package reachable from the engine entry is declared', () => {
+    const externals = walk(engineEntry);
+    const missing = [...externals.entries()].filter(([name]) => !declared.has(name));
+    expect(
+      missing,
+      `undeclared engine deps (add to lambda/agentcore/package.json): ${missing
+        .map(([name, importer]) => `${name} (via ${importer})`)
+        .join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('sanity: the walk reaches the engine, its jobs and the shared membership lookup', () => {
+    const externals = walk(engineEntry);
+    expect(externals.get('@aws-sdk/client-codebuild')).toMatch(/workflow-engine-entry\.js$/);
+    expect([...externals.keys()]).toContain('@aws-sdk/s3-request-presigner');
+    expect(externals.get('gremlin')).toMatch(/workflow-engine-entry\.js$/);
+    expect(specifiersOf(readFileSync(engineEntry, 'utf8'))).toContain(
+      '../shared/workflow-source-membership.js',
+    );
+    expect(
+      specifiersOf(readFileSync(path.join(sharedDir, 'workflow-source-membership.js'), 'utf8')),
+    ).toContain('gremlin');
+  });
+
+  it('resolves the engine and the shared helpers from the one install and refuses a second', () => {
+    // No install for the engine: every npm command belongs to another directory.
+    const installs = dockerfile.split('\n').filter((line) => /\bnpm (?:install|ci)\b/.test(line));
+    expect(installs.length).toBeGreaterThan(0);
+    for (const line of installs) expect(line).not.toContain('/opt/native-runtime-control');
+    expect(dockerfile).not.toMatch(/COPY[^\n]*native-runtime-control\/package\.json/);
+    expect(dockerfile).toContain(
+      'RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules \\\n' +
+        '    && ln -s /opt/agentcore/node_modules /opt/native-runtime-control/node_modules',
+    );
+    // The build itself refuses a second tree and an entry that does not load.
+    for (const root of ['shared', 'native-runtime-control'])
+      expect(dockerfile).toContain(
+        `test "$(readlink -f /opt/${root}/node_modules)" = /opt/agentcore/node_modules`,
+      );
+    expect(dockerfile).toContain(
+      'find /opt/shared /opt/native-runtime-control -mindepth 2 -name node_modules -print -quit',
+    );
+    expect(dockerfile).toContain("import('/opt/native-runtime-control/workflow-engine-entry.js')");
+    const check = dockerfile.indexOf('readlink -f /opt/native-runtime-control/node_modules');
+    expect(check).toBeGreaterThan(
+      dockerfile.indexOf(
+        'ln -s /opt/agentcore/node_modules /opt/native-runtime-control/node_modules',
+      ),
+    );
+    expect(dockerfile.lastIndexOf('\nUSER node')).toBeGreaterThan(check);
+  });
+});
+
 describe('protected engine Lambda interface stage', () => {
   it('installs the runtime interface client from its lockfile with its documented build tools', () => {
     const stage = dockerfile.slice(
