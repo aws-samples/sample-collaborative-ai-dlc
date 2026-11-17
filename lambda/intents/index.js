@@ -115,6 +115,10 @@ import {
   effectivePrStrategy,
   normalizePlatformPrStrategy,
 } from '../shared/pr-strategy.js';
+import {
+  effectiveLaneSyncPolicy,
+  normalizePlatformLaneSyncPolicy,
+} from '../shared/lane-sync-policy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
@@ -912,6 +916,19 @@ const fetchPlatformPrStrategy = async () => {
   }
 };
 
+// Read the platform lane sync policy (shared/lane-sync-policy.js). Fail-safe
+// to none: an unavailable setting leaves lanes as they are until merge-back.
+const fetchPlatformLaneSyncPolicy = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return 'none';
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/lane-sync-policy` }));
+    return normalizePlatformLaneSyncPolicy(res.Parameter?.Value);
+  } catch {
+    return 'none';
+  }
+};
+
 // Read the Admin compose-LLM-bypass toggle. When 'enabled' (the default), a
 // CLEAN deterministic keyword match answers a front compose without any LLM
 // call; 'disabled' forces every compose through the composer agent. Fail-open
@@ -1045,6 +1062,8 @@ const fetchProjectConfig = async (g, projectId) => {
     // Per-project stage-skipping override ('default'|'enabled'|'disabled');
     // 'default' inherits the platform SSM setting (shared/stage-skip.js).
     stageSkipping: getVal(v, 'stage_skipping') || 'default',
+    // Per-project lane sync override ('default'|'none'|'before-stage').
+    laneSyncPolicy: getVal(v, 'lane_sync_policy') || 'default',
     cliModels: Object.keys(cliModels).length ? cliModels : null,
     tierModels: Object.keys(tierModels).length ? tierModels : null,
     mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
@@ -1541,6 +1560,7 @@ const mapIntent = (meta) => ({
   constructionGateAutonomy: meta.constructionGateAutonomy ?? null,
   prStrategy: meta.prStrategy ?? null,
   stageSkipping: meta.stageSkipping ?? null,
+  laneSyncPolicy: meta.laneSyncPolicy ?? null,
   skipStageIds: meta.skipStageIds ?? null,
   composedGrid: meta.composedGrid ?? null,
   // The stock scope a composed grid runs on, so a reopened draft resolves the
@@ -7242,6 +7262,10 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
     parkReleaseSeconds: cfg.parkReleaseSeconds,
     maxParallelUnits: cfg.maxParallelUnits,
     prStrategy,
+    laneSyncPolicy: effectiveLaneSyncPolicy(
+      await fetchPlatformLaneSyncPolicy(),
+      cfg.laneSyncPolicy,
+    ),
     constructionGateAutonomy: requestedAutonomyMode,
     constructionGateAutonomyGrant: requestedAutonomyMode
       ? {

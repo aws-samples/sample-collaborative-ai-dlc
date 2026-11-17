@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runGit, fetchOrigin } from '../git-engine.js';
-import { laneSyncEvent, laneSyncPolicy, syncLaneWithIntent } from '../lane-sync.js';
+import { laneSyncEvent, syncLaneWithIntent } from '../lane-sync.js';
 
 // Real git spawns can be slow on busy CI machines.
 vi.setConfig({ testTimeout: 30_000 });
@@ -75,15 +75,6 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
-});
-
-describe('laneSyncPolicy', () => {
-  it('is none unless set to before-stage', () => {
-    expect(laneSyncPolicy({})).toBe('none');
-    expect(laneSyncPolicy({ LANE_SYNC_POLICY: 'none' })).toBe('none');
-    expect(laneSyncPolicy({ LANE_SYNC_POLICY: 'always' })).toBe('none');
-    expect(laneSyncPolicy({ LANE_SYNC_POLICY: 'before-stage' })).toBe('before-stage');
-  });
 });
 
 describe('syncLaneWithIntent', () => {

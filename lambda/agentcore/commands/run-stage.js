@@ -96,11 +96,8 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
-import {
-  laneSyncEvent,
-  laneSyncPolicy,
-  syncLaneWithIntent as defaultSyncLaneWithIntent,
-} from '../lane-sync.js';
+import { laneSyncEvent, syncLaneWithIntent as defaultSyncLaneWithIntent } from '../lane-sync.js';
+import { normalizePlatformLaneSyncPolicy } from '../../shared/lane-sync-policy.js';
 import {
   consumeCommitDescription,
   createEngineCommitMessages,
@@ -1835,6 +1832,9 @@ const runStageAttempt = async (
     // Both snapshotted onto the intent and forwarded by the orchestrator.
     mcpServersByTier = null,
     customRules = [],
+    // Lane sync policy (shared/lane-sync-policy.js), snapshotted on the intent
+    // META and forwarded by the orchestrator. Absent = none.
+    laneSyncPolicy = null,
     attachments = [],
     workspaceDir,
     // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
@@ -2384,12 +2384,12 @@ const runStageAttempt = async (
     }
   }
 
-  // 2b. Lane sync (LANE_SYNC_POLICY=before-stage): merge the intent branch's
+  // 2b. Lane sync (laneSyncPolicy 'before-stage'): merge the intent branch's
   // latest head into the unit branch before a fresh stage, so the lane sees
   // units merged since it was cut and changes merged into the intent branch
   // directly. A resumed conversation keeps the tree it saw when it parked.
   if (
-    laneSyncPolicy(env) === 'before-stage' &&
+    normalizePlatformLaneSyncPolicy(laneSyncPolicy) === 'before-stage' &&
     unitSlug &&
     !resumeFrom &&
     repos.length > 0 &&

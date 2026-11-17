@@ -244,6 +244,9 @@ export interface AgentSettings {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default for spaces that inherit PR delivery policy. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Platform default for spaces that inherit lane sync: 'before-stage'
+   *  merges the intent branch into a unit lane before each fresh stage. */
+  laneSyncPolicy?: 'none' | 'before-stage';
   /** Agent CLIs a platform admin disabled for new selections. Empty = all
    *  enabled. Intents that already pinned a CLI keep it. */
   disabledClis?: AgentCli[];
@@ -319,6 +322,8 @@ export interface AgentSettingsUpdate {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default PR delivery strategy. Omit to leave unchanged. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Platform default lane sync policy. Omit to leave unchanged. */
+  laneSyncPolicy?: 'none' | 'before-stage';
   /** Agent CLIs disabled for selection; at least one must stay enabled. Omit
    *  to leave unchanged. */
   disabledClis?: AgentCli[];

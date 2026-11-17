@@ -684,6 +684,23 @@ resource "aws_ssm_parameter" "pr_strategy" {
   tags = var.tags
 }
 
+# Platform-wide lane sync policy (none | before-stage). Projects store either
+# an explicit override or `default`; the effective value is snapshotted onto
+# each new intent. var.lane_sync_policy seeds the value when the parameter is
+# created; the Admin UI manages it afterwards.
+resource "aws_ssm_parameter" "lane_sync_policy" {
+  name        = "/${var.project_name}/${var.environment}/lane-sync-policy"
+  description = "Unit lane sync with the intent branch: none | before-stage (Admin UI managed)"
+  type        = "String"
+  value       = var.lane_sync_policy
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Composer LLM bypass — when enabled (the default) a clean deterministic
 # keyword match answers a front compose without any LLM call; disabling it
 # forces every compose through the composer agent. Managed by the Admin UI.
@@ -788,7 +805,6 @@ locals {
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
     AIDLC_REPO_REF                = var.aidlc_repo_ref
-    LANE_SYNC_POLICY              = var.lane_sync_policy
     BEDROCK_MODEL                 = var.bedrock_model
     BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region

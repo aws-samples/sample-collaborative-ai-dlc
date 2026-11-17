@@ -1,8 +1,9 @@
 // Lane sync: bring the intent branch's latest head into a unit lane before a
 // stage runs, so a lane sees work that reached the intent branch after the lane
 // was cut (an earlier unit merged, or a change merged into the intent branch
-// directly). Opt-in with LANE_SYNC_POLICY=before-stage; the default, none,
-// leaves lanes as they are until merge-back or reconciliation.
+// directly). Opt-in with the 'before-stage' lane sync policy
+// (shared/lane-sync-policy.js); the default, none, leaves lanes as they are
+// until merge-back or reconciliation.
 //
 // The merge is the same engine operation reconciliation uses (mergeBranchNoFf
 // with the branch roles reversed): fetch, reset the local unit branch onto its
@@ -18,11 +19,6 @@ import {
 } from './git-engine.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import { createEngineCommitMessages } from './commit-message.js';
-
-export const LANE_SYNC_POLICIES = Object.freeze(['none', 'before-stage']);
-
-export const laneSyncPolicy = (env = process.env) =>
-  env?.LANE_SYNC_POLICY === 'before-stage' ? 'before-stage' : 'none';
 
 const SWAPPED_REASONS = Object.freeze({
   unit_branch_missing: 'intent_branch_missing',

@@ -92,6 +92,8 @@ export interface Project {
   // Per-project stage-skipping override: 'default' inherits the platform
   // Admin setting; enabled/disabled override it for this project's intents.
   stageSkipping?: StageSkippingOverride;
+  // Per-project lane sync override: 'default' inherits the platform setting.
+  laneSyncPolicy?: LaneSyncPolicyOverride;
   environmentId?: string;
   // Conversation language for agent prose (#784). Omitted when unset (agents
   // keep the default behaviour: no language instruction).
@@ -100,6 +102,7 @@ export interface Project {
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
 export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
+export type LaneSyncPolicyOverride = 'default' | 'none' | 'before-stage';
 
 // The resolved conversation language the backend stores: a canonical BCP 47
 // tag plus its display names, resolved at write time.
@@ -158,6 +161,7 @@ export interface UpdateProjectInput {
   // A raw BCP 47 tag ('ko'); the backend resolves and stores the display
   // names. null clears the setting.
   conversationLanguage?: string | null;
+  laneSyncPolicy?: LaneSyncPolicyOverride;
 }
 
 export interface AddRepoInput {
