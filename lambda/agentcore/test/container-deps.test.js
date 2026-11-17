@@ -200,6 +200,10 @@ describe('protected engine dependency closure (same image, same single install)'
     expect(dockerfile).toContain(
       'find /opt/shared /opt/native-runtime-control -mindepth 2 -name node_modules -print -quit',
     );
+    // The install is not locked: npm may nest a second copy inside the one tree.
+    expect(dockerfile).toContain(
+      `test "$(find /opt/agentcore/node_modules -type d -path '*/node_modules/gremlin' | wc -l)" -eq 1`,
+    );
     expect(dockerfile).toContain("import('/opt/native-runtime-control/workflow-engine-entry.js')");
     const check = dockerfile.indexOf('readlink -f /opt/native-runtime-control/node_modules');
     expect(check).toBeGreaterThan(
