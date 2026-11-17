@@ -372,6 +372,33 @@ describe('seed-blocks reseed mode', () => {
   });
 });
 
+describe('seed-blocks baseline seed of frontmatter the release importer normalizes', () => {
+  const V2113 = AIDLC_COMPATIBILITY_PROFILES['v2.11.3'];
+  const STAGE_KEY = 'BLOCK#SYSTEM#STAGE#requirements-analysis|V#latest';
+
+  it('seeds 2.11.3, whose requirements-analysis outputs carry an unquoted colon', async () => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles('v2.11.3'));
+    await handler({ ref: V2113.upstreamRef, reseed: true });
+    expect(tableStore.get(STAGE_KEY)?.phase).toBe('inception');
+  });
+
+  it('reads a ref with no compatibility profile in the newest dialect', async () => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles('v2.11.3'));
+    await handler({ ref: 'b'.repeat(40), reseed: true });
+    expect(tableStore.get(STAGE_KEY)?.phase).toBe('inception');
+  });
+
+  it('names a stage whose frontmatter still does not parse, and writes nothing', async () => {
+    const broken = 'core/aidlc-common/stages/inception/broken-stage.md';
+    fetchCoreFiles.mockImplementation(
+      async () => new Map([...CORE_FILES, [broken, '---\nslug: broken\noutputs: a (b: c)\n---\n']]),
+    );
+    await expect(handler({ reseed: true })).rejects.toThrow(broken);
+    expect(tableStore.size).toBe(0);
+    expect(s3Store.size).toBe(0);
+  });
+});
+
 describe('seed-blocks importRelease mode', () => {
   const profile = AIDLC_COMPATIBILITY_PROFILES[RELEASE_PROFILE];
   const releasePrefix = `aidlc-releases/v1/${profile.upstreamRef}/i${AIDLC_RELEASE_IMPORTER_REVISION}`;
