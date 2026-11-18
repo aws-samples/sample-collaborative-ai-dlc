@@ -140,7 +140,10 @@ methodology version.
 ## Compatibility evidence and runtime support
 
 The analyzer reports structural validity, dependency closure, sensor command
-compatibility, mapped frontmatter values, and runtime-command fidelity. Each
+compatibility, mapped frontmatter values, and runtime-command fidelity. The
+dependency closure follows a sensor script's relative imports the way Bun
+resolves them, including a TypeScript-style `./lib.js` specifier for a published
+`lib.ts`. Each
 authored value is classified as `native`, `approximated`, `unsupported`, or
 `packaging-only`. The report includes the specific source values that the
 current runtime does not honour.
@@ -333,7 +336,9 @@ keeps the 2.11 frontmatter dialect, scope settings, sensor declarations and the
 eleven compilable scope plans.
 Its Requirements Analysis `outputs` description has an unquoted colon that
 makes the upstream YAML invalid; importer revision 4 quotes that known scalar
-without changing its value.
+without changing its value. Its sensor scripts import sibling modules by their
+emitted `.js` name; importer revision 5 resolves those to the published `.ts`
+files, so its recorded dependency closure is complete.
 
 The 2.11.3 adapter keeps repository membership fixed and supports an optional
 human plan review. Administrators can inspect these differences before approval:
