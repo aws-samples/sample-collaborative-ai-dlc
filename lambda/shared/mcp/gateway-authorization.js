@@ -2,13 +2,16 @@
 // interceptor in front of every target. Pure orchestration over injected
 // dependencies, deny-by-default:
 //   1. the Gateway already authenticated the caller (SigV4, InvokeGateway);
-//   2. the control-plane grant is verified (signature, audience, expiry, kid)
-//      and its mode is one the built-in MCP serves (never an engine-data
-//      `execution` grant);
+//   2. the control-plane grant is verified (signature, audience, expiry, kid,
+//      and not retired by the control plane, failing closed when the
+//      retirement records cannot be read) and its mode is one the built-in MCP
+//      serves (never an engine-data `execution` grant);
 //   3. the runtime's session context must stay inside the grant, including the
 //      signed release-policy digest;
-//   4. for a tool call, the target must be known and the tool in the role's
-//      catalog for this stage/policy — checked before any data access;
+//   4. for a tool call, the target must be known and the tool allowed —
+//      for `aidlc` by the role's catalog for this stage/policy, for a customer
+//      target by its registry rule against the signed grant alone
+//      (gateway-custom-targets.js) — checked before any data access;
 //   5. execution, stage leg and intent→project ownership are re-read with
 //      consistent reads and must still be ACTIVE (per-call revocation).
 // These reads are preflight only: the process store's transactional ownership
@@ -23,6 +26,7 @@ import {
   scopeFromGrantAndSession,
 } from './gateway-session.js';
 import { GatewayContextError, headerMapFrom, singleHeader } from './gateway-context.js';
+import { customToolAllowed } from './gateway-custom-targets.js';
 
 export const AIDLC_TARGET = 'aidlc';
 export const TARGET_TOOL_SEPARATOR = '___';
@@ -36,6 +40,9 @@ const DENIAL_TEXT = {
   invalid_arguments: 'Tool call denied: the arguments do not match the tool schema.',
   tool_not_allowed_for_role: 'Tool call denied: this tool is not available in this session.',
   lane_outside_grant: 'Tool call denied: this session is limited to its own unit lane.',
+  tool_not_allowed_for_target:
+    'Tool call denied: this tool is not enabled for this space and stage.',
+  mode_not_allowed_for_target: 'Tool call denied: this tool is only available in stage sessions.',
 };
 export const gatewayDenialText = (reason) =>
   (Object.hasOwn(DENIAL_TEXT, reason) && DENIAL_TEXT[reason]) || 'Tool call denied.';
@@ -82,6 +89,8 @@ export const toolAllowedForContext = ({ scope, role }, target, tool) =>
     describeChanges: scope.describeChanges,
   }).includes(tool);
 
+const NO_CUSTOM_TARGETS = new Map();
+
 const readHeader = (headers, name) => {
   try {
     return singleHeader(headers, name);
@@ -97,7 +106,16 @@ export const createGatewayAuthorizer = ({
   openGraph,
   closeGraphSource,
   processTable,
+  // Returns the customer target registry (parseCustomTargets). A function so a
+  // malformed registry fails each request closed instead of the whole Lambda.
+  customTargets = () => NO_CUSTOM_TARGETS,
 }) => {
+  // The predicate tools/call enforces and tools/list filters with.
+  const allowsTool = (targets, authorized, target, tool) =>
+    target === AIDLC_TARGET
+      ? toolAllowedForContext(authorized, target, tool)
+      : customToolAllowed(targets, authorized.grant, target, tool);
+
   // `qualifiedTool` is the Gateway tool name for tools/call, absent for the
   // session-level methods (initialize, tools/list, ping, notifications).
   const authorize = async (rawHeaders, { qualifiedTool } = {}) => {
@@ -125,12 +143,22 @@ export const createGatewayAuthorizer = ({
       throw new GatewayAccessDenied('session_outside_grant', gatewayAuditScope({ grant }));
     }
     const auditScope = gatewayAuditScope({ grant, ...context });
+    const targets = customTargets();
 
+    let target = null;
     if (qualifiedTool !== undefined) {
-      const { target, tool } = splitQualifiedToolName(qualifiedTool);
-      if (target !== AIDLC_TARGET) throw new GatewayAccessDenied('unknown_target', auditScope);
-      if (!toolAllowedForContext(context, target, tool)) {
-        throw new GatewayAccessDenied('tool_not_allowed_for_role', auditScope);
+      const split = splitQualifiedToolName(qualifiedTool);
+      target = split.target;
+      if (target === AIDLC_TARGET) {
+        if (!toolAllowedForContext(context, target, split.tool)) {
+          throw new GatewayAccessDenied('tool_not_allowed_for_role', auditScope);
+        }
+      } else if (!targets.has(target)) {
+        throw new GatewayAccessDenied('unknown_target', auditScope);
+      } else if (grant.mode !== 'stage') {
+        throw new GatewayAccessDenied('mode_not_allowed_for_target', auditScope);
+      } else if (!customToolAllowed(targets, grant, target, split.tool)) {
+        throw new GatewayAccessDenied('tool_not_allowed_for_target', auditScope);
       }
     }
 
@@ -146,7 +174,12 @@ export const createGatewayAuthorizer = ({
     } catch {
       throw new GatewayAccessDenied('scope_not_active', auditScope);
     }
-    return { grant, ...context, auditScope };
+    const authorized = { grant, ...context, auditScope, target };
+    return {
+      ...authorized,
+      hasCustomTargets: targets.size > 0,
+      allowsTool: (listedTarget, tool) => allowsTool(targets, authorized, listedTarget, tool),
+    };
   };
 
   return { authorize };

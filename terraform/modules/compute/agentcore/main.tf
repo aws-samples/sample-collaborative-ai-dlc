@@ -513,6 +513,9 @@ resource "aws_iam_role_policy" "agentcore" {
             aws_ssm_parameter.tier_models.arn,
           ]
         },
+      ],
+      # Not in the gateway_only profile (mcp-gateway-targets.tf denies it).
+      var.runtime_mcp_credentials == "gateway_only" ? [] : [
         {
           # MCP secrets: at stage start (and verify) the runtime resolves the
           # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
@@ -526,6 +529,8 @@ resource "aws_iam_role_policy" "agentcore" {
             "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
           ]
         },
+      ],
+      [
         {
           # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
           # background job completes/heartbeats the durable callback the
@@ -793,8 +798,15 @@ locals {
     }, local.mcp_gateway_enabled ? {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+    } : {}, var.runtime_mcp_credentials == "gateway_only" ? {
+    RUNTIME_MCP_CREDENTIALS = "gateway_only"
+    } : {}, length(local.mcp_gateway_custom_targets) > 0 ? {
+    # Tells the runtime to materialize the customer-tool proxy; it carries no
+    # target, endpoint or credential.
+    AIDLC_MCP_GATEWAY_CUSTOM_TARGETS = "true"
     } : {}, local.engine_data_enabled ? {
-    ENGINE_DATA_FUNCTION = module.engine_data_lambda[0].lambda_function_name
+    ENGINE_DATA_FUNCTION    = module.engine_data_lambda[0].lambda_function_name
+    SOURCE_CONTROL_FUNCTION = local.source_control_runtime_alias_arn
   } : {})
 }
 
