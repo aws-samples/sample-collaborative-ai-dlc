@@ -4,6 +4,15 @@ import { withVerificationLease } from './helpers/verification-lease.js';
 import { retryQueuedReleases } from '../../shared/runtime-session.js';
 import { capacityProviderName } from '../runtime-backends/capacity-provider.js';
 
+// Qualification resolves the platform sandbox policy; the suite runs on the default.
+vi.mock('../../shared/sandbox-settings.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveInvocationSandbox: vi.fn(async () => structuredClone(actual.DEFAULT_SANDBOX_CONFIG)),
+  };
+});
+
 const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
   MANAGED_INSTANCES_SUBNETS: '["subnet-1"]',

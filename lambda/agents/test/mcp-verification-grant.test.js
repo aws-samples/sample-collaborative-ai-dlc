@@ -12,6 +12,7 @@ import {
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { handler } from '../index.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../../shared/sandbox-settings.js';
 import { verifyMcpSecretVerificationGrant } from '../../shared/mcp-secret-verification-grant.js';
 import { mcpSecretConfigAuthority } from '../../shared/mcp-secret-config.js';
 
@@ -181,6 +182,7 @@ describe('authorized MCP verification issuance', () => {
     expect((await handler(event({ projectId, mcpServers: editedConfig }))).statusCode).toBe(200);
     expect(payload()).toEqual({
       command: 'verify-mcp',
+      agentSandbox: { enabled: false, version: null, settings: DEFAULT_SANDBOX_CONFIG.settings },
       projectId,
       mcpServersByTier: { global: globalConfig, project: editedConfig },
     });
