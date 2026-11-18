@@ -357,6 +357,10 @@ module "auth" {
   waf_enabled             = var.enable_waf
   web_acl_arn             = module.waf.regional_web_acl_arn
 
+  access_token_validity_minutes = var.auth_access_token_validity_minutes
+  id_token_validity_minutes     = var.auth_id_token_validity_minutes
+  refresh_token_validity_hours  = var.auth_refresh_token_validity_hours
+
   custom_domain                 = var.auth_domain
   custom_domain_active          = var.auth_domain_active
   custom_domain_certificate_arn = var.auth_domain == "" ? "" : terraform_data.auth_parent_dns[var.auth_domain].output

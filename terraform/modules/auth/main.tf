@@ -39,6 +39,10 @@ locals {
     ],
     [filesha256("${path.module}/../../../config/platform-roles.json")]
   )))
+
+  # Without an explicit value, refresh tokens keep their historical lifetimes:
+  # one day with enterprise SSO, seven days in local mode.
+  refresh_token_validity_hours = coalesce(var.refresh_token_validity_hours, local.sso_enabled ? 24 : 168)
 }
 
 data "aws_secretsmanager_secret_version" "oidc_client_secret" {
@@ -279,14 +283,14 @@ resource "aws_cognito_user_pool_client" "main" {
   ) : ["COGNITO"]
 
   # Token validity
-  access_token_validity  = 60 # 1 hour
-  id_token_validity      = 60 # 1 hour
-  refresh_token_validity = local.sso_enabled ? 1 : 7
+  access_token_validity  = var.access_token_validity_minutes
+  id_token_validity      = var.id_token_validity_minutes
+  refresh_token_validity = local.refresh_token_validity_hours
 
   token_validity_units {
     access_token  = "minutes"
     id_token      = "minutes"
-    refresh_token = "days"
+    refresh_token = "hours"
   }
 
   # Prevent user existence errors

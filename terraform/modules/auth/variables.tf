@@ -38,6 +38,44 @@ variable "auth_mode" {
   type        = string
 }
 
+# Ranges follow the Cognito app client limits.
+variable "access_token_validity_minutes" {
+  description = "Access token lifetime in minutes."
+  type        = number
+  default     = 60
+  nullable    = false
+
+  validation {
+    condition     = var.access_token_validity_minutes >= 5 && var.access_token_validity_minutes <= 1440 && floor(var.access_token_validity_minutes) == var.access_token_validity_minutes
+    error_message = "auth_access_token_validity_minutes must be a whole number of minutes from 5 to 1440."
+  }
+}
+
+variable "id_token_validity_minutes" {
+  description = "ID token lifetime in minutes."
+  type        = number
+  default     = 60
+  nullable    = false
+
+  validation {
+    condition     = var.id_token_validity_minutes >= 5 && var.id_token_validity_minutes <= 1440 && floor(var.id_token_validity_minutes) == var.id_token_validity_minutes
+    error_message = "auth_id_token_validity_minutes must be a whole number of minutes from 5 to 1440."
+  }
+}
+
+variable "refresh_token_validity_hours" {
+  description = "Refresh token lifetime in hours. Null selects 24 hours with enterprise SSO and 168 hours otherwise."
+  type        = number
+  default     = null
+
+  validation {
+    # try() keeps a null value from failing the range check on Terraform
+    # versions whose logical operators do not short-circuit.
+    condition     = var.refresh_token_validity_hours == null || try(var.refresh_token_validity_hours >= 1 && var.refresh_token_validity_hours <= 87600 && floor(var.refresh_token_validity_hours) == var.refresh_token_validity_hours, false)
+    error_message = "auth_refresh_token_validity_hours must be null or a whole number of hours from 1 to 87600."
+  }
+}
+
 variable "sso_providers" {
   description = "Normalized OIDC and SAML provider definitions."
   type = map(object({
