@@ -1177,14 +1177,16 @@ update_command() {
         echo "Refusing downgrade from $old_version to $VERSION; pass --allow-downgrade to override." >&2
         exit 1
     fi
+    # Authentication and domain options change the deployment even when the
+    # source does not, so they must not be skipped as a no-op update.
+    local config_changes="$AUTH_MODE_EXPLICIT$SSO_CONFIG_EXPLICIT$APP_DOMAIN_EXPLICIT$APP_DOMAIN_ALIASES_EXPLICIT$ACM_CERTIFICATE_ARN_EXPLICIT$ROUTE53_ZONE_ID_EXPLICIT"
     if [[ -n "$REF" ]]; then
-        [[ "$RESOLVED_COMMIT" != "$old_commit" ]] || {
+        if [[ "$RESOLVED_COMMIT" == "$old_commit" && -z "$config_changes" ]]; then
             echo "Already on $(target_description)."
             exit 0
-        }
+        fi
     else
-        if [[ "$VERSION" == "$old_version" &&
-              -z "$AUTH_MODE_EXPLICIT$SSO_CONFIG_EXPLICIT$APP_DOMAIN_EXPLICIT$APP_DOMAIN_ALIASES_EXPLICIT$ACM_CERTIFICATE_ARN_EXPLICIT$ROUTE53_ZONE_ID_EXPLICIT" ]]; then
+        if [[ "$VERSION" == "$old_version" && -z "$config_changes" ]]; then
             echo "Already on AI-DLC v$VERSION."
             exit 0
         fi
