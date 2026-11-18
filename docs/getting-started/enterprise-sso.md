@@ -79,10 +79,9 @@ identities that are disabled or do not pass the configured access gate.
 ## Token lifetimes
 
 After every sign-in, local or federated, Cognito issues the tokens the web app
-uses. Their lifetimes bound how long a session stays usable without a new
-sign-in, and so how long a user who was disabled or removed at the identity
-provider keeps access. When your organization's identity policy caps session or
-token lifetimes, set them in the environment's `.tfvars`:
+uses. Their lifetimes decide how often the web app must refresh its session and
+when a new sign-in is required. When your organization's identity policy caps
+session or token lifetimes, set them in the environment's `.tfvars`:
 
 ```hcl
 auth_access_token_validity_minutes = 60 # 5-1440
@@ -100,8 +99,20 @@ auth_refresh_token_validity_hours  = 24 # 1-87600
   realtime connection, and sends the ID token. Amplify refreshes expired ID and
   access tokens with the refresh token, so shorter values add token refreshes
   but do not sign users out.
-- The refresh token lifetime is the longest a browser session lasts. When it
-  ends, users sign in again.
+- When the refresh token expires, the web app can no longer refresh and the
+  user must sign in again. Refresh expiry is not a hard session cap: it stops
+  future refreshes but does not invalidate tokens already issued.
+  - An ID token issued by a refresh just before the deadline stays valid for the
+    full ID token lifetime. A session can therefore keep working for up to the
+    refresh token lifetime plus the ID token lifetime after sign-in.
+  - Realtime connections are authorized when they open. The web app reconnects
+    before its ten-minute realtime scope token expires, and reconnecting
+    requires a valid ID token, but the servers do not close a connection that
+    is already open when its tokens expire.
+- Lifetimes are not revocation. A user disabled or removed at the identity
+  provider keeps access until the tokens already issued expire. Size the ID
+  token lifetime for the longest access you accept after a removal, and use
+  the refresh token lifetime for how often users must sign in again.
 - The values apply to the single app client, so they also cover local Cognito
   accounts in `hybrid` mode.
 - A change applies to tokens issued after the next apply. Tokens already issued
