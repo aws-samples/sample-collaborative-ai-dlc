@@ -1,4 +1,5 @@
 import gremlin from 'gremlin';
+import { BUSINESS_ROLES } from '../shared/business-roles.js';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import {
   membershipStore,
@@ -65,6 +66,23 @@ export const handler = async (event, context) => {
     const actorRole = await fetchMembershipRole(g, projectId, actorId);
     if (!actorRole) return response(403, { error: 'Access denied' });
 
+    const route = event.resource || event.path || '';
+    const businessRolesRoute = route.endsWith('/business-roles');
+    const historyRoute = route.endsWith('/membership-history');
+    if (historyRoute) {
+      if (httpMethod !== 'GET') return response(405, { error: 'Method not allowed' });
+      const { from, to, nextToken } = event.queryStringParameters || {};
+      return response(
+        200,
+        await membershipStore.listHistory(projectId, { from, to, token: nextToken }),
+      );
+    }
+    if (businessRolesRoute && httpMethod === 'GET' && !targetUserId) {
+      return response(200, BUSINESS_ROLES);
+    }
+    if (businessRolesRoute && (httpMethod !== 'PUT' || !targetUserId))
+      return response(405, { error: 'Method not allowed' });
+
     if (httpMethod === 'GET') {
       const params = event.queryStringParameters || {};
       const paged = params.paged === '1';
@@ -80,6 +98,7 @@ export const handler = async (event, context) => {
                 userId: member.userId,
                 email: getVal(user.value, 'email'),
                 role: member.membershipRole,
+                localRoles: member.localRoles || [],
               };
             }),
           )),
@@ -105,6 +124,20 @@ export const handler = async (event, context) => {
     const userId = httpMethod === 'POST' ? data.userId : targetUserId;
     if (typeof userId !== 'string' || !userId.trim())
       return response(400, { error: 'userId is required' });
+    if (businessRolesRoute) {
+      const member = await membershipStore.changeLocalRoles({
+        spaceId: projectId,
+        userId,
+        actorId,
+        localRoles: data.localRoles,
+      });
+      return response(200, {
+        projectId,
+        userId,
+        role: member.membershipRole,
+        localRoles: member.localRoles,
+      });
+    }
     const role =
       httpMethod === 'DELETE'
         ? null

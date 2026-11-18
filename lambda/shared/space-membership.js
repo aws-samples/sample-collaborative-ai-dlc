@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { normalizeLocalRoles } from './business-roles.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
@@ -127,20 +128,25 @@ export const createMembershipStore = ({
     action,
     changeId = randomUUID(),
     migration = false,
+    localRoles,
   }) => {
     if (role !== null && !validRole(role)) throw new Error('Invalid membership role');
+    const changingLocalRoles = localRoles !== undefined;
+    if (changingLocalRoles) localRoles = normalizeLocalRoles(localRoles);
     const timestamp = now();
     const key = membershipKey(spaceId, userId);
     const after =
       role === null
         ? null
         : {
+            ...before,
             ...key,
             userId,
             membershipRole: role,
             createdAt: before?.createdAt || timestamp,
             updatedAt: timestamp,
             revision: changeId,
+            ...(changingLocalRoles ? { localRoles } : {}),
           };
     const condition =
       before && !migration
@@ -157,9 +163,24 @@ export const createMembershipStore = ({
       };
     }
     const writes = [
-      after
-        ? { Put: { TableName: accessTable, Item: after, ...condition } }
-        : { Delete: { TableName: accessTable, Key: key, ...condition } },
+      changingLocalRoles
+        ? {
+            Update: {
+              TableName: accessTable,
+              Key: key,
+              ...condition,
+              UpdateExpression: 'SET localRoles = :roles, updatedAt = :timestamp, revision = :next',
+              ExpressionAttributeValues: {
+                ...condition.ExpressionAttributeValues,
+                ':roles': localRoles,
+                ':timestamp': timestamp,
+                ':next': changeId,
+              },
+            },
+          }
+        : after
+          ? { Put: { TableName: accessTable, Item: after, ...condition } }
+          : { Delete: { TableName: accessTable, Key: key, ...condition } },
       {
         Put: {
           TableName: auditTable,
@@ -170,8 +191,8 @@ export const createMembershipStore = ({
             actorId,
             action,
             targetUserId: userId,
-            before,
-            after,
+            before: changingLocalRoles ? before.localRoles || [] : before,
+            after: changingLocalRoles ? localRoles : after,
             timestamp,
             changeId,
           },
@@ -202,6 +223,21 @@ export const createMembershipStore = ({
       throw error;
     }
     return after;
+  };
+  const changeLocalRoles = async ({ spaceId, userId, actorId, localRoles, changeId }) => {
+    const roles = normalizeLocalRoles(localRoles);
+    const before = await get(spaceId, userId);
+    if (!before) throw Object.assign(new Error('Member not found'), { statusCode: 404 });
+    return change({
+      spaceId,
+      userId,
+      actorId,
+      before,
+      role: before.membershipRole,
+      localRoles: roles,
+      action: 'local-roles-changed',
+      changeId,
+    });
   };
   // Keep the deleting owner until every other page has drained. A failed batch
   // leaves that owner's permission intact so the existing delete can be retried.
@@ -249,6 +285,7 @@ export const createMembershipStore = ({
     listHistory,
     hasOtherOwner,
     change,
+    changeLocalRoles,
     deleteSpaceMembers,
   };
 };

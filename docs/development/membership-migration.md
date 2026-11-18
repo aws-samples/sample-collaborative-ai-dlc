@@ -117,7 +117,15 @@ role controls until reloaded.
 Permission history is retained in the audit table. The shared membership store
 supports internal queries with optional, inclusive ISO timestamp bounds and
 returns newest-first pages of up to 50 records with a continuation token.
-This slice adds no permission-history API or screen.
+Space members can read it through `GET /projects/{projectId}/membership-history`
+(`from`, `to`, and `nextToken` query parameters). No history screen exists yet.
+
+Business-role assignments are stored as `localRoles` on the membership item: a
+sorted list of unique IDs from the shared catalog in
+`lambda/shared/business-roles.js`. An update changes only `localRoles`,
+`updatedAt`, and `revision`, and writes a `local-roles-changed` audit item in
+the same transaction. That item's `before` and `after` hold the old and new role
+lists.
 
 Each change records its actor, space, target user, timestamp, change ID, and
 before/after membership. Revision conditions reject stale changes. Actor

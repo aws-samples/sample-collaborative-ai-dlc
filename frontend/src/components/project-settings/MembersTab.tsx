@@ -33,14 +33,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Building2, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
+import { Building2, Pencil, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
 import {
   projectsService,
   type AssignableUser,
+  type BusinessRole,
   type Member,
   type ProjectRole,
 } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
+import { businessRoleIcon } from './businessRoleIcons';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -50,6 +52,11 @@ const ROLE_LABELS: Record<ProjectRole, string> = {
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage space, members, and settings',
   member: 'Create intents, answer questions, and collaborate',
+};
+
+const BusinessRoleIcon = ({ id }: { id: string }) => {
+  const Icon = businessRoleIcon(id);
+  return <Icon aria-hidden="true" className="h-3 w-3 shrink-0 text-muted-foreground" />;
 };
 
 const initials = (m: { email?: string; userId: string }) => {
@@ -70,11 +77,20 @@ interface Props {
 }
 
 export function MembersTab({ projectId, userRole }: Props) {
+  return <MembersTabContent key={projectId} projectId={projectId} userRole={userRole} />;
+}
+
+function MembersTabContent({ projectId, userRole }: Props) {
   const canManageMembers = userRole === 'owner';
 
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [businessRoles, setBusinessRoles] = useState<BusinessRole[]>([]);
+  const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [draftRoles, setDraftRoles] = useState<string[]>([]);
+  const [savingRoles, setSavingRoles] = useState(false);
+  const [rolesError, setRolesError] = useState<string | null>(null);
 
   // Add member dialog
   const [showAddMember, setShowAddMember] = useState(false);
@@ -96,8 +112,12 @@ export function MembersTab({ projectId, userRole }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const mems = await projectsService.listMembers(projectId);
+      const [mems, catalog] = await Promise.all([
+        projectsService.listMembers(projectId),
+        projectsService.listBusinessRoles(projectId),
+      ]);
       setMembers(Array.isArray(mems) ? mems : []);
+      setBusinessRoles(catalog);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load members');
     } finally {
@@ -193,6 +213,42 @@ export function MembersTab({ projectId, userRole }: Props) {
     }
   };
 
+  const handleSaveBusinessRoles = async () => {
+    if (!editingMember || !canManageMembers || savingRoles) return;
+    setSavingRoles(true);
+    setRolesError(null);
+    try {
+      const updated = await projectsService.updateMemberBusinessRoles(
+        projectId,
+        editingMember.userId,
+        draftRoles,
+      );
+      setMembers((current) =>
+        current.map((member) =>
+          member.userId === updated.userId ? { ...member, localRoles: updated.localRoles } : member,
+        ),
+      );
+      setEditingMember(null);
+    } catch (err) {
+      setRolesError(err instanceof Error ? err.message : 'Failed to save business roles');
+    } finally {
+      setSavingRoles(false);
+    }
+  };
+
+  const roleName = (id: string) => businessRoles.find((role) => role.id === id)?.name || id;
+  const roleChips = (roles: string[]) =>
+    roles.length ? (
+      roles.map((id) => (
+        <Badge key={id} variant="outline" className="gap-1 bg-background text-xs font-normal">
+          <BusinessRoleIcon id={id} />
+          {roleName(id)}
+        </Badge>
+      ))
+    ) : (
+      <span className="text-xs text-muted-foreground">No business roles</span>
+    );
+
   return (
     <>
       <SettingsCard
@@ -227,67 +283,119 @@ export function MembersTab({ projectId, userRole }: Props) {
               <Skeleton className="h-12 w-full" />
             </div>
           ) : (
-            <div className="divide-y rounded-lg border">
-              {members.map((member) => (
-                <div key={member.userId} className="flex items-center gap-3 px-3.5 py-2.5">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
-                    {initials(member)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{member.email || member.userId}</p>
-                    <p className="truncate font-mono text-[11px] text-muted-foreground/80">
-                      {member.userId.substring(0, 12)}…
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {canManageMembers ? (
-                      <Select
-                        value={member.role}
-                        onValueChange={(value) => {
-                          const newRole = value as ProjectRole;
-                          if (newRole !== member.role) {
-                            setConfirmRoleChange({ userId: member.userId, newRole });
-                          }
-                        }}
-                      >
-                        <SelectTrigger
-                          aria-label={`Space access for ${member.email || member.userId}`}
-                          className="h-8 w-28 bg-background text-xs"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(['owner', 'member'] as const).map((role) => (
-                            <SelectItem key={role} value={role}>
-                              {ROLE_LABELS[role]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="border-transparent bg-muted text-[10px] text-muted-foreground"
-                      >
-                        {ROLE_LABELS[member.role]}
-                      </Badge>
-                    )}
-                    {canManageMembers && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => setConfirmRemove(member.userId)}
-                        title="Remove member"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[640px] text-left">
+                <thead className="bg-muted/40 text-[13px] text-muted-foreground">
+                  <tr>
+                    <th scope="col" className="px-3.5 py-2 font-medium">
+                      Member
+                    </th>
+                    <th scope="col" className="px-3.5 py-2 font-medium">
+                      Business roles
+                    </th>
+                    <th scope="col" className="px-3.5 py-2 font-medium">
+                      Space access
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {members.map((member) => (
+                    <tr key={member.userId}>
+                      <td className="px-3.5 py-2.5">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+                            {initials(member)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">
+                              {member.email || member.userId}
+                            </p>
+                            <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+                              {member.userId.substring(0, 12)}…
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3.5 py-2.5">
+                        {canManageMembers ? (
+                          <button
+                            type="button"
+                            aria-label={`Edit business roles for ${member.email || member.userId}`}
+                            className="group flex w-full items-center gap-2 rounded-md bg-muted/50 p-2 text-left hover:bg-muted focus-visible:outline-ring"
+                            onClick={() => {
+                              setEditingMember(member);
+                              setDraftRoles([...(member.localRoles || [])]);
+                              setRolesError(null);
+                            }}
+                          >
+                            <span className="flex flex-1 flex-wrap gap-1">
+                              {roleChips(member.localRoles || [])}
+                            </span>
+                            <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+                          </button>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 rounded-md bg-muted/50 p-2">
+                            {roleChips(member.localRoles || [])}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-2.5">
+                        <div className="flex items-center gap-2">
+                          {canManageMembers ? (
+                            <Select
+                              value={member.role}
+                              onValueChange={(value) => {
+                                const newRole = value as ProjectRole;
+                                if (newRole !== member.role) {
+                                  setConfirmRoleChange({ userId: member.userId, newRole });
+                                }
+                              }}
+                            >
+                              <SelectTrigger
+                                aria-label={`Space access for ${member.email || member.userId}`}
+                                className="h-8 w-28 bg-background text-xs"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {(['owner', 'member'] as const).map((role) => (
+                                  <SelectItem key={role} value={role}>
+                                    {ROLE_LABELS[role]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="border-transparent bg-muted text-[10px] text-muted-foreground"
+                            >
+                              {ROLE_LABELS[member.role]}
+                            </Badge>
+                          )}
+                          {canManageMembers && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => setConfirmRemove(member.userId)}
+                              title="Remove member"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+          <p className="text-xs text-muted-foreground">
+            Business roles describe responsibilities for now. They do not grant space access or
+            restrict actions. Only Space Owners can change them.
+          </p>
 
           {/* Role legend */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 pt-1">
@@ -308,6 +416,85 @@ export function MembersTab({ projectId, userRole }: Props) {
           </div>
         </div>
       </SettingsCard>
+
+      <Dialog
+        open={!!editingMember && canManageMembers}
+        onOpenChange={(open) => {
+          if (!open && !savingRoles) setEditingMember(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit business roles</DialogTitle>
+            <DialogDescription>
+              Responsibilities in this space for {editingMember?.email || editingMember?.userId}.
+              Business roles do not change Owner or Member access.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Label htmlFor="business-role-select">Add a business role</Label>
+            <Select
+              value=""
+              disabled={savingRoles || draftRoles.length === businessRoles.length}
+              onValueChange={(id) =>
+                setDraftRoles((current) => [...new Set([...current, id])].toSorted())
+              }
+            >
+              <SelectTrigger id="business-role-select" className="bg-background">
+                <SelectValue placeholder="Select a role" />
+              </SelectTrigger>
+              <SelectContent>
+                {businessRoles
+                  .filter(({ id }) => !draftRoles.includes(id))
+                  .map(({ id, name }) => (
+                    <SelectItem key={id} value={id}>
+                      <span className="flex items-center gap-2">
+                        <BusinessRoleIcon id={id} />
+                        {name}
+                      </span>
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <div className="flex flex-wrap gap-2">
+              {draftRoles.length ? (
+                draftRoles.map((id) => (
+                  <Badge key={id} variant="outline" className="gap-1 bg-muted/50 font-normal">
+                    <BusinessRoleIcon id={id} />
+                    {roleName(id)}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${roleName(id)}`}
+                      className="rounded-sm p-1 hover:bg-muted"
+                      disabled={savingRoles}
+                      onClick={() =>
+                        setDraftRoles((current) => current.filter((role) => role !== id))
+                      }
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">No business roles assigned.</p>
+              )}
+            </div>
+            {rolesError && (
+              <p role="alert" className="text-sm text-destructive">
+                {rolesError}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingRoles} onClick={() => setEditingMember(null)}>
+              Cancel
+            </Button>
+            <Button disabled={savingRoles} onClick={handleSaveBusinessRoles}>
+              {savingRoles ? 'Saving...' : 'Save changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Member Dialog */}
       <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
