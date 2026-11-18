@@ -1827,6 +1827,7 @@ case "$*" in
     ;;
   *"route53 get-hosted-zone"*) printf '%s\\n' "\${AIDLC_FAKE_ZONE_NAME:-example.com.}"; exit 0 ;;
   *"cloudfront list-distributions"*)
+    [[ -n "\${AIDLC_FAKE_NO_DISTRIBUTIONS:-}" ]] && exit 0
     printf '{"DistributionList":{"Items":%s}}\\n' "\${AIDLC_FAKE_DISTRIBUTIONS:-[]}"
     exit 0
     ;;
@@ -2455,6 +2456,30 @@ test('installer preflight validates the certificate, zone and hostname availabil
     },
   });
   assert.equal(readopted.status, 0, readopted.stderr);
+});
+
+test('installer preflight accepts an account without CloudFront distributions', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-no-distributions-'));
+  const env = mockedCommandEnv(dir, repository);
+  // AWS CLI v2 pagination prints nothing at all when the list is empty.
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1234567890ABC',
+    ],
+    { env: { ...env, AIDLC_FAKE_NO_DISTRIBUTIONS: '1' } },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(installed.stdout, /Custom domain:\s+aidlc\.example\.com/);
+  assert.match(readFileSync(env.AIDLC_AWS_LOG, 'utf8'), /cloudfront list-distributions/);
 });
 
 test('installer prints external DNS records when Route53 is not managed', () => {
