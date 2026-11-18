@@ -510,8 +510,8 @@ case "$url" in
     done
     cp -a "$source"/. "$destination"/
     ;;
-  *.tar.gz|*.tgz) tar -xzf "$archive" -C "$destination" --strip-components="$strip";;
-  *.tar.xz) tar -xJf "$archive" -C "$destination" --strip-components="$strip";;
+  *.tar.gz|*.tgz) tar -xzf "$archive" -C "$destination" --strip-components="$strip" --no-same-owner;;
+  *.tar.xz) tar -xJf "$archive" -C "$destination" --strip-components="$strip" --no-same-owner;;
   *) printf 'unsupported archive: %s\\n' "$url" >&2; exit 1;;
 esac
 `;
