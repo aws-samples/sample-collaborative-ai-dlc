@@ -498,7 +498,7 @@ For **GitHub App**:
 
 ### Space-bound source control
 
-Existing spaces must be explicitly bound by an owner/admin before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
+Existing spaces must be explicitly bound by an Owner before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
 
 #### GitLab (code host + GitLab Issues)
 

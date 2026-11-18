@@ -49,7 +49,8 @@ import {
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
-import { fetchMembershipRole, getVal } from '../shared/trackers.js';
+import { getVal } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
 import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
@@ -384,11 +385,11 @@ const projectRuntimeAccess = async (event, projectId, { requireEditor = false } 
   return withNeptune(async (g) => {
     const role = await fetchMembershipRole(g, projectId, userId);
     if (!role) return { denied: true, statusCode: 403, error: 'Not a project member' };
-    if (requireEditor && role !== 'owner' && role !== 'admin') {
+    if (requireEditor && role !== 'owner') {
       return {
         denied: true,
         statusCode: 403,
-        error: 'Only project owners and admins can verify MCP servers',
+        error: 'Only project owners can verify MCP servers',
       };
     }
 
@@ -679,9 +680,9 @@ export const handler = async (event, context) => {
     if (projectId && path.endsWith('/agent-credentials')) {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
       const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
-      if (role !== 'owner' && role !== 'admin' && !isPlatformAdmin(event)) {
+      if (role !== 'owner' && !isPlatformAdmin(event)) {
         return response(403, {
-          error: 'Only space owners and admins can manage agent credentials',
+          error: 'Only space owners can manage agent credentials',
         });
       }
       if (httpMethod === 'GET') {
@@ -1278,7 +1279,7 @@ export const handler = async (event, context) => {
       // Authorization — the verifier spawns configured commands and probes
       // arbitrary URLs from inside the runtime (with its env), so gate it to
       // exactly who can EDIT the config, using the caller's Cognito identity:
-      //   projectId present → must be owner/admin of that project
+      //   projectId present → must be owner of that project
       //   projectId absent  → global config → platform admin
       const verifyProjectId = input.projectId;
       let runtimeTarget = coreRuntimeTarget();

@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 // Discuss on a question gate whose Question vertex is missing from the intent
 // graph (a checkpoint gate, or a failed best-effort mirror). Runs the real
 // handler against the gremlin server and DynamoDB Local: the gate row is the
@@ -75,6 +76,7 @@ beforeAll(async () => {
     .from_('p')
     .to('u')
     .next();
+  await seedMembership('proj-1', MEMBER, 'member');
 });
 
 afterAll(async () => {

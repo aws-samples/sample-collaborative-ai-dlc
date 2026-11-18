@@ -40,7 +40,7 @@ personal > space > platform
 ```
 
 - Users manage personal credentials in **Account Settings**.
-- Space owners and admins manage shared credentials in **Space Settings → Agent**.
+- Space Owners manage shared credentials in **Space Settings → Agent**.
 - Platform admins manage fallback credentials in **Admin → Agents**.
 
 The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends only an opaque binding to AgentCore. AgentCore reads the bound SecureString for each invocation rather than retaining secrets in the long-lived process environment.

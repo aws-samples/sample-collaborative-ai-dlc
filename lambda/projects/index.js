@@ -1,3 +1,4 @@
+import { fetchMembershipRole, membershipStore } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { randomUUID } from 'node:crypto';
@@ -39,12 +40,7 @@ import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
 import { ensureFreshGitToken } from '../shared/git-token.js';
 import { getProvider } from '../shared/git-providers.js';
-import {
-  getVal,
-  projectTrackersFoldStep,
-  mapBinding,
-  fetchMembershipRole,
-} from '../shared/trackers.js';
+import { getVal, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
@@ -60,6 +56,8 @@ import {
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
+import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
+import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
 import {
   PROJECT_PR_STRATEGIES,
   DEFAULT_PR_STRATEGY,
@@ -84,7 +82,7 @@ const logger = new Logger({ persistentKeys: { component: 'projects' } });
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
-const { cardinality, P } = gremlin.process;
+const { cardinality } = gremlin.process;
 
 // Synthetic-binding id for legacy projects (issue_integration_enabled='true'
 // but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
@@ -625,18 +623,18 @@ const handleProjectCustomMcpServers = async (
   if (!userId) return response(401, { error: 'Unauthorized' });
 
   // The config may carry secrets in env/headers, so the RAW config (and the
-  // secrets sub-route) stays owner/admin-only. Plain members may read the
+  // secrets sub-route) stays owner-only. Plain members may read the
   // derived server NAMES only (GET on the main route) — see below.
   const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
-  const canEdit = role === 'owner' || role === 'admin';
+  const canEdit = role === 'owner';
 
   // Sub-route: /custom-mcp-servers/secrets — per-var SecureString CRUD under the
   // project's SSM prefix. GET returns set-state only; PUT rotates/clears.
-  // Owner/admin only (never exposed to members).
+  // Owner only (never exposed to members).
   if (/\/custom-mcp-servers\/secrets(\/|$)/.test(requestPath)) {
     if (!canEdit) {
-      return response(403, { error: 'Only project owners and admins can access MCP secrets' });
+      return response(403, { error: 'Only project owners can access MCP secrets' });
     }
     const base = mcpSecretsPrefix();
     if (!base) return response(500, { error: 'MCP secret store not configured' });
@@ -698,7 +696,7 @@ const handleProjectCustomMcpServers = async (
 
   if (httpMethod === 'PUT') {
     if (!canEdit) {
-      return response(403, { error: 'Only project owners and admins can modify MCP servers' });
+      return response(403, { error: 'Only project owners can modify MCP servers' });
     }
     let data;
     try {
@@ -822,13 +820,13 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
   if (!userId) return response(401, { error: 'Unauthorized' });
 
   // Read (GET) is open to any project member so they can see which steering
-  // docs the agent runs with; write (PUT) stays owner/admin-only. Members get
+  // docs the agent runs with; write (PUT) stays owner-only. Members get
   // filenames only — no presigned download URL is minted for them (below).
   const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
-  const canEdit = role === 'owner' || role === 'admin';
+  const canEdit = role === 'owner';
   if (httpMethod === 'PUT' && !canEdit) {
-    return response(403, { error: 'Only project owners and admins can modify custom rules' });
+    return response(403, { error: 'Only project owners can modify custom rules' });
   }
 
   const artifactsBucket = process.env.ARTIFACTS_BUCKET;
@@ -848,7 +846,7 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
     const docsWithUrls = await Promise.all(
       docs.map(async (doc) => {
         // Members see the filename only — never a presigned download URL, so
-        // the doc body stays owner/admin-only even if the UI leaked a button.
+        // the doc body stays owner-only even if the UI leaked a button.
         if (!canEdit) return { filename: doc.filename };
         if (!doc.s3Key || !artifactsBucket) return doc;
         try {
@@ -1021,9 +1019,9 @@ const handleProjectEnvironment = async (g, response, httpMethod, projectId, user
     }
 
     if (httpMethod === 'PUT') {
-      if (role !== 'owner' && role !== 'admin') {
+      if (role !== 'owner') {
         return response(403, {
-          error: 'Only project owners and admins can assign environments',
+          error: 'Only project owners can assign environments',
         });
       }
       let data;
@@ -1067,27 +1065,12 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
   const { httpMethod } = event;
 
   // Membership check — all repo routes require project membership
-  const isMember = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .inV()
-    .has('User', 'id', userId)
-    .hasNext();
-  if (!isMember) return response(403, { error: 'Access denied' });
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
 
   if (httpMethod === 'DELETE') {
-    const allowed = await g
-      .V()
-      .has('Project', 'id', projectId)
-      .outE('HAS_MEMBER')
-      .has('role', P.within('owner', 'admin'))
-      .inV()
-      .has('User', 'id', userId)
-      .hasNext();
-    if (!allowed) {
-      return response(403, { error: 'Only project owners and admins can remove repositories' });
-    }
+    if (role !== 'owner')
+      return response(403, { error: 'Only Space Owners can remove repositories' });
 
     const repoUrl = event.queryStringParameters?.url;
     if (!repoUrl) return response(400, { error: 'url query parameter is required' });
@@ -1142,17 +1125,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
   // POST /projects/{projectId}/repos
   if (httpMethod === 'POST') {
-    const allowed = await g
-      .V()
-      .has('Project', 'id', projectId)
-      .outE('HAS_MEMBER')
-      .has('role', P.within('owner', 'admin'))
-      .inV()
-      .has('User', 'id', userId)
-      .hasNext();
-    if (!allowed) {
-      return response(403, { error: 'Only project owners and admins can add repositories' });
-    }
+    if (role !== 'owner') return response(403, { error: 'Only Space Owners can add repositories' });
 
     const data = JSON.parse(event.body || '{}');
     if (!data.url) return response(400, { error: 'url is required' });
@@ -1285,7 +1258,7 @@ export const handler = async (event, context) => {
       httpMethod === 'GET' && path?.endsWith('/admin/tracker-migration/status');
     const isAdminMigrationRun = httpMethod === 'POST' && path?.endsWith('/admin/tracker-migration');
 
-    // POST /projects/{projectId}/migrate-tracker — owner/admin only.
+    // POST /projects/{projectId}/migrate-tracker — owner only.
     // Backfills the tracker_* fields on this project's sprints + creates a
     // synthetic HAS_TRACKER edge if the project still uses the legacy
     // issue_integration_enabled boolean. Idempotent. See parent issue #194.
@@ -1293,8 +1266,8 @@ export const handler = async (event, context) => {
       if (!userId) return response(401, { error: 'Unauthorized' });
       const role = await fetchMembershipRole(g, projectId, userId);
       if (!role) return response(403, { error: 'Access denied' });
-      if (role !== 'owner' && role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can migrate trackers' });
+      if (role !== 'owner') {
+        return response(403, { error: 'Only project owners can migrate trackers' });
       }
       let dryRun = false;
       if (body) {
@@ -1377,23 +1350,17 @@ export const handler = async (event, context) => {
           // fold into one traversal (parity with the list endpoint).
           if (!userId) return response(401, { error: 'Unauthorized' });
 
+          const role = await fetchMembershipRole(g, projectId, userId);
+          if (!role) return response(403, { error: 'Access denied' });
           const single = await g
             .V()
             .has('Project', 'id', projectId)
-            .as('p')
-            .outE('HAS_MEMBER')
-            .as('e')
-            .inV()
-            .has('User', 'id', userId)
-            .select('e', 'p')
-            .by(__.values('role'))
-            .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
+            .project('vertex', 'trackers')
+            .by(__.valueMap())
+            .by(projectTrackersFoldStep())
             .next();
           if (single.done) return response(403, { error: 'Access denied' });
-
-          const item = single.value;
-          const role = item instanceof Map ? item.get('e') : item.e;
-          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const pBundle = single.value;
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
             (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
@@ -1427,60 +1394,70 @@ export const handler = async (event, context) => {
         // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
 
-        const results = await g
-          .V()
-          .has('User', 'id', userId)
-          .inE('HAS_MEMBER')
-          .as('e')
-          .outV()
-          .hasLabel('Project')
-          .as('p')
-          .select('e', 'p')
-          .by(__.values('role'))
-          .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
-          .toList();
-        const settled = await Promise.allSettled(
-          results.map(async (item) => {
-            // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
-            const role = item instanceof Map ? item.get('e') : item.e;
-            const pBundle = item instanceof Map ? item.get('p') : item.p;
-            const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
-            const trackerMaps =
-              (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
-            const pid = getVal(v, 'id');
-            const legacyGitRepo = getVal(v, 'git_repo');
+        const paged = event.queryStringParameters?.paged === '1';
+        const projects = [];
+        let nextToken = paged ? event.queryStringParameters?.nextToken : undefined;
+        do {
+          const membershipPage = await membershipStore.listUserSpaces(userId, nextToken);
+          const settled = await Promise.allSettled(
+            membershipPage.items.map(async (membership) => {
+              const pid = membership.pk.slice('SPACE#'.length);
+              // Index propagation cannot re-authorize a revoked member or preserve an old role.
+              const role = await fetchMembershipRole(g, pid, userId);
+              if (!role) return null;
+              const result = await g
+                .V()
+                .has('Project', 'id', pid)
+                .project('vertex', 'trackers')
+                .by(__.valueMap())
+                .by(projectTrackersFoldStep())
+                .next();
+              if (result.done) return null;
+              const pBundle = result.value;
+              const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+              const trackerMaps =
+                (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
+              const legacyGitRepo = getVal(v, 'git_repo');
 
-            await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
-            const repos = await fetchRepos(g, pid);
+              await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
+              const repos = await fetchRepos(g, pid);
 
-            return withLegacyTracker({
-              id: pid,
-              name: getVal(v, 'name'),
-              gitProvider: getVal(v, 'git_provider') || 'github',
-              gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
-              agentCli: getVal(v, 'agent_cli') || 'kiro',
-              cliModels: parseCliModels(getVal(v, 'cli_models')),
-              tierModels: parseTierModels(getVal(v, 'tier_models')),
-              issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
-              createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-              // Legacy projects created before updated_at existed fall back to created_at.
-              updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-              userRole: role || 'member',
-              trackers: trackerMaps.map(mapBinding),
-              repos,
-              ...readV2Settings(v),
+              return withLegacyTracker({
+                id: pid,
+                name: getVal(v, 'name'),
+                gitProvider: getVal(v, 'git_provider') || 'github',
+                gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
+                agentCli: getVal(v, 'agent_cli') || 'kiro',
+                cliModels: parseCliModels(getVal(v, 'cli_models')),
+                tierModels: parseTierModels(getVal(v, 'tier_models')),
+                issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
+                createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+                // Legacy projects created before updated_at existed fall back to created_at.
+                updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
+                userRole: role || 'member',
+                trackers: trackerMaps.map(mapBinding),
+                repos,
+                ...readV2Settings(v),
+              });
+            }),
+          );
+          // Don't let one project's enrichment failure 500 the whole list.
+          const failed = settled.filter((r) => r.status === 'rejected');
+          if (failed.length > 0) {
+            logger.error('Projects failed to enrich and were omitted', {
+              count: failed.length,
+              reasons: failed.map((f) => f.reason?.message),
             });
-          }),
-        );
-        // Don't let one project's enrichment failure 500 the whole list.
-        const failed = settled.filter((r) => r.status === 'rejected');
-        if (failed.length > 0) {
-          logger.error('Projects failed to enrich and were omitted', {
-            count: failed.length,
-            reasons: failed.map((f) => f.reason?.message),
-          });
-        }
-        const projects = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+          }
+          projects.push(
+            ...settled
+              .filter((r) => r.status === 'fulfilled')
+              .map((r) => r.value)
+              .filter(Boolean),
+          );
+          nextToken = membershipPage.nextToken;
+          if (paged) return response(200, { items: projects, nextToken });
+        } while (nextToken);
         return response(200, projects);
 
       case 'POST': {
@@ -1680,14 +1657,14 @@ export const handler = async (event, context) => {
           await g.addV('User').property('id', userId).property('email', userEmail).next();
         }
 
-        // Add the creator as project owner
-        await g
-          .V()
-          .has('Project', 'id', id)
-          .addE('HAS_MEMBER')
-          .property('role', 'owner')
-          .to(__.V().has('User', 'id', userId))
-          .next();
+        // Membership and its baseline history commit together.
+        await membershipStore.change({
+          spaceId: id,
+          userId,
+          actorId: userId,
+          role: 'owner',
+          action: 'space-created',
+        });
 
         // Notification event for integrations (best-effort, never throws).
         await publishNotificationEvent('space.created', {
@@ -1721,11 +1698,11 @@ export const handler = async (event, context) => {
       case 'PUT': {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
-        // Owners and admins can update project settings
+        // Owners can update project settings
         const updaterRole = await fetchMembershipRole(g, projectId, userId);
         if (!updaterRole) return response(403, { error: 'Access denied' });
-        if (updaterRole !== 'owner' && updaterRole !== 'admin') {
-          return response(403, { error: 'Only project owners and admins can update settings' });
+        if (updaterRole !== 'owner') {
+          return response(403, { error: 'Only project owners can update settings' });
         }
 
         const data = JSON.parse(body);
@@ -1831,7 +1808,7 @@ export const handler = async (event, context) => {
             )
             .next();
         }
-        // v2 settings — owner/admin tunable. Only meaningful for v2 projects;
+        // v2 settings — owner tunable. Only meaningful for v2 projects;
         // writing them on a v1 project is harmless (readV2Settings ignores them).
         let normalizedParkReleaseSeconds;
         if (data.parkReleaseSeconds !== undefined) {
@@ -1933,15 +1910,22 @@ export const handler = async (event, context) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Only owners can delete projects
-        const canDelete = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .outE('HAS_MEMBER')
-          .has('role', 'owner')
-          .inV()
-          .has('User', 'id', userId)
-          .hasNext();
-        if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
+        const deletingMember = await membershipStore.get(projectId, userId);
+        if (deletingMember?.membershipRole !== 'owner')
+          return response(403, { error: 'Only Space Owners can delete spaces' });
+        const beforeRemove = async (memberId) => {
+          requireYjsCleanupTime(cleanupDeadline);
+          await invalidateTrackerBindingsByDelegator(g, memberId, 'space_deleted', projectId);
+          await invalidateProjectBindingsByDelegator(ddb, projectId, memberId, 'space_deleted', {
+            actor: userId,
+          });
+        };
+        // If graph teardown succeeded but the final membership transaction failed,
+        // the same owner can finish cleanup on retry without granting content access.
+        if (!(await g.V().has('Project', 'id', projectId).hasNext())) {
+          await membershipStore.deleteSpaceMembers(projectId, userId, { beforeRemove });
+          return response(204, {});
+        }
 
         // Full cascade. A project owns many intents; each intent owns an entire
         // EXEC#<id> DynamoDB partition (META, stages, events, gates, METRIC#,
@@ -2053,9 +2037,13 @@ export const handler = async (event, context) => {
             .drop()
             .next();
 
-          // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
-          // drop with it).
+          // Drain other memberships while retaining this owner's retry permission.
+          await membershipStore.deleteSpaceMembers(projectId, userId, {
+            keepActor: true,
+            beforeRemove,
+          });
           await g.V().has('Project', 'id', projectId).drop().next();
+          await membershipStore.deleteSpaceMembers(projectId, userId, { beforeRemove });
           logger.info('Project deleted', {
             projectId,
             actor,
@@ -2068,6 +2056,7 @@ export const handler = async (event, context) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
+    if (err.statusCode) return response(err.statusCode, { error: err.message });
     if (err?.code === 'YJS_CLEANUP_PENDING')
       return response(409, {
         error: 'Collaboration cleanup is in progress. Retry deletion shortly.',

@@ -352,3 +352,7 @@ variable "v2_executions_table_name" {
   description = "Process table used for authentication policy, reviews, and invocation inventory"
   type        = string
 }
+
+variable "access_table_name" {
+  type = string
+}

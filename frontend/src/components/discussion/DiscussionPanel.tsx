@@ -69,7 +69,7 @@ export function DiscussionPanel() {
   const role = ctx?.role ?? null;
   // v1 sprint discussions are read-only — every write affordance is hidden.
   const readOnly = scope?.kind === 'sprint';
-  const canRedact = !readOnly && (role === 'admin' || role === 'owner');
+  const canRedact = !readOnly && role === 'owner';
 
   const {
     messages,

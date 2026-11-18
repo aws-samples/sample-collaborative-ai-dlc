@@ -133,20 +133,20 @@ revision.
 
 #### Scope and authored knowledge
 
-| Vertex              | Scope         | Purpose                                                                                                                        |
-| ------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `Project`           | Platform      | A space: membership and the shared knowledge boundary. The vertex label and the `projectId` key keep the space's earlier name. |
-| `Intent`            | Project       | Anchor for one unit of requested agent work.                                                                                   |
-| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.                                                                                 |
-| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.                                                                                 |
-| `Question`          | Intent        | Agent or checkpoint question (summary confirmation, plan approval), structured answer, and answering provenance.               |
-| `Steering`          | Intent        | Human course correction, revision, or redirect.                                                                                |
-| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.                                                                              |
-| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                                                                                        |
-| `PullRequest`       | Intent        | Final intent-level pull request.                                                                                               |
-| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.                                                                      |
-| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.                                                                          |
-| `LearningRule`      | Project       | Reusable team or project learning guardrail.                                                                                   |
+| Vertex              | Scope         | Purpose                                                                                                                       |
+| ------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `Project`           | Platform      | A space: lifecycle and the shared knowledge boundary. The vertex label and the `projectId` key keep the space's earlier name. |
+| `Intent`            | Project       | Anchor for one unit of requested agent work.                                                                                  |
+| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.                                                                                |
+| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.                                                                                |
+| `Question`          | Intent        | Agent or checkpoint question (summary confirmation, plan approval), structured answer, and answering provenance.              |
+| `Steering`          | Intent        | Human course correction, revision, or redirect.                                                                               |
+| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.                                                                             |
+| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                                                                                       |
+| `PullRequest`       | Intent        | Final intent-level pull request.                                                                                              |
+| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.                                                                     |
+| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.                                                                         |
+| `LearningRule`      | Project       | Reusable team or project learning guardrail.                                                                                  |
 
 A checkpoint gate (summary confirmation, plan approval) is a `Question` too:
 the gate is mirrored when it is raised, and Discuss rebuilds a missing vertex
@@ -367,7 +367,7 @@ not by database-level foreign keys:
 
 | Identifier                    | DynamoDB role                                                  | Neptune role                                                      |
 | ----------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `projectId`                   | Space execution index and captured configuration.              | Space scope, membership, knowledge, and learnings.                |
+| `projectId`                   | Space membership, execution index, and captured configuration. | Space scope, knowledge, and learnings.                            |
 | `intentId`                    | Associates the execution header with the user's intent.        | Anchors the intent knowledge subgraph.                            |
 | `executionId`                 | Owns the execution-table partition.                            | Provenance field on artifacts created by that run.                |
 | `stageInstanceId`             | Identifies a stage row and its callbacks, output, and metrics. | Provenance field on artifacts produced by the stage.              |
@@ -457,3 +457,22 @@ The key schemes in `lambda/shared/blocks.js` and
 
 For the surrounding AWS components and other storage services, see
 [Architecture](architecture.md).
+
+## DynamoDB space access and audit
+
+The access table stores one membership per space and stable user ID:
+`pk = SPACE#<spaceId>`, `sk = MEMBER#<userId>`. It carries `userId`,
+`membershipRole` (`owner` or `member`), creation/update timestamps, and a revision.
+Its `by-user` GSI uses `userId` / `pk`, projecting all attributes. Space member
+queries and access checks use consistent base-table reads; the user-space list
+index is eventually consistent and cannot authorize protected content.
+
+A separate audit table stores append-only permission changes under the same space
+partition, keyed by `AUDIT#<ISO-time>#<changeId>`. It records actor, action,
+target user, before/after membership, timestamp, and change ID. Membership and
+history writes commit together in a DynamoDB transaction. Both tables have PITR,
+the installation's encryption/deletion protection, and no TTL. Space deletion
+removes access records while retaining audit history.
+
+See [Space membership migration](../development/membership-migration.md) for
+installation ordering, legacy Admin conversion, pagination, and recovery.

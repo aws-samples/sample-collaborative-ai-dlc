@@ -2,7 +2,7 @@ import { api } from './api';
 import type { GitProvider } from './gitProvider';
 import type { ProjectEnvironmentAssignment } from './environments';
 
-export type ProjectRole = 'owner' | 'admin' | 'member';
+export type ProjectRole = 'owner' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
@@ -131,7 +131,7 @@ export interface UpdateProjectInput {
   cliModels?: CliModels;
   tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
-  // v2 settings (owner/admin tunable).
+  // v2 settings (owner tunable).
   workflowId?: string;
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
@@ -180,8 +180,25 @@ export interface CustomRule {
   uploadUrl?: string;
 }
 
+// REST pages are bounded; callers that need the directory follow every token,
+// including an empty page left by stale index memberships.
+async function listPages<T>(path: string): Promise<T[]> {
+  const items: T[] = [];
+  let nextToken: string | null = null;
+  do {
+    const page: { items: T[]; nextToken: string | null } | T[] = await api.get(
+      `${path}?paged=1${nextToken ? `&nextToken=${encodeURIComponent(nextToken)}` : ''}`,
+    );
+    // A rolled-back backend may still return the legacy array.
+    if (Array.isArray(page)) return [...items, ...page];
+    items.push(...page.items);
+    nextToken = page.nextToken;
+  } while (nextToken);
+  return items;
+}
+
 export const projectsService = {
-  list: () => api.get<Project[]>('/projects'),
+  list: () => listPages<Project>('/projects'),
   get: (id: string) => api.get<Project>(`/projects/${id}`),
   create: (input: CreateProjectInput) => api.post<Project>('/projects', input),
   update: (id: string, input: UpdateProjectInput) => api.put<Project>(`/projects/${id}`, input),
@@ -199,7 +216,7 @@ export const projectsService = {
     api.delete(`/projects/${projectId}/repos?url=${encodeURIComponent(repoUrl)}`),
 
   // Members
-  listMembers: (projectId: string) => api.get<Member[]>(`/projects/${projectId}/members`),
+  listMembers: (projectId: string) => listPages<Member>(`/projects/${projectId}/members`),
   addMember: (projectId: string, input: AddMemberInput) =>
     api.post<Member>(`/projects/${projectId}/members`, input),
   updateMemberRole: (projectId: string, userId: string, role: ProjectRole) =>
@@ -226,7 +243,7 @@ export const projectsService = {
     api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
 
   // Project-level custom MCP servers (raw JSON string, name-keyed JSON object).
-  // The GET response is role-dependent: owners/admins get the raw config
+  // The GET response is role-dependent: owners get the raw config
   // (`customMcpServers`); plain members get server names only (`mcpServerNames`).
   getCustomMcpServers: (projectId: string) =>
     api.get<{ customMcpServers?: string; mcpServerNames?: string[] }>(

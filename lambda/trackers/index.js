@@ -21,11 +21,8 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
-import {
-  trackerBindingProjectionStep,
-  mapBinding,
-  fetchMembershipRole,
-} from '../shared/trackers.js';
+import { trackerBindingProjectionStep, mapBinding } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import { getGitConnection, deleteGitConnection } from '../shared/git-connection-store.js';
 import {
   invalidateBindingsByCredentialRef,
@@ -893,8 +890,8 @@ export const handler = async (event, context) => {
 
     // POST /projects/{id}/trackers
     if (httpMethod === 'POST' && !bindingId) {
-      if (role !== 'owner' && role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can add trackers' });
+      if (role !== 'owner') {
+        return response(403, { error: 'Only project owners can add trackers' });
       }
       const data = body ? JSON.parse(body) : {};
       const provider = data.provider;
@@ -1007,8 +1004,8 @@ export const handler = async (event, context) => {
 
     // DELETE /projects/{id}/trackers/{bindingId}
     if (httpMethod === 'DELETE' && bindingId && !path.includes('/issues')) {
-      if (role !== 'owner' && role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can remove trackers' });
+      if (role !== 'owner') {
+        return response(403, { error: 'Only project owners can remove trackers' });
       }
       if (bindingId === LEGACY_GITHUB_BINDING_ID) {
         // Legacy synthetic binding has no corresponding graph edge to drop.

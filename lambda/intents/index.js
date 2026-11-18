@@ -65,7 +65,8 @@ import {
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
-import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
+import { projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
@@ -4349,8 +4350,8 @@ const handleDeleteIntent = async ({
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
-  if (auth.role !== 'owner' && auth.role !== 'admin') {
-    return response(403, { error: 'Only project owners and admins can delete intents' });
+  if (auth.role !== 'owner') {
+    return response(403, { error: 'Only project owners can delete intents' });
   }
   // The two-pass, intent_id-guarded cascade (Yjs → Neptune → DynamoDB) lives
   // in shared/intent-deletion so the projects lambda reuses it verbatim on a
@@ -4487,8 +4488,8 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
 // Publication recovery is independent of stage recovery and always scoped
 // to the current run. Preview performs reads only, including old executions.
 const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, response }) => {
-  if (auth.role !== 'owner' && auth.role !== 'admin')
-    return response(403, { error: 'Only project owners and admins can retry delivery' });
+  if (auth.role !== 'owner')
+    return response(403, { error: 'Only project owners can retry delivery' });
   const records = await store.getExecutionRecords(intentId, {
     includeOutputs: false,
     consistentRead: true,
@@ -4570,8 +4571,8 @@ const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, respo
 // is replayed from the section start so a sibling that consumed the wrong
 // gate answer cannot be integrated.
 const handleRepairIntent = async ({ event, projectId, intentId, auth, g, response }) => {
-  if (auth.role !== 'owner' && auth.role !== 'admin') {
-    return response(403, { error: 'Only project owners and admins can repair intents' });
+  if (auth.role !== 'owner') {
+    return response(403, { error: 'Only project owners can repair intents' });
   }
   const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
