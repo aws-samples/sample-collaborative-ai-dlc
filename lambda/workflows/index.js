@@ -660,13 +660,53 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
     return res(400, { error: `layer must be one of ${[...VALID_RULE_LAYERS].join(', ')}` });
   }
 
+  // A ref may only point at the SYSTEM baseline or the caller's own library:
+  // loadRules reads blocks straight from ruleTenant at compile time, so an
+  // arbitrary value would resolve another tenant's blocks.
+  const ruleTenant = input.ruleTenant ?? SYSTEM_TENANT;
+  if (ruleTenant !== SYSTEM_TENANT && ruleTenant !== tenant) {
+    return res(400, {
+      error: `ruleTenant must be ${SYSTEM_TENANT} or ${tenant}`,
+      code: 'invalid_rule_tenant',
+    });
+  }
+
+  // Reject a ref that would never resolve or never apply (issue #783): a
+  // missing block used to save silently and surface only in the compiled
+  // view's `unresolved`, and the compiler applies a rule by the BLOCK's own
+  // layer, so a ref under a different layer is dead configuration.
+  const rule = await ddb.send(
+    new GetCommand({
+      TableName: blocksTable(),
+      Key: { pk: blockPk(ruleTenant, 'RULE', ruleId), sk: LATEST },
+    }),
+  );
+  if (!rule.Item) {
+    return res(400, {
+      error: `Rule '${ruleId}' does not exist in tenant '${ruleTenant}'`,
+      code: 'rule_not_found',
+    });
+  }
+  if (!rule.Item.layer) {
+    return res(400, {
+      error: `Rule '${ruleId}' has no layer; set the rule block's layer before attaching it`,
+      code: 'rule_layer_unset',
+    });
+  }
+  if (rule.Item.layer !== layer) {
+    return res(400, {
+      error: `Rule '${ruleId}' is a ${rule.Item.layer}-layer rule; attach it at layer '${rule.Item.layer}'`,
+      code: 'rule_layer_mismatch',
+    });
+  }
+
   const item = {
     pk: workflowPk(tenant, workflowId),
     sk: ruleRefSk(layer, ruleId),
     type: 'RuleRef',
     ruleId,
     layer,
-    ruleTenant: input.ruleTenant ?? SYSTEM_TENANT,
+    ruleTenant,
   };
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);

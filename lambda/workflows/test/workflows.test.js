@@ -634,6 +634,14 @@ describe('workflows handler', () => {
   });
 
   it('adds and removes rule refs, exposed in the composition and rejecting bad layers', async () => {
+    store.set('BLOCK#SYSTEM#RULE#aidlc-org|V#latest', {
+      pk: 'BLOCK#SYSTEM#RULE#aidlc-org',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'RULE',
+      blockId: 'aidlc-org',
+      layer: 'org',
+    });
     await createWorkflow({ id: 'wf', name: 'WF' });
 
     const bad = parse(
@@ -676,6 +684,86 @@ describe('workflows handler', () => {
     expect(removed.statusCode).toBe(204);
     const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
     expect(after.body.ruleRefs).toEqual([]);
+  });
+
+  it('rejects rule refs that would never resolve or never apply', async () => {
+    const seedRule = (tenant, id, layer) => {
+      store.set(`BLOCK#${tenant}#RULE#${id}|V#latest`, {
+        pk: `BLOCK#${tenant}#RULE#${id}`,
+        sk: 'V#latest',
+        tenantId: tenant,
+        blockType: 'RULE',
+        blockId: id,
+        ...(layer ? { layer } : {}),
+      });
+    };
+    seedRule('default', 'team-language', 'team');
+    seedRule('SYSTEM', 'no-layer-rule', null);
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const addRule = (body) =>
+      handler(event({ method: 'POST', workflowId: 'wf', path: 'rules', body }));
+
+    // Missing block: the library rule exists only in `default`, so the implicit
+    // SYSTEM default and an explicit SYSTEM tenant both fail to resolve.
+    const missing = parse(await addRule({ ruleId: 'team-language', layer: 'team' }));
+    expect(missing.status).toBe(400);
+    expect(missing.body.code).toBe('rule_not_found');
+    const missingExplicit = parse(
+      await addRule({ ruleId: 'team-language', layer: 'team', ruleTenant: 'SYSTEM' }),
+    );
+    expect(missingExplicit.status).toBe(400);
+    expect(missingExplicit.body.code).toBe('rule_not_found');
+
+    const foreignTenant = parse(
+      await addRule({ ruleId: 'team-language', layer: 'team', ruleTenant: 'other-tenant' }),
+    );
+    expect(foreignTenant.status).toBe(400);
+    expect(foreignTenant.body.code).toBe('invalid_rule_tenant');
+
+    // The compiler applies a rule by the block's own layer, so a mismatched or
+    // absent block layer is dead configuration.
+    const mismatch = parse(
+      await addRule({ ruleId: 'team-language', layer: 'project', ruleTenant: 'default' }),
+    );
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.code).toBe('rule_layer_mismatch');
+    const layerless = parse(await addRule({ ruleId: 'no-layer-rule', layer: 'org' }));
+    expect(layerless.status).toBe(400);
+    expect(layerless.body.code).toBe('rule_layer_unset');
+
+    const ok = parse(
+      await addRule({ ruleId: 'team-language', layer: 'team', ruleTenant: 'default' }),
+    );
+    expect(ok.status).toBe(201);
+    expect(ok.body).toMatchObject({
+      ruleId: 'team-language',
+      layer: 'team',
+      ruleTenant: 'default',
+    });
+
+    // None of the rejected calls persisted a ref or bumped the version.
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(after.body.ruleRefs).toEqual([
+      { ruleId: 'team-language', layer: 'team', ruleTenant: 'default' },
+    ]);
+    expect(after.body.version).toBe(2);
+  });
+
+  it('still compiles pre-existing unresolved rule refs into rules.unresolved', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    // Written directly to the table (as seed-blocks does), bypassing the API
+    // validation: the compiled view must keep reporting it, not fail.
+    store.set('WF#default#wf|RULEREF#team#ghost-rule', {
+      pk: 'WF#default#wf',
+      sk: 'RULEREF#team#ghost-rule',
+      type: 'RuleRef',
+      ruleId: 'ghost-rule',
+      layer: 'team',
+      ruleTenant: 'SYSTEM',
+    });
+    const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
+    expect(res.status).toBe(200);
+    expect(res.body.rules.unresolved).toEqual(['ghost-rule']);
   });
 
   it('compiles the rule view: universal layers everywhere, phase rules by phase match', async () => {

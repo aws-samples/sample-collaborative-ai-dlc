@@ -49,9 +49,13 @@ Each placement carries a **scope membership** map: for every scope, whether the 
 - New placements default their membership from the SYSTEM baseline for the same stage.
 - A placement with no `EXECUTE` in any scope can never run — the composer marks the chip with a warning badge ("No scope — never runs") so dead configuration is caught while authoring, not in a run.
 
+### Rule stack
+
+The **Rules** tab lists the rules attached to the workflow, grouped by layer in the resolution chain (org → team → team-learnings → project → project-learnings → phase). At stage start the referenced rule bodies are concatenated in that order (alphabetical by rule id within a layer) into the stage's steering doc, so the tab shows the order agents read. Attach a rule from the SYSTEM baseline or the user library — the layer and owning tenant come from the rule block itself — or remove one. The API rejects a reference whose rule block doesn't exist in the named tenant or whose layer differs from the block's own layer. Stage-layer rules are reserved by the methodology and cannot be attached yet.
+
 ### Scope graph and insights
 
-The composer includes the **workflow scope graph** — the compiled stage DAG (produces → consumes and requires edges) filtered per scope — plus an insights panel surfacing compiled warnings: cycles, orphaned artifacts, zero-scope placements, and the per-stage autonomy profile.
+The composer includes the **workflow scope graph** — the compiled stage DAG (produces → consumes and requires edges) filtered per scope — plus an insights panel surfacing compiled warnings: cycles, orphaned artifacts, zero-scope placements, unresolved rule references, and the per-stage autonomy profile.
 
 ## Versioning and pinning
 
