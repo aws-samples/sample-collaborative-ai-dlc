@@ -85,7 +85,7 @@ sso_providers = {}
 # Lifetimes of the Cognito tokens issued after every sign-in, local or
 # federated. Lower them when an identity policy caps session length; see
 # docs/getting-started/enterprise-sso.md#token-lifetimes. Without the refresh
-# value, sessions last 24 hours with enterprise SSO and 7 days in local mode.
+# value, users sign in again after 24 hours with enterprise SSO and 7 days in local mode.
 #
 #   auth_access_token_validity_minutes = 60 # 5-1440
 #   auth_id_token_validity_minutes     = 60 # 5-1440
