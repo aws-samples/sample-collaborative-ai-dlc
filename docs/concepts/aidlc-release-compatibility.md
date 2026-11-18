@@ -336,7 +336,9 @@ keeps the 2.11 frontmatter dialect, scope settings, sensor declarations and the
 eleven compilable scope plans.
 Its Requirements Analysis `outputs` description has an unquoted colon that
 makes the upstream YAML invalid; importer revision 4 quotes that known scalar
-without changing its value.
+without changing its value. Its sensor scripts import sibling modules by their
+emitted `.js` name; importer revision 5 resolves those to the published `.ts`
+files, so its recorded dependency closure is complete.
 
 The 2.11.3 adapter keeps repository membership fixed and supports an optional
 human plan review. Administrators can inspect these differences before approval:
