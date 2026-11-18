@@ -278,6 +278,18 @@ test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
   assert.match(example, /^enable_waf\s+= false$/m);
 });
 
+test('the frontend distribution sends security headers with the application shell', () => {
+  const frontend = read('terraform/modules/frontend/main.tf');
+  assert.match(
+    frontend,
+    /data "aws_cloudfront_response_headers_policy" "security_headers" \{\s*name = "Managed-SecurityHeadersPolicy"\s*\}/,
+  );
+  assert.match(
+    frontend,
+    /default_cache_behavior \{[\s\S]*?response_headers_policy_id = data\.aws_cloudfront_response_headers_policy\.security_headers\.id[\s\S]*?function_association \{/,
+  );
+});
+
 test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   const runtimePolicy = read('terraform/modules/security/dynamodb-kms-runtime-access/main.tf');
   for (const action of [
