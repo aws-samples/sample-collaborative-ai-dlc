@@ -7,11 +7,17 @@
 // (Claude: .claude/rules, Kiro: .kiro/steering) by the stage materializer, so
 // the CLI auto-loads them — mirroring the retired v1 pool-worker
 // `writeScopedRules` (commit acd2d33) rather than concatenating into the prompt.
+//
+// With engine data enabled the bodies come from engine-data's
+// blob.readCustomRules, which reads the rules the execution META lists and
+// keeps the same per-document skips. Its denials and transport errors are not
+// an empty read: they reject, and the runtime S3 client is never used.
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import path from 'node:path';
 import { s3 as defaultS3 } from './clients.js';
+import { blobAccessFor } from './engine-data-client.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'custom-rules' } });
 
@@ -40,9 +46,18 @@ export const fetchCustomRules = async ({
   env = process.env,
   s3 = defaultS3,
   log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
+  blobs,
 } = {}) => {
+  if (!Array.isArray(customRules) || customRules.length === 0) return [];
+  if (env.ENGINE_DATA_FUNCTION) {
+    const filenames = customRules
+      .filter((doc) => doc && isSafeKey(doc.s3Key))
+      .map((doc) => doc.filename || path.basename(doc.s3Key));
+    if (filenames.length === 0) return [];
+    return (blobs ?? blobAccessFor({ env })).readCustomRules({ filenames });
+  }
   const bucket = env.ARTIFACTS_BUCKET;
-  if (!bucket || !Array.isArray(customRules) || customRules.length === 0) return [];
+  if (!bucket) return [];
 
   const out = [];
   for (const doc of customRules) {

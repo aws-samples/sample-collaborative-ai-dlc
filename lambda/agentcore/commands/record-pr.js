@@ -14,17 +14,12 @@
 //   { ok: false, reason: 'missing_input' }     — no identity / no prs
 //   { ok: false, reason: 'record_failed', detail } — infra error
 
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 
 export const recordPr = async (payload, deps) => {
   const { projectId, intentId, executionId, prs = [] } = payload ?? {};
-  const {
-    store,
-    openGraph,
-    broadcast = async () => {},
-    clock,
-    createWriter = createGraphWriter,
-  } = deps;
+  const { store, broadcast = async () => {} } = deps;
+  const openEngineGraph = engineGraphOpener(deps);
   if (!intentId || !executionId || !Array.isArray(prs) || prs.length === 0) {
     return { ok: false, reason: 'missing_input' };
   }
@@ -33,14 +28,9 @@ export const recordPr = async (payload, deps) => {
   const event = (type, summary) =>
     store?.appendEvent?.({ executionId, type, actor: 'agentcore', summary }).catch(() => {});
 
-  let g;
+  let graph;
   try {
-    g = await openGraph();
-    const graph = createWriter({
-      g,
-      scope: { projectId, intentId, executionId },
-      ...(clock ? { clock } : {}),
-    });
+    graph = await openEngineGraph({ projectId, intentId, executionId });
 
     const recorded = [];
     for (const pr of prs) {
@@ -57,6 +47,6 @@ export const recordPr = async (payload, deps) => {
     await event('v2.pr.record_failed', e.message);
     return { ok: false, reason: 'record_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };

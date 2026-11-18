@@ -449,6 +449,29 @@ default_severity: advisory
     );
   });
 
+  it('quotes the 2.11.3 requirements output description without changing its value', () => {
+    const requirementsPath = 'core/aidlc-common/stages/inception/requirements-analysis.md';
+    const outputDescription =
+      "requirements.md, requirements-analysis-questions.md, traceability.json (Step 10: an `ids` list with one entry per FR and NFR ID, spelled exactly as requirements.md spells it, each with `kind` functional or non-functional and, for a sub-requirement, `of` its requirement) (under this stage's record dir, engine-resolved)";
+    const requirementsSource = `---\nslug: requirements-analysis\noutputs: ${outputDescription}\n---\n# Requirements`;
+    const result = normalizeAidlcFrontmatter({
+      profileId: 'v2.11.3',
+      path: requirementsPath,
+      content: requirementsSource,
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.normalizations).toEqual([
+      expect.objectContaining({
+        code: 'quote-stage-output-description',
+        path: requirementsPath,
+      }),
+    ]);
+    expect(parseFrontmatterStrict(result.content, { path: requirementsPath }).data.outputs).toBe(
+      outputDescription,
+    );
+  });
+
   it('does not apply the 2.8+ dialect to legacy profiles', () => {
     const result = normalizeAidlcFrontmatter({
       profileId: 'v2.7.0',

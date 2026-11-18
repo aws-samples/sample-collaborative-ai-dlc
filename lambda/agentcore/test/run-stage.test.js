@@ -1,18 +1,20 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { mockClient } from 'aws-sdk-client-mock';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import { runWithGatewayGrant } from '../mcp/gateway-context.js';
+import { authorizeMcpSecretRequest } from '../../credential-broker/mcp-secrets.js';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
-import {
-  runStage,
-  resetKiroCreditRateCache,
-  withPlatformSensors,
-  __test,
-} from '../commands/run-stage.js';
+import { runStage, withPlatformSensors, __test } from '../commands/run-stage.js';
+import { resetKiroCreditRateCache } from '../cli/kiro-usage.js';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import {
   commitAndPushAll as realCommitAndPushAll,
@@ -22,15 +24,20 @@ import {
 import { repoCheckoutPath } from '../../shared/repo-validation.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { currentCredentialSession } from '../credential-session.js';
-import { renderRulesDoc } from '../stage-materializer.js';
+import {
+  materializeOpenCodeConfig as stageOpenCodeConfig,
+  renderRulesDoc,
+} from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
+import { createRemoteProcessStore } from '../engine-data-client.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
 import { evaluateGatePreconditions, sensorGateFindings } from '../../shared/gate-preconditions.js';
 import { MAX_SENSOR_REASON_LENGTH } from '../../shared/sensor-verdict.js';
+import { autonomousLoopBackGate } from '../../shared/construction-autonomy.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -911,6 +918,29 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
   });
 
+  it.each([0, 2])('logs CLI exit %s at the appropriate severity', async (exitCode) => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      await runStage(
+        baseArgs,
+        baseDeps({
+          spawnFn: () => ({
+            on: (event, callback) => event === 'close' && setImmediate(() => callback(exitCode)),
+            stdin: { end() {} },
+          }),
+        }),
+      );
+      const expected = exitCode === 0 ? info : error;
+      const other = exitCode === 0 ? error : info;
+      expect(expected).toHaveBeenCalledWith('cli exit', expect.objectContaining({ exitCode }));
+      expect(other).not.toHaveBeenCalledWith('cli exit', expect.anything());
+    } finally {
+      info.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('records FAILED on a non-zero CLI exit', async () => {
     const deps = baseDeps({
       spawnFn: () => ({
@@ -924,6 +954,46 @@ describe('runStage — failure paths (always records terminal state)', () => {
       deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
     ).toBe(true);
   });
+
+  it.each(['error', 'close'])(
+    'records FAILED and logs cli_error when the child emits %s without an exit code',
+    async (event) => {
+      const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      try {
+        const deps = baseDeps({
+          spawnFn: () => {
+            const child = new EventEmitter();
+            child.stdin = { end() {} };
+            setImmediate(() =>
+              child.emit(
+                event,
+                event === 'error'
+                  ? Object.assign(new Error('spawn fixture ENOENT'), { code: 'ENOENT' })
+                  : null,
+              ),
+            );
+            return child;
+          },
+        });
+        const result = await runStage(baseArgs, deps);
+        expect(result).toMatchObject({ ok: false, reason: 'cli_error' });
+        expect(
+          deps.store.calls.some(
+            ([name, row]) => name === 'updateStageState' && row.state === 'FAILED',
+          ),
+        ).toBe(true);
+        expect(error).toHaveBeenCalledWith(
+          'cli_error',
+          expect.objectContaining({ code: event === 'error' ? 'ENOENT' : 'cli_no_exit_code' }),
+        );
+        expect(info).not.toHaveBeenCalledWith('cli exit', expect.anything());
+      } finally {
+        info.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
 
   it('fails fast on a not-implemented (agent-team) stage without spawning', async () => {
     const lib = library();
@@ -1174,6 +1244,134 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
     global: {},
     project: { tool: { command: 'npx', env: { API: '${MYSERVER_KEY}' } } },
   };
+
+  it.each([true, false])(
+    'uses the broker in enabled mode, success=%s, never local SSM or fallback',
+    async (success) => {
+      const lambda = mockClient(LambdaClient);
+      const ssm = mockClient(SSMClient);
+      const local = vi.fn(() => {
+        throw new Error('local resolver tripwire');
+      });
+      const { cap, spawnFn } = capturingSpawn();
+      vi.stubEnv('ENGINE_DATA_FUNCTION', 'engine-data');
+      vi.stubEnv('CREDENTIAL_BROKER_FUNCTION', 'credential-broker');
+      ssm.onAnyCommand().rejects(new Error('direct SSM tripwire'));
+      const deps = baseDeps({ spawnFn, resolveMcpSecrets: local, loadConductor: async () => '' });
+      const secretRead = vi.fn(async ({ input }) => {
+        expect(input).toEqual({
+          Name: '/app/dev/projects/p1/mcp-secrets/MYSERVER_KEY',
+          WithDecryption: true,
+        });
+        return { Parameter: { Value: 'broker-secret' } };
+      });
+      lambda.on(InvokeCommand).callsFake(async (input) => {
+        expect(input.FunctionName).toBe('credential-broker');
+        expect(JSON.parse(Buffer.from(input.Payload))).toEqual({
+          action: 'resolve-mcp-secrets',
+          gatewayGrant: 'stage-grant',
+          projectId: 'p1',
+          mcpServersByTier: serversByTier,
+        });
+        const request = JSON.parse(Buffer.from(input.Payload));
+        const result = success
+          ? await authorizeMcpSecretRequest(request, {
+              env: {
+                ENGINE_DATA_ENABLED: 'true',
+                V2_PROCESS_TABLE: 'process',
+                AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
+              },
+              verifyGrant: async () => ({
+                mode: 'stage',
+                projectId: baseArgs.projectId,
+                intentId: baseArgs.intentId,
+                executionId: baseArgs.executionId,
+                stageId: baseArgs.stageId,
+              }),
+              ddbClient: {
+                send: async ({ input: read }) => {
+                  expect(read.ConsistentRead).toBe(true);
+                  expect(read.Key.pk).toBe('EXEC#e1');
+                  if (read.Key.sk === 'META')
+                    return { Item: { ...baseArgs, mcpServersByTier: serversByTier } };
+                  const stage = deps.store.calls.find(([op]) => op === 'putStage')[1];
+                  expect(read.Key.sk).toBe(`STAGE#${stage.stageInstanceId}`);
+                  return { Item: stage };
+                },
+              },
+              ssmClient: { send: secretRead },
+            })
+          : { ok: false, code: 'MCP_SECRET_MISSING' };
+        return { Payload: Buffer.from(JSON.stringify(result)) };
+      });
+      try {
+        const result = await runWithGatewayGrant('stage-grant', () =>
+          runStage({ ...baseArgs, mcpServersByTier: serversByTier }, deps),
+        );
+        expect(result).toMatchObject(
+          success ? { ok: true, state: 'SUCCEEDED' } : { ok: false, reason: 'mcp_secret_error' },
+        );
+        expect(cap.env?.MYSERVER_KEY ?? null).toBe(success ? 'broker-secret' : null);
+        expect(local).not.toHaveBeenCalled();
+        expect(ssm.calls()).toHaveLength(0);
+        expect(lambda.calls()).toHaveLength(1);
+        expect(secretRead).toHaveBeenCalledTimes(success ? 1 : 0);
+      } finally {
+        lambda.restore();
+        ssm.restore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  describe('with runtime_mcp_credentials = gateway_only', () => {
+    const SENTINEL = 'sentinel-runtime-mcp-secret-e21b';
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([
+      ['a stdio server with a secret ref', serversByTier, undefined],
+      [
+        'a remote server with an inline header',
+        {
+          global: {
+            wiki: { type: 'http', url: 'https://wiki.example/mcp', headers: { A: SENTINEL } },
+          },
+          project: {},
+        },
+        undefined,
+      ],
+      ['a stdio server on resume', serversByTier, 'q-1'],
+    ])(
+      'fails the stage on %s before resolving secrets or spawning',
+      async (_l, byTier, resumeFrom) => {
+        vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+        const resolveMcpSecrets = vi.fn(async () => ({ secretEnv: { MYSERVER_KEY: SENTINEL } }));
+        const { cap, spawnFn } = capturingSpawn();
+        const deps = baseDeps({ spawnFn, resolveMcpSecrets });
+        const res = await runStage({ ...baseArgs, resumeFrom, mcpServersByTier: byTier }, deps);
+
+        expect(res).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+        expect(res.detail).toContain('mcp_gateway_custom_targets');
+        expect(resolveMcpSecrets).not.toHaveBeenCalled();
+        expect(cap.env).toBeNull();
+        expect(JSON.stringify(deps.store.calls)).not.toContain(SENTINEL);
+        expect(
+          deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+        ).toBe(true);
+      },
+    );
+
+    it('runs a stage without custom MCP servers unchanged', async () => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const { cap, spawnFn } = capturingSpawn();
+      const res = await runStage(
+        { ...baseArgs, mcpServersByTier: { global: {}, project: {} } },
+        baseDeps({ spawnFn, resolveMcpSecrets: async () => ({ secretEnv: {} }) }),
+      );
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(cap.env).not.toBeNull();
+    });
+  });
 
   it('injects the resolved secretEnv into the child spawn env', async () => {
     const { cap, spawnFn } = capturingSpawn();
@@ -2079,6 +2277,88 @@ describe('runStage — LLM reviewer axis', () => {
     return store;
   };
 
+  // The human answers "Request changes" while reading the reviewer's findings,
+  // often by reference ("apply 1 and 3"). The resumed author gets the review the
+  // human saw at that gate, not a later run.
+  describe('a validation revision', () => {
+    const GATE_ID = 'gate-validation-1';
+    const OPENED_AT = '2026-11-04T10:00:00.000Z';
+    const SEEN = '1. Missing acceptance criteria\n2. Vague scope\n3. No error states';
+    const revision = ({ rows, feedback = 'Apply findings 1 and 3' } = {}) => {
+      const store = spyStore({
+        humanTask: {
+          humanTaskId: GATE_ID,
+          kind: 'validation',
+          status: 'answered',
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          createdAt: OPENED_AT,
+          answer: { decision: 'request-changes', feedback },
+        },
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: GATE_ID,
+          cli: 'claude',
+          cliSessionId: 'session-1',
+        },
+      });
+      store.listSensorRuns = async () => rows;
+      const prompts = [];
+      const spawnFn = (_command, args) => {
+        prompts.push(args.join(' '));
+        return { ...okSpawn(), stdin: { end: (text) => text && prompts.push(String(text)) } };
+      };
+      const deps = baseDeps({
+        store,
+        spawnFn,
+        loadLibrary: async () => ({ workflow: workflow(), library: libWithReviewer() }),
+      });
+      return { deps, prompts };
+    };
+    const resumeText = (prompts) => prompts.find((p) => p.includes('requested changes')) ?? '';
+
+    it('includes the findings the human saw with their feedback', async () => {
+      const { deps, prompts } = revision({
+        rows: [
+          { ...reviewerRow('NOT-READY', SEEN), timestamp: '2026-11-04T09:59:00.000Z' },
+          { ...reviewerRow('READY', 'a later review'), timestamp: '2026-11-04T10:30:00.000Z' },
+        ],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).toContain('(aidlc-reviewer-agent, NOT-READY)');
+      expect(text).toContain('3. No error states');
+      expect(text).toContain('apply the findings it asks for, and only those');
+      expect(text).not.toContain('a later review');
+    });
+
+    it('does not resume the author when the review cannot be read', async () => {
+      const { deps, prompts } = revision({ rows: [] });
+      deps.store.listSensorRuns = vi.fn(async () => {
+        throw new Error('Storage unavailable');
+      });
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: false, reason: 'resume_state_unavailable' });
+      expect(prompts).toEqual([]);
+      expect(deps.store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(
+        false,
+      );
+    });
+
+    it('sends only the feedback when the review recorded no findings', async () => {
+      const { deps, prompts } = revision({
+        rows: [{ ...reviewerRow('NOT-READY', ''), timestamp: '2026-11-04T09:59:00.000Z' }],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).not.toContain('The independent review the human saw');
+    });
+  });
+
   it('fails a reviewer-only stage when the reviewer returns NOT-READY', async () => {
     const deps = baseDeps({
       store: storeWithVerdict('NOT-READY', 'missing acceptance criteria'),
@@ -2484,6 +2764,12 @@ describe('buildReviewerPrompt — read scope + identity marker', () => {
     knowledge: '',
     round: 1,
   };
+
+  it('asks for numbered findings, each with its required action', () => {
+    const prompt = buildReviewerPrompt(args);
+    expect(prompt).toContain('Number every finding, starting at 1');
+    expect(prompt).toContain('refer to findings by number');
+  });
 
   it('instructs the identity marker: reviewer arg + verbatim first findings line', () => {
     const prompt = buildReviewerPrompt(args);
@@ -3058,6 +3344,90 @@ describe('runStage — resume mode', () => {
     return { spawnFn, get: () => captured };
   };
 
+  // The gate UI answers a single-choice question with an option index. The
+  // resumed agent must read the chosen label (and any note), not raw JSON: the
+  // 2.11.3 plan-review fallback asks Approve plan / Request changes this way and
+  // the agent revises and asks again only if it can tell which one was chosen.
+  it.each([
+    { pick: 0, label: 'Approve plan', note: undefined },
+    { pick: 1, label: 'Request changes', note: 'Split the migration into its own step.' },
+  ])(
+    'resumes an ordinary question with its chosen label: $label',
+    async ({ pick, label, note }) => {
+      const cap = captureArgv();
+      const deps = baseDeps({
+        spawnFn: cap.spawnFn,
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-1',
+            status: 'answered',
+            questions: JSON.stringify([
+              {
+                text: 'Review the plan before coding',
+                options: [{ label: 'Approve plan' }, { label: 'Request changes' }],
+              },
+            ]),
+            answer: { answers: [{ selectedOptions: [pick], ...(note ? { freeText: note } : {}) }] },
+          },
+          stage: { cli: 'claude', cliSessionId: 'sess-7' },
+        }),
+      });
+
+      const res = await runStage(
+        { ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) },
+        deps,
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const prompt = cap.get().prompt;
+      expect(prompt).toContain(`"${label}"`);
+      expect(prompt).not.toContain('selectedOptions');
+      if (note) expect(prompt).toContain(note);
+    },
+  );
+
+  // An ordinary question can carry several sub-questions, and a sub-question
+  // can allow several options. Every answer reaches the agent, each against its
+  // own question, with any note the human added.
+  it('resumes a multi-question answer with every choice and note', async () => {
+    const cap = captureArgv();
+    const deps = baseDeps({
+      spawnFn: cap.spawnFn,
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          questions: JSON.stringify([
+            { text: 'Which database?', options: [{ label: 'Postgres' }, { label: 'DynamoDB' }] },
+            {
+              text: 'Which regions?',
+              multiSelect: true,
+              options: [{ label: 'eu-west-1' }, { label: 'us-east-1' }, { label: 'ap-south-1' }],
+            },
+          ]),
+          answer: {
+            answers: [
+              { selectedOptions: [1] },
+              { selectedOptions: [0, 2], freeText: 'Keep latency under 50 ms.' },
+            ],
+          },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+
+    const prompt = cap.get().prompt;
+    expect(prompt).toContain('Which database?');
+    expect(prompt).toContain('"DynamoDB"');
+    expect(prompt).toContain('Which regions?');
+    expect(prompt).toContain('"eu-west-1"');
+    expect(prompt).toContain('"ap-south-1"');
+    expect(prompt).toContain('Keep latency under 50 ms.');
+    expect(prompt).not.toContain('selectedOptions');
+  });
+
   it('resumes the persisted Claude conversation with --resume + the answer, reaches SUCCEEDED', async () => {
     const cap = captureArgv();
     const deps = baseDeps({
@@ -3320,6 +3690,40 @@ describe('runStage — resume mode', () => {
     // The marker is stamped only after a COMPLETE archive, so a replay of a
     // finished archive skips it and the pass-1 heads this attempt is about to write
     // are not archived as if they were pass 0's.
+    // The jump an autonomous run takes itself writes the same kind of row a human
+    // loop-back leaves, so the target's re-run finds it, archives, and is told why.
+    it('re-enters fresh from the gate row an autonomous loop-back stores', async () => {
+      const AUTO_ID = 'eg-validation-si-bt-lb0-0-run-1';
+      const { open, answer } = autonomousLoopBackGate({
+        humanTaskId: AUTO_ID,
+        stage: { stageId: 'build-and-test', stageInstanceId: RECOMMENDER_INSTANCE_ID },
+        loopBack: {
+          offered: true,
+          target: { stageId: 'requirements-analysis' },
+          reason: 'payment integration tests fail',
+          spent: 0,
+        },
+      });
+      const { deps, archiveArtifactsForStages, order } = archiveHarness();
+      deps.store.getHumanTask = async (_executionId, humanTaskId) =>
+        humanTaskId === AUTO_ID ? { ...open, ...answer } : null;
+      let promptSeen = null;
+      deps.spawnFn = () => {
+        order.push('spawn');
+        return { ...okSpawn(), stdin: { end: (prompt) => (promptSeen = prompt) } };
+      };
+
+      const res = await runStage({ ...baseArgs, resumeFrom: AUTO_ID }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(archiveArtifactsForStages.mock.calls[0][0]).toMatchObject({
+        stageInstanceIds: [BASE_STAGE_INSTANCE_ID, RECOMMENDER_INSTANCE_ID],
+        restartId: `loopback-${AUTO_ID}`,
+      });
+      expect(order[0]).toBe('archive');
+      expect(promptSeen).toContain('payment integration tests fail');
+    });
+
     it('does not archive again when this decision already archived', async () => {
       const { deps, archiveArtifactsForStages } = archiveHarness({
         stage: { loopBackArchiveId: GATE_ID },
@@ -3538,7 +3942,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     };
 
   const codexSpawn =
-    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0 } = {}) =>
+    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0, usage } = {}) =>
     (command, args) => {
       capture?.({ command, args });
       const child = new EventEmitter();
@@ -3557,6 +3961,12 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
             `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
           ),
         );
+        if (usage) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(`${JSON.stringify({ type: 'turn.completed', usage })}\n`),
+          );
+        }
         child.emit('close', exitCode);
       });
       return child;
@@ -3629,6 +4039,76 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     const argv = seen.find((value) => value.args);
     expect(argv.args[argv.args.indexOf('--session') + 1]).toBe('ses_old');
     expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  describe('under gateway_only, with the durable store in a single-repository checkout', () => {
+    // A Git hook's GIT_DIR/GIT_INDEX_FILE would point these commands at this repository.
+    const gitEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+    );
+    afterEach(() => vi.unstubAllEnvs());
+    const resume = async ({ tracked }) => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-ocstore-'));
+      // OpenCode's user config is under HOME: keep the developer's out.
+      vi.stubEnv('HOME', nodePath.join(root, 'home'));
+      const ws = nodePath.join(root, 'ws');
+      const stored = nodePath.join(ws, '.opencode-data', 'opencode');
+      await mkdir(stored, { recursive: true });
+      await writeFile(nodePath.join(stored, 'opencode.db'), 'sessions');
+      if (tracked) {
+        await writeFile(
+          nodePath.join(stored, 'auth.json'),
+          JSON.stringify({ 'https://config.example': { type: 'wellknown', key: 'K', token: 't' } }),
+        );
+      }
+      execFileSync('git', ['init', '-q'], { cwd: ws, env: gitEnv });
+      if (tracked) execFileSync('git', ['add', '.opencode-data'], { cwd: ws, env: gitEnv });
+      const local = nodePath.join(root, 'local');
+      const seen = [];
+      const res = runStage(
+        { ...baseArgs, workspaceDir: ws, requestedCli: 'opencode', resumeFrom: 'q-open' },
+        baseDeps({
+          availableClis: ['opencode'],
+          env: {
+            BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+            OPENCODE_XDG_DATA_HOME: local,
+            V2_OPENCODE_STORE_DIR: nodePath.join(ws, '.opencode-data'),
+          },
+          store: spyStore({
+            humanTask: { humanTaskId: 'q-open', status: 'answered', answer: { freeText: 'Go' } },
+            stage: { cli: 'opencode', cliSessionId: 'ses_old' },
+          }),
+          materializeOpenCodeConfig: stageOpenCodeConfig,
+          spawnFn: openCodeSpawn({
+            emitSession: false,
+            capture: (value) =>
+              value.args &&
+              seen.push({
+                args: value.args,
+                restored: readFileSync(nodePath.join(local, 'opencode', 'opencode.db'), 'utf8'),
+                auth: existsSync(nodePath.join(local, 'opencode', 'auth.json')),
+              }),
+          }),
+          hasOpenCodeStore: async () => true,
+        }),
+      );
+      return { res, seen };
+    };
+
+    it('refuses to resume from a store the repository tracks', async () => {
+      const { res, seen } = await resume({ tracked: true });
+      await expect(res).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+      expect(seen).toEqual([]);
+    });
+
+    it('still resumes from the store the platform wrote', async () => {
+      const { res, seen } = await resume({ tracked: false });
+      await expect(res).resolves.toMatchObject({ ok: true, cli: 'opencode' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].args[seen[0].args.indexOf('--session') + 1]).toBe('ses_old');
+      expect(seen[0]).toMatchObject({ restored: 'sessions', auth: false });
+    });
   });
 
   it('persists the first observed Codex thread id before marking a parked stage waiting', async () => {
@@ -3707,7 +4187,11 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     };
     const restoreCodexRollout = vi.fn(async () => {
       order.push('restore');
-      return { ok: true, status: 'restored' };
+      return {
+        ok: true,
+        status: 'restored',
+        usage: { input_tokens: 100, output_tokens: 20, cached_input_tokens: 50 },
+      };
     });
     const persistCodexRollout = vi.fn(async () => {
       order.push('persist');
@@ -3730,6 +4214,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
         cleanupCodexHome: vi.fn(async () => true),
         spawnFn: codexSpawn({
           emitSession: false,
+          usage: { input_tokens: 140, output_tokens: 30, cached_input_tokens: 75 },
           capture: ({ args }) => {
             if (args) order.push('spawn');
           },
@@ -3748,6 +4233,13 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     expect(order.indexOf('restore')).toBeLessThan(order.indexOf('resume-row'));
     expect(order.indexOf('restore')).toBeLessThan(order.indexOf('spawn'));
     expect(order.indexOf('persist')).toBeGreaterThan(order.indexOf('spawn'));
+    expect(
+      store.calls.filter(([method]) => method === 'recordMetric').map(([, row]) => row.metrics),
+    ).toContainEqual({
+      tokensInput: 40,
+      tokensOutput: 10,
+      tokensCacheRead: 25,
+    });
   });
 
   it('demotes a Codex resume when its durable rollout is missing', async () => {
@@ -4417,6 +4909,56 @@ describe('runStage — Kiro store sync (restore before spawn, persist after)', (
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
+  // Engine data answers every call under a grant whose run a rewind replaced
+  // with this denial; the client rehydrates it into a thrown error.
+  const deniedStore = (code) =>
+    createRemoteProcessStore({
+      grant: () => 'grant',
+      invoke: async () => ({
+        error: { name: 'EngineDataAccessDenied', code, message: 'Engine data call denied' },
+      }),
+    });
+
+  it('reports a stage claim denied for a replaced run as retired', async () => {
+    const remote = deniedStore('run_retired');
+    const store = { ...spyStore(), claimStageAttempt: remote.claimStageAttempt };
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn }),
+    );
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed claim as retired when the META re-read is denied for a replaced run', async () => {
+    const store = {
+      ...spyStore(),
+      claimStageAttempt: async () => {
+        throw Object.assign(new Error('RUNNING under cb-old'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      },
+      getExecution: deniedStore('run_retired').getExecution,
+    };
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn: vi.fn(okSpawn) }),
+    );
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+  });
+
+  it('still fails a stage on any other engine-data denial', async () => {
+    const remote = deniedStore('scope_mismatch');
+    const store = { ...spyStore(), claimStageAttempt: remote.claimStageAttempt };
+    await expect(
+      runStage(
+        { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+        baseDeps({ store, spawnFn: vi.fn(okSpawn) }),
+      ),
+    ).rejects.toMatchObject({ name: 'EngineDataAccessDenied', code: 'scope_mismatch' });
+  });
+
   it('retires a superseded Kiro answer without changing stage state', async () => {
     const seed = ownedMissingSession();
     seed.humanTask.status = 'superseded';
@@ -4701,6 +5243,75 @@ describe('runStage — Kiro store sync (restore before spawn, persist after)', (
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'credential_invalid' });
+  });
+});
+
+describe('runStage — measured token usage', () => {
+  const usage = {
+    input_tokens: 8,
+    output_tokens: 1700,
+    cache_read_input_tokens: 30000,
+    cache_creation_input_tokens: 2000,
+  };
+  const metrics = {
+    tokensInput: 8,
+    tokensOutput: 1700,
+    tokensCacheRead: 30000,
+    tokensCacheWrite: 2000,
+  };
+  const tokenRows = (deps) =>
+    deps.store.calls.filter(
+      ([name, row]) => name === 'recordMetric' && 'tokensInput' in row.metrics,
+    );
+
+  it.each([0, 1])(
+    'persists and broadcasts terminal usage before returning (exit %s)',
+    async (exitCode) => {
+      const sent = [];
+      const deps = baseDeps({
+        spawnFn: () =>
+          kiroChild({
+            exitCode,
+            stdout: [
+              JSON.stringify({ type: 'assistant', message: { content: [], usage } }),
+              JSON.stringify({ type: 'result', usage, is_error: exitCode !== 0 }),
+            ].join('\n'),
+          }),
+        broadcast: async (event) => sent.push(event),
+      });
+      await runStage(baseArgs, deps);
+      expect(tokenRows(deps)).toHaveLength(1);
+      expect(tokenRows(deps)[0][1]).toMatchObject({
+        executionId: 'e1',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+        metrics,
+      });
+      expect(sent).toContainEqual(expect.objectContaining({ action: 'agent.metric', metrics }));
+    },
+  );
+
+  it('does not invent usage if the CLI terminates without a result', async () => {
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          stdout: JSON.stringify({ type: 'assistant', message: { content: [], usage } }),
+        }),
+    });
+    await runStage(baseArgs, deps);
+    expect(tokenRows(deps)).toEqual([]);
+  });
+
+  it('keeps usage persistence failure from failing the stage', async () => {
+    const deps = baseDeps({
+      spawnFn: () => kiroChild({ stdout: JSON.stringify({ type: 'result', usage }) }),
+    });
+    const recordMetric = deps.store.recordMetric;
+    deps.store.recordMetric = async (row) => {
+      if ('tokensInput' in row.metrics) throw new Error('metric unavailable');
+      return recordMetric(row);
+    };
+    expect(await runStage(baseArgs, deps)).toMatchObject({ ok: true });
   });
 });
 
@@ -5231,7 +5842,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       gitProvider: 'github',
       projectId: 'p1',
       executionId: 'e1',
-      message: 'aidlc(requirements-analysis): e1',
+      message: expect.stringMatching(/^docs\(aidlc\): checkpoint requirements-analysis stage\n/),
     });
     // No gitAuthor in the payload → engine-only identity (author: null).
     expect(calls[0].author).toBeNull();
@@ -5821,9 +6432,16 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
-  it('carries the unit dimension in the engine commit message', async () => {
+  it('writes a conventional engine commit with the unit, the Jira key and attribution trailers', async () => {
     const messages = [];
     const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        execution: {
+          title: 'Stagger renovate runs',
+          source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+        },
+      }),
       ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
       commitAndPushAll: async ({ message }) => {
         messages.push(message);
@@ -5834,7 +6452,67 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
       deps,
     );
-    expect(messages).toEqual(['aidlc(code-generation): billing — e1']);
+    expect(messages).toEqual([
+      [
+        'chore(aidlc): checkpoint code-generation stage for billing [ABC-12]',
+        '',
+        'Intent: Stagger renovate runs',
+        '',
+        'AIDLC-Stage: code-generation',
+        'AIDLC-Unit: billing',
+        'AIDLC-Execution: e1',
+      ].join('\n'),
+    ]);
+  });
+
+  it('commits with the change description the agent recorded, then records its use', async () => {
+    const messages = [];
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      execution: {
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      stage: {
+        commitDescription: {
+          type: 'fix',
+          scope: 'billing',
+          summary: 'round totals',
+          descriptionId: 'd1',
+        },
+      },
+    });
+    const recorded = [];
+    store.recordCommitDescriptionUse = async (args) => recorded.push(args);
+    let mcpScope = null;
+    const deps = unitDeps({
+      store,
+      materializeStage: async ({ scope }) => {
+        mcpScope = scope;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async ({ message }) => {
+        messages.push(message);
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'https://x/r.git', committed: true, pushed: true }],
+        };
+      },
+    });
+    await runStage(
+      { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
+      deps,
+    );
+    expect(mcpScope).toMatchObject({ describeChanges: true });
+    expect(messages[0].split('\n')[0]).toBe('fix(billing): round totals [ABC-12]');
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        executionId: 'e1',
+        descriptionId: 'd1',
+        repos: ['https://x/r.git'],
+      }),
+    ]);
   });
 
   it('retains committed code refs when a unit stage parks before projection', async () => {
@@ -5967,6 +6645,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: parkedGitResult, unitSlug: 'billing' }),
@@ -6049,6 +6732,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: failedGitResult, unitSlug: 'billing' }),
@@ -7150,6 +7838,18 @@ const checkpointRun = ({
     const child = new EventEmitter();
     child.stdin = { end() {} };
     child.stdout = new EventEmitter();
+    const close = (code) => {
+      child.stdout.emit(
+        'data',
+        Buffer.from(
+          JSON.stringify({
+            type: 'result',
+            usage: { input_tokens: 10, output_tokens: spawnCount },
+          }),
+        ),
+      );
+      child.emit('close', code);
+    };
     if (spawnCount === (repairCheckpoint ? 2 : 1)) {
       void bridge
         .confirmSummary({ summary: 'The lead summary' })
@@ -7161,11 +7861,11 @@ const checkpointRun = ({
             task.answeredAt = 'T';
             task.answeredBy = 'alice';
           }
-          setImmediate(() => child.emit('close', 0));
+          setImmediate(() => close(0));
         })
-        .catch(() => setImmediate(() => child.emit('close', 1)));
+        .catch(() => setImmediate(() => close(1)));
     } else {
-      setImmediate(() => child.emit('close', 0));
+      setImmediate(() => close(0));
     }
     return child;
   };
@@ -7354,6 +8054,13 @@ describe('runStage — checkpoint park races', () => {
 
     expect(result).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN' });
     expect(run.getSpawnCount()).toBe(2);
+    const usage = run.deps.store.calls
+      .filter(([name, row]) => name === 'recordMetric' && row.metrics.tokensInput != null)
+      .map(([, row]) => row.metrics);
+    expect(usage).toEqual([
+      { tokensInput: 10, tokensOutput: 1 },
+      { tokensInput: 10, tokensOutput: 2 },
+    ]);
     expect(run.stageRow.state).toBe('WAITING_FOR_HUMAN');
     expect([...run.humanTasks.values()]).toHaveLength(1);
     expect([...run.humanTasks.values()][0].status).toBe('pending');
@@ -7861,6 +8568,58 @@ describe('runStage — produced-head observation', () => {
 
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', producedHeadsUnavailable: true });
     expect(res).not.toHaveProperty('producedHeads');
+  });
+
+  it('with engine data on, reads through the engine graph and never opens Neptune directly', async () => {
+    const head = { artifactType: 'requirements-analysis', logicalKey: 'k1', snapshotHash: 'h' };
+    const called = [];
+    const results = { readCurrentArtifactHeadHashes: [head] };
+    const openEngineGraph = vi.fn(
+      async () =>
+        new Proxy(
+          { close: async () => {} },
+          {
+            // Not thenable: the opener's result is awaited.
+            get: (target, name) =>
+              name === 'then'
+                ? undefined
+                : (target[name] ??
+                  (async () => {
+                    called.push(name);
+                    return results[name] ?? [];
+                  })),
+          },
+        ),
+    );
+    const openGraph = vi.fn(async () => {
+      throw Object.assign(new Error('direct graph'), { code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    });
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary() }),
+        openGraph,
+        openEngineGraph,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', producedHeads: [head] });
+    expect(openGraph).not.toHaveBeenCalled();
+    expect(called).toEqual(
+      expect.arrayContaining([
+        'getTeamKnowledge',
+        'getLearningRules',
+        'getItems',
+        'readCurrentArtifactHeadHashes',
+      ]),
+    );
+    for (const [scope] of openEngineGraph.mock.calls) {
+      expect(scope).toMatchObject({
+        intentId: baseArgs.intentId,
+        executionId: baseArgs.executionId,
+      });
+    }
   });
 
   it('carries the heads it did read', async () => {

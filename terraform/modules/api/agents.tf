@@ -9,6 +9,8 @@
 #   - GET  /agents/{taskId}/questions          — recorded agent questions (read)
 #   - GET  /agents/capabilities                — CLI/model discovery (v2 model
 #     picker; probes the AgentCore runtime and refreshes model-pricing SSM)
+#   - scheduled `refresh-model-pricing`        — hourly Price List refresh of
+#     the model-pricing SSM table
 #   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 #     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 
@@ -49,12 +51,13 @@ module "agents_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = var.lambda_security_group_ids
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     QUESTIONS_TABLE                     = var.agent_questions_table_name
+    ACCESS_TABLE                        = var.access_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
@@ -69,9 +72,36 @@ module "agents_lambda" {
     BEDROCK_REGION                = var.bedrock_region
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
-  }
+    }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
+    # Set only in the strict profile (lambda/shared/runtime-mcp-policy.js).
+  var.runtime_mcp_credentials == "gateway_only" ? { RUNTIME_MCP_CREDENTIALS = "gateway_only" } : {})
 }
 
+
+# Rebuild the model-pricing SSM table from the AWS Price List API every hour, so
+# a price AWS publishes later is picked up without anyone opening a model
+# picker. The table has no built-in prices: until the first run after a
+# deployment, cost shows as unavailable.
+resource "aws_cloudwatch_event_rule" "agents_model_pricing_refresh" {
+  name                = "${var.project_name}-agents-model-pricing-refresh-${var.environment}"
+  description         = "Refresh the model price table from the AWS Price List API"
+  schedule_expression = "rate(1 hour)"
+}
+
+resource "aws_cloudwatch_event_target" "agents_model_pricing_refresh" {
+  rule      = aws_cloudwatch_event_rule.agents_model_pricing_refresh.name
+  target_id = "agents-model-pricing-refresh"
+  arn       = module.agents_lambda.lambda_function_arn
+  input     = jsonencode({ action = "refresh-model-pricing" })
+}
+
+resource "aws_lambda_permission" "agents_model_pricing_refresh" {
+  statement_id  = "AllowExecutionFromModelPricingRefresh"
+  action        = "lambda:InvokeFunction"
+  function_name = module.agents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.agents_model_pricing_refresh.arn
+}
 
 resource "aws_lambda_permission" "agents" {
   statement_id  = "AllowAPIGateway"

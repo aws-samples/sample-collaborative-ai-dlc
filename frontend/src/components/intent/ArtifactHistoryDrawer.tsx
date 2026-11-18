@@ -18,7 +18,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
+import { ArtifactContent } from '@/components/intent/ArtifactContent';
 
 const formatDate = (value: string | null) =>
   value ? new Date(value).toLocaleString() : 'Unknown time';
@@ -175,7 +175,11 @@ function ArtifactHistoryDrawerContent({
               )}
               {content ? (
                 <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ArtifactMarkdown content={content} />
+                  <ArtifactContent
+                    artifactType={selectedSummary?.artifactType ?? artifact.artifactType}
+                    content={content}
+                    title={artifact.title || artifact.id}
+                  />
                 </div>
               ) : (
                 !loading && <p className="text-sm text-muted-foreground">No content recorded.</p>

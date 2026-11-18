@@ -1,13 +1,40 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { normalizeSsoConfig } from '../sso-config.mjs';
+import { loadAndNormalizeSsoConfig, normalizeSsoConfig } from '../sso-config.mjs';
 
 const secretArn =
   'arn:aws:secretsmanager:eu-west-1:111122223333:secret:/aidlc/test-client-secret-AbCdEf';
+
+test('malformed SSO JSON does not disclose input fragments in errors or CLI output', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-sso-invalid-json-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  const marker = 'SSO_LEAK';
+  for (const input of [marker, `{"providers":[{"clientId":${marker}}]}`]) {
+    writeFileSync(path, input);
+    assert.throws(() => loadAndNormalizeSsoConfig(path, 'hybrid'), {
+      message: 'Configuration must contain valid JSON',
+    });
+    for (const flags of [[], ['--no-metadata-files']]) {
+      const result = spawnSync(
+        process.execPath,
+        [new URL('../sso-config.mjs', import.meta.url).pathname, path, 'hybrid', ...flags],
+        { encoding: 'utf8' },
+      );
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, '');
+      assert.equal(
+        result.stderr,
+        'Invalid SSO configuration: Configuration must contain valid JSON\n',
+      );
+      assert.ok(!result.stderr.includes(marker));
+    }
+  }
+});
 
 test('normalizes multiple OIDC providers and known role mappings', () => {
   const normalized = normalizeSsoConfig(

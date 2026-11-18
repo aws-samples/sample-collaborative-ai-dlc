@@ -181,6 +181,103 @@ describe('runQuorumEdit', () => {
     expect(deps.store.createSteering).not.toHaveBeenCalled();
   });
 
+  it('signs an execution-scoped gateway grant from META into both runtime dispatches', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, projectId: 'p-meta' }));
+    deps.engineData = true;
+    deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.projectId}`);
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    approve();
+    expect(await run).toMatchObject({ ok: true });
+    expect(invokes.map((p) => [p.command, p.gatewayGrant, p.agentCredentialGrant])).toEqual([
+      ['quorum-edit-plan-start', 'gw:execution:p-meta', 'test-agent-credential-grant'],
+      ['quorum-edit-apply-start', 'gw:execution:p-meta', 'test-agent-credential-grant'],
+    ]);
+    expect(deps.issueGatewayGrant.mock.calls).toEqual([
+      [{ mode: 'execution', projectId: 'p-meta', intentId: 'i1', executionId: 'i1' }],
+      [{ mode: 'execution', projectId: 'p-meta', intentId: 'i1', executionId: 'i1' }],
+    ]);
+  });
+
+  it('signs no execution grant when the Gateway is on without engine data', async () => {
+    deps.issueGatewayGrant = vi.fn(async () => 'gw');
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    approve();
+    expect(await run).toMatchObject({ ok: true });
+    expect(invokes).toHaveLength(2);
+    for (const p of invokes) expect(p).not.toHaveProperty('gatewayGrant');
+    expect(deps.issueGatewayGrant).not.toHaveBeenCalled();
+  });
+
+  it('retires each phase grant by jti once its callback is in', async () => {
+    deps.engineData = true;
+    const order = [];
+    deps.issueGatewayGrant = vi.fn(async (scope, options) => {
+      const id = options?.randomId?.() ?? 'unpinned';
+      order.push(`issue:${id}`);
+      return `gw:${scope.mode}:${id}`;
+    });
+    deps.retireGatewayGrant = vi.fn(async ({ grantId }) => {
+      order.push(`retire:${grantId}`);
+      return { retired: true };
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async () => []);
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    const planJti = invokes[0].gatewayGrant.split(':')[2];
+    expect(planJti).toMatch(/^[0-9a-f-]{36}$/);
+    // Parked on the human decision: the plan job's grant is already retired.
+    expect(order).toEqual([`issue:${planJti}`, `retire:${planJti}`]);
+    approve();
+    expect(await run).toMatchObject({ ok: true });
+    const applyJti = invokes[1].gatewayGrant.split(':')[2];
+    expect(applyJti).not.toBe(planJti);
+    expect(order.slice(2)).toEqual([`issue:${applyJti}`, `retire:${applyJti}`]);
+    expect(deps.store.addPendingGrantRetirements).not.toHaveBeenCalled();
+  });
+
+  it('fails the edit and records the jti when a phase grant cannot be retired', async () => {
+    deps.engineData = true;
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    deps.issueGatewayGrant = vi.fn(
+      async (scope, options) => `gw:${scope.mode}:${options?.randomId?.()}`,
+    );
+    deps.retireGatewayGrant = vi.fn(async () => {
+      throw new Error('down');
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async ({ grantIds }) => grantIds);
+    try {
+      const res = await runQuorumEdit(EVENT, ctx, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'gateway_grant_retirement_failed' });
+      expect(deps.store.addPendingGrantRetirements).toHaveBeenCalledWith({
+        executionId: 'i1',
+        grantIds: [invokes[0].gatewayGrant.split(':')[2]],
+      });
+      expect(invokes).toHaveLength(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('sends no gateway grant when the deployment has not enabled the Gateway', async () => {
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    approve();
+    await run;
+    expect(invokes).toHaveLength(2);
+    for (const p of invokes) expect(p).not.toHaveProperty('gatewayGrant');
+  });
+
   it('a successful apply on a PARKED run records an artifact-edit steering row', async () => {
     deps.store.getExecution = vi.fn(async () => ({ ...META, status: 'WAITING' }));
     const run = runQuorumEdit(EVENT, ctx, deps);

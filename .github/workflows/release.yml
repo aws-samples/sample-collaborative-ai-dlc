@@ -68,6 +68,15 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/deploy-demo.yml
+    # Environment secrets still need named forwarding through workflow_call.
+    secrets:
+      ACM_CERTIFICATE_ARN: ${{ secrets.ACM_CERTIFICATE_ARN }}
+      APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+      APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
+      AUTH_CERTIFICATE_ARN: ${{ secrets.AUTH_CERTIFICATE_ARN }}
+      AUTH_DOMAIN: ${{ secrets.AUTH_DOMAIN }}
+      AUTH_ROUTE53_ZONE_ID: ${{ secrets.AUTH_ROUTE53_ZONE_ID }}
+      SSO_CONFIG: ${{ secrets.SSO_CONFIG }}
     with:
       ref: v${{ inputs.version }}
       require_custom_domain: true

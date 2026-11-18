@@ -8,6 +8,7 @@ import {
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
+import { DeliveryStatus } from '@/components/intent/DeliveryStatus';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
@@ -77,6 +78,13 @@ const CREDENTIAL_FAILURE_CODES = new Set([
   'credential_quota_exhausted',
 ]);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
+// A CREATED run no orchestrator has claimed should leave CREATED within
+// seconds of the hand-off.
+const UNCLAIMED_STALL_AFTER_MS = 2 * 60_000;
+// A claimed run in CREATED is initializing its workspace. The orchestrator's
+// init callback times out after 2 h (v2-orchestrator INIT_WS_CALLBACK_TIMEOUT)
+// and fails the run; the slack covers that failure write.
+const CLAIMED_INIT_STALL_AFTER_MS = 2 * 60 * 60_000 + 10 * 60_000;
 const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
@@ -122,10 +130,10 @@ export default function IntentView() {
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
-  // Role gate for the destructive delete (owner/admin — the API enforces it
+  // Role gate for the destructive delete (owner — the API enforces it
   // too; hiding the button just avoids a guaranteed 403).
   const { project } = useProjectCache(projectId ?? null);
-  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const canDelete = project?.userRole === 'owner';
   const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);
@@ -253,7 +261,7 @@ export default function IntentView() {
     }
   };
 
-  // Permanent delete (owner/admin): removes the intent's graph data, run
+  // Permanent delete (owner): removes the intent's graph data, run
   // history and realtime docs, then returns to the project page. Refused by
   // the API while RUNNING — the button hides for it.
   const handleDelete = async () => {
@@ -342,8 +350,13 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
+  const completion = detail.unitCompletion;
+  const terminalCompletion = intent.status === 'SUCCEEDED' ? completion?.state : null;
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
+  // Repair stops the run, which would also cancel a sibling lane's resume, so
+  // the server refuses it until every resuming lane has restarted.
+  const lanesResuming = Object.values(laneWaits).some((wait) => wait.kind === 'resuming');
   const needsLaneRepair =
     recoveryWaits.length > 0 && ['RUNNING', 'WAITING', 'FAILED'].includes(intent.status);
   const error = actionError ?? loadError;
@@ -365,7 +378,7 @@ export default function IntentView() {
     (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
-  // Deletable (destructive): owner/admin, any status except mid-RUNNING.
+  // Deletable (destructive): owner, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
   const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
   const exportUnavailableReason = 'Not available before the workflow starts';
@@ -389,13 +402,19 @@ export default function IntentView() {
   const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // Stalled detection: a CREATED run whose hand-off never reached a live
-  // orchestrator strands here (init-ws should flip it to RUNNING within
-  // seconds). After >2 min untouched, offer a restart instead of spinning.
+  // orchestrator strands here. After >2 min untouched, offer a restart instead
+  // of spinning. Once an orchestrator has claimed the run, CREATED means the
+  // workspace is still initializing — a large clone legitimately takes many
+  // minutes, and the orchestrator fails the run itself if the init job dies —
+  // so only flag it after the init callback window has clearly passed.
   const lastTouch = intent.updatedAt ?? intent.createdAt;
+  const stallAfterMs = intent.orchestratorStartedAt
+    ? CLAIMED_INIT_STALL_AFTER_MS
+    : UNCLAIMED_STALL_AFTER_MS;
   const isStalled =
     intent.status === 'CREATED' &&
     !!lastTouch &&
-    Date.now() - new Date(lastTouch).getTime() > 120_000;
+    Date.now() - new Date(lastTouch).getTime() > stallAfterMs;
   const isCredentialFailure =
     isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
   const credentialSettingsPath = isCredentialFailure
@@ -417,7 +436,13 @@ export default function IntentView() {
           </h1>
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
-              {intent.status}
+              {terminalCompletion === 'incomplete'
+                ? 'Incomplete work'
+                : terminalCompletion === 'unknown'
+                  ? 'Completion unverified'
+                  : terminalCompletion === 'partial'
+                    ? 'Partial delivery'
+                    : intent.status}
             </Badge>
           )}
           <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
@@ -588,6 +613,44 @@ export default function IntentView() {
         </div>
       )}
 
+      {terminalCompletion && terminalCompletion !== 'complete' && (
+        <div className="rounded border border-agent-error/30 px-3 py-3 text-sm" role="status">
+          <p>
+            {terminalCompletion === 'partial'
+              ? 'Partial delivery was explicitly accepted. Integrated work and the recorded omissions are preserved.'
+              : terminalCompletion === 'unknown'
+                ? 'Completion could not be verified. Review the recorded work and available evidence before publishing.'
+                : 'The recorded success has unfinished current-plan work. Review the remaining units before publishing.'}
+          </p>
+          <p>
+            {completion?.integrated} of {completion?.total} units verified integrated;{' '}
+            {completion?.skipped} explicitly omitted.
+          </p>
+          {completion?.unresolved.slice(0, 12).map((unit) => (
+            <p key={`${unit.sectionIndex}/${unit.slug}`}>
+              Section {unit.sectionIndex}/{unit.slug}: {unit.reason ?? unit.state}
+            </p>
+          ))}
+          {terminalCompletion !== 'partial' && (
+            <p>
+              Automatic continuation of finished incomplete intents is not supported. Ordinary
+              rewind reruns the affected work.
+            </p>
+          )}
+        </div>
+      )}
+
+      {intent.status === 'SUCCEEDED' && (
+        <DeliveryStatus
+          key={intentId}
+          projectId={projectId}
+          intentId={intentId}
+          delivery={detail.delivery}
+          canRetry={canRepair}
+          reload={reload}
+        />
+      )}
+
       {needsLaneRepair && (
         <div className="rounded border border-agent-error/30 bg-agent-error/[0.06] px-3 py-3 text-sm">
           <div className="flex items-start justify-between gap-3">
@@ -600,6 +663,8 @@ export default function IntentView() {
                 {recoveryWaits.length} lane{recoveryWaits.length === 1 ? ' is' : 's are'} parked
                 without an answerable question. Merged units are safe; active lanes must be replayed
                 from the section boundary.
+                {lanesResuming &&
+                  ' Another lane is resuming after an answer; repair is available once it restarts.'}
               </p>
             </div>
             {canRepair && (
@@ -608,7 +673,7 @@ export default function IntentView() {
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"
-                disabled={repairing}
+                disabled={repairing || lanesResuming}
                 onClick={() => setConfirmRepair(true)}
               >
                 {repairing ? (

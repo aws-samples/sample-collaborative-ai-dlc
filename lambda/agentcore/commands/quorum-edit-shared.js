@@ -3,9 +3,14 @@
 // the plan sanitization, fence stripping and the rewrite structure guard are
 // unit-testable without a CLI or a graph.
 
-import { flattenVertexMap } from '../../shared/graph-rows.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
+import {
+  htmlArtifactRefusal,
+  isHtmlDocument,
+  keepsHtml,
+  sectionHeadings,
+} from '../../shared/html-artifact.js';
 
 // Bounded content windows: Quorum edits are coordinated document rewrites,
 // not whole-corpus analysis. A document beyond the rewrite limit is refused
@@ -39,6 +44,8 @@ export const stripMarkdownFence = (text = '') => {
 export const checkRewriteStructure = ({ artifactType, artifactId, before, after }) => {
   const prev = extractArtifactStructure({ artifactType, artifactId, content: before });
   const next = extractArtifactStructure({ artifactType, artifactId, content: after });
+  const beforeIsHtml = isHtmlDocument(before);
+  const afterIsHtml = isHtmlDocument(after);
   const problems = [];
   if (prev.structuredPresent && !next.structuredPresent) {
     problems.push(
@@ -56,9 +63,26 @@ export const checkRewriteStructure = ({ artifactType, artifactId, before, after 
   ) {
     problems.push(`the \`${prev.structuredKey}:\` block lost all of its entries`);
   }
-  if (prev.sections.length >= 2 && next.sections.length === 0) {
+  // An HTML document's sections are its <h2> elements, which the markdown
+  // splitSections read cannot see at all — so each side is counted by the rule
+  // of the shape it has (a markdown side keeps its old behavior, and a
+  // markdown -> HTML rewrite is judged on both counts).
+  const beforeSections = beforeIsHtml ? sectionHeadings(before) : prev.sections;
+  const afterSections = afterIsHtml ? sectionHeadings(after) : next.sections;
+  if (beforeSections.length >= 2 && afterSections.length === 0) {
     problems.push('every section heading was removed');
   }
+  // A visual artifact stored as HTML stays HTML: answering in markdown would
+  // silently replace the rendered document with prose. A legacy HTML document of
+  // a non-visual type has no format it may keep — HTML is refused for it — so
+  // rewriting it to markdown is the conversion to the only allowed format, and
+  // an HTML answer is refused by htmlArtifactRefusal alone. Markdown -> HTML
+  // stays allowed (htmlArtifactRefusal still refuses HTML for non-visual types).
+  if (keepsHtml(artifactType, before) && !afterIsHtml) {
+    problems.push(`Artifact type \`${artifactType}\` must stay a complete HTML document`);
+  }
+  const htmlRefusal = htmlArtifactRefusal(artifactType, after);
+  if (htmlRefusal) problems.push(htmlRefusal);
   return {
     ok: problems.length === 0,
     problems,
@@ -67,17 +91,28 @@ export const checkRewriteStructure = ({ artifactType, artifactId, before, after 
   };
 };
 
-// Prompt rules that keep a rewrite structure-safe. Generic fence preservation
-// for every document, plus the SAME machine-readable structure contract the
-// stage prompts inject for types with a registered extraction spec — so what
-// a rewrite is told to preserve and what the parser reads cannot drift.
-export const structurePreservationRules = (artifactType) => {
-  const lines = [
-    'STRUCTURE PRESERVATION (mandatory):',
-    '- Keep every fenced code block (``` … ```) from the original document. Fenced YAML blocks are machine-parsed into the business graph — deleting one destroys derived data.',
-    '- If the change affects entries inside a fenced YAML block, edit/add entries while keeping the block, its top-level key, and its field shape intact. Keep existing ids stable.',
-    '- Keep the markdown section headings; restructure only where the change requires it.',
-  ];
+// Prompt rules that keep a rewrite structure-safe. Fence preservation for every
+// markdown document, the heading rule of the document's own shape, plus the
+// SAME machine-readable structure contract the stage prompts inject for types
+// with a registered extraction spec — so what a rewrite is told to preserve and
+// what the parser reads cannot drift.
+export const structurePreservationRules = (artifactType, content) => {
+  const html = keepsHtml(artifactType, content);
+  const lines = ['STRUCTURE PRESERVATION (mandatory):'];
+  // A complete HTML document carries no fenced YAML block, and its sections are
+  // <h2> elements rather than markdown headings; a legacy HTML document of a
+  // non-visual type is rewritten to markdown, so it follows the markdown rules.
+  if (!html) {
+    lines.push(
+      '- Keep every fenced code block (``` … ```) from the original document. Fenced YAML blocks are machine-parsed into the business graph — deleting one destroys derived data.',
+      '- If the change affects entries inside a fenced YAML block, edit/add entries while keeping the block, its top-level key, and its field shape intact. Keep existing ids stable.',
+    );
+  }
+  lines.push(
+    html
+      ? '- Keep every `<h2>` section heading; restructure only where the change requires it.'
+      : '- Keep the markdown section headings; restructure only where the change requires it.',
+  );
   const contract = renderStructureContract(String(artifactType ?? ''));
   if (contract) {
     lines.push(
@@ -130,20 +165,22 @@ export const sanitizePlan = ({ parsed, downstream = [] }) => {
   return { summary: bounded(parsed?.summary, 1000), items };
 };
 
-// One artifact (full row incl. content), intent-scoped. Returns null when
-// absent or superseded — an edit against a rewound-away artifact is a bug.
-export const fetchArtifactForEdit = async (g, intentId, artifactId) => {
-  const res = await g
-    .V()
-    .has('Artifact', 'id', artifactId)
-    .has('intent_id', intentId)
-    .valueMap(true)
-    .next();
-  if (res.done || !res.value) return null;
-  const row = flattenVertexMap(res.value);
-  if (row.superseded_at) return null;
-  return row;
-};
+// One artifact (full row incl. content), intent-scoped, through the engine
+// graph. Null when absent or superseded — an edit against a rewound-away
+// artifact is a bug.
+export const fetchArtifactForEdit = (graph, _intentId, artifactId) =>
+  graph.getArtifactForEdit({ artifactId });
+
+// The rest of an edit's graph work, in the injectable shape the Quorum jobs
+// use. Origin, actor and the stale reason are fixed by the graph operation.
+export const fetchClosureForEdit = ({ graph, artifactId }) =>
+  graph.fetchDownstreamClosure({ artifactId });
+export const applyQuorumEdit = ({ graph, artifactId, editId, content }) =>
+  graph.applyArtifactEdit({ artifactId, editId, content });
+export const markClosureStale = ({ graph, sourceArtifactId, artifactIds, editId }) =>
+  graph.markArtifactsStale({ sourceArtifactId, artifactIds, editId });
+export const verifyUnaffected = ({ graph, artifactId, note }) =>
+  graph.verifyArtifact({ artifactId, note });
 
 // Progress emitter: persisted OUTPUT# chunk (restore-on-reload, keyed under
 // the qedit pane) + live `agent.output` broadcast — the exact contract the
@@ -198,5 +235,9 @@ export default {
   structurePreservationRules,
   sanitizePlan,
   fetchArtifactForEdit,
+  fetchClosureForEdit,
+  applyQuorumEdit,
+  markClosureStale,
+  verifyUnaffected,
   makeProgressEmitter,
 };

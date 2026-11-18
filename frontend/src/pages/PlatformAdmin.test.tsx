@@ -16,6 +16,9 @@ vi.mock('@/components/admin/AgentCredentialsCard', () => ({
 vi.mock('@/components/admin/AgentClisCard', () => ({
   AgentClisCard: () => <div data-testid="agent-clis-card" />,
 }));
+vi.mock('@/components/admin/AgentSandboxingCard', () => ({
+  AgentSandboxingCard: () => <textarea aria-label="Sandbox JSON" />,
+}));
 vi.mock('@/components/admin/DefaultModelsCard', () => ({
   DefaultModelsCard: () => <div data-testid="default-models-card" />,
 }));
@@ -90,6 +93,16 @@ describe('PlatformAdmin', () => {
   it('opens managed environments from the query parameter', async () => {
     renderAt('/admin?tab=environments');
     expect(await screen.findByTestId('environments-tab')).toBeInTheDocument();
+  });
+
+  it('keeps sandbox edits when switching between General and Sandboxing', async () => {
+    const user = userEvent.setup();
+    renderAt('/admin?tab=agents');
+    await user.click(screen.getByRole('tab', { name: 'Sandboxing' }));
+    await user.type(screen.getByRole('textbox', { name: 'Sandbox JSON' }), 'draft');
+    await user.click(screen.getByRole('tab', { name: 'General' }));
+    await user.click(screen.getByRole('tab', { name: 'Sandboxing' }));
+    expect(screen.getByRole('textbox', { name: 'Sandbox JSON' })).toHaveValue('draft');
   });
 
   it('falls back to Users for an unknown ?tab= value', async () => {

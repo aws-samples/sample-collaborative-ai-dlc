@@ -148,6 +148,8 @@ export const readIntentArtifactEntries = async (g, intentId) => {
     .has('Intent', 'id', intentId)
     .out('CONTAINS')
     .hasLabel('Artifact')
+    // A CONTAINS edge alone is not ownership: only the intent's own rows count.
+    .has('intent_id', intentId)
     .project('vertexId', 'props')
     .by(T.id)
     .by(__.valueMap(true))
@@ -156,6 +158,53 @@ export const readIntentArtifactEntries = async (g, intentId) => {
     vertexId: row.get('vertexId'),
     ...flattenVertexMap(row.get('props')),
   }));
+};
+
+// Every property artifactLogicalKeyFromRow, compareNewest and the supersession
+// filter read, so heads can be selected without loading artifact bodies.
+const ARTIFACT_HEAD_FIELDS = Object.freeze([
+  'id',
+  'intent_id',
+  'artifact_logical_key',
+  'section_index',
+  'unit_slug',
+  'created_by_stage_instance_id',
+  'artifact_type',
+  'collaborator',
+  'created_at',
+  'updated_at',
+  'edited_at',
+  'archived_at',
+  'superseded_at',
+]);
+
+// Full rows, as getIntentGraph returns them, of the current heads named `artifactId`.
+export const readCurrentArtifactHeads = async (g, intentId, artifactId) => {
+  const entries = await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('CONTAINS')
+    .hasLabel('Artifact')
+    .has('intent_id', intentId)
+    .project('vertexId', 'props')
+    .by(T.id)
+    .by(__.valueMap(...ARTIFACT_HEAD_FIELDS))
+    .toList();
+  const vertexIds = new Map();
+  const rows = entries.map((entry) => {
+    const row = flattenVertexMap(entry.get('props'));
+    vertexIds.set(row, entry.get('vertexId'));
+    return row;
+  });
+  const heads = selectCurrentArtifactHeads(rows, intentId).filter((row) => row.id === artifactId);
+  const full = [];
+  for (const head of heads) {
+    const [props] = await g.V(vertexIds.get(head)).valueMap(true).toList();
+    const row = props && flattenVertexMap(props);
+    // Superseded between the two reads (a concurrent rewind or archive).
+    if (row && !row.superseded_at) full.push(row);
+  }
+  return full;
 };
 
 export const legacyVersionId = (row) =>
@@ -534,6 +583,7 @@ export const archiveArtifactsForStages = async ({
       await g
         .V(row.vertexId)
         .out('HAS_SECTION', 'HAS_ITEM')
+        .has('intent_id', intentId)
         .property(cardinality.single, 'superseded_at', archivedAt)
         .toList();
     }

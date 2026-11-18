@@ -11,7 +11,7 @@ A **block** is the atomic, editable unit of the methodology. There are nine bloc
 | **Stage**     | The atomic unit of work. Declares its phase, execution mode, lead/support agents, the artifacts it produces/consumes/requires, its sensors, reviewer, and human-validation gate |
 | **Agent**     | A domain-expert persona (lead, support, or reviewer) with optional model override and examples                                                                                  |
 | **Scope**     | A run profile — e.g. feature, bugfix, greenfield. Decides which stages execute for a given intent                                                                               |
-| **Rule**      | A layered guardrail on the chain `org → team → team-learnings → project → project-learnings → phase → stage`                                                                    |
+| **Rule**      | A layered guardrail on the chain `org → team → team-learnings → project → project-learnings → phase → stage` (the `project` layers apply to the space)                          |
 | **Sensor**    | A deterministic post-stage check: a command plus file-glob matches, backed by an executable script                                                                              |
 | **Artifact**  | A named output that wires stages together (produces → consumes); derived from the stage graph so it can't drift                                                                 |
 | **Knowledge** | A methodology corpus attached to an agent (or shared); team-tier knowledge is accrued at runtime                                                                                |
@@ -95,7 +95,7 @@ Construction stages that are marked to run **per unit of work** form a parallel 
 - After the skeleton, you choose the autonomy level once: continue fully autonomously, or gate every batch. Batch gates work the same way: approve, or request changes to revise the batch (after three revision cycles an accept-as-is option appears, mirroring the upstream methodology's escape hatch).
 - Completed lanes are merged back into the intent branch by the engine — serialized, deterministic, in dependency-safe order. Merge conflicts trigger a scoped conflict-resolution stage; a failed lane blocks only its dependents and surfaces a retry / skip / abort gate.
 
-The scheduling is entirely deterministic — no LLM decides what runs when. Concurrency is capped by the project's `maxParallelUnits` setting.
+The scheduling is entirely deterministic — no LLM decides what runs when. Concurrency is capped by the space's `maxParallelUnits` setting.
 
 ## Where this lives in the product
 

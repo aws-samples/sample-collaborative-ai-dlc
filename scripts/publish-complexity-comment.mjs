@@ -1,12 +1,12 @@
 import { lstat, readFile } from 'node:fs/promises';
-import { renderComparison } from './complexity-report.mjs';
+import { hasIncompleteCoverage, renderComparison } from './complexity-report.mjs';
 
 export const commentMarker = '<!-- complexity-coverage-report -->';
 const sha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 const text = (value) => typeof value === 'string' && value.length <= 10000;
 
-function validCoverage(value) {
+export function validCoverage(value) {
   if (value === null) return true;
   if (!value || !['unknown', 'measured'].includes(value.status)) return false;
   if (value.status === 'unknown') return true;
@@ -175,12 +175,17 @@ export async function publishComplexityComment({
         comment.body?.startsWith(commentMarker),
     );
     const previous = existing?.body.match(/<!-- quality-run:(\d+):(\d+) -->/);
-    if (
+    const olderRun =
       previous &&
       (Number(previous[1]) > run.id ||
-        (Number(previous[1]) === run.id && Number(previous[2]) > run.run_attempt))
-    )
-      continue;
+        (Number(previous[1]) === run.id && Number(previous[2]) > run.run_attempt));
+    const combinedReport = existing?.body.includes('<!-- review-assets:');
+    if (olderRun && !combinedReport) continue;
+    if (combinedReport) {
+      const { enrichReviewSignals } = await import('./pr-impact/publish.mjs');
+      if (await enrichReviewSignals({ github, context, pr, run, report, existing, warn })) continue;
+    }
+    if (olderRun) continue;
     const url = `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${run.id}`;
     let content = '# Complexity and test coverage\n\nQuality report unavailable — see CI logs.';
     if (report) {
@@ -194,7 +199,12 @@ export async function publishComplexityComment({
         });
         sameBase = comparison.merge_base_commit.sha === report.mergeBase;
       }
-      if (sameBase && report.files.length === 0) {
+      const noResults =
+        report.findings.length === 0 &&
+        report.improvements.length === 0 &&
+        !hasIncompleteCoverage(report) &&
+        !report.dependencyNote;
+      if (sameBase && (report.files.length === 0 || noResults)) {
         if (existing) {
           await github.rest.issues.deleteComment({ ...repo, comment_id: existing.id });
         }

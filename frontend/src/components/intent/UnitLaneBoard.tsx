@@ -32,6 +32,7 @@ import {
   Hammer,
   Loader2,
   MessageSquare,
+  RefreshCw,
   TriangleAlert,
 } from 'lucide-react';
 
@@ -56,7 +57,7 @@ const STATE_LABEL: Record<DisplayState, string> = {
   PR_READY: 'Ready to merge',
   ADDRESSING_FEEDBACK: 'Fixing feedback',
   MERGING: 'Merging',
-  MERGED: 'Merged',
+  MERGED: 'Integrated',
   BLOCKED: 'Blocked',
   FAILED: 'Failed',
   WAITING_INPUT: 'Waiting for input',
@@ -153,6 +154,18 @@ const STATE_ORDER: DisplayState[] = [
 const unitLaneKey = laneWaitKey;
 const reviewCommentSelectionKey = (comment: UnitReviewComment) =>
   `${comment.repository}:${comment.id}`;
+// The unit states in which the feedback API accepts a batch. The drawer
+// loads the comments itself, so the stored commentCount (written only by
+// that load) must not decide whether the drawer can be opened.
+const FEEDBACK_UNIT_STATES: ReadonlySet<UnitState> = new Set([
+  'PR_DRAFT',
+  'RECONCILING',
+  'PR_READY',
+  'ADDRESSING_FEEDBACK',
+]);
+const canReviewFeedback = (unit: IntentUnit, prs: IntentUnitPr[]) =>
+  FEEDBACK_UNIT_STATES.has(unit.state) &&
+  prs.some((pr) => pr.number != null && pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED');
 
 // ── Card ─────────────────────────────────────────────────────────────────────
 interface UnitCardProps {
@@ -383,25 +396,25 @@ function UnitCard({
           View live output
         </button>
       )}
-      {prs.some((pr) => pr.commentCount > 0 && pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED') &&
-        onAddressFeedback && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onAddressFeedback(unit)}
-            className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
-          >
-            <MessageSquare className="h-3 w-3" />
-            Address feedback
-          </Button>
-        )}
+      {canReviewFeedback(unit, prs) && onAddressFeedback && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onAddressFeedback(unit)}
+          className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
+        >
+          <MessageSquare className="h-3 w-3" />
+          Address feedback
+        </Button>
+      )}
     </div>
   );
 }
 
 // ── Presentational board (pure — tested in isolation) ────────────────────────
 export interface UnitLaneBoardViewProps {
+  intentBranch?: string | null;
   unitPlan: IntentUnitPlan;
   units: IntentUnit[];
   /** Live transcript tail per unit slug (only running units need an entry). */
@@ -418,6 +431,7 @@ export interface UnitLaneBoardViewProps {
 }
 
 export function UnitLaneBoardView({
+  intentBranch,
   unitPlan,
   units,
   streamsBySlug,
@@ -449,10 +463,8 @@ export function UnitLaneBoardView({
   // lambda/shared/v2-process-store.js:1000), so counting over all detail.units
   // would report states for units that aren't on the board.
   const planSlugs = useMemo(() => {
-    const fromBatches = (unitPlan.batches ?? []).flat();
-    const slugs = fromBatches.length > 0 ? fromBatches : (unitPlan.units ?? []).map((u) => u.slug);
-    return new Set(slugs);
-  }, [unitPlan.batches, unitPlan.units]);
+    return new Set((unitPlan.units ?? []).map((u) => u.slug));
+  }, [unitPlan.units]);
 
   // State-count chips — only states actually present among plan units, in a
   // stable order.
@@ -480,6 +492,16 @@ export function UnitLaneBoardView({
   return (
     <Card>
       <CardHeader className="pb-3">
+        <p className="text-xs text-muted-foreground">
+          Integrated units are on the intent branch
+          {intentBranch ? (
+            <>
+              {' '}
+              <code>{intentBranch}</code>
+            </>
+          ) : null}
+          . The final pull request is reviewed and merged separately.
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle className="text-sm">Units</CardTitle>
           <Badge variant="outline" className="text-[10px] text-muted-foreground">
@@ -708,6 +730,7 @@ export function UnitLaneBoard({
   return (
     <>
       <UnitLaneBoardView
+        intentBranch={detail?.intent.branch}
         unitPlan={unitPlan}
         units={units}
         streamsBySlug={streamsBySlug}
@@ -723,24 +746,43 @@ export function UnitLaneBoard({
   );
 }
 
-function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose: () => void }) {
+export function UnitReviewDrawer({
+  unit,
+  onClose,
+}: {
+  unit: IntentUnit | null;
+  onClose: () => void;
+}) {
   const { projectId, intentId } = useIntent();
   const [comments, setComments] = useState<UnitReviewComment[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by Refresh: comments can arrive while the drawer is open.
+  const [reloads, setReloads] = useState(0);
+
+  useEffect(() => {
+    setSelected(new Set());
+  }, [unit]);
 
   useEffect(() => {
     if (!unit || unit.sectionIndex == null) return;
     let live = true;
     setLoading(true);
     setError(null);
-    setSelected(new Set());
     intentsService
       .unitReviewComments(projectId, intentId, unit.sectionIndex, unit.slug)
       .then(({ comments: rows }) => {
-        if (live) setComments(rows);
+        if (!live) return;
+        setComments(rows);
+        // Keep a refresh from dropping choices that are still selectable.
+        const selectable = new Set(
+          rows
+            .filter((comment) => !comment.previouslySelected)
+            .map((comment) => reviewCommentSelectionKey(comment)),
+        );
+        setSelected((current) => new Set([...current].filter((key) => selectable.has(key))));
       })
       .catch((cause: Error) => {
         if (live) setError(cause.message);
@@ -751,7 +793,7 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
     return () => {
       live = false;
     };
-  }, [projectId, intentId, unit]);
+  }, [projectId, intentId, unit, reloads]);
 
   const submit = async () => {
     if (!unit || unit.sectionIndex == null || selected.size === 0) return;
@@ -795,7 +837,7 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
             </div>
           )}
           {!loading && comments.length === 0 && !error && (
-            <p className="py-8 text-sm text-muted-foreground">No review comments</p>
+            <p className="py-8 text-sm text-muted-foreground">No review comments yet.</p>
           )}
           <div className="space-y-2 py-2">
             {comments.map((comment) => {
@@ -846,7 +888,17 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
           </div>
           {error && <p className="py-2 text-sm text-agent-error">{error}</p>}
         </ScrollArea>
-        <SheetFooter className="pt-3">
+        <SheetFooter className="gap-2 pt-3">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setReloads((count) => count + 1)}
+            disabled={loading || submitting}
+            className="gap-2"
+          >
+            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            Refresh
+          </Button>
           <Button
             type="button"
             onClick={submit}

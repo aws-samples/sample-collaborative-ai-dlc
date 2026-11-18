@@ -182,6 +182,21 @@ const readClosureCatalog = async ({ s3, bucket, manifest }) => {
   return catalog;
 };
 
+const assertResolvablePin = ({ s3, bucket, methodologyRelease }) => {
+  if (!methodologyRelease?.sourceSha || !methodologyRelease?.closureDigest) {
+    throw new ReleaseResolverError(
+      'release_pin_invalid',
+      'release-resolver: methodologyRelease must carry sourceSha and closureDigest',
+    );
+  }
+  if (!s3 || !bucket) {
+    throw new ReleaseResolverError(
+      'release_pin_invalid',
+      'release-resolver: an S3 client and bucket are required to resolve a release',
+    );
+  }
+};
+
 /**
  * Resolves and verifies the immutable closure a `methodologyRelease` pin names.
  * Throws `release_not_found` when the release was never published and
@@ -195,24 +210,11 @@ const loadReleaseClosure = async ({
   tableName = null,
   cache = releaseClosureCache,
 }) => {
-  if (!methodologyRelease?.sourceSha || !methodologyRelease?.closureDigest) {
-    throw new ReleaseResolverError(
-      'release_pin_invalid',
-      'release-resolver: methodologyRelease must carry sourceSha and closureDigest',
-    );
-  }
-  if (!s3 || !bucket) {
-    throw new ReleaseResolverError(
-      'release_pin_invalid',
-      'release-resolver: an S3 client and bucket are required to resolve a release',
-    );
-  }
+  assertResolvablePin({ s3, bucket, methodologyRelease });
   const cacheKey = closureCacheKey(methodologyRelease);
   const cached = readCachedClosure(cache, cacheKey);
   if (cached) return cached;
 
-  // A fork's pin names it as one, so its manifest is read from the fork's own
-  // custom prefix; the reader asserts that the bytes there describe that fork.
   const forkPin = methodologyRelease.custom === true;
   // A fork becomes runnable only through an admin promotion, which the registry
   // records. A fork pin is honoured only while that record says so; without a
@@ -237,6 +239,16 @@ const loadReleaseClosure = async ({
       );
     }
   }
+  const closure = await verifyReleaseClosure({ s3, bucket, methodologyRelease });
+  return cache ? rememberClosure(cache, cacheKey, closure) : closure;
+};
+
+// Reads and digest-verifies the closure a pin names: manifest, provenance and
+// catalog. It decides nothing about whether the release may run; the callers do.
+const verifyReleaseClosure = async ({ s3, bucket, methodologyRelease }) => {
+  // A fork's pin names it as one, so its manifest is read from the fork's own
+  // custom prefix; the reader asserts that the bytes there describe that fork.
+  const forkPin = methodologyRelease.custom === true;
   const manifest = await readReleaseManifest({
     s3,
     bucket,
@@ -297,6 +309,33 @@ const loadReleaseClosure = async ({
       ]),
     ),
   });
+  return closure;
+};
+
+// Separate from releaseClosureCache on purpose: loadReleaseClosure answers from
+// its cache before the runnable check, so an inspected, unpromoted fork must
+// never be in it.
+const releaseInspectionCache = new Map();
+
+/**
+ * Reads a registered release's closure to SHOW it, never to run it: the admin
+ * contents view of a fork that is still import-only. Every digest, provenance
+ * and official-pin check of loadReleaseClosure applies; only the
+ * fork-must-be-promoted gate is not asked, because nothing executes. The
+ * caller decides who may read which record. Execution paths must keep using
+ * loadReleaseClosure.
+ */
+const inspectReleaseClosure = async ({
+  s3,
+  bucket,
+  methodologyRelease,
+  cache = releaseInspectionCache,
+}) => {
+  assertResolvablePin({ s3, bucket, methodologyRelease });
+  const cacheKey = closureCacheKey(methodologyRelease);
+  const cached = readCachedClosure(cache, cacheKey);
+  if (cached) return cached;
+  const closure = await verifyReleaseClosure({ s3, bucket, methodologyRelease });
   return cache ? rememberClosure(cache, cacheKey, closure) : closure;
 };
 
@@ -581,6 +620,7 @@ const resolveRuntimeFile = async ({ s3, bucket, closure, repoPath }) => {
 
 const __test = {
   releaseClosureCache,
+  releaseInspectionCache,
   RELEASE_CLOSURE_CACHE_LIMIT,
   RELEASE_JSON_MAX_BYTES,
   closureCacheKey,
@@ -588,6 +628,7 @@ const __test = {
 
 export {
   __test,
+  inspectReleaseClosure,
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
   ReleaseResolverError,
@@ -597,6 +638,7 @@ export {
 };
 
 export default {
+  inspectReleaseClosure,
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
   ReleaseResolverError,

@@ -10,7 +10,8 @@ import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
-import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
+import { ArtifactContent } from '@/components/intent/ArtifactContent';
+import { rendersAsHtml } from '@/components/intent/ArtifactHtmlFrame';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
@@ -42,7 +43,8 @@ export function ArtifactViewer({
   const [editing, setEditing] = useState(false);
 
   const content = artifact.content ?? '';
-  const collapsible = content.length > COLLAPSE_CHARS;
+  const html = rendersAsHtml(artifact.artifactType, content);
+  const collapsible = !html && content.length > COLLAPSE_CHARS;
   const shown = collapsible && !expanded ? `${content.slice(0, COLLAPSE_CHARS)}…` : content;
 
   // Rewind lineage (docs/v2-steering.md): a superseded artifact came from a
@@ -113,7 +115,11 @@ export function ArtifactViewer({
           <>
             {content && (
               <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
-                <ArtifactMarkdown content={shown} />
+                <ArtifactContent
+                  artifactType={artifact.artifactType}
+                  content={shown}
+                  title={artifact.title}
+                />
               </div>
             )}
             {collapsible && (

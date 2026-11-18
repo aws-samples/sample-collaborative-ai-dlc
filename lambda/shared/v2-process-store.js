@@ -22,7 +22,9 @@ import {
 import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
+  deliveryKey,
   executionMetaKey,
+  outputKey,
   workflowCheckpointKey,
   stageKey,
   humanTaskKey,
@@ -133,12 +135,76 @@ const retryTransactionConflicts = (client) => ({
   },
 });
 
+const snapshotCondition = (row, fields) => {
+  if (!row) return { ConditionExpression: 'attribute_not_exists(pk)' };
+  const names = {};
+  const values = {};
+  const conditions = fields.map((field, index) => {
+    names[`#s${index}`] = field;
+    if (row[field] === undefined) return `attribute_not_exists(#s${index})`;
+    values[`:s${index}`] = row[field];
+    return `#s${index} = :s${index}`;
+  });
+  return {
+    ConditionExpression: `attribute_exists(pk) AND ${conditions.join(' AND ')}`,
+    ExpressionAttributeNames: names,
+    ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
+  };
+};
+
+// A non-empty DynamoDB string set of grant jtis, or null (pendingGrantRetirements).
+const pendingGrantIdSet = (grantIds) => {
+  const unique = [...new Set((grantIds ?? []).filter((id) => typeof id === 'string' && id))];
+  return unique.length ? new Set(unique) : null;
+};
+
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const ddb = retryTransactionConflicts(client);
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
   const now = () => (clock ? clock() : new Date().toISOString());
   const nextId = () => (ids ? ids() : randomUUID());
+
+  // Used by recovery's retired owner as well as active section decisions.
+  // The token check and row mutation must commit together.
+  const updateForRun = async (executionId, runId, params, ifUnitPlan) => {
+    const { ReturnValues: _returnValues, ...update } = params;
+    await transact([
+      {
+        ConditionCheck: {
+          TableName: table(),
+          Key: executionMetaKey(executionId),
+          ConditionExpression: 'orchestratorRunId = :run',
+          ExpressionAttributeValues: { ':run': runId },
+        },
+      },
+      ...(ifUnitPlan === undefined
+        ? []
+        : [
+            {
+              ConditionCheck: {
+                TableName: table(),
+                Key: unitPlanKey(executionId),
+                ...snapshotCondition(ifUnitPlan, [
+                  'units',
+                  'sourceArtifactId',
+                  'producedByStageInstanceId',
+                  'promotedAt',
+                ]),
+              },
+            },
+          ]),
+      { Update: update },
+    ]);
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: params.Key,
+        ConsistentRead: true,
+      }),
+    );
+    return Item ?? null;
+  };
 
   const transact = async (TransactItems) => {
     try {
@@ -316,6 +382,122 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
+  // Delivery owns publication only. Its lease outlives a 900s orchestrator
+  // invocation plus a 120s source-control call; a crashed attempt is recoverable.
+  const getDelivery = async (executionId, runId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: deliveryKey(executionId, runId),
+        ConsistentRead: true,
+      }),
+    );
+    return Item ?? null;
+  };
+  const deliveryPlanCheck = (executionId, plan) =>
+    plan === undefined
+      ? []
+      : [
+          {
+            ConditionCheck: {
+              TableName: table(),
+              Key: unitPlanKey(executionId),
+              ...snapshotCondition(plan, [
+                'units',
+                'sourceArtifactId',
+                'producedByStageInstanceId',
+                'promotedAt',
+              ]),
+            },
+          },
+        ];
+  const claimDelivery = async ({ meta, delivery, attemptId, ifUnitPlan }) => {
+    const ts = now();
+    const leaseUntil = new Date(Date.parse(ts) + 20 * 60_000).toISOString();
+    const item = {
+      ...delivery,
+      ...deliveryKey(meta.executionId, meta.orchestratorRunId),
+      type: 'FinalDelivery',
+      executionId: meta.executionId,
+      orchestratorRunId: meta.orchestratorRunId,
+      attemptId,
+      leaseUntil,
+      updatedAt: ts,
+      status: 'in_progress',
+      revision: (delivery.revision ?? 0) + 1,
+    };
+    await transact([
+      {
+        Update: {
+          TableName: table(),
+          Key: executionMetaKey(meta.executionId),
+          UpdateExpression: 'SET deliveryAttemptId = :attempt, deliveryLeaseUntil = :until',
+          ConditionExpression:
+            '#status = :succeeded AND orchestratorRunId = :run AND updatedAt = :updated AND (attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :now)',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':succeeded': 'SUCCEEDED',
+            ':run': meta.orchestratorRunId,
+            ':updated': meta.updatedAt,
+            ':attempt': attemptId,
+            ':until': leaseUntil,
+            ':now': ts,
+          },
+        },
+      },
+      {
+        Put: {
+          TableName: table(),
+          Item: item,
+          ConditionExpression:
+            delivery.revision == null ? 'attribute_not_exists(pk)' : 'revision = :revision',
+          ...(delivery.revision == null
+            ? {}
+            : { ExpressionAttributeValues: { ':revision': delivery.revision } }),
+        },
+      },
+      ...deliveryPlanCheck(meta.executionId, ifUnitPlan),
+    ]);
+    return item;
+  };
+  const saveDelivery = async ({ delivery, finished = false, ifUnitPlan }) => {
+    const ts = now();
+    const item = { ...delivery, updatedAt: ts };
+    await transact([
+      {
+        Update: {
+          TableName: table(),
+          Key: executionMetaKey(delivery.executionId),
+          UpdateExpression: finished
+            ? 'REMOVE deliveryAttemptId, deliveryLeaseUntil'
+            : 'SET deliveryAttemptId = :attempt',
+          ConditionExpression:
+            '#status = :succeeded AND orchestratorRunId = :run AND deliveryAttemptId = :attempt AND deliveryLeaseUntil > :now',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':succeeded': 'SUCCEEDED',
+            ':run': delivery.orchestratorRunId,
+            ':attempt': delivery.attemptId,
+            ':now': finished ? ts : new Date(Date.parse(ts) + 150_000).toISOString(),
+          },
+        },
+      },
+      {
+        Put: {
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attemptId = :attempt AND revision = :revision',
+          ExpressionAttributeValues: {
+            ':attempt': delivery.attemptId,
+            ':revision': delivery.revision,
+          },
+        },
+      },
+      ...deliveryPlanCheck(delivery.executionId, ifUnitPlan),
+    ]);
+    return item;
+  };
+
   // Publish the latest checkpoint only while the originating orchestrator still
   // owns META. The condition and put must share one transaction because they
   // target different items in the execution partition.
@@ -358,8 +540,22 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  const deleteWorkflowCheckpoint = async (executionId) => {
+  const deleteWorkflowCheckpoint = async (executionId, { ifOrchestratorRunId } = {}) => {
     if (!executionId) throw new Error('deleteWorkflowCheckpoint requires executionId');
+    if (ifOrchestratorRunId) {
+      await transact([
+        {
+          ConditionCheck: {
+            TableName: table(),
+            Key: executionMetaKey(executionId),
+            ConditionExpression: 'orchestratorRunId = :run',
+            ExpressionAttributeValues: { ':run': ifOrchestratorRunId },
+          },
+        },
+        { Delete: { TableName: table(), Key: workflowCheckpointKey(executionId) } },
+      ]);
+      return null;
+    }
     const { Attributes } = await ddb.send(
       new DeleteCommand({
         TableName: table(),
@@ -381,6 +577,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     status,
     fromStatus = null,
     ifOrchestratorRunId = null,
+    ifUpdatedAt,
+    ifUnitPlan,
     ifPendingHumanTaskId,
     ownership = null,
     additionalWrites = [],
@@ -391,18 +589,25 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     orchestratorExpiresAt,
     rewindFromStageId,
     resumeRequired,
+    // A lane repair's recorded relaunch ({ repairId, retiredRunId, sectionIndex,
+    // fromStageId, laneSlugs }): written with the repair's retired-run write,
+    // before any destructive cleanup, so a refused relaunch can be resumed.
+    // null REMOVEs it.
+    repairRelaunch,
     currentPhase,
     currentStage,
     pendingHumanTaskId,
     startedAt,
     completedAt,
     failureReason,
+    completionValidation,
     failure,
     startedBy,
     starterName,
     starterEmail,
     agentCli,
     credentialBinding,
+    agentSandbox,
     mcpServersByTier,
     constructionAutonomyMode,
     constructionGateAutonomy,
@@ -439,6 +644,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     // clearing a resolved marker never drops a newer one for another gate.
     ifResumeRequiredFor = null,
     ifDraftRevision = null,
+    // A relaunch requires META to owe no Gateway grant retirement: the jti set
+    // is removed once emptied (DynamoDB drops an empty set), so absence means
+    // every recorded jti was retired.
+    ifNoPendingGrantRetirements = false,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -500,6 +709,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('completedAt = :ca');
       values[':ca'] = completedAt;
     }
+    if (completionValidation !== undefined) {
+      sets.push('completionValidation = :completionValidation');
+      values[':completionValidation'] = completionValidation;
+    }
     if (failureReason !== undefined) {
       sets.push('failureReason = :fr');
       values[':fr'] = failureReason;
@@ -550,6 +763,22 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('credentialBinding = :acb');
       values[':acb'] = credentialBinding;
     }
+    if (agentSandbox !== undefined) {
+      if (
+        !(
+          (status === 'CREATED' && fromStatus === 'DRAFT') ||
+          (status === 'DRAFT' && fromStatus === 'CREATED')
+        ) ||
+        (agentSandbox !== null &&
+          (typeof agentSandbox !== 'object' || typeof agentSandbox.enabled !== 'boolean'))
+      ) {
+        throw new Error(
+          'Sandbox settings can only be captured during the first conditional launch',
+        );
+      }
+      sets.push('agentSandbox = :sandbox');
+      values[':sandbox'] = agentSandbox;
+    }
     if (mcpServersByTier !== undefined) {
       if (status !== 'CREATED' || !fromStatus) {
         throw new Error('MCP settings can only be replaced during a conditional launch');
@@ -584,6 +813,12 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
     // Clearing REMOVEs the marker rather than writing null, so a run that never
     // needed a resume keeps the row shape it always had.
+    if (repairRelaunch === null) {
+      removes.push('repairRelaunch');
+    } else if (repairRelaunch !== undefined) {
+      sets.push('repairRelaunch = :rrl');
+      values[':rrl'] = repairRelaunch;
+    }
     if (resumeRequired === null) {
       removes.push('resumeRequired');
     } else if (resumeRequired !== undefined) {
@@ -749,6 +984,12 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     };
     if (Object.keys(names).length) params.ExpressionAttributeNames = names;
     const conditions = [];
+    if (status !== undefined || orchestratorRunId !== undefined) {
+      conditions.push(
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow)',
+      );
+      values[':deliveryNow'] = ts;
+    }
     if (fromStatus) {
       conditions.push('#status = :fromStatus');
       params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#status': 'status' };
@@ -757,6 +998,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     if (ifOrchestratorRunId) {
       conditions.push('orchestratorRunId = :ifOrid');
       params.ExpressionAttributeValues[':ifOrid'] = ifOrchestratorRunId;
+    }
+    if (ifUpdatedAt !== undefined) {
+      conditions.push('updatedAt = :ifUpdatedAt');
+      params.ExpressionAttributeValues[':ifUpdatedAt'] = ifUpdatedAt;
     }
     if (ifResumeRequiredFor !== null) {
       conditions.push('resumeRequired.humanTaskId = :ifRrh');
@@ -780,6 +1025,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       );
       values[':ifDraftRevision'] = ifDraftRevision;
     }
+    if (ifNoPendingGrantRetirements) {
+      conditions.push('attribute_not_exists(pendingGrantRetirements)');
+    }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const credentialWrites = [];
     if (credentialBinding !== undefined) {
@@ -789,18 +1037,40 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         ...scopeActivityWrites(table(), [row], { includePlatform: true }),
       );
     }
+    const planWrites =
+      ifUnitPlan === undefined
+        ? []
+        : [
+            {
+              ConditionCheck: {
+                TableName: table(),
+                Key: unitPlanKey(executionId),
+                ...snapshotCondition(ifUnitPlan, [
+                  'units',
+                  'batches',
+                  'sourceArtifactId',
+                  'producedByStageInstanceId',
+                  'walkingSkeleton',
+                  'skipMatrix',
+                  'autonomyMode',
+                  'promotedAt',
+                  'updatedAt',
+                ]),
+              },
+            },
+          ];
     if (ownership) {
       await writeStageAttempt({
         executionId,
         ownership,
-        writes: [...additionalWrites, ...credentialWrites, { Update: params }],
+        writes: [...additionalWrites, ...planWrites, ...credentialWrites, { Update: params }],
       });
       // Transactions cannot return ALL_NEW; read the committed row instead.
       return getExecution(executionId, { consistentRead: true });
     }
-    if (additionalWrites.length) {
+    if (additionalWrites.length || planWrites.length) {
       const { ReturnValues: _returnValues, ...update } = params;
-      await transact([...additionalWrites, ...credentialWrites, { Update: update }]);
+      await transact([...additionalWrites, ...planWrites, ...credentialWrites, { Update: update }]);
       return getExecution(executionId, { consistentRead: true });
     }
     if (credentialBinding !== undefined) {
@@ -871,6 +1141,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     pendingHumanTaskId,
     pendingCodeCommitRefs,
     ownership = null,
+    ifOrchestratorRunId = null,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -921,6 +1192,16 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
       return getStage(executionId, stageInstanceId, { consistentRead: true });
     }
+    if (ifOrchestratorRunId) {
+      const { ReturnValues: _returnValues, ...update } = input;
+      await updateExecution({
+        executionId,
+        fromStatus: 'RUNNING',
+        ifOrchestratorRunId,
+        additionalWrites: [{ Update: update }],
+      });
+      return getStage(executionId, stageInstanceId, { consistentRead: true });
+    }
     const { Attributes } = await ddb.send(new UpdateCommand(input));
     return Attributes;
   };
@@ -969,6 +1250,99 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       if (error?.name === 'ConditionalCheckFailedException') return null;
       throw error;
     }
+  };
+
+  // Fail a stage attempt whose Gateway grant could not be retired. Unlike
+  // failRunningStageAttempt this also overrides the worker's own verdict
+  // (SUCCEEDED, WAITING_FOR_HUMAN): the attempt's outcome is not accepted while
+  // its grant may still be used. Fenced by the attempt's callback id (and, when
+  // given, by the run that dispatched it), so a later retry or resume of the
+  // stage is never touched. Null when the row is absent, already FAILED or
+  // SKIPPED, or owned by another attempt.
+  const failStageAttemptForGrantRetirement = async ({
+    executionId,
+    stageInstanceId,
+    stageCallbackId,
+    orchestratorRunId = null,
+    runtimeError = 'gateway_grant_retirement_failed',
+  }) => {
+    if (!stageCallbackId) {
+      throw new Error('failStageAttemptForGrantRetirement requires stageCallbackId');
+    }
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          ConditionExpression:
+            'attribute_exists(pk) AND #state IN (:running, :succeeded, :waiting) AND ' +
+            'stageCallbackId = :callbackId' +
+            (orchestratorRunId
+              ? ' AND (attribute_not_exists(orchestratorRunId) OR orchestratorRunId = :runId)'
+              : ''),
+          UpdateExpression:
+            'SET #state = :failed, updatedAt = :ts, completedAt = :ts, GSI2SK = :g2sk, runtimeError = :err',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':running': 'RUNNING',
+            ':succeeded': 'SUCCEEDED',
+            ':waiting': 'WAITING_FOR_HUMAN',
+            ':failed': 'FAILED',
+            ':callbackId': stageCallbackId,
+            ':ts': ts,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STAGE',
+              state: 'FAILED',
+              id: stageInstanceId,
+            }).GSI2SK,
+            ':err': runtimeError,
+            ...(orchestratorRunId ? { ':runId': orchestratorRunId } : {}),
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Gateway grant jtis whose retirement exhausted its retries, kept on META (a
+  // string set) until a later control-plane action retires them: /start,
+  // rewind, recompose and lane repair retry them before they relaunch the run
+  // (gateway-grant-retirement.js). ADD/DELETE on a set are idempotent, so a
+  // replayed durable step or a repeated request is harmless.
+  const addPendingGrantRetirements = async ({ executionId, grantIds }) => {
+    const grantIdSet = pendingGrantIdSet(grantIds);
+    if (!grantIdSet) return null;
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: 'ADD pendingGrantRetirements :ids SET updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':ids': grantIdSet, ':ts': now() },
+      }),
+    );
+    return [...grantIdSet];
+  };
+
+  const clearPendingGrantRetirements = async ({ executionId, grantIds }) => {
+    const grantIdSet = pendingGrantIdSet(grantIds);
+    if (!grantIdSet) return null;
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: 'DELETE pendingGrantRetirements :ids SET updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':ids': grantIdSet, ':ts': now() },
+      }),
+    );
+    return [...grantIdSet];
   };
 
   // Flip a parked stage (WAITING_FOR_HUMAN) back to RUNNING on resume WITHOUT
@@ -1113,6 +1487,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     humanTaskId,
     ownership = null,
     orchestratorRunId = null,
+    ifOrchestratorRunId = null,
   }) => {
     const id = humanTaskId ?? nextId();
     const item = buildHumanTaskRow({
@@ -1181,6 +1556,26 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
           ownership,
           additionalWrites: writes,
         });
+      return item;
+    }
+    // An autonomous decision records its gate without parking META. Its token
+    // check must commit with the put, just as an ordinary gate's park does.
+    if (ifOrchestratorRunId) {
+      item.orchestratorRunId = ifOrchestratorRunId;
+      await updateExecution({
+        executionId,
+        fromStatus: 'RUNNING',
+        ifOrchestratorRunId,
+        additionalWrites: [
+          {
+            Put: {
+              TableName: table(),
+              Item: item,
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+        ],
+      });
       return item;
     }
     if (orchestratorRunId) {
@@ -1412,6 +1807,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     humanTaskId,
     supersededBy = null,
     ownership = null,
+    ifOrchestratorRunId = null,
   }) => {
     const ts = now();
     try {
@@ -1444,6 +1840,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
         return getHumanTask(executionId, humanTaskId, { consistentRead: true });
       }
+      if (ifOrchestratorRunId) return updateForRun(executionId, ifOrchestratorRunId, input);
       const { Attributes } = await ddb.send(new UpdateCommand(input));
       return Attributes;
     } catch (e) {
@@ -1640,13 +2037,15 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // `countsAgainstCap` additionally tallies the decision on META, which is the
   // per-intent cap — true for the stage the run jumps TO (one tally per decision),
   // false for the stage it jumps FROM, which needs the same guards and no second
-  // tally.
+  // tally. An optional run token additionally fences both reset transactions on
+  // a still-RUNNING owner; a replay cannot report success to a retired run.
   const resetStageRow = async ({
     executionId,
     stageInstanceId,
     preservePendingCodeCommitRefs = false,
     loopBackId = null,
     countsAgainstCap = true,
+    ifOrchestratorRunId = null,
   }) => {
     const existing = await getStage(executionId, stageInstanceId, {
       consistentRead: Boolean(loopBackId),
@@ -1658,9 +2057,18 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       // Consistent, like every other read on this path: the tally this replay is
       // reporting was written by the transaction below, so an eventually
       // consistent META could hand the caller a count from before its own write.
-      const meta = countsAgainstCap
-        ? await getExecution(executionId, { consistentRead: true })
-        : null;
+      const meta =
+        countsAgainstCap || ifOrchestratorRunId
+          ? await getExecution(executionId, { consistentRead: true })
+          : null;
+      if (
+        ifOrchestratorRunId &&
+        (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING')
+      ) {
+        throw Object.assign(new Error('Loop-back run no longer owns the execution'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      }
       return countsAgainstCap
         ? { ...existing, loopBackCount: Number(meta?.loopBackCount ?? 0) }
         : existing;
@@ -1721,19 +2129,37 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         : { ReturnValues: 'ALL_NEW' }),
     };
     if (!loopBackId) {
+      if (ifOrchestratorRunId) return updateForRun(executionId, ifOrchestratorRunId, stageUpdate);
       const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
       return Attributes;
     }
-    // Guarded but not tallied: the attempt CAS alone, so a stale read cannot write
-    // an attempt another writer already used. A lost CAS returns null and the caller
+    // Guarded but not tallied: the attempt CAS, with the optional META ownership
+    // check in the same transaction. A stale read cannot write an attempt another
+    // writer already used. A lost attempt CAS returns null and the caller
     // fails the loop-back closed rather than leaving this stage's earlier receipts
     // reachable under the new attempt.
     if (!countsAgainstCap) {
       try {
+        if (ifOrchestratorRunId) {
+          const { ReturnValues: _returnValues, ...update } = stageUpdate;
+          await updateExecution({
+            executionId,
+            fromStatus: 'RUNNING',
+            ifOrchestratorRunId,
+            additionalWrites: [{ Update: update }],
+          });
+          return getStage(executionId, stageInstanceId, { consistentRead: true });
+        }
         const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
         return Attributes;
       } catch (error) {
         if (error?.name !== 'ConditionalCheckFailedException') throw error;
+        if (ifOrchestratorRunId) {
+          const meta = await getExecution(executionId, { consistentRead: true });
+          if (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING') {
+            throw error;
+          }
+        }
         const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
         return row?.lastLoopBackId === loopBackId ? row : null;
       }
@@ -1755,7 +2181,13 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
                 ConditionExpression:
                   'attribute_exists(pk) AND ' +
                   '(attribute_not_exists(loopBackIds) OR NOT contains(loopBackIds, :loopBackId)) AND ' +
-                  '(attribute_not_exists(loopBackCount) OR loopBackCount < :limit)',
+                  '(attribute_not_exists(loopBackCount) OR loopBackCount < :limit)' +
+                  (ifOrchestratorRunId
+                    ? ' AND orchestratorRunId = :ownedRun AND #ownedStatus = :ownedRunning'
+                    : ''),
+                ...(ifOrchestratorRunId
+                  ? { ExpressionAttributeNames: { '#ownedStatus': 'status' } }
+                  : {}),
                 ExpressionAttributeValues: {
                   ':zero': 0,
                   ':one': 1,
@@ -1764,6 +2196,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
                   ':loopBackId': loopBackId,
                   ':limit': LOOP_BACK_LIMIT,
                   ':ts': ts,
+                  ...(ifOrchestratorRunId
+                    ? { ':ownedRun': ifOrchestratorRunId, ':ownedRunning': 'RUNNING' }
+                    : {}),
                 },
               },
             },
@@ -1773,6 +2208,15 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     } catch (error) {
       if (error?.name !== 'TransactionCanceledException') throw error;
       const meta = await getExecution(executionId, { consistentRead: true });
+      if (
+        ifOrchestratorRunId &&
+        (meta?.orchestratorRunId !== ifOrchestratorRunId || meta.status !== 'RUNNING')
+      ) {
+        throw Object.assign(new Error('Loop-back run no longer owns the execution'), {
+          name: 'ConditionalCheckFailedException',
+          cause: error,
+        });
+      }
       if (!meta?.loopBackIds?.includes(loopBackId)) throw error;
       const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
       return row ? { ...row, loopBackCount: Number(meta.loopBackCount ?? 0) } : row;
@@ -1816,6 +2260,61 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         ...(reason ? { ExpressionAttributeValues: { ':reason': reason } } : {}),
       }),
     );
+  };
+
+  // The agent's description of the stage's changes (describe_changes), read by
+  // the engine for its commit messages. Each commit records the repositories it
+  // used it in. With ownership, a retired attempt's delayed call cannot
+  // overwrite it.
+  const setCommitDescription = async ({
+    executionId,
+    stageInstanceId,
+    description,
+    ownership = null,
+  }) => {
+    const input = {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      UpdateExpression: 'SET commitDescription = :description',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':description': description },
+    };
+    if (ownership) {
+      await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+      return;
+    }
+    await ddb.send(new UpdateCommand(input));
+  };
+
+  // Records the repositories a commit used the description in, only while it
+  // is still that description, so a newer one written meanwhile starts unused.
+  // Returns whether it was recorded.
+  const recordCommitDescriptionUse = async ({
+    executionId,
+    stageInstanceId,
+    descriptionId,
+    repos,
+  }) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          UpdateExpression:
+            'SET commitDescription.committedRepos = list_append(if_not_exists(commitDescription.committedRepos, :none), :repos)',
+          ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
+          ExpressionAttributeValues: {
+            ':descriptionId': descriptionId,
+            ':repos': repos,
+            ':none': [],
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   const recordMetric = async ({
@@ -2068,12 +2567,28 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   //   stageInstanceId — only that stage's chunks; pass null EXPLICITLY (via
   //     `filterByStage: true`) to select the stage-less workspace/init bucket.
   //   afterSeq — only chunks with seq > afterSeq (incremental catch-up cursor).
+  //     This is an SK range, not a filter: a FilterExpression is applied after
+  //     the read, so a catch-up would otherwise read (and bill) the whole
+  //     transcript, which for a long run is tens of MB on one partition key.
   // Paginated: output partitions routinely exceed one 1MB Query page.
+  // OUTPUT_SEQ_MAX is the largest sequence the 12-digit padded SK holds.
+  const OUTPUT_SEQ_MAX = 999_999_999_999;
   const getOutputs = async (
     executionId,
     { stageInstanceId, filterByStage = stageInstanceId !== undefined, afterSeq = null } = {},
   ) => {
-    const values = { ':pk': executionPk(executionId), ':p': 'OUTPUT#' };
+    const values = { ':pk': executionPk(executionId) };
+    let keyCondition = 'pk = :pk AND begins_with(sk, :p)';
+    if (afterSeq == null) {
+      values[':p'] = 'OUTPUT#';
+    } else {
+      // seq > afterSeq ⇔ seq >= floor(afterSeq) + 1 for integer sequences.
+      const first = Math.max(0, Math.floor(Number(afterSeq)) + 1);
+      if (first > OUTPUT_SEQ_MAX) return [];
+      keyCondition = 'pk = :pk AND sk BETWEEN :from AND :to';
+      values[':from'] = outputKey(executionId, first).sk;
+      values[':to'] = outputKey(executionId, OUTPUT_SEQ_MAX).sk;
+    }
     const filters = [];
     if (filterByStage) {
       if (stageInstanceId == null) {
@@ -2084,13 +2599,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         values[':sid'] = stageInstanceId;
       }
     }
-    if (afterSeq != null) {
-      filters.push('seq > :after');
-      values[':after'] = Number(afterSeq);
-    }
     return queryAll(ddb, {
       TableName: table(),
-      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      KeyConditionExpression: keyCondition,
       ...(filters.length > 0
         ? { FilterExpression: filters.map((f) => `(${f})`).join(' AND ') }
         : {}),
@@ -2129,6 +2640,56 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey && items.length < limit);
     return items;
+  };
+
+  // Completion does not need outputs, model prompts, metrics or graph state.
+  // Bound every read, including a single unusually large execution. A limit is
+  // explicitly unverified; callers must never treat the prefix as a clean run.
+  const getCompletionRecords = async (
+    executionId,
+    { maxRecords = 2000, includeStages = false } = {},
+  ) => {
+    if (!Number.isInteger(maxRecords) || maxRecords < 2 || maxRecords > 10000) {
+      throw new Error('Completion record limit must be 2..10000');
+    }
+    const meta = await getExecution(executionId, { consistentRead: true });
+    const unitPlan = await getUnitPlan(executionId, { consistentRead: true });
+    const records = {
+      meta,
+      unitPlan,
+      units: [],
+      unitPrs: [],
+      humanTasks: [],
+      stages: [],
+      truncated: false,
+    };
+    let remaining = maxRecords - 2;
+    for (const [field, prefix] of [
+      ['units', 'UNIT#'],
+      ['unitPrs', 'UNITPR#'],
+      ['humanTasks', 'HUMAN#'],
+      ...(includeStages ? [['stages', 'STAGE#']] : []),
+    ]) {
+      let cursor;
+      do {
+        const page = await ddb.send(
+          new QueryCommand({
+            TableName: table(),
+            KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+            ExpressionAttributeValues: { ':pk': executionPk(executionId), ':prefix': prefix },
+            ConsistentRead: true,
+            Limit: Math.min(remaining + 1, 100),
+            ExclusiveStartKey: cursor,
+          }),
+        );
+        const items = page.Items ?? [];
+        records[field].push(...items.slice(0, remaining));
+        if (items.length > remaining) return { ...records, truncated: true };
+        remaining -= items.length;
+        cursor = page.LastEvaluatedKey;
+      } while (cursor);
+    }
+    return records;
   };
 
   const listActiveExecutions = async ({ limit = Infinity } = {}) => {
@@ -2275,11 +2836,12 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // All unit lane rows for an execution. SK prefix 'UNIT#' (exact — a bare
   // 'UNIT' would also match UNITPLAN). Paginated: the orchestrator's lane
   // scheduler reads this — a dropped page would make lanes invisible.
-  const listUnits = async (executionId) => {
+  const listUnits = async (executionId, { consistentRead = false } = {}) => {
     const items = await queryAll(ddb, {
       TableName: table(),
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
       ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'UNIT#' },
+      ...(consistentRead ? { ConsistentRead: true } : {}),
     });
     return items.toSorted(bySk);
   };
@@ -2377,6 +2939,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     state,
     fromStates = null,
     fields = {},
+    ifOrchestratorRunId = null,
+    ifUnitPlan,
   }) => {
     if (!UNIT_STATES.includes(state)) throw new Error(`invalid unit state: ${state}`);
     const ts = now();
@@ -2426,6 +2990,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       });
     }
     try {
+      if (ifOrchestratorRunId)
+        return await updateForRun(executionId, ifOrchestratorRunId, params, ifUnitPlan);
       const { Attributes } = await ddb.send(new UpdateCommand(params));
       return Attributes;
     } catch (e) {
@@ -2492,6 +3058,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     repository,
     state,
     fromStates = null,
+    ifOrchestratorRunId = null,
     fields = {},
   }) => {
     if (state !== undefined && !UNIT_PR_STATES.includes(state)) {
@@ -2542,6 +3109,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         params.ExpressionAttributeValues[`:from${index}`] = value;
       });
     }
+    if (ifOrchestratorRunId) return updateForRun(executionId, ifOrchestratorRunId, params);
     try {
       const { Attributes } = await ddb.send(new UpdateCommand(params));
       return Attributes;
@@ -2870,6 +3438,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     skipMatrix,
     walkingSkeleton,
     autonomyMode,
+    ifOrchestratorRunId = null,
   }) => {
     const sets = ['updatedAt = :ts'];
     const values = { ':ts': now() };
@@ -2885,16 +3454,16 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('autonomyMode = :am');
       values[':am'] = autonomyMode;
     }
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: unitPlanKey(executionId),
-        UpdateExpression: `SET ${sets.join(', ')}`,
-        ExpressionAttributeValues: values,
-        ConditionExpression: 'attribute_exists(pk)',
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
+    const params = {
+      TableName: table(),
+      Key: unitPlanKey(executionId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeValues: values,
+      ConditionExpression: 'attribute_exists(pk)',
+      ReturnValues: 'ALL_NEW',
+    };
+    if (ifOrchestratorRunId) return updateForRun(executionId, ifOrchestratorRunId, params);
+    const { Attributes } = await ddb.send(new UpdateCommand(params));
     return Attributes;
   };
 
@@ -3206,9 +3775,13 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // seconds and outputs are the bulk of a long run's partition. '#' is 0x23;
   // '$' (0x24) is the next code point, so sk < 'OUTPUT#' and sk >= 'OUTPUT$'
   // partition the SK space exactly around the OUTPUT# prefix.
-  const getExecutionRecords = async (executionId, { includeOutputs = true } = {}) => {
+  const getExecutionRecords = async (
+    executionId,
+    { includeOutputs = true, consistentRead = false } = {},
+  ) => {
     const base = {
       TableName: table(),
+      ...(consistentRead ? { ConsistentRead: true } : {}),
       ExpressionAttributeValues: { ':pk': executionPk(executionId) },
     };
     const Items = includeOutputs
@@ -3243,6 +3816,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       feedbackBatches: records.filter((r) => r.sk.startsWith('FEEDBACK#')),
       quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
       composes: records.filter((r) => r.sk.startsWith('COMPOSE#')),
+      deliveries: records.filter((r) => r.sk.startsWith('DELIVERY#')),
       trackerSync: records.find((r) => r.sk === 'TRACKERSYNC') ?? null,
     };
   };
@@ -3311,6 +3885,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   return {
     createExecution,
     getExecution,
+    getDelivery,
+    claimDelivery,
+    saveDelivery,
     putWorkflowCheckpoint,
     getWorkflowCheckpoint,
     deleteWorkflowCheckpoint,
@@ -3321,6 +3898,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getStage,
     updateStageState,
     failRunningStageAttempt,
+    failStageAttemptForGrantRetirement,
+    addPendingGrantRetirements,
+    clearPendingGrantRetirements,
     resumeStageRow,
     appendEvent,
     listEvents,
@@ -3340,6 +3920,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     resetStageRow,
     markLoopBackArchived,
     setLoopBackRecommendation,
+    setCommitDescription,
+    recordCommitDescriptionUse,
     recordMetric,
     recordGraphRead,
     recordSensorRun,
@@ -3351,6 +3933,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     appendOutput,
     getOutputs,
     listProjectExecutions,
+    getCompletionRecords,
     listActiveExecutions,
     listStaleActiveExecutions,
     patchExecutionConfig,

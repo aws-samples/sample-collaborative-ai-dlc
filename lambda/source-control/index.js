@@ -1,4 +1,6 @@
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
+import { inspectDelivery } from '../shared/delivery-provider.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -6,6 +8,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
+import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -25,12 +28,28 @@ import {
   resolveBindingCredential,
   verifyBindingCredential,
 } from '../shared/source-control-credentials.js';
+import { kmsPublicKeyResolver } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
+import {
+  RUNTIME_ALIAS_ERROR_CODES,
+  gatewayGrantVerifier,
+  handleRuntimeOperation,
+  isRuntimeAliasInvocation,
+} from './runtime-alias.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const sts = new STSClient({});
 const logger = new Logger({ persistentKeys: { component: 'source-control' } });
+const verifyRuntimeGrant = gatewayGrantVerifier(
+  kmsPublicKeyResolver({
+    kms: new KMSClient({}),
+    GetPublicKeyCommand,
+    allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').map((id) => id.trim()),
+  }),
+  gatewayGrantRetirementCheckFromEnv({ ddb }),
+);
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 
@@ -42,6 +61,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   compare: 'read',
   'find-pr': 'read',
   'create-pr': 'write',
+  'delivery-inspect': 'read',
   'pr-status': 'read',
   'set-pr-draft': 'write',
   'reopen-pr': 'write',
@@ -51,6 +71,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   'list-issues': 'read',
   'get-issue': 'read',
   'list-issue-comments': 'read',
+  'issue-attachments': 'read',
   'add-issue-comment': 'write',
   'close-issue': 'write',
   'merge-branch': 'write',
@@ -85,21 +106,6 @@ const fetchProjectRepositories = async (g, projectId) => {
     repo: graphValue(row, 'repo'),
     provider: graphValue(row, 'provider') || 'github',
   }));
-};
-
-const fetchMembershipRole = async (g, projectId, userId) => {
-  if (!userId) return null;
-  const rows = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('membership')
-    .inV()
-    .has('User', 'id', userId)
-    .select('membership')
-    .by(__.values('role'))
-    .toList();
-  return rows[0] || null;
 };
 
 const sameRepository = (a, b) => {
@@ -143,9 +149,8 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
-        // codecommit-role: the tenant role and the committer identity.
-        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
-        ...(item.externalId ? { externalId: item.externalId } : {}),
+        // codecommit-role: only the committer identity. The role and external
+        // ID come from the one platform connection, not the selection (#531).
         ...(item.committerName ? { committerName: item.committerName } : {}),
         ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
@@ -317,7 +322,15 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
         targetBranch: args.targetBranch,
         state: args.state,
       });
+    case 'delivery-inspect':
+      return inspectDelivery(provider, ctx, repo, args);
     case 'create-pr':
+      if (args.expectedHeadSha) {
+        const head = await provider.getBranchHead(ctx, repo, args.branch);
+        if (head !== args.expectedHeadSha) return { failed: true, reason: 'branch_changed' };
+        if (!args.baseBranch || !(await provider.getBranchHead(ctx, repo, args.baseBranch)))
+          return { failed: true, reason: 'missing_base' };
+      }
       return provider.createPullRequest(ctx, repo, args);
     case 'pr-status':
       return provider.getPullRequestStatus(ctx, repo, args.number);
@@ -337,6 +350,8 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
       return provider.getIssue(ctx, repo, args.number);
     case 'list-issue-comments':
       return provider.listIssueComments(ctx, repo, args.number);
+    case 'issue-attachments':
+      return provider.issueAttachments(ctx, repo, args);
     case 'add-issue-comment':
       return provider.addIssueComment(ctx, repo, args.number, args.body);
     case 'close-issue':
@@ -425,6 +440,22 @@ const reviewNumberFromPath = (path) =>
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
+  if (isRuntimeAliasInvocation(context)) {
+    try {
+      const result = await handleRuntimeOperation(event, {
+        ddbClient: ddb,
+        verifyGrant: verifyRuntimeGrant,
+        execute: executeSourceControlOperation,
+      });
+      return { ok: true, result };
+    } catch (error) {
+      const code = RUNTIME_ALIAS_ERROR_CODES.has(error?.code)
+        ? error.code
+        : loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
+      logger.error('runtime operation denied', { code });
+      return { ok: false, code };
+    }
+  }
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;
@@ -468,7 +499,7 @@ export const handler = async (event, context) => {
       fetchProjectRepositories(g, projectId),
     ]);
     if (!role) return response(403, { error: 'Access denied' });
-    const privileged = role === 'owner' || role === 'admin';
+    const privileged = role === 'owner';
     if (path.endsWith('/source-control')) {
       if (event.httpMethod === 'GET') {
         const bindings = await listProjectBindings(ddb, projectId);
@@ -476,7 +507,7 @@ export const handler = async (event, context) => {
       }
       if (!privileged) {
         return response(403, {
-          error: 'Only project owners and admins can configure source control',
+          error: 'Only project owners can configure source control',
         });
       }
       if (event.httpMethod === 'DELETE') {
@@ -528,7 +559,6 @@ export const handler = async (event, context) => {
             authType: selection.authType,
             userId,
             selection,
-            projectBindings: existing,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:
@@ -548,6 +578,9 @@ export const handler = async (event, context) => {
             createdBy: prior?.createdBy,
           });
         } catch (error) {
+          // A platform fault (SSM read) is not a repository verdict: let the
+          // outer handler return its safe 5xx instead of a 409.
+          if (error.code === 'CODECOMMIT_CONNECTION_UNAVAILABLE') throw error;
           failures.push({
             provider: repo.provider,
             repo: repo.repo,
@@ -624,7 +657,6 @@ export const handler = async (event, context) => {
 export {
   SOURCE_CONTROL_OPERATIONS,
   fetchProjectRepositories,
-  fetchMembershipRole,
   normalizeProviderSelections,
   isSupportedProvider,
   bindingStatusForProject,

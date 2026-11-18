@@ -44,6 +44,31 @@ describe('resolveRelativeImport', () => {
   it('returns the bare candidate when nothing exists, so the caller can report it', () => {
     expect(resolveRelativeImport(new Map(), 'core/tools/a.ts', './lib')).toBe('core/tools/lib');
   });
+  it.each([
+    ['./lib.js', 'core/tools/lib.ts'],
+    ['./lib.js', 'core/tools/lib.tsx'],
+    ['./lib.jsx', 'core/tools/lib.tsx'],
+    ['./lib.mjs', 'core/tools/lib.mts'],
+  ])('takes the TypeScript-style specifier %s to the source file %s', (specifier, source) => {
+    const files = new Map([[source, '']]);
+    expect(resolveRelativeImport(files, 'core/tools/a.ts', specifier)).toBe(source);
+  });
+  it('does not take a .cjs specifier to a .cts file, as Bun does not', () => {
+    const files = new Map([['core/tools/lib.cts', '']]);
+    expect(resolveRelativeImport(files, 'core/tools/a.ts', './lib.cjs')).toBe('core/tools/lib.cjs');
+  });
+  it('prefers a published .js file over its .ts namesake', () => {
+    const files = new Map([
+      ['core/tools/lib.js', ''],
+      ['core/tools/lib.ts', ''],
+    ]);
+    expect(resolveRelativeImport(files, 'core/tools/a.ts', './lib.js')).toBe('core/tools/lib.js');
+  });
+  it('reports the specifier as written when neither the .js nor the .ts file exists', () => {
+    expect(resolveRelativeImport(new Map(), 'core/tools/a.ts', './lib.js')).toBe(
+      'core/tools/lib.js',
+    );
+  });
 });
 
 describe('dependencyClosure', () => {
@@ -60,6 +85,23 @@ describe('dependencyClosure', () => {
       external: ['node:fs'],
       cycles: [],
     });
+  });
+
+  it('walks a .js specifier to the .ts module a release publishes', () => {
+    const closure = dependencyClosure(
+      new Map([
+        ['core/tools/entry.ts', 'import { b } from "./budget.ts";'],
+        ['core/tools/budget.ts', 'import { c } from "./c.js";'],
+        ['core/tools/c.ts', 'export const c = 1;'],
+      ]),
+      'core/tools/entry.ts',
+    );
+    expect(closure.files).toEqual([
+      'core/tools/budget.ts',
+      'core/tools/c.ts',
+      'core/tools/entry.ts',
+    ]);
+    expect(closure.missing).toEqual([]);
   });
 
   it('reports an import no file satisfies', () => {

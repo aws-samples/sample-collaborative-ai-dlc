@@ -443,11 +443,12 @@ describe('runChild — exit contract', () => {
     expect(await p).toEqual({ exitCode: 0, stderrTail: '' });
   });
 
-  it('maps a spawn error to a null exit code', async () => {
+  it('propagates an asynchronous spawn error to the caller', async () => {
     const child = fakeChild();
     const p = runChild({ command: 'x', args: [], spawnFn: () => child });
-    child.emit('error', new Error('ENOENT'));
-    expect(await p).toEqual({ exitCode: null, stderrTail: '' });
+    const error = Object.assign(new Error('spawn x ENOENT'), { code: 'ENOENT' });
+    child.emit('error', error);
+    await expect(p).rejects.toBe(error);
   });
 
   it('tees + buffers the stderr tail when captureStderrTail is set', async () => {

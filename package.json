@@ -1,6 +1,6 @@
 {
   "name": "sample-collaborative-ai-dlc",
-  "version": "2.2.0",
+  "version": "2.3.1",
   "private": true,
   "workspaces": [
     "lambda/agentcore",
@@ -11,6 +11,7 @@
     "lambda/credential-metadata",
     "lambda/cognito-users",
     "lambda/discussions",
+    "lambda/engine-data",
     "lambda/environments",
     "lambda/general-info",
     "lambda/github",
@@ -19,6 +20,9 @@
     "lambda/gitlab",
     "lambda/bitbucket",
     "lambda/codecommit",
+    "lambda/mcp-interceptor",
+    "lambda/mcp-tools",
+    "lambda/migrate-memberships",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
     "lambda/sso-token",
@@ -74,15 +78,16 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@aws-sdk/client-apigatewaymanagementapi": "^3.1106.0",
-    "@aws-sdk/client-dynamodb": "^3.1106.0",
-    "@aws-sdk/client-lambda": "^3.1106.0",
-    "@aws-sdk/client-s3": "^3.1106.0",
-    "@aws-sdk/client-secrets-manager": "^3.1106.0",
-    "@aws-sdk/client-ssm": "^3.1106.0",
-    "@aws-sdk/credential-providers": "^3.1106.0",
-    "@aws-sdk/lib-dynamodb": "^3.1106.0",
-    "@aws-sdk/s3-request-presigner": "^3.1106.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1133.0",
+    "@aws-sdk/client-dynamodb": "^3.1133.0",
+    "@aws-sdk/client-eventbridge": "^3.1133.0",
+    "@aws-sdk/client-lambda": "^3.1133.0",
+    "@aws-sdk/client-s3": "^3.1133.0",
+    "@aws-sdk/client-secrets-manager": "^3.1133.0",
+    "@aws-sdk/client-ssm": "^3.1133.0",
+    "@aws-sdk/credential-providers": "^3.1133.0",
+    "@aws-sdk/lib-dynamodb": "^3.1133.0",
+    "@aws-sdk/s3-request-presigner": "^3.1133.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
     "@smithy/config-resolver": "^4.6.10",
     "@smithy/node-config-provider": "^3.0.0",
@@ -113,7 +118,7 @@
       "@hono/node-server": "^2.0.5"
     },
     "archiver-utils": {
-      "glob": "^13.0.6"
+      "glob": "^14.0.2"
     },
     "js-yaml": "4.3.2",
     "uuid": "^11.1.1"

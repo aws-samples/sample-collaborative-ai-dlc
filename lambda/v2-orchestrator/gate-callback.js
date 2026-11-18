@@ -70,3 +70,31 @@ export const unparkGate = async (store, { executionId, humanTaskId, runId, unitS
     );
   }
 };
+
+// A gate answered before its callback was bound resumes without the callback.
+// The answer route completes a gate's callback only when the answered row
+// already carried that callbackId, so this one would stay pending for the rest
+// of the run. The durable runtime suspends an invocation whenever no operation
+// is running and any callback is pending, which turns every later pause
+// between operations into a possible suspension with no wake-up. Complete it
+// here, but only when the answer route can't: the gate holds another callback
+// id, or none. Call it inside an existing durable step, so a replay doesn't
+// send it twice and the operation sequence is unchanged. Best-effort: a
+// failure logs and the run carries on.
+export const releaseUnusedGateCallback = async (
+  releaseCallback,
+  { gate, callbackId, humanTaskId, logger = null },
+) => {
+  if (typeof releaseCallback !== 'function' || !callbackId) return false;
+  if (!gate || gate.callbackId === callbackId) return false;
+  try {
+    await releaseCallback(callbackId, { released: 'gate_answered_early', humanTaskId });
+    return true;
+  } catch (error) {
+    logger?.warn?.('unused gate callback not released', {
+      humanTaskId,
+      error: error?.name ?? String(error),
+    });
+    return false;
+  }
+};

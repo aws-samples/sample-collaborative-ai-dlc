@@ -116,6 +116,7 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
     // tool handlers the real agent would call over stdio.
     let capturedMcpConfigPath = null;
     const fakeAgentSpawn = (command, args) => {
+      let onStdout = () => {};
       // Find the mcp-config the materializer wrote and act as the agent: build a
       // writer+bridge with the trusted scope and create the expected artifact.
       capturedMcpConfigPath = args[args.indexOf('--mcp-config') + 1];
@@ -149,13 +150,23 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
           title: 'Requirements',
           content: '## Functional\n- login',
         });
-        await handlers.collect_metric({
-          metrics: { tokensInput: 120, tokensOutput: 340, contextWindowPct: 18 },
-        });
+        onStdout(
+          Buffer.from(
+            JSON.stringify({
+              type: 'result',
+              usage: { input_tokens: 120, output_tokens: 340, cache_read_input_tokens: 30000 },
+            }),
+          ),
+        );
       };
       // Mimic a child process that runs, then exits 0.
       const child = {
         stdin: { end() {} },
+        stdout: {
+          on: (event, cb) => {
+            if (event === 'data') onStdout = cb;
+          },
+        },
         on(ev, cb) {
           if (ev === 'close')
             run().then(
@@ -246,10 +257,15 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
 
     // 3c. Output persisted for restore-on-reload, metric recorded. Multiple
     // metric samples land per run (the write-side prompt-size sample + the
-    // agent-reported usage) — find each by its keys.
+    // measured CLI usage) — find each by its keys.
     expect(outputs.map((o) => o.content)).toContain('Analyzing the intent…');
     const usageSample = metrics.find((m) => m.metrics?.tokensInput !== undefined);
-    expect(usageSample.metrics).toMatchObject({ tokensInput: 120, contextWindowPct: 18 });
+    expect(usageSample.metrics).toEqual({
+      tokensInput: 120,
+      tokensOutput: 340,
+      tokensCacheRead: 30000,
+    });
+    expect(metrics.filter((m) => m.metrics?.tokensInput !== undefined)).toHaveLength(1);
     const promptSample = metrics.find((m) => m.metrics?.promptBytes !== undefined);
     expect(promptSample.metrics.promptBytes).toBeGreaterThan(0);
   });

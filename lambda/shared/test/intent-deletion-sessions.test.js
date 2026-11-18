@@ -420,3 +420,60 @@ describe('intent-bound auxiliary sessions', () => {
     expect(store.deleteExecution).not.toHaveBeenCalled();
   });
 });
+
+describe('deleteIntentCascade gateway grant retirement', () => {
+  it('retires the execution’s grants before any session is stopped, for a forced live delete', async () => {
+    const order = [];
+    const store = storeStub(records);
+    const agentcore = {
+      send: vi.fn(async (command) => {
+        order.push(command.constructor.name);
+        return {};
+      }),
+    };
+    const retireExecutionGrants = vi.fn(async (reason) => {
+      order.push(`retire:${reason}`);
+    });
+    await deleteIntentCascade({
+      g: gStub(),
+      store,
+      ddb: null,
+      agentcore,
+      intentId: 'int-1',
+      meta: { ...instancesMeta, status: 'RUNNING' },
+      retireExecutionGrants,
+      force: true,
+    });
+    expect(retireExecutionGrants).toHaveBeenCalledExactlyOnceWith('deleted');
+    expect(order[0]).toBe('retire:deleted');
+    expect(order).toContain('StopRuntimeSessionCommand');
+  });
+});
+
+describe('deleteIntentCascade fail-closed retirement', () => {
+  it('aborts before touching anything when the grant retirement fails', async () => {
+    const store = storeStub(records);
+    const agentcore = { send: vi.fn().mockResolvedValue({}) };
+    const ddb = { send: vi.fn().mockResolvedValue({}) };
+    const failure = Object.assign(new Error('retire failed'), {
+      code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+    });
+    await expect(
+      deleteIntentCascade({
+        g: gStub(),
+        store,
+        ddb,
+        agentcore,
+        intentId: 'int-1',
+        meta: { ...instancesMeta, status: 'WAITING' },
+        yjsTable: 'yjs',
+        retireExecutionGrants: vi.fn(async () => Promise.reject(failure)),
+        force: true,
+      }),
+    ).rejects.toBe(failure);
+    expect(agentcore.send).not.toHaveBeenCalled();
+    expect(ddb.send).not.toHaveBeenCalled();
+    expect(store.getExecutionRecords).not.toHaveBeenCalled();
+    expect(store.deleteExecution).not.toHaveBeenCalled();
+  });
+});

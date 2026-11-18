@@ -68,6 +68,18 @@ export function buildCodeItems(detail: IntentDetail): CodeItem[] {
   const repoPushed = (slug: string) => pushedSummaries.some((s) => s.includes(slug));
 
   const prByRepo = new Map((detail.pullRequests ?? []).map((pr) => [pr.repository ?? '', pr]));
+  for (const repo of detail.delivery?.repositories ?? []) {
+    if (repo.pr)
+      prByRepo.set(repo.repoId, {
+        id: `delivery-${repo.repoId}`,
+        repository: repo.repoId,
+        prUrl: repo.pr.prUrl,
+        prNumber: String(repo.pr.prNumber),
+        branch: repo.pr.branch,
+        baseBranch: repo.pr.baseBranch,
+        createdAt: null,
+      });
+  }
   return (detail.intent.repos ?? [])
     .map((repo) => {
       const slug = gitRepoSlug(repo);

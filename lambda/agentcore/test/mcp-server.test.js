@@ -6,6 +6,7 @@ import {
   READ_TOOLS,
   REVIEWER_TOOLS,
   AUTHOR_TOOLS,
+  DESCRIBE_CHANGES_TOOLS,
   toolsForRole,
   ok,
 } from '../mcp/server.js';
@@ -95,9 +96,9 @@ const stubBridge = () => ({
     this.calls.push(['recordProjectType', args]);
     return args;
   },
-  collectMetric(args) {
-    this.calls.push(['collectMetric', args]);
-    return { metricId: 'm1' };
+  describeChanges(args) {
+    this.calls.push(['describeChanges', args]);
+    return args;
   },
   emitStageNote(args) {
     this.calls.push(['emitStageNote', args]);
@@ -130,6 +131,13 @@ describe('buildToolHandlers — routing + envelopes', () => {
     const env = await h.record_project_type({ projectType: 'brownfield' });
     expect(parse(env)).toEqual({ projectType: 'brownfield' });
     expect(bridge.calls).toContainEqual(['recordProjectType', { projectType: 'brownfield' }]);
+  });
+
+  it('routes describe_changes through the process bridge', async () => {
+    const args = { type: 'fix', summary: 'handle empty carts', breaking: false };
+    const env = await h.describe_changes(args);
+    expect(parse(env)).toMatchObject(args);
+    expect(bridge.calls).toContainEqual(['describeChanges', expect.objectContaining(args)]);
   });
 
   it('create_artifact emits a v2.artifact.created note so the UI updates live', async () => {
@@ -185,7 +193,6 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(graph.withWriter).toHaveBeenCalledTimes(1);
 
     await handlers.send_output({ content: 'hi' });
-    await handlers.collect_metric({ metrics: { tokens: 1 } });
     await handlers.emit_stage_note({ summary: 'note' });
     expect(graph.withWriter).toHaveBeenCalledTimes(1);
   });
@@ -290,10 +297,12 @@ describe('buildToolHandlers — routing + envelopes', () => {
   });
 
   it('surfaces a generic error message as isError', async () => {
-    bridge.collectMetric = () => {
+    bridge.sendOutput = () => {
       throw new Error('ddb down');
     };
-    const env = await buildToolHandlers({ writer, bridge }).collect_metric({ metrics: {} });
+    const env = await buildToolHandlers({ writer, bridge }).send_output({
+      content: 'hi',
+    });
     expect(env.isError).toBe(true);
     expect(env.content[0].text).toBe('ddb down');
   });
@@ -305,11 +314,10 @@ describe('role gating', () => {
     const reader = handlersForRole(h, 'reader');
     expect(Object.keys(reader).toSorted()).toEqual([...READ_TOOLS].toSorted());
     expect(reader.create_artifact).toBeUndefined();
-    expect(reader.collect_metric).toBeUndefined();
     expect(reader.submit_review).toBeUndefined();
   });
 
-  it('reviewer gets the clean-room subset only — reads, metrics, and verdict submit', () => {
+  it('reviewer gets the clean-room subset only — reads and verdict submit', () => {
     const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
     const reviewer = handlersForRole(h, 'reviewer');
     expect(Object.keys(reviewer).toSorted()).toEqual([...REVIEWER_TOOLS].toSorted());
@@ -321,7 +329,6 @@ describe('role gating', () => {
     // Same for learning rules: read-only for a reviewer.
     expect(reviewer.get_learning_rules).toBeDefined();
     expect(reviewer.record_learning_rule).toBeUndefined();
-    expect(reviewer.collect_metric).toBeDefined();
     expect(reviewer.submit_review).toBeDefined();
   });
 
@@ -336,6 +343,25 @@ describe('role gating', () => {
     const author = handlersForRole(h, 'author', 'workspace-detection');
     expect(author.record_project_type).toBeDefined();
     expect(Object.keys(author)).toHaveLength(AUTHOR_TOOLS.length + 1);
+  });
+});
+
+describe('toolsForRole — describe_changes', () => {
+  it('adds describe_changes only for the owning author session when enabled', () => {
+    expect(toolsForRole('author', 'code-generation')).not.toContain('describe_changes');
+    expect(toolsForRole('author', 'code-generation', null, { describeChanges: true })).toEqual([
+      ...AUTHOR_TOOLS,
+      ...DESCRIBE_CHANGES_TOOLS,
+    ]);
+    expect(
+      toolsForRole('author', 'code-generation', null, {
+        describeChanges: true,
+        checkpointOwner: false,
+      }),
+    ).not.toContain('describe_changes');
+    expect(toolsForRole('reviewer', 'code-generation', null, { describeChanges: true })).toEqual(
+      REVIEWER_TOOLS,
+    );
   });
 });
 
@@ -361,6 +387,7 @@ describe('registerTools', () => {
     object: () => ({ optional: () => ({}) }),
     array: () => ({ optional: () => ({}) }),
     record: () => ({ optional: () => ({}) }),
+    boolean: () => ({ optional: () => ({}) }),
   };
 
   it('registers exactly the read tools for a reader', () => {
@@ -384,6 +411,13 @@ describe('registerTools', () => {
     const server = { tool: (name) => registered.push(name) };
     registerTools({ server, handlers: {}, role: 'author', z: fakeZod });
     expect(registered.toSorted()).toEqual([...AUTHOR_TOOLS].toSorted());
+  });
+
+  it('registers describe_changes when the engine writes Conventional Commits', () => {
+    const registered = [];
+    const server = { tool: (name) => registered.push(name) };
+    registerTools({ server, handlers: {}, role: 'author', describeChanges: true, z: fakeZod });
+    expect(registered.toSorted()).toEqual([...AUTHOR_TOOLS, ...DESCRIBE_CHANGES_TOOLS].toSorted());
   });
 
   it('registers project classification for workspace detection', () => {

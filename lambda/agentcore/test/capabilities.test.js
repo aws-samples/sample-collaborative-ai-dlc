@@ -50,11 +50,51 @@ describe('capabilities command', () => {
       },
     );
     expect(res.ok).toBe(true);
+    expect(res.sandboxEnforcement).toBe(true);
     const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
     expect(byCli.claude).toMatchObject({ installed: true, authed: false, available: false });
     expect(byCli.kiro).toMatchObject({ installed: true, authed: true, available: true });
     expect(byCli.opencode).toMatchObject({ installed: true, authed: false, available: false });
     expect(res.kiroModels.models.map((m) => m.id)).toContain('claude-sonnet-4.6');
+  });
+
+  it('says whether the Kiro model list is an answer or a failed lookup', async () => {
+    const probe = (captureChild) =>
+      capabilities(
+        {},
+        {
+          discoverInstalledClis: async () => ['kiro'],
+          captureChild,
+          env: { KIRO_API_KEY: 'k' },
+        },
+      );
+
+    const listed = await probe(async () => ({ stdout: KIRO_LIST_JSON }));
+    expect(listed.kiroModels.source).toBe('catalog');
+    expect(listed.kiroModels.models.length).toBeGreaterThan(0);
+
+    // The CLI answered with no model: an empty answer.
+    expect((await probe(async () => ({ stdout: '{"models":[]}' }))).kiroModels).toEqual({
+      models: [],
+      default: null,
+      source: 'catalog',
+    });
+
+    // The CLI could not be run, or printed something that is not a model list:
+    // a failed lookup, not an empty catalogue.
+    for (const captureChild of [
+      async () => {
+        throw new Error('kiro-cli exited 1');
+      },
+      async () => ({ stdout: 'error: not logged in' }),
+      async () => ({ stdout: '' }),
+    ]) {
+      expect((await probe(captureChild)).kiroModels).toEqual({
+        models: [],
+        default: null,
+        source: 'error',
+      });
+    }
   });
 
   it('uses the same Bedrock bearer token as Claude for OpenCode and Codex auth', async () => {
@@ -81,7 +121,8 @@ describe('capabilities command', () => {
       },
     );
     expect(capture).not.toHaveBeenCalled();
-    expect(res.kiroModels).toEqual({ models: [], default: null });
+    // No lookup ran, so "no models" is an answer, not a failed lookup.
+    expect(res.kiroModels).toEqual({ models: [], default: null, source: 'catalog' });
     const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
     expect(byCli.claude).toMatchObject({ available: true });
     expect(byCli.kiro).toMatchObject({ installed: false, available: false });
@@ -138,7 +179,7 @@ describe('capabilities authentication and advertisement', () => {
     expect(res.clis.every((c) => !c.authed && !c.available)).toBe(true);
   });
 
-  it('keeps the keys-only body byte-for-byte', async () => {
+  it('preserves keys-only capabilities alongside sandbox support', async () => {
     const keysOnly = composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER]);
     const res = await capabilities(
       {},
@@ -153,8 +194,6 @@ describe('capabilities authentication and advertisement', () => {
         capabilityContributions: keysOnly.capabilityContributions,
       },
     );
-    // The body a keys-only image published before runtime providers were composed, plus the
-    // connection-verification modes it serves (none).
     expect(JSON.stringify(res)).toBe(
       JSON.stringify({
         ok: true,
@@ -164,11 +203,12 @@ describe('capabilities authentication and advertisement', () => {
           { cli: 'opencode', installed: false, authed: true, available: false },
           { cli: 'codex', installed: false, authed: true, available: false },
         ],
-        kiroModels: parseKiroModels(KIRO_LIST_JSON),
+        kiroModels: { ...parseKiroModels(KIRO_LIST_JSON), source: 'catalog' },
         agentAuthProtocol: 2,
         agentAuthModes: ['keys'],
         agentAuthVerification: [],
         invocationAccounting: true,
+        sandboxEnforcement: true,
       }),
     );
   });

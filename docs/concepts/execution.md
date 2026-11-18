@@ -9,7 +9,7 @@ DRAFT → CREATED → RUNNING ↔ WAITING
                     └→ SUCCEEDED | FAILED | CANCELLED
 ```
 
-An intent is created as a draft, reviewed, and started. On start, the platform compiles the project's pinned workflow into an execution plan for the intent's scope, snapshots the project's runtime settings (CLI, models, park release, parallelism, PR strategy), and hands off to a **durable orchestrator** — a Lambda-based durable execution that drives the intent end to end.
+An intent is created as a draft, reviewed, and started. On start, the platform compiles the space's pinned workflow into an execution plan for the intent's scope, snapshots the space's runtime settings (CLI, models, park release, parallelism, PR strategy), and hands off to a **durable orchestrator** — a Lambda-based durable execution that drives the intent end to end.
 
 `WAITING` means the run is parked on a human gate; answering resumes it exactly where it stopped. Terminal states can be rewound (see [Steering and rewind](#steering-and-rewind)).
 
@@ -44,9 +44,10 @@ record keys and indexes.
 Agents run on **Amazon Bedrock AgentCore** — a serverless runtime that gives each session a dedicated microVM and filesystem. There is no agent server fleet to operate: sessions are created on demand, park at zero compute while waiting for humans, and expire when idle.
 
 - Each intent gets one runtime session; parallel construction lanes get their own sessions.
-- Each stage spawns a **headless agent CLI** (Kiro, Claude Code, OpenCode, or Codex — selected per project) inside the session.
+- Each stage spawns a **headless agent CLI** (Kiro, Claude Code, OpenCode, or Codex — selected for each intent) inside the session.
 - The CLI's only interface to the platform is a stdio **MCP server**. Business reads and writes go to the graph as typed, provenance-stamped artifacts; questions, outputs, and metrics go to the process store and stream live to the browser.
 - Stages run as background jobs with durable callbacks, so a stage can run for hours while the orchestrator is suspended at zero compute.
+- Workspace initialization (clone, intent-branch publish, graph anchor) runs the same way: the orchestrator dispatches `init-ws-start` and waits on a durable callback, so a large clone is not bounded by the orchestrator Lambda's 900-second timeout. The job heartbeats while it runs. The run fails with `init_ws_failed` when the job reports a failure, stops heartbeating for 15 minutes, or has not finished within 2 hours; in the last two cases the orchestrator stops the intent's AgentCore session first, so a clone still running cannot hold the workspace when the intent is started again. The intent stays `CREATED` while it runs. Environment revisions built before `init-ws-start` existed, and runs already in flight at deployment, keep the synchronous `init-ws` call.
 - Session storage persists across park/resume, so a stage that asked a question continues its conversation with full context when you answer — even days later.
 
 The CLI authenticates to its model with a bearer token (Bedrock API key) or a Kiro API key configured in [Platform Admin → Agents](../using-the-platform/platform-settings.md#agents). The runtime's IAM role deliberately has no model-invocation permissions — token auth is the only path.
@@ -59,8 +60,10 @@ The CLI authenticates to its model with a bearer token (Bedrock API key) or a Ki
 
 Git is deterministic and owned by the engine — **the agent never runs git and never holds credentials**:
 
-- On start, the engine clones the project's repositories, creates the intent branch `aidlc/<title-slug>` (a readable slug derived from the intent title) off each repository's base branch, and mounts the checkout as the agent's working directory.
+- On start, the engine clones the space's repositories, creates the intent branch `aidlc/<title-slug>` (a readable slug derived from the intent title) off each repository's base branch, and mounts the checkout as the agent's working directory.
 - The engine commits and pushes after **every** stage exit — success, park, or failure — so no work is ever lost to a session expiry.
+- Engine commits are [Conventional Commits](https://www.conventionalcommits.org/), so repositories that lint commit messages accept them and release tooling can version and changelog from them. The stage's agent gets a `describe_changes` tool and is asked to declare the type, an optional scope, a one-line imperative summary and any breaking change of what it changed, because only it can judge whether the work is a feature, a fix or documentation. The first commit holding that work uses the description (`fix(billing): round totals [ABC-12]`, with `!` and a `BREAKING CHANGE:` footer for a breaking change, wrapped to 100 columns with URLs kept whole): the stage commit, or the lead draft of an ensemble stage. Each repository takes it once: a repository whose tree was clean or whose commit failed gets it on the stage's next commit, while one that already committed it gets a checkpoint. Every other engine commit is a checkpoint that release tooling ignores by default: `docs(aidlc): checkpoint <stage> stage` before construction, where stages only write AI-DLC artifacts, and `chore(aidlc): checkpoint <stage> stage` (or `… lead draft`, `… repair`) otherwise, plus `chore(aidlc): merge <unit> lane` and the other lane commits. When the intent was started from a Jira Cloud issue, its key is appended to the header (`[ABC-12]`); otherwise the header has no key. Issue keys the agent writes in its summary are removed, so the key appears once. The intent title goes in the body, and the stage, unit and execution in `AIDLC-Stage`, `AIDLC-Unit` and `AIDLC-Execution` trailers.
+- Set `pr_title_tracker_key = true` to prefix the intent pull/merge request title with the same Jira key (`[ABC-12] Fix invoice rounding`), for teams whose merge request checks or Jira integration expect it. Unit draft pull requests and intents without a Jira issue keep their titles.
 - Credentials are injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. In GitHub App mode, pushes use installation tokens instead of user tokens.
 - Parallel lanes work on section-specific per-unit branches (`aidlc/<intent-slug>--s<k>-unit-<slug>`).
 - With **Intent PR**, the engine merges completed lanes into the intent branch with serialized `--no-ff` merges in dependency-safe order.
@@ -69,7 +72,25 @@ Git is deterministic and owned by the engine — **the agent never runs git and 
 
 For PR-per-unit delivery, DynamoDB is scheduling truth. A unit is complete only after every changed repository confirms the exact ready head is on the intent branch. A partial multi-repository merge preserves merged work, blocks dependents, and enters halt-and-ask.
 
-Provider comments never launch agents by themselves. A project member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
+The lane board calls this outcome **Integrated**. Its stored identifier remains
+`MERGED`; it does not mean that the final intent-to-base PR has merged. Counts
+use the active unit plan; retained rows from earlier plans remain history.
+
+A walking skeleton must be a dependency-free unit in the current DAG. A missing
+choice receives a dependency-free default before approval. Re-promotion retains
+valid captured choices. If the regenerated DAG renames that unit or gives it
+dependencies, promotion records the change and offers a new dependency-free
+default at the normal fan-out approval. Original answers remain in history.
+Execution still rejects invalid choices in an already approved plan. A workflow with `skeleton: off`
+still runs all units, without the solo-first ceremony.
+
+Shared stages and successful completion require every active-plan lane to be
+integrated or explicitly omitted by a recorded human skip. Blocked-only work
+still enters halt-and-ask. Retry preserves integration; skip also omits the
+unintegrated dependent closure; abort fails the run. Partial delivery is presented
+separately from complete delivery.
+
+Provider comments never launch agents by themselves. A space member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
 
 ## Human gates, park and resume
 
@@ -114,6 +135,6 @@ Every process write is persisted to DynamoDB (the source of truth) and broadcast
 
 - A live stage pipeline grouped by phase, with per-stage status, durations (active vs. waiting), attempts, and sensor verdicts.
 - Streaming agent output per stage, a timeline of events, and artifact discussions.
-- Token usage, context-window pressure, and estimated cost per stage, per intent, and per project — with model attribution stamped server-side.
+- Token usage, context-window pressure, and estimated cost per stage, per intent, and per space — with model attribution stamped server-side.
 
 See [Observing intents](../using-the-platform/intent-observability.md) for the full tour.

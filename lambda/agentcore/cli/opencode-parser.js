@@ -1,3 +1,5 @@
+import { aggregateMetrics } from '../../shared/metric-classification.js';
+
 // Incremental parser for `opencode run --format json` JSONL output.
 //
 // OpenCode emits one completed part per line. The parser accepts arbitrarily
@@ -79,6 +81,7 @@ const toolOf = (event) => {
   if (eventType !== 'tool_use' && partType !== 'tool') return null;
   if (!['completed', 'error', 'failed'].includes(status)) return null;
   return {
+    id: part.callID ?? part.id,
     name: part.tool ?? event?.tool ?? 'tool',
     status: status === 'completed' ? 'completed' : 'error',
     input: state.input ?? part.input ?? event?.input ?? null,
@@ -155,7 +158,7 @@ export const createOpenCodeJsonlParser = ({
     if (type === 'step_finish' || partType === 'step_finish') {
       const metrics = usageFrom(event);
       if (metrics) {
-        state.metrics = { ...state.metrics, ...metrics };
+        state.metrics = aggregateMetrics([{ metrics: state.metrics }, { metrics }]);
         onUsage(metrics, event);
       }
     }

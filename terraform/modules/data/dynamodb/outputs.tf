@@ -94,3 +94,19 @@ output "environment_registry_table_arn" {
   description = "ARN of the managed environment registry table"
   value       = aws_dynamodb_table.environment_registry.arn
 }
+
+output "access_table_name" {
+  value = aws_dynamodb_table.access.name
+}
+
+output "access_table_arn" {
+  value = aws_dynamodb_table.access.arn
+}
+
+output "audit_table_name" {
+  value = aws_dynamodb_table.audit.name
+}
+
+output "audit_table_arn" {
+  value = aws_dynamodb_table.audit.arn
+}

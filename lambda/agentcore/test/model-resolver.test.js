@@ -4,7 +4,9 @@ import {
   resolveStageModel,
   quorumCliModels,
   machineCliModels,
+  CODEX_DEFAULT_MODEL,
 } from '../model-resolver.js';
+import { costForMetrics, makePriceResolver } from '../../shared/model-pricing.js';
 import { getDriver } from '../cli/drivers.js';
 
 describe('resolveModelId', () => {
@@ -140,7 +142,8 @@ describe('resolveStageModel — Codex uses its OWN model namespace (openai.*)', 
     );
   });
 
-  it('returns undefined when no codex model is selected (driver omits -m → codex default)', () => {
+  it('resolves the pinned Codex default when no codex model is selected', () => {
+    // The Claude-shaped agent override and BEDROCK_MODEL still must not apply.
     expect(
       resolveStageModel({
         cliModels: {},
@@ -148,13 +151,35 @@ describe('resolveStageModel — Codex uses its OWN model namespace (openai.*)', 
         cli: 'codex',
         env,
       }),
-    ).toBeUndefined();
+    ).toBe(CODEX_DEFAULT_MODEL);
     expect(
       resolveStageModel({
         cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
         cli: 'codex',
         env,
       }),
+    ).toBe('openai.gpt-6.1-sol');
+  });
+
+  it('records a model the price table can price when no Codex model is configured', () => {
+    const model = resolveStageModel({ cliModels: {}, cli: 'codex', env });
+    const priceFor = makePriceResolver({
+      version: 2,
+      region: 'us-east-1',
+      prices: { 'openai.gpt-6.1-sol': { regional: { input: 2.2, output: 11 } } },
+    });
+    const cost = costForMetrics(
+      { tokensInput: 1_000_000, tokensOutput: 1_000_000 },
+      model,
+      priceFor,
+    );
+    expect(cost.priced).toBe(true);
+    expect(cost.totalCost).toBeCloseTo(2.2 + 11);
+  });
+
+  it('leaves an unset codex model to a non-Bedrock backend', () => {
+    expect(
+      resolveStageModel({ cliModels: {}, cli: 'codex', env, backend: { id: 'gateway' } }),
     ).toBeUndefined();
   });
 

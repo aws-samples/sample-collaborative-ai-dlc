@@ -10,19 +10,22 @@
 // The PROMPT ASSEMBLY is a pure function (no fs/network) so it is unit-tested in
 // isolation; the workspace write is the thin effectful shell.
 
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
-import { MCP_SERVER_NAME } from './cli/drivers.js';
+import { GATEWAY_TOOLS_SERVER_NAME, MCP_SERVER_NAME } from './cli/drivers.js';
 import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
 import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import { currentCredentialSession } from './credential-session.js';
 import { createRuntimeMcpBridge } from './mcp/runtime-bridge.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
+import { codexUntrustedProjectsToml, exclusiveOpenCodeConfig } from './cli/exclusive-mcp.js';
+import { gatewayOnlyMcp } from '../shared/runtime-mcp-policy.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -203,7 +206,7 @@ export const OUTPUT_CONTRACT = [
   '',
   '- Record EVERY business artifact via `create_artifact`; wire links with',
   '  `link_artifacts`. Output not written through a tool is DISCARDED.',
-  '- Finish with a `send_output` summary and `collect_metric` for usage.',
+  '- Finish with a `send_output` summary.',
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 
@@ -243,6 +246,20 @@ const renderWorkspaceDetectionContract = (stageId, policy = null) => {
     'workflow stages and native workspace exports.',
   ].join('\n');
 };
+
+// The engine commits this stage's work with the agent's Conventional Commits
+// description, which release tooling reads for the version and changelog.
+const CHANGE_DESCRIPTION_CONTRACT = [
+  '## Commit description contract',
+  '',
+  'The engine commits your work when you finish, and repositories release from those',
+  'commit messages. Before `send_output`, call `describe_changes` once with the',
+  'Conventional Commits type that matches what you changed in the repository: `feat`',
+  'for new behaviour, `fix` for a bug fix, `docs` when you only wrote documentation or',
+  'AI-DLC artifacts, and so on. Mark it breaking only when existing users must change',
+  'something, and say what breaks and how to migrate. Leave issue keys out of the',
+  "summary: the engine adds the intent's own. If you change nothing, skip it.",
+].join('\n');
 
 // Render the resolved input artifacts as a prompt section. An `expectedAbsent`
 // input (its producer exists in the workflow but is out of the selected scope —
@@ -424,6 +441,8 @@ export const buildStagePrompt = ({
   conductor = '',
   compiledContext = '',
   attachments = [],
+  // This session owns the stage and has describe_changes.
+  describeChanges = false,
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -456,6 +475,7 @@ export const buildStagePrompt = ({
   if (unitScope) sections.push('', unitScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
+  if (describeChanges) sections.push('', CHANGE_DESCRIPTION_CONTRACT);
   const scopePolicy = renderScopePolicy(stage.policy);
   if (scopePolicy) sections.push('', scopePolicy);
   sections.push(
@@ -553,15 +573,25 @@ const scrubCustomMcpAuth = (customServers = {}) =>
 // validated + reserved-name-filtered upstream) are scrubbed and spread FIRST so
 // the reserved `aidlc` entry, written last, always wins a name collision — a
 // custom entry can never override the runtime bridge.
+//
+// With customer MCP targets behind the Gateway, the runtime-owned
+// `aidlc-gateway-tools` entry relays to the passthrough proxy over its own
+// socket. It is also written after the custom servers, so it wins a name
+// collision too, and it carries no endpoint or credential.
+const relayEntry = (socketPath) => ({
+  command: process.execPath,
+  args: [new URL('./mcp/stdio-relay.js', import.meta.url).pathname, socketPath],
+  env: CUSTOM_MCP_AUTH_ENV_SCRUB,
+});
+
 export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
     ...scrubCustomMcpAuth(customServers),
+    ...(env.AIDLC_GATEWAY_TOOLS_SOCKET
+      ? { [GATEWAY_TOOLS_SERVER_NAME]: relayEntry(env.AIDLC_GATEWAY_TOOLS_SOCKET) }
+      : {}),
     aidlc: env.AIDLC_MCP_SOCKET
-      ? {
-          command: process.execPath,
-          args: [new URL('./mcp/stdio-relay.js', import.meta.url).pathname, env.AIDLC_MCP_SOCKET],
-          env: CUSTOM_MCP_AUTH_ENV_SCRUB,
-        }
+      ? relayEntry(env.AIDLC_MCP_SOCKET)
       : {
           command: 'node',
           args: [mcpEntry],
@@ -604,6 +634,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
             // everywhere else — independent of the policy, because the absence of an
             // answer path does not depend on what the release enables.
             ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),
+            // Written ONLY for the session that owns a stage, so it gets
+            // describe_changes. Absent everywhere else.
+            ...(scope.describeChanges === true && scope.checkpointOwner !== false
+              ? { V2_DESCRIBE_CHANGES: '1' }
+              : {}),
             // The validation revision the checkpoint receipts are scoped to. Absent
             // for the first run and for every run without a policy.
             ...(scope.policy && scope.validationRound
@@ -636,18 +671,84 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
   },
 });
 
-const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
-  const session = currentCredentialSession();
-  if (!session) return env; // Pure/local harness callers own their process lifetime.
-  const trustedEnv = buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env;
-  const bridge = await createRuntimeMcpBridge({ entry: mcpEntry, trustedEnv });
+const GATEWAY_PROXY_ENTRY = new URL('./mcp/gateway-proxy.js', import.meta.url).pathname;
+
+const localMcpDisabled = (message) =>
+  Object.assign(new Error(message), { code: 'MCP_LOCAL_SERVER_DISABLED' });
+
+// With the Gateway enabled the runtime bridge runs the proxy instead of the
+// local server. A missing grant fails closed: falling back to the local server
+// would silently restore direct data access the deployment opted out of.
+export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    if (env.ENGINE_DATA_FUNCTION) throw localMcpDisabled('Engine data requires the MCP Gateway');
+    return { entry: mcpEntry, trustedEnv };
+  }
+  if (!grant) {
+    throw Object.assign(new Error('Gateway MCP requires a control-plane grant'), {
+      code: 'GATEWAY_GRANT_MISSING',
+    });
+  }
+  return {
+    entry: GATEWAY_PROXY_ENTRY,
+    trustedEnv: {
+      ...trustedEnv,
+      AIDLC_MCP_GATEWAY_URL: env.AIDLC_MCP_GATEWAY_URL,
+      AIDLC_MCP_GATEWAY_TARGET: env.AIDLC_MCP_GATEWAY_TARGET ?? 'aidlc',
+      AIDLC_MCP_GATEWAY_GRANT: grant,
+    },
+  };
+};
+
+// The customer-tool proxy runs only for a stage session (the interceptor
+// denies discussion and conflict grants on customer targets anyway) of a
+// deployment with customer targets behind its Gateway. It reuses the aidlc
+// launch's trusted env, so it presents the same grant and session.
+export const gatewayToolsLaunch = ({ launch, env, scope }) =>
+  env.AIDLC_MCP_GATEWAY_URL &&
+  env.AIDLC_MCP_GATEWAY_CUSTOM_TARGETS === 'true' &&
+  (scope.mode ?? 'stage') === 'stage'
+    ? {
+        entry: GATEWAY_PROXY_ENTRY,
+        trustedEnv: { ...launch.trustedEnv, AIDLC_MCP_GATEWAY_MODE: 'passthrough' },
+      }
+    : null;
+
+const ownedBridge = async (session, launch) => {
+  const bridge = await createRuntimeMcpBridge(launch);
   try {
     session.own(() => bridge.dispose());
   } catch (error) {
     await bridge.dispose();
     throw error;
   }
-  return { ...env, AIDLC_MCP_SOCKET: bridge.socketPath, AIDLC_MCP_CONTEXT_ID: randomUUID() };
+  return bridge;
+};
+
+const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
+  const session = currentCredentialSession();
+  if (!session) {
+    // Without the bridge the CLI would spawn the local server itself.
+    if (env.AIDLC_MCP_GATEWAY_URL || env.ENGINE_DATA_FUNCTION) {
+      throw localMcpDisabled('Gateway MCP requires a credential session');
+    }
+    return env; // Pure/local harness callers own their process lifetime.
+  }
+  const launch = mcpServerLaunch({
+    mcpEntry,
+    trustedEnv: buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env,
+    env,
+    grant: currentGatewayGrant(),
+  });
+  const bridge = await ownedBridge(session, launch);
+  const toolsLaunch = gatewayToolsLaunch({ launch, env, scope });
+  const toolsBridge = toolsLaunch ? await ownedBridge(session, toolsLaunch) : null;
+  return {
+    ...env,
+    AIDLC_MCP_SOCKET: bridge.socketPath,
+    ...(toolsBridge ? { AIDLC_GATEWAY_TOOLS_SOCKET: toolsBridge.socketPath } : {}),
+    AIDLC_MCP_CONTEXT_ID: randomUUID(),
+  };
 };
 
 // Concatenate the bodies of the rule blocks resolved for this stage (universal +
@@ -698,15 +799,26 @@ export const KIRO_AGENT_NAME = 'aidlc';
 // carries that CLI-only field. `resources` points Kiro at the
 // steering dir: with a custom --agent, Kiro does NOT auto-load .kiro/steering,
 // so the glob is required to load the project's custom rules
-// (https://kiro.dev/docs/cli/steering). Pure.
-export const buildKiroAgentConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
-  $schema:
-    'https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json',
+// (https://kiro.dev/docs/cli/steering). Under gateway_only (`exclusiveMcp`),
+// `includeMcpJson: false` keeps the global and workspace
+// `.kiro/settings/mcp.json` servers out (cli/exclusive-mcp.js). Pure.
+const KIRO_AGENT_SCHEMA =
+  'https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json';
+
+export const buildKiroAgentConfig = ({
+  mcpEntry,
+  scope,
+  env = {},
+  customServers = {},
+  exclusiveMcp = false,
+}) => ({
+  $schema: KIRO_AGENT_SCHEMA,
   name: KIRO_AGENT_NAME,
   description: 'AI-DLC v2 stage execution agent (runtime-managed MCP surface).',
   mcpServers: buildMcpConfig({ mcpEntry, scope, env, customServers }).mcpServers,
   tools: ['*'],
   resources: ['file://.kiro/steering/**/*.md'],
+  ...(exclusiveMcp ? { includeMcpJson: false } : {}),
 });
 
 // Effectful: write the Kiro agent config to <workspaceDir>/.kiro/agents/aidlc.json
@@ -723,7 +835,13 @@ export const materializeKiroAgent = async ({
   const agentsDir = path.join(workspaceDir, '.kiro', 'agents');
   await mkdir(agentsDir, { recursive: true });
   env = await prepareMcpEnvironment({ mcpEntry, scope, env });
-  const config = buildKiroAgentConfig({ mcpEntry, scope, env, customServers });
+  const config = buildKiroAgentConfig({
+    mcpEntry,
+    scope,
+    env,
+    customServers,
+    exclusiveMcp: gatewayOnlyMcp(),
+  });
   const agentName = env.AIDLC_MCP_CONTEXT_ID
     ? `${KIRO_AGENT_NAME}-${env.AIDLC_MCP_CONTEXT_ID}`
     : KIRO_AGENT_NAME;
@@ -732,6 +850,26 @@ export const materializeKiroAgent = async ({
   await writeFile(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
   currentCredentialSession()?.own(() => rm(configPath, { force: true }));
   return agentName;
+};
+
+// gateway_only, a one-shot that brings no agent: an agent with no MCP server at
+// all, so Kiro's default agent cannot load `.kiro/settings/mcp.json`. Returns
+// the agent name and a remover for its file.
+export const materializeIsolatedKiroAgent = async ({ workspaceDir }) => {
+  const agentsDir = path.join(workspaceDir, '.kiro', 'agents');
+  await mkdir(agentsDir, { recursive: true });
+  const agentName = `${KIRO_AGENT_NAME}-isolated-${randomUUID()}`;
+  const configPath = path.join(agentsDir, `${agentName}.json`);
+  const config = {
+    $schema: KIRO_AGENT_SCHEMA,
+    name: agentName,
+    description: 'AI-DLC one-shot prompt (no MCP servers).',
+    mcpServers: {},
+    tools: ['*'],
+    includeMcpJson: false,
+  };
+  await writeFile(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+  return { agentName, remove: () => rm(configPath, { force: true }) };
 };
 
 const openCodeEnvRef = (value) =>
@@ -804,8 +942,10 @@ export const buildOpenCodeConfig = ({
 
 // OpenCode reads inline config after repository configuration. Returning the
 // JSON through OPENCODE_CONFIG_CONTENT leaves AGENTS.md and .opencode untouched
-// while retaining non-conflicting repository settings.
+// while retaining non-conflicting repository settings. Under gateway_only every
+// MCP server those other layers define is disabled in it (cli/exclusive-mcp.js).
 export const materializeOpenCodeConfig = async ({
+  workspaceDir,
   mcpEntry,
   scope,
   env = process.env,
@@ -813,7 +953,10 @@ export const materializeOpenCodeConfig = async ({
   maxTurns = null,
 }) => {
   env = await prepareMcpEnvironment({ mcpEntry, scope, env });
-  return JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers, maxTurns }));
+  const config = buildOpenCodeConfig({ mcpEntry, scope, env, customServers, maxTurns });
+  return JSON.stringify(
+    gatewayOnlyMcp() ? await exclusiveOpenCodeConfig({ config, cwd: workspaceDir, env }) : config,
+  );
 };
 
 // ── Codex config (per-stage CODEX_HOME) ──
@@ -823,7 +966,8 @@ export const materializeOpenCodeConfig = async ({
 // appended rollout JSONL never touches AgentCore's managed-session mount. The
 // stage runner copies only the selected rollout to/from durable storage around
 // resumable author runs (cli/codex-store.js). Config, global guidance, reviewer
-// sessions, and SQLite state always remain local.
+// sessions, and SQLite state always remain local. SQLite defaults to CODEX_HOME:
+// a shared index would retain rollout paths from invocation homes we deleted.
 
 // TOML value emitters — config values here are flat strings/arrays/maps, so a
 // tiny local emitter beats a dependency. Strings are emitted as TOML basic
@@ -944,22 +1088,41 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
       // Inserted directly after the table header — TOML keys must precede any
       // nested table ([….env]) inside the same section.
       lines.splice(1, 0, 'required = true', 'startup_timeout_sec = 30', 'tool_timeout_sec = 600');
+    } else if (name === GATEWAY_TOOLS_SERVER_NAME) {
+      // Customer tools go through the Gateway proxy: the same timeouts as the
+      // built-in tools, but not required, so a customer outage does not stop
+      // the stage from starting.
+      lines.splice(1, 0, 'startup_timeout_sec = 30', 'tool_timeout_sec = 600');
     }
     sections.push(lines.join('\n'));
   }
   return sections.join('\n\n');
 };
 
-// Ephemeral-local SQLite home for codex state (see header comment). Overridable
-// for tests/local runs via env.
-const codexSqliteHome = (env) => env.V2_CODEX_SQLITE_HOME || '/home/node/.codex-state';
+const codexBaseToml = () => [
+  '# Materialized by the AI-DLC runtime — regenerated every stage run.',
+  'model_provider = "amazon-bedrock"',
+  'approval_policy = "never"',
+  'sandbox_mode = "danger-full-access"',
+  // The rendered rules doc doubles as the project doc when the repo has no
+  // AGENTS.md. When it HAS one, the global $CODEX_HOME/AGENTS.md (written by
+  // materializeCodexHome) still points codex at the runtime rules.
+  'project_doc_fallback_filenames = [".aidlc/rules.md"]',
+  '',
+  '[history]',
+  'persistence = "save-all"',
+  '',
+];
 
+// `untrustedProjects` (gateway_only): the `[projects."<dir>"]` tables that make
+// Codex skip the repository's `.codex/` layers (cli/exclusive-mcp.js).
 export const buildCodexConfigToml = ({
   mcpEntry,
   scope,
   env = {},
   customServers = {},
   secretEnv = {},
+  untrustedProjects = '',
 }) => {
   // A custom server named `aidlc` keeps its FIRST insertion position through the
   // buildMcpConfig spread (JS re-assignment preserves key order) even though the
@@ -972,24 +1135,13 @@ export const buildCodexConfigToml = ({
   }).mcpServers;
   const mcpServers = { ...others, [MCP_SERVER_NAME]: aidlc };
   return [
-    '# Materialized by the AI-DLC runtime — regenerated every stage run.',
-    'model_provider = "amazon-bedrock"',
-    'approval_policy = "never"',
-    'sandbox_mode = "danger-full-access"',
-    // The rendered rules doc doubles as the project doc when the repo has no
-    // AGENTS.md. When it HAS one, the global $CODEX_HOME/AGENTS.md (written by
-    // materializeCodexHome) still points codex at the runtime rules.
-    'project_doc_fallback_filenames = [".aidlc/rules.md"]',
-    `sqlite_home = ${tomlString(codexSqliteHome(env))}`,
-    '',
-    '[history]',
-    'persistence = "save-all"',
-    '',
+    ...codexBaseToml(),
     // Refs resolve against the RESOLVED MCP secret env only (fail-closed SSM
     // values) — never the raw container env, whose reserved keys a ref may not
     // name anyway (mcp-secret-resolver RESERVED_MCP_ENV_KEYS).
     toCodexMcpToml(mcpServers, secretEnv),
     '',
+    ...(untrustedProjects ? [untrustedProjects, ''] : []),
   ].join('\n');
 };
 
@@ -1031,6 +1183,7 @@ export const resolveCodexHome = ({ scope = {}, env = process.env } = {}) => {
 // Effectful: recreate the scoped local home and write config.toml + AGENTS.md.
 // A resume passes reset=false after codex-store restored its sessions subtree.
 export const materializeCodexHome = async ({
+  workspaceDir,
   mcpEntry,
   scope,
   env = process.env,
@@ -1042,11 +1195,38 @@ export const materializeCodexHome = async ({
   if (reset) await rm(homeDir, { recursive: true, force: true });
   await mkdir(homeDir, { recursive: true });
   env = await prepareMcpEnvironment({ mcpEntry, scope, env });
-  const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers, secretEnv });
+  const untrustedProjects = gatewayOnlyMcp() ? await codexUntrustedProjectsToml(workspaceDir) : '';
+  const toml = buildCodexConfigToml({
+    mcpEntry,
+    scope,
+    env,
+    customServers,
+    secretEnv,
+    untrustedProjects,
+  });
   const configPath = path.join(homeDir, 'config.toml');
   await writeFile(configPath, toml, { encoding: 'utf8', mode: 0o600 });
   currentCredentialSession()?.own(() => rm(configPath, { force: true }));
   await writeFile(path.join(homeDir, 'AGENTS.md'), CODEX_GLOBAL_AGENTS_MD, 'utf8');
+  return homeDir;
+};
+
+// gateway_only, a one-shot that brings no home: a private home with no MCP
+// server and the working directory's projects untrusted, under the home root so
+// cli/codex-store.js cleanupCodexHome removes it after the run.
+export const materializeIsolatedCodexHome = async ({ workspaceDir, env = process.env }) => {
+  const root = path.resolve(env.V2_CODEX_HOME_ROOT || DEFAULT_CODEX_HOME_ROOT);
+  await mkdir(root, { recursive: true });
+  const homeDir = await mkdtemp(path.join(root, 'isolated-'));
+  try {
+    const toml = [...codexBaseToml(), await codexUntrustedProjectsToml(workspaceDir), ''].join(
+      '\n',
+    );
+    await writeFile(path.join(homeDir, 'config.toml'), toml, { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    await rm(homeDir, { recursive: true, force: true });
+    throw error;
+  }
   return homeDir;
 };
 
@@ -1214,6 +1394,7 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
     attachments,
+    describeChanges: scope?.describeChanges === true && scope?.checkpointOwner !== false,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

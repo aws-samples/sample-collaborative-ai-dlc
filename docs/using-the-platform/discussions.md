@@ -32,7 +32,15 @@ arrow in the thread header returns to the thread list.
 ## Messages
 
 - Markdown is supported (no raw HTML).
-- `@` opens a mention picker over the project members. Mentioned users who are
+- Start a message with `@quorum` to ask Quorum a question. Your message is saved
+  to the thread before Quorum replies, so teammates and later asks can read it.
+  If saving the message or submitting the ask fails, use **retry** to finish
+  the request. Reopening the thread offers a retry for your saved unconfirmed
+  asks; retries reuse the original message and assist request IDs. With
+  OpenCode, Quorum answers the asks of one thread one at a time. When engine
+  data is enabled, an ask that cannot start within about two and a half
+  minutes of being submitted is marked failed as busy, and can be retried.
+- `@` opens a mention picker over the space members. Mentioned users who are
   **currently online** get an in-app notification with a jump-to-thread link.
   Offline users see the unread badge on their next visit — there is no email
   or push delivery yet.
@@ -45,7 +53,7 @@ arrow in the thread header returns to the thread list.
 
 ## Resolving a thread
 
-Any project member can resolve a thread (the action is fully audited — the
+Any space member can resolve a thread (the action is fully audited — the
 resolver's name is shown in the thread header). When resolving you can record
 a **resolution summary** — the durable "what did we decide" — and optionally
 mark one message as the accepted outcome.
@@ -54,7 +62,7 @@ Resolved threads can be reopened by any member.
 
 ## Moderation (redaction)
 
-Project **admins and owners** can redact any message from the message context
+Space **admins and owners** can redact any message from the message context
 menu. Redaction **replaces** the content with `[redacted by {name}]` — the
 original text is purged from the database while the audit trail (who redacted,
 when) is preserved.
@@ -78,6 +86,11 @@ Non-members get a 403 on everything, including realtime access.
 - **One thread per entity**: busy entities may mix decision and
   implementation topics in one thread. The data model is ready for multiple
   titled threads without migration when the need materializes.
+- **Checkpoint questions are discussable**: the summary-confirmation and
+  plan-approval gates are `Question` vertices too. If a gate has no vertex
+  (its mirror write never landed), Discuss rebuilds it from the gate row,
+  keeping the recorded answer and who answered it. Discussing a checkpoint
+  never answers it or resumes execution.
 - Messages live in the scope's graph (`Discussion` / `DiscussionMessage`
   vertices), so discussions are queryable collaboration context for both
   humans and agents — not throwaway chat history. Deleting an intent (or a

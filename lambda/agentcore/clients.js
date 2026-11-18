@@ -23,6 +23,9 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
+import { directGraphTripwire, realtimeAccessFor } from './engine-data-client.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'clients' } });
 
@@ -66,8 +69,11 @@ export const invokeCredentialBroker = async (request) => {
   return result;
 };
 
+// With engine-data enabled, SOURCE_CONTROL_FUNCTION is the grant-only
+// `:runtime` alias, which authorizes against the execution the grant names.
 export const invokeSourceControlOperation = async ({
   projectId,
+  executionId,
   provider,
   repo,
   operation,
@@ -86,6 +92,9 @@ export const invokeSourceControlOperation = async ({
       Payload: Buffer.from(
         JSON.stringify({
           action: 'operate',
+          ...(process.env.ENGINE_DATA_FUNCTION
+            ? { gatewayGrant: currentGatewayGrant(), executionId }
+            : {}),
           projectId,
           provider,
           repo,
@@ -166,7 +175,8 @@ export const sendStageCallbackHeartbeat = async (
 };
 
 // Open a Neptune (or local gremlin-server) traversal source. wss+SigV4 in prod;
-// plain ws for the test container.
+// plain ws for the test container. Refused with engine data enabled: graph
+// access then belongs to engine-data.
 //
 // Each call returns an INDEPENDENT connection the caller OWNS and MUST close
 // (via closeGraphSource in mcp/graph-writer.js). There is deliberately no module
@@ -176,6 +186,7 @@ export const sendStageCallbackHeartbeat = async (
 // the process hit EMFILE ("too many open files") and the next stage crashed.
 // Ownership + closeGraphSource is the fix.
 export const openGraph = async () => {
+  if (process.env.ENGINE_DATA_FUNCTION) return directGraphTripwire()();
   const endpoint = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
   const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
@@ -216,9 +227,29 @@ const apiClientFor = (endpoint) => {
 // `intent:<intentId>` (the v2 realtime channel). The connection query drains
 // LastEvaluatedKey — a Query page caps at 1MB and truncation would silently
 // stop broadcasting to the connections past the first page.
-export const broadcastToIntent = async (intentId, payload) => {
-  const connectionsTable = process.env.CONNECTIONS_TABLE;
-  const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
+//
+// With engine data enabled the fan-out is engine-data's realtime.broadcastIntent:
+// it derives the channel from the invocation's grant and owns the connection
+// query and posts. The runtime still never throws into the engine; a denial is
+// logged apart from a delivery failure, and nothing falls back to a direct call.
+export const broadcastToIntent = async (
+  intentId,
+  payload,
+  { env = process.env, realtime } = {},
+) => {
+  if (env.ENGINE_DATA_FUNCTION) {
+    if (!intentId) return;
+    try {
+      await (realtime ?? realtimeAccessFor({ env })).broadcastIntent(payload);
+    } catch (err) {
+      const fields = { action: payload?.action ?? null, error: err?.name, code: err?.code ?? null };
+      if (err?.name === ENGINE_DATA_DENIED_ERROR) logger.warn('intent broadcast denied', fields);
+      else logger.error('intent broadcast failed', fields);
+    }
+    return;
+  }
+  const connectionsTable = env.CONNECTIONS_TABLE;
+  const websocketEndpoint = env.WEBSOCKET_ENDPOINT;
   if (!connectionsTable || !websocketEndpoint || !intentId) return;
   try {
     const items = [];

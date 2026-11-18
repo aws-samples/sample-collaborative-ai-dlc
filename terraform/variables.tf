@@ -129,10 +129,28 @@ variable "aidlc_repo_ref" {
   default     = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"
 }
 
-variable "aidlc_release_pinning" {
-  description = "Pin new intents to the immutable AI-DLC release published for the resolved ref (issue #482). \"on\" or \"off\"; existing intents are unaffected either way."
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance a custom AI-DLC fork release named \"gitlab:<namespace>/<project>\" is imported from (seed-blocks importRelease). An https origin."
   type        = string
-  default     = "off"
+  default     = "https://gitlab.com"
+  validation {
+    condition     = can(regex("^https://[^/?#@]+/?$", var.aidlc_custom_source_gitlab_url))
+    error_message = "aidlc_custom_source_gitlab_url must be an https origin, such as https://gitlab.com."
+  }
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN whose value is a GitLab token with read_api, used to import a custom AI-DLC fork release from a private GitLab project. Empty: only public GitLab projects can be imported."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.aidlc_custom_source_gitlab_token_secret_arn == "" || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.aidlc_custom_source_gitlab_token_secret_arn))
+    error_message = "aidlc_custom_source_gitlab_token_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+variable "aidlc_release_pinning" {
+  description = "Enable AI-DLC version selection for new intents. Standard deployment prepares the supported catalogs; an explicit \"off\" opts out. Until Stable is selected, the configured baseline remains in use. Existing intents are unaffected."
+  type        = string
+  default     = "on"
 
   validation {
     condition     = contains(["on", "off"], var.aidlc_release_pinning)
@@ -140,11 +158,29 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
+  type        = bool
+  default     = false
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)
   default     = {}
   sensitive   = true
+}
+
+variable "agentcore_image_tag" {
+  description = "Tag of a pre-built AgentCore image in its ECR repository (plus <tag>-amd64 when enable_instances_compute is true), built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
+}
+
+variable "yjs_image_tag" {
+  description = "Tag of a pre-built yjs-server image in its ECR repository, built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
 }
 
 # ---------------------------------------------------------------------------
@@ -368,4 +404,98 @@ variable "iam_permissions_boundary_arn" {
   description = "Permissions boundary for every IAM role this deployment creates, for accounts that require one. Empty sets none."
   type        = string
   default     = ""
+}
+
+variable "enable_mcp_gateway" {
+  description = "Serve the built-in aidlc MCP tools through AgentCore Gateway (grant-verified per call) instead of the in-runtime MCP server. Requires network_mode = VPC."
+  type        = bool
+  default     = false
+}
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish best-effort notification events to it (discussion.message, discussion.resolved, gate.pending, space.created) for integrations such as chat notifications. See docs/using-the-platform/notification-events.md."
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "With notification_events_enabled: the event bus name. Empty uses <project_name>-<environment>-events."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.notification_event_bus_name == "" || can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_bus_name))
+    error_message = "notification_event_bus_name must be empty or 1-256 characters of A-Z, a-z, 0-9, ., _ and -."
+  }
+}
+
+variable "notification_event_source" {
+  description = "With notification_events_enabled: the EventBridge source the events carry, for rule patterns."
+  type        = string
+  default     = "collaborative-ai-dlc"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_source)) && !startswith(var.notification_event_source, "aws.")
+    error_message = "notification_event_source must be 1-256 characters of A-Z, a-z, 0-9, ., _ and -, and must not start with aws."
+  }
+}
+
+variable "enable_engine_data" {
+  description = "Route the AgentCore engine's data access through grant-verifying services: process state, knowledge graph, methodology catalog, custom-rule and attachment blobs, and intent broadcasts through the engine-data Lambda; Git credentials and custom MCP secrets through the credential broker; provider review operations through the source-control runtime alias. The intents Lambda also signs execution grants. Requires enable_mcp_gateway."
+  type        = bool
+  default     = false
+}
+
+variable "enforce_runtime_grants" {
+  description = "Retire the pre-engine-data runtime request shapes at the credential broker: Git credential and agent credential requests then always require the Gateway grant (and invocation accounting). While false, requests that carry the new authority fields are still fully verified, and legacy-shape requests from runtimes started before enable_engine_data are served the legacy way and logged as LEGACY_RUNTIME_REQUEST. Also removes the AgentCore runtime role's direct Neptune, DynamoDB, S3, SSM, websocket and DynamoDB KMS access, its direct-client environment and its grant on the unqualified source-control function (managed environments share the role); turning it off restores them. Turn on only after that count has drained to zero and every core and managed runtime image carries the engine-data client. Requires enable_engine_data."
+  type        = bool
+  default     = false
+}
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile. \"allow\" (default) keeps today's behaviour: space and platform custom MCP servers run from the agent runtime with their secrets resolved into it. \"gateway_only\" keeps every custom MCP credential and every direct custom MCP connection out of the runtime microVM: direct servers and their secrets are refused when saved, at launch, at dispatch, by the credential broker and by the runtime, and customer MCP servers are served only as mcp_gateway_custom_targets. Requires enable_mcp_gateway, enable_engine_data and enforce_runtime_grants. Git tokens and model credentials still reach the runtime."
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
+variable "mcp_gateway_custom_targets" {
+  description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway as remote MCP targets, keyed by an immutable target name. The Gateway injects each target's credential from an AgentCore Identity credential provider created out of band; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
+  type = map(object({
+    endpoint    = string
+    description = optional(string)
+    auth = object({
+      type                    = string
+      credential_provider_arn = string
+      secret_arn              = string
+      scopes                  = optional(list(string), [])
+      custom_parameters       = optional(map(string))
+      credential_location     = optional(string)
+      parameter_name          = optional(string)
+      prefix                  = optional(string)
+    })
+    private_endpoint = optional(object({
+      managed_vpc_resource = optional(object({
+        vpc_identifier           = string
+        subnet_ids               = list(string)
+        endpoint_ip_address_type = string
+        security_group_ids       = optional(list(string))
+        routing_domain           = optional(string)
+      }))
+      self_managed_lattice_resource = optional(object({
+        resource_configuration_identifier = string
+      }))
+    }))
+    allow = object({
+      project_ids = list(string)
+      stage_ids   = optional(list(string))
+      tools       = optional(list(string))
+    })
+  }))
+  default  = {}
+  nullable = false
 }

@@ -10,7 +10,14 @@ import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { agentAuthProviderUi } from './agent-auth/registry';
 import { summarizeConfiguration } from './agent-auth/summary';
 
-const MECHANISM_LABELS: Record<string, string> = { 'api-key': 'API keys' };
+const CONNECTION_STATES: Record<string, string> = {
+  ready: 'Ready',
+  'reconnect-required': 'Needs reconnecting by an administrator',
+  revoked: 'No longer valid. An administrator needs to replace it',
+  missing: 'Not set up yet',
+};
+const connectionStateLabel = (state?: string) =>
+  state ? (CONNECTION_STATES[state] ?? state) : CONNECTION_STATES.missing;
 
 export function AgentAuthenticationModeSettings({
   authentication,
@@ -52,6 +59,48 @@ export function AgentAuthenticationModeSettings({
       setBusy(false);
     }
   };
+  const reconnectNotice = connection?.state === 'reconnect-required' && (
+    <p role="status">
+      An administrator must reconnect this shared connection before agents can start.
+    </p>
+  );
+  // The personal view has no space context: the server returns the platform
+  // default (or the person's own key in Keys mode), while a space can select its
+  // own connection or key at run time. Say so instead of implying one answer.
+  if (scope === 'personal') {
+    if (policy.mode === 'keys')
+      return connection && connection.state !== 'ready' ? (
+        <p role="status" className="rounded-md bg-muted/40 p-3 text-xs">
+          There is no platform Bedrock key. Agents use a space's key where one is set; otherwise add
+          your own key below or ask an administrator.
+        </p>
+      ) : null;
+    return (
+      <section
+        aria-label="Platform default Bedrock access"
+        className="space-y-1 rounded-md bg-muted/40 p-3 text-xs"
+      >
+        <p className="font-medium">Platform default Bedrock access: {labelFor(policy.mode)}</p>
+        <p>Your administrators manage this. A space can use its own access instead.</p>
+        <p>Status: {connectionStateLabel(connection?.state)}</p>
+        {summary.length > 0 && (
+          <div className="break-all text-muted-foreground">
+            {summary.map((line) => (
+              <p key={line.label}>
+                {line.label}: {line.value}
+              </p>
+            ))}
+          </div>
+        )}
+        {connection?.state === 'reconnect-required' && (
+          <p role="status">
+            An administrator must reconnect the platform default before agents that use it can
+            start.
+          </p>
+        )}
+      </section>
+    );
+  }
   const preview = (request: AgentAuthChangeRequest) =>
     perform(async () => setReview(await agentsService.previewAuthenticationChange(request)));
   // Failures propagate so the provider's Setup can show them and stay open.
@@ -123,16 +172,6 @@ export function AgentAuthenticationModeSettings({
             ` · ${hasOverride ? `Space ${targetUi?.noun ?? 'key'} override` : 'Inherits platform connection'}`}
         </p>
       )}
-      {scope === 'personal' && (
-        <p>
-          {authentication.personalMechanisms.length
-            ? `Personal overrides use ${authentication.personalMechanisms
-                .map((mechanism) => MECHANISM_LABELS[mechanism] ?? mechanism)
-                .join(' or ')}.`
-            : `Personal overrides are unavailable while the platform uses ${labelFor(policy.mode)}.`}{' '}
-          Shared connections are managed by platform administrators.
-        </p>
-      )}
       {scope === 'space' &&
         targetUi &&
         (authentication.canManageConnections && spaceProjectId ? (
@@ -175,11 +214,7 @@ export function AgentAuthenticationModeSettings({
           ))}
         </div>
       )}
-      {connection?.state === 'reconnect-required' && (
-        <p role="status">
-          An administrator must reconnect this shared connection before new invocations can run.
-        </p>
-      )}
+      {reconnectNotice}
       <p>Kiro uses its separate key settings.</p>
       {error && (
         <p role="alert" className="text-destructive">
@@ -201,7 +236,7 @@ export function AgentAuthenticationModeSettings({
           onCancel={() => setReview(null)}
         />
       )}
-      {setupOpen && targetUi && scope !== 'personal' && (
+      {setupOpen && targetUi && (
         <targetUi.Setup
           scope={scope}
           projectId={spaceProjectId}

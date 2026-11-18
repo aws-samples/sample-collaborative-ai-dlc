@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { UnitLaneBoardView, isBeforeConstructionPhase, isFanoutActive } from './UnitLaneBoard';
-import type { IntentUnit, IntentUnitPlan, UnitState } from '@/services/intents';
+import type { IntentUnit, IntentUnitPlan, IntentUnitPr, UnitState } from '@/services/intents';
 import type { PhaseNode } from '@/services/workflows';
 
 const unit = (slug: string, state: UnitState, over: Partial<IntentUnit> = {}): IntentUnit => ({
@@ -95,7 +95,7 @@ describe('UnitLaneBoardView', () => {
     // (>=1) rather than uniqueness; state labels are unique per fixture.
     expect(screen.getAllByText('auth').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('reporting')).toBeInTheDocument();
-    expect(screen.getByText('Merged')).toBeInTheDocument();
+    expect(screen.getByText('Integrated')).toBeInTheDocument();
     expect(screen.getByText('Building')).toBeInTheDocument();
     expect(screen.getByText('Blocked')).toBeInTheDocument();
     expect(screen.getByText('Pending')).toBeInTheDocument();
@@ -115,7 +115,7 @@ describe('UnitLaneBoardView', () => {
 
   it('summarizes only the states that are present', () => {
     renderView();
-    expect(screen.getByText('1 merged')).toBeInTheDocument();
+    expect(screen.getByText('1 integrated')).toBeInTheDocument();
     expect(screen.getByText('1 building')).toBeInTheDocument();
     expect(screen.getByText('1 blocked')).toBeInTheDocument();
     expect(screen.getByText('1 pending')).toBeInTheDocument();
@@ -137,7 +137,7 @@ describe('UnitLaneBoardView', () => {
     expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
     expect(screen.queryByText('legacy')).not.toBeInTheDocument();
     // real units still counted
-    expect(screen.getByText('1 merged')).toBeInTheDocument();
+    expect(screen.getByText('1 integrated')).toBeInTheDocument();
   });
 
   it('renders the live stream only when a running stage instance is provided', () => {
@@ -250,9 +250,9 @@ describe('UnitLaneBoardView', () => {
     expect(screen.getByText(/Choose the persistence model/)).toBeInTheDocument();
   });
 
-  it('hides Address feedback until at least one provider comment exists', () => {
+  it('offers Address feedback for an open review PR before any comment count is stored', () => {
     const onAddressFeedback = vi.fn();
-    const pr = {
+    const pr: IntentUnitPr = {
       sectionIndex: 1,
       unitSlug: 'auth',
       repository: 'owner/api',
@@ -265,7 +265,7 @@ describe('UnitLaneBoardView', () => {
       headSha: 'a',
       readyHeadSha: null,
       targetSha: 'b',
-      state: 'DRAFT' as const,
+      state: 'DRAFT',
       mergeable: null,
       commentCount: 0,
       repositoryOutcome: null,
@@ -285,19 +285,33 @@ describe('UnitLaneBoardView', () => {
       onAddressFeedback,
     };
     const { rerender } = renderView(props);
+    fireEvent.click(screen.getByRole('button', { name: 'Address feedback' }));
+    expect(onAddressFeedback).toHaveBeenCalledWith(props.units[0]);
+
+    const rerenderWith = (overrides: { units?: IntentUnit[]; unitPrs?: IntentUnitPr[] }) =>
+      rerender(
+        <UnitLaneBoardView
+          unitPlan={props.unitPlan}
+          units={overrides.units ?? props.units}
+          streamsBySlug={{}}
+          runningStageBySlug={{}}
+          unitPrs={overrides.unitPrs ?? props.unitPrs}
+          onAddressFeedback={onAddressFeedback}
+        />,
+      );
+
+    // Outside active review, the feedback API refuses a batch.
+    rerenderWith({ units: [unit('auth', 'MERGED', { sectionIndex: 1 })] });
     expect(screen.queryByRole('button', { name: 'Address feedback' })).not.toBeInTheDocument();
 
-    rerender(
-      <UnitLaneBoardView
-        unitPlan={props.unitPlan}
-        units={props.units}
-        streamsBySlug={{}}
-        runningStageBySlug={{}}
-        unitPrs={[{ ...pr, commentCount: 1 }]}
-        onAddressFeedback={onAddressFeedback}
-      />,
-    );
-    expect(screen.getByRole('button', { name: 'Address feedback' })).toBeInTheDocument();
+    // No open review PR: unchanged and closed repositories have nothing to review.
+    rerenderWith({
+      unitPrs: [
+        { ...pr, state: 'UNCHANGED', number: null },
+        { ...pr, repository: 'owner/web', state: 'CLOSED' },
+      ],
+    });
+    expect(screen.queryByRole('button', { name: 'Address feedback' })).not.toBeInTheDocument();
   });
 
   it('keeps repeated unit slugs distinct across sections and shows repository PR state', () => {

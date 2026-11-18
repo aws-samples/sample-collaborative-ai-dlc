@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
@@ -31,6 +31,17 @@ vi.mock('@/services/sourceControl', () => ({
   },
 }));
 
+const getTrackerIssue = vi.fn();
+const listComments = vi.fn();
+const listIssuePages = vi.fn();
+vi.mock('@/services/trackers', () => ({
+  trackersService: {
+    getIssue: (...args: unknown[]) => getTrackerIssue(...args),
+    listComments: (...args: unknown[]) => listComments(...args),
+    listIssuePages: (...args: unknown[]) => listIssuePages(...args),
+  },
+}));
+
 import NewIntentPage from './NewIntentPage';
 
 const baseProject = (over: Record<string, unknown> = {}) => ({
@@ -57,6 +68,73 @@ const renderPage = () =>
       </Routes>
     </MemoryRouter>,
   );
+
+describe('NewIntentPage — Jira media filenames', () => {
+  const issue = (id: string, body = 'List preview') => ({
+    resourceId: id,
+    title: id,
+    body,
+    labels: [],
+    author: { handle: 'Author' },
+    createdAt: '2026-01-01T00:00:00Z',
+  });
+
+  beforeEach(() => {
+    getTrackerIssue.mockReset();
+    listComments.mockReset().mockResolvedValue([]);
+    listIssuePages.mockReset().mockImplementation(async function* () {
+      yield { items: [issue('PROJ-1'), issue('PROJ-2')], done: true };
+    });
+    useProjectCache.mockReturnValue({
+      project: baseProject({
+        trackers: [
+          { id: 'jira', provider: 'jira-cloud', instance: 'cloud', externalProjectKey: 'PROJ' },
+        ],
+      }),
+      loading: false,
+    });
+  });
+
+  it('uses the selected issue with resolved media filenames in the prompt', async () => {
+    getTrackerIssue.mockResolvedValue(issue('PROJ-1', 'Before\n\nbrief.pdf\n\nAfter'));
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /PROJ-1/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Prompt')).toHaveValue(
+        '# PROJ-1\n\nBefore\n\nbrief.pdf\n\nAfter',
+      ),
+    );
+    expect(getTrackerIssue).toHaveBeenCalledExactlyOnceWith('p1', 'jira', 'PROJ-1');
+  });
+
+  it('keeps the available issue text when enrichment fails', async () => {
+    getTrackerIssue.mockRejectedValue(new Error('Jira unavailable'));
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /PROJ-1/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Prompt')).toHaveValue('# PROJ-1\n\nList preview'),
+    );
+  });
+
+  it('does not overwrite a newer selection when an earlier Jira lookup finishes late', async () => {
+    let resolveFirst!: (value: ReturnType<typeof issue>) => void;
+    getTrackerIssue
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(issue('PROJ-2', 'second.pdf'));
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /PROJ-1/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /PROJ-2/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Prompt')).toHaveValue('# PROJ-2\n\nsecond.pdf'),
+    );
+    await act(async () => resolveFirst(issue('PROJ-1', 'first.pdf')));
+    expect(screen.getByLabelText('Prompt')).toHaveValue('# PROJ-2\n\nsecond.pdf');
+  });
+});
 
 describe('NewIntentPage — DRAFT-first creation', () => {
   beforeEach(() => {

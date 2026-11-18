@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { act } from 'react';
-import { Link, MemoryRouter, Routes, Route } from 'react-router';
+import { Link, MemoryRouter, Routes, Route, useLocation } from 'react-router';
 
 beforeEach(() => {
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
@@ -39,6 +39,8 @@ const listComposes = vi.fn();
 const composeReportUpload = vi.fn();
 const attachments = vi.fn();
 const attachmentUploadUrls = vi.fn();
+const trackerAttachments = vi.fn();
+const importTrackerAttachment = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -49,6 +51,8 @@ vi.mock('@/services/intents', () => ({
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
     attachments: (...a: unknown[]) => attachments(...a),
     attachmentUploadUrls: (...a: unknown[]) => attachmentUploadUrls(...a),
+    trackerAttachments: (...a: unknown[]) => trackerAttachments(...a),
+    importTrackerAttachment: (...a: unknown[]) => importTrackerAttachment(...a),
   },
 }));
 
@@ -146,9 +150,9 @@ const draftIntent = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
-const renderPage = (controls?: ReactNode) =>
+const renderPage = (controls?: ReactNode, state?: Record<string, unknown>) =>
   render(
-    <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
+    <MemoryRouter initialEntries={[{ pathname: '/space/p1/intent/i1/compose', state }]}>
       {controls}
       <Routes>
         <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
@@ -262,6 +266,56 @@ describe('IntentComposePage', () => {
     validateGrid.mockReset();
     useProjectCache.mockReset();
     useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  it('consumes automatic import state so reloading does not restore removed files', async () => {
+    const source = { bindingId: 'b1', resourceId: '42', provider: 'github-issues' };
+    get.mockResolvedValue(draftIntent({ source, attachments: [] }));
+    trackerAttachments.mockReset().mockResolvedValue({
+      attachments: [
+        {
+          id: 'asset-1',
+          filename: 'spec.pdf',
+          url: 'https://github.com/user-attachments/files/1/spec.pdf',
+        },
+      ],
+    });
+    const attachment = {
+      attachmentId: 'a1',
+      filename: 'spec.pdf',
+      size: 10,
+      source: { ...source, attachmentId: 'asset-1' },
+    };
+    importTrackerAttachment.mockReset().mockImplementation(async () => {
+      attachments.mockResolvedValue({ attachments: [attachment], attachmentRevision: 1 });
+      return { status: 'imported', attachment };
+    });
+    const NavigationState = () => (
+      <output data-testid="navigation-state">{JSON.stringify(useLocation().state)}</output>
+    );
+    const first = renderPage(<NavigationState />, {
+      importTrackerAttachments: true,
+      releaseSelectionFallback: true,
+    });
+    await screen.findByText('spec.pdf');
+    expect(screen.getByTestId('attachment-list')).toHaveTextContent('spec.pdf');
+    expect(screen.getByTestId('attachment-list')).toHaveTextContent('From source issue');
+    expect(screen.queryByLabelText('Tracker attachment import')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry import' })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(JSON.parse(screen.getByTestId('navigation-state').textContent || '{}')).toEqual({
+        releaseSelectionFallback: true,
+      });
+    });
+    const savedState = JSON.parse(screen.getByTestId('navigation-state').textContent || '{}');
+    first.unmount();
+    // The backend now has no attachment (the user removed it). Simulate a
+    // reload using the history entry actually left by the first render.
+    attachments.mockResolvedValue({ attachments: [], attachmentRevision: 2 });
+    renderPage(<NavigationState />, savedState);
+    await screen.findByText('spec.pdf: not imported');
+    expect(trackerAttachments).toHaveBeenCalledTimes(2);
+    expect(importTrackerAttachment).toHaveBeenCalledTimes(1);
   });
 
   it('uploads PDF, DOCX, and XLSX originals to reach the 50-file limit', async () => {
@@ -633,6 +687,91 @@ describe('IntentComposePage', () => {
     expect(await screen.findByText('disabled by admin')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('agent-cli-codex')).toBeDisabled());
     expect(screen.getByTestId('agent-cli-kiro')).toBeEnabled();
+  });
+
+  it('shows a loader and placeholders while agent CLIs are loading', async () => {
+    let resolveCapabilities: (value: unknown) => void = () => {};
+    getProjectCapabilities.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCapabilities = resolve;
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByTestId('agent-cli-loader')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-cli-placeholders')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-kiro')).not.toBeInTheDocument();
+    expect(screen.queryByText('no credential')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveCapabilities({
+        available: ['kiro', 'claude'],
+        runtimeClis: [
+          {
+            cli: 'kiro',
+            installed: true,
+            authed: true,
+            available: true,
+            credentialSource: 'user',
+          },
+          {
+            cli: 'claude',
+            installed: true,
+            authed: true,
+            available: true,
+            credentialSource: 'space',
+          },
+        ],
+      });
+    });
+
+    expect(await screen.findByTestId('agent-cli-kiro')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-loader')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-placeholders')).not.toBeInTheDocument();
+  });
+
+  it('shows a Stages loader while the compiled workflow is loading', async () => {
+    let resolveCompiled: (value: unknown) => void = () => {};
+    compiled.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCompiled = resolve;
+      }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByTestId('stages-loader')).toBeInTheDocument();
+    expect(screen.getByTestId('stages-placeholders')).toBeInTheDocument();
+    expect(screen.queryByTestId('scope-summary')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /predefined/i })).toBeDisabled();
+
+    await act(async () => {
+      resolveCompiled({
+        scopeGrid: {
+          feature: { init: 'EXECUTE', design: 'EXECUTE', build: 'EXECUTE' },
+        },
+        autonomy: { perStage: {}, rollup: { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 } },
+        graph: {
+          nodes: [
+            { stageId: 'init', phasePath: '01', order: 0 },
+            { stageId: 'design', phasePath: '04', order: 1 },
+            { stageId: 'build', phasePath: '04', order: 2 },
+          ],
+          edges: [],
+          cycles: [],
+          danglingConsumes: [],
+          orphanProduces: [],
+          unknownArtifacts: [],
+          acyclic: true,
+        },
+        rules: { universal: [], phaseRules: {}, pairings: [], perStage: {}, unresolved: [] },
+      });
+    });
+
+    expect(await screen.findByTestId('scope-summary')).toBeInTheDocument();
+    expect(screen.queryByTestId('stages-loader')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stages-placeholders')).not.toBeInTheDocument();
   });
 
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {

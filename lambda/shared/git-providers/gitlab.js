@@ -7,6 +7,7 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { ProviderError } from './errors.js';
+import { discoverLinkedAttachments, transferTrackerAttachment } from '../tracker-attachments.js';
 
 const logger = new Logger({ persistentKeys: { component: 'git-provider', module: 'gitlab' } });
 
@@ -208,10 +209,16 @@ const mapRepo = (r) => ({
 const REPO_PAGE_SIZE = 100;
 const REPO_MAX_PAGES = 10;
 
-const fetchRepoPage = async (ctx, page) => {
+// GitLab ignores search terms shorter than this and returns nothing.
+const MIN_REPO_SEARCH_LENGTH = 3;
+
+const fetchRepoPage = async (ctx, page, search) => {
+  // search_namespaces matches the group path too, so "emu steering" or
+  // "utilities/steering" find a project nested deep in a large group tree.
+  const searchParams = search ? `&search=${encodeURIComponent(search)}&search_namespaces=true` : '';
   const res = await glFetch(
     ctx,
-    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=${REPO_PAGE_SIZE}&page=${page}&order_by=last_activity_at`,
+    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=${REPO_PAGE_SIZE}&page=${page}&order_by=last_activity_at${searchParams}`,
   );
   const data = await res.json();
   if (!Array.isArray(data)) {
@@ -229,13 +236,17 @@ const fetchRepoPage = async (ctx, page) => {
 // is refreshed once for all parallel pages by glFetch (see refreshFor). A full GitLab project page takes ~5s,
 // so the remaining pages are fetched in parallel rather than in sequence.
 // GitLab omits X-Total-Pages above 10,000 results; then fetch up to the cap.
-const listRepos = async (ctx) => {
-  const first = await fetchRepoPage(ctx, 1);
+// The cap can hide projects in a large group tree, so the picker also passes
+// the typed search text, which GitLab filters across every membership.
+const listRepos = async (ctx, { search } = {}) => {
+  const term = String(search ?? '').trim();
+  if (term && term.length < MIN_REPO_SEARCH_LENGTH) return [];
+  const first = await fetchRepoPage(ctx, 1, term);
   if (first.repos.length < REPO_PAGE_SIZE) return first.repos;
   const lastPage = Math.min(first.totalPages ?? REPO_MAX_PAGES, REPO_MAX_PAGES);
   const pages = [];
   for (let page = 2; page <= lastPage; page += 1) pages.push(page);
-  const rest = await Promise.all(pages.map((page) => fetchRepoPage(ctx, page)));
+  const rest = await Promise.all(pages.map((page) => fetchRepoPage(ctx, page, term)));
   return [first, ...rest].flatMap((p) => p.repos);
 };
 
@@ -430,6 +441,51 @@ const listIssueComments = async (ctx, repoId, issueNumber) => {
   return Array.isArray(data)
     ? data.filter((comment) => !comment.system).map(mapIssueDiscussionComment)
     : [];
+};
+
+const issueAttachments = async (ctx, repoId, args) => {
+  if (!/^[1-9]\d*$/.test(String(args.number))) {
+    throw new ProviderError(400, 'Invalid issue number');
+  }
+  const issue = await getIssue(ctx, repoId, args.number);
+  const project = encodeProject(repoId);
+  const comments = [];
+  let page = '1';
+  while (page) {
+    const response = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/issues/${args.number}/notes?per_page=100&sort=asc&page=${page}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok)
+      throw new ProviderError(response.status, 'Could not read issue attachments in comments');
+    comments.push(
+      ...(await response.json()).filter((note) => !note.system).map(mapIssueDiscussionComment),
+    );
+    page = response.headers.get('x-next-page') || '';
+  }
+  const attachments = discoverLinkedAttachments({
+    provider: id,
+    repository: repoId,
+    issue,
+    comments,
+  });
+  if (!args.attachmentId) return { attachments };
+  const attachment = attachments.find((item) => item.id === args.attachmentId);
+  if (!attachment)
+    return { status: 'failed', reason: 'The attachment is no longer referenced by the issue.' };
+  const uploadPath = new URL(attachment.url).pathname.slice(`/${repoId}/uploads/`.length);
+  if (!attachment.skipReason && !/^[a-f0-9]{32}\/[^/]+$/i.test(uploadPath)) {
+    return { status: 'skipped', reason: 'This GitLab upload URL format is not supported.' };
+  }
+  return transferTrackerAttachment({
+    attachment,
+    uploadUrl: args.uploadUrl,
+    maxBytes: args.maxBytes,
+    fetchImpl: ctx.fetchImpl || fetch,
+    request: (options) =>
+      glFetch(ctx, `${API_BASE}/projects/${project}/uploads/${uploadPath}`, options),
+  });
 };
 
 const addIssueComment = async (ctx, repoId, issueNumber, body) => {
@@ -706,6 +762,44 @@ const findPullRequest = async (
     : null;
 };
 
+// Every merge request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const project = encodeProject(repoId);
+  const mrs = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=all&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
+    // The project's list includes merge requests from forks; delivery publishes
+    // only from this project.
+    const fromHere = (row) =>
+      row.source_project_id == null || row.source_project_id === row.target_project_id;
+    for (const mr of rows.filter((row) => row.source_branch === sourceBranch && fromHere(row)))
+      mrs.push({
+        number: mr.iid,
+        url: mr.web_url,
+        sourceBranch: mr.source_branch,
+        targetBranch: mr.target_branch ?? null,
+        headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+        // `locked` is an open merge request while GitLab merges it.
+        state: ['opened', 'locked'].includes(mr.state)
+          ? 'open'
+          : mr.state === 'merged'
+            ? 'merged'
+            : 'closed',
+        body: mr.description ?? '',
+      });
+    if (rows.length < 100) return mrs;
+  }
+  throw new ProviderError(409, 'Merge-request lookup truncated');
+};
+
 // Create a merge request. Enforces the unmerged-construction-task-branch guard
 // for parity with GitHub. Returns { prUrl, prNumber } on success,
 // { skipped, reason } for a no-change repo, { conflict, unmergedBranches } when
@@ -713,7 +807,7 @@ const findPullRequest = async (
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false },
+  { branch, baseBranch, title, body, draft = false, allowRetarget = true },
 ) => {
   const project = encodeProject(repoId);
 
@@ -812,7 +906,7 @@ const createPullRequest = async (
       // it is a reasonable merge target.
       if (text.includes('target branch')) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
-        if (defaultBranch && defaultBranch !== resolvedBase) {
+        if (allowRetarget && defaultBranch && defaultBranch !== resolvedBase) {
           res = await postMr(defaultBranch);
           if (res.ok) {
             await cleanupConstructionTaskBranches(ctx, repoId, branch);
@@ -860,6 +954,18 @@ const createPullRequest = async (
 // `from` lacks; an empty list means identical-or-behind — either way there is
 // nothing to merge, which is all the caller needs to know.
 // Returns { status: 'ahead'|'identical'|'missing_head'|'missing_base'|'unknown', aheadBy?, base }.
+const getBranchHead = async (ctx, repoId, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${encodeProject(repoId)}/repository/branches/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.commit?.id) throw new ProviderError(502, 'Invalid branch response');
+  return data.commit.id;
+};
+
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const project = encodeProject(repoId);
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -1044,13 +1150,16 @@ export {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1083,13 +1192,16 @@ export default {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

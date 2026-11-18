@@ -24,7 +24,7 @@ Managed environments must run an image with IAM authentication support. Publish 
 2. Enter the inference account, region, role name or path, and optional ExternalId. The inference account and region can differ from the application, within the same AWS partition.
 3. For a new role, run the generated CloudShell commands in their indicated accounts. For an existing role, select **I already have an inference role**, then **Continue to connection test**. This skips the AWS setup step. The trust policy names the credential broker; the broker policy allows assumption of that exact inference role.
 4. Choose **Test connection**. This checks STS assumption and paginated Bedrock model discovery from the runtime. It does not invoke a model or prove model entitlements/Mantle access.
-5. Choose **Review connection change**, inspect the proposed role, region and impact, then **Apply reviewed change**.
+5. Choose **Review connection change**, check the proposed role and region and any work it says is affected, then **Confirm change** (**Confirm anyway** when started work is affected).
 6. Select models available in the inference account and region. The policy supports Bedrock Runtime inference for Claude Code/OpenCode and Bedrock Mantle for Codex.
 
 An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows setup for connecting this deployment to the role. You can also open it with **Connect this deployment to the role** before testing. Required trust and permissions are available under a separate details panel for administrators.
@@ -33,7 +33,7 @@ CloudShell commands run in a separate Bash process with the AWS output pager dis
 
 The application generates IAM setup documents; it does not modify AWS IAM itself. The broker needs STS access, and the runtime needs access to the broker and inference endpoints.
 
-In **Space Settings → Agent**, platform administrators can **Set space IAM role** or **Change space IAM role**. **Use platform connection** reviews removal of the override. Space owners who are not platform administrators cannot configure, verify, or clear IAM roles. Personal Bedrock keys are disabled in IAM mode; Kiro remains independently configurable.
+In **Space Settings → Agent**, platform administrators can **Set space IAM role** or **Change space IAM role**. **Use platform connection** reviews removal of the override. Space owners who are not platform administrators cannot configure, verify, or clear IAM roles. In IAM mode no agent credentials card offers a Bedrock key; Kiro remains independently configurable. **Account Settings** shows each person the platform default IAM role, region and status. It has no space context, so it notes that a space with its own role uses that role instead. A Bedrock key saved before the switch stays stored but unused, and it can only be cleared after the platform returns to **Keys**.
 
 Switching back to **Keys** also requires review. Saved Bedrock keys become applicable again. An IAM role or mode change affects future selections; a started invocation retains its versioned connection.
 
@@ -52,7 +52,7 @@ An assumption denial is reported as an IAM access error, including when credenti
 
 ## Renewal and expiry
 
-The broker redeems a signed five-minute handoff grant, checks the pinned connection and execution, and assumes the exact role with an inference-only session policy. The resulting STS credentials last up to one hour. Renewal uses a separate signed audience bound to that connection, purpose, project and execution, with a fixed eight-hour deadline measured from the original grant. Renewal cannot switch roles, retrieve keys, or slide that deadline.
+The broker redeems a signed five-minute handoff grant, checks the pinned connection and execution, and assumes the exact role with an inference-only session policy. The resulting STS credentials last up to one hour. Renewal uses a separate signed audience bound to that connection, purpose, space and execution, with a fixed eight-hour deadline measured from the original grant. Renewal cannot switch roles, retrieve keys, or slide that deadline.
 
 Each invocation's generic credential session owns an authenticated loopback AWS container-credential endpoint. Claude Code, OpenCode and Codex use their credential providers to acquire fresh credentials while the same process continues. STS credentials and renewal tokens stay in memory. Only the local endpoint and its random authorization token enter the trusted credential environment. The built-in MCP bridge retains application AWS identity in the runtime; it is not passed through the CLI.
 
@@ -60,7 +60,7 @@ Renewal starts five minutes before STS expiry. Transient failures retry every 30
 
 Detached work retains the same credential session until it finishes. A later invocation, including an answer to a parked conversation, redeems a fresh handoff grant and gets a fresh endpoint for the pinned connection. It does not reuse expired STS credentials or extend an earlier invocation's renewal token.
 
-Revocation is checked against the stored connection on each redemption and renewal. AWS permissions and trust can also be revoked. Application selection changes do not revoke already-issued STS credentials; their AWS validity and the runtime's invocation cancellation remain distinct boundaries.
+Revocation is checked against the stored connection on each redemption and renewal. With engine-data, a renewal for an execution also ends with the Gateway grant that authorized its handoff: once that grant is retired (its stage settles, its command returns, or the execution is cancelled, rewound, recomposed, repaired or deleted), or the execution was cancelled after the handoff, renewal is refused. Renewal tokens issued before this binding are still renewed while `enforce_runtime_grants` is off, logged as `LEGACY_RENEWAL_TOKEN`, and refused once it is on. AWS permissions and trust can also be revoked. Application selection changes do not revoke already-issued STS credentials; their AWS validity and the runtime's invocation cancellation remain distinct boundaries.
 
 ## Foundation records
 

@@ -1,4 +1,6 @@
 import { credentialEnvName, authError } from '../shared/agent-auth-contracts.js';
+import { listCodexModels } from '../shared/bedrock-models.js';
+import { listMantleModels } from './mantle-models.js';
 
 // Keys deliver the API key in the CLI provider's env var. Kiro bindings qualify as 'keys'.
 export const KEYS_RUNTIME_PROVIDER = Object.freeze({
@@ -16,4 +18,17 @@ export const KEYS_RUNTIME_PROVIDER = Object.freeze({
       return { env: { [credentialEnvName(binding.provider)]: material.value } };
     },
   }),
+  // Codex models are read from bedrock-mantle with the same API key the run will
+  // present, so a key restricted to one region reports that region's catalogue.
+  capabilities: async ({ env = {} }) => {
+    const region = env.BEDROCK_REGION || env.AWS_REGION;
+    const apiKey = env[credentialEnvName('bedrock')];
+    if (!region || !apiKey) return {};
+    return {
+      codexModels: await listCodexModels({
+        region,
+        listModels: (target) => listMantleModels({ region: target, apiKey }),
+      }),
+    };
+  },
 });

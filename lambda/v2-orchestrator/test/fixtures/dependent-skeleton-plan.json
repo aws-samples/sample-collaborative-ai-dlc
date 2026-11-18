@@ -1,0 +1,83 @@
+{
+  "units": [
+    {
+      "dependsOn": [],
+      "slug": "notifications-data-infra",
+      "kind": null
+    },
+    {
+      "dependsOn": ["notifications-data-infra"],
+      "slug": "notification-core",
+      "kind": "service"
+    },
+    {
+      "dependsOn": ["notification-core", "notifications-data-infra"],
+      "slug": "execution-event-capture",
+      "kind": "service"
+    },
+    {
+      "kind": "service",
+      "dependsOn": ["notification-core", "notifications-data-infra"],
+      "slug": "notifications-api"
+    },
+    {
+      "dependsOn": ["notifications-api"],
+      "kind": "ui",
+      "slug": "fe-inbox"
+    },
+    {
+      "dependsOn": ["notification-core", "notifications-api", "fe-inbox"],
+      "kind": "service",
+      "slug": "realtime-user-channel"
+    },
+    {
+      "dependsOn": ["realtime-user-channel", "fe-inbox"],
+      "kind": "ui",
+      "slug": "fe-realtime-alerts"
+    },
+    {
+      "dependsOn": [
+        "notification-core",
+        "notifications-data-infra",
+        "notifications-api",
+        "fe-inbox"
+      ],
+      "kind": "service",
+      "slug": "email-setup"
+    },
+    {
+      "dependsOn": [
+        "email-setup",
+        "execution-event-capture",
+        "realtime-user-channel",
+        "fe-realtime-alerts"
+      ],
+      "kind": "service",
+      "slug": "email-immediate"
+    },
+    {
+      "dependsOn": ["email-immediate", "execution-event-capture"],
+      "kind": "service",
+      "slug": "email-digest"
+    },
+    {
+      "slug": "notification-observability",
+      "dependsOn": ["email-digest", "execution-event-capture", "notification-core"],
+      "kind": null
+    }
+  ],
+  "batches": [
+    ["notifications-data-infra"],
+    ["notification-core"],
+    ["execution-event-capture", "notifications-api"],
+    ["fe-inbox"],
+    ["email-setup", "realtime-user-channel"],
+    ["fe-realtime-alerts"],
+    ["email-immediate"],
+    ["email-digest"],
+    ["notification-observability"]
+  ],
+  "walkingSkeleton": "notification-core",
+  "autonomyMode": "autonomous",
+  "skipMatrix": {}
+}

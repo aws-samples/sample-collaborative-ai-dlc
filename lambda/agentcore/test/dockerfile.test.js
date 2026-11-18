@@ -13,7 +13,6 @@ describe('AgentCore image ownership', () => {
     expect(createDirs).toBeGreaterThan(-1);
     expect(createDirs).toBeLessThan(dropPrivileges);
     expect(dockerfile).toContain('/mnt/workspace');
-    expect(dockerfile).toContain('/home/node/.codex-state');
     expect(dockerfile).toContain('/home/node/.codex-runs');
   });
 

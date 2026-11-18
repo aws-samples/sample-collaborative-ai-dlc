@@ -27,6 +27,15 @@ import {
   RESERVED_MCP_ENV_KEYS,
 } from '../mcp-secret-resolver.js';
 import { mcpSecretPaths } from '../mcp-secret-paths.js';
+import { fileURLToPath } from 'node:url';
+import { captureChild } from '../cli/spawn.js';
+import { currentSandbox } from '../sandbox/launcher.js';
+import { resolveVerificationMcpSecrets } from '../mcp-secret-broker.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+} from '../../shared/runtime-mcp-policy.js';
 
 const { validateMcpServers, toMcpServerMap, extractSecretRefs } = mcpValidatorPkg;
 
@@ -76,13 +85,53 @@ const makeTransport = (server) => {
   return new StdioClientTransport({
     command: server.command,
     args: server.args ?? [],
-    env: { ...getDefaultEnvironment(), ...server.env },
+    env: {
+      ...getDefaultEnvironment(),
+      ...Object.fromEntries(
+        [
+          'HTTP_PROXY',
+          'HTTPS_PROXY',
+          'ALL_PROXY',
+          'NO_PROXY',
+          'http_proxy',
+          'https_proxy',
+          'all_proxy',
+          'no_proxy',
+          'NODE_USE_ENV_PROXY',
+        ]
+          .filter((key) => process.env[key] !== undefined)
+          .map((key) => [key, process.env[key]]),
+      ),
+      ...server.env,
+    },
   });
 };
 
 // Default probe: connect (runs the full MCP handshake), list tools, close.
 // Resolves { ok:true, tools } | { ok:false, error }. Never throws.
 const defaultProbeServer = async (server, { timeoutMs }) => {
+  if (currentSandbox().enabled) {
+    // The SDK owns both its child processes and HTTP transports. Run the whole
+    // handshake inside SRT so neither transport can bypass the selected policy.
+    const result = await captureChild({
+      command: process.execPath,
+      args: [fileURLToPath(import.meta.url), '--sandbox-probe'],
+      env: { NODE_USE_ENV_PROXY: '1' },
+      promptViaStdin: true,
+      prompt: JSON.stringify({ server, timeoutMs }),
+      captureStderr: true,
+      inheritCredentialEnvironment: false,
+      timeoutMs: timeoutMs + 5_000,
+    });
+    if (result.exitCode !== 0) {
+      return { ok: false, error: result.sandboxError ?? 'Sandboxed MCP connection check failed' };
+    }
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      return { ok: false, error: 'Invalid MCP connection check response' };
+    }
+  }
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   let transport;
   try {
@@ -110,6 +159,15 @@ const defaultProbeServer = async (server, { timeoutMs }) => {
   }
 };
 
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === '--sandbox-probe') {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const { server, timeoutMs } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const result = await defaultProbeServer(server, { timeoutMs });
+  process.stdout.write(JSON.stringify(result));
+  process.exit(0);
+}
+
 /**
  * Verify a set of custom MCP servers. Payload:
  *   {
@@ -132,6 +190,12 @@ export const verifyMcp = async (payload, deps = {}) => {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     resolveMcpSecrets = defaultResolveMcpSecrets,
   } = deps;
+
+  // gateway_only: the agents Lambda refuses verification before dispatch; the
+  // runtime refuses it too, before resolving or connecting to anything.
+  if (gatewayOnlyMcp()) {
+    return { error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE, code: RUNTIME_MCP_GATEWAY_ONLY };
+  }
 
   const projectId = payload?.projectId || null;
   // Normalize input into the two-tier shape. Legacy single-map payloads (older
@@ -173,28 +237,44 @@ export const verifyMcp = async (payload, deps = {}) => {
   const overrides = projectId ? { project: unsaved } : { global: unsaved };
 
   let secretEnv = {};
-  try {
-    ({ secretEnv } = await resolveMcpSecrets({
-      survivingGlobal,
-      survivingProject,
-      globalPath,
-      projectPath,
-      overrides,
-    }));
-  } catch {
-    // A collision, reserved-name, or unresolved ref threw. Fall back to per-server
-    // reporting: resolve whatever we can (best-effort, no throw) so servers WITHOUT
-    // an offending ref still probe. Collisions/reserved/missing are reported per
-    // server below — never masked by the merge.
-    secretEnv = await resolveBestEffort({
-      survivingGlobal,
-      survivingProject,
-      globalPath,
-      projectPath,
-      overrides,
-      resolveMcpSecrets,
-    });
-  }
+  let brokerResults = null;
+  const remote = Boolean(process.env.ENGINE_DATA_FUNCTION);
+  if (remote) {
+    if (globalRefSet.size || projectRefSet.size) {
+      try {
+        ({ secretEnv, results: brokerResults } = await resolveVerificationMcpSecrets({
+          projectId,
+          mcpServersByTier: { global, project },
+          verificationGrant: payload?.verificationGrant,
+          unsavedSecrets: payload?.unsavedSecrets,
+        }));
+      } catch {
+        return { error: 'MCP secret broker resolution failed' };
+      }
+    }
+  } else
+    try {
+      ({ secretEnv } = await resolveMcpSecrets({
+        survivingGlobal,
+        survivingProject,
+        globalPath,
+        projectPath,
+        overrides,
+      }));
+    } catch {
+      // A collision, reserved-name, or unresolved ref threw. Fall back to per-server
+      // reporting: resolve whatever we can (best-effort, no throw) so servers WITHOUT
+      // an offending ref still probe. Collisions/reserved/missing are reported per
+      // server below — never masked by the merge.
+      secretEnv = await resolveBestEffort({
+        survivingGlobal,
+        survivingProject,
+        globalPath,
+        projectPath,
+        overrides,
+        resolveMcpSecrets,
+      });
+    }
 
   // Build the merged survivor map (same as the runtime) and probe each entry.
   const survivorMap = {
@@ -207,6 +287,7 @@ export const verifyMcp = async (payload, deps = {}) => {
   const names = Object.keys(survivorMap);
   const entries = await Promise.all(
     names.map(async (name) => {
+      if (brokerResults?.[name]?.ok === false) return [name, brokerResults[name]];
       const refs = refsByServer[name] ?? [];
       // Reserved-name guard (same hard boundary the resolver enforces): a ref may
       // not shadow a runtime env key (auth / AWS creds / cache). Report it as a
@@ -244,6 +325,17 @@ export const verifyMcp = async (payload, deps = {}) => {
         ];
       }
       const expanded = expandServerSecrets(survivorMap[name], secretEnv);
+      if (remote) {
+        try {
+          const result = await probeServer(expanded, { timeoutMs });
+          return [
+            name,
+            result?.ok === true ? result : { ok: false, error: 'MCP server probe failed' },
+          ];
+        } catch {
+          return [name, { ok: false, error: 'MCP server probe failed' }];
+        }
+      }
       return [name, await probeServer(expanded, { timeoutMs })];
     }),
   );

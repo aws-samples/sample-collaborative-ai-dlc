@@ -9,18 +9,18 @@ import {
 
 // Where the repo list comes from: 'oauth' (default) lists the caller's own
 // repos via their personal connection; 'github-app' lists repos across the
-// platform App's installations — no personal connection needed;
-// 'codecommit-role' takes the list the CodeCommit connect form already
-// fetched while proving the role (no second round-trip, no personal
-// connection), passed in through `repos`.
-type RepoSource = 'oauth' | 'github-app' | 'codecommit-role';
+// platform App's installations — no personal connection needed. Every other
+// provider, CodeCommit included, uses the default per-provider listRepos path.
+type RepoSource = 'oauth' | 'github-app';
+
+// GitLab ignores shorter search terms.
+const MIN_SERVER_SEARCH_LENGTH = 3;
+const SERVER_SEARCH_DEBOUNCE_MS = 300;
 
 interface BaseProps {
   provider: GitProvider;
   exclude?: string[];
   repoSource?: RepoSource;
-  // Pre-fetched list for repoSource 'codecommit-role'.
-  repos?: GitRepo[];
 }
 
 interface SingleProps extends BaseProps {
@@ -41,18 +41,12 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const { provider } = props;
   const repoSource = props.repoSource ?? 'oauth';
 
-  // The pre-fetched path derives its list from props; only the fetching paths
-  // own state, so no effect ever mirrors a prop into state.
-  const provided = repoSource === 'codecommit-role' ? props.repos : undefined;
-  const [fetched, setFetched] = useState<GitRepo[]>([]);
+  const [repos, setRepos] = useState<GitRepo[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const repos = provided ?? fetched;
-  const loading = provided ? false : fetching;
 
   useEffect(() => {
-    if (repoSource === 'codecommit-role') return;
     const listRepos =
       repoSource === 'github-app'
         ? githubAppService.listRepos
@@ -60,26 +54,72 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
     setFetching(true);
     setError(null);
     listRepos()
-      .then(setFetched)
+      .then(setRepos)
       .catch((e) => setError(e.message))
       .finally(() => setFetching(false));
   }, [provider, repoSource]);
+
+  // Providers that cap the unfiltered list (GitLab: large group trees exceed
+  // it) expose `searchRepos`; a typed search is sent there and the matches are
+  // merged into the list. Merging, rather than replacing, keeps earlier
+  // selections resolvable.
+  const searchRepos =
+    repoSource === 'oauth' ? getGitProviderService(provider).searchRepos : undefined;
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const term = search.trim();
+    if (!searchRepos || term.length < MIN_SERVER_SEARCH_LENGTH) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      searchRepos(term)
+        .then((matches) => {
+          if (cancelled) return;
+          setRepos((current) => {
+            const known = new Set(current.map((r) => r.id));
+            const added = matches.filter((r) => !known.has(r.id));
+            return added.length ? [...current, ...added] : current;
+          });
+        })
+        // The unfiltered list is still usable, so a failed search is not fatal.
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, SERVER_SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setSearching(false);
+    };
+  }, [search, searchRepos]);
 
   const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 
   const filtered = useMemo(() => {
     const available = repos.filter((r) => !excludeSet.has(r.fullName));
-    if (!search) return available;
-    const q = search.toLowerCase();
-    return available.filter(
-      (r) =>
-        r.fullName.toLowerCase().includes(q) ||
-        repoDisplayName(provider, r.fullName).toLowerCase().includes(q),
-    );
+    // Every word must appear, so "emu steering" matches ".../emu/utilities/
+    // steering-docs" the same way GitLab's namespace search does.
+    const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return available;
+    return available.filter((r) => {
+      const names = `${r.fullName} ${repoDisplayName(provider, r.fullName)}`.toLowerCase();
+      return words.every((w) => names.includes(w));
+    });
   }, [repos, excludeSet, search, provider]);
 
-  if (loading) return <div className="text-sm text-gray-500">Loading repositories...</div>;
+  if (fetching) return <div className="text-sm text-gray-500">Loading repositories...</div>;
   if (error) return <div className="text-sm text-red-600">{error}</div>;
+
+  // CodeCommit has no self-service way to widen access from here; when the role
+  // sees nothing, point the user at their AWS admin (works for the tag and the
+  // explicit-ARN list alike).
+  const emptyHint =
+    provider === 'codecommit' ? (
+      <p className="px-3 pb-4 text-center text-xs text-gray-500">
+        Ask your AWS admin to grant the platform role access to the repositories you need.
+      </p>
+    ) : null;
 
   if (props.multiple) {
     const selected = new Set(props.value);
@@ -106,8 +146,13 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
         />
         <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500 text-center">
-              {repos.length === 0 ? 'No repositories available' : 'No matching repositories'}
+            <div className="px-3 py-4 text-center text-sm text-gray-500">
+              {searching
+                ? 'Searching...'
+                : repos.length === 0
+                  ? 'No repositories available'
+                  : 'No matching repositories'}
+              {!searching && repos.length === 0 && emptyHint}
             </div>
           ) : (
             filtered.map((repo) => (

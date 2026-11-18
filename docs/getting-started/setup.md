@@ -96,6 +96,15 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
+#### Building-block bodies
+
+Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
+
+- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`), with `{type}` matched in any case as the API accepts it. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
+- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
+
+The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
@@ -408,6 +417,35 @@ That requires repository/cache permissions, lifecycle and cost decisions, and
 verification of the pinned image digests for each architecture. This deployment
 does not provision a mirror or fall back to anonymous Docker Hub pulls.
 
+### Pre-built container images
+
+By default Terraform builds the AgentCore and Yjs images during apply. To build
+them elsewhere (for example in CI, so they can be scanned before they deploy),
+push them to the deployment's ECR repositories and set their tags:
+
+```hcl
+# terraform/environments/dev.tfvars
+agentcore_image_tag = "1.2.3"
+yjs_image_tag       = "1.2.3"
+```
+
+| Image     | Repository                   | Build context        | Dockerfile                     | Platform                                                       |
+| --------- | ---------------------------- | -------------------- | ------------------------------ | -------------------------------------------------------------- |
+| AgentCore | `<project>-agentcore-<env>`  | `lambda/`            | `lambda/agentcore/Dockerfile`  | `linux/arm64`, plus `linux/amd64` as `<tag>-amd64` (see below) |
+| Yjs       | `<project>-yjs-server-<env>` | `lambda/yjs-server/` | `lambda/yjs-server/Dockerfile` | `linux/amd64`                                                  |
+
+- With `enable_instances_compute = true`, also push the AgentCore amd64 image
+  as `<tag>-amd64`.
+- Each tag is resolved to its digest, and both images deploy by digest, so
+  moving a tag later does not change a running deployment. Treat the tags as
+  write-once: published environment revisions pin the AgentCore digest, and the
+  AgentCore repository has no lifecycle policy (see issue #427).
+- Plan fails if a tag is missing from its repository, so push the images
+  before planning. Terraform creates the repositories, so a new environment
+  needs one apply with the defaults (or a targeted apply of the two
+  `aws_ecr_repository` resources) before switching to pre-built images.
+- Leaving either variable unset (`null`) keeps the build during apply.
+
 ### Bootstrap the first platform administrator
 
 The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:
@@ -425,7 +463,7 @@ UI or with downstream Cognito group membership. See
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: each space connects an IAM role from the repository account (see [CodeCommit](#codecommit-code-host) below).
+The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: a platform admin sets one shared connection to an IAM role in the repository account, and every space uses it (see [CodeCommit](#codecommit-code-host) below).
 
 For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
@@ -437,7 +475,7 @@ terraform -chdir=terraform output -raw application_domain
 
 #### GitHub (code host + GitHub Issues)
 
-Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each project chooses its authentication type.
+Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each space chooses its authentication type.
 
 For **GitHub OAuth**:
 
@@ -453,14 +491,14 @@ The connection requests `repo`, `workflow`, and `read:user`. Existing users must
 
 For **GitHub App**:
 
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed. **Workflows: Read & write** is recommended but optional — without it a binding still verifies, but the agent cannot create or modify files under `.github/workflows/` and the project settings page shows a warning.
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed. **Workflows: Read & write** is recommended but optional — without it a binding still verifies, but the agent cannot create or modify files under `.github/workflows/` and the space settings page shows a warning.
 2. Generate a **private key** (PEM) and note the **App ID**.
-3. Install the App on each personal account or organization whose repositories projects may bind.
-4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a project is bound.
+3. Install the App on each personal account or organization whose repositories spaces may bind.
+4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a space is bound.
 
-### Project-bound source control
+### Space-bound source control
 
-Existing projects must be explicitly bound by an owner/admin before intents can run against their repositories. During a credential incident, invalidate the affected project bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
+Existing spaces must be explicitly bound by an Owner before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
 
 #### GitLab (code host + GitLab Issues)
 
@@ -476,15 +514,41 @@ GitLab's `api` scope includes repository writes, including changes to `.gitlab-c
 
 #### CodeCommit (code host)
 
-Nothing to register and no secret to store. Terraform gives the credential broker, the source-control API and the `codecommit` connector Lambda permission to `sts:AssumeRole` **only when an `aidlc:*` external ID is presented**, and publishes those three execution role ARNs:
+Nothing to register and no secret to store, and no per-user step: one platform admin sets a single shared connection and every space uses it. Two roles are involved.
+
+**The AWS admin, in the repository account**, creates one IAM role the platform assumes, and tags each repository to share. Terraform gives the credential broker, the source-control API and the `codecommit` connector Lambda permission to `sts:AssumeRole` **only when an `aidlc:*` external ID is presented**, and publishes those three execution role ARNs:
 
 ```bash
 terraform -chdir=terraform output -raw codecommit_platform_principals
 ```
 
-They are also shown on **Admin → Source Control → AWS CodeCommit**. A space owner connects a repository by creating, in the account that owns it, an IAM role whose trust policy names these principals with the external ID the connect flow shows them, and whose permissions policy is the one below, with the repository ARN replaced by the repositories the space may use (a list is fine). `ListRepositories` only accepts `"*"` as resource, so it has its own statement; every other action stays on the selected repositories. Do not grant `codecommit:*`: the platform never creates, renames or deletes a repository. The platform also narrows every call to a single repository ARN with a session policy, so the role policy is only the outer bound. The connect form renders the same policy with a copy button. The end-user side of the handshake is described in [Git integration → CodeCommit](../using-the-platform/git-integration.md#codecommit).
+The principals, the deployment external ID (`aidlc:<uuid>`, created once by Terraform, never by the app), the trust policy and the permissions policy are all shown on **Admin → Source Control → AWS CodeCommit**, each with a copy button. Create the role in the repository account with:
 
-<!-- codecommit-permissions-policy: generated by codeCommitPermissionsPolicy() in lambda/shared/codecommit-role.js; a test keeps it in sync -->
+- a **trust policy** naming those three principals and the external ID (same for every space — there is no per-user external ID any more):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "<credential-broker-role-arn>",
+          "<source-control-role-arn>",
+          "<codecommit-connector-role-arn>"
+        ]
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": { "StringEquals": { "sts:ExternalId": "aidlc:<uuid>" } }
+    }
+  ]
+}
+```
+
+- a **permissions policy** that keeps `codecommit:ListRepositories` on `"*"` (the only resource that action accepts) and gates every repository action on the `aidlc` tag. Do not grant `codecommit:*`: the platform never creates, renames or deletes a repository. The platform also narrows every call to a single repository ARN with a session policy, so the role policy is only the outer bound. The end-user side is described in [Git integration → CodeCommit](../using-the-platform/git-integration.md#codecommit).
+
+<!-- codecommit-permissions-policy: generated by codeCommitTagPermissionsPolicy() in lambda/shared/codecommit-role.js; a test keeps it in sync -->
 
 ```json
 {
@@ -497,7 +561,7 @@ They are also shown on **Admin → Source Control → AWS CodeCommit**. A space 
       "Resource": "*"
     },
     {
-      "Sid": "UseSelectedRepositories",
+      "Sid": "UseTaggedRepositories",
       "Effect": "Allow",
       "Action": [
         "codecommit:GitPull",
@@ -533,13 +597,44 @@ They are also shown on **Admin → Source Control → AWS CodeCommit**. A space 
         "codecommit:MergePullRequestByThreeWay",
         "codecommit:DeleteBranch"
       ],
-      "Resource": "arn:aws:codecommit:<region>:<account-id>:<repository-name>"
+      "Resource": "arn:aws:codecommit:<region>:<account-id>:*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/aidlc": "true" } }
     }
   ]
 }
 ```
 
-The deployment region does not need to match the repositories' region: the git host and API endpoint are derived from each repository's ARN.
+**Share a repository by tagging it** `aidlc=true`. Written exactly like that: CodeCommit stores tag keys and values case-sensitively (only the IAM context-key name is case-insensitive). No policy edit per repository, and no restart. A new repository stays closed to the platform until it is tagged, unless it is created with the tag. `ListRepositories` has no resource and is not filtered by the tag, so the platform additionally probes each repository with `GetRepository` under the role and lists only the ones it can read. Removing the tag closes a repository again within seconds.
+
+**Equivalent, more locked-down variant** (the most secured): instead of the tag condition, replace `Resource` and drop the `Condition` with an explicit list of repository ARNs:
+
+```json
+"Resource": [
+  "arn:aws:codecommit:<region>:<account-id>:<repository-name>",
+  "arn:aws:codecommit:<region>:<account-id>:<another-repository-name>"
+]
+```
+
+This uses the same code path. Do not use `NotResource`: it would open every repository not listed, including new ones. Where the deny below cannot be enforced, prefer the explicit list.
+
+**The tag is the access gate.** Anyone who can set the `aidlc` tag can share a repository with every platform user. Restrict that to the repository admins with a deny — in a Service Control Policy, or in the IAM policies of everyone except those admins:
+
+```json
+{
+  "Sid": "DenyAidlcTagOutsideRepoAdmins",
+  "Effect": "Deny",
+  "Action": ["codecommit:TagResource", "codecommit:UntagResource", "codecommit:CreateRepository"],
+  "Resource": "*",
+  "Condition": {
+    "ForAnyValue:StringEqualsIgnoreCase": { "aws:TagKeys": ["aidlc"] },
+    "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::<account-id>:role/<repo-admin-role>" }
+  }
+}
+```
+
+`aws:TagKeys` covers all three actions, including a tag set at creation. Keep `StringEqualsIgnoreCase`: the allow matches the tag key without case (`aws:ResourceTag/AIDLC` is the same key for IAM), so a case-sensitive deny would let `AIDLC=true` through. (An equivalent form uses a second statement with `"Null": { "aws:RequestTag/aidlc": "false" }` on `CreateRepository` and `TagResource`.)
+
+**The platform admin** then goes to **Admin → Source Control → AWS CodeCommit**, pastes the role ARN and region, and clicks **Test & save**. The platform assumes the role with the deployment external ID, makes one `ListRepositories` call to prove the trust, and stores the connection. A trust failure returns a hint and stores nothing. From then on every space picks CodeCommit repositories from the usual list, with no ARN, region or IAM to supply. The deployment region does not need to match the repositories' region: the git host and API endpoint are derived from each repository's ARN. The connection is one region: a space can bind only repositories in that region, even if the role allows more. Changing the region does not move existing bindings: they keep working in their region. A save that still lists a repository of the old region is refused, and the old binding stays; pick repositories in the new region to move the space.
 
 #### Bitbucket (code host)
 
@@ -617,7 +712,7 @@ Available Cognito groups:
 | `member`            | Regular platform user                                                                                                                         |
 | `approver`, `owner` | Legacy v1 groups, kept for existing installs; no longer checked by the v2 authorization model                                                 |
 
-Day-to-day access to a project's intents, discussions, and settings is governed by **project membership** (owner / admin / member roles managed per project in **Project Settings → Members**), not by Cognito groups — see [Projects and settings](../using-the-platform/projects.md).
+Day-to-day access to a space's intents, discussions, and settings is governed by **space membership** (owner / admin / member roles managed per space in **Space Settings → Members**), not by Cognito groups — see [Spaces and settings](../using-the-platform/projects.md).
 
 ## Set up the frontend
 
@@ -664,6 +759,37 @@ Because these are inlined at build time, changing the domain always requires a r
 
 This regenerates `.env`, builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
 
+### Branding
+
+A deployment can carry its own logo, wordmark, colours and fonts without changing the source. Unset, the app looks as it does by default.
+
+1. Put the assets in a folder outside the repository, for example `brand/` holding `brand.css`, `logo.svg`, `wordmark.svg`, `wordmark-dark.svg` and any fonts. Set `AIDLC_BRANDING_DIR` to it, and `deploy-frontend.sh` copies it to `/branding/` in the site.
+2. Point the build at the files with these variables, exported when you run `deploy-frontend.sh`:
+
+| Variable                   | Effect                                                                                          | Default           |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------- |
+| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint                               | none              |
+| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon                              | none              |
+| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                                                     | the wordmark      |
+| `VITE_BRAND_LOGO`          | the app's mark: header icon when there is no wordmark, the Spaces page header, and the tab icon | `/logo.svg`       |
+| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                                              | `AI-DLC`          |
+| `VITE_BRAND_FAVICON`       | browser tab icon                                                                                | the logo          |
+| `VITE_BRAND_TITLE`         | browser tab title                                                                               | the default title |
+
+```bash
+export AIDLC_BRANDING_DIR="$PWD/../brand"
+export VITE_BRAND_STYLESHEET=/branding/brand.css
+export VITE_BRAND_WORDMARK=/branding/wordmark.svg
+export VITE_BRAND_WORDMARK_DARK=/branding/wordmark-dark.svg
+export VITE_BRAND_LOGO=/branding/logo.svg
+export VITE_BRAND_NAME="Example Corp"
+./scripts/deploy-frontend.sh dev
+```
+
+The theme is CSS variables (`--primary`, `--background`, `--radius`, the sidebar and chart colours, and so on, defined on `:root` and `.dark` in `frontend/src/index.css`). A brand stylesheet overrides them with the same selectors: it loads later, so it wins. Tailwind's colour palette is CSS variables too (`--color-blue-500` and so on), so hard-coded colour classes can follow the brand as well. Relative `url()`s and `@import`s in the stylesheet resolve under `/branding/`.
+
+The stylesheet blocks the first render for at most three seconds, so a missing file never stops the app loading. These are build-time settings, so changing them needs a rebuild.
+
 ### Access the application
 
 ```bash
@@ -704,11 +830,11 @@ A domain change needs both steps: Terraform updates the distribution and the OAu
 
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
-If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing projects keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and project records need a one-time backfill onto the new polymorphic shape.
+If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing spaces keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and space records need a one-time backfill onto the new polymorphic shape.
 
 Operators have two equivalent paths, both idempotent:
 
-- **Admin UI**: open **Admin → Trackers → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
+- **Admin UI**: open **Admin → Trackers → Tracker Migration** in the deployed app. The card displays a live count of legacy spaces and sprints; click **Migrate all** when ready.
 - **CLI**: invoke the `migrate-tracker-fields` Lambda directly. Supports a dry-run for previewing.
 
   ```bash

@@ -38,6 +38,8 @@ import {
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { getDriver, selectCli } from '../cli/drivers.js';
 import { runChild as defaultRunChild } from '../cli/spawn.js';
+import { createCliOutputSink } from '../output-normalizer.js';
+import { createUsageRecorder } from '../cli/usage-recorder.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -52,6 +54,7 @@ import {
 import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from '../cli/codex-store.js';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
+import { createEngineCommitMessages } from '../commit-message.js';
 
 const logger = new Logger({
   persistentKeys: { component: 'agentcore', module: 'resolve-conflict' },
@@ -165,7 +168,10 @@ const resolveConflictImplementation = async (
 
   const multi = repos.length > 1;
   const dirFor = (url) => repoTargetDir({ url, workspaceDir, multi });
-  const mergeMessage = `aidlc(conflict-resolution): ${unitSlug} — ${executionId}`;
+  const mergeMessage = await createEngineCommitMessages({ store, executionId })({
+    kind: 'conflict-resolution',
+    unitSlug,
+  });
 
   // ── 1. ENGINE: begin the reverse merges, collecting real conflicts ────────
   const conflictedByRepo = [];
@@ -269,8 +275,19 @@ const resolveConflictImplementation = async (
       invocation = driver.buildInvocation({ prompt, model, allowedTools: [], mcpConfigPath });
     }
     let result;
+    const usage = createUsageRecorder({
+      store,
+      scope: { executionId, stageInstanceId: scope.stageInstanceId, unitSlug, sectionIndex },
+      model,
+      publish,
+      env,
+      workspaceDir,
+      spawnFn,
+    });
+    const output = createCliOutputSink({ cli, emit: () => {}, onUsage: usage.onUsage });
     const execute = () =>
       runChild({
+        logContext: { executionId, intentId, projectId },
         command: invocation.command,
         args: invocation.args,
         env: { ...invocation.env, ...driver.envForAuth(env) },
@@ -278,6 +295,7 @@ const resolveConflictImplementation = async (
         prompt,
         promptViaStdin: invocation.promptViaStdin,
         spawnFn,
+        onStdout: (chunk) => output.write(chunk),
       });
     try {
       result =
@@ -287,6 +305,8 @@ const resolveConflictImplementation = async (
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: 'cli_error', detail: e.message };
     } finally {
+      output.flush();
+      await usage.flush();
       if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
       if (cli === 'codex') {
         await cleanupCodexHome({ codexHome, env }).catch(() => false);

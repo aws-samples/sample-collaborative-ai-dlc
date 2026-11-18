@@ -153,6 +153,7 @@ export function summarizeCost(samples: CostSample[]): CostSummary | null {
   const costed = withCost.filter(
     (m) =>
       (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0 ||
+      (m.metrics?.tokensCacheRead ?? 0) + (m.metrics?.tokensCacheWrite ?? 0) > 0 ||
       (m.metrics?.credits ?? 0) > 0,
   );
   const creditPricedStages = new Set(

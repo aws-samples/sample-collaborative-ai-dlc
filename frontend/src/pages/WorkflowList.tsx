@@ -1,10 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   workflowsService,
   type WorkflowSummary,
   type CreateWorkflowInput,
 } from '@/services/workflows';
+import {
+  aidlcReleasesService,
+  releaseDisplayLabel,
+  type ReleaseWorkflow,
+} from '@/services/aidlcReleases';
+import { ReleaseContentsDialog } from '@/components/releases/ReleaseContentsDialog';
 import { DEFAULT_PHASE_NODES } from './composer/defaultPhases';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,18 +36,34 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Trash2, Workflow as WorkflowIcon, Lock } from 'lucide-react';
+import { Plus, Trash2, Workflow as WorkflowIcon, Lock, Package } from 'lucide-react';
 
 // kebab-case, matching the backend id rule.
 const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export default function WorkflowList() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const selectedLibraryRelease = searchParams.get('libraryRelease') || null;
+  const libraryReleaseQuery = selectedLibraryRelease
+    ? `?libraryRelease=${encodeURIComponent(selectedLibraryRelease)}`
+    : '';
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<WorkflowSummary | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  // The stable release's workflow, when release pinning is on (issue #607):
+  // what a new intent on the release's workflow runs, read-only.
+  const [stableRelease, setStableRelease] = useState<{
+    releaseId: string;
+    label: string;
+    workflow: ReleaseWorkflow;
+  } | null>(null);
+  const [contentsReleaseId, setContentsReleaseId] = useState<string | null>(null);
+  const [selectedReleaseLabel, setSelectedReleaseLabel] = useState<string | null>(null);
+  const [selectedReleaseError, setSelectedReleaseError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,6 +81,56 @@ export default function WorkflowList() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (selectedLibraryRelease) {
+      let cancelled = false;
+      setSelectedReleaseError(null);
+      setSelectedReleaseLabel(null);
+      void aidlcReleasesService
+        .catalog(selectedLibraryRelease, ['stage'])
+        .then((selected) => {
+          if (!cancelled) setSelectedReleaseLabel(releaseDisplayLabel(selected.release));
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setSelectedReleaseError(
+              error instanceof Error
+                ? error.message
+                : 'The selected AI-DLC version could not be loaded.',
+            );
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setSelectedReleaseError(null);
+    setSelectedReleaseLabel(null);
+    let cancelled = false;
+    void aidlcReleasesService.stableCatalog(['stage']).then((stable) => {
+      if (cancelled) return;
+      setStableRelease(
+        stable?.contents.workflow
+          ? {
+              releaseId: stable.releaseId,
+              label: releaseDisplayLabel(stable.release),
+              workflow: stable.contents.workflow,
+            }
+          : null,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLibraryRelease]);
+
+  // A workflow created under a selected version is authored against it, so
+  // every way to create one waits until that version has been read.
+  const releaseReady = !selectedLibraryRelease || Boolean(selectedReleaseLabel);
+  const openCreate = () => {
+    if (releaseReady) setShowCreate(true);
+  };
 
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
@@ -89,11 +161,23 @@ export default function WorkflowList() {
               </p>
             </div>
           </div>
-          <Button onClick={() => setShowCreate(true)} className="gap-2">
+          <Button onClick={openCreate} className="gap-2" disabled={!releaseReady}>
             <Plus className="h-4 w-4" />
             New Workflow
           </Button>
         </div>
+
+        {selectedReleaseError && (
+          <p role="alert" className="mb-4 text-sm text-destructive">
+            The selected AI-DLC version could not be loaded for workflow authoring. Choose another
+            version before continuing. {selectedReleaseError}
+          </p>
+        )}
+        {selectedLibraryRelease && selectedReleaseLabel && (
+          <p role="status" className="mb-4 rounded-md border bg-muted px-3 py-2 text-sm">
+            New and edited workflows use {selectedReleaseLabel} for versioned stage references.
+          </p>
+        )}
 
         {loading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -116,7 +200,7 @@ export default function WorkflowList() {
               <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
                 Create a workflow to arrange library blocks into your own phases and flow.
               </p>
-              <Button onClick={() => setShowCreate(true)} className="gap-2">
+              <Button onClick={openCreate} className="gap-2" disabled={!releaseReady}>
                 <Plus className="h-4 w-4" />
                 New Workflow
               </Button>
@@ -128,7 +212,7 @@ export default function WorkflowList() {
               <Card
                 key={wf.id}
                 className="group cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
-                onClick={() => navigate(`/workflows/${wf.id}`)}
+                onClick={() => navigate(`/workflows/${wf.id}${libraryReleaseQuery}`)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-2">
@@ -171,7 +255,60 @@ export default function WorkflowList() {
             ))}
           </div>
         )}
+
+        {stableRelease && (
+          <section className="mt-10" data-testid="release-workflow-section">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Package className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-base font-semibold">
+                Workflow in {stableRelease.label} (stable)
+              </h2>
+              <span className="font-mono text-[11px] text-muted-foreground break-all">
+                {stableRelease.releaseId}
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <Card
+                className="cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
+                onClick={() => setContentsReleaseId(stableRelease.releaseId)}
+              >
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-sm truncate">
+                        {stableRelease.workflow.name}
+                      </h3>
+                      <p className="text-[11px] text-muted-foreground/70 font-mono truncate">
+                        {stableRelease.workflow.id}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="h-5 gap-1 text-[9px] shrink-0">
+                      <Package className="h-2.5 w-2.5" />
+                      RELEASE
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    Intents pinned to this release run this copy of {stableRelease.workflow.id} in
+                    place of the SYSTEM one.
+                  </p>
+                  <div className="text-[11px] text-muted-foreground/60">
+                    {stableRelease.workflow.placements.length} stages ·{' '}
+                    {stableRelease.workflow.scopeRefs.length} scopes · read-only
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </section>
+        )}
       </div>
+
+      {contentsReleaseId && (
+        <ReleaseContentsDialog
+          releaseId={contentsReleaseId}
+          initialType="stage"
+          onClose={() => setContentsReleaseId(null)}
+        />
+      )}
 
       {showCreate && (
         <CreateWorkflowDialog
@@ -179,7 +316,7 @@ export default function WorkflowList() {
           onClose={() => setShowCreate(false)}
           onCreated={(id) => {
             setShowCreate(false);
-            navigate(`/workflows/${id}`);
+            navigate(`/workflows/${id}${libraryReleaseQuery}`);
           }}
         />
       )}

@@ -4,7 +4,8 @@
 // This module is deliberately tiny and dependency-free so both the fetcher
 // (repo-fetch.js, which drags in tar-stream) and the profile registry
 // (aidlc-compatibility-profiles.js, which must stay cheap to bundle) can share
-// exactly one definition of "what is a legal GitHub owner/repo".
+// exactly one definition of "what is a legal GitHub owner/repo" (or GitLab
+// project path).
 //
 // Everything here is fail-closed: a name that does not match the strict GitHub
 // grammar is rejected rather than escaped, because the value ends up in a URL
@@ -59,13 +60,68 @@ const assertGithubRepo = (repo) => {
   return repo;
 };
 
+// A GitLab source is written `gitlab:<namespace>/<project>`, where the
+// namespace may be nested (`group/subgroup/project`). It is fetched from the
+// deployment's configured GitLab instance (gitlab.com by default) through the
+// project archive API, optionally with a read token, so a fork can stay in a
+// private repository. The prefix keeps every existing GitHub slug unchanged.
+const GITLAB_PREFIX = 'gitlab:';
+// GitLab path segments: letters, digits, `_`, `-` and `.`; they cannot start
+// with `-` or `.`, nor end with `.git` or `.atom`. `.`, `..` and any `..` are
+// refused, as for GitHub names.
+const GITLAB_SEGMENT_RE = /^[A-Za-z0-9_](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9_-])?$/;
+// GitLab nests at most 20 subgroups under a top-level group, plus the project.
+const GITLAB_MAX_SEGMENTS = 22;
+const GITLAB_MAX_PATH_LENGTH = 255;
+
+const isGitlabSegment = (value) =>
+  typeof value === 'string' &&
+  GITLAB_SEGMENT_RE.test(value) &&
+  !value.includes('..') &&
+  !/\.(git|atom)$/i.test(value);
+
+const isGitlabProjectPath = (value) => {
+  if (typeof value !== 'string' || value.length > GITLAB_MAX_PATH_LENGTH) return false;
+  const segments = value.split('/');
+  return (
+    segments.length >= 2 &&
+    segments.length <= GITLAB_MAX_SEGMENTS &&
+    segments.every(isGitlabSegment)
+  );
+};
+
+const parseGitlabRepository = (value) => {
+  const path = value.slice(GITLAB_PREFIX.length);
+  if (!isGitlabProjectPath(path)) {
+    throw new CustomSourceError(
+      'custom_source_repository_invalid',
+      `aidlc-custom-source: "${value}" is not a valid GitLab project ("gitlab:<namespace>/<project>")`,
+      { details: { repository: value } },
+    );
+  }
+  return {
+    provider: 'gitlab',
+    path,
+    repository: `${GITLAB_PREFIX}${path}`,
+    // One key segment per level, as for GitHub: the whole project path is
+    // percent-encoded into ONE segment under `gitlab/`. A GitHub repository
+    // name cannot contain `%`, so no GitHub `gitlab/<name>` prefix can collide.
+    keySegments: ['gitlab', encodeURIComponent(path)],
+  };
+};
+
 /**
- * Splits an `owner/name` slug into its validated halves. Exactly one slash is
- * allowed: a nested namespace is not a GitHub repository path and would break
- * the one-segment-per-level key layout.
+ * Parses a custom source repository. `owner/name` is a GitHub repository:
+ * exactly one slash, because a nested namespace is not a GitHub repository path
+ * and would break the one-segment-per-level key layout.
+ * `gitlab:<namespace>/<project>` is a GitLab project on the configured instance.
+ *
+ * Returns `{ provider, repository, keySegments }` plus `owner`/`repo` for
+ * GitHub or `path` for GitLab. `repository` is the canonical identity.
  */
 const parseRepositorySlug = (repository) => {
   const value = typeof repository === 'string' ? repository.trim() : '';
+  if (value.startsWith(GITLAB_PREFIX)) return parseGitlabRepository(value);
   const parts = value.split('/');
   if (parts.length !== 2) {
     throw new CustomSourceError(
@@ -77,17 +133,25 @@ const parseRepositorySlug = (repository) => {
   const [owner, repo] = parts;
   assertGithubOwner(owner);
   assertGithubRepo(repo);
-  return { owner, repo, repository: `${owner}/${repo}` };
+  return {
+    provider: 'github',
+    owner,
+    repo,
+    repository: `${owner}/${repo}`,
+    keySegments: [owner, repo],
+  };
 };
 
 export {
   CustomSourceError,
   GITHUB_OWNER_RE,
   GITHUB_REPO_RE,
+  GITLAB_PREFIX,
   assertGithubOwner,
   assertGithubRepo,
   isGithubOwner,
   isGithubRepo,
+  isGitlabProjectPath,
   parseRepositorySlug,
 };
 
@@ -95,9 +159,11 @@ export default {
   CustomSourceError,
   GITHUB_OWNER_RE,
   GITHUB_REPO_RE,
+  GITLAB_PREFIX,
   assertGithubOwner,
   assertGithubRepo,
   isGithubOwner,
   isGithubRepo,
+  isGitlabProjectPath,
   parseRepositorySlug,
 };

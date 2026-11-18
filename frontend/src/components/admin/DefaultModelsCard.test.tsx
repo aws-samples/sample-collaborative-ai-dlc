@@ -34,6 +34,9 @@ const defaultCapabilities = (over: Record<string, unknown> = {}) => ({
     ],
     opencode: [{ id: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
     codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
+    // The default fixture is a runtime that read the region's catalogue (#674);
+    // tests about the fallback override this.
+    codexSource: 'catalog',
   },
   ...over,
 });
@@ -41,6 +44,16 @@ const defaultCapabilities = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+// jsdom implements no pointer capture, and Radix Select calls it the moment the
+// trigger is pressed: without the shim the dropdown never opens in a test.
+function shimPointerCapture() {
+  const proto = Element.prototype as unknown as Record<string, () => unknown>;
+  proto.hasPointerCapture = () => false;
+  proto.releasePointerCapture = () => {};
+  proto.setPointerCapture = () => {};
+  proto.scrollIntoView = () => {};
+}
 
 describe('DefaultModelsCard', () => {
   it('renders skeletons while loading settings', () => {
@@ -266,5 +279,264 @@ describe('DefaultModelsCard', () => {
         tierModels: { quorum: { claude: 'us.anthropic.claude-sonnet-4-6' } },
       }),
     );
+  });
+
+  it('lets a model ID the catalogue does not list be typed in (#674)', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+    updateSettings.mockResolvedValue({});
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByText('Custom model ID…'));
+
+    const input = await screen.findByTestId('default-model-input-codex');
+    expect(input).not.toBeDisabled();
+    await user.type(input, 'openai.gpt-6.1-sol');
+
+    await user.click(screen.getByRole('button', { name: /Save Models/ }));
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cliModels: expect.objectContaining({ codex: 'openai.gpt-6.1-sol' }),
+      }),
+    );
+  });
+
+  it('goes back to the dropdown with the typed ID kept as a custom choice', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByText('Custom model ID…'));
+    await user.type(await screen.findByTestId('default-model-input-codex'), 'openai.gpt-6.1-sol');
+
+    await user.click(screen.getByTestId('default-model-list-codex'));
+
+    const trigger = await screen.findByTestId('default-model-select-codex');
+    expect(trigger).toHaveTextContent('openai.gpt-6.1-sol (custom)');
+  });
+
+  it('says so when the regional Codex catalogue could not be read (#674)', async () => {
+    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-5.5' } }));
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [],
+          opencode: [],
+          codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
+          codexSource: 'cached',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    // A backend that predates `sources` reports the Codex source only.
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-source-codex')).toHaveTextContent(
+        'showing the last list read',
+      );
+    });
+    // The saved selection is still the value in the field: the cached list is
+    // what the picker offers, not a reset of the configured model.
+    expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent('GPT-5.5');
+    expect(screen.queryByTestId('codex-catalog-unavailable')).not.toBeInTheDocument();
+  });
+
+  it('says which lists are the last ones read, in the default and the per-tier pickers', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({ tierModels: { judgment: { codex: 'openai.gpt-5.5' } } }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          ...defaultCapabilities().models,
+          sources: { kiro: 'cached', claude: 'cached', opencode: 'catalog', codex: 'cached' },
+          codexSource: 'cached',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    for (const cli of ['kiro', 'claude', 'codex']) {
+      expect(await screen.findByTestId(`default-model-source-${cli}`)).toHaveTextContent(
+        'showing the last list read',
+      );
+      expect(screen.getByTestId(`admin-tier-model-source-${cli}`)).toHaveTextContent(
+        'last list read',
+      );
+    }
+    expect(screen.queryByTestId('default-model-source-opencode')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-tier-model-source-opencode')).not.toBeInTheDocument();
+  });
+
+  it('shows no cached-list note when every list was read now', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({ tierModels: { judgment: { codex: 'openai.gpt-5.5' } } }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          ...defaultCapabilities().models,
+          sources: { kiro: 'catalog', claude: 'catalog', opencode: 'catalog', codex: 'catalog' },
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await screen.findByTestId('default-model-select-codex');
+    for (const cli of ['kiro', 'claude', 'opencode', 'codex']) {
+      expect(screen.queryByTestId(`default-model-source-${cli}`)).not.toBeInTheDocument();
+      expect(screen.queryByTestId(`admin-tier-model-source-${cli}`)).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(['error', 'unavailable'] as const)(
+    'offers no built-in list and asks for a model ID when the catalogue is %s',
+    async (codexSource) => {
+      getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-5.5' } }));
+      getCapabilities.mockResolvedValue(
+        defaultCapabilities({
+          models: { kiro: [], claude: [], opencode: [], codex: [], codexSource },
+        }),
+      );
+
+      render(<DefaultModelsCard />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('codex-catalog-unavailable')).toHaveTextContent(
+          'enter a model ID',
+        );
+      });
+      // The saved id stays in the field and another one can be typed.
+      expect(screen.getByTestId('default-model-input-codex')).toHaveValue('openai.gpt-5.5');
+    },
+  );
+
+  it('shows the cost note below a selected model that has no price', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({
+        cliModels: { codex: 'openai.gpt-7-nova', claude: 'us.anthropic.claude-sonnet-4-6' },
+        tierModels: { judgment: { codex: 'openai.gpt-7-nova' } },
+      }),
+    );
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [{ id: 'us.anthropic.claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
+          opencode: [],
+          codex: [
+            { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' },
+            { id: 'openai.gpt-7-nova', name: 'openai.gpt-7-nova', priced: false },
+          ],
+          codexSource: 'catalog',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-unpriced-codex')).toHaveTextContent(
+        'Cost estimate unavailable for this model',
+      );
+    });
+    // The list is untouched: the option carries the name the catalogue gave it.
+    expect(screen.getByTestId('default-model-select-codex')).toHaveTextContent(
+      /^openai\.gpt-7-nova$/,
+    );
+    expect(screen.queryByTestId('default-model-unpriced-claude')).not.toBeInTheDocument();
+    // The per-tier override of the same model carries the note too.
+    expect(screen.getByTestId('admin-tier-model-judgment-codex-unpriced')).toBeInTheDocument();
+  });
+
+  it('drops the cost note when a priced model is selected instead', async () => {
+    shimPointerCapture();
+    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-7-nova' } }));
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [],
+          opencode: [],
+          codex: [
+            { id: 'openai.gpt-6.1-terra', name: 'openai.gpt-6.1-terra' },
+            { id: 'openai.gpt-7-nova', name: 'openai.gpt-7-nova', priced: false },
+          ],
+          codexSource: 'catalog',
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+    await screen.findByTestId('default-model-unpriced-codex');
+
+    await user.click(screen.getByTestId('default-model-select-codex'));
+    await user.click(await screen.findByRole('option', { name: 'openai.gpt-6.1-terra' }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('default-model-unpriced-codex')).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the saved selection when the region lists no Codex model (#674)', async () => {
+    getSettings.mockResolvedValue(defaultSettings({ cliModels: { codex: 'openai.gpt-6.1-sol' } }));
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: { kiro: [], claude: [], opencode: [], codex: [], codexSource: 'catalog' },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    // An empty regional catalogue means no dropdown to choose from — the saved
+    // id stays in the field and a region-specific id can still be typed.
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-input-codex')).toHaveValue('openai.gpt-6.1-sol');
+    });
+    expect(screen.queryByTestId('codex-catalog-unavailable')).not.toBeInTheDocument();
+  });
+
+  it('shows no catalogue warning when the regional list was read', async () => {
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(
+      defaultCapabilities({
+        models: {
+          kiro: [],
+          claude: [],
+          opencode: [],
+          codex: [{ id: 'openai.gpt-6.1-sol', name: 'openai.gpt-6.1-sol' }],
+          codexSource: 'catalog',
+        },
+      }),
+    );
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('codex-catalog-unavailable')).not.toBeInTheDocument();
   });
 });

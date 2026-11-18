@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import yaml from 'js-yaml';
 import { stubPublicEcr } from './helpers/public-ecr.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -94,6 +95,119 @@ test('current release metadata is internally consistent', () => {
   const version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
   const checked = run('node', ['scripts/release.mjs', 'check', version]);
   assert.equal(checked.status, 0, checked.stderr);
+});
+
+test('release forwards every deployment configuration secret through the reusable workflow contract', () => {
+  const release = yaml.load(readFileSync(releaseWorkflow, 'utf8')).jobs['deploy-demo'];
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8'));
+  const configurationSecrets = Object.values(deployment.jobs.deploy.env)
+    .flatMap((value) =>
+      [...String(value).matchAll(/\bsecrets\.([A-Z_][A-Z0-9_]*)/g)].map((match) => match[1]),
+    )
+    .sort();
+
+  assert.ok(configurationSecrets.includes('APP_DOMAIN'));
+  assert.ok(configurationSecrets.includes('SSO_CONFIG'));
+  assert.equal(typeof release.secrets, 'object', 'release must use explicit secret mappings');
+  assert.deepEqual(
+    Object.keys(release.secrets ?? {}).sort(),
+    configurationSecrets,
+    'release must forward all deployment configuration secrets, without unrelated secrets',
+  );
+  for (const name of configurationSecrets) {
+    assert.equal(release.secrets[name], '${{ secrets.' + name + ' }}');
+    assert.ok(
+      Object.hasOwn(deployment.on.workflow_call.secrets, name),
+      `${name} must be declared by the reusable workflow`,
+    );
+  }
+});
+
+test('release secret forwarding does not activate optional main deployment secrets', () => {
+  const main = yaml.load(readFileSync(mainDemoWorkflow, 'utf8')).jobs['deploy-main'];
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8'));
+  assert.equal(main.secrets, undefined);
+  for (const [name, secret] of Object.entries(deployment.on.workflow_call.secrets)) {
+    assert.equal(secret.required, false, `${name} must remain optional for main deployments`);
+  }
+});
+
+test('release configuration rejects missing domain or SSO settings before AWS credentials', () => {
+  const deployment = yaml.load(readFileSync(demoWorkflow, 'utf8')).jobs.deploy;
+  const validationIndex = deployment.steps.findIndex(
+    (step) => step.name === 'Validate deployment configuration',
+  );
+  const credentialsIndex = deployment.steps.findIndex(
+    (step) => step.name === 'Configure AWS credentials',
+  );
+  assert.ok(validationIndex >= 0 && validationIndex < credentialsIndex);
+  const env = Object.fromEntries(Object.keys(deployment.env).map((name) => [name, '']));
+  Object.assign(env, {
+    AWS_ACCOUNT_ID: '123456789012',
+    AWS_REGION: 'us-east-1',
+    AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/deploy',
+    BEDROCK_MODEL: 'test-model',
+    TF_STATE_BUCKET: 'test-state',
+    TF_STATE_KEY: 'terraform.tfstate',
+    TF_STATE_REGION: 'us-east-1',
+    GITHUB_ENVIRONMENT: 'demo-release',
+    REQUIRE_CUSTOM_DOMAIN: 'true',
+    APP_DOMAIN: 'localhost',
+    APP_DOMAIN_ALIASES: '[]',
+    ACM_CERTIFICATE_ARN: 'arn:aws:acm:us-east-1:123456789012:certificate/test',
+    AUTH_MODE: 'hybrid',
+    SSO_CONFIG: '{}',
+  });
+  const validate = (overrides = {}) =>
+    run('bash', ['-e', '-c', deployment.steps[validationIndex].run], {
+      env: { ...env, ...overrides },
+    });
+  const valid = validate();
+  assert.equal(valid.status, 0, valid.stderr);
+
+  const missingDomain = validate({ APP_DOMAIN: '', ACM_CERTIFICATE_ARN: '' });
+  assert.notEqual(missingDomain.status, 0);
+  assert.match(missingDomain.stderr, /Custom-domain configuration is required/);
+
+  const missingSso = validate({ SSO_CONFIG: '' });
+  assert.notEqual(missingSso.status, 0);
+  assert.match(missingSso.stderr, /AUTH_MODE hybrid requires the SSO_CONFIG secret/);
+});
+
+test('release check ignores local tooling and worktrees but validates application manifests', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-release-local-folders-'));
+  const version = '2.0.0';
+  try {
+    mkdirSync(join(fixture, 'scripts'));
+    cpSync(join(root, 'scripts/release.mjs'), join(fixture, 'scripts/release.mjs'));
+    writeJson(join(fixture, 'package.json'), { name: 'aidlc', version, private: true });
+    writeJson(join(fixture, 'package-lock.json'), {
+      version,
+      packages: { '': { version } },
+    });
+    writeFileSync(join(fixture, 'CHANGELOG.md'), `# Changelog\n\n## [${version}] - TBD\n`);
+    for (const directory of ['.opencode', '.playwright-mcp', '.worktrees/other-branch']) {
+      mkdirSync(join(fixture, directory), { recursive: true });
+      writeJson(join(fixture, directory, 'package.json'), {
+        name: 'local-tool',
+        version: '1.0.0',
+      });
+    }
+    mkdirSync(join(fixture, 'frontend'));
+    writeJson(join(fixture, 'frontend/package.json'), { name: 'frontend', private: true });
+
+    const checked = run('node', ['scripts/release.mjs', 'check', version], { cwd: fixture });
+    assert.equal(checked.status, 0, checked.stderr);
+
+    writeJson(join(fixture, 'frontend/package.json'), { name: 'frontend', version: '1.0.0' });
+    const invalid = run('node', ['scripts/release.mjs', 'check', version], { cwd: fixture });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /frontend\/package\.json must not define a version/);
+    assert.match(invalid.stderr, /frontend\/package\.json must set private: true/);
+    assert.doesNotMatch(invalid.stderr, /\.opencode|\.playwright-mcp|\.worktrees/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test('release and main deployments use isolated protected environments and GitHub OIDC', () => {
@@ -423,6 +537,29 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
 });
 
+test('Terraform plan inspection allows deleting the Gateway grant retirement table, not replacing it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
+  const address = 'module.agentcore.aws_dynamodb_table.gateway_grant_retirements[0]';
+  const offPlan = join(dir, 'off.json');
+  const replacePlan = join(dir, 'replace.json');
+  writeJson(offPlan, {
+    resource_changes: [{ address, type: 'aws_dynamodb_table', change: { actions: ['delete'] } }],
+  });
+  writeJson(replacePlan, {
+    resource_changes: [
+      { address, type: 'aws_dynamodb_table', change: { actions: ['delete', 'create'] } },
+    ],
+  });
+
+  const accepted = run('node', [inspector, offPlan]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /Allowed Gateway grant retirement table removal/);
+
+  const rejected = run('node', [inspector, replacePlan]);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /protected persistent resources/);
+});
+
 test('Terraform teardown preparation only permits existing-resource protection updates', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-teardown-plan-'));
   const address = 'module.dynamodb.aws_dynamodb_table.sessions';
@@ -610,6 +747,9 @@ fi
 if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   exit 0
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  exit 0
+fi
 exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
@@ -715,6 +855,10 @@ if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   printf 'initialize-inventory %s %s\\n' "$AWS_REGION" "$V2_PROCESS_TABLE" >> "$AIDLC_TERRAFORM_LOG"
   exit "\${AIDLC_FAKE_INVENTORY_EXIT:-0}"
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  printf 'prepare-releases %s %s\\n' "$AWS_REGION" "$SEED_BLOCKS_FUNCTION" >> "$AIDLC_TERRAFORM_LOG"
+  exit "\${AIDLC_FAKE_RELEASE_PREP_EXIT:-0}"
+fi
 exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
@@ -782,6 +926,8 @@ test('standalone deployment forwards --var overrides to terraform plan', () => {
       'app_domain=aidlc.example.com',
       '--var',
       'route53_zone_id=Z1234567890ABC',
+      '--var',
+      'aidlc_release_pinning=off',
     ],
     { env },
   );
@@ -796,6 +942,7 @@ test('standalone deployment forwards --var overrides to terraform plan', () => {
   assert.match(planLine, /-var-file=\S+summary\.tfvars/);
   assert.match(planLine, /-var app_domain=aidlc\.example\.com/);
   assert.match(planLine, /-var route53_zone_id=Z1234567890ABC/);
+  assert.match(planLine, /-var aidlc_release_pinning=off/);
 });
 
 test('standalone deployment omits --var entirely when none are given', () => {
@@ -824,6 +971,30 @@ test('standalone deployment can skip the post-apply baseline seed', () => {
   assert.equal(deployed.status, 0, deployed.stderr);
   assert.match(deployed.stdout, /Skipping AI-DLC default workflow/);
   assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
+});
+
+test('deployment prepares supported catalogs after apply even when baseline reseeding is skipped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-releases-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile, '--skip-seed'], {
+    env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const log = readFileSync(terraformLog, 'utf8');
+  assert.match(log, /prepare-releases eu-west-1 seed-summary/);
+  assert.ok(log.indexOf('apply ') < log.indexOf('prepare-releases '));
+});
+
+test('deployment fails visibly if a supported catalog cannot be prepared', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-releases-fail-'));
+  const { env, planFile } = standaloneDeployEnv(dir);
+  const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
+    env: { ...env, AIDLC_FAKE_RELEASE_PREP_EXIT: '42' },
+  });
+  assert.equal(result.status, 42);
+  assert.doesNotMatch(result.stdout, /Infrastructure deployment complete/);
+  assert.match(result.stdout, /AI-DLC default workflow and building blocks applied/);
+  assert.match(result.stderr, /prepare-aidlc-releases\.mjs/);
 });
 
 test('deployment initializes inventory after apply even when baseline seeding is skipped', () => {
@@ -1715,6 +1886,7 @@ case "$*" in
     ;;
   *"route53 get-hosted-zone"*) printf '%s\\n' "\${AIDLC_FAKE_ZONE_NAME:-example.com.}"; exit 0 ;;
   *"cloudfront list-distributions"*)
+    [[ -n "\${AIDLC_FAKE_NO_DISTRIBUTIONS:-}" ]] && exit 0
     printf '{"DistributionList":{"Items":%s}}\\n' "\${AIDLC_FAKE_DISTRIBUTIONS:-[]}"
     exit 0
     ;;
@@ -2343,6 +2515,30 @@ test('installer preflight validates the certificate, zone and hostname availabil
     },
   });
   assert.equal(readopted.status, 0, readopted.stderr);
+});
+
+test('installer preflight accepts an account without CloudFront distributions', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-no-distributions-'));
+  const env = mockedCommandEnv(dir, repository);
+  // AWS CLI v2 pagination prints nothing at all when the list is empty.
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1234567890ABC',
+    ],
+    { env: { ...env, AIDLC_FAKE_NO_DISTRIBUTIONS: '1' } },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(installed.stdout, /Custom domain:\s+aidlc\.example\.com/);
+  assert.match(readFileSync(env.AIDLC_AWS_LOG, 'utf8'), /cloudfront list-distributions/);
 });
 
 test('installer prints external DNS records when Route53 is not managed', () => {

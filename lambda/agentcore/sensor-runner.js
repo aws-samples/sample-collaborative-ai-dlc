@@ -23,9 +23,17 @@
 // not be executed at all. `run-stage` decides what to do with a held verdict.
 
 import { spawn } from 'node:child_process';
+import { captureChild } from './cli/spawn.js';
+import { currentSandbox } from './sandbox/launcher.js';
+import {
+  sensitiveEnvironmentValues,
+  redactCredentialText,
+  redactDiagnostic,
+} from '../shared/safe-event-logger.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { isReleaseDependencyError } from '../shared/release-script-closure.js';
 import {
   SENSOR_RESULT,
   SENSOR_APPLICABILITY,
@@ -335,8 +343,20 @@ const sensorChildEnv = (source = {}) => {
 // Spawn a child and collect stdout/stderr + exit, enforcing a hard timeout.
 // Never rejects on a non-zero exit (a failing sensor is data, not an error).
 // `spawnFn` injectable for tests.
-const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
-  new Promise((resolve) => {
+const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) => {
+  if (currentSandbox().enabled) {
+    return captureChild({
+      command: file,
+      args,
+      timeoutMs,
+      cwd,
+      env: sensorChildEnv(env),
+      spawnFn,
+      captureStderr: true,
+      inheritCredentialEnvironment: false,
+    });
+  }
+  return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -371,104 +391,11 @@ const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
     });
     child.on('close', (code) => finish(code));
   });
+};
 
 const STDERR_BUDGET = 500;
 const DETAIL_BUDGET_BYTES = 120_000;
 const SAMPLE_FILES = 5;
-const REDACTED_DIAGNOSTIC = '[REDACTED]';
-const CREDENTIAL_LABEL =
-  '[A-Za-z0-9_-]*(?:secret|password|passwd|token|credential|private[-_]?key|api[-_]?key|authorization|cookie|signature)[A-Za-z0-9_-]*';
-const JSON_DOUBLE_CREDENTIAL_PATTERN = new RegExp(
-  `(["']${CREDENTIAL_LABEL}["']\\s*:\\s*)"(?:\\\\.|[^"\\\\])*"`,
-  'gi',
-);
-const JSON_SINGLE_CREDENTIAL_PATTERN = new RegExp(
-  `(["']${CREDENTIAL_LABEL}["']\\s*:\\s*)'(?:\\\\.|[^'\\\\])*'`,
-  'gi',
-);
-const ASSIGNED_CREDENTIAL_PATTERN = new RegExp(
-  `(\\b(${CREDENTIAL_LABEL})\\b\\s*[:=]\\s*)(?!\\[REDACTED\\])([^\\s,;}\\][{]+)`,
-  'gi',
-);
-const ARGUMENT_CREDENTIAL_PATTERN = new RegExp(`(--?${CREDENTIAL_LABEL}\\b\\s+)([^\\s]+)`, 'gi');
-const QUERY_CREDENTIAL_PATTERN = new RegExp(`([?&]${CREDENTIAL_LABEL}=)([^&#\\s]+)`, 'gi');
-const SENSITIVE_ENV_NAME =
-  /(?:^|_)(?:secret|password|passwd|token|credentials?|private_key|api_key|authorization|cookie|signature|askpass|netrc|access_key_id)(?:_|$)/i;
-const SENSITIVE_FIELD_NAME =
-  /(?:secret|password|passwd|token|credential|privatekey|apikey|authorization|cookie|signature|askpass|netrc)/i;
-const SENSITIVE_PATH_PATTERN =
-  /(?:~|\/(?:[^/\s"'():]+\/)*)(?:\.aws\/credentials|\.git-credentials|\.netrc|\.npmrc|\.pypirc|\.docker\/config\.json|\.config\/gcloud\/application_default_credentials\.json|run\/secrets\/[^\s"'():]+)/gi;
-
-const sensitiveEnvironmentValues = (source = {}) =>
-  [
-    ...new Set(
-      Object.entries(source)
-        .filter(([name]) => SENSITIVE_ENV_NAME.test(String(name)))
-        .map(([, value]) => (typeof value === 'string' ? value : ''))
-        // Replacing very short values globally would destroy ordinary diagnostics;
-        // labelled forms are still covered by the structural patterns below.
-        .filter((value) => value.length >= 4 && value !== REDACTED_DIAGNOSTIC),
-    ),
-  ].toSorted((a, b) => b.length - a.length);
-
-const credentialField = (key) => {
-  const normalized = String(key).replaceAll(/[-_]/g, '').toLowerCase();
-  return SENSITIVE_FIELD_NAME.test(normalized) || ['setcookie', 'accesskeyid'].includes(normalized);
-};
-
-// Sensor processes execute repository-controlled tooling. Treat every diagnostic
-// as untrusted and redact credentials before it can become a SensorRun, activity
-// note, UI payload, or deduplication key.
-const redactCredentialText = (value, sensitiveValues = []) => {
-  let text = String(value);
-  for (const sensitiveValue of sensitiveValues) {
-    text = text.replaceAll(sensitiveValue, REDACTED_DIAGNOSTIC);
-  }
-  text = text.replace(
-    /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g,
-    REDACTED_DIAGNOSTIC,
-  );
-  text = text.replace(
-    /\b((?:authorization|proxy-authorization)\s*[:=])([^\r\n,;]+)/gi,
-    (_match, prefix) => `${prefix} ${REDACTED_DIAGNOSTIC}`,
-  );
-  text = text.replace(
-    /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi,
-    `$1 ${REDACTED_DIAGNOSTIC}`,
-  );
-  text = text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi, `$1${REDACTED_DIAGNOSTIC}@`);
-  text = text.replace(JSON_DOUBLE_CREDENTIAL_PATTERN, `$1"${REDACTED_DIAGNOSTIC}"`);
-  text = text.replace(JSON_SINGLE_CREDENTIAL_PATTERN, `$1'${REDACTED_DIAGNOSTIC}'`);
-  text = text.replace(ASSIGNED_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
-  text = text.replace(ARGUMENT_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
-  text = text.replace(QUERY_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
-  text = text.replace(SENSITIVE_PATH_PATTERN, REDACTED_DIAGNOSTIC);
-  text = text.replace(
-    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}(?:-[A-Za-z0-9-]{10,})*)\b|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g,
-    REDACTED_DIAGNOSTIC,
-  );
-  return text;
-};
-
-const redactDiagnostic = (value, sensitiveValues = [], seen = new WeakMap()) => {
-  if (typeof value === 'string') return redactCredentialText(value, sensitiveValues);
-  if (Array.isArray(value))
-    return value.map((entry) => redactDiagnostic(entry, sensitiveValues, seen));
-  if (!value || typeof value !== 'object') return value;
-  if (seen.has(value)) return seen.get(value);
-
-  const redacted = {};
-  seen.set(value, redacted);
-  for (const [key, entry] of Object.entries(value)) {
-    redacted[key] = credentialField(key)
-      ? entry == null
-        ? entry
-        : REDACTED_DIAGNOSTIC
-      : redactDiagnostic(entry, sensitiveValues, seen);
-  }
-  return redacted;
-};
-
 const tailDiagnostic = (stderr, sensitiveValues = []) => {
   const text =
     typeof stderr === 'string' ? redactCredentialText(stderr, sensitiveValues).trim() : '';
@@ -615,6 +542,7 @@ const resultFromScript = ({
   exitCode,
   stdout,
   stderr = '',
+  sandboxError,
   verdictMode = 'exit-code',
   sensitiveValues = [],
   dispatcherExitCodes = false,
@@ -633,6 +561,7 @@ const resultFromScript = ({
       sensitiveValues,
     ),
   });
+  if (sandboxError) return inconclusive('sandbox-start-failed');
 
   if (exitCode === 0 && verdictMode === 'stdout-json') {
     if (!stdoutText) return inconclusive('missing-verdict', { stdout: null });
@@ -711,17 +640,9 @@ const STAGE_BUDGET_EXHAUSTED = 'the stage budget was exhausted before this file 
 // A pinned sensor whose script could not be verified or read has not produced a
 // verdict at all, so its severity does not apply — the check is missing, which is
 // the drift the release pin exists to prevent. run-stage applies the same test to
-// the persona and knowledge bodies its ensemble sessions read.
-//
-// `runtime_file_missing` is listed explicitly because it does not carry the
-// `release_` prefix: the resolver raises it when a release manifest lists an
-// object that is absent from storage. An incompletely published closure is a
-// release integrity failure exactly like a digest mismatch, so it must hold the
-// stage rather than degrade to a best-effort advisory note.
-export const isReleaseDependencyError = (error) =>
-  ['ReleaseResolverError', 'AidlcReleaseError'].includes(error?.name) &&
-  (String(error.code ?? '').startsWith('release_') ||
-    ['runtime_file_missing', 'unpinned_user_block', 'user_block_missing'].includes(error.code));
+// the persona and knowledge bodies its ensemble sessions read. The predicate is
+// shared with the closure reader engine-data runs.
+export { isReleaseDependencyError };
 
 // Create the sensor runner. `graph` is the graph-writer (for reading produced
 // artifact content); `loadBlockScript` fetches a sensor's `.ts` from S3;

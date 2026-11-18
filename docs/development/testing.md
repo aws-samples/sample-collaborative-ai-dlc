@@ -53,6 +53,10 @@ Sign in as a platform administrator and open **Platform Settings ->
 Environments**. The deployment publishes only Standard. Within five minutes,
 the catalog bootstrap creates Java, Go, Rust, Maven, and Gradle tool families
 and queues their initial versions for import.
+When the deployment enables Instances compute (and so publishes the x86_64
+core image), the bootstrap also creates an x86_64 version of each of the five
+tools and starts the Java, Go, and Rust x86_64 builds. They are not published
+or recommended automatically.
 
 This test covers three distinct paths:
 
@@ -78,13 +82,19 @@ For each shipped tool:
    unsupported, explicitly accept that scan limitation and confirm the
    acceptance remains visible.
 5. Publish the version. Mark Java as recommended before publishing Maven or
-   Gradle.
+   Gradle. Recommendations are per architecture: on an Instances-enabled
+   deployment, repeat this for the x86_64 versions, recommending x86_64 Java
+   before building x86_64 Maven or Gradle.
 
 ### Verify custom tool creation
 
 Create a `.NET SDK` tool using an official Linux ARM64 SDK archive and the
 `.NET` preset. Confirm source inspection, normalization, scanning, `dotnet
 --version`, and a real console build succeed, then publish it.
+
+On an Instances-enabled deployment, also select an arm64 Rust version, choose
+**Add x86_64 build**, enter the x86_64 archive URL, and confirm the installer
+script targets `x86_64-unknown-linux-gnu` and the build succeeds.
 
 ### Verify environment composition
 
@@ -101,8 +111,8 @@ OCI digests and retains the protected base entrypoint, command, user, port, and
 health behavior. Confirm the projected and actual compressed image sizes stay
 below the configured AgentCore image limit.
 
-Create projects with small repositories that exercise each selected toolchain.
-In **Project Settings -> Environment**, assign each published environment and
+Create spaces with small repositories that exercise each selected toolchain.
+In **Space Settings -> Environment**, assign each published environment and
 start a new intent. Confirm the intent detail and audit views show the exact
 environment revision, image digest, runtime version, endpoint, compatibility
 version, tool snapshots, and passed verification result.
@@ -110,7 +120,7 @@ version, tool snapshots, and passed verification result.
 To verify immutable intent targeting:
 
 1. Start an intent and record its environment revision and runtime endpoint.
-2. Change the project's environment assignment.
+2. Change the space's environment assignment.
 3. Resume, rewind, cancel, and stop the original intent.
 4. Confirm its detail and audit views retain the original revision and
    endpoint, while a newly created intent uses the new assignment.
@@ -130,7 +140,7 @@ Inspect failures through the UI or the resource outputs above. Critical and
 High findings must stop at security review until a platform administrator
 accepts them. The findings and acceptance record must remain visible after
 publication. Image build, container validation, and AgentCore endpoint failures
-must leave the previous published revision and project assignments unchanged.
+must leave the previous published revision and space assignments unchanged.
 
 When testing is complete, delete the test intents and retire the catalog-backed
 test environments in the UI. Environment and tool images are retained while
@@ -154,7 +164,7 @@ A bare `terraform destroy` remains blocked by those protections.
 
 ## WAF origin verification
 
-Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, and WAF-disabled configuration. These tests inspect planned configuration; they do not execute the AWS WAF engine.
+Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, WAF-disabled configuration, and the building-block exemption (the counted body-content rules, the labelling and blocking rules, and which methods and paths the exemption matches). These tests inspect planned configuration; they do not execute the AWS WAF engine.
 
 For a deployed non-production environment, verify both `enable_waf` settings after Terraform apply and WAF propagation. Use a current Cognito JWT and an authenticated REST route such as `/api/projects`:
 
@@ -168,7 +178,11 @@ For a deployed non-production environment, verify both `enable_waf` settings aft
 | CloudFront OPTIONS preflight and configured OAuth callback             | Existing flow works        | Existing flow works                                |
 | Cognito local login and configured SSO login                           | Existing flow works        | Existing flow works                                |
 
-Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header. Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
+Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header.
+
+Also check that saving a building block whose body contains `../templates/foo.md` and an HTML comment succeeds, and that the same body sent to another write route (for example `POST /api/projects`) is still blocked with a WAF 403.
+
+Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
 
 ## Enterprise SSO integration test
 
@@ -325,13 +339,13 @@ its user record before the access gate runs. It must be marked **access denied**
 must not have an effective Admin badge, and must not appear in a space's
 **Add member** user list.
 
-As a space owner, open **Project Settings -> Members** and verify:
+As a space owner, open **Space Settings -> Members** and verify:
 
 1. Both admitted federated users appear as **DisposableCognito** identities.
 2. The local administrator appears separately as a **Cognito account**.
 3. The denied user does not appear.
 4. Adding the test member allows that identity to open the space after sign-in.
-5. The assigned project role is reflected in the available settings and
+5. The assigned space role is reflected in the available settings and
    discussion controls.
 6. A discussion message posted by the test member is rendered as that user's
    own message, not as another member's message.
@@ -412,6 +426,72 @@ npm run format:check
 npm run secretlint
 npx vitest run --project=agentcore
 ```
+
+### SRT image integration tests
+
+Requires Node 22/24 and Docker with ARM64 support (native or emulated).
+Run from the repository root; no AWS or model credentials are needed:
+
+```bash
+./scripts/agent-e2e-testing.sh --sandbox
+```
+
+The runner builds the AgentCore image and tests the actual starter configuration,
+restrictive settings and sandboxing disabled, through both process launch helpers.
+The test fixture is mounted only for testing and is excluded from the production image.
+
+| Operation                                 | Disabled | Starter  | Restrictive settings                            |
+| ----------------------------------------- | -------- | -------- | ----------------------------------------------- |
+| Workspace write/read                      | Succeeds | Succeeds | Succeeds                                        |
+| Claude session write on a fresh workspace | Succeeds | Succeeds | Succeeds                                        |
+| Credential-file read                      | Succeeds | Blocked  | Succeeds                                        |
+| Original credential-file modification     | Succeeds | Blocked  | Blocked                                         |
+| Protected test-file read/write            | Succeeds | Succeeds | Blocked; original file remains unchanged        |
+| Write allowed beneath a denied directory  | Succeeds | Succeeds | Blocked; parent deny takes precedence           |
+| Create nested user/mount namespaces       | Succeeds | Blocked  | Blocked                                         |
+| Direct connection to the test server      | Succeeds | Blocked  | Blocked                                         |
+| HTTP request to the test server           | Succeeds | Succeeds | Proxy returns 403; destination receives nothing |
+| SRT denial event                          | None     | None     | Destination and port logged                     |
+| Round trip through the runtime MCP bridge | Succeeds | Succeeds | Succeeds when Unix sockets are allowed          |
+
+The restrictive policy also runs with Unix sockets disabled, verifying that the
+MCP bridge is then blocked. Credential checks use dummy files at the four paths
+listed in the starter. The restrictive test policy denies reads elsewhere.
+
+The tests also check stdin delivery, exit status, temporary-file cleanup and the
+installed SRT version. Set `AGENTCORE_IMAGE` to reuse a local image or `KEEP_E2E=1`
+to retain containers and logs on failure. The runner supplies
+`seccomp=unconfined` and `systempaths=unconfined` for local Docker testing only.
+Timeout and credential-cancellation cases also verify that SRT removes its
+temporary filesystem mount points before returning.
+
+These checks do not exercise live harness/model calls or full intent execution.
+See [Agent sandboxing](../using-the-platform/agent-sandboxing.md) for configuring
+policies in the application.
+
+### Harness tool logs
+
+Both launch helpers log `cli.tool` events from Claude, Kiro, Codex and OpenCode's
+JSON output, with or without SRT. Each reported tool result includes its name,
+call ID when available, status, paths or command, and bounded, redacted failure
+details. Failures use `WARN`, successes use `INFO`, even when the harness exits
+zero. `cli.error` records recognized harness error events at `WARN`. Stage harness
+exits use `INFO` for zero and `ERROR` for nonzero.
+
+SRT denials, cleanup failures, dropped observations (`sandbox.log_gap`) and
+unclassified violations use `WARN`; sandbox setup failures use `ERROR`.
+Startup and optional file-write observations use `INFO` (a file observation alone
+does not confirm a denial). Set the existing Terraform `powertools_log_level`
+to `"WARN"` (`POWERTOOLS_LOG_LEVEL` in the runtime) to hide successful tool calls
+and other `INFO` logs while keeping warnings and errors. Raw stderr and plain
+console output bypass this setting.
+
+The `invocationId` links these records to SRT events; stage and persona launches
+also supply execution context. A tool failure alone is not proof of an SRT
+denial. Conversation events, write contents and successful tool output are
+excluded from these logs. Full stdout still reaches existing UI/capture callers;
+JSON conversation output is no longer duplicated into runtime logs. Stderr
+logging is unchanged. Tools that never report a result are not covered.
 
 ### Local multi-CLI E2E
 
@@ -539,8 +619,8 @@ For each selected CLI, the harness:
 5. Removes the container, answers the gate directly in the process store, and
    starts a new container with the same workspace volume.
 6. Resumes the same CLI session.
-7. Requires `create_artifact`, `send_output`, and `collect_metric`.
-8. Verifies the successful stage, graph edge, output, metric, session identity,
+7. Requires `create_artifact` and `send_output`.
+8. Verifies the successful stage, graph edge, output, measured CLI usage, session identity,
    native edit parsing, output timestamps, and Git runtime exclusions.
 
 Starting fresh and resume legs in separate containers exercises Claude's and

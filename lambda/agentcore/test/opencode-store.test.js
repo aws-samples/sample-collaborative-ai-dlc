@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  OPENCODE_STORE_WAIT_EXPIRED,
+  __test,
   resolveOpenCodeStore,
   restoreOpenCodeStore,
   persistOpenCodeStore,
@@ -114,5 +116,140 @@ describe('OpenCode store sync', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(order).toEqual(['restore-1', 'run-1', 'persist-1', 'restore-2', 'run-2', 'persist-2']);
+  });
+
+  it('gives up a turn not reached by waitUntil without overlapping the holder', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const order = [];
+      let releaseFirst;
+      const firstGate = new Promise((resolve) => {
+        releaseFirst = resolve;
+      });
+      const env = { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-wait' };
+      const quiet = { restore: async () => {}, persist: async () => {} };
+      const first = withOpenCodeStore({
+        env,
+        ...quiet,
+        operation: async () => {
+          order.push('run-1');
+          await firstGate;
+          order.push('done-1');
+        },
+      });
+      const late = withOpenCodeStore({
+        env,
+        ...quiet,
+        waitUntil: 1_000,
+        operation: async () => order.push('run-late'),
+      });
+      const lateResult = late.catch((error) => error.code);
+      const third = withOpenCodeStore({
+        env,
+        ...quiet,
+        operation: async () => order.push('run-3'),
+      });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(await lateResult).toBe(OPENCODE_STORE_WAIT_EXPIRED);
+      expect(order).toEqual(['run-1']);
+      releaseFirst();
+      await Promise.all([first, third]);
+      expect(order).toEqual(['run-1', 'done-1', 'run-3']);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs a bounded turn that arrives in time', async () => {
+    const operation = vi.fn(async () => 'ran');
+    await expect(
+      withOpenCodeStore({
+        env: { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-free' },
+        restore: async () => {},
+        persist: async () => {},
+        waitUntil: Date.now() + 60_000,
+        operation,
+      }),
+    ).resolves.toBe('ran');
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it('returns by settleBy while a slow persist keeps the store locked', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const order = [];
+      const env = { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-settle' };
+      let deferred = null;
+      const first = withOpenCodeStore({
+        env,
+        restore: async () => {},
+        persist: () =>
+          new Promise((resolve) => setTimeout(resolve, 10_000)).then(() => order.push('persist-1')),
+        settleBy: 1_000,
+        defer: (pending) => {
+          deferred = pending;
+        },
+        operation: async () => 'answer',
+      });
+      const second = withOpenCodeStore({
+        env,
+        restore: async () => order.push('restore-2'),
+        persist: async () => {},
+        operation: async () => order.push('run-2'),
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(first).resolves.toBe('answer');
+      expect(deferred).toBeInstanceOf(Promise);
+      expect(order).toEqual([]);
+      await vi.advanceTimersByTimeAsync(9_000);
+      await Promise.all([deferred, second]);
+      expect(order).toEqual(['persist-1', 'restore-2', 'run-2']);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up a turn whose restore outlasts waitUntil, keeping the store until it settles', async () => {
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const order = [];
+      const env = { ...ENV, V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-restore' };
+      let deferred = null;
+      const late = withOpenCodeStore({
+        env,
+        restore: () =>
+          new Promise((resolve) => setTimeout(resolve, 10_000)).then(() => {
+            order.push('restore-1');
+            throw new Error('copy failed');
+          }),
+        persist: async () => order.push('persist-1'),
+        waitUntil: 1_000,
+        defer: (pending) => {
+          deferred = pending;
+        },
+        operation: async () => order.push('run-1'),
+      });
+      const lateResult = late.catch((error) => error.code);
+      const next = withOpenCodeStore({
+        env,
+        restore: async () => order.push('restore-2'),
+        persist: async () => {},
+        operation: async () => order.push('run-2'),
+      });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(await lateResult).toBe(OPENCODE_STORE_WAIT_EXPIRED);
+      expect(deferred).toBeInstanceOf(Promise);
+      expect(order).toEqual([]);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(true);
+      await vi.advanceTimersByTimeAsync(9_000);
+      await Promise.all([deferred, next]);
+      // The refused turn never runs and never persists its partial local copy.
+      expect(order).toEqual(['restore-1', 'restore-2', 'run-2']);
+      expect(__test.locks.has(env.V2_OPENCODE_STORE_DIR)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -14,6 +14,8 @@
 //   V2_ASK_QUESTION      '0' on a dispatched persona session, which has no answer
 //                        path back into it; absent otherwise
 //   V2_AGENT_REF         trusted agent identity of a dispatched persona session
+//   V2_DESCRIBE_CHANGES  '1' on the session that owns a stage, which gets
+//                        describe_changes; absent otherwise
 //   V2_VALIDATION_ROUND  the validation revision checkpoint receipts are scoped
 //                        to; absent for the first run and without a policy
 //   V2_MCP_MODE          stage (default) | discussion | conflict
@@ -31,6 +33,13 @@ import { createProcessStore } from '../../shared/v2-process-store.js';
 import { contextFromEnv, validateStartupContext } from './startup-context.js';
 
 export const startMcpServer = async ({ env = process.env, store: injectedStore } = {}) => {
+  // This server reads and writes with the runtime role. A remote-path runtime
+  // serves the built-in tools through the Gateway proxy instead.
+  if (env.ENGINE_DATA_FUNCTION || env.AIDLC_MCP_GATEWAY_URL) {
+    throw Object.assign(new Error('The local MCP server is disabled on the remote data path'), {
+      code: 'MCP_LOCAL_SERVER_DISABLED',
+    });
+  }
   const { scope, role, mode } = contextFromEnv(env);
   const store =
     mode === 'discussion'
@@ -67,6 +76,7 @@ export const startMcpServer = async ({ env = process.env, store: injectedStore }
     policy: scope.policy,
     checkpointOwner: scope.checkpointOwner,
     canAsk: scope.canAsk,
+    describeChanges: scope.describeChanges,
     z,
     env,
   });

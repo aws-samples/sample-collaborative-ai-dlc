@@ -742,6 +742,46 @@ const findPullRequest = async (
   const data = await res.json();
   return Array.isArray(data.values) && data.values.length > 0 ? data.values[0] : null;
 };
+// Every pull request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none. The description is requested
+// explicitly so delivery markers are read from the listing itself.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const query = `source.branch.name=${JSON.stringify(sourceBranch)} AND (state="OPEN" OR state="MERGED" OR state="DECLINED" OR state="SUPERSEDED") AND (draft=true OR draft=false)`;
+  let url = `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests?q=${encodeURIComponent(query)}&pagelen=50&fields=${encodeURIComponent('+values.description')}`;
+  const prs = [];
+  for (let page = 0; page < 20 && url; page++) {
+    const res = await bbFetch(ctx, url);
+    if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
+    const data = await res.json();
+    if (!Array.isArray(data.values)) throw new ProviderError(502, 'Invalid pull-request lookup');
+    // A pull request from a fork targets this repository too; delivery
+    // publishes only from this repository.
+    const fromHere = (row) => {
+      const source = row.source?.repository?.full_name;
+      const destination = row.destination?.repository?.full_name;
+      return !source || !destination || source.toLowerCase() === destination.toLowerCase();
+    };
+    for (const pr of data.values.filter(
+      (row) => row.source?.branch?.name === sourceBranch && fromHere(row),
+    ))
+      prs.push({
+        number: pr.id,
+        url: pr.links?.html?.href,
+        sourceBranch: pr.source.branch.name,
+        targetBranch: pr.destination?.branch?.name ?? null,
+        headSha: pr.source?.commit?.hash ?? null,
+        state: pr.state === 'OPEN' ? 'open' : pr.state === 'MERGED' ? 'merged' : 'closed',
+        body: pr.description ?? '',
+      });
+    if (data.next && !String(data.next).startsWith(`${API_BASE}/`))
+      throw new ProviderError(502, 'Invalid pull-request page link');
+    url = data.next ?? null;
+  }
+  if (url) throw new ProviderError(409, 'Pull-request lookup truncated');
+  return prs;
+};
 
 const createPullRequest = async (
   ctx,
@@ -847,6 +887,19 @@ const createPullRequest = async (
         }
       : {}),
   };
+};
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.target?.hash) throw new ProviderError(502, 'Invalid branch response');
+  return data.target.hash;
 };
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
@@ -1055,7 +1108,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1089,7 +1144,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

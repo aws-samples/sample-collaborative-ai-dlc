@@ -615,7 +615,7 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
     const { deps, store, args, commits } = commitTrackingHarness();
     const order = [];
     deps.commitAndPushAll = async (commitArgs) => {
-      order.push(`commit:${commitArgs.message.includes('(lead draft)') ? 'lead-draft' : 'engine'}`);
+      order.push(`commit:${commitArgs.message.includes('lead draft') ? 'lead-draft' : 'engine'}`);
       commits.push(commitArgs.message);
       return {
         ok: true,
@@ -638,7 +638,7 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
     expect(order[1]).toBe('commit:lead-draft');
     expect(order.slice(2, -1).every((step) => step === 'spawn')).toBe(true);
     expect(order.at(-1)).toBe('commit:engine');
-    expect(commits.filter((message) => message.includes('(lead draft)'))).toHaveLength(1);
+    expect(commits.filter((message) => message.includes('lead draft'))).toHaveLength(1);
     expect(eventTypes(store).filter((type) => type === 'v2.git.pushed').length).toBeGreaterThan(1);
   });
 
@@ -648,11 +648,11 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
 
     const result = await runStage(args, deps);
 
-    expect(commits[0]).toContain('(lead draft)');
+    expect(commits[0]).toContain('lead draft');
     const pushed = store.calls
       .filter((call) => call[0] === 'appendEvent' && call[1].type === 'v2.git.pushed')
       .map((call) => call[1].summary);
-    expect(pushed.some((summary) => summary.includes('(lead draft)'))).toBe(true);
+    expect(pushed.some((summary) => summary.includes('lead draft'))).toBe(true);
     expect(result.ok).toBe(false);
     // The lead's commit is retained for traceability even though the stage then
     // failed on the engine commit, so a clean retry can still reconstruct it.
@@ -661,6 +661,102 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
       .at(-1);
     expect(failedStage[1].pendingCodeCommitRefs).toContainEqual({ repo: 'r1', sha: 'lead1' });
   });
+});
+
+// The lead describes its changes, and the lead-draft commit is the one that
+// holds them; personas cannot describe. The final commit may hold nothing.
+describe('runStage — the change description on an ensemble stage', () => {
+  const A = 'https://x/a.git';
+  const B = 'https://x/b.git';
+  // outcomes: per commit call, the repositories that commit and those whose
+  // commit fails; the others are clean.
+  const describedHarness = (mode, { repoUrls = [A], outcomes }) => {
+    const { deps, store, args } = harness({ mode, ...withGraph() });
+    let row = {
+      stageInstanceId: STAGE_INSTANCE_ID,
+      attempt: 0,
+      commitDescription: {
+        type: 'feat',
+        scope: 'api',
+        summary: 'add retries',
+        descriptionId: 'd1',
+      },
+    };
+    store.getStage = async () => row;
+    store.recordCommitDescriptionUse = async ({ descriptionId, repos }) => {
+      if (row.commitDescription?.descriptionId !== descriptionId) return false;
+      const committedRepos = [...(row.commitDescription.committedRepos ?? []), ...repos];
+      row = { ...row, commitDescription: { ...row.commitDescription, committedRepos } };
+      return true;
+    };
+    const commits = [];
+    deps.ensureWorkspaceSource = async () => ({ restored: false, repos: [], failed: [] });
+    deps.spawnFn = outputWritingSpawn;
+    deps.commitAndPushAll = async ({ repos, message, messages }) => {
+      const outcome = outcomes[commits.length] ?? {};
+      const call = {};
+      const results = repos.map((repo) => {
+        const url = typeof repo === 'string' ? repo : repo.url;
+        call[url] = (messages?.[url] ?? message).split('\n')[0];
+        if (outcome.committed?.includes(url)) {
+          return { repo: url, sha: `sha-${commits.length}`, committed: true, pushed: true };
+        }
+        if (outcome.failed?.includes(url)) {
+          return { repo: url, committed: false, pushed: false, reason: 'commit_failed' };
+        }
+        return { repo: url, committed: false, pushed: 'up_to_date' };
+      });
+      commits.push(call);
+      return {
+        ok: results.every((r) => r.reason !== 'commit_failed'),
+        committed: results.some((r) => r.committed),
+        results,
+      };
+    };
+    const repoArgs = {
+      ...args,
+      repos: repoUrls,
+      branch: 'aidlc/i1',
+    };
+    return { deps, args: repoArgs, commits, row: () => row };
+  };
+  const FEAT = 'feat(api): add retries';
+  const CHECKPOINT = 'docs(aidlc): checkpoint requirements-analysis stage';
+
+  it.each(['pipeline', 'mob'])(
+    'uses it for a dirty %s lead draft and checkpoints the clean final tree',
+    async (mode) => {
+      const { deps, args, commits, row } = describedHarness(mode, {
+        outcomes: [{ committed: [A] }, {}],
+      });
+      await runStage(args, deps);
+      expect(commits.map((call) => call[A])).toEqual([FEAT, CHECKPOINT]);
+      expect(row().commitDescription.committedRepos).toEqual([A]);
+    },
+  );
+
+  it.each(['pipeline', 'mob'])(
+    'keeps it for the final commit when the %s lead draft tree is clean',
+    async (mode) => {
+      const { deps, args, commits } = describedHarness(mode, { outcomes: [{}, {}] });
+      await runStage(args, deps);
+      expect(commits.map((call) => call[A])).toEqual([FEAT, FEAT]);
+    },
+  );
+
+  it.each(['pipeline', 'mob'])(
+    'keeps it for a repository whose %s lead-draft commit failed, checkpointing the one that committed',
+    async (mode) => {
+      const { deps, args, commits, row } = describedHarness(mode, {
+        repoUrls: [A, B],
+        outcomes: [{ committed: [A], failed: [B] }, { committed: [B] }],
+      });
+      await runStage(args, deps);
+      expect(commits[0]).toEqual({ [A]: FEAT, [B]: FEAT });
+      expect(commits[1]).toEqual({ [A]: CHECKPOINT, [B]: FEAT });
+      expect(row().commitDescription.committedRepos).toEqual([A, B]);
+    },
+  );
 });
 
 describe('runStage — ensemble lead-draft provenance', () => {
@@ -777,7 +873,7 @@ describe('runStage — ensemble lead-draft provenance', () => {
           deps,
         );
         expect(commits).toHaveLength(2);
-        expect(commits[0].message).toContain('(lead draft)');
+        expect(commits[0].message).toContain('lead draft');
         expect(commits[0]).toMatchObject({
           baseBranch: 'trunk',
           baseBranches: { 'acme/api': 'production' },
@@ -787,6 +883,11 @@ describe('runStage — ensemble lead-draft provenance', () => {
           commitRefs: [{ repo: 'acme/api', sha: 'a'.repeat(40) }],
           repos: ['acme/api'],
           workspaceDir,
+          // Credential context so a re-cloned shallow checkout can deepen.
+          projectId: 'p1',
+          executionId: 'e1',
+          gitProvider: undefined,
+          repoProviders: null,
         });
         expect.soft(inspectedFiles).toEqual(['src/lead.ts']);
         const expectedProvenance =

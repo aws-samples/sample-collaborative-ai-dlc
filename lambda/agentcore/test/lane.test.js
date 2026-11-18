@@ -219,10 +219,28 @@ describe('merge-lane', () => {
     expect(res.results[0].merged).toBe(true);
     // Deterministic merge message carries unit + execution.
     const msg = await git(['log', '-1', '--format=%s', 'aidlc/i1'], ws);
-    expect(msg.stdout.trim()).toBe('aidlc(merge): auth — e1');
+    expect(msg.stdout.trim()).toBe('chore(aidlc): merge auth lane');
     expect(store.events).toEqual([
       expect.objectContaining({ type: 'v2.git.merged', unitSlug: 'auth' }),
     ]);
+  });
+
+  it('appends the Jira key and the attribution trailers to the merge commit', async () => {
+    const remote = await initRemote();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const ws = await intentWorkspace(remote);
+    const store = {
+      ...spyStore(),
+      getExecution: async () => ({
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      }),
+    };
+    const res = await mergeLane(basePayload(ws), deps(remote, store));
+    expect(res.ok).toBe(true);
+    const msg = await git(['log', '-1', '--format=%B', 'aidlc/i1'], ws);
+    expect(msg.stdout.trim()).toBe(
+      'chore(aidlc): merge auth lane [ABC-12]\n\nAIDLC-Unit: auth\nAIDLC-Execution: e1',
+    );
   });
 
   it('a payload gitAuthor makes the merge commit authored by the user, committed by the engine', async () => {

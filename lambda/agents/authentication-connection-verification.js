@@ -5,6 +5,7 @@ import { authModeDescriptor } from '../shared/agent-auth-providers.js';
 import { connectionBinding } from '../shared/agent-auth-selection-strategies.js';
 import { AGENT_AUTH_MODES } from '../shared/agent-command-registry.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import { resolveInvocationSandbox } from '../shared/sandbox-settings.js';
 import { withDisposableSession } from '../shared/runtime-session.js';
 import { runtimeSdkInput } from '../shared/runtime-target.js';
 
@@ -57,6 +58,8 @@ export const createConnectionVerifier =
       );
     } catch (error) {
       if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
+      if (error?.code === 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED')
+        return response(409, { code: error.code, error: error.message });
       const rejected = stage === 'runtime' && error?.name === 'RuntimeClientError';
       logger.error('Connection verification request failed', {
         mode,
@@ -83,7 +86,9 @@ export const createConnectionVerifier =
         const text = result.response ? await result.response.transformToString() : '';
         return text ? JSON.parse(text) : null;
       };
-      const runtimeCapabilities = await invoke({ command: 'capabilities' });
+      // One policy for the probe, the qualification and the check.
+      const agentSandbox = await resolveInvocationSandbox({ payload: { projectId } });
+      const runtimeCapabilities = await invoke({ command: 'capabilities', agentSandbox });
       // Older images cannot check this mode; say so instead of failing on an unknown command.
       const verifiable = runtimeCapabilities?.agentAuthVerification;
       if (!Array.isArray(verifiable) || !verifiable.includes(mode))
@@ -101,10 +106,15 @@ export const createConnectionVerifier =
           credentialBinding,
           runtimeCapabilities,
         },
-        { ssm },
+        {
+          ssm,
+          readSandbox: async () => agentSandbox,
+          qualifyRuntime: async () => runtimeCapabilities,
+        },
       );
       const result = await invoke({
         command: 'verify-connection',
+        agentSandbox,
         projectId,
         credentialBinding,
         agentCredentialGrant,

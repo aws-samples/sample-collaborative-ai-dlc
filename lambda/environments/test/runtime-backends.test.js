@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  BedrockAgentCoreControlClient,
+  CreateAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore-control';
 import { runtimeBackendFor } from '../runtime-backends/index.js';
 import { INSTANCES_TRANSIENT_ERRORS } from '../runtime-backends/instances.js';
 
@@ -79,6 +83,7 @@ describe('microVMs backend', () => {
       pending: false,
       capacityProviderArn: null,
       runtimeParams: {
+        platformVersion: 'V1',
         networkConfiguration: {
           networkMode: 'VPC',
           networkModeConfig: { subnets: ['subnet-rt'], securityGroups: ['sg-rt'] },
@@ -98,6 +103,38 @@ describe('microVMs backend', () => {
     expect(out).toEqual({ released: true });
     expect(runtimeClient.send).toHaveBeenCalledTimes(1);
     expect(runtimeClient.send.mock.calls[0][0].constructor.name).toBe('StopRuntimeSessionCommand');
+  });
+
+  it('serializes the V1 pin in the SDK request to AgentCore', async () => {
+    const handle = vi.fn().mockResolvedValue({
+      response: {
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from('{}'),
+      },
+    });
+    const client = new BedrockAgentCoreControlClient({
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      requestHandler: { handle },
+    });
+    const prepared = await runtimeBackendFor({}).prepareRuntime();
+
+    await client.send(
+      new CreateAgentRuntimeCommand({
+        agentRuntimeName: 'test_runtime',
+        roleArn: 'arn:aws:iam::123456789012:role/test',
+        agentRuntimeArtifact: {
+          containerConfiguration: {
+            containerUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/test:latest',
+          },
+        },
+        ...prepared.runtimeParams,
+      }),
+    );
+
+    expect(handle).toHaveBeenCalledOnce();
+    expect(JSON.parse(handle.mock.calls[0][0].body).platformVersion).toBe('V1');
   });
 });
 

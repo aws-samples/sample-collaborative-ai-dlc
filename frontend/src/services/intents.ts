@@ -46,6 +46,7 @@ export interface IntentEnvironmentSnapshot {
   runtimeArn: string | null;
   runtimeEndpoint: string | null;
   compatibilityVersion: string;
+  sandboxEnforcement?: boolean;
   verification: Record<string, unknown> | null;
 }
 
@@ -101,6 +102,7 @@ export interface Intent {
   aidlcRepoRef?: string | null;
   // Per-intent AI-DLC release pin; null/absent on unpinned (legacy) intents.
   methodologyRelease?: MethodologyReleasePin | null;
+  methodologyReleaseTest?: boolean;
   scope: string | null;
   currentPhase: string | null;
   currentStage: string | null;
@@ -167,6 +169,9 @@ export interface Intent {
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  // When an orchestrator run claimed this execution; null until claimed and
+  // after a relaunch resets it. Absent from older API responses.
+  orchestratorStartedAt?: string | null;
 }
 
 export interface IntentAttachment {
@@ -178,7 +183,23 @@ export interface IntentAttachment {
   s3VersionId: string;
   uploadedBy: string;
   uploadedAt: string;
+  source?: IntentSource & {
+    attachmentId: string;
+    attachmentUrl: string;
+    commentId: string | null;
+  };
 }
+
+export interface TrackerAttachmentCandidate {
+  id: string;
+  filename: string;
+  url: string;
+  skipReason?: string;
+}
+
+export type TrackerAttachmentImportResult =
+  | { status: 'imported'; attachment: IntentAttachment }
+  | { status: 'skipped' | 'failed'; reason: string };
 
 export interface IntentAttachmentUpload {
   attachmentId: string;
@@ -316,6 +337,9 @@ export interface IntentStage {
   waitMs?: number;
   parkedAt?: string | null;
   pendingHumanTaskId?: string | null;
+  // A lane whose answer reached the run and is waiting for its runtime to
+  // resume (judged by the server, with the rule /repair uses).
+  laneResuming?: boolean;
 }
 
 // One gate-precondition finding. `overridable` is what puts
@@ -862,14 +886,52 @@ export interface IntentDetail {
   sensorRuns: IntentSensorRun[];
   artifacts: IntentArtifact[];
   pullRequests?: IntentPullRequest[];
+  delivery?: IntentDelivery;
   /** Quorum-supported artifact edit sessions (post-hoc document editing). */
   quorumEdits?: QuorumEdit[];
   /** Composer sessions (scope/grid proposals + authoritative validation). */
   composes?: ComposeSession[];
   unitPlan?: IntentUnitPlan | null;
+  unitCompletion?: {
+    state: 'complete' | 'partial' | 'incomplete' | 'unknown' | 'aborted';
+    reason?: string | null;
+    total: number;
+    integrated: number;
+    skipped: number;
+    unresolved: {
+      sectionIndex: number;
+      slug: string;
+      state: UnitState | 'UNKNOWN' | 'MISSING';
+      reason?: string;
+    }[];
+    legacyPartial: boolean;
+  } | null;
   units?: IntentUnit[];
   unitPrs?: IntentUnitPr[];
   feedbackBatches?: IntentFeedbackBatch[];
+}
+
+export interface IntentDelivery {
+  status: 'unknown' | 'pending' | 'in_progress' | 'succeeded' | 'failed' | 'partial' | 'no_change';
+  message?: string | null;
+  leaseUntil?: string;
+  repositories: {
+    repoId: string;
+    provider: string;
+    branch: string;
+    baseBranch: string | null;
+    status: string;
+    reason?: string;
+    retryable?: boolean;
+    pr?: { prUrl: string; prNumber: string | number; branch: string; baseBranch: string | null };
+  }[];
+}
+export interface DeliveryPreview {
+  delivery: IntentDelivery;
+  previewToken: string;
+  historical: boolean;
+  retryable: boolean;
+  canRecord: boolean;
 }
 
 export interface IntentRepairResult {
@@ -907,6 +969,8 @@ export interface CreateIntentInput {
   // selectable releases are accepted; 400 codes: release_not_selectable,
   // release_not_found, release_selection_disabled. Omit for legacy behaviour.
   methodologyReleaseId?: string;
+  // Admin-only test of a qualified release, including hidden versions.
+  methodologyReleaseTest?: boolean;
   // Freeze the construction autonomy grant at create: 'autonomous' lets the run
   // complete the construction stage gates after the first one without stopping
   // (failures, Plan Approval and blocking findings still halt). Omit — or send
@@ -1128,7 +1192,8 @@ export const intentsService = {
     api.get<IntentAudit>(`/projects/${projectId}/intents/${intentId}/audit`),
   // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
   // scopes to one pane — the literal "intent" is the stage-less workspace/init
-  // bucket; `afterSeq` fetches only chunks emitted after a known sequence.
+  // bucket; `afterSeq` fetches only chunks emitted after a known sequence, and
+  // the response's `cursor` is the afterSeq to send next.
   outputs: (
     projectId: string,
     intentId: string,
@@ -1138,7 +1203,7 @@ export const intentsService = {
     if (params.stageInstanceId !== undefined) qs.set('stageInstanceId', params.stageInstanceId);
     if (params.afterSeq !== undefined) qs.set('afterSeq', String(params.afterSeq));
     const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
-    return api.get<{ outputs: IntentOutput[] }>(
+    return api.get<{ outputs: IntentOutput[]; cursor?: number }>(
       `/projects/${projectId}/intents/${intentId}/outputs${suffix}`,
     );
   },
@@ -1219,6 +1284,15 @@ export const intentsService = {
     api.get<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
       `/projects/${projectId}/intents/${intentId}/attachments`,
     ),
+  trackerAttachments: (projectId: string, intentId: string) =>
+    api.get<{ attachments?: TrackerAttachmentCandidate[]; reason?: string }>(
+      `/projects/${projectId}/intents/${intentId}/attachments/import`,
+    ),
+  importTrackerAttachment: (projectId: string, intentId: string, attachmentId: string) =>
+    api.post<TrackerAttachmentImportResult>(
+      `/projects/${projectId}/intents/${intentId}/attachments/import`,
+      { attachmentId },
+    ),
   attachmentUploadUrls: (
     projectId: string,
     intentId: string,
@@ -1278,6 +1352,14 @@ export const intentsService = {
       `/projects/${projectId}/intents/${intentId}/rewind`,
       input,
     ),
+  previewDelivery: (projectId: string, intentId: string) =>
+    api.post<DeliveryPreview>(`/projects/${projectId}/intents/${intentId}/delivery`, {
+      preview: true,
+    }),
+  retryDelivery: (projectId: string, intentId: string, previewToken: string) =>
+    api.post<{ delivery: IntentDelivery }>(`/projects/${projectId}/intents/${intentId}/delivery`, {
+      previewToken,
+    }),
   repair: (projectId: string, intentId: string) =>
     api.post<IntentRepairResult>(`/projects/${projectId}/intents/${intentId}/repair`, {}),
   // Re-attempt the durable callback for an already-recorded gate answer

@@ -326,6 +326,21 @@ describe('evalRequiredSections — a timestamp run record', () => {
   });
 });
 
+describe('evalRequiredSections — an HTML artifact', () => {
+  const page = (body) => `<!doctype html><html><body>${body}</body></html>`;
+
+  it('counts distinct <h2> elements as sections and keeps the two-section floor', () => {
+    const pass = evalRequiredSections(
+      page('<h2>Login</h2><h2>Home</h2><h2>Home</h2>'),
+      'wireframes',
+    );
+    expect(pass).toMatchObject({ pass: true, detail: { headings: ['## Login', '## Home'] } });
+
+    const short = evalRequiredSections(page('<h2>Login</h2>\n## Not a heading\n'), 'wireframes');
+    expect(short).toMatchObject({ pass: false, detail: { h2_count: 1, findings_count: 1 } });
+  });
+});
+
 describe('evalRequiredSections', () => {
   it('passes at >= 2 distinct H2 headings', () => {
     const r = evalRequiredSections('## One\n\ntext\n\n## Two\n');

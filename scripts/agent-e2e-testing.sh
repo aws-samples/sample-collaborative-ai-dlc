@@ -5,6 +5,7 @@
 #
 # Usage:
 #   BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
+#   ./scripts/agent-e2e-testing.sh --sandbox  # image tests, no credentials needed
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -110,6 +111,7 @@ preflight() {
   command -v node >/dev/null 2>&1 || fail "node is required"
   docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
   docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required"
+  [ "${1:-}" = "--sandbox" ] && return 0
   [[ "$BEDROCK_MODEL" =~ ^[^[:space:]/]+$ ]] ||
     fail "BEDROCK_MODEL must be a bare Bedrock model/profile id"
   [ -n "$KIRO_MODEL" ] || fail "KIRO_MODEL must not be empty"
@@ -221,8 +223,8 @@ start_services() {
     --network-alias gremlin \
     tinkerpop/gremlin-server:3.7.3 >/dev/null
 
-  local ready=0 attempt
-  for attempt in $(seq 1 60); do
+  local ready=0 _attempt
+  for _attempt in $(seq 1 60); do
     if docker logs "$GREMLIN_CONTAINER" 2>&1 | grep -q 'Channel started at port 8182'; then
       ready=1
       break
@@ -234,7 +236,7 @@ start_services() {
   local -a args=()
   while IFS= read -r arg; do args+=("$arg"); done < <(container_args)
   ready=0
-  for attempt in $(seq 1 30); do
+  for _attempt in $(seq 1 30); do
     if docker run --rm "${args[@]}" --entrypoint node "$IMAGE" \
       /opt/agentcore/test/local-e2e-harness.mjs bootstrap >/dev/null 2>&1; then
       ready=1
@@ -312,6 +314,41 @@ print_summary() {
   printf 'OpenCode: %s\n' "$OPENCODE_RESULT"
   printf 'Codex:    %s\n' "$CODEX_RESULT"
 }
+
+run_sandbox_tests() {
+  local test_case enabled policy helper name rc
+  local fixture="/opt/agentcore/test/fixtures/sandbox-integration.mjs"
+  mkdir -p "$LOG_DIR"
+  for test_case in false:starter true:starter true:restricted-unix true:restrictive; do
+    enabled="${test_case%%:*}"
+    policy="${test_case#*:}"
+    for helper in capture stream; do
+      name="aidlc-e2e-sandbox-${enabled}-${policy}-${helper}-${RUN_ID}"
+      log "Sandbox enabled=$enabled, $policy policy, $helper helper"
+      # These local Docker options allow SRT to create its Linux namespaces.
+      docker run --platform linux/arm64 --name "$name" --label "$LABEL" \
+        --security-opt seccomp=unconfined --security-opt systempaths=unconfined \
+        --volume "$ROOT/lambda/agentcore/test/fixtures/sandbox-integration.mjs:$fixture:ro" \
+        --entrypoint node "$IMAGE" "$fixture" "$enabled" "$helper" "$policy"
+      rc=$?
+      docker logs "$name" >"$LOG_DIR/sandbox-${enabled}-${policy}-${helper}.log" 2>&1 || true
+      if [ "$rc" -eq 0 ]; then
+        printf 'PASS: sandbox enabled=%s, %s policy, %s helper\n' "$enabled" "$policy" "$helper"
+        docker rm "$name" >/dev/null 2>&1 || true
+      else
+        printf 'FAIL: sandbox enabled=%s, %s policy, %s helper\n' "$enabled" "$policy" "$helper" >&2
+        OVERALL_FAIL=1
+      fi
+    done
+  done
+}
+
+if [ "${1:-}" = "--sandbox" ]; then
+  preflight --sandbox
+  build_image || fail "AgentCore image build failed"
+  run_sandbox_tests
+  exit "$OVERALL_FAIL"
+fi
 
 parse_clis
 preflight

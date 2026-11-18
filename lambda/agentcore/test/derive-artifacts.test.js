@@ -17,6 +17,13 @@ const artifact = (overrides = {}) => ({
   ...overrides,
 });
 
+// Head lookups answered from the same rows the fake writer lists.
+const withHeads = (writer) =>
+  Object.assign(writer, {
+    getCurrentHeads: async ({ id }) =>
+      currentArtifacts(await writer.getIntentGraph({})).filter((a) => a.id === id),
+  });
+
 describe('currentArtifacts', () => {
   it('filters superseded artifacts and returns a stable order', () => {
     expect(
@@ -57,7 +64,7 @@ describe('deriveArtifacts', () => {
     const broadcast = vi.fn(async () => {});
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e', stageInstanceId: 'si-1' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast },
+      { openGraph: async () => ({}), createWriter: () => withHeads(writer), store, broadcast },
     );
     expect(out).toMatchObject({
       ok: true,
@@ -66,13 +73,87 @@ describe('deriveArtifacts', () => {
       items: 1,
       enrichment: 'off',
     });
-    expect(writer.getIntentGraph).toHaveBeenCalledWith({
-      includeContent: true,
-      includeSuperseded: true,
-    });
+    // The listing carries no bodies; each target's body is read on its own.
+    expect(writer.getIntentGraph.mock.calls[0][0]).toEqual({ includeSuperseded: true });
     expect(writer.mirrorArtifactDerivations).toHaveBeenCalledTimes(1);
     expect(store.appendEvent.mock.calls[0][0].type).toBe('v2.derive.completed');
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.derived', sectionCount: 1 });
+  });
+
+  it('also derives artifacts this stage changed, whatever their type or creator', async () => {
+    const decisions = artifact({
+      id: 'decision-log',
+      artifact_type: 'decisions',
+      created_by_stage_instance_id: 'si-earlier',
+      updated_by_stage_instance_id: 'si-1',
+      content: [
+        '## Decisions',
+        '',
+        '```yaml',
+        'decisions:',
+        '  - id: dec-session-tokens',
+        '    title: Use short-lived session tokens',
+        '    status: proposed',
+        '```',
+      ].join('\n'),
+    });
+    const writer = {
+      getIntentGraph: vi.fn(async () => [
+        artifact(),
+        artifact({ id: 'reqs-art', artifact_type: 'requirements' }),
+        artifact({ id: 'other-stage', created_by_stage_instance_id: 'si-2' }),
+        artifact({
+          id: 'earlier-stories',
+          created_by_stage_instance_id: 'si-earlier',
+          updated_by_stage_instance_id: 'si-1',
+        }),
+        artifact({
+          id: 'untouched-log',
+          artifact_type: 'decisions',
+          created_by_stage_instance_id: 'si-other',
+          updated_by_stage_instance_id: 'si-2',
+        }),
+        decisions,
+      ]),
+      mirrorArtifactDerivations: vi.fn(async ({ artifact: a, extraction }) => ({
+        artifactId: a.id,
+        sections: extraction.sections.length,
+        items: extraction.items.length,
+        citations: 0,
+        superseded: 0,
+      })),
+    };
+    const store = { appendEvent: vi.fn(async () => {}) };
+    const out = await deriveArtifacts(
+      {
+        projectId: 'p',
+        intentId: 'i',
+        executionId: 'e',
+        stageInstanceId: 'si-1',
+        artifactTypes: ['stories'],
+      },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
+    );
+    expect(out.ok).toBe(true);
+    // This stage's own stories, plus what it changed of earlier stages' work.
+    // Not its undeclared requirements, and nothing other stages created or
+    // last changed.
+    expect([...out.artifacts].toSorted()).toEqual([
+      'decision-log',
+      'earlier-stories',
+      'stories-art',
+    ]);
+    const log = writer.mirrorArtifactDerivations.mock.calls.find(
+      ([call]) => call.artifact.id === 'decision-log',
+    );
+    expect(log[0].extraction.items).toEqual([
+      expect.objectContaining({ slug: 'dec-session-tokens', label: 'Decision' }),
+    ]);
   });
 
   it('returns missing identity without opening the graph', async () => {
@@ -102,7 +183,12 @@ describe('deriveArtifacts', () => {
     const store = { appendEvent: vi.fn(async () => {}) };
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
     );
     expect(out).toMatchObject({ ok: true, itemEdges: 4 });
     // Intent-wide sweep: once per derive run, not per artifact.
@@ -128,12 +214,82 @@ describe('deriveArtifacts', () => {
     const store = { appendEvent: vi.fn(async () => {}) };
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
     );
     expect(out).toMatchObject({ ok: true, itemEdges: 0 });
     expect(
       store.appendEvent.mock.calls.find((c) => c[0].type === 'v2.derive.completed'),
     ).toBeTruthy();
+  });
+});
+
+describe('deriveArtifacts — artifacts that move under the derive', () => {
+  const mirror = vi.fn(async ({ artifact: a }) => ({
+    artifactId: a.id,
+    sections: 1,
+    items: 1,
+    citations: 0,
+    superseded: 0,
+  }));
+  const run = (writer) => {
+    const store = { appendEvent: vi.fn(async () => {}) };
+    const promise = deriveArtifacts(
+      { projectId: 'p', intentId: 'i', executionId: 'e' },
+      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+    );
+    return { store, promise };
+  };
+
+  it('skips an artifact that changed, vanished or became ambiguous and derives the rest', async () => {
+    // One logical artifact each: four different creating stages.
+    const rows = [
+      artifact({ id: 'changed', created_at: '1', created_by_stage_instance_id: 'si-changed' }),
+      artifact({ id: 'gone', created_at: '2', created_by_stage_instance_id: 'si-gone' }),
+      artifact({ id: 'twice', created_at: '3', created_by_stage_instance_id: 'si-twice' }),
+      artifact({ id: 'kept', created_at: '4', created_by_stage_instance_id: 'si-kept' }),
+    ];
+    let changedReads = 0;
+    const writer = {
+      getIntentGraph: vi.fn(async () => rows),
+      // The listing still names every row; the head lookups behind the
+      // per-artifact reads see what changed since.
+      getCurrentHeads: async ({ id }) => {
+        if (id === 'gone') return [];
+        const [row] = rows.filter((r) => r.id === id);
+        if (id === 'twice') return [row, { ...row }];
+        if (id === 'changed' && ++changedReads > 1) {
+          return [{ ...row, content: `${row.content}\n\nEdited meanwhile.` }];
+        }
+        return [row];
+      },
+      mirrorArtifactDerivations: mirror,
+    };
+    const { store, promise } = run(writer);
+    const out = await promise;
+    expect(out).toMatchObject({ ok: true, artifacts: ['kept'] });
+    expect(out.errors).toEqual([
+      { artifactId: 'changed', error: 'artifact_changed' },
+      { artifactId: 'gone', error: 'not_found' },
+      { artifactId: 'twice', error: 'artifact_ambiguous' },
+    ]);
+    expect(store.appendEvent.mock.calls.map(([e]) => e.type)).toEqual(['v2.derive.partial']);
+  });
+
+  it('still fails the derive on any other graph error', async () => {
+    const writer = withHeads({
+      getIntentGraph: vi.fn(async () => [artifact()]),
+      mirrorArtifactDerivations: vi.fn(async () => {
+        throw new Error('neptune down');
+      }),
+    });
+    const { store, promise } = run(writer);
+    expect(await promise).toEqual({ ok: false, reason: 'derive_failed', detail: 'neptune down' });
+    expect(store.appendEvent.mock.calls.map(([e]) => e.type)).toEqual(['v2.derive.failed']);
   });
 });
 
@@ -198,7 +354,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store,
       oneShot,
       availableClis: ['claude'],
@@ -241,7 +397,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn();
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store: makeStore(),
       oneShot,
       availableClis: ['claude'],
@@ -257,7 +413,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn(async () => ({ ok: false, reason: 'no_cli', text: '', metrics: null }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store,
       oneShot,
       availableClis: [],
@@ -270,16 +426,30 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
 
   it('skips an unparseable answer without writing props', async () => {
     const writer = makeWriter();
-    const oneShot = vi.fn(async () => ({ ok: true, text: 'sorry, no json', metrics: null }));
+    const store = makeStore();
+    const oneShot = vi.fn(async () => ({
+      ok: true,
+      text: 'sorry, no json',
+      metrics: { credits: 0.5 },
+      creditRate: 0.04,
+      model: 'claude-opus-4.6',
+    }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
-      store: makeStore(),
+      createWriter: () => withHeads(writer),
+      store,
       oneShot,
       availableClis: ['claude'],
     });
     expect(out).toMatchObject({ ok: true, enriched: 0 });
     expect(writer.applyArtifactEnrichment).not.toHaveBeenCalled();
+    expect(store.recordMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metrics: { credits: 0.5, enrichmentCalls: 1 },
+        resolvedModel: 'claude-opus-4.6',
+        creditRate: 0.04,
+      }),
+    );
   });
 
   it('never calls the one-shot when the mode is off', async () => {
@@ -287,7 +457,12 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn();
     const out = await deriveArtifacts(
       { ...basePayload, enrichment: 'off' },
-      { openGraph: async () => ({}), createWriter: () => writer, store: makeStore(), oneShot },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store: makeStore(),
+        oneShot,
+      },
     );
     expect(out).toMatchObject({ ok: true, enrichment: 'off' });
     expect(oneShot).not.toHaveBeenCalled();

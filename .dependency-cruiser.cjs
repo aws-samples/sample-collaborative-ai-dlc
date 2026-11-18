@@ -17,8 +17,9 @@
 // where they are devDependencies for the workspace build. They are intentional
 // runtime imports; all other npm-dev/npm-no-pkg imports from production code
 // are forbidden below.
+// SRT is declared by both consumers of shared/sandbox-config (agents and agentcore).
 const sharedRuntimeDependencyPath =
-  '^node_modules/(?:@aws-lambda-powertools/|@aws-sdk/|@smithy/|gremlin(?:/|$)|gremlin-aws-sigv4(?:/|$)|js-yaml(?:/|$)|neptune-lambda-client(?:/|$)|tar-stream(?:/|$))';
+  '^node_modules/(?:@anthropic-ai/sandbox-runtime(?:/|$)|@aws-lambda-powertools/|@aws-sdk/|@smithy/|gremlin(?:/|$)|gremlin-aws-sigv4(?:/|$)|js-yaml(?:/|$)|neptune-lambda-client(?:/|$)|tar-stream(?:/|$))';
 
 module.exports = {
   forbidden: [

@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
@@ -129,6 +130,7 @@ const installDdbFake = () => {
 
 let handler;
 let close;
+let __setGatewayGrantIssuer;
 let conn;
 let g;
 
@@ -136,6 +138,7 @@ beforeAll(async () => {
   vi.stubEnv('GREMLIN_PARTITION', PARTITION);
   vi.stubEnv('AWS_PROFILE', undefined);
   ({ handler, close } = await import('../index.js'));
+  ({ __setGatewayGrantIssuer } = await import('../handlers.js'));
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
@@ -225,18 +228,8 @@ const seedProject = async ({ projectId, sprintId, members = [] }) => {
   }
   for (const { sub, role } of members) {
     await g.addV('User').property('id', sub).property('email', `${sub}@example.com`).next();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .as('p')
-      .V()
-      .has('User', 'id', sub)
-      .as('u')
-      .addE('HAS_MEMBER')
-      .property('role', role)
-      .from_('p')
-      .to('u')
-      .next();
+
+    await seedMembership(projectId, sub, role);
   }
 };
 
@@ -1344,6 +1337,12 @@ describe('intent-scoped discussions', () => {
   const seedIntent = async () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
+    processStore.set(`EXEC#${intentId}`, {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      projectId,
+      status: 'DRAFT',
+    });
     const artifactId = `art-${randomUUID()}`;
     const questionId = `ht-${randomUUID()}`;
     await seedProject({
@@ -1638,6 +1637,97 @@ describe('intent-scoped discussions', () => {
     expect(json(msgs).messages.map((m) => m.content)).toContain('hello intent');
   });
 
+  it("labels notification events with the intent's own project, not the URL's", async () => {
+    const { EventBridgeClient, PutEventsCommand } = await import('@aws-sdk/client-eventbridge');
+    const ebMock = mockClient(EventBridgeClient);
+    ebMock.on(PutEventsCommand).resolves({ FailedEntryCount: 0 });
+    vi.stubEnv('NOTIFICATION_EVENT_BUS', 'bus-test');
+    try {
+      const { projectId, intentId } = await seedIntent();
+      // A different project id in the path: authorisation follows the intent.
+      const path = { projectId: randomUUID(), intentId };
+      const created = json(
+        await call('POST', intentPath('/discussions'), {
+          pathParameters: path,
+          body: { entityType: 'intent' },
+        }),
+      );
+      const posted = await call('POST', intentPath('/discussions/{discussionId}/messages'), {
+        pathParameters: { ...path, discussionId: created.id },
+        body: { id: 'dm-attrib-aaaaaaaa', content: 'hello' },
+      });
+      expect(posted.statusCode).toBe(201);
+      const resolved = await call('PUT', intentPath('/discussions/{discussionId}'), {
+        pathParameters: { ...path, discussionId: created.id },
+        body: { status: 'resolved', resolutionSummary: 'done' },
+      });
+      expect(resolved.statusCode).toBe(200);
+
+      const events = ebMock
+        .commandCalls(PutEventsCommand)
+        .map((c) => c.args[0].input.Entries[0])
+        .map((e) => ({ type: e.DetailType, projectId: JSON.parse(e.Detail).projectId }));
+      expect(events).toEqual([
+        { type: 'discussion.message', projectId },
+        { type: 'discussion.resolved', projectId },
+      ]);
+    } finally {
+      ebMock.restore();
+    }
+  });
+
+  it('gives notification events ids unique across threads and resolves', async () => {
+    const { EventBridgeClient, PutEventsCommand } = await import('@aws-sdk/client-eventbridge');
+    const ebMock = mockClient(EventBridgeClient);
+    ebMock.on(PutEventsCommand).resolves({ FailedEntryCount: 0 });
+    vi.stubEnv('NOTIFICATION_EVENT_BUS', 'bus-test');
+    try {
+      const { projectId, intentId } = await seedIntent();
+      const path = { projectId, intentId };
+      const thread = async (entityId) =>
+        json(
+          await call('POST', intentPath('/discussions'), {
+            pathParameters: path,
+            body: { entityType: 'review', entityId, entityTitle: entityId },
+          }),
+        ).id;
+      const [a, b] = [await thread('ht-review-1'), await thread('ht-review-2')];
+      expect(a).not.toBe(b);
+      // The same client message id in two threads.
+      for (const discussionId of [a, b]) {
+        const posted = await call('POST', intentPath('/discussions/{discussionId}/messages'), {
+          pathParameters: { ...path, discussionId },
+          body: { id: 'dm-shared-aaaaaaaa', content: 'hello' },
+        });
+        expect(posted.statusCode).toBe(201);
+      }
+      const setStatus = (status) =>
+        call('PUT', intentPath('/discussions/{discussionId}'), {
+          pathParameters: { ...path, discussionId: a },
+          body: { status, resolutionSummary: 'done' },
+        });
+      // A repeated resolve is not a new occurrence; reopen + resolve is.
+      for (const status of ['resolved', 'resolved', 'open', 'resolved']) {
+        vi.advanceTimersByTime(1000);
+        expect((await setStatus(status)).statusCode).toBe(200);
+      }
+
+      const events = ebMock
+        .commandCalls(PutEventsCommand)
+        .map((c) => c.args[0].input.Entries[0])
+        .map((e) => ({ type: e.DetailType, eventId: JSON.parse(e.Detail).eventId }));
+      expect(events.filter((e) => e.type === 'discussion.message')).toEqual([
+        { type: 'discussion.message', eventId: `${a}:dm-shared-aaaaaaaa` },
+        { type: 'discussion.message', eventId: `${b}:dm-shared-aaaaaaaa` },
+      ]);
+      const resolves = events.filter((e) => e.type === 'discussion.resolved');
+      expect(resolves).toHaveLength(2);
+      expect(new Set(resolves.map((e) => e.eventId)).size).toBe(2);
+    } finally {
+      ebMock.restore();
+    }
+  });
+
   it('starts Quorum assist on an intent thread and invokes AgentCore with the discussion session', async () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
@@ -1659,6 +1749,7 @@ describe('intent-scoped discussions', () => {
     processStore.set(`EXEC#${intentId}`, {
       pk: `EXEC#${intentId}`,
       sk: 'META',
+      projectId,
       environment: {
         runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
         runtimeEndpoint: 'revision_r_1',
@@ -1726,6 +1817,8 @@ describe('intent-scoped discussions', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
+    expect(payload.agentSandbox).toMatchObject({ enabled: false });
+    expect(payload).not.toHaveProperty('gatewayGrant');
     expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
@@ -1735,6 +1828,41 @@ describe('intent-scoped discussions', () => {
     expect(again.statusCode).toBe(202);
     expect(json(again).message.id).toBe(body.message.id);
     expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('attaches a short-lived discussion gateway grant only when the Gateway is enabled', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: { kiro: { provider: 'kiro', source: 'user', userId: MEMBER_SUB } },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const issuer = vi.fn(async () => 'gateway-grant-token');
+    __setGatewayGrantIssuer(issuer);
+    try {
+      const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+        pathParameters: { projectId, intentId, discussionId: created.id },
+        body: { requestId: 'assist-request-gateway', command: 'summarize', agentCli: 'kiro' },
+      });
+      expect(res.statusCode).toBe(202);
+    } finally {
+      __setGatewayGrantIssuer(null);
+    }
+    expect(issuer).toHaveBeenCalledWith(
+      { mode: 'discussion', projectId, intentId, executionId: intentId },
+      { ttlSeconds: 300 },
+    );
+    const calls = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand);
+    const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.payload).toString('utf8'));
+    expect(payload.gatewayGrant).toBe('gateway-grant-token');
   });
 
   it('authorizes a started intent assist with the pinned binding, not the caller binding', async () => {

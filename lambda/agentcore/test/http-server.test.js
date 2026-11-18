@@ -1,7 +1,22 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import { EventEmitter } from 'node:events';
+import {
+  createBusyTracker,
+  dispatchInvocation,
+  createServer,
+  processStoreFor,
+  graphAccessFor,
+  createSandboxPreparation,
+  sandboxSettingsReaderFor,
+} from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
+import { currentSandbox, DEFAULT_SANDBOX_CONFIG } from '../sandbox/launcher.js';
+import { createRemoteProcessStore } from '../engine-data-client.js';
+import { currentGatewayGrant } from '../mcp/gateway-context.js';
+import { engineDataOp } from '../../shared/engine-data-ops.js';
+import { capabilities } from '../commands/capabilities.js';
+import { captureChild } from '../cli/spawn.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -18,6 +33,45 @@ describe('createBusyTracker', () => {
 });
 
 describe('dispatchInvocation', () => {
+  it('passes trusted sandbox settings to detached agent work without leaking into engine calls', async () => {
+    let background;
+    const sandbox = { ...DEFAULT_SANDBOX_CONFIG, enabled: true, version: 3 };
+    const prepareSandbox = vi.fn().mockResolvedValue(sandbox);
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage-start', sandbox: { enabled: false } },
+      handlers: {
+        runStageStart: async (payload) => {
+          expect(payload.sandbox).toBeUndefined();
+          background = new Promise((resolve) => setImmediate(() => resolve(currentSandbox())));
+          return { ok: true };
+        },
+      },
+      prepareSandbox,
+    });
+    expect(result.body.ok).toBe(true);
+    expect(await background).toMatchObject({ enabled: true, version: 3 });
+    expect(currentSandbox().enabled).toBe(false);
+    prepareSandbox.mockClear();
+    await dispatchInvocation({
+      payload: { command: 'init-ws' },
+      handlers: { initWs: async () => ({ enabled: currentSandbox().enabled }) },
+      prepareSandbox,
+    });
+    expect(prepareSandbox).not.toHaveBeenCalled();
+  });
+
+  it('refuses the invocation when sandbox settings cannot be loaded', async () => {
+    const runStage = vi.fn();
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage' },
+      handlers: { runStage },
+      prepareSandbox: async () => {
+        throw new Error('Settings unavailable');
+      },
+    });
+    expect(result.statusCode).toBe(500);
+    expect(runStage).not.toHaveBeenCalled();
+  });
   const handlers = {
     initWs: async (p) => ({ ok: true, intentId: p.intentId }),
     runStage: async (p) => ({ ok: true, stageId: p.stageId, state: 'SUCCEEDED' }),
@@ -35,10 +89,15 @@ describe('dispatchInvocation', () => {
   });
 
   it('keeps routing and authentication metadata in one command registry', () => {
-    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['init-ws']).toEqual({
+      handler: 'initWs',
+      agentAuth: false,
+      grantScope: 'execution',
+    });
     expect(COMMANDS['run-stage']).toEqual({
       handler: 'runStage',
       agentAuth: AGENT_AUTH_MODES.EXECUTION,
+      grantScope: 'stage',
     });
     expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
     expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
@@ -120,6 +179,65 @@ describe('dispatchInvocation', () => {
       { command: 'run-stage', stageId: 's1' },
       { availableClis: ['kiro'] },
     );
+  });
+
+  it('keeps the gateway grant out of command payloads but available to the invocation', async () => {
+    let seen = null;
+    const runStage = vi.fn(async (payload) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      seen = currentGatewayGrant();
+      return { ok: true, payloadKeys: Object.keys(payload) };
+    });
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage', stageId: 's1', gatewayGrant: 'gw-grant' },
+      handlers: { runStage },
+      prepareInvocation: vi.fn(async () => ({})),
+    });
+    expect(result.body.payloadKeys).not.toContain('gatewayGrant');
+    expect(seen).toBe('gw-grant');
+    expect(currentGatewayGrant()).toBeNull();
+  });
+
+  it('relays an execution grant to engine-only commands and their background work', async () => {
+    const prepareInvocation = vi.fn();
+    let background;
+    const handlerFor = (name) =>
+      vi.fn(async (payload) => {
+        // A detached job started inside the invocation keeps the grant.
+        background = new Promise((resolve) => setTimeout(() => resolve(currentGatewayGrant()), 1));
+        return { ok: true, name, seen: currentGatewayGrant(), payloadKeys: Object.keys(payload) };
+      });
+    for (const [command, handler] of [
+      ['init-ws', 'initWs'],
+      ['init-ws-start', 'initWsStart'],
+      ['record-pr', 'recordPr'],
+      ['quorum-edit-apply-start', 'quorumEditApplyStart'],
+    ]) {
+      const result = await dispatchInvocation({
+        payload: { command, intentId: 'i1', gatewayGrant: `grant-${command}` },
+        handlers: { [handler]: handlerFor(handler) },
+        prepareInvocation: command === 'init-ws' ? prepareInvocation : vi.fn(async () => ({})),
+      });
+      expect(result.body).toMatchObject({ ok: true, seen: `grant-${command}` });
+      expect(result.body.payloadKeys).not.toContain('gatewayGrant');
+      await expect(background).resolves.toBe(`grant-${command}`);
+      expect(currentGatewayGrant()).toBeNull();
+    }
+    expect(prepareInvocation).not.toHaveBeenCalled();
+  });
+
+  it('prepares credentials under the invocation grant', async () => {
+    let seenByPrepare = null;
+    await dispatchInvocation({
+      payload: { command: 'run-stage', executionId: 'e1', gatewayGrant: 'gw-grant' },
+      handlers: { runStage: vi.fn(async () => ({ ok: true })) },
+      prepareInvocation: vi.fn(async () => {
+        seenByPrepare = currentGatewayGrant();
+        return {};
+      }),
+    });
+    expect(seenByPrepare).toBe('gw-grant');
+    expect(currentGatewayGrant()).toBeNull();
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {
@@ -401,5 +519,374 @@ describe('createServer (http)', () => {
     const res = await fetch(`http://127.0.0.1:${port}/nope`);
     expect(res.status).toBe(404);
     server.close();
+  });
+});
+
+describe('processStoreFor', () => {
+  const local = { kind: 'local' };
+  const deps = {
+    ddb: 'ddb',
+    createLocal: vi.fn(() => local),
+    createRemote: vi.fn(() => ({ kind: 'remote' })),
+    misconfigured: vi.fn(() => ({ kind: 'misconfigured' })),
+  };
+
+  it('keeps the local store when engine-data is off', () => {
+    expect(processStoreFor({ ...deps, env: { V2_PROCESS_TABLE: 't' } })).toBe(local);
+    expect(deps.createLocal).toHaveBeenCalledWith({ ddb: 'ddb', tableName: 't' });
+  });
+
+  it('routes the store to engine-data under the current grant', async () => {
+    const store = processStoreFor({
+      ...deps,
+      env: { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' },
+    });
+    expect(store).toEqual({ kind: 'remote' });
+    expect(deps.createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+  });
+
+  it('fails closed when engine-data is on but the MCP still runs locally', () => {
+    expect(processStoreFor({ ...deps, env: { ENGINE_DATA_FUNCTION: 'fn' } })).toEqual({
+      kind: 'misconfigured',
+    });
+  });
+});
+
+describe('graphAccessFor', () => {
+  const openGraph = vi.fn(async () => ({}));
+  const REMOTE_ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+
+  it('keeps the direct graph and runs the engine operations locally when engine-data is off', () => {
+    const local = vi.fn();
+    const access = graphAccessFor({ env: {}, openGraph, createLocal: () => local });
+    expect(access).toEqual({ engineData: false, openGraph, openEngineGraph: local });
+  });
+
+  it('routes engine graph operations to engine-data and trips any direct graph open', async () => {
+    const remote = vi.fn();
+    const createRemote = vi.fn(() => remote);
+    const access = graphAccessFor({ env: REMOTE_ENV, openGraph, createRemote });
+    expect(access.engineData).toBe(true);
+    expect(access.openEngineGraph).toBe(remote);
+    expect(createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without the MCP Gateway instead of falling back to the direct graph', async () => {
+    const access = graphAccessFor({ env: { ENGINE_DATA_FUNCTION: 'fn' }, openGraph });
+    await expect(access.openEngineGraph({ intentId: 'i1' })).rejects.toMatchObject({
+      code: 'ENGINE_DATA_MISCONFIGURED',
+    });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
+  });
+});
+
+// The production wiring: the real SRT policy resolver over the engine-data
+// process store, with only the Lambda transport replaced. Like engine-data, the
+// fake endpoint refuses any call that does not carry the invocation's grant.
+describe('dispatchInvocation with engine-data', () => {
+  const GRANT = 'gw-grant';
+  const ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+  const executions = {
+    off: { executionId: 'off', projectId: 'p1', status: 'RUNNING', agentSandbox: null },
+    on: {
+      executionId: 'on',
+      projectId: 'p1',
+      status: 'RUNNING',
+      agentSandbox: { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 4 },
+    },
+  };
+
+  const engineDataWiring = () => {
+    const calls = [];
+    const invoke = vi.fn(async ({ op, args, grant }) => {
+      calls.push({ op, grant });
+      if (grant !== GRANT) {
+        return { error: { name: 'EngineDataError', code: 'ENGINE_DATA_GRANT_INVALID' } };
+      }
+      if (op === engineDataOp('getExecution')) return { ok: true, result: executions[args[0]] };
+      return { error: { name: 'EngineDataError', message: `unexpected ${op}` } };
+    });
+    const store = processStoreFor({
+      env: ENV,
+      createRemote: (options) => createRemoteProcessStore({ ...options, invoke }),
+    });
+    const readSettings = vi.fn(async () => {
+      throw new Error('a RUNNING execution keeps its captured policy');
+    });
+    const release = vi.fn(async () => {});
+    const prepareInvocation = vi.fn(async (payload) => {
+      await store.getExecution(payload.executionId, { consistentRead: true });
+      return { credentialSession: { run: (fn) => fn(), release } };
+    });
+    return {
+      calls,
+      release,
+      dispatch: (payload, runStageStart) =>
+        dispatchInvocation({
+          payload: { command: 'run-stage-start', projectId: 'p1', ...payload },
+          handlers: { runStageStart },
+          prepareInvocation,
+          prepareSandbox: createSandboxPreparation({ store, readSettings }),
+        }),
+    };
+  };
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ])('starts a stage with SRT %s', async (executionId, enabled) => {
+    const { calls, release, dispatch } = engineDataWiring();
+    const seen = {};
+    const result = await dispatch({ executionId, gatewayGrant: GRANT }, async () => {
+      seen.grant = currentGatewayGrant();
+      seen.sandbox = currentSandbox();
+      return { ok: true, state: 'ACCEPTED' };
+    });
+    expect(result).toMatchObject({ statusCode: 200, body: { ok: true, state: 'ACCEPTED' } });
+    expect(seen.grant).toBe(GRANT);
+    expect(seen.sandbox.enabled).toBe(enabled);
+    expect(calls).toEqual([
+      { op: engineDataOp('getExecution'), grant: GRANT },
+      { op: engineDataOp('getExecution'), grant: GRANT },
+    ]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(currentGatewayGrant()).toBeNull();
+  });
+
+  it('refuses an invocation without a grant before reaching engine-data', async () => {
+    const { calls, dispatch } = engineDataWiring();
+    const runStageStart = vi.fn();
+    const result = await dispatch({ executionId: 'off' }, runStageStart);
+    expect(result.statusCode).toBe(500);
+    expect(result.body.error).toBe('No engine data grant for this invocation');
+    expect(calls).toEqual([]);
+    expect(runStageStart).not.toHaveBeenCalled();
+  });
+
+  it('releases the credentials and drops the grant when the handler throws', async () => {
+    const { release, dispatch } = engineDataWiring();
+    const result = await dispatch({ executionId: 'on', gatewayGrant: GRANT }, async () => {
+      throw new Error('boom');
+    });
+    expect(result).toMatchObject({ statusCode: 500, body: { error: 'boom' } });
+    expect(release).toHaveBeenCalledOnce();
+    expect(currentGatewayGrant()).toBeNull();
+  });
+});
+
+// enforce_runtime_grants strips the runtime role of its process-table access.
+// Commands with no captured policy (no execution, or a DRAFT) then run on the
+// policy their dispatcher resolved; nothing reads the settings with the role.
+describe('dispatchInvocation on a runtime role without data access', () => {
+  const GRANT = 'gw-grant';
+  // Terraform keeps V2_PROCESS_TABLE on every runtime; only the marker says the
+  // role cannot read it.
+  const ENV = {
+    ENGINE_DATA_FUNCTION: 'fn',
+    AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp',
+    V2_PROCESS_TABLE: 't',
+    RUNTIME_DATA_ACCESS: 'engine_data_only',
+  };
+  const enabledPolicy = { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 7 };
+  const disabledPolicy = {
+    enabled: false,
+    version: null,
+    settings: DEFAULT_SANDBOX_CONFIG.settings,
+  };
+  const executions = {
+    draft: { executionId: 'draft', projectId: 'p1', status: 'DRAFT', agentSandbox: null },
+    pinned: {
+      executionId: 'pinned',
+      projectId: 'p1',
+      status: 'RUNNING',
+      agentSandbox: enabledPolicy,
+    },
+  };
+
+  const wiring = () => {
+    const denied = Object.assign(new Error('not authorized to perform: dynamodb:GetItem'), {
+      name: 'AccessDeniedException',
+    });
+    const ddb = { send: vi.fn(async () => Promise.reject(denied)) };
+    const invoke = vi.fn(async ({ op, args, grant }) => {
+      if (grant !== GRANT) {
+        return { error: { name: 'EngineDataError', code: 'ENGINE_DATA_GRANT_INVALID' } };
+      }
+      if (op === engineDataOp('getExecution')) return { ok: true, result: executions[args[0]] };
+      return { error: { name: 'EngineDataError', message: `unexpected ${op}` } };
+    });
+    const store = processStoreFor({
+      env: ENV,
+      ddb,
+      createRemote: (options) => createRemoteProcessStore({ ...options, invoke }),
+    });
+    const prepareSandbox = createSandboxPreparation({
+      store,
+      readSettings: sandboxSettingsReaderFor({ env: ENV, ddb }),
+    });
+    const handler = vi.fn(async () => ({ ok: true, sandbox: currentSandbox() }));
+    const dispatch = (payload) =>
+      dispatchInvocation({
+        payload,
+        handlers: new Proxy({}, { get: () => handler }),
+        prepareSandbox,
+      });
+    return { ddb, invoke, handler, dispatch };
+  };
+
+  // Every grant-free command, so a new one cannot quietly reach for the role.
+  const grantFree = Object.entries(COMMANDS)
+    .filter(([, definition]) => definition.grantScope === 'none')
+    .map(([name, definition]) => [name, Boolean(definition.agentAuth) || name === 'verify-mcp']);
+  it('covers the grant-free commands', () => {
+    expect(grantFree.map(([name]) => name).toSorted()).toEqual(
+      ['capabilities', 'managed-runtime-check', 'verify-connection', 'verify-mcp'].toSorted(),
+    );
+  });
+
+  it.each(grantFree)('runs %s without touching the process table', async (command, sandboxed) => {
+    for (const policy of [enabledPolicy, disabledPolicy]) {
+      for (const fields of [{}, { projectId: 'p1', credentialBindings: {} }]) {
+        const { ddb, invoke, dispatch } = wiring();
+        const result = await dispatch({ command, ...fields, agentSandbox: policy });
+        expect(result.statusCode).toBe(200);
+        expect(result.body.sandbox).toMatchObject(
+          sandboxed ? { enabled: policy.enabled, version: policy.version } : { enabled: false },
+        );
+        expect(ddb.send).not.toHaveBeenCalled();
+        expect(invoke).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it.each(['compose-plan-start', 'discussion-assist-start'])(
+    'runs %s for a DRAFT on the dispatched policy after reading META through engine-data',
+    async (command) => {
+      const { ddb, invoke, dispatch } = wiring();
+      const result = await dispatch({
+        command,
+        projectId: 'p1',
+        executionId: 'draft',
+        gatewayGrant: GRANT,
+        agentSandbox: enabledPolicy,
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.body.sandbox).toMatchObject({ enabled: true, version: 7 });
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(ddb.send).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a started execution on its captured policy whatever the payload says', async () => {
+    const { ddb, dispatch } = wiring();
+    const result = await dispatch({
+      command: 'run-stage-start',
+      projectId: 'p1',
+      executionId: 'pinned',
+      gatewayGrant: GRANT,
+      agentSandbox: disabledPolicy,
+    });
+    expect(result.body.sandbox).toMatchObject({ enabled: true, version: 7 });
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['without a dispatched policy', undefined],
+    ['with a malformed policy', { enabled: 'no' }],
+    ['with an enabled policy without settings', { enabled: true }],
+  ])('refuses capabilities %s instead of reading the settings', async (_case, agentSandbox) => {
+    const { ddb, handler, dispatch } = wiring();
+    const result = await dispatch({ command: 'capabilities', agentSandbox });
+    expect(result.statusCode).toBe(500);
+    expect(handler).not.toHaveBeenCalled();
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+
+  // Before enforcement the role keeps its table access, and a deploy updates the
+  // dispatchers and the runtime together: a payload from a dispatcher that does
+  // not send `agentSandbox` yet must still run, engine-data or not.
+  it.each([
+    ['the direct path', { V2_PROCESS_TABLE: 't' }],
+    ['an engine-data runtime before enforcement', { ...ENV, RUNTIME_DATA_ACCESS: undefined }],
+  ])('still reads the settings itself on %s when no policy is dispatched', async (_c, env) => {
+    const send = vi.fn(async () => ({
+      Item: {
+        revision: 2,
+        enabled: true,
+        applied: { version: 2, settings: enabledPolicy.settings },
+      },
+    }));
+    const readSettings = sandboxSettingsReaderFor({ env, ddb: { send } });
+    const sandbox = await createSandboxPreparation({ store: {}, readSettings })({
+      command: 'capabilities',
+    });
+    expect(sandbox).toMatchObject({ enabled: true, version: 2 });
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0][0].input).toMatchObject({
+      TableName: 't',
+      Key: { pk: 'SETTINGS#SANDBOX', sk: 'CURRENT' },
+    });
+  });
+
+  // Managed-environment qualification sends the platform policy; the real
+  // capabilities command then launches kiro-cli --list-models under it.
+  it.each([
+    ['inside SRT when the platform enables the sandbox', enabledPolicy, '/usr/bin/unshare'],
+    ['directly when the platform disables it', disabledPolicy, 'kiro-cli'],
+  ])('qualification runs Kiro %s', async (_case, policy, launcher) => {
+    const { ddb, invoke } = wiring();
+    const prepareSandbox = createSandboxPreparation({
+      store: {},
+      readSettings: sandboxSettingsReaderFor({ env: ENV, ddb }),
+    });
+    const sandboxRequests = [];
+    const spawnFn = vi.fn((command) => {
+      const child = new EventEmitter();
+      child.pid = 4242;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn();
+      child.send = (request, callback) => {
+        sandboxRequests.push(request);
+        callback?.();
+      };
+      setImmediate(() => {
+        if (command === '/usr/bin/unshare') child.emit('message', { type: 'sandbox.starting' });
+        child.stdout.emit('data', JSON.stringify({ models: [{ model_id: 'auto' }] }));
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    const result = await dispatchInvocation({
+      payload: { command: 'capabilities', agentSandbox: policy },
+      handlers: {
+        [commandDefinition('capabilities').handler]: (payload) =>
+          capabilities(payload, {
+            env: {},
+            discoverInstalledClis: async () => ['kiro'],
+            captureChild: (options) => captureChild({ ...options, spawnFn }),
+          }),
+      },
+      prepareSandbox,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.kiroModels.models.map(({ id }) => id)).toEqual(['auto']);
+    expect(spawnFn).toHaveBeenCalledOnce();
+    expect(spawnFn.mock.calls[0][0]).toBe(launcher);
+    if (policy.enabled) {
+      expect(sandboxRequests).toHaveLength(1);
+      expect(sandboxRequests[0]).toMatchObject({
+        command: 'kiro-cli',
+        settings: { network: policy.settings.network },
+      });
+    } else {
+      expect(sandboxRequests).toEqual([]);
+    }
+    expect(ddb.send).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

@@ -4,11 +4,13 @@ import {
   ListObjectVersionsCommand,
 } from '@aws-sdk/client-s3';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { MAX_ATTACHMENT_BYTES, attachmentCommittedKey } from '../shared/intent-attachment-keys.js';
+
+export { MAX_ATTACHMENT_BYTES, attachmentCommittedKey };
 
 const logger = new Logger({ persistentKeys: { component: 'intent-attachments' } });
 
 export const MAX_ATTACHMENTS = 50;
-export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
 export const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB across all files
 export const ATTACHMENT_UPLOAD_TTL_SECONDS = 300;
 
@@ -30,10 +32,6 @@ const attachmentTypes = new Map([
 // Builds the short-lived upload object's intent-scoped staging key.
 export const attachmentStagingKey = (intentId, attachmentId, extension) =>
   `intent-attachments/staging/${intentId}/${attachmentId}${extension}`;
-
-// Builds the immutable committed object's intent-scoped key.
-export const attachmentCommittedKey = (intentId, attachmentId, extension) =>
-  `intent-attachments/committed/${intentId}/${attachmentId}${extension}`;
 
 const containsControlCharacter = (value) =>
   [...value].some((character) => {
@@ -78,6 +76,39 @@ export const activePendingAttachments = (meta, now = Date.now()) =>
   (Array.isArray(meta.pendingAttachmentUploads) ? meta.pendingAttachmentUploads : []).filter(
     (attachment) => Date.parse(attachment.expiresAt ?? '') > now,
   );
+
+export const attachmentCapacityError = (meta, incoming) => {
+  const existing = [...(meta.attachments || []), ...activePendingAttachments(meta)];
+  if (existing.length + incoming.length > MAX_ATTACHMENTS) {
+    return `Maximum ${MAX_ATTACHMENTS} attachments per intent`;
+  }
+  if (
+    [...existing, ...incoming].reduce((sum, file) => sum + Number(file.size || 0), 0) >
+    MAX_ATTACHMENT_TOTAL_BYTES
+  ) {
+    return 'Attachments cannot exceed 25 MB in total';
+  }
+  return null;
+};
+
+export const normalizeImportedAttachment = (raw) => {
+  let filename = raw.filename || '';
+  const extension = filename.includes('.') ? `.${filename.split('.').pop().toLowerCase()}` : '';
+  let mimeType = raw.mimeType;
+  if (
+    attachmentTypes.has(extension) &&
+    ['application/octet-stream', 'binary/octet-stream', 'application/zip'].includes(mimeType)
+  ) {
+    mimeType = attachmentTypes.get(extension);
+  }
+  if (!extension) {
+    const inferred = [...attachmentTypes].find(([, type]) => type === mimeType)?.[0];
+    // An HTML login/error page must not become an attachment when a provider
+    // protects an extensionless image URL with a browser session.
+    if (inferred && inferred !== '.html') filename += inferred;
+  }
+  return validateAttachmentDescriptor({ filename, mimeType, size: raw.size });
+};
 
 // Returns durable cleanup tombstones that need an object purge retry.
 export const pendingAttachmentDeletions = (meta) =>

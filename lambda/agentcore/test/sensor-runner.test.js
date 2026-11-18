@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createSensorRunner, __test } from '../sensor-runner.js';
+import { DEFAULT_SANDBOX_CONFIG, withSandbox } from '../sandbox/launcher.js';
 import { sensorGateFindings } from '../../shared/gate-preconditions.js';
 import {
   knownChangedFileProvenance,
@@ -638,6 +639,57 @@ describe('runStageSensors — script kind', () => {
       }, 0);
       return child;
     };
+
+  it.each([false, true])(
+    'runs script sensors through SRT and never passes a setup failure (%s)',
+    async (setupFails) => {
+      await writeFile(path.join(ws, 'file.ts'), 'export const value = 1;');
+      let request;
+      const spawnFn = vi.fn((command, args) => {
+        expect(command).toBe('/usr/bin/unshare');
+        expect(args.at(-1)).toContain('sandbox/worker.js');
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        child.send = (message, callback) => {
+          request = message;
+          callback();
+          setImmediate(() => {
+            child.emit('message', { type: setupFails ? 'sandbox.error' : 'sandbox.starting' });
+            child.stdout.emit('data', Buffer.from('{"pass":true}'));
+            child.emit('close', setupFails ? 1 : 0);
+          });
+        };
+        return child;
+      });
+      const runner = createSensorRunner({
+        graph: null,
+        workspaceDir: ws,
+        loadBlockScript: async () => 'console.log("{}")',
+        spawnFn,
+      });
+      const verdicts = await withSandbox({ ...DEFAULT_SANDBOX_CONFIG, enabled: true }, () =>
+        runner.runStageSensors({
+          sensors: [
+            {
+              sensorId: 'linter',
+              severity: 'blocking',
+              runtime: 'bun',
+              command: 'bun x.ts',
+              matches: '**/*.ts',
+              timeoutSeconds: 5,
+              dispatcherExitCodes: true,
+            },
+          ],
+          stageId: 'code-generation',
+        }),
+      );
+      expect(spawnFn).toHaveBeenCalledOnce();
+      expect(request.settings.network.strictAllowlist).toBe(false);
+      expect(verdicts[0].result).toBe(setupFails ? 'INCONCLUSIVE' : 'PASS');
+    },
+  );
 
   it('INCONCLUSIVE when no workspace file matches the glob', async () => {
     await writeFile(path.join(ws, 'README.md'), '# hi');

@@ -54,6 +54,9 @@ export interface AgentModel {
   id: string;
   name: string;
   description?: string | null;
+  /** `false` when the AWS Price List table has no price for the model: it stays
+   *  selectable and its usage shows the cost as unavailable. Absent otherwise. */
+  priced?: boolean;
 }
 
 /** Per-CLI availability as reported by the v2 AgentCore runtime (not the ECS
@@ -173,6 +176,13 @@ export interface SpaceAgentCredentialStatus extends AgentCredentialStatus {
   platformFallback: AgentCredentialStatus;
 }
 
+/** Where a CLI's model list comes from: read now (`catalog`), the last list
+ *  read after a failed lookup (`cached`, possibly empty), a failed lookup with
+ *  nothing read before (`error`), or no such source (`unavailable`). */
+export type ModelListSource = 'catalog' | 'cached' | 'error' | 'unavailable';
+export type CodexCatalogSource = ModelListSource;
+export type ModelListSources = Partial<Record<AgentCli, ModelListSource>>;
+
 export interface AgentCapabilities {
   available: AgentCli[];
   runtimeModelOverride?: Record<AgentCli, boolean>;
@@ -183,10 +193,22 @@ export interface AgentCapabilities {
   disabledClis?: AgentCli[];
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
-  models?: Partial<Record<AgentCli, AgentModel[]>>;
+  models?: Partial<Record<AgentCli, AgentModel[]>> & {
+    /** How the Codex catalogue resolved: read from the region's Mantle endpoint
+     *  now (`catalog`), the last list read after a failed lookup (`cached`), a
+     *  failed lookup with nothing cached (`error`), or a runtime that reported
+     *  no catalogue (`unavailable`). There is no built-in list. */
+    codexSource?: CodexCatalogSource;
+    /** The same per CLI. Absent from older backends. */
+    sources?: ModelListSources;
+  };
 }
 
 export interface AgentSettings {
+  /** Effective inference region. Absent from older backends. */
+  bedrockRegion?: string;
+  /** Platform admins only. Draft and applied SRT settings are independent. */
+  sandbox?: SandboxSettings;
   authentication?: AgentAuthenticationView;
   /** True when a bearer token is stored in SSM (value is never returned to the browser) */
   bedrockBearerTokenSet: boolean;
@@ -233,7 +255,28 @@ export interface AgentSettings {
    *  server the project overrides by name does not survive) and run the same
    *  cross-tier collision check the backend does. */
   globalMcpServerSecretRefs?: Record<string, string[]>;
+  /** Present only when the deployment serves custom MCP servers exclusively
+   *  through the AgentCore Gateway (runtime_mcp_credentials = gateway_only). */
+  runtimeMcpCredentials?: 'gateway_only';
 }
+
+export interface SandboxSettings {
+  revision: number;
+  enabled: boolean;
+  applied: {
+    version: number;
+    settings: Record<string, unknown>;
+    appliedAt: string;
+    appliedBy: string;
+  } | null;
+  draft: Record<string, unknown> | null;
+  defaultSettings: Record<string, unknown>;
+}
+
+export type SandboxSettingsUpdate = { expectedRevision: number } & (
+  | { action: 'draft' | 'apply'; config: string }
+  | { action: 'toggle'; enabled: boolean }
+);
 
 export interface McpVerifyResult {
   ok: boolean;
@@ -306,6 +349,13 @@ export const agentsService = {
 
   async updateSettings(update: AgentSettingsUpdate): Promise<{ saved: boolean }> {
     return api.put('/agents/settings', update);
+  },
+
+  async updateSandbox(update: SandboxSettingsUpdate): Promise<SandboxSettings> {
+    const result = await api.put<{ sandbox: SandboxSettings }>('/agents/settings', {
+      sandbox: update,
+    });
+    return result.sandbox;
   },
 
   async getPersonalCredentials(): Promise<AgentCredentialStatus> {

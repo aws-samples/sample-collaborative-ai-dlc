@@ -12,7 +12,6 @@ import {
 import * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
-import { Pilcrow } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -261,19 +260,6 @@ export function CollaborativeTextarea({
     ? remotePositions.filter((position) => position.line === localLine)
     : [];
 
-  const startNewParagraph = useCallback(() => {
-    const view = viewRef.current;
-    if (!view || disabledRef.current) return;
-    const end = view.state.doc.length;
-    view.focus();
-    view.dispatch({
-      changes: { from: end, insert: '\n\n' },
-      selection: { anchor: end + 1 },
-      scrollIntoView: true,
-      userEvent: 'input.new-paragraph',
-    });
-  }, []);
-
   const revealRemoteCursor = useCallback((position: RemotePosition) => {
     const view = viewRef.current;
     if (!view) return;
@@ -340,7 +326,7 @@ export function CollaborativeTextarea({
         )}
         style={{ height }}
       />
-      {contributionTools && (
+      {contributionTools && remotePositions.length > 0 && (
         <div className="mt-1 flex h-7 min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
             {nearbyUsers.length > 0 && (
@@ -364,16 +350,6 @@ export function CollaborativeTextarea({
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            className="inline-flex h-6 shrink-0 items-center gap-1 rounded border bg-background px-2 font-medium text-foreground shadow-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={startNewParagraph}
-            disabled={disabled}
-            title="Start a separate contribution at the end"
-          >
-            <Pilcrow className="h-3 w-3" />
-            New paragraph
-          </button>
         </div>
       )}
     </div>

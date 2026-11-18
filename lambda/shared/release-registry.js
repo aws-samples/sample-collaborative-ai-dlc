@@ -1,3 +1,4 @@
+import { releaseSourceInfo } from './aidlc-release-source-info.js';
 // The release registry and channel pointers.
 //
 // The importer publishes an immutable release closure to S3; the runtime resolves
@@ -696,6 +697,10 @@ const registerCustomRelease = async ({
 // are each classified in their own right, three approximated and judged by annex
 // reach, eleven refused. A list stored by the previous build therefore looks
 // current at revision 5 while still holding blockers this build has answered.
+// Revision 7 classifies AI-DLC 2.11.1's `sensor-<id> --stage` (a sensor run on
+// request from stage prose), which an earlier build stored as an unknown,
+// unannexed family under the bare command — so a record registered before it
+// keeps refusing promotion until its list is recomputed.
 // Promotion therefore re-evaluates such a list from the immutable closure,
 // exactly like a record with no list at all. Other readers (the intent-creation
 // eligibility check) keep using the stored list: a record can only be selected
@@ -704,7 +709,7 @@ const registerCustomRelease = async ({
 // Bump this with EVERY change to what the evidence collector decides. Without
 // it, eligibility would depend on when a record was registered or last
 // refreshed rather than on its immutable closure and this runtime.
-const FIDELITY_EVIDENCE_REVISION = 6;
+const FIDELITY_EVIDENCE_REVISION = 8;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&
@@ -1519,7 +1524,19 @@ const clearChannel = async ({ ddb, tableName, channel, expectedRevision, actor =
  * to make intent creation fail platform-wide — an EXPLICIT id is still rejected,
  * so no caller silently gets a release it did not ask for.
  */
-const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) => {
+// forAdminTest is set only after the intent API verifies platform-admin access.
+// It permits a hidden, already-qualified release; it never qualifies a release.
+const resolveSelectableRelease = async ({
+  ddb,
+  tableName,
+  releaseId = null,
+  forAdminTest = false,
+}) => {
+  if (forAdminTest && !releaseId)
+    throw new ReleaseRegistryError(
+      'release_selection_invalid',
+      'An admin test requires an explicit release',
+    );
   if (!releaseId) {
     const stable = await getChannel({ ddb, tableName, channel: 'stable' });
     if (!stable?.releaseId) return null;
@@ -1548,7 +1565,7 @@ const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) =>
       { details: { releaseId: String(releaseId) } },
     );
   }
-  assertSelectableRecord(record);
+  assertSelectableRecord(forAdminTest ? { ...record, visible: true } : record);
   return releaseToApi(record);
 };
 
@@ -1604,6 +1621,7 @@ const listRegistrableProfiles = async ({ ddb, tableName, s3, bucket }) => {
       const registered = await getRelease({ ddb, tableName, releaseId: profile.releaseId });
       return {
         profileId: profile.id,
+        sourceInfo: releaseSourceInfo(profile.id),
         releaseId: profile.releaseId,
         label: profile.label ?? null,
         upstreamVersion: profile.upstreamVersion ?? null,

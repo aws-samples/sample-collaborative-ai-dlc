@@ -6,14 +6,12 @@ const fakeStore = () => {
   const humanTasks = new Map();
   const events = [];
   const outputs = [];
-  const metrics = [];
   const execPatches = [];
   let seq = 0;
   return {
     humanTasks,
     events,
     outputs,
-    metrics,
     execPatches,
     async createHumanTask(args) {
       humanTasks.set(args.humanTaskId, {
@@ -47,9 +45,9 @@ const fakeStore = () => {
       outputs.push(row);
       return row;
     },
-    async recordMetric({ metrics: m }) {
-      metrics.push(m);
-      return { metricId: `m${metrics.length}` };
+    descriptions: [],
+    async setCommitDescription(args) {
+      this.descriptions.push(args);
     },
   };
 };
@@ -126,24 +124,75 @@ describe('recordProjectType', () => {
   });
 });
 
-describe('collectMetric + emitStageNote', () => {
-  it('records a metric bag and broadcasts it live', async () => {
+describe('describeChanges', () => {
+  it('stores the normalised description on the stage row and audits it', async () => {
     const store = fakeStore();
-    const sent = [];
-    const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
-    const res = await bridge.collectMetric({ metrics: { tokensInput: 5, contextWindowPct: 12 } });
-    expect(res).toEqual({ metricId: 'm1' });
-    expect(store.metrics[0]).toEqual({ tokensInput: 5, contextWindowPct: 12 });
-    expect(sent[0]).toMatchObject({
-      action: 'agent.metric',
-      executionId: 'exec-1',
-      intentId: 'intent-1',
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, unitSlug: 'billing' },
+      ids: () => 'd1',
+    });
+    await expect(
+      bridge.describeChanges({
+        type: 'feat',
+        scope: 'API',
+        summary: 'Add retry to the payment client.',
+        breaking: true,
+        breakingChange: 'retries are on by default; set retries to 0 to opt out',
+      }),
+    ).resolves.toEqual({
+      type: 'feat',
+      scope: 'api',
+      summary: 'add retry to the payment client',
+      breaking: true,
+      breakingChange: 'retries are on by default; set retries to 0 to opt out',
+      unitSlug: 'billing',
+    });
+    expect(store.descriptions).toEqual([
+      {
+        executionId: 'exec-1',
+        stageInstanceId: 'si-1',
+        description: expect.objectContaining({ type: 'feat', descriptionId: 'd1' }),
+      },
+    ]);
+    expect(store.events.at(-1)).toMatchObject({
+      type: 'v2.commit.described',
       stageInstanceId: 'si-1',
-      metricId: 'm1',
-      metrics: { tokensInput: 5, contextWindowPct: 12 },
+      summary: 'Changes described as feat(api)!: add retry to the payment client',
     });
   });
 
+  it('writes the description under the attempt ownership, so a retired callback cannot overwrite it', async () => {
+    const store = fakeStore();
+    const ownership = { orchestratorRunId: 'run-1', stageCallbackId: 'cb-old' };
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, ...ownership },
+      ids: () => 'd1',
+    });
+    await bridge.describeChanges({ type: 'fix', summary: 'round totals' });
+    expect(store.descriptions).toEqual([
+      expect.objectContaining({
+        stageInstanceId: 'si-1',
+        ownership: expect.objectContaining({ ...ownership, stageInstanceId: 'si-1' }),
+      }),
+    ]);
+  });
+
+  it.each([
+    [{ type: 'feature', summary: 'x' }, /type must be one of/],
+    [{ type: 'fix', summary: '  ' }, /summary must/],
+    [{ type: 'fix', summary: 'x', breaking: true }, /breakingChange/],
+    [{ type: 'fix', scope: 'two words', summary: 'x' }, /scope/],
+  ])('rejects %j without storing it', async (args, error) => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({ store, scope: SCOPE });
+    await expect(bridge.describeChanges(args)).rejects.toThrow(error);
+    expect(store.descriptions).toEqual([]);
+  });
+});
+
+describe('emitStageNote', () => {
   it('appends an audit note event and broadcasts it live', async () => {
     const store = fakeStore();
     const sent = [];
@@ -288,7 +337,7 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
     });
   });
 
-  it('sendOutput / collectMetric / emitStageNote broadcasts carry the lane', async () => {
+  it('sendOutput / emitStageNote broadcasts carry the lane', async () => {
     const store = fakeStore();
     const sent = [];
     const bridge = createProcessBridge({
@@ -297,9 +346,8 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
       broadcast: (p) => sent.push(p),
     });
     await bridge.sendOutput({ content: 'hi' });
-    await bridge.collectMetric({ metrics: { tokensInput: 1 } });
     await bridge.emitStageNote({ summary: 'note' });
-    for (const action of ['agent.output', 'agent.metric', 'agent.note']) {
+    for (const action of ['agent.output', 'agent.note']) {
       expect(sent.find((p) => p.action === action)).toMatchObject({ unitSlug: 'billing' });
     }
     expect(store.events.find((e) => e.type === 'v2.stage.note')).toMatchObject({

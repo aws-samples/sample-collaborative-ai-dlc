@@ -41,6 +41,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getBranding } from '@/lib/branding';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   useProjectSort,
@@ -164,7 +165,7 @@ export default function Dashboard() {
         {/* Header */}
         <div className="flex items-end justify-between mb-8">
           <div className="flex items-center gap-4">
-            <img src="/logo.svg" alt="AI-DLC" className="h-14 w-14 shrink-0" />
+            <img src={getBranding().logo} alt={getBranding().name} className="h-14 w-14 shrink-0" />
             <div>
               <h1 className="text-3xl font-bold tracking-tight">Spaces</h1>
               <p className="text-sm text-muted-foreground mt-0.5">

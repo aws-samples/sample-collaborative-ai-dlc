@@ -26,6 +26,8 @@ variables {
   powertools_log_event          = false
   registry_table_name           = "test-registry"
   registry_table_arn            = "arn:aws:dynamodb:us-east-1:123456789012:table/test-registry"
+  process_table_name            = "test-process"
+  process_table_arn             = "arn:aws:dynamodb:us-east-1:123456789012:table/test-process"
   core_image_uri                = "123456789012.dkr.ecr.us-east-1.amazonaws.com/core"
   core_image_digest             = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   core_image_size_bytes         = 1
@@ -128,5 +130,27 @@ run "one_instances_configuration_for_both_lambdas" {
       "bedrock-agentcore:DeleteCapacityProviderSession",
     )
     error_message = "Session cleanup belongs to the ungated policy only."
+  }
+}
+
+# Qualification runs the image's CLIs under the platform sandbox policy; the
+# poller may read that one item of the process table and nothing else.
+run "status_reads_only_the_sandbox_settings" {
+  command = plan
+  module {
+    source = "./modules/compute/managed-environments"
+  }
+
+  assert {
+    condition = [
+      for s in jsondecode(aws_iam_role_policy.status.policy).Statement : s
+      if contains(flatten([s.Resource]), "arn:aws:dynamodb:us-east-1:123456789012:table/test-process")
+      ] == [{
+        Effect    = "Allow"
+        Action    = ["dynamodb:GetItem"]
+        Resource  = "arn:aws:dynamodb:us-east-1:123456789012:table/test-process"
+        Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["SETTINGS#SANDBOX"] } }
+    }]
+    error_message = "The status lambda may only GetItem the SETTINGS#SANDBOX item of the process table."
   }
 }

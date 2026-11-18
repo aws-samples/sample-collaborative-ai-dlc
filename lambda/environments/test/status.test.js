@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createStatusHandler, runtimeNameFor } from '../status.js';
 import { withVerificationLease } from './helpers/verification-lease.js';
+import { DEFAULT_SANDBOX_CONFIG, resolveInvocationSandbox } from '../../shared/sandbox-settings.js';
+
+// Qualification resolves the platform sandbox policy; each test sets the one it runs under.
+vi.mock('../../shared/sandbox-settings.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    resolveInvocationSandbox: vi.fn(async () => structuredClone(actual.DEFAULT_SANDBOX_CONFIG)),
+  };
+});
 
 const environment = {
   environmentId: 'custom',
@@ -157,6 +167,7 @@ describe('managed environment status handler', () => {
       runtimeEndpointArn: null,
     });
     const runtimeInput = controlClient.send.mock.calls[0][0].input;
+    expect(runtimeInput.platformVersion).toBe('V1');
     expect(runtimeInput.protocolConfiguration).toEqual({
       serverProtocol: 'HTTP',
     });
@@ -281,6 +292,7 @@ describe('managed environment status handler', () => {
       }),
     );
     expect(controlClient.send.mock.calls[0][0].constructor.name).toBe('CreateAgentRuntimeCommand');
+    expect(controlClient.send.mock.calls[0][0].input.platformVersion).toBe('V1');
   });
 
   it('reopens legacy Critical scan failures without rebuilding the image', async () => {
@@ -386,12 +398,86 @@ describe('managed environment status handler', () => {
     expect(store.updateRevision).not.toHaveBeenCalled();
   });
 
-  it('records endpoint and command validation evidence', async () => {
+  it.each([undefined, true])(
+    'records runtime validation evidence, sandbox=%s',
+    async (sandboxEnforcement) => {
+      const verifying = {
+        ...revision,
+        status: 'VERIFYING',
+        scanFindings: { severityCounts: { HIGH: 2 } },
+        securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
+        runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+        runtimeId: 'runtime-1',
+        runtimeVersion: '3',
+        runtimeEndpoint: 'revision_r_1',
+        runtimeEndpointArn:
+          'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+      };
+      const store = mutableStore(verifying);
+      const runtimeClient = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce({
+            response: {
+              transformToString: async () =>
+                JSON.stringify({ ok: true, clis: ['node', 'python'], sandboxEnforcement }),
+            },
+          })
+          .mockResolvedValueOnce({
+            response: {
+              transformToString: async () =>
+                JSON.stringify({
+                  ok: true,
+                  nonce: 'check-r-1',
+                  compatibilityVersion: '1',
+                  nonRoot: true,
+                  workspaceWritable: true,
+                  protectedRuntime: true,
+                }),
+            },
+          }),
+      };
+      const handler = createStatusHandler({
+        cleanupStore: cleanupStoreStub(),
+        store,
+        ecrClient: { send: vi.fn() },
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+      });
+      const result = await handler({ action: 'poll' });
+      expect(result.results[0].revision.status).toBe('READY');
+      expect(result.results[0].revision.verification).toMatchObject({
+        status: 'PASSED',
+        securityScan: 'ACCEPTED',
+        endpoint: 'PASSED',
+        toolBuilds: 'PASSED',
+      });
+      if (sandboxEnforcement)
+        expect(result.results[0].revision.verification.sandboxEnforcement).toBe(true);
+      else expect(result.results[0].revision.verification).not.toHaveProperty('sandboxEnforcement');
+      expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
+      // The runtime may hold no settings access, so qualification sends the platform's.
+      expect(JSON.parse(runtimeClient.send.mock.calls[0][0].input.payload)).toEqual({
+        command: 'capabilities',
+        agentSandbox: DEFAULT_SANDBOX_CONFIG,
+      });
+      expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
+        'StopRuntimeSessionCommand',
+      );
+      expect(runtimeClient.send.mock.calls[2][0].input).toMatchObject({
+        agentRuntimeArn: verifying.runtimeArn,
+        qualifier: 'revision_r_1',
+        runtimeSessionId: expect.stringContaining('managed-environment-r-1-'),
+      });
+    },
+  );
+
+  // capabilities spawns the image's CLIs (kiro-cli --list-models), so
+  // qualification must run them under the policy agent work would get.
+  describe('qualification sandbox policy', () => {
     const verifying = {
       ...revision,
       status: 'VERIFYING',
-      scanFindings: { severityCounts: { HIGH: 2 } },
-      securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
       runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
       runtimeId: 'runtime-1',
       runtimeVersion: '3',
@@ -399,50 +485,58 @@ describe('managed environment status handler', () => {
       runtimeEndpointArn:
         'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
     };
-    const store = mutableStore(verifying);
-    const runtimeClient = {
-      send: vi
-        .fn()
-        .mockResolvedValueOnce({
-          response: {
-            transformToString: async () => JSON.stringify({ ok: true, clis: ['node', 'python'] }),
-          },
-        })
-        .mockResolvedValueOnce({
-          response: {
-            transformToString: async () =>
-              JSON.stringify({
-                ok: true,
-                nonce: 'check-r-1',
-                compatibilityVersion: '1',
-                nonRoot: true,
-                workspaceWritable: true,
-                protectedRuntime: true,
-              }),
-          },
+    const reply = (body) => ({ response: { transformToString: async () => JSON.stringify(body) } });
+    const poll = (runtimeClient) =>
+      createStatusHandler({
+        cleanupStore: cleanupStoreStub(),
+        store: mutableStore(verifying),
+        ecrClient: { send: vi.fn() },
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+      })({ action: 'poll' });
+
+    it('sends the platform policy the settings enable', async () => {
+      const platform = { ...structuredClone(DEFAULT_SANDBOX_CONFIG), enabled: true, version: 4 };
+      vi.mocked(resolveInvocationSandbox).mockResolvedValueOnce(platform);
+      const runtimeClient = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce(reply({ ok: true, clis: [], sandboxEnforcement: true }))
+          .mockResolvedValueOnce(
+            reply({ ok: true, nonce: 'check-r-1', compatibilityVersion: '1', nonRoot: true }),
+          )
+          .mockResolvedValue({}),
+      };
+
+      const result = await poll(runtimeClient);
+
+      expect(result.results[0].revision.status).toBe('READY');
+      expect(resolveInvocationSandbox).toHaveBeenLastCalledWith({ payload: {} });
+      expect(JSON.parse(runtimeClient.send.mock.calls[0][0].input.payload)).toEqual({
+        command: 'capabilities',
+        agentSandbox: platform,
+      });
+    });
+
+    it('fails closed without invoking the runtime when the policy cannot be read', async () => {
+      vi.mocked(resolveInvocationSandbox).mockRejectedValueOnce(
+        Object.assign(new Error('not authorized to perform: dynamodb:GetItem'), {
+          name: 'AccessDeniedException',
         }),
-    };
-    const handler = createStatusHandler({
-      cleanupStore: cleanupStoreStub(),
-      store,
-      ecrClient: { send: vi.fn() },
-      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
-      runtimeClient,
-    });
-    const result = await handler({ action: 'poll' });
-    expect(result.results[0].revision.status).toBe('READY');
-    expect(result.results[0].revision.verification).toMatchObject({
-      status: 'PASSED',
-      securityScan: 'ACCEPTED',
-      endpoint: 'PASSED',
-      toolBuilds: 'PASSED',
-    });
-    expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
-    expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe('StopRuntimeSessionCommand');
-    expect(runtimeClient.send.mock.calls[2][0].input).toMatchObject({
-      agentRuntimeArn: verifying.runtimeArn,
-      qualifier: 'revision_r_1',
-      runtimeSessionId: expect.stringContaining('managed-environment-r-1-'),
+      );
+      const runtimeClient = { send: vi.fn().mockResolvedValue({}) };
+
+      const result = await poll(runtimeClient);
+
+      expect(result.results[0].revision).toMatchObject({
+        status: 'FAILED',
+        failure: { reason: 'runtime_validation_failed' },
+      });
+      expect(
+        runtimeClient.send.mock.calls.filter(
+          ([command]) => command.constructor.name === 'InvokeAgentRuntimeCommand',
+        ),
+      ).toEqual([]);
     });
   });
 

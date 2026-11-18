@@ -18,6 +18,8 @@
 // a registry entry keyed on the closure's runtime files (aidlc-capabilities.js),
 // exactly like the loop-back it shares a protocol module with.
 
+import { LOOP_BACK_OPTION, loopBackGateFields } from './stage-loopback.js';
+
 // The registry key whose presence allows the grant. Release mode alone is not
 // enough: a catalog that ships no construction protocol has no autonomy to
 // reproduce, so the field is refused at create rather than silently ignored.
@@ -32,8 +34,44 @@ const GATE_AUTO_APPROVED_EVENT = 'v2.gate.auto_approved';
 
 // The approval receipt's recorded answer. Upstream mandates a marker string on an
 // autonomous completion so an audit reader can tell a waived gate from a human
-// one; this is that marker.
+// one; these are that marker, and the loop-back form carries its ordinal.
 const AUTONOMOUS_GATE_INPUT = 'Autonomous construction gate per construction protocol module';
+const autonomousLoopBackInput = (ordinal) =>
+  `Autonomous loop-back ${ordinal} per construction protocol module`;
+
+/**
+ * The validation gate row an autonomous loop-back writes, already answered.
+ *
+ * Exactly the row a human `loop-back` answer leaves on build-and-test's gate:
+ * same kind, the `rejected` status the answer endpoint requires for a loop-back,
+ * and the engine's offer (`loopBackTarget`, reason, status, note). The target's
+ * re-run reads THIS row to archive the rewound stages and to tell code
+ * generation why it was sent back, and the stage resets are keyed on its id, so
+ * the jump has to be stored, not held in memory. `open` is what
+ * `createHumanTask` writes; `answer` is what `answerHumanTask` records on it.
+ */
+const autonomousLoopBackGate = ({ humanTaskId, stage, loopBack, findings = [] }) => {
+  const marker = autonomousLoopBackInput(Number(loopBack.spent ?? 0) + 1);
+  return {
+    open: {
+      humanTaskId,
+      stageInstanceId: stage.stageInstanceId ?? null,
+      kind: 'validation',
+      prompt: `${marker}: ${stage.stageId} sent back to ${loopBack.target.stageId}. ${loopBack.reason}`,
+      options: [LOOP_BACK_OPTION],
+      // The advisory findings the jump was taken over, kept as a human gate
+      // keeps them, so the record says what autonomy did not stop for.
+      ...(findings.length ? { findings } : {}),
+      ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
+    },
+    answer: {
+      status: 'rejected',
+      answer: { decision: LOOP_BACK_OPTION, userInput: marker },
+      answeredBy: null,
+      answeredByName: marker,
+    },
+  };
+};
 
 /**
  * Whether this catalog proves it has construction autonomy at all. Consumed by
@@ -127,6 +165,8 @@ export {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
+  autonomousLoopBackGate,
+  autonomousLoopBackInput,
   constructionAutonomyApplies,
   firstConstructionStageId,
   grantAutonomyOffered,
@@ -138,6 +178,8 @@ export default {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
+  autonomousLoopBackGate,
+  autonomousLoopBackInput,
   constructionAutonomyApplies,
   firstConstructionStageId,
   grantAutonomyOffered,

@@ -16,7 +16,7 @@ This platform is built on a set of principles that survive tool changes and tech
 
 ## The lifecycle
 
-Work is organized around **intents**. An intent is a title and a prompt — a feature, a bugfix, a whole greenfield system — scoped to a project. Starting an intent executes a **workflow**: an ordered plan of stages, grouped into phases, that carries the work from idea to a reviewable pull request.
+Work is organized around **intents**. An intent is a title and a prompt — a feature, a bugfix, a whole greenfield system — scoped to a space. Starting an intent executes a **workflow**: an ordered plan of stages, grouped into phases, that carries the work from idea to a reviewable pull request.
 
 ```mermaid
 graph LR
@@ -45,7 +45,7 @@ The workflow itself is data, not code: it is composed from a library of **buildi
 - **Parallel construction** — deterministic fan-out into per-unit lanes with engine-owned merges
 - **Human gates and steering** — clarifying questions, approval gates, course corrections, per-stage rewind
 - **Serverless agent runtime** — isolated Bedrock AgentCore sessions per intent, durable orchestration, park/resume at zero compute
-- **Deep observability** — live stage pipeline, sensors, durations, token usage and cost per stage, intent, and project
+- **Deep observability** — live stage pipeline, sensors, durations, token usage and cost per stage, intent, and space
 - **Graph-based traceability** — requirements, stories, components, decisions, and units of work as typed, linked items
 - **Git and tracker integration** — GitHub and GitLab code hosts; GitHub Issues, GitLab Issues, and Jira Cloud trackers
 - **Real-time collaboration** with presence, discussions, and live agent output

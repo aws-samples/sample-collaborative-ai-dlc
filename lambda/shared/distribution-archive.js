@@ -16,18 +16,51 @@ const safeDistributionPath = (value) => {
   return path;
 };
 
-const buildDistributionArchive = async (files) => {
-  const entries = [...files].map(([path, body]) => [
-    safeDistributionPath(path),
-    Buffer.isBuffer(body) ? body : Buffer.from(body),
-  ]);
-  if (entries.length > MAX_DISTRIBUTION_FILES) {
-    throw new Error(`distribution-archive: exceeds ${MAX_DISTRIBUTION_FILES} files`);
+// Fixed tar header fields, so the same files always build the same bytes: an
+// archive's checksum is recorded in its manifest, and two builds of one release
+// (an overlapping re-import) must agree with it. gzip's own header carries no
+// timestamp from zlib.
+const ENTRY_HEADER = Object.freeze({
+  mode: 0o644,
+  mtime: new Date(0),
+  uid: 0,
+  gid: 0,
+  uname: '',
+  gname: '',
+});
+// The reason a set of files cannot be archived (an unsafe path, or more files or
+// bytes than an archive holds), or null when it can. Lets a caller decide before
+// it builds or publishes anything.
+const distributionLimitError = (files) => {
+  let count = 0;
+  let totalBytes = 0;
+  for (const [path, body] of files) {
+    try {
+      safeDistributionPath(path);
+    } catch (error) {
+      return error.message;
+    }
+    count += 1;
+    totalBytes += body.length;
   }
-  const totalBytes = entries.reduce((sum, [, body]) => sum + body.length, 0);
+  if (count > MAX_DISTRIBUTION_FILES) {
+    return `distribution-archive: exceeds ${MAX_DISTRIBUTION_FILES} files`;
+  }
   if (totalBytes > MAX_DISTRIBUTION_BYTES) {
-    throw new Error(`distribution-archive: exceeds ${MAX_DISTRIBUTION_BYTES} bytes`);
+    return `distribution-archive: exceeds ${MAX_DISTRIBUTION_BYTES} bytes`;
   }
+  return null;
+};
+const buildDistributionArchive = async (files) => {
+  const entries = [...files]
+    .map(([path, body]) => [
+      safeDistributionPath(path),
+      Buffer.isBuffer(body) ? body : Buffer.from(body),
+    ])
+    // Paths are unique map keys, so a code-unit comparison is a total order.
+    .toSorted(([a], [b]) => (a < b ? -1 : 1));
+  const limitError = distributionLimitError(entries);
+  if (limitError) throw new Error(limitError);
 
   const pack = tar.pack();
   const gzip = zlib.createGzip({ level: 9 });
@@ -41,7 +74,7 @@ const buildDistributionArchive = async (files) => {
   pack.pipe(gzip);
   for (const [path, body] of entries) {
     await new Promise((resolve, reject) => {
-      pack.entry({ name: path, size: body.length, mode: 0o644 }, body, (error) => {
+      pack.entry({ ...ENTRY_HEADER, name: path, size: body.length }, body, (error) => {
         if (error) reject(error);
         else resolve();
       });
@@ -113,6 +146,7 @@ export {
   MAX_DISTRIBUTION_BYTES,
   MAX_DISTRIBUTION_FILES,
   buildDistributionArchive,
+  distributionLimitError,
   extractDistributionArchive,
   safeDistributionPath,
 };

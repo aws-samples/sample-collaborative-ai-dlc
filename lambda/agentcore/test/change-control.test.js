@@ -127,6 +127,34 @@ describe('changeControlChoice', () => {
     expect(changeControlChoice({ answer: { freeText: 'stop here' } })).toBe('stop');
   });
 
+  it.each([
+    [0, 'reconfirm'],
+    [1, 'stop'],
+  ])('reads UI option %s from the stored question', (index, expected) => {
+    const gate = {
+      questions: JSON.stringify([
+        { options: [{ label: 'Reconfirm and continue' }, { label: 'Stop here so I can rewind' }] },
+      ]),
+      answer: { answers: [{ selectedOptions: [index] }] },
+    };
+    expect(changeControlChoice(gate)).toBe(expected);
+  });
+
+  it.each([[0, 1], [-1], [2], ['0'], []])(
+    'does not authorize malformed UI selection %j',
+    (...selectedOptions) => {
+      const gate = {
+        questions: JSON.stringify([
+          {
+            options: [{ label: 'Reconfirm and continue' }, { label: 'Stop here so I can rewind' }],
+          },
+        ]),
+        answer: { answers: [{ selectedOptions, freeText: 'Reconfirm and continue' }] },
+      };
+      expect(changeControlChoice(gate)).toBeNull();
+    },
+  );
+
   // A garbled answer names no option; the caller treats that as NOT a
   // reconfirmation and halts (recoverable via rewind).
   it('returns null for an answer that names neither option', () => {
@@ -419,6 +447,70 @@ describe('runStage — change_control: relaxed', () => {
     });
   });
 
+  // The rehydrated engine-data error for a history past the Invoke cap.
+  const tooLarge = () =>
+    Object.assign(new Error('Store result is too large to return'), {
+      name: 'EngineStoreError',
+      code: 'response_too_large',
+    });
+
+  it('fails the stage when the event history is too large to read', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.listEvents = async () => {
+      throw tooLarge();
+    };
+    let spawned = false;
+    const res = await runStage(
+      args,
+      deps(store, {
+        scopeFm: { changeControl: 'relaxed' },
+        deps: {
+          spawnFn: () => {
+            spawned = true;
+            return {
+              on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+              stdin: { end() {} },
+            };
+          },
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'execution_history_too_large' });
+    expect(spawned).toBe(false);
+    expect(store.of('appendEvent').filter((e) => e.type === 'v2.change.accepted')).toEqual([]);
+    expect(store.of('updateStageState')).toContainEqual(
+      expect.objectContaining({ state: 'FAILED', runtimeError: 'execution_history_too_large' }),
+    );
+  });
+
+  it('fails the stage when the checkpoint ladder cannot read the event history', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    // The change-control dedup reads the history first; the history then grows
+    // past the cap before the ladder's read after the agent turn.
+    let reads = 0;
+    store.listEvents = async () => {
+      reads += 1;
+      if (reads > 1) throw tooLarge();
+      return [];
+    };
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
+    expect(reads).toBe(2);
+    expect(res).toMatchObject({ ok: false, reason: 'execution_history_too_large' });
+    expect(store.of('updateStageState')).toContainEqual(
+      expect.objectContaining({ state: 'FAILED', runtimeError: 'execution_history_too_large' }),
+    );
+  });
+
+  it('still treats an unreadable event history as empty when the read merely failed', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.listEvents = async () => {
+      throw new Error('throttled');
+    };
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(store.of('appendEvent').filter((e) => e.type === 'v2.change.accepted')).toHaveLength(1);
+  });
+
   it('records the change the first time it is seen', async () => {
     const store = harnessStore({ receipts: [APPROVAL] });
     await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
@@ -555,6 +647,35 @@ describe('runStage — change_control: strict', () => {
     const [gate] = store.of('createHumanTask');
     const [question] = JSON.parse(gate.questions);
     expect(question.text).toContain('could not be read');
+  });
+
+  it('accepts reconfirmation from the actual UI gate and writes a receipt before running', async () => {
+    const first = harnessStore({ receipts: [APPROVAL] });
+    await runStage(args, deps(first, { scopeFm: { changeControl: 'strict' } }));
+    const [question] = first.of('createHumanTask');
+    const store = harnessStore({
+      receipts: [APPROVAL],
+      humanTask: {
+        ...question,
+        status: 'answered',
+        answeredBy: 'u1',
+        answer: { answers: [{ selectedOptions: [0] }] },
+      },
+    });
+    const capture = promptCapture();
+    const result = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+    expect(result.state).toBe('SUCCEEDED');
+    expect(store.of('putReceipt')).toContainEqual(
+      expect.objectContaining({
+        kind: 'change-reconfirm',
+        choice: 'reconfirm',
+        detail: expect.objectContaining({ inputsFingerprint: CHANGED_FINGERPRINT }),
+      }),
+    );
+    expect(capture.seen.prompt).toContain('reconfirmed');
   });
 
   it('reconfirm writes the receipt, tells the agent, and runs the stage', async () => {

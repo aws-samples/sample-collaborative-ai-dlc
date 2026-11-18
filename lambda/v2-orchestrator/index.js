@@ -21,25 +21,43 @@
 // REPLAY DISCIPLINE: every side effect (agent invokes, provider operations,
 // and all store writes) MUST be inside ctx.step(...) or it re-executes on replay.
 
+import { randomUUID } from 'node:crypto';
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  LambdaClient,
+  InvokeCommand,
+  SendDurableExecutionCallbackSuccessCommand,
+} from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
+import {
+  gatewayGrantIssuanceGuardFromEnv,
+  gatewayGrantRetirerFromEnv,
+} from '../shared/gateway-grant-retirement.js';
+import {
+  GATEWAY_GRANT_RETIREMENT_FAILURE,
+  GATEWAY_GRANT_RETIREMENT_RETRY,
+  GatewayGrantRetirementExhaustedError,
+  retireGrantDurably,
+  retirePendingGrantsDurably,
+} from './grant-retirement.js';
 import {
   prepareAgentInvocation,
   executionCredentialBinding,
 } from '../shared/agent-credential-service.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
-import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../shared/sandbox-settings.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
@@ -69,10 +87,20 @@ import {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
+  autonomousLoopBackGate,
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
+import { notifyGatePending } from '../shared/notification-events.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+import {
+  skeletonProblem,
+  finalizeUnitCompletion,
+  completionSections,
+  unitCompletion,
+  completionMessage,
+  unitPlanIdentity,
+} from '../shared/unit-completion.js';
 import { sdkTarget, stopSession as stopSharedSession } from '../shared/runtime-session.js';
 import {
   awaitEngineGate,
@@ -83,10 +111,23 @@ import {
   fanoutGateAddendum,
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
-import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
+import { openIntentPrs } from '../shared/intent-pr.js';
+import { publishFinalDelivery } from '../shared/final-delivery.js';
+import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
+import {
+  bindGateCallback,
+  ownsAnsweredGate,
+  releaseUnusedGateCallback,
+  unparkGate,
+} from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+  hasDirectMcpServers,
+} from '../shared/runtime-mcp-policy.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -103,6 +144,11 @@ const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
+const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
+const gatewayGrantRetirer = gatewayGrantRetirerFromEnv({ ddb });
+const gatewayGrantIssuanceGuard = gatewayGrantIssuanceGuardFromEnv({ ddb });
+
+export { GATEWAY_GRANT_RETIREMENT_FAILURE, GATEWAY_GRANT_RETIREMENT_RETRY };
 
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
@@ -138,6 +184,8 @@ const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
+// Prefix intent pull request titles with the intent's Jira issue key.
+const PR_TITLE_TRACKER_KEY = () => process.env.PR_TITLE_TRACKER_KEY === 'true';
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -237,9 +285,6 @@ const defaultSourceControlOperation = async ({
   return body.result;
 };
 
-const repoProvider = (meta, repoId) =>
-  sharedRepoProvider(repoId, meta.gitProvider, meta.repoProviders);
-
 // Map a timeline event type to the live broadcast payload the UI routes on
 // (useIntentEvents → refetch on agent.workspace / agent.execution). The
 // orchestrator is NOT VPC-attached and reaches the connections table over the
@@ -270,11 +315,36 @@ const livePayloadFor = (type, summary) => {
 // cross the source-control service boundary; credentials never enter this process.
 const defaultDeps = () => ({
   store: defaultStore,
+  publishDelivery: (args) =>
+    publishFinalDelivery({
+      ...args,
+      operation: defaultSourceControlOperation,
+      loadPlan: createIntentMethodologyLoader({
+        ddb,
+        s3,
+        tableName: BLOCKS_TABLE,
+        bucket: ARTIFACTS_BUCKET,
+      }).loadPlan,
+    }),
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
+  issueGatewayGrant: gatewayGrantIssuer,
+  // Execution grants are signed only when they have a reader: engine data.
+  engineData: process.env.ENGINE_DATA_ENABLED === 'true',
+  retireGatewayGrant: gatewayGrantRetirer,
+  awaitGrantIssuance: gatewayGrantIssuanceGuard,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
+  // Completes this execution's own callback for a gate answered before its
+  // wait began (gate-callback.js releaseUnusedGateCallback).
+  releaseCallback: (callbackId, result) =>
+    lambda.send(
+      new SendDurableExecutionCallbackSuccessCommand({
+        CallbackId: callbackId,
+        Result: Buffer.from(JSON.stringify(result ?? null)),
+      }),
+    ),
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
     defaultSourceControlOperation({
       projectId,
@@ -295,6 +365,7 @@ const defaultDeps = () => ({
       args: { base, head },
     }),
   applicationUrl: APPLICATION_URL(),
+  prTitleTrackerKey: PR_TITLE_TRACKER_KEY(),
   unitPrProvider: {
     compare: ({ projectId, gitProvider, repoId, base, head }) =>
       defaultSourceControlOperation({
@@ -384,6 +455,25 @@ const defaultDeps = () => ({
   },
 });
 
+// The existing tracker handoff consumes the complete set of published PRs.
+// Publication retry does not add another tracker/provider polling loop.
+// Partial publication withholds the handoff; say so instead of staying silent.
+const trackerDeferredSummary = (published, total) =>
+  `Tracker synchronization waits until every repository's pull request is published (${published} of ${total} published). Check delivery for the remaining repositories.`;
+const publishTrackerDelivery = (store, meta, pullRequests) =>
+  store.putTrackerSync({
+    executionId: meta.executionId,
+    projectId: meta.projectId,
+    intentId: meta.intentId ?? meta.executionId,
+    source: meta.source,
+    pullRequests,
+    intentTitle: meta.title ?? null,
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    branch: meta.branch ?? null,
+  });
+
 const handler = async (event, ctx, deps = defaultDeps()) => {
   const {
     store,
@@ -391,10 +481,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     invokeRuntime: rawInvokeRuntime,
     stopSession,
     broadcast,
+    releaseCallback = null,
     openPr,
     comparePrBranches,
     unitPrProvider,
     applicationUrl,
+    prTitleTrackerKey = false,
   } = deps;
   const { intentId, executionId } = event;
   logger.resetKeys();
@@ -408,6 +500,57 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   if (event.action === 'quorum-edit') {
     return runQuorumEdit(event, ctx, deps);
   }
+  if (event.action === 'retry-delivery') {
+    const retryMeta = await ctx.step('delivery-load', () =>
+      store.getExecution(executionId, { consistentRead: true }),
+    );
+    if (
+      !retryMeta ||
+      retryMeta.projectId !== event.projectId ||
+      retryMeta.orchestratorRunId !== event.runId
+    )
+      return { ok: false, reason: 'retired' };
+    const results = await ctx.step('delivery-publish', () =>
+      deps.publishDelivery({
+        store,
+        meta: retryMeta,
+        applicationUrl,
+        prTitleTrackerKey,
+        claimed: { attemptId: event.attemptId },
+      }),
+    );
+    const publishedPrs = results.map((result) => result.pr).filter(Boolean);
+    const trackerBound = Boolean(retryMeta.source?.bindingId && retryMeta.source?.resourceId);
+    const trackerDeferred =
+      trackerBound &&
+      publishedPrs.length > 0 &&
+      results.some((result) => result.eventType === 'v2.pr.failed');
+    if (publishedPrs.length && !trackerDeferred && trackerBound) {
+      await ctx.step('delivery-tracker', async () => {
+        try {
+          await publishTrackerDelivery(store, retryMeta, publishedPrs);
+        } catch {
+          await store.appendEvent({
+            executionId,
+            type: 'v2.tracker.failed',
+            summary: 'Tracker synchronization could not be scheduled after delivery retry',
+          });
+        }
+      });
+    }
+    await ctx.step('delivery-notify', async () => {
+      for (const result of results)
+        await store.appendEvent({ executionId, type: result.eventType, summary: result.summary });
+      if (trackerDeferred)
+        await store.appendEvent({
+          executionId,
+          type: 'v2.tracker.blocked',
+          summary: trackerDeferredSummary(publishedPrs.length, results.length),
+        });
+      await broadcast(intentId, { action: 'agent.pr', summary: 'Delivery status updated' });
+    });
+    return { ok: true };
+  }
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
     // against the suspended callback — there is no separate resume invocation.
@@ -415,16 +558,58 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return { ok: false, reason: 'not_a_start' };
   }
 
-  const meta = await ctx.step('load-meta', () =>
-    store.getExecution(executionId, { consistentRead: true }),
-  );
+  const meta = await ctx.step('load-meta', async () => {
+    const loaded = await store.getExecution(executionId, {
+      consistentRead: true,
+    });
+    // Version behavior in the existing first checkpoint. Old histories have no
+    // marker and retain their operation sequence; repair creates a new history.
+    // laneWaitPolicyVersion 1: lanes read their integration turn in durable
+    // steps (section.js waitForIntegrationTurn).
+    return loaded
+      ? {
+          ...loaded,
+          completionPolicyVersion: 1,
+          laneWaitPolicyVersion: 1,
+          autonomousLoopBackVersion: 1,
+          deliveryPolicyVersion: 1,
+        }
+      : null;
+  });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
   const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const credentialBinding = executionCredentialBinding(meta);
-  const invokeIntentRuntime = async (payload, runtimeSessionId) => {
+  // `gatewayGrantId` pins the grant's jti (runStage memoizes it per stage
+  // attempt) so a re-driven dispatch re-signs the SAME jti the stage callback
+  // later retires. `withGatewayGrant: false` sends a call that uses no
+  // execution data (the init-ws-start probe) without a grant, so it leaves no
+  // grant to retire.
+  const invokeIntentRuntime = async (
+    rawPayload,
+    runtimeSessionId,
+    { policy = null, gatewayGrantId = null, withGatewayGrant = true } = {},
+  ) => {
+    const gatewayScope =
+      withGatewayGrant && typeof deps.issueGatewayGrant === 'function'
+        ? gatewayScopeForCommand(rawPayload, {
+            projectId,
+            intentId: meta.intentId,
+            executionId,
+            policy,
+            engineData: deps.engineData === true,
+          })
+        : null;
+    const payload = gatewayScope
+      ? {
+          ...rawPayload,
+          gatewayGrant: gatewayGrantId
+            ? await deps.issueGatewayGrant(gatewayScope, { randomId: () => gatewayGrantId })
+            : await deps.issueGatewayGrant(gatewayScope),
+        }
+      : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
       return rawInvokeRuntime(payload, runtimeSessionId, runtimeTarget);
@@ -437,7 +622,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         credentialBinding,
         runtimeCapabilities: meta.environment,
       },
-      { issueGrant: deps.issueAgentCredentialGrant },
+      {
+        issueGrant: deps.issueAgentCredentialGrant,
+        readSandbox: async () => meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG,
+      },
     );
     return rawInvokeRuntime(
       {
@@ -505,6 +693,51 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // Guarded by the ownership token: a retired run (cancel/rewind relaunched the
   // intent under a new runId) fails the CAS and exits quietly instead of
   // clobbering the new run's META.
+  // A run retires each grant it issues, by jti, when that grant's use ends
+  // (runtimeStep below, and runStage for stage grants); its terminal outcome
+  // writes no execution-level retirement. That keeps grants issued after the
+  // run ended by someone else (a discussion, an artifact-edit derive) valid,
+  // and leaves nothing for a /start after FAILED to race.
+  const grantRetirement =
+    typeof deps.issueGatewayGrant === 'function' && typeof deps.retireGatewayGrant === 'function'
+      ? { retireGatewayGrant: deps.retireGatewayGrant, store, executionId }
+      : null;
+
+  // One synchronous engine command whose payload carries a Gateway grant: the
+  // jti is memoized in its own step (a re-driven invoke re-signs the same jti),
+  // the command runs in `stepName`, and once it returns — or throws — the jti
+  // is retired, fail-closed with the durable retry strategy. `body(invoke)` is
+  // the step body; `invoke` is invokeIntentRuntime pinned to that jti. An
+  // exhausted retirement leaves the jti on META and throws, which fails the run.
+  const runtimeStep = async (ctxArg, stepName, body, stepOptions) => {
+    if (!grantRetirement)
+      return ctxArg.step(stepName, () => body(invokeIntentRuntime), stepOptions);
+    const gatewayGrantId = await ctxArg.step(`grant-id-sync-${stepName}`, async () => randomUUID());
+    const invoke = (payload, session, options = {}) =>
+      invokeIntentRuntime(payload, session, { ...options, gatewayGrantId });
+    let result;
+    let failure = null;
+    try {
+      result = await ctxArg.step(stepName, () => body(invoke), stepOptions);
+    } catch (error) {
+      failure = error;
+    }
+    const retired = await retireGrantDurably(ctxArg, grantRetirement, {
+      stepKey: `sync-${stepName}`,
+      grant: { grantId: gatewayGrantId, executionId, outcome: failure ? 'error' : 'returned' },
+    });
+    // An unretired grant takes priority over the command's own error, which
+    // best-effort callers would otherwise swallow.
+    if (!retired) {
+      throw new GatewayGrantRetirementExhaustedError(
+        gatewayGrantId,
+        failure ? { cause: failure } : {},
+      );
+    }
+    if (failure) throw failure;
+    return result;
+  };
+
   const fail = async (reason, detail, structuredFailure = null) => {
     const message = detail ? `${reason}: ${detail}` : reason;
     const failure = {
@@ -559,10 +792,43 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return {
         runId: updated?.orchestratorRunId ?? token,
         orchestratorExpiresAt: updated?.orchestratorExpiresAt ?? expiresAt,
+        // Replay gate for the workspace initialization shape (see
+        // initWorkspace). Memoized with the claim, so a run that checkpointed
+        // before this field existed replays the legacy `init-ws` step.
+        initWsMode: INIT_WS_MODE_CALLBACK,
       };
     });
     runId = claim.runId;
     orchestratorExpiresAt = claim.orchestratorExpiresAt;
+    // A cancel/rewind/recompose/repair may have just retired this execution's
+    // grants up to the current second. The claim above
+    // replaced the run id, so no older writer can move that retirement later;
+    // wait until this clock — the one that stamps `iat` — is past it, so this
+    // run's first grant is not born retired. A failed read only risks such a
+    // grant being refused (consumers fail closed), so the run proceeds.
+    if (
+      typeof deps.issueGatewayGrant === 'function' &&
+      typeof deps.awaitGrantIssuance === 'function'
+    ) {
+      await ctx.step('await-grant-retirement', async () => {
+        try {
+          const { retiredAt, waitedMs, bounded } = await deps.awaitGrantIssuance(executionId);
+          if (bounded) {
+            logger.warn('gateway execution retirement is ahead of this clock', {
+              retiredAt,
+              waitedMs,
+            });
+          }
+          return { waitedMs };
+        } catch (error) {
+          logger.warn('gateway execution retirement could not be read', {
+            code: 'GATEWAY_GRANT_RETIREMENT_UNAVAILABLE',
+            error: error?.name ?? 'Error',
+          });
+          return { waitedMs: 0 };
+        }
+      });
+    }
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
@@ -572,9 +838,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         : null;
     const sessionId = sessionIdFor(intentId);
     const publishCheckpoint = async (stepName, sourceStageInstanceId = null) => {
-      const result = await ctx.step(stepName, async () => {
+      const result = await runtimeStep(ctx, stepName, async (invoke) => {
         try {
-          return await invokeIntentRuntime(
+          return await invoke(
             {
               command: 'create-workflow-checkpoint',
               projectId,
@@ -610,31 +876,33 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       'v2.workspace.initializing',
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
     );
-    const initResult = await ctx.step('init-ws', () =>
-      invokeIntentRuntime(
-        {
-          command: 'init-ws',
-          projectId,
-          intentId,
-          executionId,
-          repos: meta.repos ?? [],
-          branch: meta.branch,
-          baseBranch: meta.baseBranch,
-          baseBranches: meta.baseBranches,
-          gitProvider,
-          repoProviders: meta.repoProviders ?? null,
-          ...(gitAuthor ? { gitAuthor } : {}),
-          title: meta.title,
-          prompt: meta.prompt,
-          workflowId,
-          workflowVersion,
-          scope,
-          startedBy: meta.startedBy,
-          attachments: meta.attachments ?? [],
-        },
-        sessionId,
-      ),
-    );
+    const initResult = await initWorkspace(ctx, invokeIntentRuntime, {
+      mode: claim.initWsMode ?? null,
+      runtimeStep,
+      grantRetirement,
+      sessionId,
+      orchestratorRunId: runId,
+      stopIntentSession,
+      initPayload: {
+        projectId,
+        intentId,
+        executionId,
+        repos: meta.repos ?? [],
+        branch: meta.branch,
+        baseBranch: meta.baseBranch,
+        baseBranches: meta.baseBranches,
+        gitProvider,
+        repoProviders: meta.repoProviders ?? null,
+        ...(gitAuthor ? { gitAuthor } : {}),
+        title: meta.title,
+        prompt: meta.prompt,
+        workflowId,
+        workflowVersion,
+        scope,
+        startedBy: meta.startedBy,
+        attachments: meta.attachments ?? [],
+      },
+    });
     // The runtime returns {ok:false, reason} on checkout / vertex / seed failure;
     // it does NOT throw. Detect it here or the run would march on into stages
     // against an un-initialized workspace.
@@ -900,6 +1168,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
         store,
         suffix,
+        retireGatewayGrant:
+          typeof deps.issueGatewayGrant === 'function' &&
+          typeof deps.retireGatewayGrant === 'function'
+            ? deps.retireGatewayGrant
+            : null,
         ids: { projectId, intentId, executionId, orchestratorRunId: runId },
         workflowId,
         workflowVersion,
@@ -1043,7 +1316,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             const gate = await store.getHumanTask(executionId, humanTaskId, {
               consistentRead: true,
             });
-            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+            const answered = isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+            // Notification event: a human is needed. Inside this step, so the
+            // step sequence is unchanged and a replayed history doesn't publish.
+            // Never throws; does nothing without a bus.
+            if (!answered) {
+              await notifyGatePending(store, {
+                projectId,
+                intentId,
+                executionId,
+                humanTaskId,
+                stage: label,
+                gate,
+                meta: fresh ?? undefined,
+              });
+            }
+            return answered;
           });
         }
         if (!answeredEarly) {
@@ -1080,9 +1368,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Retired while parked? Cancel/rewind supersedes the pending gate and
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
-        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-        );
+        // An early answer's unused callback is released in this same step, so
+        // the operation sequence of runs in progress is unchanged.
+        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, async () => {
+          const gate = await store.getHumanTask(executionId, humanTaskId, {
+            consistentRead: true,
+          });
+          if (answeredEarly) {
+            await releaseUnusedGateCallback(releaseCallback, {
+              gate,
+              callbackId,
+              humanTaskId,
+              logger,
+            });
+          }
+          return gate;
+        });
         if (gateAfter?.status === 'superseded') {
           logger.info('run retired while parked', { humanTaskId });
           return {
@@ -1153,14 +1454,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ctx,
       store,
       invokeRuntime: invokeIntentRuntime,
+      runtimeStep,
       stopSession: stopIntentSession,
       broadcast,
+      releaseCallback,
       emitEvent,
       fail,
       executeStage,
       publishCheckpoint,
       ids: { projectId, intentId, executionId },
       runId: null, // stamped below once minted
+      completionPolicyVersion: meta.completionPolicyVersion ?? 0,
+      laneWaitPolicyVersion: meta.laneWaitPolicyVersion ?? 0,
       intentBranch: meta.branch,
       cloneBase: {
         repos: meta.repos ?? [],
@@ -1280,25 +1585,28 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           }
 
           if (outputArtifactTypes.length > 0) {
-            const derived = await ctx.step(`derive-artifacts-${stage.stageId}${suffix}`, () =>
-              invokeIntentRuntime(
-                {
-                  command: 'derive-artifacts',
-                  projectId,
-                  intentId,
-                  executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  sectionIndexes: segments
-                    .filter((candidate) => candidate.kind === 'section')
-                    .map((candidate) => candidate.index),
-                  artifactTypes: outputArtifactTypes,
-                  enrichment: deriveEnrichment,
-                  ...(requestedCli ? { requestedCli } : {}),
-                  ...(cliModels ? { cliModels } : {}),
-                  ...(tierModels ? { tierModels } : {}),
-                },
-                sessionId,
-              ),
+            const derived = await runtimeStep(
+              ctx,
+              `derive-artifacts-${stage.stageId}${suffix}`,
+              (invoke) =>
+                invoke(
+                  {
+                    command: 'derive-artifacts',
+                    projectId,
+                    intentId,
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId ?? null,
+                    sectionIndexes: segments
+                      .filter((candidate) => candidate.kind === 'section')
+                      .map((candidate) => candidate.index),
+                    artifactTypes: outputArtifactTypes,
+                    enrichment: deriveEnrichment,
+                    ...(requestedCli ? { requestedCli } : {}),
+                    ...(cliModels ? { cliModels } : {}),
+                    ...(tierModels ? { tierModels } : {}),
+                  },
+                  sessionId,
+                ),
             );
             if (!derived || derived.ok === false) {
               await emitEvent(
@@ -1321,20 +1629,23 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // the plan validator already rejects for its own section.)
           let unitPlanForGate = null;
           if (producesUnitDag) {
-            const promotion = await ctx.step(`promote-units-${stage.stageId}${suffix}`, () =>
-              invokeIntentRuntime(
-                {
-                  command: 'promote-units',
-                  projectId,
-                  intentId,
-                  executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  sectionIndexes: segments
-                    .filter((candidate) => candidate.kind === 'section')
-                    .map((candidate) => candidate.index),
-                },
-                sessionId,
-              ),
+            const promotion = await runtimeStep(
+              ctx,
+              `promote-units-${stage.stageId}${suffix}`,
+              (invoke) =>
+                invoke(
+                  {
+                    command: 'promote-units',
+                    projectId,
+                    intentId,
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId ?? null,
+                    sectionIndexes: segments
+                      .filter((candidate) => candidate.kind === 'section')
+                      .map((candidate) => candidate.index),
+                  },
+                  sessionId,
+                ),
             );
             if (!promotion || promotion.ok === false) {
               const out = await fail(
@@ -1610,29 +1921,66 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               : { offer: { offered: false }, recommended: false };
           const loopBack = loopBackLookup.offer;
           const overridable = overridableFindings(gateFindings);
+          // Any finding that refuses gate entry on its own: a blocking gate sensor
+          // that did not PASS (FAIL, INCONCLUSIVE, unavailable, timed out), a
+          // missing required artifact, or a terminal adversarial NOT-READY.
+          const blocked = gateFindings.some((item) => item.severity === 'blocking');
           // Whether this gate may be waived, and whether it may offer the
           // escalation. Both predicates are pure and both fail closed: anything
           // unexpected leaves `autoApprove` false, which opens the ordinary gate.
           let autoApprove = false;
+          let autoLoopBack = false;
           let autonomyGrantOffered = false;
           try {
             // "No finding" only means clean when the outputs were OBSERVED: the
             // evaluator deliberately skips the required-output check for an
-            // unobserved set, so an unobserved set halts here instead.
-            const outputsObserved =
+            // unobserved set, so an unobserved set halts here instead. A
+            // candidate list that could not be READ halts for the same reason:
+            // the jump and the waiver both need evidence, not its absence. A
+            // candidate that WAS read is put to the human at the gate, and
+            // neither the jump nor the waiver opens one, so it halts too.
+            const evidenceClear =
               outcome.result?.producedHeadsUnavailable !== true &&
-              Array.isArray(outcome.result?.producedHeads);
-            // Learning candidates and a loop-back recommendation are put to the
-            // human at the gate; a waived gate would drop them unseen, so a gate
-            // with either halts. That covers every recommendation: offered, at
-            // the cap (upstream halts there too), or with no target. A candidate
-            // list that could not be READ halts for the same reason as an
-            // unobserved output set: the waiver needs evidence, not its absence.
+              Array.isArray(outcome.result?.producedHeads) &&
+              !learningCandidateLookup.unavailable &&
+              learningCandidates.length === 0;
+            // Upstream takes the Build-and-Test jump itself under autonomy, so an
+            // offered loop-back is TAKEN rather than approved — and it is decided
+            // first, because a stage whose agent asked to go back to code
+            // generation is not a stage to auto-approve.
+            //
+            // But the jump is the autonomous answer to ONE thing: the agent's typed
+            // recommendation that the build-and-test results need a code fix. It is
+            // not an answer to a blocking finding. A blocking gate sensor, a missing
+            // required artifact, or an unresolved reviewer objection means the
+            // evidence itself cannot be trusted — rewinding on that would discard
+            // the finding and silently re-run the work, which is precisely the
+            // halt-and-ask case upstream refuses to let autonomy override. Advisory
+            // findings do NOT withhold the jump: failing tests routinely arrive
+            // alongside advisory notes, and halting on those would make the
+            // autonomous loop-back unreachable in practice.
+            //
+            // This is the one case where a recorded recommendation does not open
+            // the human gate (see `autoApprove` below): the jump writes the gate
+            // row itself, already answered, so the recommendation is still on the
+            // record.
+            //
+            // An execution whose first checkpoint predates the jump has the
+            // human gate's operations in its history at this point, so it keeps
+            // opening the gate.
+            autoLoopBack =
+              meta.autonomousLoopBackVersion >= 1 &&
+              autonomyWaivable &&
+              evidenceClear &&
+              loopBack.offered &&
+              !blocked;
+            // A loop-back recommendation is put to the human at the gate; a
+            // waived gate would drop it unseen, so a gate with one halts. That
+            // covers every recommendation: offered, at the cap (upstream halts
+            // there too), or with no target.
             autoApprove =
               autonomyWaivable &&
-              outputsObserved &&
-              !learningCandidateLookup.unavailable &&
-              learningCandidates.length === 0 &&
+              evidenceClear &&
               !loopBackLookup.recommended &&
               gateFindings.length === 0;
             autonomyGrantOffered = grantAutonomyOffered({
@@ -1644,6 +1992,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           } catch (error) {
             logger.error('Construction autonomy decision failed; opening the human gate', error);
             autoApprove = false;
+            autoLoopBack = false;
             autonomyGrantOffered = false;
           }
           // Blocking findings require an explicit override; the loop-back, when
@@ -1697,49 +2046,119 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   answeredByName: AUTONOMOUS_GATE_INPUT,
                 },
               }
-            : await awaitEngineGate(ctx, sectionToolkit, {
-                name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-                kind: 'validation',
-                stageInstanceId: stage.stageInstanceId ?? null,
-                prompt: [
-                  validationPrompt({
-                    stage,
-                    outputArtifactTypes,
-                    round: validationRound,
-                    skipTargets: gateSkipTargets,
-                    nextStageId,
-                    recomposeTargets: gateRecomposeTargets,
-                    findings: gateFindings,
-                    learnings: learningsRitual ? { candidates: learningCandidates } : null,
-                    loopBack,
-                  }),
-                  // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
-                  // plan (units, waves, skeleton pick, skip matrix) and accepts
-                  // structured overrides on the approve answer.
-                  ...(fanoutGateNeeded
-                    ? [
-                        '',
-                        fanoutGateAddendum({
-                          sectionIndex: fanoutSection.index,
-                          unitPlan: unitPlanForGate,
-                          sectionStages: fanoutSection.stages,
-                          skeleton: defaultSkeletonFor(unitPlanForGate),
-                        }),
-                      ]
-                    : []),
-                ].join('\n'),
-                options: gateOptions,
-                nextStageId,
-                ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
-                ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
-                ...(gateFindings.length ? { findings: gateFindings } : {}),
-                ...(learningsRitual ? { learningsRitual: true } : {}),
-                // The reason, the outcome and its one-sentence explanation, for every
-                // outcome the agent recommended — not only the one that offers the
-                // option. `loopBackTarget` stays offered-only: the answer endpoint and
-                // the container read it as the engine's offer.
-                ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
-              });
+            : autoLoopBack
+              ? // The jump autonomy takes is STORED as the validation gate row a
+                // human loop-back leaves, already answered, under the id this gate
+                // would have had. The target's re-run resumes from that row (it
+                // archives the rewound stages and reads the reason from it), the
+                // stage resets are keyed on its id, and the id carries the run, so
+                // a relaunch at the same stage and round is a new decision. From
+                // here the run takes the human loop-back path unchanged. One step:
+                // a replay finds the row answered and reads it back. A cancel that
+                // superseded the row before it was answered retires the run, as it
+                // does for any engine gate.
+                asEngineGateResult(
+                  await ctx.step(
+                    `auto-loop-back-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                    async () => {
+                      // A jump opens no gate, so this path never parks META and
+                      // never un-parks it — and the un-park is where a human
+                      // gate re-proves this run still owns a running intent. A
+                      // cancel or a relaunch that lands before the jump has no
+                      // row to supersede yet, so the proof is taken here, as an
+                      // ownership-fenced META write, before anything is
+                      // written: a lost fence rewinds no stage, spends no
+                      // loop-back and records nothing. Same idiom the lane
+                      // gates use (gate-callback.js): re-stamp the token under
+                      // itself, which leaves the row otherwise untouched.
+                      try {
+                        await store.updateExecution({
+                          executionId,
+                          orchestratorRunId: runId,
+                          fromStatus: 'RUNNING',
+                          ...(runId ? { ifOrchestratorRunId: runId } : {}),
+                        });
+                      } catch (error) {
+                        if (error?.name === 'ConditionalCheckFailedException') return null;
+                        throw error;
+                      }
+                      const { open, answer } = autonomousLoopBackGate({
+                        humanTaskId: `eg-validation-${stage.stageInstanceId ?? stage.stageId}-${round}-${runId}`,
+                        stage,
+                        loopBack,
+                        findings: gateFindings,
+                      });
+                      await store
+                        .createHumanTask({
+                          executionId,
+                          ...open,
+                          ifOrchestratorRunId: runId,
+                        })
+                        .catch((error) => {
+                          if (error?.name !== 'ConditionalCheckFailedException') throw error;
+                        });
+                      return (
+                        (await store.answerHumanTask({
+                          executionId,
+                          humanTaskId: open.humanTaskId,
+                          ...answer,
+                          ifOrchestratorRunId: runId,
+                        })) ??
+                        (await store.getHumanTask(executionId, open.humanTaskId, {
+                          consistentRead: true,
+                        }))
+                      );
+                    },
+                  ),
+                )
+              : await awaitEngineGate(ctx, sectionToolkit, {
+                  name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                  kind: 'validation',
+                  stageLabel: stage.stageId,
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                  prompt: [
+                    validationPrompt({
+                      stage,
+                      outputArtifactTypes,
+                      round: validationRound,
+                      skipTargets: gateSkipTargets,
+                      nextStageId,
+                      recomposeTargets: gateRecomposeTargets,
+                      findings: gateFindings,
+                      learnings: learningsRitual ? { candidates: learningCandidates } : null,
+                      loopBack,
+                    }),
+                    // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
+                    // plan (units, waves, skeleton pick, skip matrix) and accepts
+                    // structured overrides on the approve answer.
+                    ...(fanoutGateNeeded
+                      ? [
+                          '',
+                          fanoutGateAddendum({
+                            sectionIndex: fanoutSection.index,
+                            unitPlan: unitPlanForGate,
+                            sectionStages: fanoutSection.stages,
+                            skeleton: defaultSkeletonFor(unitPlanForGate, {
+                              legacy: !meta.completionPolicyVersion,
+                            }),
+                          }),
+                        ]
+                      : []),
+                  ].join('\n'),
+                  options: gateOptions,
+                  nextStageId,
+                  ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
+                  ...(gateRecomposeTargets.length
+                    ? { recomposeTargets: gateRecomposeTargets }
+                    : {}),
+                  ...(gateFindings.length ? { findings: gateFindings } : {}),
+                  ...(learningsRitual ? { learningsRitual: true } : {}),
+                  // The reason, the outcome and its one-sentence explanation, for every
+                  // outcome the agent recommended — not only the one that offers the
+                  // option. `loopBackTarget` stays offered-only: the answer endpoint and
+                  // the container read it as the engine's offer.
+                  ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
+                });
           // The gate holds the offer now, so the next validation round starts
           // without a recommendation unless the agent records a new one.
           if (loopBackLookup.recommended) {
@@ -1802,6 +2221,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     stageInstanceId: stage.stageInstanceId,
                     loopBackId: validation.gate.humanTaskId,
                     countsAgainstCap: false,
+                    ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
                   }),
               );
               if (!recommenderReset) {
@@ -1817,25 +2237,43 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     executionId,
                     stageInstanceId: targetStage.stageInstanceId,
                     loopBackId: validation.gate.humanTaskId,
+                    ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
                   }),
               );
               if (!reset) {
                 throw new Error('target stage row was not reset; loop-back cap was not recorded');
               }
             } catch (error) {
+              if (autoLoopBack && runId) {
+                const live = await store.getExecution(executionId, { consistentRead: true });
+                if (live?.orchestratorRunId !== runId || live.status !== 'RUNNING') {
+                  return { ok: false, reason: 'retired', intentId };
+                }
+              }
               const detail = error?.message ?? String(error);
               logger.error('Loop-back stage reset failed', error);
-              await ctx.step(
+              const failureWrite = await ctx.step(
                 `loop-back-reset-failed-stage-${resetFailureStage.stageInstanceId}-${round}`,
                 () =>
-                  store.updateStageState({
-                    executionId,
-                    stageInstanceId: resetFailureStage.stageInstanceId,
-                    state: 'FAILED',
-                    runtimeError: `loopback_reset_failed: ${detail}`,
-                    completedAt: nowIso(),
-                  }),
+                  store
+                    .updateStageState({
+                      executionId,
+                      stageInstanceId: resetFailureStage.stageInstanceId,
+                      state: 'FAILED',
+                      runtimeError: `loopback_reset_failed: ${detail}`,
+                      completedAt: nowIso(),
+                      ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
+                    })
+                    .catch((writeError) => {
+                      if (autoLoopBack && writeError?.name === 'ConditionalCheckFailedException') {
+                        return null;
+                      }
+                      throw writeError;
+                    }),
               );
+              if (autoLoopBack && failureWrite === null) {
+                return { ok: false, reason: 'retired', intentId };
+              }
               return await fail('loopback_reset_failed', `${resetFailureStage.stageId}: ${detail}`);
             }
             await emitEvent(
@@ -2139,11 +2577,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             // stage is already approved and the human's decision stands.
             const offeredLearning = learningsRitual ? gateLearnings(validation.gate?.answer) : '';
             if (offeredLearning) {
-              await ctx.step(
+              await runtimeStep(
+                ctx,
                 `record-learning-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-                async () => {
+                async (invoke) => {
                   try {
-                    return await invokeIntentRuntime(
+                    return await invoke(
                       {
                         command: 'record-learning',
                         projectId,
@@ -2181,12 +2620,26 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   });
                   const effective = {
                     walkingSkeleton:
-                      overrides.walkingSkeleton ?? defaultSkeletonFor(unitPlanForGate),
+                      overrides.walkingSkeleton ??
+                      defaultSkeletonFor(unitPlanForGate, {
+                        legacy: !meta.completionPolicyVersion,
+                      }),
                     skipMatrix: overrides.skipMatrix ?? unitPlanForGate.skipMatrix ?? {},
                   };
+                  const problem = skeletonProblem(
+                    unitPlanForGate,
+                    effective.walkingSkeleton,
+                    fanoutSection.stages,
+                  );
+                  if (meta.completionPolicyVersion && problem) return { ...effective, problem };
                   try {
-                    await store.updateUnitPlanDecisions({ executionId, ...effective });
-                  } catch {
+                    await store.updateUnitPlanDecisions({
+                      executionId,
+                      ...effective,
+                      ...(meta.completionPolicyVersion ? { ifOrchestratorRunId: runId } : {}),
+                    });
+                  } catch (error) {
+                    if (meta.completionPolicyVersion) throw error;
                     /* promotion defaults stand when the patch write is lost */
                   }
                   if (overrides.rejected.length) {
@@ -2204,6 +2657,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   return effective;
                 },
               );
+              if (decisions.problem)
+                return await fail('invalid_walking_skeleton', decisions.problem);
               await emitEvent(
                 ctx,
                 `fanout-approved-${stage.stageId}-${round}`,
@@ -2373,27 +2828,80 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     }
 
+    // A grant whose retirement exhausted its retries in a lane that was later
+    // retried or skipped is still on META: retire it before the run reports
+    // success, or fail the run (the jti stays recorded for the next relaunch).
+    if (grantRetirement) {
+      const pendingRetired = await retirePendingGrantsDurably(ctx, grantRetirement);
+      if (!pendingRetired) {
+        return await fail(
+          GATEWAY_GRANT_RETIREMENT_FAILURE,
+          'gateway grants of the run could not be retired',
+        );
+      }
+    }
+
     // Terminal success — CAS on the ownership token: a retired run (relaunched
     // under a new runId while this one was still unwinding) exits quietly. The
     // verdict is the step result so a durable replay sees it too.
-    const ownedFinish = await ctx.step('finish-succeeded', async () => {
+    let ownedFinish;
+    if (meta.completionPolicyVersion >= 1) {
+      let completion;
       try {
-        await store.updateExecution({
-          executionId,
-          projectId,
-          status: 'SUCCEEDED',
-          startedAt: meta.startedAt,
-          completedAt: nowIso(),
-          failureReason: null,
-          failure: null,
-          ...(runId ? { ifOrchestratorRunId: runId } : {}),
-        });
-        return true;
-      } catch (e) {
-        if (e?.name === 'ConditionalCheckFailedException') return false;
-        throw e;
+        completion = await ctx.step('finish-completion-v1', () =>
+          finalizeUnitCompletion({
+            store,
+            executionId,
+            runId,
+            plan: planResult.plan,
+            expectedUnitPlanIdentity: sectionToolkit.completionUnitPlan
+              ? unitPlanIdentity(sectionToolkit.completionUnitPlan)
+              : null,
+          }),
+        );
+      } catch {
+        return fail(
+          'completion_unverified',
+          'Completion state could not be read or committed. Work is preserved; review diagnostics before retrying.',
+          null,
+          { fromStatus: 'RUNNING' },
+        );
       }
-    });
+      if (completion.state === 'retired') return { ok: false, reason: 'retired', intentId };
+      if (!['complete', 'partial'].includes(completion.state)) {
+        await emitEvent(
+          ctx,
+          'completion-failed-event-v2',
+          'v2.execution.failed',
+          completion.message,
+        );
+        return {
+          ok: false,
+          reason:
+            completion.state === 'unknown' ? 'completion_unverified' : 'completion_inconsistent',
+          intentId,
+        };
+      }
+      ownedFinish = true;
+    } else
+      ownedFinish = await ctx.step('finish-succeeded', async () => {
+        try {
+          await store.updateExecution({
+            executionId,
+            projectId,
+            status: 'SUCCEEDED',
+            startedAt: meta.startedAt,
+            completedAt: nowIso(),
+            failureReason: null,
+            failure: null,
+            ...(runId ? { ifOrchestratorRunId: runId } : {}),
+          });
+          return true;
+        } catch (e) {
+          if (e?.name === 'ConditionalCheckFailedException') return false;
+          throw e;
+        }
+      });
     if (!ownedFinish) {
       logger.info('retired run skipped terminal success write');
       return { ok: false, reason: 'retired', intentId };
@@ -2405,18 +2913,75 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // intent branch onto the base branch, via the source-control service (the
     // v1 unmerged-branch guard lives inside createPullRequest). PR problems
     // never un-succeed the run — every outcome is a loud timeline event. A
-    const prResults = await ctx.step('open-pr', async () =>
-      openIntentPrs({
-        openPr,
+    const prResults = await ctx.step('open-pr', async () => {
+      if (meta.deliveryPolicyVersion) {
+        try {
+          return await deps.publishDelivery({
+            store,
+            meta: { ...meta, orchestratorRunId: runId },
+            applicationUrl,
+            prTitleTrackerKey,
+          });
+        } catch {
+          // Store/provider uncertainty is delivery uncertainty, never a stage failure.
+          return [
+            {
+              eventType: 'v2.pr.failed',
+              summary:
+                'Delivery could not be verified. Check delivery to reconcile provider state before retrying.',
+            },
+          ];
+        }
+      }
+
+      const verifyCompletion = async () => {
+        const records = await store.getCompletionRecords(executionId);
+        const receipt = records.meta?.completionValidation;
+        if (
+          records.meta?.orchestratorRunId !== runId ||
+          records.meta?.status !== 'SUCCEEDED' ||
+          receipt?.runId !== runId ||
+          !['complete', 'partial'].includes(receipt?.state) ||
+          receipt?.unitPlanIdentity !== unitPlanIdentity(records.unitPlan)
+        )
+          throw new Error(
+            'Execution ownership, plan or completion decision changed before publication',
+          );
+        const completion = unitCompletion(records, completionSections(planResult.plan));
+        if (!['complete', 'partial'].includes(completion.state))
+          throw new Error(completionMessage(completion));
+      };
+      if (meta.completionPolicyVersion >= 1) {
+        try {
+          await verifyCompletion();
+        } catch {
+          return [
+            {
+              eventType: 'v2.pr.failed',
+              summary:
+                'Final publication withheld: completion evidence is incomplete or unavailable. Work is preserved; review completion diagnostics.',
+            },
+          ];
+        }
+      }
+      return openIntentPrs({
+        openPr:
+          meta.completionPolicyVersion >= 1
+            ? async (input) => {
+                await verifyCompletion();
+                return openPr(input);
+              }
+            : openPr,
         comparePrBranches,
         store,
         meta,
         executionId,
         runId,
         applicationUrl,
+        prTitleTrackerKey,
         log: (m) => logger.info(m),
-      }),
-    );
+      });
+    });
     for (let i = 0; i < prResults.length; i++) {
       const r = prResults[i];
       await emitEvent(ctx, `pr-event-${i}`, r.eventType, r.summary);
@@ -2426,21 +2991,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // un-succeeds a run whose PR already exists on the remote.
     const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
     if (openedPrs.length > 0) {
-      if (meta.source?.bindingId && meta.source?.resourceId) {
+      if (
+        meta.source?.bindingId &&
+        meta.source?.resourceId &&
+        (!meta.deliveryPolicyVersion ||
+          !prResults.some((result) => result.eventType === 'v2.pr.failed'))
+      ) {
         const published = await ctx.step('publish-tracker-sync', async () => {
           try {
-            await store.putTrackerSync({
-              executionId,
-              projectId,
-              intentId,
-              source: meta.source,
-              pullRequests: openedPrs,
-              intentTitle: meta.title ?? null,
-              workflowId,
-              workflowVersion,
-              scope,
-              branch: meta.branch ?? null,
-            });
+            await publishTrackerDelivery(store, meta, openedPrs);
             return true;
           } catch (error) {
             logger.error('tracker sync publication failed', error);
@@ -2455,10 +3014,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             'Tracker synchronization could not be scheduled',
           );
         }
+      } else if (meta.source?.bindingId && meta.source?.resourceId) {
+        // Only reachable with deliveryPolicyVersion: new histories, new step.
+        await emitEvent(
+          ctx,
+          'tracker-sync-deferred',
+          'v2.tracker.blocked',
+          trackerDeferredSummary(openedPrs.length, prResults.length),
+        );
       }
-      const recordResult = await ctx.step('record-pr', async () => {
+      const recordResult = await runtimeStep(ctx, 'record-pr', async (invoke) => {
         try {
-          return await invokeIntentRuntime(
+          return await invoke(
             { command: 'record-pr', projectId, intentId, executionId, prs: openedPrs },
             sessionId,
           );
@@ -2486,6 +3053,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // at the durable-function boundary (module INIT crashes used to fail with
     // zero user-visible feedback).
     logger.error('orchestrator failed', err);
+    if (err instanceof GatewayGrantRetirementExhaustedError) {
+      return await fail(GATEWAY_GRANT_RETIREMENT_FAILURE, err.message);
+    }
     return await fail('orchestrator_error', err?.message ?? String(err));
   }
 };
@@ -2508,6 +3078,153 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 // that dies mid-stage surfaces here in minutes instead of hours.
 const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
 const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// Workspace initialization (clone, intent-branch publish, Intent anchor, state
+// seed). The synchronous `init-ws` step holds the whole clone inside one
+// orchestrator Lambda invocation, so a large repository outlives the 900 s
+// function timeout and the durable retry lands on a half-written checkout.
+// Runs whose claim carries INIT_WS_MODE_CALLBACK instead dispatch
+// `init-ws-start` and suspend on a durable callback, mirroring runStage.
+//
+// Replay compatibility: the mode rides the memoized `mint-run-id` result, so a
+// run that checkpointed under the old code replays exactly `init-ws`; only new
+// runs use the probe/callback operation names.
+//
+// Older environment images: a published environment revision pins the
+// AgentCore container it was built from, and one built before init-ws-start
+// answers `unknown command`. The side-effect-free probe (no callbackId, so a
+// current container refuses with missing_callback_id) detects that BEFORE a
+// callback exists, and such runs keep the synchronous step.
+//
+// Every outcome is returned in init-ws's own {ok, reason, detail} shape so the
+// caller's single decode path is unchanged.
+export const INIT_WS_MODE_CALLBACK = 'callback';
+// Bounds a clone that is still heartbeating but never finishes; generous
+// because a repository's size is not known up front.
+const INIT_WS_CALLBACK_TIMEOUT = { hours: 2 };
+const INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// The container answers an unregistered command with HTTP 400, which AgentCore
+// raises as RuntimeClientError ("Received error (400) from runtime") rather
+// than returning the body. The probe sends a command and valid JSON, so a 400
+// from the runtime can only mean the command is unknown. A body-shaped
+// `unknown command` error is accepted too (direct/local transports).
+const isUnknownCommandResponse = (res) =>
+  typeof res?.error === 'string' && res.error.startsWith('unknown command');
+const isUnknownCommandError = (err) =>
+  err?.name === 'RuntimeClientError' && /\(400\)/.test(err?.message ?? '');
+
+const initWorkspace = async (
+  ctx,
+  invokeRuntime,
+  {
+    mode,
+    runtimeStep,
+    grantRetirement,
+    sessionId,
+    orchestratorRunId,
+    initPayload,
+    stopIntentSession,
+  },
+) => {
+  const runSynchronously = () =>
+    runtimeStep(ctx, 'init-ws', (invoke) =>
+      invoke({ command: 'init-ws', ...initPayload }, sessionId),
+    );
+  if (mode !== INIT_WS_MODE_CALLBACK) return runSynchronously();
+
+  // The probe is refused before the runtime reads any execution data, so it
+  // carries no grant.
+  const support = await ctx.step('init-ws-probe', async () => {
+    try {
+      const res = await invokeRuntime(
+        { command: 'init-ws-start', executionId: initPayload.executionId },
+        sessionId,
+        { withGatewayGrant: false },
+      );
+      return { callback: !isUnknownCommandResponse(res) };
+    } catch (err) {
+      if (isUnknownCommandError(err)) return { callback: false };
+      // Transport failures (cold-start timeout, throttling) keep the durable
+      // step's retry behavior, exactly as the synchronous init-ws step does.
+      throw err;
+    }
+  });
+  if (!support?.callback) return runSynchronously();
+
+  const [initDone, callbackId] = await ctx.createCallback('init-ws-cb', {
+    timeout: INIT_WS_CALLBACK_TIMEOUT,
+    heartbeatTimeout: INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT,
+  });
+  // The background job uses the dispatch's grant until it completes the
+  // callback, so the jti is memoized for the dispatch (a re-driven dispatch
+  // re-signs the same jti) and retired once the callback is in, as runStage
+  // does for a stage attempt.
+  const gatewayGrantId = grantRetirement
+    ? await ctx.step('grant-id-async-init-ws', async () => randomUUID())
+    : null;
+  const retireGrant = (outcome) =>
+    gatewayGrantId
+      ? retireGrantDurably(ctx, grantRetirement, {
+          stepKey: 'async-init-ws',
+          grant: { grantId: gatewayGrantId, executionId: grantRetirement.executionId, outcome },
+        })
+      : true;
+  const settle = async (result) => {
+    if (!(await retireGrant(result.ok === false ? 'error' : 'returned'))) {
+      throw new GatewayGrantRetirementExhaustedError(gatewayGrantId);
+    }
+    return result;
+  };
+  let dispatch;
+  try {
+    dispatch = await ctx.step('init-ws-dispatch', () =>
+      invokeRuntime(
+        { command: 'init-ws-start', ...initPayload, orchestratorRunId, callbackId },
+        sessionId,
+        { gatewayGrantId },
+      ),
+    );
+  } catch (error) {
+    if (!(await retireGrant('error'))) {
+      throw new GatewayGrantRetirementExhaustedError(gatewayGrantId, { cause: error });
+    }
+    throw error;
+  }
+  // The accept only says "job started"; a refusal (a concurrent init job,
+  // heartbeat channel unavailable) fails initialization here.
+  if (!dispatch || dispatch.ok === false || dispatch.error) {
+    return settle({
+      ok: false,
+      reason: dispatch?.reason ?? 'init_ws_dispatch_failed',
+      detail: dispatch?.detail ?? dispatch?.error ?? null,
+    });
+  }
+  try {
+    // Callback serdes is pass-through: the container's body arrives as the raw
+    // JSON string (see runStage).
+    const raw = await initDone;
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!result || typeof result !== 'object') {
+      return settle({ ok: false, reason: 'init_ws_bad_callback_result' });
+    }
+    return settle(result);
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return settle({ ok: false, reason: 'init_ws_bad_callback_result', detail: err.message });
+    }
+    // Callback timeout / heartbeat expiry (dead container) / explicit failure.
+    // The container job has no deadline of its own, so a clone that outlived
+    // the callback would keep the session busy and its activeJobs reservation
+    // would refuse a retry. Stop the session before the run is marked FAILED.
+    await ctx.step('init-ws-stop', () => stopIntentSession(sessionId));
+    return settle({
+      ok: false,
+      reason: 'init_ws_callback_failed',
+      detail: err?.message ?? String(err),
+    });
+  }
+};
 
 const runStage = async (
   ctx,
@@ -2554,6 +3271,9 @@ const runStage = async (
     // callback result arrives to report the id.
     stageInstanceId,
     store,
+    // Records the attempt's grant jti as retired once its callback arrives.
+    // Null when the deployment issues no grant or has no retirement table.
+    retireGatewayGrant = null,
   },
 ) => {
   // The attempt key names every durable identity for this stage attempt. It
@@ -2571,6 +3291,36 @@ const runStage = async (
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
   });
 
+  // The grant's jti, memoized per attempt: a re-driven dispatch step re-signs
+  // the same jti, so the one retirement below covers every token this attempt
+  // handed the runtime. A resume leg is a new attempt and gets a new jti.
+  const gatewayGrantId = retireGatewayGrant
+    ? await ctx.step(`grant-id-${attemptKey}`, async () => randomUUID())
+    : null;
+
+  // End-of-stage retirement: once the callback (or its timeout/failure) is in,
+  // the runtime has no more legitimate use for the grant. Fail-closed: the
+  // step throws on a write failure and is retried; the attempt does not
+  // settle until the jti is retired. Returns false once retries are exhausted
+  // (the jti is then recorded on META by retireGrantDurably).
+  const retireGrant = async (result) => {
+    if (!gatewayGrantId) return true;
+    return retireGrantDurably(
+      ctx,
+      { retireGatewayGrant, store, executionId: ids.executionId },
+      {
+        stepKey: attemptKey,
+        grant: {
+          grantId: gatewayGrantId,
+          executionId: ids.executionId,
+          stageId: stage.stageId,
+          stageCallbackId,
+          outcome: typeof result?.state === 'string' ? result.state : null,
+        },
+      },
+    );
+  };
+
   const reconcileFailure = async (result) => {
     if (result?.state !== 'FAILED' || !stageInstanceId) return result;
     await ctx.step(`reconcile-stage-${attemptKey}`, () =>
@@ -2584,68 +3334,121 @@ const runStage = async (
     return result;
   };
 
-  const dispatch = await ctx.step(`run-${attemptKey}`, async () =>
-    invokeRuntime(
-      {
-        command: 'run-stage-start',
-        // Launch-latency anchor (cold start metric): stamped at dispatch,
-        // INSIDE the step so a memoized replay never re-stamps it. The
-        // container computes agentLaunchMs = accept − dispatchedAt, covering
-        // the InvokeAgentRuntime hop + any microVM cold start.
-        dispatchedAt: nowIso(),
-        ...ids,
-        stageId: stage.stageId,
-        // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
-        // the slug on every row/event/broadcast, and scopes the prompt.
-        unitSlug,
-        sectionIndex,
-        workflowId,
-        workflowVersion,
-        ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
-        ...(methodologyPins ? { methodologyPins } : {}),
-        ...(methodologyRelease ? { methodologyRelease } : {}),
-        scope,
-        ...(skipStageIds?.length ? { skipStageIds } : {}),
-        ...(composedGrid ? { composedGrid } : {}),
-        ...(policyScope ? { policyScope } : {}),
-        ...(intentSettings ? { intentSettings } : {}),
-        ...(cliModels ? { cliModels } : {}),
-        ...(tierModels ? { tierModels } : {}),
-        ...(requestedCli ? { requestedCli } : {}),
-        ...(mcpServersByTier ? { mcpServersByTier } : {}),
-        ...(customRules ? { customRules } : {}),
-        ...(attachments ? { attachments } : {}),
-        // Repository and branch references for source self-heal. AgentCore
-        // resolves a short-lived credential directly from the broker.
-        ...cloneInputs,
-        resumeFrom: resumeFrom ?? null,
-        // The validation revision the checkpoint receipts are scoped to. Sent
-        // only for a stage with a resolved release policy and only after a
-        // "Request changes", so every other payload is unchanged.
-        ...(stage.policy && validationRound ? { validationRound } : {}),
-        // The gate the revision's feedback lives on, sent under the same
-        // condition. A later leg of the revision resumes from whatever gate
-        // parked it, so the gate it resumes is not the one that asked for
-        // changes; naming the validation gate is what keeps the personas on the
-        // real feedback.
-        ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
-        reviewFeedback: reviewFeedback
-          ? {
-              batchId: reviewFeedback.batchId ?? null,
-              prompt: reviewFeedback.prompt,
-              targets: reviewFeedback.targets ?? [],
-            }
-          : null,
-        stageCallbackId,
-      },
-      sessionId,
-    ),
-  );
+  // Every outcome of the attempt — verdict, refusal, bad body, callback
+  // timeout or failure — ends the grant's legitimate use.
+  // An unretired grant fails the attempt whatever its verdict. The worker may
+  // already have written its own verdict (SUCCEEDED, WAITING_FOR_HUMAN) to the
+  // attempt row, which failRunningStageAttempt would leave alone, so the row is
+  // failed by the retirement-specific reconciliation, fenced by this attempt's
+  // callback id and run.
+  const settle = async (result) => {
+    if (!(await retireGrant(result))) {
+      if (stageInstanceId) {
+        await ctx.step(`reconcile-stage-grant-${attemptKey}`, () =>
+          store.failStageAttemptForGrantRetirement({
+            executionId: ids.executionId,
+            stageInstanceId,
+            stageCallbackId,
+            orchestratorRunId: ids.orchestratorRunId ?? null,
+            runtimeError: GATEWAY_GRANT_RETIREMENT_FAILURE,
+          }),
+        );
+      }
+      return {
+        ok: false,
+        state: 'FAILED',
+        reason: GATEWAY_GRANT_RETIREMENT_FAILURE,
+        detail: `stage verdict ${typeof result?.state === 'string' ? result.state : 'unknown'}`,
+      };
+    }
+    return reconcileFailure(result);
+  };
+
+  // A dispatch that throws (transport error after the runtime may have
+  // accepted the job) still handed the grant out: retire it before the error
+  // reaches the run's failure path.
+  let dispatch;
+  try {
+    dispatch = await ctx.step(`run-${attemptKey}`, async () => {
+      // gateway_only: a pinned (or legacy inline) config with direct MCP
+      // servers never reaches the runtime. Decided inside the existing
+      // dispatch step, so step names and order are unchanged for replay; the
+      // refusal settles like any other dispatch refusal below.
+      if (gatewayOnlyMcp() && hasDirectMcpServers(mcpServersByTier)) {
+        return {
+          ok: false,
+          reason: RUNTIME_MCP_GATEWAY_ONLY,
+          detail: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+        };
+      }
+      return invokeRuntime(
+        {
+          command: 'run-stage-start',
+          // Launch-latency anchor (cold start metric): stamped at dispatch,
+          // INSIDE the step so a memoized replay never re-stamps it. The
+          // container computes agentLaunchMs = accept − dispatchedAt, covering
+          // the InvokeAgentRuntime hop + any microVM cold start.
+          dispatchedAt: nowIso(),
+          ...ids,
+          stageId: stage.stageId,
+          // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
+          // the slug on every row/event/broadcast, and scopes the prompt.
+          unitSlug,
+          sectionIndex,
+          workflowId,
+          workflowVersion,
+          ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
+          ...(methodologyPins ? { methodologyPins } : {}),
+          ...(methodologyRelease ? { methodologyRelease } : {}),
+          scope,
+          ...(skipStageIds?.length ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+          ...(policyScope ? { policyScope } : {}),
+          ...(intentSettings ? { intentSettings } : {}),
+          ...(cliModels ? { cliModels } : {}),
+          ...(tierModels ? { tierModels } : {}),
+          ...(requestedCli ? { requestedCli } : {}),
+          ...(mcpServersByTier ? { mcpServersByTier } : {}),
+          ...(customRules ? { customRules } : {}),
+          ...(attachments ? { attachments } : {}),
+          // Repository and branch references for source self-heal. AgentCore
+          // resolves a short-lived credential directly from the broker.
+          ...cloneInputs,
+          resumeFrom: resumeFrom ?? null,
+          // The validation revision the checkpoint receipts are scoped to. Sent
+          // only for a stage with a resolved release policy and only after a
+          // "Request changes", so every other payload is unchanged.
+          ...(stage.policy && validationRound ? { validationRound } : {}),
+          // The gate the revision's feedback lives on, sent under the same
+          // condition. A later leg of the revision resumes from whatever gate
+          // parked it, so the gate it resumes is not the one that asked for
+          // changes; naming the validation gate is what keeps the personas on the
+          // real feedback.
+          ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
+          reviewFeedback: reviewFeedback
+            ? {
+                batchId: reviewFeedback.batchId ?? null,
+                prompt: reviewFeedback.prompt,
+                targets: reviewFeedback.targets ?? [],
+              }
+            : null,
+          stageCallbackId,
+        },
+        sessionId,
+        { policy: stage.policy ?? null, gatewayGrantId },
+      );
+    });
+  } catch (error) {
+    if (!(await retireGrant({ state: 'FAILED' }))) {
+      throw new GatewayGrantRetirementExhaustedError(gatewayGrantId, { cause: error });
+    }
+    throw error;
+  }
   // The accept response only says "job started" — a refusal (unknown command on
   // an old container, duplicate job, missing fields) fails the stage HERE; the
   // verdict for an accepted job always travels through the callback.
   if (!dispatch || dispatch.ok === false || dispatch.error) {
-    return reconcileFailure({
+    return settle({
       ok: false,
       state: 'FAILED',
       reason: dispatch?.reason ?? 'stage_dispatch_failed',
@@ -2661,16 +3464,16 @@ const runStage = async (
     const raw = await stageDone;
     const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!result || typeof result !== 'object') {
-      return reconcileFailure({
+      return settle({
         ok: false,
         state: 'FAILED',
         reason: 'stage_bad_callback_result',
       });
     }
-    return reconcileFailure(result);
+    return settle(result);
   } catch (err) {
     if (err instanceof SyntaxError) {
-      return reconcileFailure({
+      return settle({
         ok: false,
         state: 'FAILED',
         reason: 'stage_bad_callback_result',
@@ -2678,7 +3481,7 @@ const runStage = async (
       });
     }
     // Callback timeout / heartbeat expiry (dead container) / explicit failure.
-    return reconcileFailure({
+    return settle({
       ok: false,
       state: 'FAILED',
       reason: 'stage_callback_failed',
@@ -2729,6 +3532,10 @@ const producedArtifactTypes = (producedHeads) =>
   Array.isArray(producedHeads)
     ? [...new Set(producedHeads.map((head) => head?.artifactType).filter(Boolean))]
     : null;
+
+// The `awaitEngineGate` result shape for a gate row read directly.
+const asEngineGateResult = (gate) =>
+  !gate || gate.status === 'superseded' || !gate.answer ? { superseded: true } : { gate };
 
 const findingLine = (item) =>
   [
@@ -2841,256 +3648,6 @@ const validationPrompt = ({
         ]
       : []),
   ].join('\n');
-};
-
-// ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
-// One PR per repo from the intent branch onto the base branch. Provider outcomes
-// (opened / already-open / no-changes / guard-conflict / error) become timeline
-// events the caller records. The PR body links back to the intent and carries
-// an HONEST unit summary: lanes that were skipped after failure are named, so
-// the reviewer knows what the increment does NOT contain (the human explicitly
-// chose to continue without them — the fan-in gate is the decision record, the
-// PR body is its mirror).
-const openIntentPrs = async ({
-  openPr,
-  comparePrBranches = null,
-  store,
-  meta,
-  executionId,
-  runId = null,
-  applicationUrl,
-  log,
-}) => {
-  const repos = meta.repos ?? [];
-  const branch = meta.branch;
-  const strategy = meta.prStrategy ?? 'intent-pr';
-  // Per-repo base-branch override wins; the legacy single string is the
-  // project-wide fallback; a repo absent from both falls through to null so
-  // the provider resolves that repo's ACTUAL default branch (never 'main').
-  const baseFor = (repoId) => meta.baseBranches?.[repoId] ?? meta.baseBranch ?? null;
-  if (repos.length === 0) {
-    return [
-      { eventType: 'v2.pr.skipped', summary: 'No repositories on this intent — no PR to open' },
-    ];
-  }
-  // Deterministic lost-work signal (2026-07 incident): did the engine record
-  // repo work during this run? v2.git.pushed names repos whose commits reached
-  // the remote; v2.git.push_failed names repos whose work did NOT become
-  // durable. An artifact-only run has neither — for those, a commit-less
-  // branch is genuinely "no changes". Best-effort: an unreadable timeline
-  // just means the signal is silent (never blocks the PR).
-  let gitEvents = [];
-  try {
-    gitEvents = ((await store.listEvents?.(executionId)) ?? []).filter(
-      (e) => e.eventType === 'v2.git.pushed' || e.eventType === 'v2.git.push_failed',
-    );
-  } catch {
-    /* signal is best-effort */
-  }
-  const repoGitActivity = (repoId) => ({
-    pushed: gitEvents.some((e) => e.eventType === 'v2.git.pushed' && e.summary?.includes(repoId)),
-    pushFailed: gitEvents.some(
-      (e) => e.eventType === 'v2.git.push_failed' && e.summary?.includes(repoId),
-    ),
-  });
-
-  // Unit transparency for the PR body (best-effort — a store without unit
-  // rows, or a pre-WP3 run, just omits the section).
-  let unitLines = [];
-  try {
-    const units = (await store.listUnits?.(executionId)) ?? [];
-    const unmerged = units.filter((u) => u.state && u.state !== 'MERGED');
-    if (units.length) {
-      unitLines = [
-        '',
-        `Units: ${units.length} total, ${units.length - unmerged.length} merged.`,
-        ...unmerged.map(
-          (u) =>
-            `- ⚠️ unit \`${u.slug}\` NOT merged (${u.state}${u.failureReason ? `: ${u.failureReason}` : ''}) — its branch is preserved`,
-        ),
-      ];
-    }
-  } catch {
-    /* transparency section is best-effort */
-  }
-
-  const title = meta.title || `AI-DLC: ${branch}`;
-  const aidlcAttribution = buildIntentAttribution({
-    applicationUrl,
-    projectId: meta.projectId,
-    intentId: meta.intentId ?? executionId,
-  });
-  const trackerRepository = (() => {
-    try {
-      const pathname = decodeURIComponent(new URL(meta.source?.resourceUrl).pathname);
-      if (meta.source?.provider === 'github-issues') {
-        const parts = pathname.split('/').filter(Boolean);
-        return parts.length >= 4 && parts[2] === 'issues' ? parts.slice(0, 2).join('/') : null;
-      }
-      if (meta.source?.provider === 'gitlab-issues') {
-        const marker = '/-/issues/';
-        const markerIndex = pathname.indexOf(marker);
-        return markerIndex > 0 ? pathname.slice(1, markerIndex) : null;
-      }
-    } catch {
-      // A missing or malformed source URL only omits the PR tracker reference.
-    }
-    return null;
-  })();
-  const trackerReferenceFor = (provider, repoId) => {
-    const resourceId = String(meta.source?.resourceId || '').trim();
-    if (!resourceId) return null;
-    const matchingTracker =
-      (meta.source?.provider === 'github-issues' && provider === 'github') ||
-      (meta.source?.provider === 'gitlab-issues' && provider === 'gitlab');
-    if (matchingTracker && trackerRepository) {
-      const issueRef =
-        trackerRepository.toLowerCase() === repoId.toLowerCase()
-          ? `#${resourceId}`
-          : `${trackerRepository}#${resourceId}`;
-      return `Closes ${issueRef}`;
-    }
-    if (meta.source?.provider === 'jira-cloud') {
-      return meta.source.resourceUrl
-        ? `Related task: [${resourceId}](${meta.source.resourceUrl})`
-        : `Related task: ${resourceId}`;
-    }
-    return meta.source?.resourceUrl
-      ? `Related issue: [#${resourceId}](${meta.source.resourceUrl})`
-      : null;
-  };
-
-  const results = [];
-  for (const repo of repos) {
-    const repoId = typeof repo === 'string' ? repo : repo.url;
-    const provider = repoProvider(meta, repoId);
-    try {
-      const trackerReference = trackerReferenceFor(provider, repoId);
-      const body = [
-        `Automated ${provider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
-        ...unitLines,
-        ...(trackerReference ? ['', trackerReference] : []),
-      ].join('\n');
-      const activity = repoGitActivity(repoId);
-      // Pre-check: does the intent branch exist remotely with commits ahead of
-      // base? 'unknown' (comparison unavailable) falls through to the PR call
-      // — the pre-check adds safety, never a new way to block a good PR.
-      const cmp = comparePrBranches
-        ? await comparePrBranches({
-            projectId: meta.projectId,
-            gitProvider: provider,
-            repoId,
-            base: baseFor(repoId),
-            head: branch,
-          }).catch((e) => ({ status: 'unknown', detail: e?.message }))
-        : { status: 'unknown' };
-      if (cmp.status === 'missing_head') {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} not possible: intent branch "${branch}" does not exist on the remote — the engine never pushed it${
-            activity.pushFailed
-              ? ' (git push failures were recorded during the run; the work may still sit on the session workspace)'
-              : ''
-          }`,
-        });
-        continue;
-      }
-      if (cmp.status === 'identical' || cmp.status === 'behind') {
-        // No commits to merge. Benign ONLY for a run that never had repo work;
-        // a run that recorded engine git activity but ends commit-less has
-        // LOST WORK and must fail loudly (the 2026-07 incident: two ENOSPC'd
-        // commits, a clean-looking branch, and a quiet "no changes" skip).
-        if (activity.pushed || activity.pushFailed) {
-          results.push({
-            eventType: 'v2.pr.failed',
-            summary: `PR for ${repoId} not possible: "${branch}" has no commits ahead of ${cmp.base ?? 'the base branch'} although the run recorded ${
-              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
-            } — likely lost work; check the run's v2.git events and the session workspace`,
-          });
-          continue;
-        }
-        results.push({
-          eventType: 'v2.pr.skipped',
-          summary: `No PR for ${repoId}: no changes between ${branch} and ${cmp.base ?? 'the base branch'} (no repo work was recorded this run)`,
-        });
-        continue;
-      }
-      const res = await openPr({
-        projectId: meta.projectId,
-        gitProvider: provider,
-        repoId,
-        branch,
-        baseBranch: baseFor(repoId),
-        title,
-        body,
-        // One creation attempt per orchestrator run. The execution id alone
-        // is the intent id, identical across a rewind or repair relaunch, so
-        // it would replay a PR a reviewer closed in the meantime (CodeCommit
-        // cannot reopen it). A durable replay of this step keeps its run id
-        // and therefore its key.
-        attemptKey: runId ? `${executionId}:${runId}` : executionId,
-      });
-      if (res?.prUrl) {
-        results.push({
-          eventType: 'v2.pr.opened',
-          summary: `${res.existing ? 'PR already open' : 'PR opened'} for ${repoId}: ${res.prUrl}`,
-          // Structured data for record-pr (the graph write happens in the
-          // VPC-attached runtime; the orchestrator has no Neptune access).
-          pr: {
-            repoId,
-            provider,
-            prUrl: res.prUrl,
-            prNumber: res.prNumber ?? null,
-            branch,
-            // The provider retargets to the repo's real default branch when the
-            // requested base was invalid — record the ACTUAL merge target.
-            baseBranch: res.retargetedBase ?? baseFor(repoId),
-          },
-        });
-      } else if (res?.skipped) {
-        // The provider's own "no changes" verdict (compare was unavailable).
-        // Same lost-work override as above: recorded git activity means this
-        // skip is NOT benign.
-        if (activity.pushed || activity.pushFailed) {
-          results.push({
-            eventType: 'v2.pr.failed',
-            summary: `PR for ${repoId} reported "${res.reason ?? 'no changes'}" although the run recorded ${
-              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
-            } — likely lost work; check the run's v2.git events and the session workspace`,
-          });
-        } else {
-          results.push({
-            eventType: 'v2.pr.skipped',
-            summary: `No PR for ${repoId}: ${res.reason ?? 'no changes between the branches'}`,
-          });
-        }
-      } else if (res?.failed) {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} failed (${res.reason ?? 'error'}): ${res.error ?? 'no detail'}`,
-        });
-      } else if (res?.conflict) {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR blocked for ${repoId}: ${res.error ?? 'unmerged branches'}${
-            res.unmergedBranches?.length ? ` (${res.unmergedBranches.join(', ')})` : ''
-          }`,
-        });
-      } else {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} returned an unexpected result: ${JSON.stringify(res).slice(0, 300)}`,
-        });
-      }
-    } catch (e) {
-      log?.(`PR open failed for ${repoId}: ${e?.message}`);
-      results.push({
-        eventType: 'v2.pr.failed',
-        summary: `PR open failed for ${repoId}: ${e?.message ?? String(e)}`,
-      });
-    }
-  }
-  return results;
 };
 
 export const lambdaHandler = withDurableExecution(handler);

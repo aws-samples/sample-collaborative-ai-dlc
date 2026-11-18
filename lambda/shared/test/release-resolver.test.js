@@ -18,6 +18,7 @@ import { sha256 } from '../blocks.js';
 import { executionPlanFromMethodologyCatalog } from '../methodology-catalog.js';
 import {
   __test,
+  inspectReleaseClosure,
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
   resolveMethodologyLibrary,
@@ -816,6 +817,54 @@ describe('import-only releases never execute', () => {
     await expect(
       loadReleaseClosure({ ...releaseArgs(pinA), cache: new Map() }),
     ).resolves.toMatchObject({ releaseId: bundleA.manifest.releaseId });
+  });
+
+  // Showing a fork's contents to the admin deciding whether to promote it is
+  // not running it: inspection skips only the promotion gate, never a digest or
+  // provenance check, and never feeds the run-time cache.
+  describe('inspectReleaseClosure', () => {
+    it('reads an unpromoted fork without making it runnable', async () => {
+      const bundle = customBundle();
+      await publishRelease(bundle);
+      const pin = forkPin(bundle);
+      const inspection = new Map();
+      const runtime = new Map();
+
+      await expect(
+        inspectReleaseClosure({ ...releaseArgs(pin), cache: inspection }),
+      ).resolves.toMatchObject({ releaseId: bundle.manifest.releaseId });
+      await expect(
+        loadReleaseClosure({ ...releaseArgs(pin), ddb: ddbMock, tableName: TABLE, cache: runtime }),
+      ).rejects.toMatchObject({ code: 'release_not_runnable' });
+      expect(inspection.size).toBe(1);
+      expect(runtime.size).toBe(0);
+    });
+
+    it('still refuses a custom manifest under an official pin', async () => {
+      const bundle = customBundle();
+      store.set(
+        releaseManifestKey({
+          sha: bundle.manifest.sourceSha,
+          importerRevision: bundle.manifest.importerRevision,
+        }),
+        `${JSON.stringify(bundle.manifest, null, 2)}\n`,
+      );
+      const { custom: _custom, sourceRepository: _repo, ...officialPin } = forkPin(bundle);
+
+      await expect(
+        inspectReleaseClosure({ ...releaseArgs(officialPin), cache: new Map() }),
+      ).rejects.toMatchObject({ code: 'release_not_runnable' });
+    });
+
+    it('still refuses a closure whose catalog drifted', async () => {
+      const bundle = customBundle();
+      await publishRelease(bundle);
+      store.set(bundle.manifest.catalog.key, JSON.stringify({ tampered: true }));
+
+      await expect(
+        inspectReleaseClosure({ ...releaseArgs(forkPin(bundle)), cache: new Map() }),
+      ).rejects.toMatchObject({ code: 'release_closure_mismatch' });
+    });
   });
 });
 

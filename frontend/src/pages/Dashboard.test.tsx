@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
@@ -34,5 +34,31 @@ describe('Dashboard — branding', () => {
     expect(
       screen.getByText('Shared workspaces where people and AI agents build together'),
     ).toBeInTheDocument();
+  });
+
+  describe('logo', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    const renderDashboard = () =>
+      render(
+        <MemoryRouter>
+          <Dashboard />
+        </MemoryRouter>,
+      );
+
+    it('shows the stock logo by default', () => {
+      renderDashboard();
+      expect(screen.getByRole('img', { name: 'AI-DLC' })).toHaveAttribute('src', '/logo.svg');
+    });
+
+    it("shows the deployment's logo and name when branded", () => {
+      vi.stubEnv('VITE_BRAND_LOGO', '/branding/logo.svg');
+      vi.stubEnv('VITE_BRAND_NAME', 'Example Corp');
+      renderDashboard();
+      expect(screen.getByRole('img', { name: 'Example Corp' })).toHaveAttribute(
+        'src',
+        '/branding/logo.svg',
+      );
+    });
   });
 });

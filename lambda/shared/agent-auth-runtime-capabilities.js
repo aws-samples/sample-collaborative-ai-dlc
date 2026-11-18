@@ -5,24 +5,46 @@ import {
 import { randomUUID } from 'node:crypto';
 import { resolveRuntimeTarget, runtimeSdkInput } from './runtime-target.js';
 import { authError } from './agent-auth-catalog.js';
+import { resolveInvocationSandbox } from './sandbox-settings.js';
 
 const client = new BedrockAgentCoreClient({});
+const sandboxUnsupported = () =>
+  authError(
+    'AGENT_SANDBOX_RUNTIME_UNSUPPORTED',
+    'The selected runtime has not confirmed sandbox enforcement. Rebuild, verify and publish an updated environment before running with sandboxing enabled.',
+  );
+export const assertSandboxRuntime = (capabilities) => {
+  if (capabilities?.sandboxEnforcement !== true) throw sandboxUnsupported();
+};
 // Legacy/default snapshots have no authentication qualification. Probe the
 // actual target before issuing a versioned grant; never assume image support.
+// The probe carries the current sandbox policy (`sandbox`, else read here): an
+// engine-data runtime cannot read it and refuses a capabilities call without one.
 export const qualifyAgentAuthRuntime = async (
   capabilities,
-  { runtime = client, env = process.env, requiredModes = [] } = {},
+  {
+    runtime = client,
+    env = process.env,
+    requiredModes = [],
+    requireSandbox = false,
+    sandbox = null,
+    readSandbox = () => resolveInvocationSandbox({ payload: {} }),
+  } = {},
 ) => {
   if (
     capabilities?.agentAuthProtocol &&
-    requiredModes.every((mode) => capabilities.agentAuthModes?.includes(mode))
+    requiredModes.every((mode) => capabilities.agentAuthModes?.includes(mode)) &&
+    (!requireSandbox || capabilities.sandboxEnforcement === true)
   )
     return capabilities;
   const resolved = resolveRuntimeTarget(
     { environment: capabilities },
     env.AGENTCORE_RUNTIME_ARN || '',
   );
-  if (!resolved.agentRuntimeArn) return capabilities ?? {};
+  if (!resolved.agentRuntimeArn) {
+    if (requireSandbox) throw sandboxUnsupported();
+    return capabilities ?? {};
+  }
   // On the Instances compute type every probe session gets a persistent EBS
   // volume, and this shared helper has no cleanup owner for one. It does not
   // need a probe either: an Instances revision is published only after its
@@ -30,12 +52,14 @@ export const qualifyAgentAuthRuntime = async (
   // snapshot (checked above). Missing evidence means that image cannot be
   // qualified — republishing the environment re-validates it.
   if (resolved.capacityProviderArn) {
+    if (requireSandbox && capabilities?.sandboxEnforcement !== true) throw sandboxUnsupported();
     throw authError(
       'AGENT_AUTH_RUNTIME_UNSUPPORTED',
       'The selected environment did not record authentication support; republish it to re-validate its runtime',
     );
   }
   const target = runtimeSdkInput(resolved);
+  const agentSandbox = sandbox ?? (await readSandbox());
   try {
     const result = await runtime.send(
       new InvokeAgentRuntimeCommand({
@@ -44,13 +68,19 @@ export const qualifyAgentAuthRuntime = async (
         runtimeSessionId: randomUUID(),
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities', agentSandbox })),
       }),
     );
     const value = JSON.parse(await result.response.transformToString());
     if (!value.ok) throw new Error('Runtime did not report capabilities');
-    return { agentAuthProtocol: value.agentAuthProtocol, agentAuthModes: value.agentAuthModes };
+    if (requireSandbox && value.sandboxEnforcement !== true) throw sandboxUnsupported();
+    return {
+      agentAuthProtocol: value.agentAuthProtocol,
+      agentAuthModes: value.agentAuthModes,
+      ...(value.sandboxEnforcement === true ? { sandboxEnforcement: true } : {}),
+    };
   } catch {
+    if (requireSandbox) throw sandboxUnsupported();
     throw authError(
       'AGENT_AUTH_RUNTIME_UNSUPPORTED',
       'Could not verify authentication support in the selected runtime',

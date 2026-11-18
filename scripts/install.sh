@@ -533,6 +533,9 @@ validate_alias_availability() {
         echo "Warning: could not list CloudFront distributions to check hostname availability; continuing." >&2
         return 0
     fi
+    # AWS CLI v2 pagination prints nothing when the account has no
+    # distributions, so there is nothing to collide with.
+    [[ -n "$distributions" ]] || return 0
     if [[ -n "$checkout" && -d "$checkout/terraform" ]]; then
         current_id="$(terraform -chdir="$checkout/terraform" output -raw cloudfront_distribution_id 2>/dev/null || true)"
     fi

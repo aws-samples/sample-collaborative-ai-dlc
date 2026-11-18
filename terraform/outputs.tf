@@ -216,7 +216,7 @@ output "blocks_table_arn" {
 
 # Building Blocks
 output "seed_blocks_lambda_name" {
-  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  description = "Name of the seed and release-preparation Lambda. Deployment scripts prepare official releases automatically; direct Terraform users run scripts/prepare-aidlc-releases.mjs after apply."
   value       = module.lambda.seed_blocks_lambda_name
 }
 
@@ -422,4 +422,14 @@ output "managed_tool_status_lambda_name" {
 output "codecommit_platform_principals" {
   description = "Execution role ARNs a tenant must trust on a CodeCommit access role (comma-separated); also shown by the connect flow"
   value       = module.lambda.codecommit_platform_principals
+}
+
+output "notification_event_bus_name" {
+  description = "Notification event bus name, or empty when notification_events_enabled is false"
+  value       = module.lambda.notification_event_bus_name
+}
+
+output "notification_event_bus_arn" {
+  description = "Notification event bus ARN, or empty when notification_events_enabled is false"
+  value       = module.lambda.notification_event_bus_arn
 }

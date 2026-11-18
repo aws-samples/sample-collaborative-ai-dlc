@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { mockClient } from 'aws-sdk-client-mock';
 import { createConnectionVerifier } from '../authentication-connection-verification.js';
 import { connectionBinding } from '../../shared/agent-auth-selection-strategies.js';
 import { normalizeConnection } from '../../shared/agent-auth-contracts.js';
 import { verifyAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
 import { TEST_CONNECTION_MODE } from '../../shared/test/helpers/auth-modes.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../../shared/sandbox-settings.js';
 
 // Verification is reached only through a registered mode, so register a synthetic one.
 vi.mock('../../shared/agent-auth-modes.js', async (importOriginal) =>
@@ -11,6 +14,12 @@ vi.mock('../../shared/agent-auth-modes.js', async (importOriginal) =>
 );
 
 const MODE = TEST_CONNECTION_MODE.id;
+const DISABLED_SANDBOX = {
+  enabled: false,
+  version: null,
+  settings: DEFAULT_SANDBOX_CONFIG.settings,
+};
+const ddbMock = mockClient(DynamoDBDocumentClient);
 const SECRET = 'verification-grant-secret'.repeat(2);
 const runtimeTarget = Object.freeze({
   agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime/test',
@@ -47,6 +56,9 @@ const verify = (request = {}) =>
   });
 
 beforeEach(() => {
+  ddbMock.reset();
+  ddbMock.on(GetCommand).resolves({});
+  vi.stubEnv('V2_PROCESS_TABLE', 'process-table');
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', SECRET);
   replies = [reply(verifyingRuntime), reply({ verified: true, account: 'fixture' })];
   agentcore = {
@@ -65,13 +77,37 @@ afterEach(() => {
 });
 
 describe('unsaved connection verification', () => {
+  it.each([false, true])(
+    'requires sandbox support in the same connection-check session: %s',
+    async (sandboxEnforcement) => {
+      ddbMock.on(GetCommand).resolves({ Item: { enabled: true, applied: { settings: {} } } });
+      replies = [reply({ ...verifyingRuntime, sandboxEnforcement }), reply({ verified: true })];
+      const result = await verify();
+      if (sandboxEnforcement) {
+        expect(result).toEqual({ statusCode: 200, body: { verified: true } });
+        expect(sessions()).toEqual([sessions()[0], sessions()[0]]);
+      } else {
+        expect(result).toMatchObject({
+          statusCode: 409,
+          body: { code: 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED' },
+        });
+        expect(payloads()).toEqual([
+          { command: 'capabilities', agentSandbox: { enabled: true, version: null, settings: {} } },
+        ]);
+        expect(ssm.send).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('probes, authorizes and checks one binding on the same fresh runtime session', async () => {
     expect(await verify()).toEqual({
       statusCode: 200,
       body: { verified: true, account: 'fixture' },
     });
     const [probe, check] = payloads();
-    expect(probe).toEqual({ command: 'capabilities' });
+    // The runtime may be unable to read the sandbox settings, so both calls carry them.
+    expect(probe).toEqual({ command: 'capabilities', agentSandbox: DISABLED_SANDBOX });
+    expect(check.agentSandbox).toEqual(DISABLED_SANDBOX);
     const expected = connectionBinding(
       normalizeConnection({
         id: check.credentialBinding.connectionId,
@@ -134,7 +170,7 @@ describe('unsaved connection verification', () => {
             'Publish an environment whose runtime supports connection verification for this mode',
         },
       });
-      expect(payloads()).toEqual([{ command: 'capabilities' }]);
+      expect(payloads()).toEqual([{ command: 'capabilities', agentSandbox: DISABLED_SANDBOX }]);
     }
     expect(ssm.send).not.toHaveBeenCalled();
   });

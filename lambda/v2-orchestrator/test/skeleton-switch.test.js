@@ -17,7 +17,7 @@ import {
   LocalDurableTestRunner,
   WaitingOperationStatus,
 } from '@aws/durable-execution-sdk-js-testing';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -125,6 +125,18 @@ const makeWorld = (skeleton) => {
 
   const invokeRuntime = async (payload) => {
     world.invokes.push(payload);
+    if (payload.command === 'init-ws-start') {
+      // Capability probe (no callbackId), then the accepted init job, which
+      // completes the init callback out-of-band.
+      if (!payload.callbackId) return { ok: false, reason: 'missing_callback_id' };
+      (async () => {
+        const op = await world.runner
+          .getOperation('init-ws-cb')
+          .waitForData(WaitingOperationStatus.STARTED);
+        await op.sendCallbackSuccess(JSON.stringify({ ok: true }));
+      })();
+      return { ok: true, accepted: true, callbackId: payload.callbackId };
+    }
     if (payload.command === 'promote-units') {
       return { ok: true, unitCount: 2, batchCount: 1 };
     }

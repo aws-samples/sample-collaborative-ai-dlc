@@ -138,6 +138,58 @@ resource "aws_api_gateway_resource" "member" {
   path_part   = "{userId}"
 }
 
+resource "aws_api_gateway_resource" "business_roles" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "business-roles"
+}
+
+resource "aws_api_gateway_resource" "member_business_roles" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.member.id
+  path_part   = "business-roles"
+}
+
+resource "aws_api_gateway_resource" "membership_history" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "membership-history"
+}
+
+locals {
+  business_role_routes = {
+    catalog = { resource = aws_api_gateway_resource.business_roles.id, method = "GET" }
+    update  = { resource = aws_api_gateway_resource.member_business_roles.id, method = "PUT" }
+    history = { resource = aws_api_gateway_resource.membership_history.id, method = "GET" }
+  }
+}
+
+resource "aws_api_gateway_method" "business_roles" {
+  for_each      = local.business_role_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "business_roles" {
+  for_each                = local.business_role_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.business_roles[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.users_lambda_invoke_arn
+}
+
+module "cors_business_roles" {
+  for_each    = local.business_role_routes
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = each.value.resource
+}
+
 # -----------------------------------------------------------------------------
 # /projects/{projectId}/sprints Resource
 # -----------------------------------------------------------------------------
@@ -1133,6 +1185,9 @@ resource "aws_lambda_permission" "workflows" {
 #
 #   /aidlc-releases                      GET (list), POST (register)
 #   /aidlc-releases/{releaseId}          PATCH (support-state decision, CAS)
+#   /aidlc-releases/{releaseId}/blocks   GET (the release's catalog, read-only)
+#   /aidlc-releases/{releaseId}/blocks/{type}/{blockId}
+#                                        GET (one catalog block + its body)
 #   /aidlc-release-channels              GET (stable/candidate/preview)
 #   /aidlc-release-channels/{channel}    PUT (move a pointer, CAS),
 #                                        DELETE (clear a pointer, CAS)
@@ -1151,6 +1206,24 @@ resource "aws_api_gateway_resource" "aidlc_release" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.aidlc_releases.id
   path_part   = "{releaseId}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_blocks" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release.id
+  path_part   = "blocks"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_block_type" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release_blocks.id
+  path_part   = "{type}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_block" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release_block_type.id
+  path_part   = "{blockId}"
 }
 
 resource "aws_api_gateway_resource" "aidlc_release_channels" {
@@ -1176,6 +1249,8 @@ locals {
     releases_get   = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "GET" }
     releases_post  = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "POST" }
     release_patch  = { resource = aws_api_gateway_resource.aidlc_release.id, method = "PATCH" }
+    blocks_get     = { resource = aws_api_gateway_resource.aidlc_release_blocks.id, method = "GET" }
+    block_get      = { resource = aws_api_gateway_resource.aidlc_release_block.id, method = "GET" }
     channels_get   = { resource = aws_api_gateway_resource.aidlc_release_channels.id, method = "GET" }
     channel_put    = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "PUT" }
     channel_delete = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "DELETE" }
@@ -1212,6 +1287,18 @@ module "cors_aidlc_release" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.aidlc_release.id
+}
+
+module "cors_aidlc_release_blocks" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_blocks.id
+}
+
+module "cors_aidlc_release_block" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_block.id
 }
 
 module "cors_aidlc_release_channels" {
@@ -1348,6 +1435,12 @@ resource "aws_api_gateway_resource" "intent_repair" {
   path_part   = "repair"
 }
 
+resource "aws_api_gateway_resource" "intent_delivery" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "delivery"
+}
+
 # Composer sessions (Adaptive Workflows): start a compose (front/report),
 # presign the report upload, and list this intent's sessions.
 resource "aws_api_gateway_resource" "intent_compose" {
@@ -1378,6 +1471,12 @@ resource "aws_api_gateway_resource" "intent_attachment_upload" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent_attachments.id
   path_part   = "upload"
+}
+
+resource "aws_api_gateway_resource" "intent_attachment_import" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_attachments.id
+  path_part   = "import"
 }
 
 resource "aws_api_gateway_resource" "intent_attachment" {
@@ -1541,12 +1640,15 @@ locals {
     cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
     resume_post            = { resource = aws_api_gateway_resource.intent_resume.id, method = "POST" }
+    delivery_post          = { resource = aws_api_gateway_resource.intent_delivery.id, method = "POST" }
     repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
     composes_get           = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
     attachments_get        = { resource = aws_api_gateway_resource.intent_attachments.id, method = "GET" }
     attachment_upload_post = { resource = aws_api_gateway_resource.intent_attachment_upload.id, method = "POST" }
+    attachment_import_get  = { resource = aws_api_gateway_resource.intent_attachment_import.id, method = "GET" }
+    attachment_import_post = { resource = aws_api_gateway_resource.intent_attachment_import.id, method = "POST" }
     attachment_delete      = { resource = aws_api_gateway_resource.intent_attachment.id, method = "DELETE" }
     recompose_post         = { resource = aws_api_gateway_resource.intent_recompose.id, method = "POST" }
     token_post             = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
@@ -1614,6 +1716,12 @@ module "cors_intent_attachment_upload" {
   resource_id = aws_api_gateway_resource.intent_attachment_upload.id
 }
 
+module "cors_intent_attachment_import" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_attachment_import.id
+}
+
 module "cors_intent_attachment" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -1678,6 +1786,12 @@ module "cors_intent_repair" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_repair.id
+}
+
+module "cors_intent_delivery" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_delivery.id
 }
 
 module "cors_intent_compose" {
@@ -3137,10 +3251,20 @@ resource "aws_api_gateway_resource" "codecommit_status" {
   path_part   = "status"
 }
 
-resource "aws_api_gateway_resource" "codecommit_connect_info" {
+# /codecommit/admin — platform-admin CodeCommit connection configuration.
+# Mirrors /github/admin: the method only requires authentication; the Lambda
+# additionally enforces the Cognito platform-admin group (requirePlatformAdmin).
+resource "aws_api_gateway_resource" "codecommit_admin" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.codecommit.id
-  path_part   = "connect-info"
+  path_part   = "admin"
+}
+
+# /codecommit/admin/config
+resource "aws_api_gateway_resource" "codecommit_admin_config" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.codecommit_admin.id
+  path_part   = "config"
 }
 
 resource "aws_api_gateway_resource" "codecommit_repos" {
@@ -3168,39 +3292,60 @@ resource "aws_api_gateway_integration" "codecommit_status_get" {
   uri                     = var.codecommit_lambda_invoke_arn
 }
 
-# GET /codecommit/connect-info (authenticated)
-resource "aws_api_gateway_method" "codecommit_connect_info_get" {
-  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET query is validated by the Lambda handler.
+# GET /codecommit/admin/config (authenticated; the Lambda additionally enforces
+# the Cognito platform-admin group — see lambda/shared/authz.js)
+resource "aws_api_gateway_method" "codecommit_admin_config_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET has no request body to validate.
   rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.codecommit_connect_info.id
+  resource_id   = aws_api_gateway_resource.codecommit_admin_config.id
   http_method   = "GET"
   authorization = "COGNITO_USER_POOLS"
   authorizer_id = aws_api_gateway_authorizer.cognito.id
 }
 
-resource "aws_api_gateway_integration" "codecommit_connect_info_get" {
+resource "aws_api_gateway_integration" "codecommit_admin_config_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.codecommit_connect_info.id
-  http_method             = aws_api_gateway_method.codecommit_connect_info_get.http_method
+  resource_id             = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method             = aws_api_gateway_method.codecommit_admin_config_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.codecommit_lambda_invoke_arn
 }
 
-# POST /codecommit/repos (authenticated) — body carries roleArn/externalId/region
-resource "aws_api_gateway_method" "codecommit_repos_post" {
+# PUT /codecommit/admin/config (authenticated; platform-admin enforced in Lambda)
+resource "aws_api_gateway_method" "codecommit_admin_config_put" {
   #checkov:skip=CKV2_AWS_53:Cognito-authenticated proxy body is validated by the Lambda handler.
   rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.codecommit_repos.id
-  http_method   = "POST"
+  resource_id   = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method   = "PUT"
   authorization = "COGNITO_USER_POOLS"
   authorizer_id = aws_api_gateway_authorizer.cognito.id
 }
 
-resource "aws_api_gateway_integration" "codecommit_repos_post" {
+resource "aws_api_gateway_integration" "codecommit_admin_config_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method             = aws_api_gateway_method.codecommit_admin_config_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.codecommit_lambda_invoke_arn
+}
+
+# GET /codecommit/repos (authenticated) — lists repositories readable by the
+# platform role, like the other providers (no request body)
+resource "aws_api_gateway_method" "codecommit_repos_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET has no request body to validate.
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.codecommit_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "codecommit_repos_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.codecommit_repos.id
-  http_method             = aws_api_gateway_method.codecommit_repos_post.http_method
+  http_method             = aws_api_gateway_method.codecommit_repos_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.codecommit_lambda_invoke_arn
@@ -3212,10 +3357,10 @@ module "cors_codecommit_status" {
   resource_id = aws_api_gateway_resource.codecommit_status.id
 }
 
-module "cors_codecommit_connect_info" {
+module "cors_codecommit_admin_config" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.codecommit_connect_info.id
+  resource_id = aws_api_gateway_resource.codecommit_admin_config.id
 }
 
 module "cors_codecommit_repos" {

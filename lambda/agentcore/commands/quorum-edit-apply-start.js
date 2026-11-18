@@ -21,13 +21,8 @@ import { runCredentialJob } from '../credential-session.js';
 //   5. complete the durable callback with the outcome.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { closeGraphSource } from '../mcp/graph-writer.js';
-import {
-  applyArtifactEdit,
-  verifyArtifact,
-  markArtifactsStale,
-  fetchDownstreamClosure,
-} from '../../shared/artifact-edit.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
+import { isHtmlDocument, keepsHtml } from '../../shared/html-artifact.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { quorumCliModels } from '../model-resolver.js';
 import {
@@ -38,6 +33,10 @@ import {
   checkRewriteStructure,
   structurePreservationRules,
   fetchArtifactForEdit,
+  fetchClosureForEdit,
+  applyQuorumEdit,
+  markClosureStale,
+  verifyUnaffected,
   makeProgressEmitter,
 } from './quorum-edit-shared.js';
 
@@ -47,7 +46,29 @@ const logger = new Logger({
 
 const REWRITE_ONE_SHOT_TIMEOUT_MS = 300_000;
 
+// The answer must come back in the format the document's TYPE allows: an HTML
+// visual artifact rewritten to markdown would replace the rendered page with
+// prose, so it is asked for as a document of its own kind. A legacy HTML
+// document of a non-visual type holds a format its type refuses, so it is asked
+// for as markdown and told to convert.
+const completeDocumentInstruction = (artifactType, content) => {
+  if (keepsHtml(artifactType, content))
+    return 'Respond with ONLY the complete updated HTML document — no commentary, no code fences around the whole document. It must stay one static, self-contained HTML page: no scripts, nothing external.';
+  if (isHtmlDocument(content)) {
+    return (
+      'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document. ' +
+      'This document is currently HTML but this type must be markdown, so convert it and keep each `<h2>` section as a `##` heading.'
+    );
+  }
+  return 'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.';
+};
+
 const jobKey = (p) => `${p.executionId}:qedit-apply:${p.editId}`;
+
+const rewriteFailure = (rewrite, fallbackReason) => ({
+  reason: rewrite.reason ?? fallbackReason,
+  ...(rewrite.detail ? { detail: rewrite.detail } : {}),
+});
 
 // Rewrite the TARGET document per the human's requested change.
 // `structureFeedback` carries the guard's findings on a retry — the previous
@@ -56,14 +77,14 @@ export const buildTargetRewritePrompt = ({ artifact, changeDescription, structur
   [
     'You are Quorum, applying a human-requested change to a project document.',
     'Rewrite the document below applying the requested change. Preserve the document structure, headings, tone and everything not affected by the change.',
-    structurePreservationRules(artifact.artifact_type),
+    structurePreservationRules(artifact.artifact_type, artifact.content),
     ...(structureFeedback
       ? [
           '',
           `YOUR PREVIOUS ATTEMPT WAS REJECTED because ${structureFeedback}. Produce the FULL document again with that fixed.`,
         ]
       : []),
-    'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.',
+    completeDocumentInstruction(artifact.artifact_type, artifact.content),
     '',
     `Document: "${artifact.title || artifact.id}" (${artifact.artifact_type ?? 'document'})`,
     `Requested change: ${changeDescription}`,
@@ -87,14 +108,14 @@ export const buildDownstreamRewritePrompt = ({
     `The upstream document "${upstream.title || upstream.id}" was just changed as follows: ${changeDescription}`,
     `The approved update plan says this document needs: ${item.proposedChange || item.rationale || 'consistency updates for the upstream change'}`,
     'Rewrite the dependent document below so it is consistent with the updated upstream. Change ONLY what the upstream change requires; preserve structure, headings, tone and unaffected content.',
-    structurePreservationRules(artifact.artifact_type),
+    structurePreservationRules(artifact.artifact_type, artifact.content),
     ...(structureFeedback
       ? [
           '',
           `YOUR PREVIOUS ATTEMPT WAS REJECTED because ${structureFeedback}. Produce the FULL document again with that fixed.`,
         ]
       : []),
-    'Respond with ONLY the complete updated markdown document — no commentary, no code fences around the whole document.',
+    completeDocumentInstruction(artifact.artifact_type, artifact.content),
     '',
     '--- UPDATED UPSTREAM DOCUMENT (bounded) ---',
     bounded(upstream.content, PLAN_TARGET_DOC_LIMIT),
@@ -107,6 +128,7 @@ export const buildDownstreamRewritePrompt = ({
 
 export const createQuorumEditApplyStart = ({
   openGraph,
+  openEngineGraph,
   store,
   broadcast = async () => {},
   availableClis = [],
@@ -115,10 +137,10 @@ export const createQuorumEditApplyStart = ({
   // Graph collaborators — injectable so the suite exercises the job without a
   // gremlin server (same seam style as derive-artifacts' createWriter).
   fetchArtifact = fetchArtifactForEdit,
-  fetchClosure = fetchDownstreamClosure,
-  applyEdit = applyArtifactEdit,
-  verify = verifyArtifact,
-  markStale = markArtifactsStale,
+  fetchClosure = fetchClosureForEdit,
+  applyEdit = applyQuorumEdit,
+  verify = verifyUnaffected,
+  markStale = markClosureStale,
   sendCallbackSuccess,
   sendCallbackHeartbeat = async () => {},
   env = process.env,
@@ -159,7 +181,7 @@ export const createQuorumEditApplyStart = ({
 
     const job = runCredentialJob(async () => {
       let heartbeatTimer = null;
-      let g;
+      let graph;
       let result;
       try {
         heartbeatTimer = setInterval(() => {
@@ -190,6 +212,7 @@ export const createQuorumEditApplyStart = ({
               stageInstanceId: `qedit-${editId}`,
               metrics: { ...out.metrics, quorumEditCalls: 1 },
               resolvedModel: out.model ?? null,
+              creditRate: out.creditRate ?? null,
             })
             .catch(() => {});
         };
@@ -229,184 +252,175 @@ export const createQuorumEditApplyStart = ({
           return { ok: false, reason: 'structure_lost', detail: structureFeedback };
         };
 
-        try {
-          g = await openGraph();
-          const edit = await store?.getQuorumEdit?.(executionId, editId);
-          const planItems = edit?.plan?.items ?? [];
-          const approvedSet = new Set(approvedArtifactIds);
-          const target = await fetchArtifact(g, intentId, artifactId);
-
-          if (!target) {
-            result = { ok: false, reason: 'artifact_not_found' };
-          } else if (String(target.content ?? '').length > REWRITE_DOC_LIMIT) {
-            result = { ok: false, reason: 'content_too_large' };
-          } else {
-            // 1. Rewrite the target document.
-            await progress(`Rewriting "${target.title || artifactId}" per the requested change…`);
-            const targetRewrite = await guardedRewrite({
-              artifact: target,
+        const applyPlanItem = async ({ item, upstream, updated, verified, failed }) => {
+          const row = await fetchArtifact(graph, intentId, item.artifactId);
+          if (!row) {
+            failed.push({ artifactId: item.artifactId, reason: 'artifact_not_found' });
+            return;
+          }
+          if (item.action === 'update') {
+            if (String(row.content ?? '').length > REWRITE_DOC_LIMIT) {
+              failed.push({ artifactId: item.artifactId, reason: 'content_too_large' });
+              return;
+            }
+            await progress(`Updating "${row.title || item.artifactId}"…`);
+            const rewrite = await guardedRewrite({
+              artifact: row,
               buildPrompt: (structureFeedback) =>
-                buildTargetRewritePrompt({
-                  artifact: target,
+                buildDownstreamRewritePrompt({
+                  artifact: row,
+                  upstream,
                   changeDescription,
+                  item,
                   structureFeedback,
                 }),
             });
-            if (!targetRewrite.ok) {
-              result = {
-                ok: false,
-                reason: targetRewrite.reason ?? 'target_rewrite_failed',
-                ...(targetRewrite.detail ? { detail: targetRewrite.detail } : {}),
-              };
-            } else {
-              const targetContent = targetRewrite.content;
-              await applyEdit({
-                g,
-                intentId,
-                artifactId,
-                content: targetContent,
-                editedBy: 'quorum',
-                editedByName: 'Quorum',
-                origin: 'quorum',
-                editRef: `qedit:${editId}`,
+            if (!rewrite.ok) {
+              // Left stale on purpose — the badge stays honest, and the
+              // intact original content is never overwritten.
+              failed.push({
+                artifactId: item.artifactId,
+                ...rewriteFailure(rewrite, 'rewrite_failed'),
               });
-              await store
-                ?.appendEvent?.({
-                  executionId,
-                  type: 'v2.artifact.edited',
-                  actor: 'quorum',
-                  summary: `Quorum updated "${target.title || artifactId}" per the approved edit`,
-                })
-                .catch(() => {});
-              await progress('Target document updated. Marking downstream artifacts…');
+              return;
+            }
+            const content = rewrite.content;
+            await applyEdit({
+              graph,
+              intentId,
+              artifactId: item.artifactId,
+              editId,
+              content,
+            });
+            await store
+              ?.appendEvent?.({
+                executionId,
+                type: 'v2.artifact.edited',
+                actor: 'quorum',
+                summary: `Quorum updated "${row.title || item.artifactId}" to follow the upstream edit`,
+              })
+              .catch(() => {});
+            updated.push(item.artifactId);
+          } else {
+            // verify-unaffected: reviewed, still valid — clear the marker
+            // and keep Quorum's rationale as the note.
+            await verify({
+              graph,
+              intentId,
+              artifactId: item.artifactId,
+              note: item.rationale ?? '',
+            });
+            verified.push(item.artifactId);
+          }
+        };
 
-              // 2. Drift truth first: the WHOLE closure is stale until the
-              // plan rehabilitates each member (update/verify below).
-              const closure = await fetchClosure({ g, intentId, artifactId });
-              await markStale({
-                g,
+        const applyApprovedPlan = async () => {
+          const edit = await store?.getQuorumEdit?.(executionId, editId);
+          const planItems = edit?.plan?.items ?? [];
+          const approvedSet = new Set(approvedArtifactIds);
+          const target = await fetchArtifact(graph, intentId, artifactId);
+
+          if (!target) return { ok: false, reason: 'artifact_not_found' };
+          if (String(target.content ?? '').length > REWRITE_DOC_LIMIT) {
+            return { ok: false, reason: 'content_too_large' };
+          }
+          // 1. Rewrite the target document.
+          await progress(`Rewriting "${target.title || artifactId}" per the requested change…`);
+          const targetRewrite = await guardedRewrite({
+            artifact: target,
+            buildPrompt: (structureFeedback) =>
+              buildTargetRewritePrompt({
+                artifact: target,
+                changeDescription,
+                structureFeedback,
+              }),
+          });
+          if (!targetRewrite.ok) {
+            return { ok: false, ...rewriteFailure(targetRewrite, 'target_rewrite_failed') };
+          }
+          const targetContent = targetRewrite.content;
+          await applyEdit({ graph, intentId, artifactId, editId, content: targetContent });
+          await store
+            ?.appendEvent?.({
+              executionId,
+              type: 'v2.artifact.edited',
+              actor: 'quorum',
+              summary: `Quorum updated "${target.title || artifactId}" per the approved edit`,
+            })
+            .catch(() => {});
+          await progress('Target document updated. Marking downstream artifacts…');
+
+          // 2. Drift truth first: the WHOLE closure is stale until the
+          // plan rehabilitates each member (update/verify below).
+          const closure = await fetchClosure({ graph, intentId, artifactId });
+          await markStale({
+            graph,
+            intentId,
+            sourceArtifactId: artifactId,
+            artifactIds: closure.map((d) => d.id),
+            editId,
+          });
+
+          // 3. Approved plan items. Only sanitized plan items can be
+          // approved (the decision endpoint intersects with the plan), and
+          // only approved ids are touched here.
+          const updated = [];
+          const verified = [];
+          const failed = [];
+          const updatedTarget = { ...target, content: targetContent };
+          for (const item of planItems) {
+            if (!approvedSet.has(item.artifactId)) continue;
+            await applyPlanItem({ item, upstream: updatedTarget, updated, verified, failed });
+          }
+
+          // 4. Re-derive the projection for every rewritten document.
+          const rewrittenTypes = [
+            ...new Set(
+              [
+                target.artifact_type,
+                ...planItems
+                  .filter((i) => updated.includes(i.artifactId))
+                  .map((i) => i.artifactType),
+              ].filter(Boolean),
+            ),
+          ];
+          if (deriveArtifacts && rewrittenTypes.length) {
+            await progress('Re-deriving the graph projection for the updated documents…');
+            try {
+              await deriveArtifacts({
+                projectId,
                 intentId,
-                artifactIds: closure.map((d) => d.id),
-                reason: `edit:${artifactId}:${editId}`,
+                executionId,
+                artifactTypes: rewrittenTypes,
+                enrichment,
+                requestedCli,
+                cliModels,
+                tierModels,
               });
-
-              // 3. Approved plan items. Only sanitized plan items can be
-              // approved (the decision endpoint intersects with the plan), and
-              // only approved ids are touched here.
-              const updated = [];
-              const verified = [];
-              const failed = [];
-              const updatedTarget = { ...target, content: targetContent };
-              for (const item of planItems) {
-                if (!approvedSet.has(item.artifactId)) continue;
-                const row = await fetchArtifact(g, intentId, item.artifactId);
-                if (!row) {
-                  failed.push({ artifactId: item.artifactId, reason: 'artifact_not_found' });
-                  continue;
-                }
-                if (item.action === 'update') {
-                  if (String(row.content ?? '').length > REWRITE_DOC_LIMIT) {
-                    failed.push({ artifactId: item.artifactId, reason: 'content_too_large' });
-                    continue;
-                  }
-                  await progress(`Updating "${row.title || item.artifactId}"…`);
-                  const rewrite = await guardedRewrite({
-                    artifact: row,
-                    buildPrompt: (structureFeedback) =>
-                      buildDownstreamRewritePrompt({
-                        artifact: row,
-                        upstream: updatedTarget,
-                        changeDescription,
-                        item,
-                        structureFeedback,
-                      }),
-                  });
-                  if (!rewrite.ok) {
-                    // Left stale on purpose — the badge stays honest, and the
-                    // intact original content is never overwritten.
-                    failed.push({
-                      artifactId: item.artifactId,
-                      reason: rewrite.reason ?? 'rewrite_failed',
-                      ...(rewrite.detail ? { detail: rewrite.detail } : {}),
-                    });
-                    continue;
-                  }
-                  const content = rewrite.content;
-                  await applyEdit({
-                    g,
-                    intentId,
-                    artifactId: item.artifactId,
-                    content,
-                    editedBy: 'quorum',
-                    editedByName: 'Quorum',
-                    origin: 'quorum',
-                    editRef: `qedit:${editId}`,
-                  });
-                  await store
-                    ?.appendEvent?.({
-                      executionId,
-                      type: 'v2.artifact.edited',
-                      actor: 'quorum',
-                      summary: `Quorum updated "${row.title || item.artifactId}" to follow the upstream edit`,
-                    })
-                    .catch(() => {});
-                  updated.push(item.artifactId);
-                } else {
-                  // verify-unaffected: reviewed, still valid — clear the marker
-                  // and keep Quorum's rationale as the note.
-                  await verify({
-                    g,
-                    intentId,
-                    artifactId: item.artifactId,
-                    verifiedBy: 'quorum',
-                    verifiedByName: 'Quorum',
-                    note: item.rationale ?? '',
-                  });
-                  verified.push(item.artifactId);
-                }
-              }
-
-              // 4. Re-derive the projection for every rewritten document.
-              const rewrittenTypes = [
-                ...new Set(
-                  [
-                    target.artifact_type,
-                    ...planItems
-                      .filter((i) => updated.includes(i.artifactId))
-                      .map((i) => i.artifactType),
-                  ].filter(Boolean),
-                ),
-              ];
-              if (deriveArtifacts && rewrittenTypes.length) {
-                await progress('Re-deriving the graph projection for the updated documents…');
-                try {
-                  await deriveArtifacts({
-                    projectId,
-                    intentId,
-                    executionId,
-                    artifactTypes: rewrittenTypes,
-                    enrichment,
-                    requestedCli,
-                    cliModels,
-                    tierModels,
-                  });
-                } catch (err) {
-                  log(`derive after apply failed (${key}):`, err?.message ?? err);
-                }
-              }
-
-              await progress(
-                `Done: target updated, ${updated.length} downstream artifact(s) updated, ${verified.length} verified unaffected${failed.length ? `, ${failed.length} left stale (failed)` : ''}.`,
-              );
-              result = {
-                ok: true,
-                updatedArtifactIds: updated,
-                verifiedArtifactIds: verified,
-                failedArtifactIds: failed.map((f) => f.artifactId),
-                failures: failed,
-              };
+            } catch (err) {
+              log(`derive after apply failed (${key}):`, err?.message ?? err);
             }
           }
+
+          await progress(
+            `Done: target updated, ${updated.length} downstream artifact(s) updated, ${verified.length} verified unaffected${failed.length ? `, ${failed.length} left stale (failed)` : ''}.`,
+          );
+          return {
+            ok: true,
+            updatedArtifactIds: updated,
+            verifiedArtifactIds: verified,
+            failedArtifactIds: failed.map((f) => f.artifactId),
+            failures: failed,
+          };
+        };
+
+        try {
+          graph = await engineGraphOpener({ openEngineGraph, openGraph })({
+            projectId,
+            intentId,
+            executionId,
+          });
+          result = await applyApprovedPlan();
         } catch (err) {
           log(`apply job crashed (${key}):`, err?.message ?? err);
           result = { ok: false, reason: 'apply_job_crashed', detail: err?.message ?? String(err) };
@@ -419,7 +433,7 @@ export const createQuorumEditApplyStart = ({
         return result;
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        await closeGraphSource(g);
+        await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
       }

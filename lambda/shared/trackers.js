@@ -34,6 +34,12 @@ const trackerBindingProjectionStep = () =>
     'displayName',
     'createdAt',
     'createdBy',
+    'delegatedAt',
+    'connectionUserId',
+    'cloudId',
+    'externalProjectId',
+    'status',
+    'invalidReason',
   )
     .by('id')
     .by('provider')
@@ -41,7 +47,13 @@ const trackerBindingProjectionStep = () =>
     .by(__.coalesce(__.values('external_project_key'), __.constant(null)))
     .by(__.coalesce(__.values('display_name'), __.constant(null)))
     .by(__.coalesce(__.values('created_at'), __.constant(null)))
-    .by(__.coalesce(__.values('created_by'), __.constant(null)));
+    .by(__.coalesce(__.values('created_by'), __.constant(null)))
+    .by(__.coalesce(__.values('delegated_at'), __.constant(null)))
+    .by(__.coalesce(__.values('connection_user_id'), __.constant(null)))
+    .by(__.coalesce(__.values('cloud_id'), __.constant(null)))
+    .by(__.coalesce(__.values('external_project_id'), __.constant(null)))
+    .by(__.coalesce(__.values('status'), __.constant(null)))
+    .by(__.coalesce(__.values('invalid_reason'), __.constant(null)));
 
 // Anonymous step yielding a single fold()-collected list of binding maps
 // scoped to the current Project vertex. Returns [] when the project has no
@@ -62,39 +74,23 @@ const mapBinding = (m) => {
     displayName: get('displayName'),
     createdAt: get('createdAt'),
     createdBy: get('createdBy'),
+    ...(get('provider') === 'jira-cloud'
+      ? {
+          delegatedAt: get('delegatedAt'),
+          connectionUserId: get('connectionUserId'),
+          cloudId: get('cloudId'),
+          externalProjectId: get('externalProjectId'),
+          status: get('status') || 'invalid',
+          invalidReason: get('invalidReason') || (get('status') ? null : 'delegation_required'),
+        }
+      : {}),
   };
 };
 
-// Fetch a project member's role with a single-property traversal.
-// Returns the role string when the user is a member, or null otherwise.
-// Used by every /projects/{projectId}/... gate; pulling only `role`
-// avoids the cost of round-tripping a full valueMap on the edge.
-const fetchMembershipRole = async (g, projectId, userId) => {
-  const r = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .values('role')
-    .next();
-  if (r.done) return null;
-  return r.value || 'member';
-};
-
-export {
-  getVal,
-  trackerBindingProjectionStep,
-  projectTrackersFoldStep,
-  mapBinding,
-  fetchMembershipRole,
-};
+export { getVal, trackerBindingProjectionStep, projectTrackersFoldStep, mapBinding };
 export default {
   getVal,
   trackerBindingProjectionStep,
   projectTrackersFoldStep,
   mapBinding,
-  fetchMembershipRole,
 };

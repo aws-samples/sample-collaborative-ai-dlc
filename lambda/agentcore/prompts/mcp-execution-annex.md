@@ -103,8 +103,24 @@ are parsed into the typed graph items that step 3 above serves to every later
 stage — follow the contract exactly (shape verbatim, ids stable across
 revisions). Prose quality is yours; block shape is not negotiable.
 
-Use `emit_stage_note` for a short progress/audit note and `collect_metric` to
-report token/context usage when you finish.
+## Visual artifacts (wireframes, user-flow, mockups) may be static HTML
+
+HTML is accepted ONLY for the visual artifact types `wireframes`, `user-flow`
+and `mockups`. For those, you MAY pass `create_artifact` one complete HTML
+document as `content` instead of markdown, so the reviewer sees the screens as
+a rendered page rather than a text description of them. Every other artifact
+type is markdown — `create_artifact` / `update_artifact` refuse HTML for it.
+
+- Start the content with `<!doctype html>`; one self-contained file.
+- **Static only**: no `<script>`, no event-handler attributes, no forms that
+  submit — scripts are disabled where it renders.
+- **Nothing external**: inline `<style>` CSS, inline `<svg>` for icons and
+  charts, `data:` URIs for images. External URLs (CDNs, fonts, images) are
+  blocked and will not load.
+- Give it at least two `<h2>` section headings and cite consumed upstream slugs
+  in the visible text, exactly as for markdown — the same sensors check both.
+
+Use `emit_stage_note` for a short progress/audit note.
 
 ## Execution quality (the part of the methodology that still applies)
 
@@ -135,8 +151,7 @@ this order; do not skip step 1:
    in step 1 — never claim you "recorded" or "wrote" an artifact you did not
    create through the tool. If `create_artifact` was not called, the stage
    produced nothing and you must say so, not paper over it.
-3. **THEN report usage** with `collect_metric`.
-4. **FINALLY, end with a plain-text line — NOT a tool call.** After the tool
+3. **FINALLY, end with a plain-text line — NOT a tool call.** After the tool
    calls above, your turn's LAST output MUST be a short, non-empty plain-text
    message (one sentence stating the stage is complete, e.g. "Stage complete —
    recorded the workspace-detection artifact."). Do **NOT** let a tool call be

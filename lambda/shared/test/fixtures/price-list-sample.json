@@ -1,0 +1,2677 @@
+[
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_InputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_InputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_MillionBatchInputTokens-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_MillionBatchOutputTokens-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "7.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "15.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "7.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_1MonthCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "158.4000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_6MonthsCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "88.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_NoCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "176.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_CacheReadInputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.3000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_CacheWriteInputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_InputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_InputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "15.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "7.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_1MonthCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "158.4000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_6MonthsCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "88.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude 3.5 Sonnet v2",
+        "usagetype": "USE1-MP:USE1_ProvisionedThroughput_NoCommit_ModelUnits_Usage-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "hour",
+              "pricePerUnit": {
+                "USD": "176.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0550000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0110000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.2000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.2200000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1250000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.6250000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.6875000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1375000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.5500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Haiku 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.5500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Mythos 5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Mythos 5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "22.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Mythos 5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "13.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Mythos 5",
+        "usagetype": "USE1-MP:USE1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "11.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Mythos 5",
+        "usagetype": "USE1-MP:USE1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "55.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheReadInputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.3300000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheReadInputTokenCount_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.3000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheWrite1hInputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "6.6000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheWrite1hInputTokenCount_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "6.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheWriteInputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "4.1250000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_CacheWriteInputTokenCount_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_InputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.3000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_InputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.6500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_InputTokenCount_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "3.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_InputTokenCount_Global_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "16.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "8.2500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "15.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Batch Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_OutputTokenCount_Global_Batch-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "7.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_1Month_InputTPM_Geo-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.1980000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_1Month_InputTPM_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.1800000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_1Month_OutputTPM_Geo-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.9900000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_1Month_OutputTPM_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.9000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_3Month_InputTPM_Geo-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.1782000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_3Month_InputTPM_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.1620000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_3Month_OutputTPM_Geo-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.8910000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "Provisioned Throughput Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 4.6",
+        "usagetype": "USE1-MP:USE1_Reserved_3Month_OutputTPM_Global-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M TPM Hour",
+              "pricePerUnit": {
+                "USD": "0.8100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_read_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_read_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_write_tokens_1h_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "4.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_write_tokens_1h_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "4.4000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_write_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_cache_write_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_input_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.2000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_output_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "10.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "eu-central-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "EUC1-MP:EUC1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "11.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "4.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_1h_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "4.4000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.2000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "10.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "Anthropic",
+        "model": "Claude Sonnet 5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "11.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_cached_input_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_cached_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.5500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "11.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "5.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "49.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-5.5",
+        "usagetype": "USE1-MP:USE1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "33.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.1100000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_read_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "0.0550000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_30m_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.2500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_30m_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_30m_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.7500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_cache_write_tokens_30m_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.3750000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_input_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_input_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_input_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "2.2000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_input_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "1.1000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_output_tokens_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "5.0000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_output_tokens_long_ctx_global_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "7.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_output_tokens_long_ctx_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "8.2500000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "product": {
+      "attributes": {
+        "regionCode": "us-east-1",
+        "feature": "On-demand Inference",
+        "provider": "OpenAI",
+        "model": "OpenAI GPT-6.1 Terra",
+        "usagetype": "USE1-MP:USE1_output_tokens_standard-Units"
+      }
+    },
+    "terms": {
+      "OnDemand": {
+        "t": {
+          "priceDimensions": {
+            "d": {
+              "unit": "1M tokens",
+              "pricePerUnit": {
+                "USD": "5.5000000000"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+]

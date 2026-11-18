@@ -11,13 +11,20 @@ import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 //   - GET  /agents/{taskId}/questions          — recorded agent questions (read)
 //   - GET  /agents/capabilities                — CLI/model discovery for the v2
 //     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
+//   - `{ action: 'refresh-model-pricing' }`    — hourly schedule: rebuild the
+//     model-pricing SSM table from the AWS Price List API
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 //   - POST /agents/authentication-setup        — Admin setup steps of registered
 //     authentication providers (authentication-settings-providers.js)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  GetParameterCommand,
+  GetParametersCommand,
+  PutParameterCommand,
+} from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
 import {
@@ -42,9 +49,19 @@ import {
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
-import { fetchMembershipRole, getVal } from '../shared/trackers.js';
-import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
-import { refreshPricing } from '../shared/model-pricing.js';
+import { getVal } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+  gatewayOnlyMcp,
+} from '../shared/runtime-mcp-policy.js';
+import { listClaudeModels } from '../shared/bedrock-models.js';
+import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
+import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
 import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
@@ -66,6 +83,15 @@ import {
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import {
+  resolveInvocationSandbox,
+  readSandboxSettings,
+  sandboxSettingsView,
+  writeSandboxSettings,
+} from '../shared/sandbox-settings.js';
+import { validateSandboxConfig } from '../shared/sandbox-config.js';
+import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
+import { issueMcpSecretVerificationGrant } from '../shared/mcp-secret-verification-grant.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -78,14 +104,16 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // runtime (shared/runtime-session.js withDisposableSession).
 const sessionCleanupStore = createSessionCleanupStore({ ddb });
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
-// Model discovery must list the profiles of the region the CLIs invoke.
-const bedrock = new BedrockClient({
-  region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
-});
+// Model discovery must list the profiles of the region the CLIs invoke, and the
+// price table is built for that region. Both clients retry a throttled or
+// failed call up to three attempts in total.
+const inferenceRegion = () => process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1';
+const bedrock = new BedrockClient({ region: inferenceRegion(), maxAttempts: 3 });
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
 // The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
 const pricing = new PricingClient({
   region: (process.env.AWS_REGION || '').startsWith('ap-') ? 'ap-south-1' : 'us-east-1',
+  maxAttempts: 3,
 });
 
 const logger = new Logger({ persistentKeys: { component: 'agents' } });
@@ -145,15 +173,19 @@ const probeRuntimeCapabilities = async ({
   credentialBindings,
   projectId,
 }) => {
+  const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
   let runtimeCapabilities;
-  if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
+  if (
+    sandbox.enabled ||
+    Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)
+  ) {
     const probe = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
         runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities', agentSandbox: sandbox })),
       }),
     );
     runtimeCapabilities = JSON.parse(await probe.response.transformToString());
@@ -165,7 +197,12 @@ const probeRuntimeCapabilities = async ({
       credentialBindings,
       runtimeCapabilities,
     },
-    { ssm },
+    {
+      ssm,
+      readSandbox: async () => sandbox,
+      // This request already owns and probes the exact session it will use.
+      qualifyRuntime: async () => runtimeCapabilities,
+    },
   );
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
@@ -176,6 +213,7 @@ const probeRuntimeCapabilities = async ({
       payload: Buffer.from(
         JSON.stringify({
           command: 'capabilities',
+          agentSandbox: sandbox,
           ...(credentialBindings ? { credentialBindings } : {}),
           ...(projectId ? { projectId } : {}),
           ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
@@ -198,6 +236,7 @@ export const verifyMcpServers = async ({
   mcpServersByTier,
   projectId,
   unsavedSecrets,
+  verificationGrant,
   runtimeTarget = coreRuntimeTarget(),
 }) => {
   if (!runtimeTarget.agentRuntimeArn) {
@@ -213,6 +252,21 @@ export const verifyMcpServers = async ({
         context: { projectId: projectId ?? null },
       },
       async (runtimeSessionId) => {
+        const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
+        if (sandbox.enabled) {
+          const probe = await agentcore.send(
+            new InvokeAgentRuntimeCommand({
+              ...runtimeSdkInput(runtimeTarget),
+              runtimeSessionId,
+              contentType: 'application/json',
+              accept: 'application/json',
+              payload: Buffer.from(
+                JSON.stringify({ command: 'capabilities', agentSandbox: sandbox }),
+              ),
+            }),
+          );
+          assertSandboxRuntime(JSON.parse(await probe.response.transformToString()));
+        }
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             ...runtimeSdkInput(runtimeTarget),
@@ -222,9 +276,11 @@ export const verifyMcpServers = async ({
             payload: Buffer.from(
               JSON.stringify({
                 command: 'verify-mcp',
+                agentSandbox: sandbox,
                 mcpServersByTier,
                 ...(projectId ? { projectId } : {}),
                 ...(unsavedSecrets ? { unsavedSecrets } : {}),
+                ...(verificationGrant ? { verificationGrant } : {}),
               }),
             ),
           }),
@@ -234,6 +290,10 @@ export const verifyMcpServers = async ({
     );
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
+    if (process.env.ENGINE_DATA_ENABLED === 'true') {
+      logger.error('[verify-mcp] runtime invoke failed');
+      return { error: 'MCP verification runtime invocation failed' };
+    }
     logger.error('[verify-mcp] runtime invoke failed', e);
     return { error: `Runtime invoke failed: ${e.message}` };
   }
@@ -341,11 +401,11 @@ const projectRuntimeAccess = async (event, projectId, { requireEditor = false } 
   return withNeptune(async (g) => {
     const role = await fetchMembershipRole(g, projectId, userId);
     if (!role) return { denied: true, statusCode: 403, error: 'Not a project member' };
-    if (requireEditor && role !== 'owner' && role !== 'admin') {
+    if (requireEditor && role !== 'owner') {
       return {
         denied: true,
         statusCode: 403,
-        error: 'Only project owners and admins can verify MCP servers',
+        error: 'Only project owners can verify MCP servers',
       };
     }
 
@@ -391,47 +451,124 @@ function modelPricingPath() {
   return prefix ? `${prefix}/model-pricing` : '';
 }
 
-// Fetch all Anthropic-on-Bedrock token SKUs from the AWS Price List API.
-// Paginated; returns the flat PriceList array the shared parser expects.
+// Fetch the on-demand token SKUs of the inference region from the AWS Price List
+// API, one paginated query per provider. Returns the flat PriceList array the
+// shared parser expects; any failed page fails the whole fetch, so a partial
+// result is never turned into a price table.
 async function fetchBedrockProducts() {
   const products = [];
-  let token;
-  do {
-    const res = await pricing.send(
-      new GetProductsCommand({
-        ServiceCode: 'AmazonBedrock',
-        Filters: [{ Type: 'TERM_MATCH', Field: 'provider', Value: 'Anthropic' }],
-        NextToken: token,
-      }),
-    );
-    products.push(...(res.PriceList ?? []));
-    token = res.NextToken;
-  } while (token);
+  for (const provider of PRICE_LIST_PROVIDERS) {
+    let token;
+    do {
+      const res = await pricing.send(
+        new GetProductsCommand({
+          ServiceCode: PRICE_LIST_SERVICE_CODE,
+          Filters: [
+            { Type: 'TERM_MATCH', Field: 'provider', Value: provider },
+            { Type: 'TERM_MATCH', Field: 'regionCode', Value: inferenceRegion() },
+            { Type: 'TERM_MATCH', Field: 'feature', Value: 'On-demand Inference' },
+          ],
+          NextToken: token,
+        }),
+      );
+      products.push(...(res.PriceList ?? []));
+      token = res.NextToken;
+    } while (token);
+  }
   return products;
 }
 
-// Refresh the SSM model-pricing table from the Price List API. Best-effort: the
-// intents lambda reads this table (with a static fallback), so a failed refresh
-// just means cost is priced from the fallback until the next successful refresh.
-// Piggy-backs on the model-discovery call (GET /agents/capabilities?models=1) so
-// prices track whatever models the picker can select, without a separate cron.
-async function refreshModelPricing() {
-  const path = modelPricingPath();
-  if (!path) return;
-  try {
-    const table = await refreshPricing({ getProducts: fetchBedrockProducts });
+// The SSM price table the intents lambda reads. Refreshed by the hourly
+// schedule (`refresh-model-pricing`) and, at most once per interval and
+// container, when a picker loads its models. Best-effort: a failed refresh
+// keeps the stored table. Intelligent-Tiering lets the parameter outgrow the
+// 4 KB standard size without a deployment change.
+const modelPricing = createModelPricing({
+  region: inferenceRegion(),
+  getProducts: fetchBedrockProducts,
+  readTable: async () => {
+    const path = modelPricingPath();
+    if (!path) return null;
+    try {
+      const res = await ssm.send(new GetParameterCommand({ Name: path }));
+      return res.Parameter?.Value ?? null;
+    } catch (error) {
+      if (error?.name === 'ParameterNotFound') return null;
+      throw error;
+    }
+  },
+  writeTable: async (value) => {
+    const path = modelPricingPath();
+    if (!path) throw new Error('AGENT_SETTINGS_SSM_PREFIX is not set');
     await ssm.send(
       new PutParameterCommand({
         Name: path,
-        Value: JSON.stringify(table),
+        Value: value,
         Type: 'String',
+        Tier: 'Intelligent-Tiering',
         Overwrite: true,
       }),
     );
-  } catch (e) {
-    logger.error('[pricing] refresh failed', e);
+  },
+  logger,
+});
+
+const modelCatalog = createModelCatalog({ logger });
+
+// Claude / OpenCode models with API keys: every page of the region's inference
+// profiles (one page holds 100, and a region can list more).
+const loadKeyClaudeModels = () =>
+  modelCatalog.claudeModels(async () => {
+    const summaries = [];
+    let nextToken;
+    do {
+      const out = await bedrock.send(
+        new ListInferenceProfilesCommand({ maxResults: 100, ...(nextToken ? { nextToken } : {}) }),
+      );
+      summaries.push(...(out.inferenceProfileSummaries ?? []));
+      nextToken = out.nextToken;
+    } while (nextToken);
+    return listClaudeModels({
+      region: inferenceRegion(),
+      listInferenceProfiles: async () => summaries,
+    });
+  });
+
+// The `models` block of a capabilities response. Starts a price refresh without
+// waiting for it; the response is built from the table already stored.
+// `discover(loadKeyModels)` runs discoverAgentModels; it calls `loadKeyModels`
+// only when the Claude list comes from this Lambda (API keys), otherwise the
+// list is the runtime's.
+const pickerModels = async ({ runtimeTarget, projectId, userId, credentialBindings, discover }) => {
+  modelPricing.refresh().catch(() => {});
+  let keyClaude;
+  const [{ runtimeCaps }, priceFor] = await Promise.all([
+    discover(async () => {
+      keyClaude = await loadKeyClaudeModels();
+      return keyClaude.models ?? [];
+    }),
+    modelPricing.priceResolver(),
+  ]);
+  const lookups = runtimeLookups(runtimeCaps);
+  const models = modelCatalog.assemble({
+    key: JSON.stringify([
+      runtimeTarget?.agentRuntimeArn ?? null,
+      projectId ?? null,
+      userId ?? null,
+      credentialBindings,
+    ]),
+    ...lookups,
+    claude: keyClaude ?? lookups.claude,
+    priceFor,
+  });
+  const failed = Object.entries(models.sources).filter(
+    ([, source]) => source === 'error' || source === 'cached',
+  );
+  if (failed.length > 0) {
+    logger.warn('[capabilities] model list lookup failed', { sources: Object.fromEntries(failed) });
   }
-}
+  return { models, runtimeCaps };
+};
 
 const authenticationSettings = () =>
   createAuthenticationSettingsService({
@@ -463,6 +600,10 @@ export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
+  // Hourly EventBridge schedule (terraform: agents_model_pricing_refresh).
+  if (event?.action === 'refresh-model-pricing') {
+    return { refreshed: await modelPricing.refresh({ force: true }) };
+  }
   const response = buildResponse(event);
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;
@@ -555,9 +696,9 @@ export const handler = async (event, context) => {
     if (projectId && path.endsWith('/agent-credentials')) {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
       const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
-      if (role !== 'owner' && role !== 'admin' && !isPlatformAdmin(event)) {
+      if (role !== 'owner' && !isPlatformAdmin(event)) {
         return response(403, {
-          error: 'Only space owners and admins can manage agent credentials',
+          error: 'Only space owners can manage agent credentials',
         });
       }
       if (httpMethod === 'GET') {
@@ -635,20 +776,23 @@ export const handler = async (event, context) => {
         return response(500, { error: 'Failed to resolve agent credentials' });
       }
       const withModels = event.queryStringParameters?.models === '1';
-      if (withModels) refreshModelPricing().catch(() => {});
-      const { claudeModels, runtimeCaps } = await discoverAgentModels({
-        credentialBindings,
-        withModels,
-        loadKeyModels: () =>
-          listClaudeModels({
-            listInferenceProfiles: async () => {
-              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-              return out.inferenceProfileSummaries ?? [];
-            },
-          }),
-        loadRuntimeCapabilities: () =>
-          fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
-      });
+      const discover = (loadKeyModels) =>
+        discoverAgentModels({
+          credentialBindings,
+          withModels,
+          loadKeyModels,
+          loadRuntimeCapabilities: () =>
+            fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
+        });
+      const { models, runtimeCaps } = withModels
+        ? await pickerModels({
+            runtimeTarget: access.runtimeTarget,
+            projectId,
+            userId: credentialUserId,
+            credentialBindings,
+            discover,
+          })
+        : await discover();
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const { disabledClis, clis: runtimeClis } = await applyDisabledClis(
         (runtimeCaps?.clis ?? []).map((cli) => ({
@@ -657,31 +801,13 @@ export const handler = async (event, context) => {
         })),
       );
       const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
-      if (!withModels) {
-        return response(200, {
-          available,
-          runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
-          runtimeClis,
-          credentialSources,
-          disabledClis,
-        });
-      }
-      const opencodeModels = claudeModels.map((model) => ({
-        ...model,
-        id: `amazon-bedrock/${model.id}`,
-      }));
       return response(200, {
         available,
         runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
         runtimeClis,
         credentialSources,
         disabledClis,
-        models: {
-          claude: claudeModels,
-          opencode: opencodeModels,
-          kiro: runtimeCaps?.kiroModels?.models ?? [],
-          codex: CODEX_BEDROCK_MODELS,
-        },
+        ...(withModels ? { models } : {}),
       });
     }
 
@@ -788,6 +914,7 @@ export const handler = async (event, context) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
+          bedrockRegion: inferenceRegion(),
           ...(process.env.V2_PROCESS_TABLE
             ? {
                 authentication: await authenticationView({
@@ -807,6 +934,15 @@ export const handler = async (event, context) => {
           customMcpServerNames,
           mcpSecretsSet,
           globalMcpServerSecretRefs,
+          ...(isPlatformAdmin(event) && process.env.V2_PROCESS_TABLE
+            ? {
+                sandbox: sandboxSettingsView(
+                  await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+                ),
+              }
+            : {}),
+          // Only in the strict profile, so the default response is unchanged.
+          ...(gatewayOnlyMcp() ? { runtimeMcpCredentials: 'gateway_only' } : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -819,8 +955,81 @@ export const handler = async (event, context) => {
       const denied = requirePlatformAdmin(event);
       if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const input = JSON.parse(body || '{}');
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return response(400, { error: 'Invalid settings request' });
+      }
       const errors = [];
+
+      if (Object.hasOwn(input, 'sandbox')) {
+        // A sandbox operation is atomic and must not partially apply unrelated
+        // credentials/model updates if validation or the revision check fails.
+        if (Object.keys(input).length !== 1) {
+          return response(400, { error: 'Save sandbox settings separately from other settings' });
+        }
+        const request = input.sandbox;
+        if (
+          !request ||
+          !['draft', 'apply', 'toggle'].includes(request.action) ||
+          !Number.isSafeInteger(request.expectedRevision) ||
+          request.expectedRevision < 0 ||
+          Object.keys(request).some(
+            (key) => !['action', 'expectedRevision', 'config', 'enabled'].includes(key),
+          ) ||
+          (request.action === 'toggle'
+            ? request.config !== undefined || typeof request.enabled !== 'boolean'
+            : request.enabled !== undefined || typeof request.config !== 'string')
+        ) {
+          return response(400, { error: 'Invalid sandbox settings request' });
+        }
+        try {
+          const config =
+            request.action === 'toggle' ? undefined : validateSandboxConfig(request.config);
+          const sandbox = await writeSandboxSettings({
+            ddb,
+            tableName: process.env.V2_PROCESS_TABLE,
+            expectedRevision: request.expectedRevision,
+            action: request.action,
+            enabled: request.enabled,
+            config,
+            actor: credentialUserId,
+          });
+          return response(200, { saved: true, sandbox });
+        } catch (error) {
+          if (error.code === 'sandbox_invalid' || error.code === 'sandbox_conflict') {
+            return response(error.code === 'sandbox_conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+              ...(error.issues ? { issues: error.issues } : {}),
+            });
+          }
+          throw error;
+        }
+      }
+
+      // gateway_only: refuse direct MCP servers and secret values before ANY
+      // setting in this request is written. An invalid config is left to the
+      // validation below.
+      try {
+        if (input.customMcpServers !== undefined) {
+          const raw =
+            typeof input.customMcpServers === 'string'
+              ? input.customMcpServers
+              : JSON.stringify(input.customMcpServers ?? {});
+          if (validateMcpServersJson(raw || '{}').valid) {
+            assertDirectMcpConfigAllowed(JSON.parse(raw || '{}'));
+          }
+        }
+        if (input.mcpSecrets !== undefined) assertMcpSecretWritesAllowed(input.mcpSecrets);
+      } catch (error) {
+        if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+        return response(400, { error: error.message, code: error.code });
+      }
 
       if (input.authenticationChange) {
         const settings = authenticationSettings();
@@ -1107,7 +1316,7 @@ export const handler = async (event, context) => {
       // Authorization — the verifier spawns configured commands and probes
       // arbitrary URLs from inside the runtime (with its env), so gate it to
       // exactly who can EDIT the config, using the caller's Cognito identity:
-      //   projectId present → must be owner/admin of that project
+      //   projectId present → must be owner of that project
       //   projectId absent  → global config → platform admin
       const verifyProjectId = input.projectId;
       let runtimeTarget = coreRuntimeTarget();
@@ -1122,6 +1331,16 @@ export const handler = async (event, context) => {
         if (denied) {
           return response(denied.statusCode, { error: denied.error, code: denied.code });
         }
+      }
+
+      // gateway_only: the probe would connect from the runtime and resolve the
+      // config's secrets (saved or just typed) into it. Refused before any
+      // grant is issued or the runtime is invoked.
+      if (gatewayOnlyMcp()) {
+        return response(400, {
+          error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+          code: RUNTIME_MCP_GATEWAY_ONLY,
+        });
       }
 
       const raw =
@@ -1152,15 +1371,36 @@ export const handler = async (event, context) => {
       // are tier-scoped to the caller by the runtime resolver: a project verify's
       // unsavedSecrets bind to project refs only (never a global-named ref). Never
       // logged (see below).
-      const unsavedSecrets =
+      let unsavedSecrets =
         input.unsavedSecrets && typeof input.unsavedSecrets === 'object'
           ? input.unsavedSecrets
           : undefined;
+
+      let verificationGrant;
+      if (process.env.ENGINE_DATA_ENABLED === 'true') {
+        try {
+          verificationGrant = await issueMcpSecretVerificationGrant(ssm, {
+            projectId: verifyProjectId || null,
+            mcpServersByTier,
+          });
+          // The editor retains drafts for renamed/removed refs; only current editable refs travel.
+          if (unsavedSecrets) {
+            const editableRefs = extractSecretRefs(editedConfig).refs;
+            unsavedSecrets = Object.fromEntries(
+              Object.entries(unsavedSecrets).filter(([ref]) => editableRefs.has(ref)),
+            );
+          }
+        } catch {
+          logger.error('[verify-mcp] authorization failed');
+          return response(502, { error: 'MCP verification authorization failed' });
+        }
+      }
 
       const result = await verifyMcpServers({
         mcpServersByTier,
         projectId: verifyProjectId,
         unsavedSecrets,
+        ...(verificationGrant ? { verificationGrant } : {}),
         runtimeTarget,
       });
       if (result.error) return response(502, result);
@@ -1211,36 +1451,26 @@ export const handler = async (event, context) => {
         });
       }
 
-      // Piggy-back a pricing refresh on model discovery so the SSM price table
-      // tracks the selectable models. Fire-and-forget: never blocks or fails the
-      // models response (the intents read path has a static fallback regardless).
-      refreshModelPricing().catch(() => {});
-
-      // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
-      // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+      // Bedrock (claude/opencode) + runtime (kiro, codex + auth state) discovery,
+      // in parallel. Both are best-effort — a failure yields the last list this
+      // container read or an empty one, never a 500.
+      const { models, runtimeCaps } = await pickerModels({
+        runtimeTarget,
+        projectId: capabilitiesProjectId || null,
+        userId: credentialUserId,
         credentialBindings,
-        loadKeyModels: () =>
-          listClaudeModels({
-            listInferenceProfiles: async () => {
-              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-              return out.inferenceProfileSummaries ?? [];
-            },
-          }),
-        loadRuntimeCapabilities: () =>
-          fetchRuntimeCapabilities(
-            runtimeTarget,
+        discover: (loadKeyModels) =>
+          discoverAgentModels({
             credentialBindings,
-            capabilitiesProjectId || null,
-          ),
+            loadKeyModels,
+            loadRuntimeCapabilities: () =>
+              fetchRuntimeCapabilities(
+                runtimeTarget,
+                credentialBindings,
+                capabilitiesProjectId || null,
+              ),
+          }),
       });
-      const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
-      // OpenCode drives the SAME Bedrock profiles as claude but requires the
-      // `amazon-bedrock/` provider prefix (see cli-models validation).
-      const opencodeModels = claudeModels.map((m) => ({
-        ...m,
-        id: `amazon-bedrock/${m.id}`,
-      }));
       const { disabledClis, clis: markedClis } = await applyDisabledClis(runtimeCaps?.clis ?? []);
       const available = markedClis
         .filter((c) => c.available)
@@ -1253,14 +1483,8 @@ export const handler = async (event, context) => {
         // the Admin disabled-CLI set applied.
         runtimeClis: runtimeCaps?.clis ? markedClis : null,
         disabledClis,
-        models: {
-          claude: claudeModels,
-          opencode: opencodeModels,
-          kiro: kiroModels,
-          // Codex on Bedrock: curated static list — the OpenAI models are not
-          // surfaced by ListInferenceProfiles (see shared/bedrock-models.js).
-          codex: CODEX_BEDROCK_MODELS,
-        },
+        // Per-CLI model lists; `priced: false` marks a model without a price.
+        models,
       });
     }
 

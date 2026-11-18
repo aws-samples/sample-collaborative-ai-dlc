@@ -101,6 +101,29 @@ const stamp = (over = {}) => ({
 
 const types = (store) => store.appended.map((event) => event.type);
 
+describe('an unreadable event history', () => {
+  it('surfaces a history too large to read instead of judging it empty', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+    store.listEvents = async () => {
+      throw Object.assign(new Error('Store result is too large to return'), {
+        name: 'EngineStoreError',
+        code: 'response_too_large',
+      });
+    };
+    await expect(ladder(store)).rejects.toMatchObject({ code: 'response_too_large' });
+    expect(store.appended).toHaveLength(0);
+  });
+
+  it('keeps judging a transiently unreadable history as empty', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+    store.listEvents = async () => {
+      throw new Error('throttled');
+    };
+    const empty = fakeStore({ receipts: [confirmationReceipt()] });
+    expect((await ladder(store)).findings).toEqual((await ladder(empty)).findings);
+  });
+});
+
 describe('the ladder is inert where it must be', () => {
   it('does nothing at all without a resolved release policy', async () => {
     const store = fakeStore();
@@ -197,18 +220,18 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
   it('skips the repair turn when the stage budget refuses it, and says so', async () => {
     const store = fakeStore();
     const messages = [];
-    let skipped = 0;
+    const skipped = [];
 
     const result = await ladder(store, {
       runRepairTurn: async (m) => messages.push(m),
       repairAllowed: () => false,
-      onRepairSkipped: async () => {
-        skipped += 1;
+      onRepairSkipped: async (reason) => {
+        skipped.push(reason);
       },
     });
 
     expect(messages).toEqual([]);
-    expect(skipped).toBe(1);
+    expect(skipped).toEqual(['stage_budget_exhausted']);
     expect(store.counters.summaryRepairAttempts).toBeUndefined();
     expect(result.findings.map((finding) => finding.code)).toEqual([
       'summary_confirmation_missing',
@@ -315,11 +338,18 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     ]);
   });
 
-  it('skips the repair rung when no resumable session exists', async () => {
+  it('skips the repair rung when no resumable session exists, and says so', async () => {
     const store = fakeStore();
+    const skipped = [];
 
-    const result = await ladder(store, { runRepairTurn: null });
+    const result = await ladder(store, {
+      runRepairTurn: null,
+      onRepairSkipped: async (reason) => {
+        skipped.push(reason);
+      },
+    });
 
+    expect(skipped).toEqual(['no_resumable_session']);
     expect(store.counters.summaryRepairAttempts).toBeUndefined();
     expect(types(store)).toEqual(['v2.summary.noncompliant']);
     expect(result.findings.map((finding) => finding.code)).toEqual([
@@ -574,5 +604,34 @@ describe('a parked checkpoint is delivered to the agent as a decision, not a Q&A
     expect(
       formatResumeAnswer({ kind: 'validation', answer: { feedback: 'tighten it' } }),
     ).toContain('requested changes');
+  });
+
+  it('adds the reviewer findings to a revision, neutralized and bounded', () => {
+    const reviewFindings = {
+      reviewerAgent: 'aidlc-product-lead-agent',
+      verdict: 'NOT-READY',
+      findings: '1. Fix the scope\n2. Add error states',
+      truncated: true,
+    };
+    const revision = formatResumeAnswer(
+      { kind: 'validation', answer: { decision: 'request-changes', feedback: 'do 2' } },
+      'requirements-analysis',
+      { reviewFindings },
+    );
+    expect(revision).toContain('requested changes:\ndo 2');
+    expect(revision).toContain('(aidlc-product-lead-agent, NOT-READY):');
+    expect(revision).toContain('2. Add error states');
+    expect(revision).toContain('was cut short');
+    expect(revision.indexOf('do 2')).toBeLessThan(revision.indexOf('Fix the scope'));
+    expect(revision.trimEnd().endsWith('then finish again.')).toBe(true);
+
+    // Findings never ride on an ordinary question's answer.
+    expect(
+      formatResumeAnswer(
+        { kind: 'question', answer: { freeText: 'MVP' } },
+        'requirements-analysis',
+        { reviewFindings },
+      ),
+    ).not.toContain('Fix the scope');
   });
 });

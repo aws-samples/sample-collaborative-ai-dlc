@@ -443,7 +443,7 @@ describe('EnvironmentsTab', () => {
         baseEnvironmentId: 'standard',
       }),
     );
-    expect(await screen.findAllByText('generated-name')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText('generated-name')).toHaveLength(2));
     expect(get).toHaveBeenCalledWith('generated-name');
   });
 

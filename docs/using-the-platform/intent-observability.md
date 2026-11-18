@@ -27,12 +27,36 @@ The default intent view is the **workbench** — the working surface for humans:
 - **Gates** — pending questions and approvals render inline (see [Human gates](#human-gates) below).
 - **Course corrections** — the steering history of the run.
 
+### HTML artifacts
+
+The visual artifacts `wireframes`, `user-flow`, and `mockups` can be a complete HTML page instead of markdown. They render as a page wherever an artifact is shown (work products, stage review, artifact history), with a **Rendered / Source** toggle. Other artifact types stay markdown: the agent tools, Quorum rewrites, and manual edits refuse HTML for them.
+
+The page renders in a fixed-height, scrollable sandboxed frame with scripts and links disabled and all network requests blocked, so only inline CSS, inline SVG, and `data:` images display. To get HTML mockups from a stage, request changes at its review gate and ask for the visual outputs as static HTML.
+
 ## The observability page
 
 The **Observability** button opens the intent's execution dashboard:
 
 - **Initial prompt** — the final user-authored draft that started the intent, preserved read-only with a copy action.
-- **Usage & activity** — aggregated token usage, a context-window gauge, and cost for the whole intent. Costs are computed per stage from live model pricing; Kiro runs show estimated cost derived from credits.
+- **Usage & activity** — aggregated token usage and cost for the whole intent. Costs are computed per stage from live model pricing; Kiro runs show estimated cost derived from credits.
+
+  Token usage comes from CLI output, including lead, repair, reviewer, support, and
+  conflict-resolution calls. Claude input totals include uncached input, cache reads,
+  and cache writes; **Usage details** shows the cache counts separately. Costs apply
+  the corresponding cache rates, including one-hour writes when the CLI reports
+  them. Codex reports cumulative thread totals, so resumed calls subtract the
+  saved thread usage and record only the new usage. Codex input totals already
+  include cache reads and writes. A Codex run with no model selected uses the
+  pinned Codex default (`openai.gpt-6.1-sol`) and is recorded under it. Kiro
+  credits use the captured overage rate and remain an estimate.
+
+  Usage is recorded when each invocation ends, including reported usage on failure
+  or before a human pause. If a CLI stops without reporting usage, the runtime
+  does not guess it. Older self-reported samples remain in history; this change
+  does not reconstruct missing usage from earlier runs. The agent-facing
+  `collect_metric` tool has been removed. Context-window gauges remain visible
+  for historical samples that include them.
+
 - **Execution progress** — the stage pipeline in three switchable views (your choice is remembered):
   - **Diagram** — a phase-grouped flow diagram with per-phase progress.
   - **Graph** — the workflow scope graph with live stage status overlaid.
@@ -70,9 +94,53 @@ version, and verification result used by the intent. It is the measurement
 surface for tuning context efficiency and confirming which immutable runtime
 executed a run.
 
-## Project-level metrics
+## Where prices come from
 
-The project page aggregates the same usage and cost metrics across all intents, next to the intent list. Model attribution is stamped server-side, and anything that couldn't be priced is flagged rather than shown as $0.
+Token prices are read from the AWS Price List API. The platform holds no price
+table of its own: a model without a usable published price shows **Cost:
+unavailable**, and a model picker shows "Cost estimate unavailable for this
+model" below such a model when it is selected. It can still be selected and
+its usage is still recorded.
+
+- **Refresh.** The price table is rebuilt every hour, and when a model picker is
+  opened if the last refresh is more than an hour old. Costs are computed when a
+  page is read, so a price that AWS publishes later also prices usage that was
+  recorded earlier, and a price change applies to earlier usage as well.
+- **After an upgrade or first deployment** costs show as unavailable until the
+  first refresh has run (at most one hour, or as soon as someone opens a model
+  picker in Admin or in Space Settings → Agent).
+- **If a refresh fails** (Price List unreachable or throttled) the last table is
+  kept. Nothing is priced from a partial answer.
+- **If the stored table cannot be read** for a moment (a throttled or failed
+  read), costs keep using the table that was read last, and the read is tried
+  again a minute later. A read that succeeds decides: if the table was removed
+  or is not in the current format, costs show as unavailable until the next
+  refresh.
+- **Region.** Prices are those of the platform's inference region
+  (`bedrock_region`); Bedrock publishes different rates per region. A space
+  whose IAM connection sends inference to another region is priced with the
+  same table.
+- **Tier.** A `global.` inference profile uses the Global cross-region rate;
+  every other ID uses the In-Region rate, which is also the Geo cross-region
+  rate. Codex sends bare `openai.*` IDs through the Mantle endpoint and uses the
+  In-Region rate; a geo-prefixed OpenAI ID is not priced. Usage samples carry no
+  prompt length, so the short-context rate is always used: a request that
+  Bedrock bills at a long-context rate is under-reported. Batch, flex, priority
+  and latency-optimized rates are not used.
+- **Cache tokens** use the published cache rates. When AWS publishes no rate for
+  a cache category that a sample contains, that sample's cost is unavailable.
+  This applies to cache writes on GPT-5.5 and GPT-5.4, for which the Price List
+  has no cache-write rate.
+- **Matching.** The Price List identifies a model by its display name, not its
+  ID. The platform matches the two by normalizing both (`Claude Sonnet 4.6` and
+  `us.anthropic.claude-sonnet-4-6`; `OpenAI GPT-5.5` and `openai.gpt-5.5`). A
+  dated ID such as `openai.gpt-5.4-2026-03-05` uses the price of its model. A
+  model whose name and ID do not match this way has no price.
+- **Kiro** is billed in credits and has no token price; see above.
+
+## Space-level metrics
+
+The space page aggregates the same usage and cost metrics across all intents, next to the intent list. Model attribution is stamped server-side, and anything that couldn't be priced is flagged rather than shown as $0.
 
 ## Human gates
 

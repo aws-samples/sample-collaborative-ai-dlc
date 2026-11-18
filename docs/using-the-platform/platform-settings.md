@@ -17,15 +17,18 @@ Federated users show their identity provider and effective mapped roles, but
 their role control is read-only because the external IdP is authoritative. See
 [Enterprise SSO](../getting-started/enterprise-sso.md#role-and-access-mapping).
 
-Day-to-day project access is _not_ managed here — it lives in each project's [Members tab](projects.md#members).
+Day-to-day space access is _not_ managed here — it lives in each space's [Members tab](projects.md#members).
 
 ## Agents
 
 Everything the agent runtime needs to run:
 
+The **General** tab contains the settings below. **Sandboxing** provides the
+platform-wide SRT toggle and JSON policy editor; see [Agent sandboxing](agent-sandboxing.md).
+
 - **Platform Agent Credentials** — fallback **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and **Kiro API Key** values. Platform admins manage these SecureString parameters; a personal or space credential takes precedence. See [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
 - **Agent CLIs** — enable or disable each agent CLI (Kiro, Claude Code, OpenCode, Codex) for the whole platform. A disabled CLI is greyed out on the intent compose page and in **Space Settings → Agent**, and the API rejects selecting it (`agent_cli_disabled`) when an intent starts, when you compose a draft with AI, or when a draft discussion assist runs. At least one CLI must stay enabled. Intents that already started on a CLI keep using it after it is disabled. All CLIs are enabled by default. Operators can pre-seed the set for a new deployment with the `disabled_clis` Terraform variable. Terraform applies that value only on first creation; after that, this switch owns it. A default model (including the `codex_model` Terraform default) only pins which model a CLI uses; it does not enable the CLI.
-- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
+- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered at run time (or "No default — use CLI built-in"). The lists are read from AWS each time the page loads: Bedrock inference profiles for Claude Code and OpenCode, the inference region's Bedrock Mantle catalogue for Codex, and the Kiro CLI for Kiro. There is no built-in list. If a list cannot be read, the last list read is shown when there is one, with the note "Could not read the current model list — showing the last list read." in the default, per-tier and space pickers; otherwise the field becomes a text input for a model ID. Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. With no Codex default, runs use `openai.gpt-6.1-sol`, the default of the pinned Codex CLI. When the selected model has no published price, "Cost estimate unavailable for this model" appears below the field; the model can still be used, and its usage is recorded without a cost. See [Where prices come from](intent-observability.md#where-prices-come-from). Spaces can override these per-CLI in [Space Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
 
 ### Credential hierarchy
@@ -37,12 +40,14 @@ personal > space > platform
 ```
 
 - Users manage personal credentials in **Account Settings**.
-- Space owners and admins manage shared credentials in **Space Settings → Agent**.
+- Space Owners manage shared credentials in **Space Settings → Agent**.
 - Platform admins manage fallback credentials in **Admin → Agents**.
 
 The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends only an opaque binding to AgentCore. AgentCore reads the bound SecureString for each invocation rather than retaining secrets in the long-lived process environment.
 
 Starting an intent pins the selected CLI and credential binding for the run's lifetime. Rotating the value at that same scope takes effect on the next invocation; clearing or invalidating it fails the run instead of falling through to another scope.
+
+Before a key is saved or cleared, the server checks which work already uses it. If nothing that has already started is affected, the change is saved straight away and the card says what it now means. Otherwise the card asks you to confirm and names, in plain words, the work that would lose access, needs reconnecting, or could not be checked, with **Show details** for the specifics. The server rejects the save if work or configuration changed after that check; save again to repeat it.
 
 There is no intent-level credential store in this feature. An intent binds to one of the three managed scopes above but never owns a separate API key. Dedicated per-intent secrets would require a separate lifecycle and authorization design.
 
@@ -52,7 +57,7 @@ The environment area contains two administrator views:
 
 - **Environments** — compose exact published tool versions over a protected
   base, build and scan the resulting ARM64 image, validate its AgentCore
-  runtime, and publish it for project assignment.
+  runtime, and publish it for space assignment.
 - **Tools** — import, verify, publish, and recommend immutable tool versions.
   Java, Go, Rust, Maven, and Gradle are shipped as tool definitions rather than
   predefined environments. Administrators can add other tools such as .NET.
@@ -64,15 +69,16 @@ recommended tool versions change.
 See [Managed tools and environments](managed-environments.md) for the complete
 administrator workflow: adding a tool, source provenance, build verification,
 security review, publication and recommendation, environment composition and
-updates, project assignment, and intent pinning.
+updates, space assignment, and intent pinning.
 
 ## Source Control
 
 Platform-wide code-host configuration:
 
-- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Projects choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Project-bound authentication](git-integration.md#project-bound-authentication).
+- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Spaces choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Space-bound authentication](git-integration.md#space-bound-authentication).
 - **GitLab** — the GitLab OAuth app credentials.
-- **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Projects may inherit or override this default. The default is **Intent PR**.
+- **AWS CodeCommit** — one shared connection for the whole deployment: the IAM role ARN and region every space uses. The card shows the platform principals, the deployment external ID, and the trust and permissions policies to hand to the AWS admin who owns the repositories; paste the role ARN and region and click **Test & save** to verify the trust and store the connection. Spaces then pick CodeCommit repositories from the usual list, with no ARN or IAM to supply. There is no per-user external ID. See [Git integration → CodeCommit](git-integration.md#codecommit) and [Setup → CodeCommit](../getting-started/setup.md#codecommit-code-host).
+- **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Spaces may inherit or override this default. The default is **Intent PR**.
 
 ## Trackers
 

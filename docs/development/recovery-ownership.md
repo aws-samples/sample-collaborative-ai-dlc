@@ -31,3 +31,89 @@ Storage must accept a write to persist FAILED state. During a complete outage th
 worker preserves its structured failure, while durable dispatch and callback
 reconciliation remain the recovery backstop. These guards protect process state;
 they do not undo provider requests or Git operations already in flight.
+
+## Completion boundaries
+
+New histories capture completion policy 1 in the existing `load-meta` result.
+The shared unit-completion evaluator validates the pinned, resolved workflow's
+expected sections, current-plan units, repository integration evidence and scoped
+human omissions. Section fan-in and final success use the same evaluator against
+persisted process state. Missing rows, unfinished work and partial integrations
+cannot pass; missing provenance, read failures and ambiguous legacy omissions
+remain unverified. Serial workflows and sections excluded by approved workflow
+scope/composition remain valid. Pre-deploy `MERGED` rows without an
+`integrationResults` attribute retain their supported integrated meaning, including
+multi-repository retries and rewinds past completed sections. New integrations
+always write the attribute; explicit empty, invalid or incomplete evidence never
+receives this legacy exemption. PR-per-unit integration still requires its
+per-repository PR records. Unpinned historical serial intents without unit work
+keep their success presentation without unit-completion diagnostics. Cancelled
+executions and recorded aborts from the current run are classified as aborted
+before workflow-pin resolution, without implying that their work was integrated.
+Missing or truncated execution reads remain unverified.
+
+Required integration writes are not best-effort. A lost response is reconciled
+from persisted state; an unrecorded integration stops the lane before dependent
+work can proceed. Final status and its completion receipt commit together under
+run, status, META revision and unit-plan conditions. Initial publication rechecks
+completion before opening a PR. These checks never rerun models or repair rows.
+Marker-absent histories (policy 0) retain their saved operation sequence and
+terminal step. The intermediate completion implementation was not released and
+has no separate replay path. Saved historical successes are never rewritten.
+
+A terminal success with unfinished or unverified work is shown honestly in the
+intent detail. Accepted omissions remain partial delivery, not execution defects.
+This release does not add automatic preservation-and-continuation recovery for
+finished incomplete intents. Existing orphan-lane/PR-review repair and ordinary
+rewind remain supported; rewind resets affected lanes, including integrated work,
+and clears omission receipts for the work explicitly being retried. Original
+answers and events remain historical. Preserve runtime and methodology pins.
+
+Deploy the runtime, orchestrator, intents API and frontend from the same release.
+No automatic production audit, status migration or runtime repinning is performed.
+
+## Gateway grant retirement
+
+With the MCP Gateway enabled, every grant consumer (the Gateway's
+`mcp-interceptor`, engine-data, the credential broker and the source-control
+`runtime` alias) refuses a retired grant; `mcp-tools` acts only on context the
+interceptor admitted. A grant is retired one by one when its use ends (`GRANT#<jti>`: a stage
+or workspace-init callback, a failed dispatch, a synchronous command that returned), or with every
+grant of its execution by a deliberate stop (`EXEC#<executionId>`: cancel,
+delete, rewind, recompose, lane repair, the durable watchdog). A run that ends on
+its own writes no execution record. The writers live in
+`lambda/shared/gateway-grant-retirement.js`; the HTTP handlers use
+`lambda/intents/grant-retirement.js` and the durable orchestrator uses
+`lambda/v2-orchestrator/grant-retirement.js`.
+
+A jti whose retirement could not be written is recorded on META in
+`pendingGrantRetirements`. For an execution grant, every consumer reads META
+first and treats a recorded jti as retired, so there is no window in which it is valid again. `/start`,
+rewind, recompose and lane repair retire the recorded jtis and clear the set
+before they relaunch; their relaunch write is conditioned on the set being
+absent, so a jti recorded meanwhile (by a concurrent derive) is retired and the
+write retried once.
+
+| Failure                                                                                                  | Persisted state                                                                                                                                                                                                        | Response                                                                                                                                                        | Retry                                                                     |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Execution retirement write fails before cancel, rewind, recompose, lane repair or delete                 | Nothing changed: the write comes before any state change                                                                                                                                                               | 503 `grant_retirement_unavailable`, log `GATEWAY_GRANT_RETIREMENT_FAILED`                                                                                       | Retry the same request                                                    |
+| The run changed while the request was in flight                                                          | Nothing changed when the first retirement detects it: the execution write is conditioned on the run id the request read. A lane repair that detects it after stopping the durable run keeps the state it already wrote | 409 `run_superseded`                                                                                                                                            | Refresh and retry                                                         |
+| Lane repair: the second retirement, after the durable run was stopped, fails                             | The execution is FAILED with `repairRelaunch` recorded; `failureReason: lane_repair_grant_retirement_failed` is stamped on a best-effort basis                                                                         | 503 `grant_retirement_unavailable`                                                                                                                              | Retry the repair: it resumes from the recorded phase                      |
+| Rewind or recompose: the second retirement, after the run id was replaced and the old run stopped, fails | Nothing relaunched; the run id stays retired. A rewind leaves the execution FAILED with `failureReason: rewind_grant_retirement_failed` (best effort); a recompose leaves it in its WAITING or FAILED status           | 503 `grant_retirement_unavailable`                                                                                                                              | Retry the same request                                                    |
+| A recorded jti cannot be retired or cleared before a relaunch                                            | Nothing relaunched; `pendingGrantRetirements` kept                                                                                                                                                                     | 503 `grant_retirement_unavailable`, log `GATEWAY_GRANT_RETIREMENT_FAILED` (`GATEWAY_GRANT_RETIREMENT_PENDING` when jtis kept arriving during the retried write) | Retry the same request                                                    |
+| A synchronous derive ran, its grant retirement failed                                                    | The jti is added to `pendingGrantRetirements`                                                                                                                                                                          | The command's own result                                                                                                                                        | None needed: consumers treat it as retired; the next relaunch retires it  |
+| Same, and recording the jti failed too                                                                   | The command's effect is kept; nothing records the live grant                                                                                                                                                           | 503 `grant_retirement_unavailable`, log `GATEWAY_GRANT_RETIREMENT_FAILED` with reason `<command>_pending_record`                                                | Retry once the store recovers; the grant expires at its TTL               |
+| A compose job is accepted                                                                                | The job runs in the background; its grant is not retired when it ends                                                                                                                                                  | 202                                                                                                                                                             | None: the grant expires after 15 minutes, or with an execution retirement |
+| A compose dispatch fails or is refused                                                                   | The compose is marked FAILED and its grant retired at once, both best effort (a failed retirement is recorded as for derive; during a store outage the compose can stay PENDING)                                       | 503 (compose dispatch failed)                                                                                                                                   | Start a new compose                                                       |
+| The orchestrator cannot retire a stage or command grant after its durable retries                        | The jti is added to `pendingGrantRetirements`, then the stage or run fails with `gateway_grant_retirement_failed`                                                                                                      | —                                                                                                                                                               | Rewind, recompose, lane repair or `/start` retire it before relaunching   |
+| Same, and recording the jti failed too                                                                   | The run fails with `gateway_grant_retirement_failed` (`recorded: false`)                                                                                                                                               | —                                                                                                                                                               | Same; the grant expires at its TTL                                        |
+| The watchdog cannot retire the grants of an expired durable run                                          | Nothing changed: the intent stays active                                                                                                                                                                               | —                                                                                                                                                               | The next watchdog tick retries                                            |
+| A consumer cannot read the retirement records                                                            | —                                                                                                                                                                                                                      | The call is denied: the verifier raises `GATEWAY_GRANT_RETIREMENT_UNAVAILABLE`, engine-data answers `grant_retirement_unavailable`                              | The caller's own retry                                                    |
+
+Lane repair records its progress on META in `repairRelaunch` before the first
+destructive step, with the run id it retired. In phase `cleanup`, a retried
+repair redoes the idempotent cleanup for the recorded section and lanes instead
+of re-checking eligibility (which the partial cleanup may have changed). Once
+every cleanup step has landed, the phase becomes `relaunch`; a retry then only
+performs the guarded relaunch. The record is cleared once the orchestrator is
+invoked, so a failed invoke, rolled back to FAILED, can be retried too.

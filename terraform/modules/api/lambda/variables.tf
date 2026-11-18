@@ -38,6 +38,12 @@ variable "application_url" {
   type        = string
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix intent pull request titles with the intent's Jira issue key"
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string
@@ -100,10 +106,20 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance the seed-blocks lambda imports gitlab: custom fork releases from"
+  type        = string
+  default     = "https://gitlab.com"
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN holding a GitLab read_api token for private gitlab: custom fork releases"
+  type        = string
+  default     = ""
+}
 variable "aidlc_release_pinning" {
   description = "Whether new intents are pinned to a published immutable AI-DLC release (\"on\"/\"off\")"
   type        = string
-  default     = "off"
+  default     = "on"
 }
 
 variable "github_oauth_secret_name" {
@@ -138,6 +154,24 @@ variable "github_app_config_param_name" {
 
 variable "github_app_config_param_arn" {
   description = "SSM parameter ARN holding the GitHub App config JSON"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_connection_param_name" {
+  description = "SSM parameter name holding the platform CodeCommit connection JSON ({roleArn, region})"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_connection_param_arn" {
+  description = "SSM parameter ARN holding the platform CodeCommit connection JSON"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_external_id" {
+  description = "Platform CodeCommit external ID (\"aidlc:<uuid>\") named in the tenant role trust policy"
   type        = string
   default     = ""
 }
@@ -396,4 +430,85 @@ variable "iam_permissions_boundary_arn" {
   description = "Permissions boundary for the IAM roles this module creates; empty sets none"
   type        = string
   default     = ""
+}
+
+variable "enable_mcp_gateway" {
+  description = "Whether the built-in MCP is served through AgentCore Gateway (static, so IAM resources can be counted at plan time)"
+  type        = bool
+  default     = false
+}
+
+variable "enable_engine_data" {
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda, with review operations through the source-control runtime alias; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  type        = bool
+  default     = false
+}
+
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes (only with enable_engine_data); otherwise it serves them the legacy way and logs LEGACY_RUNTIME_REQUEST"
+  type        = bool
+  default     = false
+}
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the credential broker, projects, intents and orchestrator Lambdas keep direct custom MCP servers and their secrets out of the runtime"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
+variable "gateway_grant_key_arn" {
+  description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish notification events to it"
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "Name of the notification event bus. Empty uses <project>-<environment>-events"
+  type        = string
+  default     = ""
+}
+
+variable "notification_event_source" {
+  description = "EventBridge source of the notification events"
+  type        = string
+  default     = "collaborative-ai-dlc"
+}
+
+variable "access_table_name" {
+  type = string
+}
+
+variable "access_table_arn" {
+  type = string
+}
+
+variable "audit_table_name" {
+  type = string
+}
+
+variable "audit_table_arn" {
+  type = string
+}
+
+variable "gateway_grant_retirement_table_name" {
+  description = "Table the orchestrator, intents and projects Lambdas record retired Gateway grants and executions in and grant consumers check (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "gateway_grant_retirement_table_arn" {
+  description = "ARN of the retired Gateway grant table (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
 }

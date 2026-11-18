@@ -84,6 +84,7 @@ const toolOf = (call, event) => {
   const failed =
     call.status === 'failed' || shellFailed(call.rawOutput) || mcpFailed(call.rawOutput);
   const tool = {
+    id: call.toolCallId,
     name: String(meta.toolName ?? call.title ?? 'tool'),
     server: meta.mcpServerName ?? null,
     status: failed ? 'error' : 'completed',

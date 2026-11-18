@@ -206,6 +206,34 @@ describe('createArtifact', () => {
     });
     expect((await writer.getArtifact({ id: 'epoch' })).collaboration_epoch).not.toBe(regenerated);
   });
+  it('stamps the stage that last changed the content, which the agent cannot set', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'first' });
+    const later = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-later' } });
+    await later.updateArtifact({
+      id: 'log',
+      props: { content: 'appended', updated_by_stage_instance_id: 'si-forged' },
+    });
+    let row = await writer.getArtifact({ id: 'log' });
+    expect(row.updated_by_stage_instance_id).toBe('si-later');
+    expect(row.created_by_stage_instance_id).toBe('si-req');
+    // A props-only update doesn't change the content, so it isn't a change to derive.
+    const third = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-third' } });
+    await third.updateArtifact({ id: 'log', props: { title: 'renamed' } });
+    row = await writer.getArtifact({ id: 'log' });
+    expect(row.updated_by_stage_instance_id).toBe('si-later');
+  });
+  it('clears the stage that last changed the content when the artifact is re-created', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'first' });
+    const later = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-later' } });
+    await later.updateArtifact({ id: 'log', props: { content: 'appended' } });
+    // A rewound creating stage writes the artifact afresh: the later edit is gone.
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'rewritten' });
+    const row = await writer.getArtifact({ id: 'log' });
+    expect(row.created_by_stage_instance_id).toBe('si-req');
+    expect(row.updated_by_stage_instance_id).toBe('');
+  });
   it('fails when the Intent anchor does not exist', async () => {
     await expect(
       writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' }),
@@ -315,6 +343,21 @@ describe('createArtifact', () => {
     });
     expect(created.id).toBe('ok');
     expect(await g.V().has('Artifact', 'id', 'ok').hasNext()).toBe(true);
+  });
+
+  it('accepts HTML only for visual artifact types, on create and on update', async () => {
+    await seedIntent();
+    const html = '<!doctype html><html><body><h2>Login</h2><h2>Home</h2></body></html>';
+    await writer.createArtifact({ artifactType: 'wireframes', id: 'wf', content: html });
+    await expect(
+      writer.createArtifact({ artifactType: 'requirements', id: 'req', content: html }),
+    ).rejects.toThrow(/`requirements` must be markdown/);
+    expect(await g.V().has('Artifact', 'id', 'req').hasNext()).toBe(false);
+
+    await writer.createArtifact({ artifactType: 'scope-document', id: 'scope', content: '## A' });
+    await expect(writer.updateArtifact({ id: 'scope', props: { content: html } })).rejects.toThrow(
+      /`scope-document` must be markdown/,
+    );
   });
 
   it('does not gate unregistered artifact types on YAML (no structured block)', async () => {

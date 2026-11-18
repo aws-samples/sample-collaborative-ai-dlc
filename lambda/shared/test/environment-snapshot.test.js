@@ -43,6 +43,21 @@ describe('environment snapshots', () => {
     expect(supportsCompatibilityVersion('3', '2')).toBe(false);
   });
 
+  it('carries sandbox enforcement only when the published revision verified it', async () => {
+    for (const supported of [false, true]) {
+      const snapshot = await resolveEnvironmentSnapshot({
+        ddb: ddb({
+          ...revision,
+          verification: { status: 'PASSED', ...(supported ? { sandboxEnforcement: true } : {}) },
+        }),
+        tableName: 'registry',
+        environmentId: 'custom',
+        fallback: { compatibilityVersion: '2' },
+      });
+      expect(snapshot.sandboxEnforcement).toBe(supported ? true : undefined);
+    }
+  });
+
   it('returns immutable image and runtime fields from the published revision', async () => {
     await expect(
       resolveEnvironmentSnapshot({

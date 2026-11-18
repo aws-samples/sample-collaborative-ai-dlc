@@ -28,9 +28,20 @@ import {
 import { parseOpenCodeJsonl } from './opencode-parser.js';
 import { parseCodexJsonl } from './codex-parser.js';
 import { parseKiroJsonl } from './kiro-parser.js';
-import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
+import {
+  OPENCODE_STORE_WAIT_EXPIRED,
+  withOpenCodeStore as defaultWithOpenCodeStore,
+} from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
+import { claudeUsageMetrics } from './claude-usage.js';
+import { captureKiroCreditRate } from './kiro-usage.js';
+import { exclusiveOpenCodeConfig } from './exclusive-mcp.js';
+import {
+  materializeIsolatedCodexHome,
+  materializeIsolatedKiroAgent,
+} from '../stage-materializer.js';
+import { RUNTIME_MCP_GATEWAY_ONLY, gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -63,15 +74,9 @@ export const parseClaudeOneShot = (stdout = '') => {
         .map((part) => part.text)
         .join('');
       if (t) text = t;
-      if (event.message?.usage) usage = event.message.usage;
     }
   }
-  const tokensInput = Number(usage?.input_tokens);
-  const tokensOutput = Number(usage?.output_tokens);
-  const metrics = {};
-  if (Number.isFinite(tokensInput) && tokensInput > 0) metrics.tokensInput = tokensInput;
-  if (Number.isFinite(tokensOutput) && tokensOutput > 0) metrics.tokensOutput = tokensOutput;
-  return { text, metrics: Object.keys(metrics).length ? metrics : null, resultSubtype };
+  return { text, metrics: claudeUsageMetrics(usage), resultSubtype };
 };
 
 // Bounded raw-output sample attached to FAILED one-shot results so a field
@@ -86,8 +91,39 @@ const sampleOf = (raw = '') => String(raw ?? '').slice(0, SAMPLE_BYTES);
 // conversation lands in its own cwd group and never collides with the
 // workspace session run-stage resumes by cwd. `timeoutMs` bounds the call —
 // a hung CLI must never wedge the derive command. Failure results carry a
-// bounded raw `sample` for field diagnosis.
+// bounded raw `sample` for field diagnosis. `startBy` (epoch ms) is the latest
+// moment the CLI may start, checked after any wait for and restore of the
+// OpenCode store; past it the call fails with `deadline_exceeded` instead of
+// running late. `finishBy` (epoch ms) is when the caller needs the result: it
+// caps the CLI timeout, and an OpenCode store persist still running then is
+// handed to `defer` for the caller to await instead of delaying the result.
 export const DEFAULT_ONE_SHOT_TIMEOUT_MS = 120_000;
+
+// gateway_only (cli/exclusive-mcp.js): whatever MCP context the caller passed,
+// or none, is the only one the CLI loads. Claude's driver adds
+// `--strict-mcp-config`; the others get an MCP-free context when the caller
+// brought none, and OpenCode's inline config disables every server another
+// layer defines for this working directory.
+const exclusiveContext = async ({ cli, cwd, env, context }) => {
+  if (cli === 'opencode') {
+    const config = context.opencodeConfigContent ? JSON.parse(context.opencodeConfigContent) : {};
+    return {
+      ...context,
+      opencodeConfigContent: JSON.stringify(await exclusiveOpenCodeConfig({ config, cwd, env })),
+    };
+  }
+  if (cli === 'kiro' && !context.agentName) {
+    const { agentName, remove } = await materializeIsolatedKiroAgent({ workspaceDir: cwd });
+    return { ...context, agentName, remove };
+  }
+  if (cli === 'codex' && !context.codexHome) {
+    return {
+      ...context,
+      codexHome: await materializeIsolatedCodexHome({ workspaceDir: cwd, env }),
+    };
+  }
+  return context;
+};
 
 export const runOneShotPrompt = async ({
   prompt,
@@ -101,25 +137,31 @@ export const runOneShotPrompt = async ({
   opencodeConfigContent = null,
   codexHome = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
+  startBy = null,
+  finishBy = null,
+  defer = () => {},
+  now = Date.now,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
   persistKiroStore = defaultPersistKiroStore,
   withOpenCodeStore = defaultWithOpenCodeStore,
   cleanupCodexHome = defaultCleanupCodexHome,
   makeDirectory = mkdir,
+  exclusiveMcp = gatewayOnlyMcp(),
 } = {}) => {
   const cli = selectCli({ requested: requestedCli, availableClis });
   if (!cli) return { ok: false, reason: 'no_cli', text: '', cli: null, model: null, metrics: null };
 
   const model = resolveStageModel({ cliModels, agentBlock: null, cli, env });
   const driver = getDriver(cli);
-  const invocation = driver.buildInvocation({
-    prompt,
-    model,
-    mcpConfigPath,
-    agentName,
-    opencodeConfigContent,
-    codexHome,
+  const notRun = (reason) => ({
+    ok: false,
+    reason,
+    text: '',
+    cli,
+    model: model ?? null,
+    exitCode: null,
+    metrics: null,
   });
   // Callers pass fresh per-invocation directories. Node reports a missing cwd
   // only as a child 'error' with no output, so create it before anything runs.
@@ -127,16 +169,26 @@ export const runOneShotPrompt = async ({
     await makeDirectory(cwd, { recursive: true });
   } catch {
     if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
-    return {
-      ok: false,
-      reason: 'cli_failed',
-      text: '',
-      cli,
-      model: model ?? null,
-      exitCode: null,
-      metrics: null,
-    };
+    return notRun('cli_failed');
   }
+  let context = { mcpConfigPath, agentName, opencodeConfigContent, codexHome };
+  if (exclusiveMcp) {
+    try {
+      context = await exclusiveContext({ cli, cwd, env, context });
+    } catch {
+      if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+      return notRun(RUNTIME_MCP_GATEWAY_ONLY);
+    }
+  }
+  const invocation = driver.buildInvocation({
+    prompt,
+    model,
+    mcpConfigPath: context.mcpConfigPath,
+    agentName: context.agentName,
+    opencodeConfigContent: context.opencodeConfigContent,
+    codexHome: context.codexHome,
+    exclusiveMcp,
+  });
   // Kiro's conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the
@@ -144,26 +196,73 @@ export const runOneShotPrompt = async ({
   // one-shot session itself rides along; its distinct cwd keeps it out of the
   // workspace session list run-stage checks before a resume.
   if (cli === 'kiro') await restoreKiroStore({ env }).catch(() => false);
-  const execute = () =>
-    captureChild({
+  // Null when the CLI can no longer start and finish inside the deadlines.
+  const execute = async () => {
+    const at = now();
+    const budgetMs = finishBy === null ? timeoutMs : Math.min(timeoutMs, finishBy - at);
+    if ((startBy !== null && at > startBy) || budgetMs <= 0) return null;
+    return captureChild({
       command: invocation.command,
       args: invocation.args,
       env: { ...invocation.env, ...driver.envForAuth(env) },
       cwd,
       prompt: invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      timeoutMs,
+      timeoutMs: budgetMs,
       ...(spawnFn ? { spawnFn } : {}),
     });
-  let capture;
+  };
+  let capture = null;
   try {
     capture =
-      cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
+      cli === 'opencode'
+        ? await withOpenCodeStore({
+            env,
+            operation: execute,
+            waitUntil: startBy,
+            settleBy: finishBy,
+            defer,
+            now,
+          })
+        : await execute();
+  } catch (error) {
+    if (error?.code !== OPENCODE_STORE_WAIT_EXPIRED) throw error;
   } finally {
     if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
-    if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+    if (cli === 'codex') {
+      await cleanupCodexHome({ codexHome: context.codexHome, env }).catch(() => false);
+    }
+    await context.remove?.().catch(() => false);
+  }
+  if (!capture) {
+    return {
+      ok: false,
+      reason: 'deadline_exceeded',
+      text: '',
+      cli,
+      model: model ?? null,
+      exitCode: null,
+      metrics: null,
+    };
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
+  const parsers = {
+    claude: parseClaudeOneShot,
+    codex: parseCodexJsonl,
+    kiro: parseKiroJsonl,
+    opencode: parseOpenCodeJsonl,
+  };
+  const parsed = parsers[cli](stdout);
+  const usage = {
+    metrics: parsed.metrics,
+    ...(parsed.metrics?.credits > 0
+      ? {
+          creditRate: await captureKiroCreditRate({ env, workspaceDir: cwd, spawnFn }).catch(
+            () => null,
+          ),
+        }
+      : {}),
+  };
 
   if (capture.credentialError)
     return {
@@ -173,7 +272,7 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics: null,
+      ...usage,
     };
   if (timedOut) {
     return {
@@ -183,7 +282,7 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode: null,
-      metrics: null,
+      ...usage,
     };
   }
   if (exitCode !== 0) {
@@ -196,13 +295,13 @@ export const runOneShotPrompt = async ({
         cli,
         model: model ?? null,
         exitCode,
-        metrics: null,
+        ...usage,
       };
     }
     // Kiro reports its failure as a late JSONL runError; the metadata and
     // messages before it can fill the bounded sample, so sample the parsed
     // error and keep the raw prefix only when no structured error exists.
-    const failure = cli === 'kiro' ? parseKiroJsonl(stdout).errors.join('\n') : '';
+    const failure = cli === 'kiro' ? parsed.errors.join('\n') : '';
     return {
       ok: false,
       reason: 'cli_failed',
@@ -210,13 +309,13 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics: null,
+      ...usage,
       sample: sampleOf(failure || stdout),
     };
   }
 
   if (cli === 'claude') {
-    const { text, metrics, resultSubtype } = parseClaudeOneShot(stdout);
+    const { text, resultSubtype } = parsed;
     return {
       ok: Boolean(text),
       reason: text ? null : 'empty_answer',
@@ -224,16 +323,10 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics,
+      ...usage,
       ...(text ? {} : { sample: sampleOf(stdout), resultSubtype }),
     };
   }
-  const parsed =
-    cli === 'codex'
-      ? parseCodexJsonl(stdout)
-      : cli === 'kiro'
-        ? parseKiroJsonl(stdout)
-        : parseOpenCodeJsonl(stdout);
   const text = parsed.text.trim();
   return {
     ok: Boolean(text),
@@ -242,7 +335,7 @@ export const runOneShotPrompt = async ({
     cli,
     model: model ?? null,
     exitCode,
-    metrics: parsed.metrics,
+    ...usage,
     ...(text
       ? {}
       : {

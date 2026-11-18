@@ -71,9 +71,14 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
 // Codex is deliberately absent too: Bedrock's OpenAI-compatible endpoint takes
 // EXACT ids like "openai.gpt-5.5" (no geo prefix), and the Claude-shaped alias
 // table / BEDROCK_MODEL env default must not leak into it — configured codex
-// selections pass through verbatim, and when unset the driver omits -m so the
-// materialized config (model_provider=amazon-bedrock) picks codex's default.
+// selections pass through verbatim, and when unset CODEX_DEFAULT_MODEL applies.
 const BEDROCK_CLIS = new Set(['claude', 'opencode']);
+
+// The model the pinned Codex CLI (CODEX_VERSION in the Dockerfile, 0.162.1)
+// picks for the amazon-bedrock provider when no -m is given. An unset Codex
+// selection resolves to it, so the run names its model explicitly and usage is
+// recorded and priced under it instead of a null model. Re-check on a CLI bump.
+export const CODEX_DEFAULT_MODEL = 'openai.gpt-6.1-sol';
 
 // The agent tiers a tier-model row can be keyed by. Kept in sync with the
 // block library's AGENT_TIERS (shared/blocks.js) — duplicated here only to
@@ -133,6 +138,9 @@ export const machineCliModels = ({ cliModels = null, tierModels = null } = {}) =
 // resolution). The bare-alias agent override and the BEDROCK_MODEL/AGENT_MODEL
 // env are Bedrock-shaped and must NOT leak into Kiro. When unset, return
 // undefined so the driver omits --model and Kiro uses its own default (`auto`).
+//
+// Codex: the same explicit selections, verbatim; when unset on Bedrock it
+// resolves to CODEX_DEFAULT_MODEL.
 export const resolveStageModel = ({
   cliModels = {},
   tierModels = null,
@@ -147,7 +155,9 @@ export const resolveStageModel = ({
       tierModelFor({ tierModels, tier, cli }) ||
       cliModels?.[cli] ||
       fallbackModelFor({ tierModels, cli });
-    return selected ? String(selected).trim() : undefined;
+    if (selected) return String(selected).trim();
+    const onBedrock = !backend || backend.id === 'bedrock';
+    return cli === 'codex' && onBedrock ? CODEX_DEFAULT_MODEL : undefined;
   }
   const raw =
     tierModelFor({ tierModels, tier, cli }) ||

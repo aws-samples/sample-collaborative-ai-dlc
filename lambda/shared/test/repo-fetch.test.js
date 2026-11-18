@@ -200,3 +200,156 @@ describe('custom fork sources', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
+
+// GitLab custom sources. The properties under test: the archive API URL is
+// built only from a validated project path and an exact SHA, the token travels
+// only in the Authorization header (never in the URL that errors print), and
+// a token is never sent to codeload.
+describe('GitLab custom sources', () => {
+  const SHA = '0123456789abcdef0123456789abcdef01234567';
+  const gitlab = (over = {}) => ({ provider: 'gitlab', path: 'acme/platform/aidlc-fork', ...over });
+
+  it('builds the project archive URL on gitlab.com by default', () => {
+    expect(tarballUrl(SHA, gitlab())).toBe(
+      `https://gitlab.com/api/v4/projects/acme%2Fplatform%2Faidlc-fork/repository/archive.tar.gz?sha=${SHA}`,
+    );
+  });
+  it('uses a self-managed instance origin', () => {
+    expect(tarballUrl(SHA, gitlab({ baseUrl: 'https://gitlab.example.com/' }))).toBe(
+      `https://gitlab.example.com/api/v4/projects/acme%2Fplatform%2Faidlc-fork/repository/archive.tar.gz?sha=${SHA}`,
+    );
+  });
+  it('refuses a non-https or non-origin instance URL', () => {
+    for (const baseUrl of [
+      'http://gitlab.example.com',
+      'https://user:pw@gitlab.example.com',
+      'https://gitlab.example.com/sub',
+      'https://gitlab.example.com/?x=1',
+      'not a url',
+    ]) {
+      expect(() => tarballUrl(SHA, gitlab({ baseUrl })), baseUrl).toThrow(/GitLab URL/);
+    }
+  });
+  it('refuses a mutable ref and an invalid project path', () => {
+    expect(() => tarballUrl('main', gitlab())).toThrow(/requires a full 40-hex commit SHA/);
+    expect(() => tarballUrl(SHA, gitlab({ path: 'acme/../x' }))).toThrow(
+      /not a valid GitLab project path/,
+    );
+    expect(() => tarballUrl(SHA, gitlab({ path: 'acme' }))).toThrow(
+      /not a valid GitLab project path/,
+    );
+    expect(() => tarballUrl(SHA, { provider: 'svn' })).toThrow(/unknown source provider/);
+  });
+  it('fetches core files with the token in the Authorization header only', async () => {
+    const tarball = await makeTarball(
+      { 'core/agents/a.md': '# fork agent', 'README.md': 'x' },
+      `aidlc-fork-${SHA}-${SHA}`,
+    );
+    mockFetchReturning(tarball);
+    const files = await fetchCoreFiles(SHA, gitlab({ token: 'glpat-secret' }));
+    expect([...files.keys()]).toEqual(['core/agents/a.md']);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).not.toContain('glpat-secret');
+    expect(init.headers.Authorization).toBe('Bearer glpat-secret');
+    expect(init.headers).not.toHaveProperty('PRIVATE-TOKEN');
+    // GitLab's archive API refuses the default `Sec-Fetch-Mode: cors` (406) and
+    // a specific archive media type.
+    expect(init.mode).toBe('same-origin');
+    expect(init.headers.Accept).toBe('*/*');
+  });
+  it('sends no Authorization header for a public project', async () => {
+    mockFetchReturning(await makeTarball({ 'core/a.md': 'a' }, `fork-${SHA}-${SHA}`));
+    await fetchCoreFiles(SHA, gitlab());
+    expect(globalThis.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+  it("reports GitLab's own reason for a refusal", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: '',
+      text: async () =>
+        JSON.stringify({ message: { error: 'This archive has been requested too many times.' } }),
+    });
+    await expect(fetchCoreFiles(SHA, gitlab())).rejects.toThrow(
+      / returned 429: This archive has been requested too many times\.$/,
+    );
+  });
+  it('keeps the token out of the error when GitLab refuses', async () => {
+    mockFetchReturning(Buffer.alloc(0), false, 404);
+    const error = await fetchCoreFiles(SHA, gitlab({ token: 'glpat-secret' })).catch((e) => e);
+    expect(error.message).toMatch(
+      /^repo-fetch: https:\/\/gitlab\.com\/api\/v4\/projects\/.* returned 404/,
+    );
+    expect(error.message).not.toContain('glpat-secret');
+  });
+  // A GitLab instance or proxy may reflect the Authorization header in its
+  // error body; that body must never carry the token into the error.
+  it.each([
+    ['in a JSON message', (t) => JSON.stringify({ message: `401 Unauthorized for Bearer ${t}` })],
+    ['in a plain-text body', (t) => `denied: Authorization: Bearer ${t}\n`],
+    ['bare, without the Bearer prefix', (t) => JSON.stringify({ error: `bad token ${t}` })],
+    ['URL-encoded', (t) => `denied: ?private_token=${encodeURIComponent(t)}`],
+    // Percent escapes are case-insensitive: %2f is the same byte as %2F.
+    [
+      'URL-encoded with lowercase escapes',
+      () => 'denied: ?private_token=glpat-review%2fsecret%2b1',
+    ],
+    ['URL-encoded with mixed-case escapes', () => 'denied: ?t=glpat-review%2Fsecret%2b1'],
+    [
+      'with every character percent-encoded',
+      (t) =>
+        `denied: ${[...Buffer.from(t)].map((b) => `%${b.toString(16).padStart(2, '0')}`).join('')}`,
+    ],
+    ['across the truncation point', (t) => `${'x'.repeat(290)} ${t} ${'y'.repeat(50)}`],
+  ])('redacts a token GitLab reflects %s', async (_label, body) => {
+    const token = 'glpat-review/secret+1';
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => body(token),
+    });
+
+    const error = await fetchCoreFiles(SHA, gitlab({ token })).catch((e) => e);
+
+    expect(error.message).toMatch(/ returned 401 Unauthorized/);
+    for (const fragment of [token, encodeURIComponent(token), 'glpat-', 'secret+1']) {
+      expect(error.message).not.toContain(fragment);
+    }
+    expect(decodeURIComponent(error.message)).not.toContain(token);
+    expect(error.message.toLowerCase()).not.toMatch(/%67%6c%70%61%74/);
+  });
+  it('keeps ordinary token characters case-sensitive', async () => {
+    // Only the escape hex is case-insensitive: text that differs from the token
+    // in a letter's case is not the token, and GitLab's reason keeps it.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ message: 'project GLPAT-Review not found' }),
+    });
+
+    await expect(fetchCoreFiles(SHA, gitlab({ token: 'glpat-review' }))).rejects.toThrow(
+      /: project GLPAT-Review not found$/,
+    );
+  });
+  it('still reports the reason once the token is redacted', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ message: '401 Unauthorized: token glpat-abc expired' }),
+    });
+
+    await expect(fetchCoreFiles(SHA, gitlab({ token: 'glpat-abc' }))).rejects.toThrow(
+      / returned 401 Unauthorized: 401 Unauthorized: token \[redacted\] expired$/,
+    );
+  });
+  it('never sends a token to codeload', async () => {
+    globalThis.fetch = vi.fn();
+    await expect(
+      fetchRepoFiles(SHA, { prefixes: ['core/'], owner: 'acme', repo: 'fork', token: 't' }),
+    ).rejects.toThrow(/only supported for GitLab sources/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});

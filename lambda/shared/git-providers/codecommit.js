@@ -33,8 +33,8 @@ import {
   EvaluatePullRequestApprovalRulesCommand,
   GetBranchCommand,
   GetCommentsForPullRequestCommand,
+  GetDifferencesCommand,
   GetFileCommand,
-  GetFolderCommand,
   GetMergeOptionsCommand,
   GetPullRequestCommand,
   GetRepositoryCommand,
@@ -354,51 +354,54 @@ const getRepositoryAccess = async (ctx, repoId) => {
   };
 };
 
-// GetFolder is neither recursive nor paginated, so a full tree is a
-// breadth-first walk of one call per folder. Both caps below are defensive: 20
-// directory levels is CodeCommit's own path limit, and 500 folders bounds the
-// call count on a pathological repository. Hitting either sets a non-enumerable
-// `truncated` flag on the returned array (so the JSON shape stays a plain list).
-const TREE_MAX_FOLDERS = 500;
-const TREE_MAX_DEPTH = 20;
+// GetDifferences with no `beforeCommitSpecifier` reports every file in the
+// commit as an addition, recursively and paginated, so a full tree costs one
+// call per 400 files. A breadth-first GetFolder walk needs one call per folder
+// and, on a few hundred folders, outlasts API Gateway's 29-second integration
+// timeout or is throttled. The page cap is defensive (20,000 files); hitting it
+// sets a non-enumerable `truncated` flag on the returned array (so the JSON
+// shape stays a plain list).
+const TREE_PAGE_SIZE = 400;
+const TREE_MAX_PAGES = 50;
+// Symbolic links and submodules are not blobs; the fetch-based providers filter
+// them out too.
+const NON_BLOB_MODES = new Set(['120000', '160000']);
 
 const getTree = async (ctx, repoId, branch = 'main') => {
   const { repositoryName } = parseRepo(repoId);
   const client = clientFor(ctx, repoId);
   const files = [];
-  const queue = [{ folderPath: '/', depth: 0 }];
-  let folders = 0;
+  let nextToken;
+  let pages = 0;
   let truncated = false;
 
-  while (queue.length) {
-    if (folders >= TREE_MAX_FOLDERS) {
+  do {
+    if (pages >= TREE_MAX_PAGES) {
       truncated = true;
       break;
     }
-    const { folderPath, depth } = queue.shift();
-    folders += 1;
+    pages += 1;
     const res = await call(
       client,
-      new GetFolderCommand({ repositoryName, commitSpecifier: branch, folderPath }),
-      'GetFolder',
+      new GetDifferencesCommand({
+        repositoryName,
+        afterCommitSpecifier: branch,
+        MaxResults: TREE_PAGE_SIZE,
+        NextToken: nextToken,
+      }),
+      'GetDifferences',
     );
-    for (const file of res.files ?? []) {
-      // GetFolder carries no file size; callers treat null as "unknown".
-      files.push({ path: file.absolutePath, sha: file.blobId ?? '', size: null });
+    for (const difference of res.differences ?? []) {
+      const blob = difference.afterBlob;
+      if (!blob?.path || NON_BLOB_MODES.has(blob.mode)) continue;
+      // GetDifferences carries no file size; callers treat null as "unknown".
+      files.push({ path: blob.path, sha: blob.blobId ?? '', size: null });
     }
-    for (const folder of res.subFolders ?? []) {
-      if (depth + 1 > TREE_MAX_DEPTH) {
-        truncated = true;
-        continue;
-      }
-      queue.push({ folderPath: folder.absolutePath, depth: depth + 1 });
-    }
-    // Submodules and symbolic links are not blobs; the fetch-based providers
-    // filter them out too.
-  }
+    nextToken = res.NextToken;
+  } while (nextToken);
 
   if (truncated) {
-    logger.warn('CodeCommit tree walk truncated', { repositoryName, branch, folders });
+    logger.warn('CodeCommit tree listing truncated', { repositoryName, branch, pages });
   }
   Object.defineProperty(files, 'truncated', { value: truncated, enumerable: false });
   return files;
@@ -537,6 +540,84 @@ const findPullRequest = async (
   });
 };
 
+// Pull requests from `sourceBranch` for final-delivery ownership checks.
+// ListPullRequests cannot filter by branch, so each listed id costs one
+// GetPullRequest. Listing every pull request of a long-lived repository would
+// be unbounded and, past the page cap, would fail on every attempt. So:
+//   - open pull requests are always listed, from every author (delivery reuses
+//     an open pull request whoever opened it); CodeCommit caps how many can be
+//     open;
+//   - closed and merged ones are listed only with `includeTerminal` (this run
+//     recorded a create request), and then only those the platform session
+//     authored: it is the only author of a pull request carrying a delivery
+//     marker. Without a session identity the walk is unfiltered. Skip this pass
+//     if the complete open set contains a candidate: selectDeliveryPr decides
+//     from open candidates before considering any terminal ownership evidence.
+// Strict: a truncated listing throws instead of reporting fewer pull requests.
+const listPullRequests = async (ctx, repoId, { sourceBranch, includeTerminal = true }) => {
+  const { region, repositoryName } = parseRepo(repoId);
+  const client = clientFor(ctx, repoId);
+  const authorArn = ctx?.token?.assumedRoleArn;
+  const passes = [
+    { pullRequestStatus: 'OPEN' },
+    ...(includeTerminal
+      ? [{ pullRequestStatus: 'CLOSED', ...(authorArn ? { authorArn } : {}) }]
+      : []),
+  ];
+  const prs = [];
+  for (const filter of passes) {
+    let nextToken;
+    let page = 0;
+    do {
+      if (page === LIST_PR_PAGES) {
+        logger.warn('CodeCommit pull-request listing truncated', {
+          repositoryName,
+          pullRequestStatus: filter.pullRequestStatus,
+        });
+        throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
+          action: 'ListPullRequests',
+          code: 'PR_LOOKUP_TRUNCATED',
+        });
+      }
+      page += 1;
+      const res = await call(
+        client,
+        new ListPullRequestsCommand({ repositoryName, ...filter, nextToken }),
+        'ListPullRequests',
+      );
+      const ids = res.pullRequestIds ?? [];
+      for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
+        const batch = await Promise.all(
+          ids
+            .slice(i, i + PR_LOOKUP_CONCURRENCY)
+            .map((pullRequestId) => getPullRequestRaw(ctx, repoId, pullRequestId)),
+        );
+        for (const pr of batch) {
+          const target = prTarget(pr);
+          if (!pr || !sameRef(target.sourceReference, sourceBranch)) continue;
+          prs.push({
+            number: pr.pullRequestId,
+            url: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
+            sourceBranch: shortRef(target.sourceReference),
+            targetBranch: shortRef(target.destinationReference) || null,
+            headSha: target.sourceCommit ?? null,
+            state:
+              pr.pullRequestStatus === 'OPEN'
+                ? 'open'
+                : target.mergeMetadata?.isMerged
+                  ? 'merged'
+                  : 'closed',
+            body: pr.description ?? '',
+          });
+        }
+      }
+      nextToken = res.nextToken;
+    } while (nextToken);
+    if (filter.pullRequestStatus === 'OPEN' && prs.some((pr) => pr.state === 'open')) return prs;
+  }
+  return prs;
+};
+
 // Merge options for a ref pair. Errors are thrown as ProviderError;
 // compareBranches decides which of them mean "cannot compare".
 const mergeOptionsFor = async (ctx, repoId, { source, destination }) => {
@@ -579,6 +660,18 @@ const INCOMPARABLE_EXCEPTIONS = new Set([
   'MaximumItemsToCompareExceededException',
   'MaximumFileContentToLoadExceededException',
 ]);
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { repositoryName } = parseRepo(repoId);
+  const res = await callOr(
+    clientFor(ctx, repoId),
+    new GetBranchCommand({ repositoryName, branchName: shortRef(branch) }),
+    'GetBranch',
+    404,
+    null,
+  );
+  return res?.branch?.commitId ?? null;
+};
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -769,7 +862,7 @@ const draftFields = (pr) => {
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false, attemptKey = '' },
+  { branch, baseBranch, title, body, draft = false, attemptKey = '', allowRetarget = true },
 ) => {
   const { arn, region, repositoryName } = parseRepo(repoId);
   const coordinates = { region, repositoryName };
@@ -813,6 +906,7 @@ const createPullRequest = async (
     };
   }
   if (comparison.status === 'missing_base') {
+    if (!allowRetarget) return { failed: true, reason: 'missing_base' };
     const defaultBranch = await getDefaultBranch(ctx, repoId);
     if (!defaultBranch || defaultBranch === resolvedBase) {
       return {
@@ -858,6 +952,7 @@ const createPullRequest = async (
       throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
     }
     if (pr.pullRequestStatus !== 'CLOSED') break;
+    if (!allowRetarget) throw new ProviderError(409, 'The previous pull request is closed');
     key = `${attemptKey ?? ''}\nreplaces:${pr.pullRequestId}`;
   }
   if (pr.pullRequestStatus === 'CLOSED') {
@@ -1227,7 +1322,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1267,7 +1364,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

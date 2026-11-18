@@ -23,7 +23,7 @@ terraform {
     }
     awscc = {
       source  = "hashicorp/awscc"
-      version = "~> 1.0"
+      version = "~> 1.0, >= 1.103.0"
     }
   }
 }
@@ -68,7 +68,9 @@ locals {
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
   agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
-  agentcore_image_tag     = substr(local.agentcore_files_sha, 0, 16)
+  # A pre-built image (var.image_tag) replaces the build below.
+  build_image         = var.image_tag == null
+  agentcore_image_tag = local.build_image ? substr(local.agentcore_files_sha, 0, 16) : var.image_tag
 
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
@@ -136,9 +138,14 @@ module "dynamodb_kms_runtime_access" {
 
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
-  role_names = {
+  role_names = merge(local.runtime_direct_data_access ? {
     agentcore = aws_iam_role.agentcore.name
-  }
+    } : {}, local.mcp_gateway_enabled ? {
+    mcp_tools       = aws_iam_role.mcp_tools[0].name
+    mcp_interceptor = aws_iam_role.mcp_interceptor[0].name
+    } : {}, local.engine_data_enabled ? {
+    engine_data = aws_iam_role.engine_data[0].name
+  } : {})
 }
 
 # ---------------------------------------------------------------------------
@@ -204,7 +211,14 @@ resource "aws_ecr_lifecycle_policy" "managed_environments" {
   })
 }
 
+moved {
+  from = module.agentcore_docker_build
+  to   = module.agentcore_docker_build[0]
+}
+
 module "agentcore_docker_build" {
+  count = local.build_image ? 1 : 0
+
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
@@ -239,7 +253,7 @@ data "aws_ecr_image" "agentcore" {
 # environments targeting x86_64 instances need an amd64 core to build FROM.
 # Gated behind var.build_amd64_image so default installs pay no extra build.
 module "agentcore_docker_build_amd64" {
-  count = var.build_amd64_image ? 1 : 0
+  count = var.build_amd64_image && local.build_image ? 1 : 0
 
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
@@ -434,13 +448,14 @@ resource "aws_iam_role_policy" "agentcore" {
         },
         {
           # Git and agent credentials are fetched just-in-time from the broker.
-          # Provider review operations use the token-owning source-control service.
+          # Provider review operations use the token-owning source-control service
+          # (only its `runtime` alias once runtime grants are enforced).
           Effect = "Allow"
           Action = ["lambda:InvokeFunction"]
-          Resource = [
-            local.credential_broker_function_arn,
-            local.source_control_function_arn,
-          ]
+          Resource = concat(
+            [local.credential_broker_function_arn],
+            local.runtime_direct_data_access ? [local.source_control_function_arn] : [],
+          )
         },
         {
           # General runtime hardening: application credentials cannot assume another role.
@@ -454,6 +469,12 @@ resource "aws_iam_role_policy" "agentcore" {
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
           Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
         },
+      ],
+      # Direct data access for runtimes on the pre-engine-data path. Removed
+      # once runtime grants are enforced: engine-data and the credential broker
+      # then serve every one of these reads and writes under a grant. (A filter,
+      # not a conditional: the statement shapes differ and would not unify.)
+      [for statement in [
         {
           # Business graph (Neptune) read + write.
           Effect   = "Allow"
@@ -479,8 +500,8 @@ resource "aws_iam_role_policy" "agentcore" {
           Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
           Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
         },
-      ],
-      var.websocket_execution_arn != "" ? [
+      ] : statement if local.runtime_direct_data_access],
+      local.runtime_direct_data_access && var.websocket_execution_arn != "" ? [
         {
           # Push live output/questions to the realtime websocket.
           Effect   = "Allow"
@@ -488,7 +509,7 @@ resource "aws_iam_role_policy" "agentcore" {
           Resource = "${var.websocket_execution_arn}/*"
         },
       ] : [],
-      [
+      local.runtime_direct_data_access ? [
         {
           # Read non-secret agent model settings. Agent credentials are resolved
           # only through the credential broker using a signed invocation grant.
@@ -499,6 +520,9 @@ resource "aws_iam_role_policy" "agentcore" {
             aws_ssm_parameter.tier_models.arn,
           ]
         },
+      ] : [],
+      # Not in the gateway_only profile (mcp-gateway-targets.tf denies it).
+      local.runtime_direct_data_access && var.runtime_mcp_credentials != "gateway_only" ? [
         {
           # MCP secrets: at stage start (and verify) the runtime resolves the
           # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
@@ -512,6 +536,8 @@ resource "aws_iam_role_policy" "agentcore" {
             "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
           ]
         },
+      ] : [],
+      [
         {
           # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
           # background job completes/heartbeats the durable callback the
@@ -757,35 +783,57 @@ resource "aws_security_group" "agentcore" {
 # ---------------------------------------------------------------------------
 
 locals {
-  runtime_environment_variables = {
+  runtime_environment_variables = merge({
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
-    BLOCKS_TABLE                  = var.blocks_table_name
-    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    CONNECTIONS_TABLE             = var.connections_table_name
-    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
     BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
-  }
+    }, local.runtime_direct_data_access ? {
+    # Only the direct clients read these; engine-data and the broker own them
+    # once runtime grants are enforced.
+    BLOCKS_TABLE           = var.blocks_table_name
+    ARTIFACTS_BUCKET       = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT       = var.neptune_endpoint
+    CONNECTIONS_TABLE      = var.connections_table_name
+    WEBSOCKET_ENDPOINT     = var.websocket_endpoint
+    MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    } : {
+    # The role holds no process-table access: invocations needing a sandbox
+    # policy must carry one instead of the runtime reading the settings.
+    RUNTIME_DATA_ACCESS = "engine_data_only"
+    }, local.mcp_gateway_enabled ? {
+    AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
+    AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+    } : {}, var.runtime_mcp_credentials == "gateway_only" ? {
+    RUNTIME_MCP_CREDENTIALS = "gateway_only"
+    } : {}, length(local.mcp_gateway_custom_targets) > 0 ? {
+    # Tells the runtime to materialize the customer-tool proxy; it carries no
+    # target, endpoint or credential.
+    AIDLC_MCP_GATEWAY_CUSTOM_TARGETS = "true"
+    } : {}, local.engine_data_enabled ? {
+    ENGINE_DATA_FUNCTION    = module.engine_data_lambda[0].lambda_function_name
+    SOURCE_CONTROL_FUNCTION = local.source_control_runtime_alias_arn
+  } : {})
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
-  depends_on = [aws_iam_role_policy.agentcore]
+  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway, aws_iam_role_policy.agentcore_invoke_engine_data]
 
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).
   protocol_configuration = "HTTP"
+
+  # Keep microVMs on V1 until the snapshot restore qualification in #719 passes.
+  platform_version = "V1"
 
   agent_runtime_artifact = {
     container_configuration = {
@@ -827,4 +875,15 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   environment_variables = local.runtime_environment_variables
 
   tags = var.tags
+}
+
+# The version this apply leaves the runtime on. The resource's own
+# agent_runtime_version keeps its pre-update value through an in-place update
+# (the provider plans it from state) and only catches up on the next refresh,
+# so consumers reading it stay one version behind until a second apply.
+# depends_on defers this read until the update has completed; without it the
+# read happens at plan time and returns the same stale version.
+data "awscc_bedrockagentcore_runtime" "stage_executor" {
+  id         = awscc_bedrockagentcore_runtime.stage_executor.id
+  depends_on = [awscc_bedrockagentcore_runtime.stage_executor]
 }

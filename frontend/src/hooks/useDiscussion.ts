@@ -9,6 +9,7 @@ import {
   displayCursorOf,
   makeMessageId,
   newerOf,
+  quorumMention,
   sortMessages,
 } from '../lib/discussion';
 import { generateColor } from '../utils/colors';
@@ -28,6 +29,8 @@ export interface PendingMessage {
   id: string;
   content: string;
   status: 'sending' | 'failed';
+  mentions: string[];
+  assistInstructions?: string;
 }
 
 interface UseDiscussionArgs {
@@ -43,6 +46,9 @@ interface UseDiscussionArgs {
 const SEED_PAGE_SIZE = 100;
 const makeAssistRequestId = (now: number = Date.now()): string =>
   `assist-${now}-${Math.random().toString(36).slice(2, 10)}`;
+
+// The persisted question is also the recovery key for its assist request.
+const askRequestId = (messageId: string): string => `assist-${messageId}`;
 
 const toPlain = (m: DiscussionMessage): DiscussionMessage => ({ ...m });
 
@@ -88,9 +94,11 @@ export function useDiscussion({
 
   // ── Single render path: mirror Y.Map('messages') → sorted state ──
   useEffect(() => {
+    // A direct thread switch has no closed/null intermediate state. Retire
+    // the previous thread's retries before recovering asks from this document.
+    setPending([]);
     if (!docId) {
       setMessages([]);
-      setPending([]);
       setSeeded(false);
       setHasMoreOlder(false);
       changeCursorRef.current = null;
@@ -100,13 +108,39 @@ export function useDiscussion({
       const all = sortMessages([...messagesMap.values()]);
       setMessages(all);
       changeCursorRef.current = changeCursorOf(all);
-      // A message that arrived through ANY channel clears its pending bubble.
-      setPending((prev) => prev.filter((p) => !messagesMap.has(p.id)));
+      // A saved question still needs an accepted assist. Reconstruct unanswered
+      // asks from history so closing the tab cannot silently abandon them.
+      const requests = new Set(all.filter((m) => m.authorType === 'agent').map((m) => m.requestId));
+      setPending((prev) => {
+        const next = prev.filter((p) => {
+          if (messagesMap.get(p.id)?.redacted) return false;
+          return p.assistInstructions !== undefined
+            ? !requests.has(askRequestId(p.id))
+            : !messagesMap.has(p.id);
+        });
+        if (scope?.kind === 'intent') {
+          for (const m of all) {
+            if (m.authorType !== 'user' || m.authorId !== user.id || m.redacted) continue;
+            const instructions = quorumMention(m.content);
+            if (instructions === null || requests.has(askRequestId(m.id))) continue;
+            if (!next.some((p) => p.id === m.id)) {
+              next.push({
+                id: m.id,
+                content: m.content,
+                mentions: m.mentions,
+                status: 'failed',
+                assistInstructions: instructions,
+              });
+            }
+          }
+        }
+        return next;
+      });
     };
     messagesMap.observeDeep(update);
     update();
     return () => messagesMap.unobserveDeep(update);
-  }, [docId, messagesMap]);
+  }, [docId, messagesMap, scope?.kind, user.id]);
 
   // Idempotent upsert with (updatedAt, id) precedence, batched per transact.
   const upsertMessages = useCallback(
@@ -219,64 +253,13 @@ export function useDiscussion({
     return () => unsubs.forEach((unsub) => unsub());
   }, [docId, discussionId, messagesMap, upsertMessages]);
 
-  // ── Send ──
-  const sendMessage = useCallback(
-    async (content: string, mentions: string[] = []) => {
-      if (!discussionId || !scope) return;
-      const trimmed = content.trim();
-      if (!trimmed) return;
-      const id = makeMessageId();
-      setPending((prev) => [...prev, { id, content: trimmed, status: 'sending' }]);
-      try {
-        const persisted = await discussionsService.postMessage(scope, discussionId, {
-          id,
-          content: trimmed,
-          mentions,
-        });
-        // Fast path: the WS broadcast also delivers this — idempotent by id.
-        upsertMessages([persisted]);
-        setPending((prev) => prev.filter((p) => p.id !== id));
-      } catch (err) {
-        console.error('Send failed:', err);
-        setPending((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
-        );
-      }
-    },
-    [discussionId, scope, upsertMessages],
-  );
-
-  // Failed bubbles retry with the SAME id — idempotent on the server.
-  const retryMessage = useCallback(
-    async (id: string) => {
-      if (!discussionId || !scope) return;
-      const failed = pending.find((p) => p.id === id);
-      if (!failed) return;
-      setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
-      try {
-        const persisted = await discussionsService.postMessage(scope, discussionId, {
-          id,
-          content: failed.content,
-        });
-        upsertMessages([persisted]);
-        setPending((prev) => prev.filter((p) => p.id !== id));
-      } catch (err) {
-        console.error('Retry failed:', err);
-        setPending((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
-        );
-      }
-    },
-    [discussionId, pending, scope, upsertMessages],
-  );
-
   const requestAssist = useCallback(
     async (
       command: AssistCommand,
       instructions = '',
       opts: { requestId?: string; selectedMessageIds?: string[] } = {},
     ) => {
-      if (!discussionId || !scope || scope.kind !== 'intent') return;
+      if (!discussionId || !scope || scope.kind !== 'intent') return false;
       const requestId = opts.requestId || makeAssistRequestId();
       try {
         const { message } = await discussionsService.assist(scope, discussionId, {
@@ -287,11 +270,78 @@ export function useDiscussion({
           ...(agentCli ? { agentCli } : {}),
         });
         upsertMessages([message]);
+        return true;
       } catch (err) {
         console.error('Discussion assist failed:', err);
+        return false;
       }
     },
     [agentCli, discussionId, scope, upsertMessages],
+  );
+
+  const submitMessage = useCallback(
+    async (message: PendingMessage) => {
+      if (!discussionId || !scope) return;
+      const { id, content, mentions, assistInstructions } = message;
+      try {
+        const persisted = await discussionsService.postMessage(scope, discussionId, {
+          id,
+          content,
+          mentions,
+        });
+        upsertMessages([persisted]);
+        // A lost response can be retried with the same message AND assist IDs.
+        if (assistInstructions !== undefined) {
+          const accepted = await requestAssist('ask', assistInstructions, {
+            requestId: askRequestId(id),
+          });
+          if (!accepted) {
+            setPending((prev) =>
+              prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
+            );
+            return;
+          }
+        }
+        setPending((prev) => prev.filter((p) => p.id !== id));
+      } catch (err) {
+        console.error('Send failed:', err);
+        setPending((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
+        );
+      }
+    },
+    [discussionId, scope, upsertMessages, requestAssist],
+  );
+
+  // ── Send ──
+  const sendMessage = useCallback(
+    async (content: string, mentions: string[] = []) => {
+      if (!discussionId || !scope) return;
+      const trimmed = content.trim();
+      if (!trimmed) return;
+      const message: PendingMessage = {
+        id: makeMessageId(),
+        content: trimmed,
+        mentions: [...mentions],
+        status: 'sending',
+        assistInstructions:
+          scope.kind === 'intent' ? (quorumMention(trimmed) ?? undefined) : undefined,
+      };
+      setPending((prev) => [...prev, message]);
+      await submitMessage(message);
+    },
+    [discussionId, scope, submitMessage],
+  );
+
+  // Retry the original payload, including mentions, for server idempotency.
+  const retryMessage = useCallback(
+    async (id: string) => {
+      const failed = pending.find((p) => p.id === id && p.status === 'failed');
+      if (!failed) return;
+      setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
+      await submitMessage(failed);
+    },
+    [pending, submitMessage],
   );
 
   // ── Typing awareness ──

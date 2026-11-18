@@ -12,7 +12,7 @@ terraform {
     }
     awscc = {
       source  = "hashicorp/awscc"
-      version = "~> 1.0"
+      version = "~> 1.0, >= 1.103.0"
     }
     time = {
       source  = "hashicorp/time"
@@ -263,6 +263,40 @@ resource "terraform_data" "resiliency_preconditions" {
   }
 }
 
+# The strict custom MCP profile only holds when every path that could hand a
+# custom MCP secret or a direct MCP connection to the runtime is grant-checked:
+# custom tools through the Gateway, MCP secrets through engine-data's broker,
+# and no legacy runtime request shapes left at the broker.
+resource "terraform_data" "runtime_mcp_credentials_preconditions" {
+  count = var.runtime_mcp_credentials == "gateway_only" ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_mcp_gateway
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enable_mcp_gateway: customer MCP servers are then served only as Gateway targets."
+    }
+    precondition {
+      condition     = var.enable_engine_data
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enable_engine_data: the credential broker is what refuses MCP secrets to the runtime."
+    }
+    precondition {
+      condition     = var.enforce_runtime_grants
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enforce_runtime_grants: legacy runtime requests must no longer be served."
+    }
+  }
+}
+
+resource "terraform_data" "runtime_grant_preconditions" {
+  count = var.enforce_runtime_grants ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_engine_data
+      error_message = "enforce_runtime_grants requires enable_engine_data: there is no Gateway grant to enforce without it."
+    }
+  }
+}
+
 # Certificate first, then the distribution that references it, then the alias
 # records that point at the distribution. Splitting the certificate and the
 # records into different graph positions is what avoids a dependency cycle.
@@ -504,7 +538,15 @@ module "neptune" {
 
 # Lambda CRUD Functions
 module "lambda" {
-  source = "./modules/api/lambda"
+  source            = "./modules/api/lambda"
+  access_table_name = module.dynamodb.access_table_name
+  access_table_arn  = module.dynamodb.access_table_arn
+  audit_table_name  = module.dynamodb.audit_table_name
+  audit_table_arn   = module.dynamodb.audit_table_arn
+
+  notification_events_enabled = var.notification_events_enabled
+  notification_event_bus_name = var.notification_event_bus_name
+  notification_event_source   = var.notification_event_source
 
   iam_role_path                = var.iam_role_path
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
@@ -518,11 +560,17 @@ module "lambda" {
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
   aidlc_release_pinning       = var.aidlc_release_pinning
+  pr_title_tracker_key        = var.pr_title_tracker_key
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
+
+  # Custom AI-DLC fork releases kept in GitLab (seed-blocks importRelease).
+  aidlc_custom_source_gitlab_url              = var.aidlc_custom_source_gitlab_url
+  aidlc_custom_source_gitlab_token_secret_arn = var.aidlc_custom_source_gitlab_token_secret_arn
+
   dynamodb_table_arns = [
     module.dynamodb.sessions_table_arn,
     module.dynamodb.notifications_table_arn,
@@ -540,6 +588,13 @@ module "lambda" {
   yjs_documents_table_name                 = module.dynamodb.yjs_documents_table_name
   yjs_documents_table_arn                  = module.dynamodb.yjs_documents_table_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
+  enable_mcp_gateway                       = var.enable_mcp_gateway
+  enable_engine_data                       = var.enable_engine_data
+  enforce_runtime_grants                   = var.enforce_runtime_grants
+  runtime_mcp_credentials                  = var.runtime_mcp_credentials
+  gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
+  gateway_grant_retirement_table_name      = module.agentcore.gateway_grant_retirement_table_name
+  gateway_grant_retirement_table_arn       = module.agentcore.gateway_grant_retirement_table_arn
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
   core_image_digest                        = module.agentcore.image_digest
@@ -551,6 +606,9 @@ module "lambda" {
   github_app_private_key_secret_arn        = module.git.github_app_private_key_secret_arn
   github_app_config_param_name             = module.git.github_app_config_param_name
   github_app_config_param_arn              = module.git.github_app_config_param_arn
+  codecommit_connection_param_name         = module.git.codecommit_connection_param_name
+  codecommit_connection_param_arn          = module.git.codecommit_connection_param_arn
+  codecommit_external_id                   = module.git.codecommit_external_id
   gitlab_oauth_secret_name                 = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn                  = module.git.gitlab_oauth_secret_arn
   bitbucket_oauth_secret_name              = module.git.bitbucket_oauth_secret_name
@@ -591,7 +649,8 @@ module "lambda" {
 
 # API Gateway
 module "api" {
-  source = "./modules/api"
+  source            = "./modules/api"
+  access_table_name = module.lambda.membership_access_table_name
 
   aws_sdk_ua_app_id                        = local.aws_sdk_ua_app_id
   credential_broker_role_arn               = module.lambda.credential_broker_role_arn
@@ -662,6 +721,8 @@ module "api" {
   v2_executions_table_name                 = module.agentcore.v2_executions_table_name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
+  enable_engine_data                       = var.enable_engine_data
+  runtime_mcp_credentials                  = var.runtime_mcp_credentials
   private_subnet_ids                       = module.networking.private_subnet_ids
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
@@ -713,6 +774,7 @@ module "yjs_server" {
   powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
+  image_tag                     = var.yjs_image_tag
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.vpc_origin_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
@@ -747,6 +809,7 @@ module "agentcore" {
   powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
+  image_tag                   = var.agentcore_image_tag
   build_amd64_image           = var.enable_instances_compute
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
@@ -770,6 +833,13 @@ module "agentcore" {
   disabled_clis       = var.disabled_clis
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
+  enable_mcp_gateway  = var.enable_mcp_gateway
+  enable_engine_data  = var.enable_engine_data
+  # With enable_engine_data, also strips the runtime role's direct data access.
+  enforce_runtime_grants = var.enforce_runtime_grants
+
+  mcp_gateway_custom_targets = var.mcp_gateway_custom_targets
+  runtime_mcp_credentials    = var.runtime_mcp_credentials
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
@@ -797,6 +867,8 @@ module "managed_environments" {
   powertools_log_event          = var.powertools_log_event
   registry_table_name           = module.dynamodb.environment_registry_table_name
   registry_table_arn            = module.dynamodb.environment_registry_table_arn
+  process_table_name            = module.agentcore.v2_executions_table_name
+  process_table_arn             = module.agentcore.v2_executions_table_arn
   kms_key_arn                   = var.kms_key_arn
   core_image_uri                = module.agentcore.ecr_repository_url
   core_image_digest             = module.agentcore.image_digest

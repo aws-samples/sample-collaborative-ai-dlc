@@ -32,7 +32,7 @@ deterministically.
 
 ```mermaid
 graph TD
-  PROJECT["Project"]
+  PROJECT["Project<br/>space"]
   INTENT["Intent"]
   ARTIFACT["Artifact<br/>canonical Markdown"]
   SECTION["Section<br/>derived heading"]
@@ -133,20 +133,24 @@ revision.
 
 #### Scope and authored knowledge
 
-| Vertex              | Scope         | Purpose                                                      |
-| ------------------- | ------------- | ------------------------------------------------------------ |
-| `Project`           | Platform      | Membership and the shared knowledge boundary.                |
-| `Intent`            | Project       | Anchor for one unit of requested agent work.                 |
-| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.               |
-| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.               |
-| `Question`          | Intent        | Agent question, structured answer, and answering provenance. |
-| `Steering`          | Intent        | Human course correction, revision, or redirect.              |
-| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.            |
-| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                      |
-| `PullRequest`       | Intent        | Final intent-level pull request.                             |
-| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.    |
-| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.        |
-| `LearningRule`      | Project       | Reusable team or project learning guardrail.                 |
+| Vertex              | Scope         | Purpose                                                                                                                       |
+| ------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `Project`           | Platform      | A space: lifecycle and the shared knowledge boundary. The vertex label and the `projectId` key keep the space's earlier name. |
+| `Intent`            | Project       | Anchor for one unit of requested agent work.                                                                                  |
+| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.                                                                                |
+| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.                                                                                |
+| `Question`          | Intent        | Agent or checkpoint question (summary confirmation, plan approval), structured answer, and answering provenance.              |
+| `Steering`          | Intent        | Human course correction, revision, or redirect.                                                                               |
+| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.                                                                             |
+| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                                                                                       |
+| `PullRequest`       | Intent        | Final intent-level pull request.                                                                                              |
+| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.                                                                     |
+| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.                                                                         |
+| `LearningRule`      | Project       | Reusable team or project learning guardrail.                                                                                  |
+
+A checkpoint gate (summary confirmation, plan approval) is a `Question` too:
+the gate is mirrored when it is raised, and Discuss rebuilds a missing vertex
+from the gate row, so a graph write that never landed does not hide a decision.
 
 #### Derived structure
 
@@ -181,8 +185,8 @@ validation, agent authoring instructions, and graph reads.
 | `HAS_MESSAGE`    | A discussion contains a durable message.                                                          |
 | `HAS_PR`         | An intent produced a final pull request.                                                          |
 | `HAS_UNIT_PR`    | An intent produced a unit-level pull request.                                                     |
-| `HAS_KNOWLEDGE`  | A project owns reusable team knowledge.                                                           |
-| `HAS_LEARNING`   | A project owns a reusable learning rule.                                                          |
+| `HAS_KNOWLEDGE`  | A space owns reusable team knowledge.                                                             |
+| `HAS_LEARNING`   | A space owns a reusable learning rule.                                                            |
 | `HAS_VERSION`    | A logical artifact head retains an immutable historical version.                                  |
 
 #### Artifact relationships
@@ -224,6 +228,8 @@ agent-supplied metadata. Common fields include:
 
 - `project_id` and `intent_id`
 - `created_by_execution_id` and `created_by_stage_instance_id`
+- `updated_by_stage_instance_id` on an artifact whose content a later stage
+  changed; that stage re-derives the artifact's sections and items
 - `section_index` and `unit_slug` for parallel construction lanes
 - `stage_attempt`
 - `created_at`
@@ -311,25 +317,26 @@ graph LR
 
 ### Record types
 
-| Sort-key pattern                     | Record            | Purpose                                                                                         |
-| ------------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------- |
-| `META`                               | Execution         | Captured intent and workflow configuration, overall status, timestamps, and repository context. |
-| `STAGE#<stageInstanceId>`            | Stage             | State and attempts for one concrete stage invocation, including a unit-specific stage.          |
-| `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                     |
-| `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                             |
-| `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                  |
-| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                     |
-| `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                     |
-| `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                          |
-| `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                          |
-| `UNITPLAN`                           | Unit plan         | Current scheduling snapshot for the construction unit DAG.                                      |
-| `UNIT#<laneId>`                      | Unit              | Scheduling state for one construction lane, including dependencies, branch, and session.        |
-| `UNITPR#<laneId>#<repository>`       | Unit pull request | Pull-request lifecycle for one unit and repository.                                             |
-| `FEEDBACK#<laneId>#<batchId>`        | Feedback batch    | A queued or completed batch of review feedback for a unit.                                      |
-| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment  | Stable per-comment state within unit feedback processing.                                       |
-| `QEDIT#<editId>`                     | Quorum edit       | Post-hoc artifact edit plan, approval callback, and apply outcome.                              |
-| `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                           |
-| `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                  |
+| Sort-key pattern                     | Record            | Purpose                                                                                          |
+| ------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------ |
+| `META`                               | Execution         | Captured intent and workflow configuration, overall status, timestamps, and repository context.  |
+| `STAGE#<stageInstanceId>`            | Stage             | State and attempts for one concrete stage invocation, including a unit-specific stage.           |
+| `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                      |
+| `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                              |
+| `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                   |
+| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                      |
+| `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                      |
+| `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                           |
+| `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                           |
+| `UNITPLAN`                           | Unit plan         | Current scheduling snapshot for the construction unit DAG.                                       |
+| `UNIT#<laneId>`                      | Unit              | Scheduling state for one construction lane, including dependencies, branch, and session.         |
+| `UNITPR#<laneId>#<repository>`       | Unit pull request | Pull-request lifecycle for one unit and repository.                                              |
+| `FEEDBACK#<laneId>#<batchId>`        | Feedback batch    | A queued or completed batch of review feedback for a unit.                                       |
+| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment  | Stable per-comment state within unit feedback processing.                                        |
+| `QEDIT#<editId>`                     | Quorum edit       | Post-hoc artifact edit plan, approval callback, and apply outcome.                               |
+| `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                            |
+| `DELIVERY#<runId>`                   | Final delivery    | Per-repository publication results, captured branch identity, and fenced retry attempt metadata. |
+| `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                   |
 
 `UNITPLAN` and `UNIT#…` rows are the scheduling source of truth. Their
 `UnitOfWork` representation in Neptune is a traceability and UI projection; the
@@ -341,7 +348,7 @@ The table has three global secondary indexes:
 
 | Index  | Key pattern                                                                      | Access pattern                                                                                      |
 | ------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a project's executions by status and start time.                                               |
+| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a space's executions by status and start time.                                                 |
 | `GSI2` | `EXEC#<executionId>` / `TYPE#<type>#STATE#<state>#<id>`                          | Find records of one type and state within an execution, such as pending human gates or ready units. |
 | `GSI3` | Sparse operational keys                                                          | Find cross-execution maintenance work without scanning the table.                                   |
 
@@ -360,7 +367,7 @@ not by database-level foreign keys:
 
 | Identifier                    | DynamoDB role                                                  | Neptune role                                                      |
 | ----------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `projectId`                   | Project execution index and captured configuration.            | Project scope, membership, knowledge, and learnings.              |
+| `projectId`                   | Space membership, execution index, and captured configuration. | Space scope, knowledge, and learnings.                            |
 | `intentId`                    | Associates the execution header with the user's intent.        | Anchors the intent knowledge subgraph.                            |
 | `executionId`                 | Owns the execution-table partition.                            | Provenance field on artifacts created by that run.                |
 | `stageInstanceId`             | Identifies a stage row and its callbacks, output, and metrics. | Provenance field on artifacts produced by the stage.              |
@@ -450,3 +457,22 @@ The key schemes in `lambda/shared/blocks.js` and
 
 For the surrounding AWS components and other storage services, see
 [Architecture](architecture.md).
+
+## DynamoDB space access and audit
+
+The access table stores one membership per space and stable user ID:
+`pk = SPACE#<spaceId>`, `sk = MEMBER#<userId>`. It carries `userId`,
+`membershipRole` (`owner` or `member`), creation/update timestamps, and a revision.
+Its `by-user` GSI uses `userId` / `pk`, projecting all attributes. Space member
+queries and access checks use consistent base-table reads; the user-space list
+index is eventually consistent and cannot authorize protected content.
+
+A separate audit table stores append-only permission changes under the same space
+partition, keyed by `AUDIT#<ISO-time>#<changeId>`. It records actor, action,
+target user, before/after membership, timestamp, and change ID. Membership and
+history writes commit together in a DynamoDB transaction. Both tables have PITR,
+the installation's encryption/deletion protection, and no TTL. Space deletion
+removes access records while retaining audit history.
+
+See [Space membership migration](../development/membership-migration.md) for
+installation ordering, legacy Admin conversion, pagination, and recovery.

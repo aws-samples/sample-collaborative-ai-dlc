@@ -1,10 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetKiroCreditRateCache } from '../cli/kiro-usage.js';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+beforeEach(() => resetKiroCreditRateCache());
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -23,6 +26,43 @@ const fakeChild = ({ exitCode = 0, stdout = '', stderr = '' } = {}) => {
 };
 
 describe('parseClaudeOneShot', () => {
+  it('retains measured usage from a failed Claude invocation', async () => {
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['claude'],
+      spawnFn: () =>
+        fakeChild({
+          exitCode: 1,
+          stdout: JSON.stringify({
+            type: 'result',
+            is_error: true,
+            usage: { input_tokens: 10, output_tokens: 2 },
+          }),
+        }),
+    });
+    expect(out).toMatchObject({ ok: false, metrics: { tokensInput: 10, tokensOutput: 2 } });
+  });
+
+  it('returns a captured credit rate with Kiro one-shot usage', async () => {
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['kiro'],
+      spawnFn: (_command, args) =>
+        args.includes('/usage')
+          ? fakeChild({ stderr: 'billed at $0.04 per credit' })
+          : fakeChild({
+              exitCode: 1,
+              stdout: JSON.stringify({
+                type: 'metadata',
+                data: { meteringUsage: [{ value: 0.5, unit: 'credit' }] },
+              }),
+            }),
+      restoreKiroStore: async () => true,
+      persistKiroStore: async () => true,
+    });
+    expect(out).toMatchObject({ ok: false, metrics: { credits: 0.5 }, creditRate: 0.04 });
+  });
+
   it('extracts the result text and token usage from stream-json lines', () => {
     const stdout = [
       '{"type":"system","subtype":"init"}',
@@ -138,6 +178,7 @@ describe('runOneShotPrompt', () => {
   it('runs kiro on stream-json and parses the answer and credits', async () => {
     let argv;
     const spawnFn = vi.fn((command, args) => {
+      if (args.includes('/usage')) return fakeChild({ stderr: 'billed at $0.04 per credit' });
       argv = { command, args };
       return fakeChild({
         stdout: kiroStream(
@@ -242,6 +283,92 @@ describe('runOneShotPrompt', () => {
     expect(childEnv.OPENCODE_CONFIG_CONTENT).toBe('{"share":"disabled"}');
     expect(childEnv.XDG_DATA_HOME).toBe('/tmp/opencode');
     expect(withOpenCodeStore).toHaveBeenCalledOnce();
+  });
+
+  it('fails with deadline_exceeded instead of starting after startBy', async () => {
+    const spawnFn = vi.fn(() => fakeChild({ stdout: 'never' }));
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['claude'],
+      startBy: 1_000,
+      now: () => 1_001,
+      spawnFn,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'claude' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('reports an OpenCode store wait past startBy as deadline_exceeded', async () => {
+    const spawnFn = vi.fn();
+    const withOpenCodeStore = vi.fn(async ({ waitUntil }) => {
+      expect(waitUntil).toBe(1_000);
+      throw Object.assign(new Error('busy'), { code: 'OPENCODE_STORE_WAIT_EXPIRED' });
+    });
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      startBy: 1_000,
+      spawnFn,
+      withOpenCodeStore,
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'opencode' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('re-checks startBy after the OpenCode store restore, before spawning', async () => {
+    let clock = 0;
+    const spawnFn = vi.fn();
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      startBy: 1_000,
+      now: () => clock,
+      spawnFn,
+      withOpenCodeStore: async ({ operation }) => {
+        clock = 1_001; // the restore outlasted the start deadline
+        return operation();
+      },
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'deadline_exceeded', cli: 'opencode' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('caps the CLI timeout at finishBy and hands late store work to defer', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const hung = () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end: () => {} };
+        child.kill = () => {
+          child.emit('exit', null);
+          child.emit('close', null);
+        };
+        return child;
+      };
+      const pending = Promise.resolve('persisting');
+      const defer = vi.fn();
+      const out = runOneShotPrompt({
+        prompt: 'p',
+        availableClis: ['opencode'],
+        finishBy: 1_005_000,
+        defer,
+        makeDirectory: async () => {},
+        spawnFn: hung,
+        withOpenCodeStore: async ({ operation, settleBy, defer: handOff }) => {
+          expect(settleBy).toBe(1_005_000);
+          const capture = await operation();
+          handOff(pending);
+          return capture;
+        },
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(out).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+      expect(defer).toHaveBeenCalledWith(pending);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('runs Codex with CODEX_HOME, Bedrock bearer auth, and turn usage', async () => {

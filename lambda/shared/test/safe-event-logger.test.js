@@ -124,6 +124,23 @@ const sensitiveRouteEvents = [
 ];
 
 describe('redactEventForLogging', () => {
+  it('does not log sandbox editor content, including rejected credentials', () => {
+    const proxy = new URL('https://proxy.example.com');
+    proxy.username = 'user';
+    proxy.password = 'private';
+    const event = {
+      path: '/agents/settings',
+      body: JSON.stringify({
+        sandbox: {
+          action: 'draft',
+          config: JSON.stringify({ network: { parentProxy: { http: proxy.toString() } } }),
+        },
+      }),
+    };
+    const redacted = redactEventForLogging(event);
+    expect(JSON.parse(redacted.body)).toEqual({ sandbox: '[REDACTED]' });
+    expect(event.body).toContain('private');
+  });
   it.each(sensitiveRouteEvents)('redacts values for $name', ({ event }) => {
     const redacted = redactEventForLogging(event);
     const serialized = JSON.stringify(redacted);

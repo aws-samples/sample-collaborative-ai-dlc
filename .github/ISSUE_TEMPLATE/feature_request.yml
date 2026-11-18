@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest a new feature or improvement
 title: '[Feature]: '
-labels: ['feature-request']
+type: Feature
 body:
   - type: markdown
     attributes:
@@ -29,13 +29,15 @@ body:
     attributes:
       label: Area
       description: Which area of the project does this relate to?
+      # Options map to area/* labels in .github/workflows/issue-labels.yml.
       options:
-        - Frontend
-        - Backend (Lambda)
-        - Infrastructure (Terraform)
-        - Agents / AI
+        - Frontend (web application)
+        - Backend (APIs, orchestration)
+        - Agents (AgentCore runtime)
+        - Infrastructure (Terraform, installer, deployment)
+        - CI and tooling
         - Documentation
-        - Other
+        - Not sure
     validations:
       required: true
 

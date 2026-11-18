@@ -92,6 +92,43 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.1 is a patch release on the 2.11 line, promoted exactly like 2.11.0,
+  // with the same frontmatter dialect. It adds one engine command:
+  // build-and-test's cross-unit coverage gate runs
+  // `engine sensor-traceability --stage build-and-test`, a sensor run on
+  // request, which this runtime refuses by name (INVOKE_FAMILY_FIDELITY in
+  // aidlc-compatibility.js, and the dialect annex).
+  'v2.11.1': Object.freeze({
+    id: 'v2.11.1',
+    releaseId: 'aidlc:895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    fixtureDigest: '68120a5f56138a4c6ffb09bb5be8748f2f4598687ab92b1e21b0eaef39d7087b',
+    label: 'AI-DLC 2.11.1',
+    upstreamVersion: '2.11.1',
+    upstreamRef: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
+  // 2.11.3 rolls up the 2.11.2 patch line. Its authored methodology keeps
+  // 2.11.1's frontmatter dialect, scope settings and sensor declarations; its
+  // sensor-on-request and dispatcher changes are not reproduced (see the
+  // compatibility guide). The compatibility matrix verifies its full imported
+  // catalog and command fidelity before administrators can promote it.
+  'v2.11.3': Object.freeze({
+    id: 'v2.11.3',
+    releaseId: 'aidlc:63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    fixtureDigest: '59636c597c6d96505ca89f94a6c76a9a24d2be48946d7c89b7a37febfb10366a',
+    label: 'AI-DLC 2.11.3',
+    upstreamVersion: '2.11.3',
+    upstreamRef: '63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {
@@ -127,7 +164,7 @@ const CUSTOM_BASE_PROFILE_IDS = Object.freeze(Object.keys(AIDLC_COMPATIBILITY_PR
  * a fork (release-resolver `release_not_runnable`).
  */
 const customProfile = ({ repository, sha, baseProfileId }) => {
-  const { owner, repo, repository: slug } = parseRepositorySlug(repository);
+  const { repository: slug } = parseRepositorySlug(repository);
   if (slug === OFFICIAL_AIDLC_REPOSITORY) {
     throw new CustomSourceError(
       'custom_repository_official',
@@ -153,7 +190,7 @@ const customProfile = ({ repository, sha, baseProfileId }) => {
     );
   }
   const upstreamRef = String(sha).toLowerCase();
-  const identity = `${owner}/${repo}@${upstreamRef}`;
+  const identity = `${slug}@${upstreamRef}`;
   return Object.freeze({
     id: `custom:${identity}`,
     releaseId: `aidlc-custom:${identity}`,
