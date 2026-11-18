@@ -24,6 +24,12 @@ variable "instance_class" {
   default     = "db.t3.medium"
 }
 
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for a new cluster's storage encryption. Empty uses the AWS managed aws/rds key. Ignored for an existing cluster."
+  type        = string
+  default     = ""
+}
+
 variable "skip_final_snapshot" {
   description = "Skip final snapshot when destroying cluster"
   type        = bool

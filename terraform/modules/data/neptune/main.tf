@@ -58,6 +58,17 @@ resource "aws_neptune_cluster" "main" {
   skip_final_snapshot                  = var.skip_final_snapshot
   final_snapshot_identifier            = var.skip_final_snapshot ? null : "${trim(substr(var.name_prefix, 0, 39), "-")}-neptune-final-${random_id.final_snapshot_suffix[0].hex}"
 
+  # New clusters are encrypted at rest with kms_key_arn, or with the AWS
+  # managed aws/rds key when it is empty. Neptune fixes both settings at
+  # creation and changing them replaces the cluster, so an existing
+  # cluster keeps its current encryption instead of being recreated.
+  storage_encrypted = true
+  kms_key_arn       = var.kms_key_arn != "" ? var.kms_key_arn : null
+
+  lifecycle {
+    ignore_changes = [storage_encrypted, kms_key_arn]
+  }
+
   tags = var.tags
 }
 
