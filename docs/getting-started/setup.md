@@ -461,6 +461,19 @@ Federated roles are mapped from the external IdP and cannot be changed in this
 UI or with downstream Cognito group membership. See
 [Enterprise SSO → Role and access mapping](enterprise-sso.md#role-and-access-mapping).
 
+### Local user passwords
+
+Users who sign in with a local Cognito account (`auth_mode` `local` or `hybrid`) manage their own password; federated users manage theirs at the identity provider and see neither option.
+
+- **Account Settings → Sign-in password** changes the password of the signed-in user. It requires the current password.
+- **Forgot password?** on the sign-in page emails a verification code and sets a new password with it. An unknown address gets the same response as a real account, so the page does not reveal which addresses have accounts.
+
+New passwords must meet the user pool policy: at least 12 characters with lowercase and uppercase letters, a number, and a symbol.
+
+A reset needs a verified email address and a permanent password. The installer creates the first administrator that way; when you create users with `aws cognito-idp admin-create-user`, set `email_verified=true`. A user who still has a temporary password signs in with it and sets a new one at the prompt instead. After an operator runs `aws cognito-idp admin-reset-user-password`, the user's next sign-in opens the reset flow.
+
+Codes are sent with Cognito's default email sender (`email_sending_account = "COGNITO_DEFAULT"`), which Amazon Cognito limits to 50 messages a day per account. The auth module does not configure Amazon SES for the user pool, so that limit applies to every reset.
+
 ### Configure provider OAuth apps
 
 The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: a platform admin sets one shared connection to an IAM role in the repository account, and every space uses it (see [CodeCommit](#codecommit-code-host) below).

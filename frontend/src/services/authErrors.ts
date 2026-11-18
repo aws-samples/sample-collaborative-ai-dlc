@@ -13,6 +13,15 @@ export class SsoAccessDeniedError extends Error {
   }
 }
 
+// Cognito refused the sign-in because an operator reset the password
+// (admin-reset-user-password); the user has to finish a password reset.
+export class PasswordResetRequiredError extends Error {
+  constructor() {
+    super('Your password must be reset before you can sign in.');
+    this.name = 'PasswordResetRequiredError';
+  }
+}
+
 export class SsoLoginTimeoutError extends Error {
   constructor(cause?: unknown) {
     super(SSO_LOGIN_TIMEOUT_MESSAGE, cause === undefined ? undefined : { cause });
