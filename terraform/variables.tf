@@ -152,6 +152,15 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "lane_sync_policy" {
+  description = "Initial platform default for when the engine brings the intent branch's latest head into a unit lane: \"none\" (only at merge-back or reconciliation) or \"before-stage\" (merged into the unit branch before each fresh stage of the lane; a conflict leaves the lane as it was). Applied when the setting is first created; afterwards it is managed in Admin settings, and each space may override it."
+  type        = string
+  default     = "none"
+  validation {
+    condition     = contains(["none", "before-stage"], var.lane_sync_policy)
+    error_message = "lane_sync_policy must be \"none\" or \"before-stage\"."
+  }
+}
 variable "pr_title_tracker_key" {
   description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
   type        = bool

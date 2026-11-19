@@ -107,6 +107,11 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "lane_sync_policy" {
+  description = "Initial platform lane sync policy (\"none\" or \"before-stage\"); the Admin UI manages it afterwards"
+  type        = string
+  default     = "none"
+}
 variable "bedrock_model" {
   description = "Default Bedrock inference profile id for stage agents"
   type        = string

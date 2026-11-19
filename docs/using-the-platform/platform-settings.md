@@ -79,6 +79,7 @@ Platform-wide code-host configuration:
 - **GitLab** — the GitLab OAuth app credentials.
 - **AWS CodeCommit** — one shared connection for the whole deployment: the IAM role ARN and region every space uses. The card shows the platform principals, the deployment external ID, and the trust and permissions policies to hand to the AWS admin who owns the repositories; paste the role ARN and region and click **Test & save** to verify the trust and store the connection. Spaces then pick CodeCommit repositories from the usual list, with no ARN or IAM to supply. There is no per-user external ID. See [Git integration → CodeCommit](git-integration.md#codecommit) and [Setup → CodeCommit](../getting-started/setup.md#codecommit-code-host).
 - **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Spaces may inherit or override this default. The default is **Intent PR**.
+- **Lane sync** — **At merge-back only** keeps each unit lane on the intent head it was cut from; **Before each stage** merges the intent branch into the lane before each fresh stage. Spaces may inherit or override this default. Its initial value comes from the Terraform variable `lane_sync_policy` (default `none`, shown as **At merge-back only**).
 
 ## Trackers
 

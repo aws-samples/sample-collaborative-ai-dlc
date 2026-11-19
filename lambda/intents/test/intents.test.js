@@ -1252,6 +1252,57 @@ describe('POST /projects/{id}/intents', () => {
     }
   });
 
+  it('resolves lane sync precedence and snapshots it on the intent', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/lane-sync-policy' })
+      .resolves({ Parameter: { Value: 'before-stage' } });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const setPolicy = (projectId, value) =>
+        g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(gremlin.process.cardinality.single, 'lane_sync_policy', value)
+          .next();
+      // A project without the property inherits the platform value.
+      const legacyProject = await seedV2Project(sub);
+      const legacy = JSON.parse((await createIntent(sub, legacyProject)).body);
+      expect(legacy.laneSyncPolicy).toBe('before-stage');
+      expect(procStore.get(keyOf(`EXEC#${legacy.id}`, 'META')).laneSyncPolicy).toBe('before-stage');
+
+      const explicitProject = await seedV2Project(sub);
+      await setPolicy(explicitProject, 'none');
+      const explicit = JSON.parse((await createIntent(sub, explicitProject)).body);
+      expect(explicit.laneSyncPolicy).toBe('none');
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
+  it('snapshots no lane sync when the platform setting is unavailable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    expect(intent.laneSyncPolicy).toBe('none');
+  });
+
+  it('snapshots no lane sync when the platform setting cannot be read', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/lane-sync-policy' })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body).laneSyncPolicy).toBe('none');
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
   it('refuses PR per unit for a CodeCommit space before creating the intent', async () => {
     vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
     ssmMock

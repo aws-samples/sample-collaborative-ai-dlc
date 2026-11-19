@@ -111,6 +111,37 @@ describe('platform PR strategy settings', () => {
   });
 });
 
+describe('platform lane sync settings', () => {
+  it('reads before-stage and fails safely to none for an unknown value', async () => {
+    ssmMock.on(GetParametersCommand).resolves({
+      Parameters: [{ Name: '/collab/dev/lane-sync-policy', Value: 'before-stage' }],
+    });
+    expect(JSON.parse((await handler(event('GET'))).body).laneSyncPolicy).toBe('before-stage');
+
+    ssmMock.on(GetParametersCommand).resolves({
+      Parameters: [{ Name: '/collab/dev/lane-sync-policy', Value: 'always' }],
+    });
+    expect(JSON.parse((await handler(event('GET'))).body).laneSyncPolicy).toBe('none');
+  });
+
+  it('lets a platform admin update the policy and rejects unknown values', async () => {
+    ssmMock.on(PutParameterCommand).resolves({});
+    const allowed = await handler(
+      event('PUT', { laneSyncPolicy: 'before-stage' }, 'platform-admin'),
+    );
+    expect(allowed.statusCode).toBe(200);
+    expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input).toMatchObject({
+      Name: '/collab/dev/lane-sync-policy',
+      Value: 'before-stage',
+    });
+
+    ssmMock.resetHistory();
+    const rejected = await handler(event('PUT', { laneSyncPolicy: 'always' }, 'platform-admin'));
+    expect(rejected.statusCode).toBe(400);
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+});
+
 describe('platform agent CLI availability settings', () => {
   it('reads the disabled set and defaults to every CLI enabled', async () => {
     ssmMock.on(GetParametersCommand).resolves({

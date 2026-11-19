@@ -86,11 +86,14 @@ export interface Project {
   // Per-project stage-skipping override: 'default' inherits the platform
   // Admin setting; enabled/disabled override it for this project's intents.
   stageSkipping?: StageSkippingOverride;
+  // Per-project lane sync override: 'default' inherits the platform setting.
+  laneSyncPolicy?: LaneSyncPolicyOverride;
   environmentId?: string;
 }
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
 export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
+export type LaneSyncPolicyOverride = 'default' | 'none' | 'before-stage';
 
 export interface TrackerMigrationResult {
   dryRun: boolean;
@@ -138,6 +141,7 @@ export interface UpdateProjectInput {
   maxParallelUnits?: number;
   prStrategy?: PrStrategy;
   stageSkipping?: StageSkippingOverride;
+  laneSyncPolicy?: LaneSyncPolicyOverride;
 }
 
 export interface AddRepoInput {

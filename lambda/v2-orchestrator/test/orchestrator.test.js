@@ -835,6 +835,26 @@ describe('orchestrator durable handler', () => {
     }
   });
 
+  it('forwards the snapshotted lane sync policy to run-stage-start', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, laneSyncPolicy: 'before-stage' }));
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    const starts = stageStarts();
+    expect(starts.length).toBeGreaterThan(0);
+    for (const rs of starts) {
+      expect(rs.laneSyncPolicy).toBe('before-stage');
+    }
+  });
+
+  it.each([undefined, 'none'])('omits laneSyncPolicy when META has %j', async (laneSyncPolicy) => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, laneSyncPolicy }));
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    const starts = stageStarts();
+    expect(starts.length).toBeGreaterThan(0);
+    for (const rs of starts) {
+      expect(rs).not.toHaveProperty('laneSyncPolicy');
+    }
+  });
+
   it('releases the warm session (StopRuntimeSession) when the park deadline wins', async () => {
     deps.store.getExecution
       .mockResolvedValueOnce(META)

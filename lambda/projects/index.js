@@ -72,6 +72,10 @@ import {
   DEFAULT_PR_STRATEGY,
   normalizeProjectPrStrategy,
 } from '../shared/pr-strategy.js';
+import {
+  PROJECT_LANE_SYNC_POLICIES,
+  normalizeProjectLaneSyncPolicy,
+} from '../shared/lane-sync-policy.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -159,6 +163,18 @@ const DEFAULT_PROJECT_PR_STRATEGY = 'default';
 const STAGE_SKIPPING_OVERRIDES = ['default', 'enabled', 'disabled'];
 const DEFAULT_STAGE_SKIPPING = 'default';
 
+// Validate + normalize the project-level lane sync override
+// (shared/lane-sync-policy.js): 'default' inherits the platform setting.
+const normalizeLaneSyncPolicy = (raw) => {
+  const value = normalizeProjectLaneSyncPolicy(raw);
+  return value
+    ? { valid: true, value }
+    : {
+        valid: false,
+        error: `laneSyncPolicy must be one of: ${PROJECT_LANE_SYNC_POLICIES.join(', ')}`,
+      };
+};
+
 // Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
 const normalizeParkReleaseSeconds = (raw) => {
   if (raw === undefined || raw === null || raw === '') {
@@ -244,6 +260,7 @@ const readV2Settings = (v) => {
       normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
       DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
+    laneSyncPolicy: normalizeProjectLaneSyncPolicy(getVal(v, 'lane_sync_policy')) || 'default',
     environmentId: getVal(v, 'environment_id') || 'standard',
   };
 };
@@ -1607,6 +1624,8 @@ export const handler = async (event, context) => {
         if (!prValidation.valid) return response(400, { error: prValidation.error });
         const skipValidation = normalizeStageSkipping(data.stageSkipping);
         if (!skipValidation.valid) return response(400, { error: skipValidation.error });
+        const laneSyncValidation = normalizeLaneSyncPolicy(data.laneSyncPolicy);
+        if (!laneSyncValidation.valid) return response(400, { error: laneSyncValidation.error });
         // The recommended CLI is advisory (selection is enforced at intent
         // start), so a settings read failure must not block space creation.
         let disabledClis = [];
@@ -1630,6 +1649,7 @@ export const handler = async (event, context) => {
           maxParallelUnits: parallelValidation.value,
           prStrategy: prValidation.value,
           stageSkipping: skipValidation.value,
+          laneSyncPolicy: laneSyncValidation.value,
         };
 
         // The platform's default environment for new spaces; Standard if unset
@@ -1670,6 +1690,7 @@ export const handler = async (event, context) => {
           .property('max_parallel_units', String(v2Settings.maxParallelUnits))
           .property('pr_strategy', v2Settings.prStrategy)
           .property('stage_skipping', v2Settings.stageSkipping)
+          .property('lane_sync_policy', v2Settings.laneSyncPolicy)
           .property('environment_id', environmentId);
         await createV.next();
 
@@ -1920,6 +1941,18 @@ export const handler = async (event, context) => {
             .property(cardinality.single, 'stage_skipping', normalizedStageSkipping)
             .next();
         }
+        // Per-project lane sync override (shared/lane-sync-policy.js).
+        let normalizedLaneSyncPolicy;
+        if (data.laneSyncPolicy !== undefined) {
+          const laneSyncValidation = normalizeLaneSyncPolicy(data.laneSyncPolicy);
+          if (!laneSyncValidation.valid) return response(400, { error: laneSyncValidation.error });
+          normalizedLaneSyncPolicy = laneSyncValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'lane_sync_policy', normalizedLaneSyncPolicy)
+            .next();
+        }
         if (data.workflowId !== undefined) {
           await g
             .V()
@@ -1961,6 +1994,9 @@ export const handler = async (event, context) => {
           ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
           ...(normalizedStageSkipping !== undefined
             ? { stageSkipping: normalizedStageSkipping }
+            : {}),
+          ...(normalizedLaneSyncPolicy !== undefined
+            ? { laneSyncPolicy: normalizedLaneSyncPolicy }
             : {}),
         });
       }

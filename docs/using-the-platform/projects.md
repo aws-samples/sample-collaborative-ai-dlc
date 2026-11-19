@@ -56,6 +56,7 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
   - **Park release (seconds)** — how long an agent session stays warm after parking on a human question before it is stopped (0–900, default 300). Lower values save compute; higher values make near-instant answers resume faster.
   - **Max parallel units** — concurrency cap for parallel construction lanes (0 = unbounded, limited only by the unit dependency graph).
   - **PR strategy** — **Platform default**, **Intent PR**, or **PR per unit**. Existing spaces remain on explicit Intent PR until changed; new spaces inherit the platform default.
+  - **Lane sync** — **Platform default**, **At merge-back only**, or **Before each stage**. With **Before each stage**, the engine merges the intent branch into a unit lane before each fresh stage, so the lane sees work that reached the intent branch after it started. See [Execution → Engine-owned git](../concepts/execution.md).
 
 ### Members
 
@@ -120,7 +121,7 @@ for publication, selection, and snapshot behavior.
 ## Settings snapshots
 
 Runtime-relevant settings (CLI, models, environment revision, park release,
-max parallel units, and PR strategy) are **snapshotted onto each intent when it
+max parallel units, PR strategy, and lane sync) are **snapshotted onto each intent when it
 is created**. Changing a setting affects the next intent, never a run already
 in flight.
 

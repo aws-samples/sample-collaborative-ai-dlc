@@ -93,6 +93,8 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
+import { laneSyncEvent, syncLaneWithIntent as defaultSyncLaneWithIntent } from '../lane-sync.js';
+import { normalizePlatformLaneSyncPolicy } from '../../shared/lane-sync-policy.js';
 import {
   consumeCommitDescription,
   createEngineCommitMessages,
@@ -1793,6 +1795,9 @@ const runStageAttempt = async (
     // Both snapshotted onto the intent and forwarded by the orchestrator.
     mcpServersByTier = null,
     customRules = [],
+    // Lane sync policy (shared/lane-sync-policy.js), snapshotted on the intent
+    // META and forwarded by the orchestrator. Absent = none.
+    laneSyncPolicy = null,
     attachments = [],
     workspaceDir,
     // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
@@ -1881,6 +1886,9 @@ const runStageAttempt = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Merge the intent branch into a unit lane before a stage (lane-sync.js).
+    // Injected for tests.
+    syncLaneWithIntent = defaultSyncLaneWithIntent,
     // Project committed files into Neptune after all stage gates pass. The
     // adapter detects traceability capability from a valid produced artifact,
     // never from workflowVersion, and is deliberately best-effort.
@@ -2333,6 +2341,58 @@ const runStageAttempt = async (
         action: 'agent.workspace',
         payload: { state: 'RESTORED', repos: heal.repos },
       });
+    }
+  }
+
+  // 2b. Lane sync (laneSyncPolicy 'before-stage'): merge the intent branch's
+  // latest head into the unit branch before a fresh stage, so the lane sees
+  // units merged since it was cut and changes merged into the intent branch
+  // directly. A resumed conversation keeps the tree it saw when it parked.
+  if (
+    normalizePlatformLaneSyncPolicy(laneSyncPolicy) === 'before-stage' &&
+    unitSlug &&
+    !resumeFrom &&
+    repos.length > 0 &&
+    branch &&
+    baseBranch &&
+    branch !== baseBranch
+  ) {
+    const sync = await syncLaneWithIntent(
+      {
+        projectId,
+        executionId,
+        unitSlug,
+        repos,
+        unitBranch: branch,
+        intentBranch: baseBranch,
+        gitProvider,
+        repoProviders,
+        gitAuthor,
+        workspaceDir,
+      },
+      { store, env },
+    ).catch((error) => ({
+      synced: false,
+      results: [{ repo: '*', outcome: 'failed', reason: error?.message ?? String(error) }],
+    }));
+    const event = laneSyncEvent({ unitSlug, intentBranch: baseBranch, results: sync.results });
+    if (event) {
+      logger.info('lane sync', {
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        type: event.type,
+        results: sync.results.map(({ repo, outcome, reason }) => ({ repo, outcome, reason })),
+      });
+      // Best-effort like the sync itself: a lost timeline row never blocks the stage.
+      await emitLifecycleEvent({
+        ...event,
+        stageInstanceId,
+        action: 'agent.workspace',
+        payload: { state: event.type === 'v2.lane.synced' ? 'SYNCED' : 'SYNC_SKIPPED' },
+      }).catch((error) =>
+        logger.warn('lane sync event failed', { executionId, unitSlug, error: error?.message }),
+      );
     }
   }
 

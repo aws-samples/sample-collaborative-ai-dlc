@@ -1106,6 +1106,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       meta.mcpServersByTier ??
       (meta.customMcpServers ? { global: {}, project: meta.customMcpServers } : null);
     const customRules = meta.customRules ?? null;
+    // Lane sync policy (shared/lane-sync-policy.js), snapshotted onto META at
+    // create; run-stage applies it to unit lanes. null = none.
+    const laneSyncPolicy = meta.laneSyncPolicy ?? null;
     const attachments = Array.isArray(meta.attachments) ? meta.attachments : [];
     // Derive-time graph enrichment mode ('off'|'llm'), snapshotted onto META at
     // create from the Admin SSM setting; forwarded in the derive-artifacts
@@ -1194,6 +1197,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         requestedCli,
         mcpServersByTier,
         customRules,
+        laneSyncPolicy,
         attachments,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
@@ -3259,6 +3263,7 @@ const runStage = async (
     requestedCli,
     mcpServersByTier,
     customRules,
+    laneSyncPolicy = null,
     attachments,
     sessionId,
     cloneInputs,
@@ -3410,6 +3415,7 @@ const runStage = async (
           ...(requestedCli ? { requestedCli } : {}),
           ...(mcpServersByTier ? { mcpServersByTier } : {}),
           ...(customRules ? { customRules } : {}),
+          ...(laneSyncPolicy && laneSyncPolicy !== 'none' ? { laneSyncPolicy } : {}),
           ...(attachments ? { attachments } : {}),
           // Repository and branch references for source self-heal. AgentCore
           // resolves a short-lived credential directly from the broker.
