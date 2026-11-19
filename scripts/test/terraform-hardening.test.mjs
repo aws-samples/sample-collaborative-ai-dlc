@@ -248,19 +248,19 @@ test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
   }
   assert.match(waf, /resource "aws_wafv2_ip_set" "cloudfront_allowlist"/);
 
-  const root = read('terraform/main.tf');
+  const rootMain = read('terraform/main.tf');
   assert.match(
-    moduleBlock(root, 'waf'),
+    moduleBlock(rootMain, 'waf'),
     /source\s+= "\.\/modules\/security\/waf"[\s\S]*?aws\.us_east_1 = aws\.us_east_1[\s\S]*?enabled\s+= var\.enable_waf/,
   );
-  assert.match(moduleBlock(root, 'auth'), /waf_enabled\s+= var\.enable_waf/);
-  assert.match(moduleBlock(root, 'api'), /waf_enabled\s+= var\.enable_waf/);
+  assert.match(moduleBlock(rootMain, 'auth'), /waf_enabled\s+= var\.enable_waf/);
+  assert.match(moduleBlock(rootMain, 'api'), /waf_enabled\s+= var\.enable_waf/);
   assert.match(
-    moduleBlock(root, 'waf'),
+    moduleBlock(rootMain, 'waf'),
     /cloudfront_origin_secret\s+= module\.frontend\.cloudfront_origin_secret/,
   );
-  assert.match(moduleBlock(root, 'api'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
-  assert.match(moduleBlock(root, 'auth'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
+  assert.match(moduleBlock(rootMain, 'api'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
+  assert.match(moduleBlock(rootMain, 'auth'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
   assert.equal(
     [...waf.matchAll(/^resource "aws_wafv2_web_acl" "/gm)].length,
     2,
@@ -291,6 +291,18 @@ test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
 
   const example = read('terraform/environments/dev.tfvars.example');
   assert.match(example, /^enable_waf\s+= false$/m);
+});
+
+test('the frontend distribution sends security headers with the application shell', () => {
+  const frontend = read('terraform/modules/frontend/main.tf');
+  assert.match(
+    frontend,
+    /data "aws_cloudfront_response_headers_policy" "security_headers" \{\s*name = "Managed-SecurityHeadersPolicy"\s*\}/,
+  );
+  assert.match(
+    frontend,
+    /default_cache_behavior \{[\s\S]*?response_headers_policy_id = data\.aws_cloudfront_response_headers_policy\.security_headers\.id[\s\S]*?function_association \{/,
+  );
 });
 
 test('DynamoDB CMK access covers deployment and every runtime caller', () => {

@@ -3,6 +3,12 @@
 # =============================================================================
 data "aws_partition" "current" {}
 
+# AWS-managed policy: HSTS, X-Content-Type-Options, X-Frame-Options
+# (SAMEORIGIN), Referrer-Policy and X-XSS-Protection on every response.
+data "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "Managed-SecurityHeadersPolicy"
+}
+
 locals {
   dns_suffix = data.aws_partition.current.dns_suffix
 }
@@ -180,6 +186,10 @@ resource "aws_cloudfront_distribution" "frontend" {
     target_origin_id       = "S3-${aws_s3_bucket.frontend.bucket}"
     compress               = true
     viewer_protocol_policy = "redirect-to-https"
+
+    # The application shell must not be framed by another site, and the
+    # browser must keep using HTTPS for this host.
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
 
     # SPA URI rewrite — only applied to the S3 origin so API Gateway errors
     # (e.g. 403 on expired Cognito token) are not rewritten to HTML.
