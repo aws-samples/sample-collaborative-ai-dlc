@@ -162,12 +162,19 @@ resource "aws_api_gateway_resource" "membership_history" {
   path_part   = "membership-history"
 }
 
+resource "aws_api_gateway_resource" "stage_responsibilities" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "stage-responsibilities"
+}
+
 locals {
   business_role_routes = {
-    catalog    = { resource = aws_api_gateway_resource.business_roles.id, method = "GET" }
-    update     = { resource = aws_api_gateway_resource.member_business_roles.id, method = "PUT" }
-    exclusions = { resource = aws_api_gateway_resource.member_excluded_roles.id, method = "PUT" }
-    history    = { resource = aws_api_gateway_resource.membership_history.id, method = "GET" }
+    responsibilities = { resource = aws_api_gateway_resource.stage_responsibilities.id, method = "GET" }
+    catalog          = { resource = aws_api_gateway_resource.business_roles.id, method = "GET" }
+    update           = { resource = aws_api_gateway_resource.member_business_roles.id, method = "PUT" }
+    exclusions       = { resource = aws_api_gateway_resource.member_excluded_roles.id, method = "PUT" }
+    history          = { resource = aws_api_gateway_resource.membership_history.id, method = "GET" }
   }
 }
 

@@ -192,6 +192,16 @@ resource "aws_iam_role_policy" "users" {
       local.neptune_statement,
       {
         Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*", var.v2_executions_table_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${var.artifacts_bucket_arn}/aidlc-releases/*", "${var.artifacts_bucket_arn}/aidlc-catalogs/*"]
+      },
+      {
+        Effect   = "Allow"
         Action   = ["dynamodb:Query", "dynamodb:UpdateItem"]
         Resource = [var.source_control_bindings_table_arn]
       },
@@ -1672,6 +1682,9 @@ locals {
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                  = var.blocks_table_name
+    V2_EXECUTIONS_TABLE           = var.v2_executions_table_name
+    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
     ACCESS_TABLE                  = var.access_table_name
     AUDIT_TABLE                   = var.audit_table_name
     NEPTUNE_ENDPOINT              = var.neptune_endpoint
