@@ -811,6 +811,23 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
+// Every branch whose name starts with `prefix`.
+const listBranchesWithPrefix = async (ctx, repoId, prefix) =>
+  (await listBranches(ctx, repoId)).filter((name) => name.startsWith(prefix));
+
+// Delete a branch. Returns false when it no longer exists.
+const deleteBranch = async (ctx, repoId, branch) => {
+  const { repositoryName } = parseRepo(repoId);
+  const res = await callOr(
+    clientFor(ctx, repoId),
+    new DeleteBranchCommand({ repositoryName, branchName: shortRef(branch) }),
+    'DeleteBranch',
+    404,
+    null,
+  );
+  return Boolean(res?.deletedBranch);
+};
+
 // ---------------------------------------------------------------------------
 // PR creation
 // ---------------------------------------------------------------------------
@@ -1322,6 +1339,8 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,
@@ -1364,6 +1383,8 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,

@@ -113,6 +113,11 @@ import {
 import { runQuorumEdit } from './quorum-edit.js';
 import { openIntentPrs } from '../shared/intent-pr.js';
 import { publishFinalDelivery } from '../shared/final-delivery.js';
+import {
+  cleanupSummary,
+  deleteUnusedIntentBranches,
+  deleteUnusedIntentBranchesEnabled,
+} from '../shared/intent-branch-cleanup.js';
 import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import {
   bindGateCallback,
@@ -327,6 +332,10 @@ const defaultDeps = () => ({
       }).loadPlan,
     }),
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
+  deleteUnusedBranches: deleteUnusedIntentBranchesEnabled()
+    ? (meta) =>
+        deleteUnusedIntentBranches({ meta, operation: defaultSourceControlOperation, logger })
+    : null,
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   issueGatewayGrant: gatewayGrantIssuer,
@@ -487,6 +496,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     unitPrProvider,
     applicationUrl,
     prTitleTrackerKey = false,
+    deleteUnusedBranches = null,
   } = deps;
   const { intentId, executionId } = event;
   logger.resetKeys();
@@ -566,6 +576,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // marker and retain their operation sequence; repair creates a new history.
     // laneWaitPolicyVersion 1: lanes read their integration turn in durable
     // steps (section.js waitForIntegrationTurn).
+    // unusedBranchCleanup: the run ends with a branch-cleanup step; pinned
+    // here so a later setting change never alters this history's steps.
     return loaded
       ? {
           ...loaded,
@@ -573,6 +585,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           laneWaitPolicyVersion: 1,
           autonomousLoopBackVersion: 1,
           deliveryPolicyVersion: 1,
+          ...(typeof deleteUnusedBranches === 'function' ? { unusedBranchCleanup: true } : {}),
         }
       : null;
   });
@@ -738,6 +751,49 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return result;
   };
 
+  // Opt-in end-of-run cleanup of the intent's branches in repositories it never
+  // changed (lambda/shared/intent-branch-cleanup.js). Only histories that
+  // pinned `unusedBranchCleanup` in load-meta take this step. Best-effort: it
+  // never changes the run's outcome, and it does nothing once a relaunch owns
+  // the execution, whose init-ws may already have checked the branch exists.
+  const cleanUpUnusedBranches = async (stepName) => {
+    if (!meta.unusedBranchCleanup || typeof deleteUnusedBranches !== 'function') return;
+    await ctx.step(stepName, async () => {
+      try {
+        const current = await store.getExecution(executionId, { consistentRead: true });
+        if (
+          !current ||
+          current.orchestratorRunId !== runId ||
+          !['SUCCEEDED', 'FAILED'].includes(current.status)
+        )
+          return { skipped: true };
+        const results = await deleteUnusedBranches({ ...current, executionId });
+        const summary = cleanupSummary(results);
+        if (summary) {
+          try {
+            await store.appendEvent?.({
+              executionId,
+              type: 'v2.branches.cleaned',
+              actor: 'orchestrator',
+              summary,
+            });
+            await broadcast?.(intentId, {
+              intentId,
+              projectId,
+              ...livePayloadFor('v2.branches.cleaned', summary),
+            });
+          } catch {
+            /* the timeline note is best-effort */
+          }
+        }
+        return { repositories: results.length };
+      } catch (error) {
+        logger.error('unused intent branch cleanup failed', error);
+        return { failed: true };
+      }
+    });
+  };
+
   const fail = async (reason, detail, structuredFailure = null) => {
     const message = detail ? `${reason}: ${detail}` : reason;
     const failure = {
@@ -770,6 +826,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return { ok: false, reason: 'retired', supersededBy: 'relaunch' };
     }
     await emitEvent(ctx, `fail-event-${reason}`, 'v2.execution.failed', message);
+    await cleanUpUnusedBranches(`branch-cleanup-${reason}`);
     return { ok: false, reason, detail };
   };
 
@@ -2878,6 +2935,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           'v2.execution.failed',
           completion.message,
         );
+        await cleanUpUnusedBranches('branch-cleanup-completion');
         return {
           ok: false,
           reason:
@@ -3049,6 +3107,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         );
       }
     }
+    await cleanUpUnusedBranches('branch-cleanup-succeeded');
     return { ok: true, intentId, stages: runStages.length };
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record

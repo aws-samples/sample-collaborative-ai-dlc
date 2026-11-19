@@ -47,6 +47,11 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
+import {
+  cleanupSummary,
+  deleteUnusedIntentBranches,
+  deleteUnusedIntentBranchesEnabled,
+} from '../shared/intent-branch-cleanup.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -3617,7 +3622,31 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
       summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
     })
     .catch((err) => logger.error('Cancel event append failed', err));
+  await cleanUpUnusedIntentBranches({ ...meta, ...updated, executionId: intentId });
   return response(200, mapIntent(updated));
+};
+// Opt-in (DELETE_UNUSED_INTENT_BRANCHES): a cancelled or repaired-to-FAILED run
+// deletes its branches from repositories it never changed. The orchestrator
+// does the same for runs it ends itself. Never throws.
+const cleanUpUnusedIntentBranches = async (meta) => {
+  if (!deleteUnusedIntentBranchesEnabled() || !meta?.executionId) return;
+  try {
+    const results = await deleteUnusedIntentBranches({
+      meta,
+      operation: sourceControlOperation,
+      logger,
+    });
+    const summary = cleanupSummary(results);
+    if (summary)
+      await store.appendEvent({
+        executionId: meta.executionId,
+        type: 'v2.branches.cleaned',
+        actor: 'system',
+        summary,
+      });
+  } catch (err) {
+    logger.error('Unused intent branch cleanup failed', err);
+  }
 };
 
 // ── Composer (Adaptive Workflows) ────────────────────────────────────────
@@ -7697,6 +7726,7 @@ const repairExpiredDurableExecution = async ({
       summary,
     })
     .catch((err) => logger.error('Durable expiry event append failed', err));
+  await cleanUpUnusedIntentBranches({ ...meta, ...updated, executionId });
   return updated;
 };
 

@@ -14238,3 +14238,105 @@ describe('gateway execution grant retirement — intents writers', () => {
     });
   });
 });
+describe('unused intent branch cleanup (opt-in)', () => {
+  const cancel = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/cancel`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+  const cleanupRequests = () => {
+    const requests = [];
+    sourceControlOperationHandler = (request) => {
+      if (request.operation !== 'delete-unused-branches') return null;
+      requests.push(request);
+      return { deleted: [request.args.branch], kept: [] };
+    };
+    return requests;
+  };
+  const cleanedEvents = (intentId) =>
+    [...procStore.values()].filter(
+      (row) =>
+        row.pk === `EXEC#${intentId}` &&
+        row.type === 'Event' &&
+        row.eventType === 'v2.branches.cleaned',
+    );
+  const waitingIntent = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-1',
+      branch: 'aidlc/feature',
+      repos: ['owner/repo'],
+      baseBranch: 'main',
+      gitProvider: 'github',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    return { sub, projectId, intent, metaKey };
+  };
+  const enable = () => {
+    process.env.DELETE_UNUSED_INTENT_BRANCHES = 'true';
+  };
+  afterEach(() => {
+    delete process.env.DELETE_UNUSED_INTENT_BRANCHES;
+  });
+
+  it('deletes nothing on cancel unless the deployment enables it', async () => {
+    const requests = cleanupRequests();
+    const { sub, projectId, intent } = await waitingIntent();
+    expect((await cancel(sub, projectId, intent.id)).statusCode).toBe(200);
+    expect(requests).toEqual([]);
+  });
+
+  it('asks the source-control service to clean each repository after a cancel', async () => {
+    enable();
+    const requests = cleanupRequests();
+    const { sub, projectId, intent } = await waitingIntent();
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('CANCELLED');
+    expect(requests).toEqual([
+      expect.objectContaining({
+        action: 'operate',
+        projectId,
+        provider: 'github',
+        repo: 'owner/repo',
+        operation: 'delete-unused-branches',
+        args: { branch: 'aidlc/feature', baseBranch: 'main' },
+      }),
+    ]);
+    expect(cleanedEvents(intent.id)).toHaveLength(1);
+  });
+
+  it('still cancels when the cleanup fails', async () => {
+    enable();
+    sourceControlOperationHandler = () => {
+      throw new Error('provider down');
+    };
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(procStore.get(metaKey).status).toBe('CANCELLED');
+    expect(cleanedEvents(intent.id)).toHaveLength(0);
+  });
+
+  it('cleans up when an expired durable run is repaired to FAILED', async () => {
+    enable();
+    const requests = cleanupRequests();
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    const expired = new Error('callback timed out');
+    expired.name = 'CallbackTimeoutException';
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).rejectsOnce(expired);
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(res.statusCode).toBe(409);
+    expect(procStore.get(metaKey).status).toBe('FAILED');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].args).toEqual({ branch: 'aidlc/feature', baseBranch: 'main' });
+  });
+});

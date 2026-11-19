@@ -3368,6 +3368,7 @@ module "intents_lambda" {
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
+    DELETE_UNUSED_INTENT_BRANCHES     = tostring(var.delete_unused_intent_branches)
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
     }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
     var.enable_mcp_gateway ? {
@@ -3704,6 +3705,7 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
+    DELETE_UNUSED_INTENT_BRANCHES        = tostring(var.delete_unused_intent_branches)
     },
     var.enable_mcp_gateway ? {
       GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn

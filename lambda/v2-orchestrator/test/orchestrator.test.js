@@ -1710,6 +1710,93 @@ describe('retired-run ownership', () => {
   });
 });
 
+describe('unused intent branch cleanup (opt-in)', () => {
+  // META as the store holds it: the claim's token and terminal status land
+  // here, so the cleanup step's consistent re-read sees this run's outcome.
+  const trackMeta = () => {
+    const state = { ...META };
+    deps.store.getExecution = vi.fn(async () => ({ ...state }));
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.orchestratorRunId) state.orchestratorRunId = input.orchestratorRunId;
+      if (input.status) state.status = input.status;
+      return { orchestratorRunId: state.orchestratorRunId };
+    });
+    return state;
+  };
+  const stepNames = () => {
+    const names = [];
+    const step = ctx.step;
+    ctx.step = (name, fn, options) => {
+      names.push(name);
+      return step(name, fn, options);
+    };
+    return names;
+  };
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+  it('takes no cleanup step unless the deployment enables it', async () => {
+    trackMeta();
+    const names = stepNames();
+    expect((await start()).ok).toBe(true);
+    expect(names.filter((n) => n.startsWith('branch-cleanup'))).toEqual([]);
+  });
+  it('cleans up after a successful run and notes it on the timeline', async () => {
+    const state = trackMeta();
+    deps.deleteUnusedBranches = vi.fn(async () => [
+      { repoId: 'owner/repo', deleted: ['aidlc/i1'], kept: [] },
+    ]);
+    const names = stepNames();
+    expect((await start()).ok).toBe(true);
+    expect(names.at(-1)).toBe('branch-cleanup-succeeded');
+    expect(deps.deleteUnusedBranches).toHaveBeenCalledOnce();
+    expect(deps.deleteUnusedBranches.mock.calls[0][0]).toMatchObject({
+      executionId: 'i1',
+      branch: 'aidlc/i1',
+      repos: ['owner/repo'],
+      status: 'SUCCEEDED',
+      orchestratorRunId: state.orchestratorRunId,
+    });
+    expect(deps.store.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'v2.branches.cleaned',
+        summary: 'Deleted the unused intent branch from 1 unchanged repository: owner/repo',
+      }),
+    );
+  });
+  it('cleans up after a failed run', async () => {
+    trackMeta();
+    deps.deleteUnusedBranches = vi.fn(async () => []);
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = withInitWs(ctx, async () => {
+      throw new Error('AgentCore 500');
+    });
+    const names = stepNames();
+    expect((await start()).reason).toBe('orchestrator_error');
+    expect(names.at(-1)).toBe('branch-cleanup-orchestrator_error');
+    expect(deps.deleteUnusedBranches).toHaveBeenCalledOnce();
+    expect(deps.deleteUnusedBranches.mock.calls[0][0].status).toBe('FAILED');
+  });
+  it('leaves the branches to a relaunch that took ownership', async () => {
+    const state = trackMeta();
+    deps.deleteUnusedBranches = vi.fn(async () => []);
+    const update = deps.store.updateExecution;
+    deps.store.updateExecution = vi.fn(async (input) => {
+      const out = await update(input);
+      if (input.status === 'SUCCEEDED') state.orchestratorRunId = 'run-relaunch';
+      return out;
+    });
+    expect((await start()).ok).toBe(true);
+    expect(deps.deleteUnusedBranches).not.toHaveBeenCalled();
+  });
+  it('never fails the run when the cleanup fails', async () => {
+    trackMeta();
+    deps.deleteUnusedBranches = vi.fn(async () => {
+      throw new Error('provider down');
+    });
+    expect(await start()).toEqual({ ok: true, intentId: 'i1', stages: 2 });
+    expect(deps.deleteUnusedBranches).toHaveBeenCalledOnce();
+  });
+});
 // ── WP3: unit DAG promotion (docs/v2-parallel.md) ──
 
 describe('unit DAG promotion after the producing stage succeeds', () => {

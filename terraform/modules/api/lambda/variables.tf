@@ -44,6 +44,12 @@ variable "pr_title_tracker_key" {
   default     = false
 }
 
+variable "delete_unused_intent_branches" {
+  description = "Delete an ended intent's branches from repositories it never changed"
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string
