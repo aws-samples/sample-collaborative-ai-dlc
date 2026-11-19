@@ -915,6 +915,72 @@ Make sure the bootstrap script completed successfully and that `terraform/enviro
 
 Check CloudWatch Logs for the Yjs collaboration server's ECS service. Common issues: missing IAM permissions, ECR image not found, resource limits exceeded.
 
+**CloudFront VPC Origin fails with `Block Public Access enabled`**
+
+```
+Error: waiting for CloudFront VPC Origin (vo_…) create
+unexpected state 'Failed : You can't update an endpoint group that has
+endpoints in a subnet with Block Public Access enabled. …'
+```
+
+The account enables [VPC Block Public Access](https://docs.aws.amazon.com/vpc/latest/userguide/security-vpc-bpa.html), and CloudFront VPC origins cannot reach the internal Yjs ALB in subnets it covers. Check the account mode with `aws ec2 describe-vpc-block-public-access-options`. If `ExclusionsAllowed` is `allowed`:
+
+1. Set the following in your environment's `.tfvars`:
+
+   ```hcl
+   vpc_block_public_access_exclusion = true
+   ```
+
+2. Delete the failed VPC Origin, as described in the next entry. The failed create left it tainted, and until it is gone every re-run fails with `EntityAlreadyExists`.
+3. Re-run the deployment.
+
+This works in both Block Public Access modes (`block-ingress` and `block-bidirectional`) and creates two kinds of exclusion:
+
+- **Bidirectional** for the two private subnets. They route through the NAT gateway, never an internet gateway, and the ALB security group still admits only the CloudFront origin-facing prefix list, so this opens no new path from the internet.
+- **Egress-only** for the public subnets that hold the NAT gateways. In `block-bidirectional` mode Block Public Access also blocks NAT gateways, which the private subnets need to pull images and reach AWS APIs. Inbound internet traffic to those subnets stays blocked, and in `block-ingress` mode this exclusion has no effect.
+
+If an organization policy disallows exclusions, ask its administrator for these exclusions.
+
+**Re-running after a failed VPC Origin fails with `EntityAlreadyExists`**
+
+```
+Error: creating CloudFront VPC Origin
+… EntityAlreadyExists: Another vpc origin with the same name already exists within the aws account.
+```
+
+A failed VPC Origin create leaves the resource tainted. Terraform then creates its replacement before deleting the failed one, and VPC Origin names are unique per account, so the replacement collides. Delete the failed origin only when no CloudFront distribution uses it. On a first deployment none does yet.
+
+Run the commands from the repository root with the same AWS credentials (profile and region) as the failed deployment. Set `ENVIRONMENT` to the environment that failed, and keep any `AIDLC_CONFIG_DIR` or `AIDLC_BACKEND_FILE` override it used, so Terraform reads that environment's state:
+
+```bash
+ENVIRONMENT=dev
+BACKEND_FILE="${AIDLC_BACKEND_FILE:-${AIDLC_CONFIG_DIR:-$PWD/terraform}/environments/${ENVIRONMENT}.s3.tfbackend}"
+if ! terraform -chdir=terraform init -reconfigure -backend-config="$BACKEND_FILE"; then
+  echo "terraform init failed for ${ENVIRONMENT}; not looking up or deleting anything." >&2
+else
+  VPC_ORIGIN_ID=$(terraform -chdir=terraform state show -no-color 'module.frontend.aws_cloudfront_vpc_origin.yjs_alb[0]' | awk '$1 == "id" { gsub(/"/, "", $3); print $3 }')
+  if [ -z "$VPC_ORIGIN_ID" ]; then
+    echo "No VPC origin in the ${ENVIRONMENT} state; nothing to delete." >&2
+  elif ! USED_BY=$(aws cloudfront list-distributions --output text \
+      --query "(DistributionList.Items || \`[]\`)[?Origins.Items[?VpcOriginConfig.VpcOriginId=='${VPC_ORIGIN_ID}']].Id | join(' ', @)"); then
+    echo "Could not list CloudFront distributions; not deleting ${VPC_ORIGIN_ID}." >&2
+  elif [ -n "$USED_BY" ]; then
+    echo "VPC origin ${VPC_ORIGIN_ID} is still used by distribution ${USED_BY}; not deleting it." >&2
+  else
+    ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text) &&
+      aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
+  fi
+fi
+```
+
+If the commands report a distribution, the origin is in use and deleting it would break that distribution, so leave it in place. Otherwise, wait until `aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID"` returns `EntityNotFound` (several minutes), then re-run the deployment for the same environment, with the same options (`--var`, `--auth-mode`, `--sso-config`) and overrides as the failed run:
+
+```bash
+./scripts/deploy-terraform.sh "$ENVIRONMENT"
+```
+
+Terraform notices the origin is gone, drops it from state, and creates a fresh one. A permanent fix is tracked in [#648](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/648).
+
 **Frontend shows authentication errors**
 
 Verify User Pool ID and App Client ID match Terraform outputs, and that the user exists in the correct group.
