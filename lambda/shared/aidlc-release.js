@@ -33,7 +33,6 @@ import { mapWithConcurrency } from './concurrency.js';
 import {
   bodyToString,
   bodyToStringWithin,
-  buildMethodologyCatalog,
   isNotFound,
   isPreconditionFailed,
 } from './methodology-catalog.js';
@@ -41,6 +40,7 @@ import { canonicalJson } from './workflow-checkpoint.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   FIRST_FINGERPRINTED_IMPORTER_REVISION,
+  buildReleaseCatalog,
   currentMapperFingerprint,
   pinnedMapperFingerprint,
 } from './aidlc-release-importer.js';
@@ -332,7 +332,7 @@ const buildReleaseBundle = ({
 
   const normalizedFiles = normalizeReleaseFiles({ profile, files });
   const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(normalizedFiles);
-  const catalog = buildMethodologyCatalog({ ref: sourceSha, blocks, workflow, sensorScripts });
+  const catalog = buildReleaseCatalog({ ref: sourceSha, blocks, workflow, sensorScripts });
 
   const entries = [];
   for (const block of blocks.toSorted(

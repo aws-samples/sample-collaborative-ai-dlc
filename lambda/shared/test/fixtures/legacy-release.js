@@ -29,15 +29,39 @@ const LATER_MAPPER_FIELDS = Object.freeze({
 const withoutFields = (block, fields) =>
   Object.fromEntries(Object.entries(block).filter(([key]) => !fields.includes(key)));
 
-const legacyCatalog = (catalog) => ({
-  ...catalog,
-  blocks: Object.fromEntries(
-    Object.entries(catalog.blocks).map(([type, blocks]) => [
-      type,
-      blocks.map((block) => withoutFields(block, LATER_MAPPER_FIELDS[type] ?? [])),
-    ]),
-  ),
-});
+// Revision 5 adds the platform default stage responsibilities on top of the
+// mapped methodology; every earlier revision's catalog lacks them.
+const withoutStageResponsibilities = (catalog) => {
+  const { cedarPolicies: _policies, ...workflow } = catalog.workflow;
+  return {
+    ...catalog,
+    workflow: {
+      ...workflow,
+      placements: (workflow.placements ?? []).map((placement) =>
+        withoutFields(placement, ['permissions']),
+      ),
+    },
+    blocks: {
+      ...catalog.blocks,
+      ...(catalog.blocks.STAGE
+        ? { STAGE: catalog.blocks.STAGE.map((stage) => withoutFields(stage, ['permissions'])) }
+        : {}),
+    },
+  };
+};
+
+const legacyCatalog = (catalog) => {
+  const mapped = withoutStageResponsibilities(catalog);
+  return {
+    ...mapped,
+    blocks: Object.fromEntries(
+      Object.entries(mapped.blocks).map(([type, blocks]) => [
+        type,
+        blocks.map((block) => withoutFields(block, LATER_MAPPER_FIELDS[type] ?? [])),
+      ]),
+    ),
+  };
+};
 
 const legacyReleaseBundle = (bundle) => {
   const catalog = legacyCatalog(bundle.catalog);
@@ -61,4 +85,4 @@ const legacyReleaseBundle = (bundle) => {
 const countAuthored = (catalog, type, field) =>
   (catalog.blocks?.[type] ?? []).filter((block) => block[field] != null).length;
 
-export { LATER_MAPPER_FIELDS, countAuthored, legacyReleaseBundle };
+export { LATER_MAPPER_FIELDS, countAuthored, legacyReleaseBundle, withoutStageResponsibilities };

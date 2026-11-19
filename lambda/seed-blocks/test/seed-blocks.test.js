@@ -1145,7 +1145,7 @@ describe('seed-blocks importRelease at the current importer revision', () => {
   });
 
   it('publishes at the asserted current revision with the mapper fingerprint recorded', async () => {
-    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(5);
+    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(6);
     const result = await handler({
       importRelease: true,
       profile: RELEASE_PROFILE,
