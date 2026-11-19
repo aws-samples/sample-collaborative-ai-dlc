@@ -1,9 +1,11 @@
 import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mockClient } from 'aws-sdk-client-mock';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   PutCommand,
+  QueryCommand,
   ScanCommand,
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -20,6 +22,12 @@ import {
 import { fetchCoreFiles, fetchRepoFiles } from '../../shared/repo-fetch.js';
 import { MAX_DISTRIBUTION_BYTES } from '../../shared/distribution-archive.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
+import { loadWorkflowComposition } from '../../shared/v2-workflow-plan.js';
+import {
+  DEFAULT_STAGE_PERMISSIONS,
+  previewStageResponsibilities,
+  validateStagePolicies,
+} from '../../shared/stage-responsibilities.js';
 
 const { registerReleaseMock, getReleaseMock, upgradeReleaseClosureMock } = vi.hoisted(() => ({
   upgradeReleaseClosureMock: vi.fn(),
@@ -118,6 +126,12 @@ const installFakes = () => {
     return { Items: items.map((i) => ({ pk: i.pk, sk: i.sk })) };
   });
 
+  ddbMock.on(QueryCommand).callsFake(({ ExpressionAttributeValues: values }) => ({
+    Items: [...tableStore.values()].filter(
+      (item) => item.pk === values[':pk'] && item.sk.startsWith(values[':v']),
+    ),
+  }));
+
   ddbMock.on(BatchWriteCommand).callsFake((input) => {
     for (const reqs of Object.values(input.RequestItems)) {
       for (const req of reqs) {
@@ -161,6 +175,22 @@ const installFakes = () => {
 const { blocks: FIXTURE_BLOCKS, runtimeFiles: FIXTURE_RUNTIME } = buildFromFiles(CORE_FILES);
 const BLOCK_COUNT = FIXTURE_BLOCKS.length;
 const TOTAL = BLOCK_COUNT + 1; // + the one workflow
+
+const previewSystemWorkflow = async () => {
+  const workflow = await loadWorkflowComposition({
+    ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
+    tableName: BLOCKS_TABLE,
+    workflowId: 'aidlc-v2',
+    workflowVersion: 1,
+  });
+  return previewStageResponsibilities({
+    workflow,
+    members: [
+      { userId: 'po', membershipRole: 'member', effectiveRoles: ['product-owner'] },
+      { userId: 'owner', membershipRole: 'owner', effectiveRoles: [] },
+    ],
+  });
+};
 
 let handler;
 
@@ -327,9 +357,92 @@ describe('seed-blocks handler', () => {
     expect(tableStore.has(`${pk}|SCOPEREF#mvp`)).toBe(true);
     expect(tableStore.has(`${pk}|V#1#SCOPEREF#feature`)).toBe(true);
   });
+
+  it('previews the seeded SYSTEM workflow with saved default responsibilities and no fork', async () => {
+    await handler({});
+    const pk = 'WF#SYSTEM#aidlc-v2';
+    const policy = tableStore.get(`${pk}|META`).cedarPolicies;
+    expect(() => validateStagePolicies(policy)).not.toThrow();
+    expect(tableStore.get(`${pk}|V#1#META`).cedarPolicies).toBe(policy);
+    for (const item of tableStore.values()) {
+      if (item.pk === pk && item.type === 'StagePlacement') {
+        expect(item.permissions).toEqual(DEFAULT_STAGE_PERMISSIONS[item.stageId] ?? null);
+        for (const version of ['V#latest', 'V#1']) {
+          const block = tableStore.get(`BLOCK#SYSTEM#STAGE#${item.stageId}|${version}`);
+          expect(block.permissions).toEqual(item.permissions);
+        }
+      }
+    }
+
+    const preview = await previewSystemWorkflow();
+    expect(preview).toMatchObject({
+      previewOnly: true,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+    });
+    expect(preview.stages.find((stage) => stage.stageId === 'intent-capture')).toMatchObject({
+      reason: 'decision-makers',
+      decisionMakers: [{ userId: 'po' }],
+    });
+    expect(preview.stages.find((stage) => stage.stageId === 'application-design')).toMatchObject({
+      reason: 'owners',
+      decisionMakers: [{ userId: 'owner' }],
+    });
+    expect([...tableStore.keys()].some((key) => key.startsWith('WF#default#'))).toBe(false);
+  });
+
+  it('keeps unknown SYSTEM stages unmapped even when their name matches a default stage', async () => {
+    fetchCoreFiles.mockResolvedValue(
+      new Map(CORE_FILES).set(
+        'core/aidlc-common/stages/ideation/custom-intent.md',
+        '---\nslug: custom-intent\nname: Intent Capture\nphase: ideation\nexecution: ALWAYS\nscopes: [feature]\n---\n# Intent Capture\n',
+      ),
+    );
+    await handler({});
+    const preview = await previewSystemWorkflow();
+    expect(preview.stages.find((stage) => stage.stageId === 'custom-intent')).toMatchObject({
+      permissions: null,
+      reason: 'unmapped',
+      decisionMakers: [],
+      contributors: [],
+    });
+  });
 });
 
 describe('seed-blocks reseed mode', () => {
+  it('adds responsibilities to an installed SYSTEM baseline through the deployment reseed', async () => {
+    await handler({});
+    // Model the data installed before responsibilities were included in the seed.
+    for (const item of tableStore.values()) {
+      if (item.pk === 'WF#SYSTEM#aidlc-v2' || item.blockType === 'STAGE') {
+        delete item.permissions;
+        delete item.cedarPolicies;
+      }
+    }
+    await expect(previewSystemWorkflow()).rejects.toThrow('no saved responsibilities policy');
+    const catalogKey = `aidlc-catalogs/v1/${REF}.json`;
+    const originalCatalog = s3Store.get(catalogKey);
+    const releaseKey = `aidlc-releases/v1/${REF}/i1/catalog.json`;
+    s3Store.set(releaseKey, '{"original":"signed release"}');
+    const fork = { pk: 'WF#default#custom', sk: 'V#1#META', cedarPolicies: 'original policy' };
+    tableStore.set(`${fork.pk}|${fork.sk}`, fork);
+
+    await handler({ reseed: true });
+
+    expect(
+      (await previewSystemWorkflow()).stages.find((s) => s.stageId === 'intent-capture'),
+    ).toMatchObject({ decisionMakers: [{ userId: 'po' }] });
+    for (const version of ['V#latest', 'V#1']) {
+      expect(tableStore.get(`BLOCK#SYSTEM#STAGE#intent-capture|${version}`).permissions).toEqual({
+        decisionMakerRoles: ['product-owner'],
+        contributorRoles: ['business-analyst', 'architect'],
+      });
+    }
+    expect(s3Store.get(catalogKey)).toBe(originalCatalog);
+    expect(s3Store.get(releaseKey)).toBe('{"original":"signed release"}');
+    expect(tableStore.get(`${fork.pk}|${fork.sk}`)).toEqual(fork);
+  });
+
   const seedStale = () => {
     tableStore.set('BLOCK#SYSTEM#STAGE#application-design|V#latest', {
       pk: 'BLOCK#SYSTEM#STAGE#application-design',

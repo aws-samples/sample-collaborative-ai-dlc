@@ -1,3 +1,11 @@
+import {
+  DEFAULT_STAGE_PERMISSIONS,
+  normalizeStagePermissions,
+  generateStagePolicies,
+  assertWorkflowItemSize,
+  validateStagePolicies,
+} from '../shared/stage-responsibilities.js';
+import { BUSINESS_ROLES } from '../shared/business-roles.js';
 // Composition over the block library: a workflow references and arranges
 // library blocks (a grouping tree + skill placements + scope/guardrail refs).
 // Workflows share the blocks table (WF#… partitions); one Query loads the
@@ -49,6 +57,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
+  UpdateCommand,
   DeleteCommand,
   QueryCommand,
   BatchWriteCommand,
@@ -150,8 +159,20 @@ const chunk = (arr, size) => {
 };
 
 const batchWrite = async (requests) => {
+  for (const request of requests) {
+    if (request.PutRequest) assertWorkflowItemSize(request.PutRequest.Item);
+  }
   for (const group of chunk(requests, 25)) {
-    await ddb.send(new BatchWriteCommand({ RequestItems: { [blocksTable()]: group } }));
+    let pending = { [blocksTable()]: group };
+    for (let attempt = 0; Object.keys(pending).length; attempt++) {
+      if (attempt >= 8) throw new Error('Workflow writes remained unprocessed');
+      const result = await ddb.send(new BatchWriteCommand({ RequestItems: pending }));
+      pending = Object.fromEntries(
+        Object.entries(result.UnprocessedItems ?? {}).filter(([, items]) => items.length),
+      );
+      if (Object.keys(pending).length)
+        await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
   }
 };
 
@@ -167,8 +188,16 @@ const queryPartition = async (tenant, workflowId, opts = {}) => {
     params.ExpressionAttributeValues[':sk'] = opts.skBeginsWith;
   }
   if (opts.projection) params.ProjectionExpression = opts.projection;
-  const { Items } = await ddb.send(new QueryCommand(params));
-  return Items || [];
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(
+      new QueryCommand({ ...params, ConsistentRead: true, ExclusiveStartKey }),
+    );
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
 };
 
 const isLiveWorkflowItem = (item) => !isWorkflowVersionSk(item.sk);
@@ -231,12 +260,6 @@ const buildSnapshotItems = async (liveItems, version) => {
   });
 };
 
-const writeWorkflowSnapshot = async (tenant, workflowId, version, liveItems = null) => {
-  const items = liveItems ?? (await queryLivePartition(tenant, workflowId));
-  const snapshots = await buildSnapshotItems(items, version);
-  await batchWrite(snapshots.map((Item) => ({ PutRequest: { Item } })));
-};
-
 const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
   const current = await loadMeta(tenant, workflowId);
   if (!current) return null;
@@ -246,8 +269,18 @@ const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
     version: (current.version ?? 1) + 1,
     updatedAt: new Date().toISOString(),
   };
-  await ddb.send(new PutCommand({ TableName: blocksTable(), Item: meta }));
-  await writeWorkflowSnapshot(tenant, workflowId, meta.version);
+  const children = (await queryLivePartition(tenant, workflowId)).filter(
+    (item) => item.sk !== META,
+  );
+  // Generate only for a NEW version. Reads/restarts always use stored text.
+  meta.cedarPolicies = generateStagePolicies(
+    children.filter((item) => item.type === 'StagePlacement'),
+  );
+  const liveItems = [meta, ...children];
+  const snapshots = await buildSnapshotItems(liveItems, meta.version);
+  // Children were read for the snapshot, not changed by this save. Writing
+  // them back would overwrite a concurrent placement update or deletion.
+  await batchWrite([meta, ...snapshots].map((Item) => ({ PutRequest: { Item } })));
   return meta;
 };
 
@@ -310,9 +343,11 @@ const createWorkflow = async (event, res, tenant) => {
 
   // Fork: copy the source workflow's grouping tree + placements + refs.
   let sourceItems = [];
+  let sourcePolicies = null;
   if (input.basedOn) {
     const src = await resolveWorkflow(tenant, input.basedOn);
     if (!src) return res(400, { error: 'basedOn workflow not found' });
+    sourcePolicies = src.meta.cedarPolicies ?? null;
     sourceItems = (await queryLivePartition(src.owner, input.basedOn)).filter((i) => i.sk !== META);
   }
 
@@ -337,8 +372,32 @@ const createWorkflow = async (event, res, tenant) => {
 
   const liveItems = [meta];
   for (const item of sourceItems) {
-    liveItems.push({ ...item, pk: workflowPk(tenant, id) });
+    liveItems.push({
+      ...item,
+      pk: workflowPk(tenant, id),
+      ...(item.type === 'StagePlacement'
+        ? {
+            // Absent: saved before responsibilities, so the copy gets defaults.
+            // null: explicitly without responsibilities, kept as is.
+            permissions:
+              item.permissions !== undefined
+                ? item.permissions
+                : (DEFAULT_STAGE_PERMISSIONS[item.stageId] ?? null),
+          }
+        : {}),
+    });
   }
+  const mappingsAdded = sourceItems.some(
+    (item) =>
+      item.type === 'StagePlacement' &&
+      item.permissions === undefined &&
+      DEFAULT_STAGE_PERMISSIONS[item.stageId],
+  );
+  meta.cedarPolicies =
+    sourcePolicies && !mappingsAdded
+      ? sourcePolicies
+      : generateStagePolicies(liveItems.filter((item) => item.type === 'StagePlacement'));
+  validateStagePolicies(meta.cedarPolicies);
   const snapshotItems = await buildSnapshotItems(liveItems, meta.version);
   const requests = [...liveItems, ...snapshotItems].map((Item) => ({ PutRequest: { Item } }));
   await batchWrite(requests);
@@ -357,6 +416,40 @@ const updateWorkflow = async (event, res, tenant, workflowId) => {
     if (nameError) return res(400, { error: nameError });
   }
 
+  if (input.applyDefaultPermissions === true) {
+    const items = await queryLivePartition(tenant, workflowId);
+    const placements = items
+      .filter((item) => item.type === 'StagePlacement')
+      .map((item) => ({
+        ...item,
+        permissions:
+          item.permissions !== undefined
+            ? item.permissions
+            : (DEFAULT_STAGE_PERMISSIONS[item.stageId] ?? null),
+      }));
+    generateStagePolicies(placements);
+    for (const placement of placements) {
+      const previous = items.find((item) => item.sk === placement.sk);
+      // An explicit null means "no responsibilities" and is never overwritten.
+      if (previous.permissions !== undefined) continue;
+      assertWorkflowItemSize(placement);
+      try {
+        await ddb.send(
+          new UpdateCommand({
+            TableName: blocksTable(),
+            Key: { pk: placement.pk, sk: placement.sk },
+            UpdateExpression: 'SET #permissions = :permissions',
+            ConditionExpression: 'attribute_exists(pk) AND attribute_not_exists(#permissions)',
+            ExpressionAttributeNames: { '#permissions': 'permissions' },
+            ExpressionAttributeValues: { ':permissions': placement.permissions },
+          }),
+        );
+      } catch (error) {
+        // Deletion or a newly assigned mapping wins over initialization.
+        if (error.name !== 'ConditionalCheckFailedException') throw error;
+      }
+    }
+  }
   const meta = await bumpWorkflowVersion(tenant, workflowId, {
     name: input.name ?? current.name,
     objective: input.objective ?? current.objective,
@@ -477,7 +570,32 @@ const addPlacement = async (event, res, tenant, workflowId) => {
     input.scopeMembership && typeof input.scopeMembership === 'object'
       ? input
       : { ...input, scopeMembership: await baselineScopeMembership(stageId) };
-  const item = buildPlacementItem(tenant, workflowId, stageId, withMembership);
+  // Copy authored defaults once, when placing a stage. Later block edits must
+  // not change existing workflow mappings or policies.
+  let stageTenant = input.stageTenant ?? tenant;
+  const readStage = async () =>
+    (
+      await ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: {
+            pk: blockPk(stageTenant, 'STAGE', stageId),
+            sk: input.pinnedVersion ? versionSk(Number(input.pinnedVersion)) : LATEST,
+          },
+        }),
+      )
+    ).Item;
+  let stage = await readStage();
+  if (!stage && input.stageTenant === undefined && stageTenant !== SYSTEM_TENANT) {
+    stageTenant = SYSTEM_TENANT;
+    stage = await readStage();
+  }
+  const item = buildPlacementItem(tenant, workflowId, stageId, {
+    ...withMembership,
+    stageTenant,
+    permissions: input.permissions === undefined ? stage?.permissions : input.permissions,
+  });
+  assertWorkflowItemSize(item);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
   return res(201, placementToApi(item));
@@ -493,7 +611,17 @@ const updatePlacement = async (event, res, tenant, workflowId, stageId) => {
   const input = parseBody(event);
   if (input === undefined) return res(400, { error: 'Invalid JSON body' });
 
-  const item = buildPlacementItem(tenant, workflowId, stageId, { ...current.Item, ...input });
+  // A placement saved before responsibilities existed keeps no permissions field
+  // until the request maps it or defaults are applied to the whole workflow.
+  const permissions =
+    input.permissions !== undefined ? input.permissions : current.Item.permissions;
+  const item = buildPlacementItem(tenant, workflowId, stageId, {
+    ...current.Item,
+    ...input,
+    permissions: permissions ?? null,
+  });
+  if (permissions === undefined) delete item.permissions;
+  assertWorkflowItemSize(item);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
   return res(200, placementToApi(item));
@@ -533,6 +661,7 @@ const addScopeRef = async (event, res, tenant, workflowId) => {
     scopeId,
     scopeTenant: input.scopeTenant ?? SYSTEM_TENANT,
   };
+  assertWorkflowItemSize(item);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
   return res(201, scopeRefToApi(item));
@@ -668,6 +797,7 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
     layer,
     ruleTenant: input.ruleTenant ?? SYSTEM_TENANT,
   };
+  assertWorkflowItemSize(item);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
   return res(201, ruleRefToApi(item));
@@ -1362,6 +1492,12 @@ const buildPlacementItem = (tenant, workflowId, stageId, input) => ({
   pinnedVersion: input.pinnedVersion ?? null,
   phasePath: input.phasePath ?? null,
   order: typeof input.order === 'number' ? input.order : 0,
+  permissions:
+    input.permissions === undefined
+      ? (DEFAULT_STAGE_PERMISSIONS[stageId] ?? null)
+      : input.permissions === null
+        ? null
+        : normalizeStagePermissions(input.permissions),
   scopeMembership:
     input.scopeMembership && typeof input.scopeMembership === 'object' ? input.scopeMembership : {},
 });
@@ -1371,6 +1507,7 @@ const metaToApi = (item) => ({
   workflowId: item.workflowId,
   name: item.name,
   objective: item.objective ?? '',
+  cedarPolicies: item.cedarPolicies ?? null,
   owner: item.tenantId,
   basedOn: item.basedOn ?? null,
   defaultScope: item.defaultScope ?? null,
@@ -1397,6 +1534,7 @@ const placementToApi = (item) => ({
   phasePath: item.phasePath ?? null,
   order: item.order ?? 0,
   scopeMembership: item.scopeMembership ?? {},
+  permissions: item.permissions ?? null,
 });
 
 const scopeRefToApi = (item) => ({ scopeId: item.scopeId, scopeTenant: item.scopeTenant });
@@ -1433,6 +1571,15 @@ const composeWorkflow = (owner, items) => {
     readOnly: owner === SYSTEM_TENANT,
     phases,
     placements,
+    needsDefaultResponsibilities:
+      !meta?.cedarPolicies ||
+      liveItems.some(
+        (item) =>
+          item.sk.startsWith('PLACEMENT#') &&
+          item.permissions === undefined &&
+          !!DEFAULT_STAGE_PERMISSIONS[item.stageId],
+      ),
+    businessRoles: BUSINESS_ROLES,
     scopeRefs,
     ruleRefs,
   };
@@ -1776,6 +1923,7 @@ const releaseWorkflowToApi = (workflow, releaseId) =>
         workflowId: workflow.workflowId ?? workflow.id,
         name: workflow.name ?? workflow.id ?? workflow.workflowId,
         objective: workflow.objective ?? '',
+        cedarPolicies: workflow.cedarPolicies ?? null,
         workflowVersion: Number(workflow.workflowVersion ?? 1),
         readOnly: true,
         phases: workflow.phases ?? [],
@@ -1784,6 +1932,7 @@ const releaseWorkflowToApi = (workflow, releaseId) =>
           phasePath: placement.phasePath ?? null,
           order: placement.order ?? 0,
           scopeMembership: placement.scopeMembership ?? {},
+          permissions: placement.permissions ?? null,
         })),
         scopeRefs: (workflow.scopeRefs ?? []).map((scopeRef) => ({ scopeId: scopeRef.scopeId })),
         ruleRefs: (workflow.ruleRefs ?? []).map((ruleRef) => ({
@@ -2064,6 +2213,8 @@ export const handler = async (event, context) => {
     // Log name + message (no PII in these handlers) so failures are diagnosable
     // from CloudWatch without a redeploy.
     logger.error('workflows handler error', err);
-    return res(500, { error: 'Internal server error' });
+    return res(err.statusCode === 400 ? 400 : 500, {
+      error: err.statusCode === 400 ? err.message : 'Internal server error',
+    });
   }
 };

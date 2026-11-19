@@ -24,6 +24,22 @@ const normalizeRoleList = (roles, field) => {
 export const normalizeLocalRoles = (roles) => normalizeRoleList(roles, 'localRoles');
 export const normalizeExcludedRoles = (roles) => normalizeRoleList(roles, 'excludedRoles');
 
+// Shared by stage block authoring and workflow placements, without loading
+// the workflow policy evaluator into the block CRUD service.
+export const normalizeStagePermissions = (permissions) => {
+  if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions))
+    throw Object.assign(new Error('permissions must contain business role lists'), {
+      statusCode: 400,
+    });
+  if (permissions.automatic !== undefined && typeof permissions.automatic !== 'boolean')
+    throw Object.assign(new Error('permissions.automatic must be a boolean'), { statusCode: 400 });
+  return {
+    decisionMakerRoles: normalizeRoleList(permissions.decisionMakerRoles, 'decisionMakerRoles'),
+    contributorRoles: normalizeRoleList(permissions.contributorRoles, 'contributorRoles'),
+    ...(permissions.automatic === true ? { automatic: true } : {}),
+  };
+};
+
 /**
  * Validate a business-role mapping saved from the Platform admin UI:
  * known role IDs only, exact non-empty IdP values, duplicates removed.

@@ -404,6 +404,7 @@ const loadUserForkWorkflow = async ({
     const page = await ddb.send(
       new QueryCommand({
         TableName: tableName,
+        ConsistentRead: true,
         KeyConditionExpression: 'pk = :pk AND begins_with(sk, :v)',
         ExpressionAttributeValues: {
           ':pk': workflowPk(tenant, workflowId),
@@ -434,6 +435,7 @@ const assembleForkWorkflow = (items, { workflowId, workflowVersion }) => {
     const sk = liveSk(item.sk);
     if (sk === 'META') {
       workflow.sourceRef = item.sourceRef ?? null;
+      if (item.cedarPolicies != null) workflow.cedarPolicies = item.cedarPolicies;
     } else if (sk.startsWith('PLACEMENT#')) {
       workflow.placements.push({
         stageId: item.stageId,
@@ -442,6 +444,7 @@ const assembleForkWorkflow = (items, { workflowId, workflowVersion }) => {
         order: item.order ?? 0,
         phasePath: item.phasePath ?? null,
         scopeMembership: item.scopeMembership ?? {},
+        ...(item.permissions != null ? { permissions: item.permissions } : {}),
       });
     } else if (sk.startsWith('RULEREF#')) {
       workflow.ruleRefs.push({ layer: item.layer, ruleId: item.ruleId });
