@@ -21,6 +21,37 @@ describe('artifact extractors', () => {
     expect(sections[0].contentHash).toHaveLength(64);
   });
 
+  it('gives headings in any script their own slug', () => {
+    const sections = splitSections('## 개요\nA\n## 要件定義\nB\n## Café menu\nC\n## Обзор\nD');
+    expect(sections.map((s) => s.slug)).toEqual(['개요', '要件定義', 'café-menu', 'обзор']);
+  });
+
+  it('numbers repeated headings after the first and never reuses a slug', () => {
+    const sections = splitSections(
+      [
+        '## Story A',
+        '### Acceptance Criteria',
+        '## Story B',
+        '### Acceptance Criteria',
+        '## Acceptance Criteria 2',
+        '### Acceptance Criteria',
+      ].join('\n'),
+    );
+    expect(sections.map((s) => s.slug)).toEqual([
+      'story-a',
+      'acceptance-criteria',
+      'story-b',
+      'acceptance-criteria-2',
+      'acceptance-criteria-2-2',
+      'acceptance-criteria-3',
+    ]);
+  });
+
+  it('falls back to the section position for a heading with no letters or digits', () => {
+    const sections = splitSections('## Overview\nA\n## ---\nB\n## 🚀\nC');
+    expect(sections.map((s) => s.slug)).toEqual(['overview', 'section-2', 'section-3']);
+  });
+
   it('harvests wikilink artifact citations', () => {
     expect(
       extractCitations(

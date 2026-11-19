@@ -14,6 +14,17 @@ const sha256 = (value = '') =>
     .update(String(value ?? ''))
     .digest('hex');
 
+// A section slug is part of its graph vertex id (`section:<artifact>:<slug>`),
+// so it must be unique within the artifact. It keeps the letters and digits of
+// every script: methodology releases write headings in the conversation
+// language, and an ASCII-only slug collapsed every non-Latin heading into one.
+const sectionSlug = (heading) =>
+  String(heading)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+
 const splitSections = (content = '') => {
   const lines = String(content ?? '').split(/\r?\n/);
   const headings = [];
@@ -22,11 +33,18 @@ const splitSections = (content = '') => {
     if (m) headings.push({ level: m[1].length, heading: m[2].trim(), line: index });
   });
   if (!headings.length) return [];
+  // A repeated heading (e.g. `### Acceptance Criteria` under every story) keeps
+  // its plain slug the first time and is numbered after that, in document order.
+  const used = new Set();
   return headings.map((h, i) => {
     const end = headings[i + 1]?.line ?? lines.length;
     const bodyLines = lines.slice(h.line + 1, end);
+    const base = sectionSlug(h.heading) || `section-${i + 1}`;
+    let slug = base;
+    for (let n = 2; used.has(slug); n += 1) slug = `${base}-${n}`;
+    used.add(slug);
     return {
-      slug: slugify(h.heading),
+      slug,
       heading: h.heading,
       level: h.level,
       order: i,
