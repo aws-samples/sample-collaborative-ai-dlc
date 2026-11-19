@@ -67,7 +67,7 @@ export function PasswordResetForm({ initialUsername, notice, onDone, onCancel }:
   };
 
   const errorBanner = error ? (
-    <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3">
+    <div role="alert" className="rounded-md border border-destructive/20 bg-destructive/10 p-3">
       <p className="text-sm text-destructive">{error}</p>
     </div>
   ) : null;
@@ -100,22 +100,38 @@ export function PasswordResetForm({ initialUsername, notice, onDone, onCancel }:
             'Send verification code'
           )}
         </Button>
-        <Button
-          type="button"
-          variant="link"
-          className="w-full"
-          onClick={onCancel}
-          disabled={submitting}
-        >
-          Back to sign in
-        </Button>
+        <div className="flex justify-between">
+          {/* An operator reset (admin-reset-user-password) already emailed a code. */}
+          <Button
+            type="button"
+            variant="link"
+            className="px-0"
+            onClick={() => {
+              if (!username.trim()) return setError('Enter your email address');
+              setError('');
+              setStep('confirm');
+            }}
+            disabled={submitting}
+          >
+            I already have a code
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            className="px-0"
+            onClick={onCancel}
+            disabled={submitting}
+          >
+            Back to sign in
+          </Button>
+        </div>
       </form>
     );
   }
 
   return (
     <form onSubmit={handleConfirm} className="space-y-4">
-      {/* The user pool masks unknown accounts, so never confirm the account exists. */}
+      {/* The app client masks unknown accounts, so never confirm the account exists. */}
       <p className="text-sm text-muted-foreground">
         If an account exists for {username.trim()}, a verification code has been sent to its email
         address.

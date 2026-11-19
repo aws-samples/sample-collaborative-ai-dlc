@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   setDisplayName: vi.fn(),
   requestPasswordReset: vi.fn(),
   confirmPasswordReset: vi.fn(),
+  needsNewPassword: false,
 }));
 
 vi.mock('@/services/auth', () => ({
@@ -31,7 +32,7 @@ vi.mock('@/contexts/AuthContext', () => ({
     requestPasswordReset: mocks.requestPasswordReset,
     confirmPasswordReset: mocks.confirmPasswordReset,
     isAuthenticated: false,
-    needsNewPassword: false,
+    needsNewPassword: mocks.needsNewPassword,
     needsDisplayName: false,
   }),
 }));
@@ -59,6 +60,7 @@ const renderLogin = (state?: { from: { pathname: string } }) =>
 beforeEach(() => {
   vi.clearAllMocks();
   setMode('local');
+  mocks.needsNewPassword = false;
 });
 
 describe('Login authentication modes', () => {
@@ -211,6 +213,40 @@ describe('Login password reset', () => {
     await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
 
     expect(screen.getByText(/reset your password with your identity provider/)).toBeInTheDocument();
+  });
+
+  it('enters an emailed code without requesting a new one', async () => {
+    mocks.confirmPasswordReset.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
+    await user.type(screen.getByLabelText('Email'), 'user@example.com');
+    await user.click(screen.getByRole('button', { name: 'I already have a code' }));
+    await user.type(screen.getByLabelText('Verification code'), '123456');
+    await user.type(screen.getByLabelText('New password'), 'New-password-1');
+    await user.type(screen.getByLabelText('Confirm new password'), 'New-password-1');
+    await user.click(screen.getByRole('button', { name: 'Reset password' }));
+
+    expect(mocks.requestPasswordReset).not.toHaveBeenCalled();
+    expect(mocks.confirmPasswordReset).toHaveBeenCalledWith(
+      'user@example.com',
+      '123456',
+      'New-password-1',
+    );
+  });
+
+  it('checks the full policy at the first-sign-in new-password prompt', async () => {
+    mocks.needsNewPassword = true;
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.type(screen.getByLabelText('New Password'), 'nouppercase-123');
+    await user.type(screen.getByLabelText('Confirm Password'), 'nouppercase-123');
+    await user.click(screen.getByRole('button', { name: 'Set Password' }));
+
+    expect(screen.getByText(/uppercase/)).toBeInTheDocument();
+    expect(mocks.completeNewPassword).not.toHaveBeenCalled();
   });
 
   it('returns to sign-in without resetting', async () => {

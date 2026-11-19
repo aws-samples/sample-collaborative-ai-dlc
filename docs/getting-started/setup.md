@@ -463,16 +463,16 @@ UI or with downstream Cognito group membership. See
 
 ### Local user passwords
 
-Users who sign in with a local Cognito account (`auth_mode` `local` or `hybrid`) manage their own password; federated users manage theirs at the identity provider and see neither option.
+Users who sign in with a local Cognito account (`auth_mode` `local` or `hybrid`) manage their own password. Federated users manage theirs at the identity provider: Account Settings does not offer them a password change, and in `hybrid` mode the reset page tells them to use their identity provider.
 
 - **Account Settings → Sign-in password** changes the password of the signed-in user. It requires the current password.
-- **Forgot password?** on the sign-in page emails a verification code and sets a new password with it. An unknown address gets the same response as a real account, so the page does not reveal which addresses have accounts.
+- **Forgot password?** on the sign-in page emails a verification code and sets a new password with it. An unknown address gets the same "code sent" response as an account with a verified email. An account without a verified email address gets an error that says so, which also confirms that the account exists.
 
-New passwords must meet the user pool policy: at least 12 characters with lowercase and uppercase letters, a number, and a symbol.
+New passwords must meet the user pool policy: at least 12 characters with lowercase and uppercase letters, a number, and one of Cognito's special characters.
 
-A reset needs a verified email address and a permanent password. The installer creates the first administrator that way; when you create users with `aws cognito-idp admin-create-user`, set `email_verified=true`. A user who still has a temporary password signs in with it and sets a new one at the prompt instead. After an operator runs `aws cognito-idp admin-reset-user-password`, the user's next sign-in opens the reset flow.
+A reset needs a verified email address. The installer creates the first administrator with one; when you create users with `aws cognito-idp admin-create-user`, set `email_verified=true`. After an operator runs `aws cognito-idp admin-reset-user-password`, Cognito emails the user a code, and their next sign-in with the old password opens the reset flow; **I already have a code** enters that code without requesting another one.
 
-Codes are sent with Cognito's default email sender (`email_sending_account = "COGNITO_DEFAULT"`), which Amazon Cognito limits to 50 messages a day per account. The auth module does not configure Amazon SES for the user pool, so that limit applies to every reset.
+Codes are sent with Cognito's default email sender (`email_sending_account = "COGNITO_DEFAULT"`), which Amazon Cognito limits to 50 messages a day per account, invitations included. The auth module does not configure Amazon SES for the user pool, so that limit applies to every reset; once it is reached, reset requests fail until the quota resets.
 
 ### Configure provider OAuth apps
 

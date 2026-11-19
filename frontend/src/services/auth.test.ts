@@ -382,24 +382,29 @@ describe('authService password self-service', () => {
       'Password must have symbol characters',
     );
     authMocks.updatePassword.mockRejectedValueOnce(
-      cognitoError('LimitExceededException', 'Attempt limit exceeded'),
+      cognitoError('LimitExceededException', 'Attempt limit exceeded, please try after some time.'),
     );
     await expect(sessionAuthService.changePassword('old', 'New-password-1')).rejects.toThrow(
       'Too many attempts',
     );
   });
 
-  it('requests a reset code and explains accounts that cannot be reset', async () => {
+  it('keeps the daily email quota error instead of telling the user to wait minutes', async () => {
+    authMocks.resetPassword.mockRejectedValueOnce(
+      cognitoError(
+        'LimitExceededException',
+        'Exceeded daily email limit for the operation or the account.',
+      ),
+    );
+    await expect(sessionAuthService.requestPasswordReset('user@example.com')).rejects.toThrow(
+      'Exceeded daily email limit',
+    );
+  });
+
+  it('requests a reset code and explains an account without a verified email', async () => {
     authMocks.resetPassword.mockResolvedValueOnce({ nextStep: {} });
     await sessionAuthService.requestPasswordReset('user@example.com');
     expect(authMocks.resetPassword).toHaveBeenCalledWith({ username: 'user@example.com' });
-
-    authMocks.resetPassword.mockRejectedValueOnce(
-      cognitoError('NotAuthorizedException', 'User password cannot be reset in the current state.'),
-    );
-    await expect(sessionAuthService.requestPasswordReset('new@example.com')).rejects.toThrow(
-      'still has its temporary password',
-    );
 
     authMocks.resetPassword.mockRejectedValueOnce(
       cognitoError(

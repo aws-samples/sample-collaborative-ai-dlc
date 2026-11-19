@@ -157,25 +157,29 @@ export interface AuthResult {
 const errorName = (error: unknown) => (error instanceof Error ? error.name : '');
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : '');
 
-// Errors every Cognito password call can raise, with user-facing wording.
-// Anything unmapped keeps Cognito's own message, which for
-// InvalidPasswordException already names the unmet policy rule.
-const passwordError = (error: unknown, specific: Record<string, string> = {}): Error => {
-  const messages: Record<string, string> = {
-    LimitExceededException: 'Too many attempts. Wait a few minutes and try again.',
-    TooManyRequestsException: 'Too many attempts. Wait a few minutes and try again.',
-    ...specific,
-  };
-  const message = messages[errorName(error)];
-  if (!message) return error instanceof Error ? error : new Error('Password request failed');
-  return new Error(message, { cause: error });
-};
-
 // NotAuthorizedException and InvalidParameterException each cover several
 // causes (disabled users, revoked or under-scoped tokens, malformed input), so
 // a specific wording is only given when Cognito's message names the cause.
 const isCognitoError = (error: unknown, name: string, pattern: RegExp) =>
   errorName(error) === name && pattern.test(errorMessage(error));
+
+// Errors every Cognito password call can raise, with user-facing wording.
+// Anything unmapped keeps Cognito's own message, which for
+// InvalidPasswordException already names the unmet policy rule.
+const passwordError = (error: unknown, specific: Record<string, string> = {}): Error => {
+  const messages: Record<string, string> = {
+    TooManyRequestsException: 'Too many attempts. Wait a few minutes and try again.',
+    ...specific,
+  };
+  // LimitExceededException also reports the account's daily email quota
+  // ("Exceeded daily email limit…"), which waiting minutes does not fix.
+  if (isCognitoError(error, 'LimitExceededException', /attempt limit exceeded/i)) {
+    messages.LimitExceededException = 'Too many attempts. Wait a few minutes and try again.';
+  }
+  const message = messages[errorName(error)];
+  if (!message) return error instanceof Error ? error : new Error('Password request failed');
+  return new Error(message, { cause: error });
+};
 
 export const authService = {
   async login(username: string, password: string): Promise<AuthResult> {
@@ -306,20 +310,14 @@ export const authService = {
     }
   },
 
-  // The user pool masks unknown accounts (prevent_user_existence_errors), so a
+  // The app client masks unknown accounts (prevent_user_existence_errors), so a
   // resolved call does not mean the account exists; callers word it that way.
   async requestPasswordReset(username: string): Promise<void> {
     try {
       await resetPassword({ username });
     } catch (error) {
-      if (
-        isCognitoError(error, 'NotAuthorizedException', /cannot be reset in the current state/i)
-      ) {
-        throw new Error(
-          'This account still has its temporary password. Sign in with it to set a new password.',
-          { cause: error },
-        );
-      }
+      // Unlike an unknown address, an account without a verified email gets
+      // this error rather than a simulated delivery.
       if (isCognitoError(error, 'InvalidParameterException', /verified email/i)) {
         throw new Error(
           'This account has no verified email address. Ask an administrator to reset your password.',
