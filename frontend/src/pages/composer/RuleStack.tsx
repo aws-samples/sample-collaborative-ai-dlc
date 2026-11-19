@@ -7,9 +7,9 @@ import { Input } from '@/components/ui/input';
 import type { Block } from '@/services/blocks';
 import type { RuleLayer, RuleRef, Workflow } from '@/services/workflows';
 
-// V2's resolution chain. Rule bodies are concatenated into the per-stage
-// steering doc in this layer order (alphabetical by rule id within a layer),
-// so the stack renders the same order the agent reads.
+// V2's resolution chain. Authored rule bodies are concatenated into the
+// per-stage steering doc in this layer order (by rule id within a layer), so
+// the stack renders the order the agent reads them.
 const LAYER_CHAIN: RuleLayer[] = [
   'org',
   'team',
@@ -35,12 +35,22 @@ const blockLayer = (block: Block): RuleLayer | null =>
     ? (block.layer as RuleLayer)
     : null;
 
+// Runs resolve a rule by id with the user library over SYSTEM (and over the
+// release library when one is in force), so the composer shows one block per id.
+const effectiveRules = (ruleLib: Block[]): Block[] => {
+  const byId = new Map<string, Block>();
+  for (const block of ruleLib) if (block.tenantId === 'SYSTEM') byId.set(block.id, block);
+  for (const block of ruleLib) if (block.tenantId !== 'SYSTEM') byId.set(block.id, block);
+  return [...byId.values()];
+};
+
 // Why a library rule cannot be attached right now, or null when it can.
 const attachBlocker = (block: Block, attached: boolean): string | null => {
   if (attached) return 'Already attached to this workflow.';
+  if (block.notInRelease) return 'Not in the release new intents run, so runs would skip it.';
   const layer = blockLayer(block);
   if (!layer) return 'No layer set — edit the rule block and set its layer first.';
-  if (layer === 'stage') return 'Stage-layer rules are reserved and not applied to runs yet.';
+  if (layer === 'stage') return 'Stage-layer rules are not applied to runs yet.';
   return null;
 };
 
@@ -55,19 +65,27 @@ export function RuleStack({
   const navigate = useNavigate();
   const [filter, setFilter] = useState('');
 
+  const rules = effectiveRules(ruleLib);
+  const blockFor = (ref: RuleRef) => rules.find((block) => block.id === ref.ruleId);
+  // A rule applies at its block's layer, whichever layer its ref is filed under.
+  const appliedLayer = (ref: RuleRef): RuleLayer => {
+    const block = blockFor(ref);
+    return (block && blockLayer(block)) ?? ref.layer;
+  };
+
   const refsByLayer = new Map<RuleLayer, RuleRef[]>();
   for (const ref of workflow.ruleRefs) {
-    const refs = refsByLayer.get(ref.layer) ?? [];
+    const layer = appliedLayer(ref);
+    const refs = refsByLayer.get(layer) ?? [];
     refs.push(ref);
-    refsByLayer.set(ref.layer, refs);
+    refsByLayer.set(layer, refs);
   }
   const layersWithRefs = LAYER_CHAIN.filter((layer) => (refsByLayer.get(layer) ?? []).length > 0);
 
-  const isAttached = (block: Block) =>
-    workflow.ruleRefs.some((ref) => ref.ruleId === block.id && ref.layer === blockLayer(block));
+  const isAttached = (block: Block) => workflow.ruleRefs.some((ref) => ref.ruleId === block.id);
 
   const query = filter.toLowerCase();
-  const filteredLib = ruleLib.filter(
+  const filteredLib = rules.filter(
     (block) =>
       !query ||
       block.name.toLowerCase().includes(query) ||
@@ -75,17 +93,15 @@ export function RuleStack({
       (typeof block.description === 'string' && block.description.toLowerCase().includes(query)),
   );
 
-  const libBlockFor = (ref: RuleRef) =>
-    ruleLib.find((block) => block.id === ref.ruleId && block.tenantId === ref.ruleTenant);
-
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <section>
         <h3 className="text-sm font-medium">Rule stack</h3>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Rules attach at a layer of the resolution chain (org → team → team-learnings → project →
-          project-learnings → phase). Their bodies are concatenated in this order into every
-          stage&apos;s steering doc; within a layer, rules sort by id.
+          project-learnings → phase). Their bodies are concatenated in this order into each
+          stage&apos;s steering doc, by id within a layer; phase rules reach only the stages of
+          their phase, and learned rules are added after these at run time.
         </p>
         {layersWithRefs.length === 0 && (
           <p className="mt-3 text-sm italic text-muted-foreground">
@@ -102,8 +118,9 @@ export function RuleStack({
                 {(refsByLayer.get(layer) ?? [])
                   .toSorted((a, b) => a.ruleId.localeCompare(b.ruleId))
                   .map((ref) => {
-                    const block = libBlockFor(ref);
+                    const block = blockFor(ref);
                     const broken = unresolved.includes(ref.ruleId);
+                    const misfiled = Boolean(block) && appliedLayer(ref) !== ref.layer;
                     return (
                       <li
                         key={`${ref.layer}:${ref.ruleId}`}
@@ -111,12 +128,19 @@ export function RuleStack({
                       >
                         <span className="truncate font-medium">{block?.name ?? ref.ruleId}</span>
                         <Badge variant="outline" className="h-4 shrink-0 px-1 text-[8px]">
-                          {ref.ruleTenant === 'SYSTEM' ? 'SYSTEM' : 'library'}
+                          {(block ? block.tenantId : ref.ruleTenant) === 'SYSTEM'
+                            ? 'SYSTEM'
+                            : 'library'}
                         </Badge>
                         {broken && (
                           <span className="flex shrink-0 items-center gap-1 text-xs text-rose-600">
                             <AlertTriangle className="h-3.5 w-3.5" />
-                            unresolved — no such rule block, runs ignore it
+                            unresolved — no rule block has this id, so runs skip it
+                          </span>
+                        )}
+                        {misfiled && (
+                          <span className="shrink-0 text-xs text-amber-600">
+                            filed under {ref.layer}; applies at its block&apos;s layer
                           </span>
                         )}
                         {!readOnly && (

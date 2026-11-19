@@ -177,6 +177,7 @@ export default function WorkflowComposer() {
   // The release's scope blocks from the last load, merged under the library's
   // own scopes on every refresh.
   const releaseScopesRef = useRef<ReleaseBlock[] | null>(null);
+  const releaseRulesRef = useRef<ReleaseBlock[] | null>(null);
 
   const readOnly = workflow?.readOnly ?? false;
 
@@ -201,6 +202,7 @@ export default function WorkflowComposer() {
     setScopeLib([]);
     setRuleLib([]);
     releaseScopesRef.current = null;
+    releaseRulesRef.current = null;
     if (!workflowId) return;
     setLoading(true);
     setError(null);
@@ -213,7 +215,8 @@ export default function WorkflowComposer() {
       setStageLib(mergeReleaseLibraryBlocks(result.stages, release?.stages ?? null));
       releaseScopesRef.current = release?.scopes ?? null;
       setScopeLib(mergeReleaseLibraryBlocks(result.scopes, release?.scopes ?? null));
-      setRuleLib(result.rules);
+      releaseRulesRef.current = release?.rules ?? null;
+      setRuleLib(mergeReleaseLibraryBlocks(result.rules, release?.rules ?? null));
       setCompiled(result.compiled);
       loadedKeyRef.current = requestKey;
       setLoadedKey(requestKey);
@@ -244,7 +247,7 @@ export default function WorkflowComposer() {
       // release's. A scope created since the load is in the library now, so a
       // later add reuses it instead of creating it again.
       setScopeLib(mergeReleaseLibraryBlocks(scopes.blocks, releaseScopesRef.current));
-      setRuleLib(rules.blocks);
+      setRuleLib(mergeReleaseLibraryBlocks(rules.blocks, releaseRulesRef.current));
     } catch {
       // silent — the optimistic state is good enough for now
     }
@@ -579,7 +582,13 @@ export default function WorkflowComposer() {
     if (!workflowId) return;
     setSaving(true);
     try {
-      await workflowsService.addRuleRef(workflowId, ruleId, layer, ruleTenant);
+      await workflowsService.addRuleRef(
+        workflowId,
+        ruleId,
+        layer,
+        ruleTenant,
+        libraryRelease?.releaseId ?? null,
+      );
       flash('Rule attached.');
       await refresh();
     } catch (e) {

@@ -81,7 +81,7 @@ import {
 } from '../shared/release-resolver.js';
 import { bodyToString, isNotFound } from '../shared/methodology-catalog.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../shared/aidlc-release.js';
-import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
+import { DEFAULT_TENANT, resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
   workflowPk,
@@ -659,43 +659,72 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
   if (!VALID_RULE_LAYERS.has(layer)) {
     return res(400, { error: `layer must be one of ${[...VALID_RULE_LAYERS].join(', ')}` });
   }
-
-  // A ref may only point at the SYSTEM baseline or the caller's own library:
-  // loadRules reads blocks straight from ruleTenant at compile time, so an
-  // arbitrary value would resolve another tenant's blocks.
-  const ruleTenant = input.ruleTenant ?? SYSTEM_TENANT;
-  if (ruleTenant !== SYSTEM_TENANT && ruleTenant !== tenant) {
+  // compileRules applies the universal layers and phase rules only, so a
+  // stage-layer ref would be stored and never reach a run.
+  if (layer === 'stage') {
+    return res(400, {
+      error: 'Stage-layer rules are not applied to runs yet; attach the rule at another layer',
+      code: 'rule_layer_unsupported',
+    });
+  }
+  if (
+    input.ruleTenant != null &&
+    input.ruleTenant !== SYSTEM_TENANT &&
+    input.ruleTenant !== tenant
+  ) {
     return res(400, {
       error: `ruleTenant must be ${SYSTEM_TENANT} or ${tenant}`,
       code: 'invalid_rule_tenant',
     });
   }
 
-  // Reject a ref that would never resolve or never apply (issue #783): a
-  // missing block used to save silently and surface only in the compiled
-  // view's `unresolved`, and the compiler applies a rule by the BLOCK's own
-  // layer, so a ref under a different layer is dead configuration.
-  const rule = await ddb.send(
-    new GetCommand({
-      TableName: blocksTable(),
-      Key: { pk: blockPk(ruleTenant, 'RULE', ruleId), sk: LATEST },
-    }),
-  );
-  if (!rule.Item) {
+  // Runs apply a rule id once, whichever layer its ref is filed under, so a
+  // second ref would inject the same body twice.
+  const ruleRefs = await queryLivePartition(tenant, workflowId, { skBeginsWith: 'RULEREF#' });
+  const attached = ruleRefs.find((ref) => ref.ruleId === ruleId);
+  if (attached) {
+    return res(409, {
+      error: `Rule '${ruleId}' is already attached at layer '${attached.layer}'`,
+      code: 'rule_already_attached',
+    });
+  }
+
+  // Resolve the rule the way runs will: over the release library the composer
+  // previews (`?libraryRelease=`), else over the user library and SYSTEM.
+  const libraryReleaseId = requestedLibraryRelease(event);
+  let rule;
+  if (libraryReleaseId) {
+    try {
+      const library = await libraryReleaseLibrary({
+        releaseId: libraryReleaseId,
+        isAdmin: isPlatformAdmin(event),
+        tenant,
+        placements: [],
+      });
+      rule = library.rulesById?.[ruleId] ?? null;
+    } catch (error) {
+      return releaseReadError(res, error);
+    }
+  } else {
+    rule = await resolveRuleBlock(ruleId);
+  }
+  if (!rule) {
     return res(400, {
-      error: `Rule '${ruleId}' does not exist in tenant '${ruleTenant}'`,
+      error: `No rule block '${ruleId}' exists in the rule library${libraryReleaseId ? ' or the release in use' : ''}`,
       code: 'rule_not_found',
     });
   }
-  if (!rule.Item.layer) {
+  if (!rule.layer) {
     return res(400, {
       error: `Rule '${ruleId}' has no layer; set the rule block's layer before attaching it`,
       code: 'rule_layer_unset',
     });
   }
-  if (rule.Item.layer !== layer) {
+  // The compiler applies a rule at its block's own layer, so a ref filed under
+  // another layer would show the rule where it does not apply.
+  if (rule.layer !== layer) {
     return res(400, {
-      error: `Rule '${ruleId}' is a ${rule.Item.layer}-layer rule; attach it at layer '${rule.Item.layer}'`,
+      error: `Rule '${ruleId}' is a ${rule.layer}-layer rule; attach it at layer '${rule.layer}'`,
       code: 'rule_layer_mismatch',
     });
   }
@@ -706,7 +735,8 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
     type: 'RuleRef',
     ruleId,
     layer,
-    ruleTenant,
+    // Provenance only: runs resolve the rule by id, not by this tenant.
+    ruleTenant: rule.tenantId ?? SYSTEM_TENANT,
   };
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
@@ -1320,21 +1350,29 @@ const loadCatalogByType = async (owner, type) => {
   return byId;
 };
 
-// Resolve each rule ref's Rule block from its owning tenant (own or SYSTEM).
+const getLatestRule = async (tenant, ruleId) =>
+  (
+    await ddb.send(
+      new GetCommand({
+        TableName: blocksTable(),
+        Key: { pk: blockPk(tenant, 'RULE', ruleId), sk: LATEST },
+      }),
+    )
+  ).Item ?? null;
+
+// Runs resolve a rule ref by id over the user library layered on SYSTEM, the
+// user copy winning (shared/v2-workflow-plan.js listMergedBlocks), and ignore
+// the ref's ruleTenant. The composer resolves the same way, so it never
+// reports a rule missing that runs apply, or the reverse.
+const resolveRuleBlock = async (ruleId) =>
+  (await getLatestRule(DEFAULT_TENANT, ruleId)) ?? (await getLatestRule(SYSTEM_TENANT, ruleId));
+
 const loadRules = async (ruleRefs) => {
-  const results = await Promise.all(
-    ruleRefs.map((ref) =>
-      ddb.send(
-        new GetCommand({
-          TableName: blocksTable(),
-          Key: { pk: blockPk(ref.ruleTenant ?? SYSTEM_TENANT, 'RULE', ref.ruleId), sk: LATEST },
-        }),
-      ),
-    ),
-  );
+  const ids = [...new Set(ruleRefs.map((ref) => ref.ruleId))];
+  const blocks = await Promise.all(ids.map((id) => resolveRuleBlock(id)));
   const rulesById = {};
-  for (const { Item } of results) {
-    if (Item) rulesById[Item.blockId] = Item;
+  for (const block of blocks) {
+    if (block) rulesById[block.blockId] = block;
   }
   return rulesById;
 };

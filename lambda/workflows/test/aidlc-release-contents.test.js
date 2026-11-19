@@ -579,6 +579,35 @@ describe('?libraryRelease= authoring preview', () => {
     expect(visible.status).toBe(200);
   });
 
+  it('attaches a rule only the release ships when the composer previews that release', async () => {
+    seedCustomWorkflow();
+    // The DynamoDB library holds no SYSTEM blocks, so this rule exists only in
+    // the closure, as a rule a custom fork adds would.
+    const releaseRule = catalogBlocks('RULE').find((rule) => rule.layer && rule.layer !== 'stage');
+    const addRule = async (query) =>
+      parse(
+        await handler({
+          ...event({
+            method: 'POST',
+            resource: '/workflows/{workflowId}/rules',
+            pathParameters: { workflowId: WORKFLOW_ID },
+            query,
+          }),
+          body: JSON.stringify({ ruleId: releaseRule.id, layer: releaseRule.layer }),
+        }),
+      );
+
+    const live = await addRule({});
+    expect(live.status).toBe(400);
+    expect(live.body.code).toBe('rule_not_found');
+
+    const viaRelease = await addRule({ libraryRelease: RELEASE_ID });
+    expect(viaRelease.status).toBe(201);
+    expect(viaRelease.body).toMatchObject({ ruleId: releaseRule.id, layer: releaseRule.layer });
+    const view = await compiled({ libraryRelease: RELEASE_ID });
+    expect(view.body.rules.unresolved).toEqual([]);
+  });
+
   it('refuses release and libraryRelease together', async () => {
     seedCustomWorkflow();
 

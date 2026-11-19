@@ -96,8 +96,8 @@ export function WorkflowInsights({ compiled }: Props) {
                 {unresolvedRules.map((ruleId) => (
                   <li key={`rule-${ruleId}`} className="flex items-center gap-2 text-rose-600">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    Rule ref <strong>{ruleId}</strong> doesn&apos;t resolve to a rule block — runs
-                    ignore it. Re-attach or remove it in the Rules tab.
+                    Rule ref <strong>{ruleId}</strong> matches no rule block, so runs skip it.
+                    Remove it in the Rules tab.
                   </li>
                 ))}
                 {unknownArtifacts.map((u) => (
