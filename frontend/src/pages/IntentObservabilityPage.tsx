@@ -139,7 +139,7 @@ export default function IntentObservabilityPage() {
   const { project } = useProjectCache(projectId);
   const [view, setView] = useState<ObsView>(readStoredView);
 
-  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const canDelete = project?.userRole === 'owner';
   const [cancelling, setCancelling] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);

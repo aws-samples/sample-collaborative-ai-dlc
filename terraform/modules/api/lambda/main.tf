@@ -25,6 +25,12 @@ locals {
 
   powertools_service_name = var.powertools_service_name
 
+  # runtime_mcp_credentials = gateway_only (lambda/shared/runtime-mcp-policy.js),
+  # set only in the strict profile so default deployments are unchanged.
+  runtime_mcp_policy_env = var.runtime_mcp_credentials == "gateway_only" ? {
+    RUNTIME_MCP_CREDENTIALS = "gateway_only"
+  } : {}
+
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,
   # which only hashes each Lambda's OWN source_path directory. A change in a
@@ -81,24 +87,26 @@ module "dynamodb_kms_runtime_access" {
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
   role_names = {
-    agents_orchestrator = aws_iam_role.agents_orchestrator.name
-    bitbucket_connector = aws_iam_role.bitbucket_connector.name
-    blocks              = aws_iam_role.blocks.name
-    credential_broker   = aws_iam_role.credential_broker.name
-    discussions         = aws_iam_role.discussions.name
-    github_connector    = aws_iam_role.github_connector.name
-    gitlab_connector    = aws_iam_role.gitlab_connector.name
-    intent_pin_lookup   = aws_iam_role.intent_pin_lookup.name
-    intents             = aws_iam_role.intents.name
-    neptune_artifacts   = aws_iam_role.neptune_artifacts.name
-    neptune_questions   = aws_iam_role.neptune_questions.name
-    neptune_reader      = aws_iam_role.neptune_reader.name
-    seed_blocks         = aws_iam_role.seed_blocks.name
-    source_control      = aws_iam_role.source_control.name
-    trackers            = aws_iam_role.trackers.name
-    users               = aws_iam_role.users.name
-    v2_orchestrator     = aws_iam_role.v2_orchestrator.name
-    workflows           = aws_iam_role.workflows.name
+    agents_orchestrator  = aws_iam_role.agents_orchestrator.name
+    bitbucket_connector  = aws_iam_role.bitbucket_connector.name
+    blocks               = aws_iam_role.blocks.name
+    credential_broker    = aws_iam_role.credential_broker.name
+    discussions          = aws_iam_role.discussions.name
+    github_connector     = aws_iam_role.github_connector.name
+    gitlab_connector     = aws_iam_role.gitlab_connector.name
+    intent_pin_lookup    = aws_iam_role.intent_pin_lookup.name
+    intents              = aws_iam_role.intents.name
+    neptune_artifacts    = aws_iam_role.neptune_artifacts.name
+    neptune_questions    = aws_iam_role.neptune_questions.name
+    neptune_tasks        = aws_iam_role.neptune_tasks.name
+    neptune_reader       = aws_iam_role.neptune_reader.name
+    membership_migration = aws_iam_role.membership_migration.name
+    seed_blocks          = aws_iam_role.seed_blocks.name
+    source_control       = aws_iam_role.source_control.name
+    trackers             = aws_iam_role.trackers.name
+    users                = aws_iam_role.users.name
+    v2_orchestrator      = aws_iam_role.v2_orchestrator.name
+    workflows            = aws_iam_role.workflows.name
   }
 }
 
@@ -775,6 +783,12 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Space deletion invalidates members' delegated source-control bindings.
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query", "dynamodb:UpdateItem"]
+        Resource = [var.source_control_bindings_table_arn]
+      },
+      {
         # v2 process table: enumerate a project's executions (GSI1) then drain
         # each EXEC#<id> partition (Query + BatchWrite delete).
         Effect = "Allow"
@@ -1227,6 +1241,8 @@ resource "aws_iam_role_policy" "source_control" {
 }
 
 module "source_control_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1249,16 +1265,22 @@ module "source_control_lambda" {
   create_role = false
   lambda_role = aws_iam_role.source_control.arn
 
+  # The runtime alias needs a published version; without engine data nothing
+  # targets a version and the function stays unpublished.
+  publish = var.enable_engine_data
+
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
+    ACCESS_TABLE                       = var.access_table_name
+    AUDIT_TABLE                        = var.audit_table_name
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
@@ -1272,7 +1294,56 @@ module "source_control_lambda" {
     CODECOMMIT_CONNECTION_PARAM        = var.codecommit_connection_param_name
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
-  }
+    }, var.enable_engine_data ? {
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    V2_PROCESS_TABLE               = var.v2_executions_table_name
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
+}
+
+# The runtime's grant-only entry point into the same function: invocations
+# through this alias are routed by their qualified ARN, before the event is
+# read, and accept only Gateway-grant-scoped review operations. Control-plane
+# callers keep the unqualified function.
+module "source_control_runtime_alias" {
+  count = var.enable_engine_data ? 1 : 0
+
+  source  = "terraform-aws-modules/lambda/aws//modules/alias"
+  version = "~> 8.0"
+
+  name             = "runtime"
+  function_name    = module.source_control_lambda.lambda_function_name
+  function_version = module.source_control_lambda.lambda_function_version
+
+  create_async_event_config = false
+}
+
+resource "aws_iam_role_policy" "source_control_runtime_alias" {
+  count = var.enable_engine_data ? 1 : 0
+
+  name = "source-control-runtime-alias"
+  role = aws_iam_role.source_control.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "VerifyGatewayGrants"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
+        Resource = var.gateway_grant_key_arn
+      },
+      {
+        # META (GetItem) and the execution's own UNITPR# rows (Query on the
+        # base table, partition-keyed by the granted execution), which bind
+        # the review numbers the runtime may act on.
+        Sid      = "ReadExecutionProcessRecords"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = var.v2_executions_table_arn
+      },
+    ]
+  })
 }
 
 # AgentCore-only credential broker. It has no API Gateway or event source; the
@@ -1407,7 +1478,7 @@ module "credential_broker_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
@@ -1426,8 +1497,45 @@ module "credential_broker_lambda" {
     CODECOMMIT_EXTERNAL_ID              = var.codecommit_external_id
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
-  }
+    }, var.enable_engine_data ? {
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+    } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
+    RUNTIME_GRANTS_ENFORCED = "true"
+  } : {}, local.runtime_mcp_policy_env)
 
+}
+
+# With engine data enabled the broker verifies Gateway grants on Git requests
+# and resolves MCP secrets for the runtime (stage and verify-mcp), deriving the
+# parameter paths itself. Invocation accounting rows use the process-table
+# item actions the broker already holds.
+resource "aws_iam_role_policy" "credential_broker_engine_data" {
+  count = var.enable_engine_data ? 1 : 0
+
+  name = "engine-data-authority"
+  role = aws_iam_role.credential_broker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "VerifyGatewayGrants"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
+        Resource = var.gateway_grant_key_arn
+      },
+      {
+        Sid    = "ResolveMcpSecrets"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+        ]
+      },
+    ]
+  })
 }
 
 # Metadata-only companion to the value-redemption broker. It runs under the
@@ -1476,6 +1584,8 @@ module "credential_metadata_lambda" {
 
 # Projects Lambda
 module "projects_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1510,6 +1620,8 @@ module "projects_lambda" {
 
   environment_variables = merge({
     AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
+    ACCESS_TABLE                   = var.access_table_name
+    AUDIT_TABLE                    = var.audit_table_name
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
@@ -1534,11 +1646,15 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }, local.notification_event_env)
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {}, local.notification_event_env, local.runtime_mcp_policy_env)
 }
 
 # Users Lambda
 module "users_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1571,6 +1687,8 @@ module "users_lambda" {
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
+    ACCESS_TABLE                  = var.access_table_name
+    AUDIT_TABLE                   = var.audit_table_name
     NEPTUNE_ENDPOINT              = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
@@ -1580,6 +1698,8 @@ module "users_lambda" {
 
 # Sprints Lambda
 module "sprints_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1611,6 +1731,8 @@ module "sprints_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1619,6 +1741,8 @@ module "sprints_lambda" {
 
 # Requirements Lambda
 module "requirements_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1651,6 +1775,8 @@ module "requirements_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1659,6 +1785,8 @@ module "requirements_lambda" {
 
 # User Stories Lambda
 module "user_stories_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1691,6 +1819,8 @@ module "user_stories_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1699,6 +1829,8 @@ module "user_stories_lambda" {
 
 # Tasks Lambda
 module "tasks_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1730,6 +1862,8 @@ module "tasks_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1738,6 +1872,8 @@ module "tasks_lambda" {
 
 # Code Files Lambda
 module "code_files_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1770,6 +1906,8 @@ module "code_files_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1778,6 +1916,8 @@ module "code_files_lambda" {
 
 # Reviews Lambda
 module "reviews_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1810,6 +1950,8 @@ module "reviews_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1818,6 +1960,8 @@ module "reviews_lambda" {
 
 # Questions Lambda
 module "questions_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1851,6 +1995,7 @@ module "questions_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1859,6 +2004,8 @@ module "questions_lambda" {
 
 # Sprint Graph Lambda
 module "sprint_graph_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1890,6 +2037,8 @@ module "sprint_graph_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -1898,6 +2047,8 @@ module "sprint_graph_lambda" {
 
 # General Info Lambda
 module "general_info_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -1930,6 +2081,8 @@ module "general_info_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -2310,6 +2463,8 @@ module "codecommit_lambda" {
 # Trackers Lambda — provider-agnostic tracker integration. Git-backed providers
 # delegate issue operations to the project source-control service.
 module "trackers_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -2342,6 +2497,8 @@ module "trackers_lambda" {
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
+    ACCESS_TABLE                   = var.access_table_name
+    AUDIT_TABLE                    = var.audit_table_name
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -2388,6 +2545,8 @@ resource "aws_lambda_permission" "tracker_delivery_reconciler" {
 
 # Timeline Events Lambda
 module "timeline_events_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -2419,6 +2578,8 @@ module "timeline_events_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -2515,6 +2676,8 @@ resource "aws_iam_role_policy" "discussions" {
 
 # Discussions Lambda
 module "discussions_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -2545,6 +2708,8 @@ module "discussions_lambda" {
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
+    ACCESS_TABLE                        = var.access_table_name
+    AUDIT_TABLE                         = var.audit_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     ENVIRONMENT                         = var.environment
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
@@ -3133,6 +3298,8 @@ resource "aws_iam_role_policy" "intents" {
 }
 
 module "intents_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
@@ -3164,6 +3331,8 @@ module "intents_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
@@ -3200,7 +3369,10 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {}, local.runtime_mcp_policy_env)
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3241,11 +3413,13 @@ module "intent_pin_lookup_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     V2_PROCESS_TABLE            = var.v2_executions_table_name
   }
 
-  depends_on = [aws_iam_role_policy_attachment.intent_pin_lookup_vpc]
+  depends_on = [aws_lambda_invocation.membership_copy, aws_iam_role_policy_attachment.intent_pin_lookup_vpc]
 }
 
 # Only the workflows principal may invoke the lookup, and only that one function.
@@ -3531,11 +3705,15 @@ module "v2_orchestrator_lambda" {
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
     },
-    var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+    } : {},
     # Execution-scoped grants authorize engine-data calls only; without engine
     # data the orchestrator signs stage and conflict grants alone.
     var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
     local.notification_event_env,
+    local.runtime_mcp_policy_env,
   )
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7

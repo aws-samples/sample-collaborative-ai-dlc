@@ -37,10 +37,12 @@ nav = [
     "using-the-platform/notification-events.md",
     "using-the-platform/real-time-collaboration.md",
     "using-the-platform/git-integration.md",
+    "using-the-platform/customer-mcp-servers.md",
   ] },
   { "Development" = [
     "development/demo-deployment.md",
     "development/testing.md",
+    "development/membership-migration.md",
     "development/pr-quality.md",
   ] },
   { "Roadmap" = "roadmap/index.md" },

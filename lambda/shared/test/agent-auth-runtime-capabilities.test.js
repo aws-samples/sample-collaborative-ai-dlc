@@ -13,13 +13,40 @@ it('probes the actual default target without credentials before qualifying IAM',
     })),
   };
   const snapshot = { runtimeArn: 'runtime', runtimeEndpoint: 'published' };
-  expect(await qualifyAgentAuthRuntime(snapshot, { runtime, env: {} })).toEqual({
+  const sandbox = { enabled: true, version: 3, settings: {} };
+  const readSandbox = vi.fn(async () => sandbox);
+  expect(await qualifyAgentAuthRuntime(snapshot, { runtime, env: {}, readSandbox })).toEqual({
     agentAuthProtocol: 2,
     agentAuthModes: ['keys', 'iam'],
   });
   const input = runtime.send.mock.calls[0][0].input;
   expect(input).toMatchObject({ agentRuntimeArn: 'runtime', qualifier: 'published' });
-  expect(JSON.parse(input.payload.toString())).toEqual({ command: 'capabilities' });
+  // The runtime cannot read the settings itself, so the probe carries them.
+  expect(JSON.parse(input.payload.toString())).toEqual({
+    command: 'capabilities',
+    agentSandbox: sandbox,
+  });
+  expect(readSandbox).toHaveBeenCalledOnce();
+});
+it('sends a policy the caller already resolved without reading the settings', async () => {
+  const runtime = {
+    send: vi.fn(async () => ({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({ ok: true, agentAuthProtocol: 2, agentAuthModes: ['keys'] }),
+      },
+    })),
+  };
+  const readSandbox = vi.fn();
+  const sandbox = { enabled: false, version: null, settings: {} };
+  await qualifyAgentAuthRuntime(
+    { runtimeArn: 'runtime', runtimeEndpoint: 'published' },
+    { runtime, env: {}, sandbox, readSandbox },
+  );
+  expect(readSandbox).not.toHaveBeenCalled();
+  expect(JSON.parse(runtime.send.mock.calls[0][0].input.payload.toString()).agentSandbox).toEqual(
+    sandbox,
+  );
 });
 it('qualifies the deployed image after older qualification sessions have been pinned', async () => {
   let deployedModes = ['keys'];
@@ -41,10 +68,14 @@ it('qualifies the deployed image after older qualification sessions have been pi
     }),
   };
   const snapshot = { runtimeArn: 'runtime', runtimeEndpoint: 'published' };
-  expect((await qualifyAgentAuthRuntime(snapshot, { runtime })).agentAuthModes).toEqual(['keys']);
+  const sandbox = { enabled: false };
+  expect((await qualifyAgentAuthRuntime(snapshot, { runtime, sandbox })).agentAuthModes).toEqual([
+    'keys',
+  ]);
   deployedModes = ['keys', 'iam'];
   expect(
-    (await qualifyAgentAuthRuntime(snapshot, { runtime, requiredModes: ['iam'] })).agentAuthModes,
+    (await qualifyAgentAuthRuntime(snapshot, { runtime, sandbox, requiredModes: ['iam'] }))
+      .agentAuthModes,
   ).toEqual(['keys', 'iam']);
 });
 describe('qualification before IAM grants', () => {
@@ -85,6 +116,7 @@ describe('qualification before IAM grants', () => {
       },
     );
     expect(prepared.agentCredentialGrant).toBe('signed');
+    expect(prepared.agentSandbox).toEqual({ enabled: false });
     expect(issueGrant.mock.calls[0][0].bindings).toEqual([binding]);
   });
 });
@@ -164,6 +196,9 @@ describe('sandbox runtime qualification', () => {
       expect(runtime.send.mock.calls[0][0].input).toMatchObject({
         agentRuntimeArn: 'selected-runtime',
         qualifier: 'published-revision',
+      });
+      expect(JSON.parse(runtime.send.mock.calls[0][0].input.payload).agentSandbox).toEqual({
+        enabled: true,
       });
     },
   );

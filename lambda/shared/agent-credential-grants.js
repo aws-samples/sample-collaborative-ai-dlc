@@ -73,6 +73,30 @@ const signingKey = (secret) => {
 const signatureFor = (encodedClaims, secret) =>
   createHmac('sha256', signingKey(secret)).update(encodedClaims).digest();
 
+// A renewal token issued for an execution's handoff names the Gateway grant that
+// authorized it, so each renewal can be refused once that grant is retired. It
+// carries exactly what the retirement check reads, and only for the same
+// execution.
+const normalizeOriginGatewayGrant = (value, executionId) => {
+  if (value === undefined || value === null) return null;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !['grantId', 'executionId', 'issuedAt'].includes(key)) ||
+    typeof value.grantId !== 'string' ||
+    !value.grantId ||
+    value.grantId.length > 128 ||
+    !executionId ||
+    value.executionId !== executionId ||
+    !Number.isInteger(value.issuedAt) ||
+    value.issuedAt < 0
+  ) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant origin is invalid');
+  }
+  return { grantId: value.grantId, executionId, issuedAt: value.issuedAt };
+};
+
 const normalizedClaims = (claims) => {
   if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
@@ -124,6 +148,7 @@ const normalizedClaims = (claims) => {
       'Credential grant protocol does not match its bindings',
     );
   }
+  const gatewayGrant = normalizeOriginGatewayGrant(claims.gatewayGrant, executionId);
   return {
     version,
     audience: AGENT_CREDENTIAL_GRANT_AUDIENCE,
@@ -134,6 +159,7 @@ const normalizedClaims = (claims) => {
     bindings,
     issuedAt: Number(claims.issuedAt),
     expiresAt: Number(claims.expiresAt),
+    ...(gatewayGrant ? { gatewayGrant } : {}),
   };
 };
 

@@ -5,6 +5,7 @@ import {
   assertSource,
   credentialChangeAffects,
 } from './agent-auth-contracts.js';
+import { INVOCATION_ACCOUNTING_TTL_SECONDS } from './invocation-accounting-ticket.js';
 
 export const AUTH_INVENTORY_KEY = Object.freeze({ pk: 'AGENTAUTH#INVENTORY', sk: 'META' });
 export const authenticationScope = ({ source = 'platform', projectId, userId } = {}) => {
@@ -38,8 +39,14 @@ export const scopeContainsRow = (scope, row) =>
   scope.source === 'platform' ||
   inventoryScopes(row).some((candidate) => authScopeKey(candidate).pk === authScopeKey(scope).pk);
 
+// An ACTIVE invocation stays as evidence, but once its accounting ticket has expired it
+// can no longer heartbeat or finish, and no runtime session outlives that window.
+const isStaleInvocation = (row, now) =>
+  row.state === 'ACTIVE' &&
+  Date.parse(row.startedAt) + INVOCATION_ACCOUNTING_TTL_SECONDS * 1000 <= now;
+
 // Terminal executions remain relevant because they can be rewound with the same
-// pinned binding. Finished invocations and auxiliary operations cannot resume.
+// pinned binding. Finished or stale invocations and auxiliary operations cannot resume.
 export const isMaterialAuthInventoryRow = (row, now = Date.now()) =>
   [
     'Execution',
@@ -53,7 +60,7 @@ export const isMaterialAuthInventoryRow = (row, now = Date.now()) =>
     'QuorumEdit',
   ].includes(row.type) &&
   (!row.agentAuthTtl || row.agentAuthTtl * 1000 > now) &&
-  !(row.type === 'AgentInvocation' && row.state === 'FINISHED') &&
+  !(row.type === 'AgentInvocation' && (row.state === 'FINISHED' || isStaleInvocation(row, now))) &&
   !(
     ['Compose', 'QuorumEdit'].includes(row.type) &&
     ['SUCCEEDED', 'FAILED', 'CANCELLED', 'APPLIED', 'REJECTED'].includes(row.state)

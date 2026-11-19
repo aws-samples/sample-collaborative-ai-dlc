@@ -255,6 +255,9 @@ export interface AgentSettings {
    *  server the project overrides by name does not survive) and run the same
    *  cross-tier collision check the backend does. */
   globalMcpServerSecretRefs?: Record<string, string[]>;
+  /** Present only when the deployment serves custom MCP servers exclusively
+   *  through the AgentCore Gateway (runtime_mcp_credentials = gateway_only). */
+  runtimeMcpCredentials?: 'gateway_only';
 }
 
 export interface SandboxSettings {

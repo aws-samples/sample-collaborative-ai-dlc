@@ -1,16 +1,15 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import * as spaceMembership from '../../shared/space-membership.js';
 
-const membership = vi.hoisted(() => ({ fetchMembershipRole: vi.fn() }));
-vi.mock('../../shared/trackers.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  membership.fetchMembershipRole.mockImplementation(actual.fetchMembershipRole);
-  return { ...actual, fetchMembershipRole: membership.fetchMembershipRole };
-});
+const membership = {
+  fetchMembershipRole: vi.spyOn(spaceMembership, 'fetchMembershipRole'),
+};
 
 const PARTITION = `t-${randomUUID()}`;
 const TABLE = 'process-test';
@@ -55,14 +54,10 @@ beforeEach(async () => {
 });
 
 const seedMember = async (projectId, sub) => {
-  const project = await g.addV('Project').property('id', projectId).next();
-  const user = await g.addV('User').property('id', sub).next();
-  await g
-    .V(project.value.id)
-    .addE('HAS_MEMBER')
-    .to(gremlin.process.statics.V(user.value.id))
-    .property('role', 'member')
-    .next();
+  await g.addV('Project').property('id', projectId).next();
+  await g.addV('User').property('id', sub).next();
+
+  await seedMembership(projectId, sub, 'member');
 };
 
 const seedIntent = (intentId, meta) => {
@@ -185,7 +180,7 @@ describe('intent-pin-lookup handler', () => {
     expect(membership.fetchMembershipRole).not.toHaveBeenCalled();
   });
 
-  it('checks membership in Neptune for a well-formed request', async () => {
+  it('checks space membership for a well-formed request', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = randomUUID();
     const intentId = randomUUID();

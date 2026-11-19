@@ -63,9 +63,15 @@ const dynamodbCallerRoles = (text) =>
     ...new Set(
       resourceBlocks(text, 'aws_iam_role_policy')
         .filter(({ body }) => body.includes('"dynamodb:'))
-        .flatMap(({ body }) =>
-          [...body.matchAll(/aws_iam_role\.([^.]+)\./g)].map((match) => match[1]),
-        ),
+        .flatMap(({ body }) => {
+          const roleMapName = body.match(/for_each\s*=\s*local\.(\w+)/)?.[1];
+          const roleMap = roleMapName
+            ? (text.match(new RegExp(`\\b${roleMapName}\\s*=\\s*\\{[^}]*\\}`))?.[0] ?? '')
+            : '';
+          return [...`${body}\n${roleMap}`.matchAll(/aws_iam_role\.([^.]+)\./g)].map(
+            (match) => match[1],
+          );
+        }),
     ),
   ].toSorted();
 const kmsAuthorizedRoles = (text) =>
@@ -75,10 +81,10 @@ const kmsAuthorizedRoles = (text) =>
 
 test('all DynamoDB tables support CMK encryption and durable tables are recoverable', () => {
   const applicationTables = read('terraform/modules/data/dynamodb/main.tf');
-  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 10);
-  assert.equal(count(applicationTables, /server_side_encryption \{/g), 10);
-  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 8);
-  assert.equal(count(applicationTables, /point_in_time_recovery/g), 8);
+  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 12);
+  assert.equal(count(applicationTables, /server_side_encryption \{/g), 12);
+  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 10);
+  assert.equal(count(applicationTables, /point_in_time_recovery/g), 10);
 
   const integrationTables = read('terraform/modules/git/main.tf');
   assert.equal(count(integrationTables, /resource "aws_dynamodb_table"/g), 4);
@@ -330,7 +336,9 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
             .map((file) => read(`terraform/modules/compute/agentcore/${file}`))
             .join('\n')
             .replaceAll('[0]', '')
-        : read(path);
+        : path === 'terraform/modules/api/lambda/main.tf'
+          ? `${read(path)}\n${read('terraform/modules/api/lambda/membership.tf')}`
+          : read(path);
     assert.deepEqual(
       kmsAuthorizedRoles(source),
       dynamodbCallerRoles(source),
@@ -358,6 +366,39 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   assert.match(prerequisites, /deployment principal needs `kms:DescribeKey`/);
   assert.match(prerequisites, /`kms:CreateGrant` additionally restricted/);
   assert.match(prerequisites, /service-principal grant to DynamoDB alone is not sufficient/);
+});
+
+test('legacy history readers have membership table, KMS and migration deployment wiring', () => {
+  const source = read('terraform/modules/api/lambda/main.tf');
+  const membership = read('terraform/modules/api/lambda/membership.tf');
+  const readers = membership.match(/\bmembership_readers\s*=\s*\{[^}]*\}/)?.[0];
+  assert.ok(readers, 'membership reader role map is missing');
+  const readerRoles = [...readers.matchAll(/aws_iam_role\.([^.]+)\.id/g)].map((match) => match[1]);
+  const kmsRoles = kmsAuthorizedRoles(source);
+  let checked = 0;
+  for (const block of lambdaModuleBlocks(source)) {
+    const workspace = block.match(
+      /path\s*=\s*"\$\{path\.module\}\/\.\.\/\.\.\/\.\.\/\.\.\/lambda\/([^"]+)"/,
+    )?.[1];
+    if (!workspace || !read(`lambda/${workspace}/index.js`).includes('authorizeLegacy')) continue;
+    const role = block.match(/lambda_role\s*=\s*aws_iam_role\.([^.]+)\.arn/)?.[1];
+    assert.ok(readerRoles.includes(role), `${workspace}: ${role} needs membership read access`);
+    assert.ok(kmsRoles.includes(role), `${workspace}: ${role} needs DynamoDB KMS access`);
+    assert.match(block, /ACCESS_TABLE\s*=\s*var\.access_table_name/, workspace);
+    assert.match(block, /depends_on\s*=\s*\[aws_lambda_invocation\.membership_copy\]/, workspace);
+    checked++;
+  }
+  assert.equal(checked, 10, 'all legacy Lambda workspaces in this module must be checked');
+});
+
+test('membership cutover reports source differences after deployment and defers graph cleanup', () => {
+  const source = read('terraform/membership.tf');
+  const invocations = resourceBlocks(source, 'aws_lambda_invocation');
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].name, 'membership_report');
+  assert.match(invocations[0].body, /action\s*=\s*"report"/);
+  assert.match(invocations[0].body, /depends_on\s*=\s*\[module\.lambda,\s*module\.api\]/);
+  assert.doesNotMatch(source, /action\s*=\s*"cleanup"/);
 });
 
 test('teardown covers every protected data store and cannot automate production', () => {
@@ -425,4 +466,31 @@ test('the AgentCore runtime role cannot assume roles', () => {
     runtimePolicy.body,
     /\{\s*(?:#[^\n]*\n\s*)*Effect\s+= "Deny"\s+Action\s+= \["sts:AssumeRole"\]\s+Resource\s+= "\*"\s*\}/,
   );
+});
+
+test('runtime grant enforcement is a separate, engine-data-gated broker rollout flag', () => {
+  const rootVariables = read('terraform/variables.tf');
+  assert.match(rootVariables, /variable "enforce_runtime_grants"[\s\S]*?default\s+= false/);
+
+  const rootMain = read('terraform/main.tf');
+  const [precondition] = resourceBlocks(rootMain, 'terraform_data').filter(
+    ({ name }) => name === 'runtime_grant_preconditions',
+  );
+  assert.ok(precondition, 'missing terraform_data "runtime_grant_preconditions"');
+  assert.match(precondition.body, /count\s+= var\.enforce_runtime_grants \? 1 : 0/);
+  assert.match(precondition.body, /condition\s+= var\.enable_engine_data\s/);
+  assert.match(
+    moduleBlock(rootMain, 'lambda'),
+    /enforce_runtime_grants\s+= var\.enforce_runtime_grants/,
+  );
+
+  const broker = moduleBlock(
+    read('terraform/modules/api/lambda/main.tf'),
+    'credential_broker_lambda',
+  );
+  assert.match(
+    broker,
+    /var\.enable_engine_data && var\.enforce_runtime_grants \? \{\s*RUNTIME_GRANTS_ENFORCED = "true"\s*\}/,
+  );
+  assert.equal(count(broker, /RUNTIME_GRANTS_ENFORCED/g), 1);
 });

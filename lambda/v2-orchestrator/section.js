@@ -70,6 +70,10 @@ import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { parseChoice } from '../shared/gate-answer.js';
 import { laneSessionIdFor } from '../shared/runtime-session-ids.js';
 import { notifyGatePending } from '../shared/notification-events.js';
+import {
+  GATEWAY_GRANT_RETIREMENT_FAILURE,
+  GatewayGrantRetirementExhaustedError,
+} from './grant-retirement.js';
 
 // Notification events: the `stage` of an engine gate with no stage of its own,
 // from its name prefix.
@@ -492,7 +496,10 @@ export const runParallelSection = async (segment, toolkit) => {
   const {
     ctx,
     store,
-    invokeRuntime,
+    // (ctxArg, stepName, body(invoke)) — one engine command in a durable step,
+    // its Gateway grant retired by jti once the command returns (index.js).
+    runtimeStep = (ctxArg, stepName, body) =>
+      ctxArg.step(stepName, () => body(toolkit.invokeRuntime)),
     stopSession,
     emitEvent, // (ctxArg, stepName, type, summary, extra)
     fail, // (reason, detail) → terminal value
@@ -670,20 +677,23 @@ export const runParallelSection = async (segment, toolkit) => {
         state: row.state,
       }));
     if (unitPrs.length === 0) return null;
-    return laneCtx
-      .step(`unit-pr-graph-${sk}-${slug}${rTag}`, () =>
-        invokeRuntime(
-          {
-            command: 'record-unit-pr',
-            projectId,
-            intentId,
-            executionId,
-            unitPrs,
-          },
-          laneSession,
-        ),
-      )
-      .catch(() => null);
+    return runtimeStep(laneCtx, `unit-pr-graph-${sk}-${slug}${rTag}`, (invoke) =>
+      invoke(
+        {
+          command: 'record-unit-pr',
+          projectId,
+          intentId,
+          executionId,
+          unitPrs,
+        },
+        laneSession,
+      ),
+    ).catch((error) => {
+      // The graph projection is best-effort; an unretired grant is not — it
+      // fails the lane like any other retirement exhaustion.
+      if (error instanceof GatewayGrantRetirementExhaustedError) throw error;
+      return null;
+    });
   };
 
   // Draft creation is replay-safe in two layers: DDB createUnitPr is
@@ -902,8 +912,8 @@ export const runParallelSection = async (segment, toolkit) => {
   };
 
   const refreshIntentWorkspace = (laneCtx, slug, rTag) =>
-    laneCtx.step(`refresh-intent-${sk}-${slug}${rTag}`, async () =>
-      invokeRuntime(
+    runtimeStep(laneCtx, `refresh-intent-${sk}-${slug}${rTag}`, async (invoke) =>
+      invoke(
         {
           command: 'refresh-intent',
           projectId,
@@ -1359,10 +1369,11 @@ export const runParallelSection = async (segment, toolkit) => {
           ?.catch(() => {}),
       );
 
-      let reconciled = await laneCtx.step(
+      let reconciled = await runtimeStep(
+        laneCtx,
         `reconcile-lane-${sk}-${slug}${rTag}-${reconciliation}`,
-        async () =>
-          invokeRuntime(
+        async (invoke) =>
+          invoke(
             {
               command: 'reconcile-lane',
               projectId,
@@ -1381,10 +1392,11 @@ export const runParallelSection = async (segment, toolkit) => {
           ),
       );
       if (reconciled?.ok === false && reconciled.reason === 'merge_conflict') {
-        const resolved = await laneCtx.step(
+        const resolved = await runtimeStep(
+          laneCtx,
           `resolve-pr-conflict-${sk}-${slug}${rTag}-${reconciliation}`,
-          async () =>
-            invokeRuntime(
+          async (invoke) =>
+            invoke(
               {
                 command: 'resolve-conflict',
                 projectId,
@@ -1907,8 +1919,8 @@ export const runParallelSection = async (segment, toolkit) => {
       );
 
       // Lane workspace: clone + unit branch off intent HEAD + push (engine git).
-      const init = await laneCtx.step(`init-lane-${sk}-${slug}${rTag}`, async () =>
-        invokeRuntime(
+      const init = await runtimeStep(laneCtx, `init-lane-${sk}-${slug}${rTag}`, async (invoke) =>
+        invoke(
           {
             command: 'init-lane',
             projectId,
@@ -2017,10 +2029,11 @@ export const runParallelSection = async (segment, toolkit) => {
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
         if (laneOutputTypes.length > 0) {
-          const derived = await laneCtx.step(
+          const derived = await runtimeStep(
+            laneCtx,
             `derive-artifacts-${stage.stageId}-u-${slug}${rTag}`,
-            () =>
-              invokeRuntime(
+            (invoke) =>
+              invoke(
                 {
                   command: 'derive-artifacts',
                   projectId,
@@ -2058,7 +2071,10 @@ export const runParallelSection = async (segment, toolkit) => {
         } catch (error) {
           return await laneFailed(laneCtx, slug, round, {
             stageId: 'unit-pr',
-            reason: 'draft_creation_failed',
+            reason:
+              error instanceof GatewayGrantRetirementExhaustedError
+                ? GATEWAY_GRANT_RETIREMENT_FAILURE
+                : 'draft_creation_failed',
             detail: error?.message ?? String(error),
           });
         }
@@ -2123,9 +2139,9 @@ export const runParallelSection = async (segment, toolkit) => {
         }
       });
       const dispatchMerge = (stepName) =>
-        laneCtx.step(stepName, () =>
+        runtimeStep(laneCtx, stepName, (invoke) =>
           withMergeLock(async () =>
-            invokeRuntime(
+            invoke(
               {
                 command: 'merge-lane',
                 projectId,
@@ -2164,27 +2180,30 @@ export const runParallelSection = async (segment, toolkit) => {
           `Unit ${slug} merge conflicts with ${intentBranch}: ${(merge.conflicts ?? []).join(', ')} — running the conflict-resolution stage`,
           { unitSlug: slug, sectionIndex: segment.index },
         );
-        const resolution = await laneCtx.step(`resolve-conflict-${sk}-${slug}${rTag}`, async () =>
-          invokeRuntime(
-            {
-              command: 'resolve-conflict',
-              projectId,
-              intentId,
-              executionId,
-              unitSlug: slug,
-              sectionIndex: segment.index,
-              repos: cloneBase.repos,
-              unitBranch,
-              intentBranch,
-              gitProvider: cloneBase.gitProvider,
-              repoProviders: cloneBase.repoProviders ?? null,
-              ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
-              requestedCli,
-              ...(cliModels ? { cliModels } : {}),
-              ...(tierModels ? { tierModels } : {}),
-            },
-            laneSession,
-          ),
+        const resolution = await runtimeStep(
+          laneCtx,
+          `resolve-conflict-${sk}-${slug}${rTag}`,
+          async (invoke) =>
+            invoke(
+              {
+                command: 'resolve-conflict',
+                projectId,
+                intentId,
+                executionId,
+                unitSlug: slug,
+                sectionIndex: segment.index,
+                repos: cloneBase.repos,
+                unitBranch,
+                intentBranch,
+                gitProvider: cloneBase.gitProvider,
+                repoProviders: cloneBase.repoProviders ?? null,
+                ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
+                requestedCli,
+                ...(cliModels ? { cliModels } : {}),
+                ...(tierModels ? { tierModels } : {}),
+              },
+              laneSession,
+            ),
         );
         if (resolution?.ok) {
           merge = await dispatchMerge(`merge-lane-retry-${sk}-${slug}${rTag}`);
@@ -2271,7 +2290,10 @@ export const runParallelSection = async (segment, toolkit) => {
       ctx.logger?.error?.('lane crashed', { slug, error: err?.message });
       return await laneFailed(laneCtx, slug, round, {
         stageId: 'lane',
-        reason: 'lane_crashed',
+        reason:
+          err instanceof GatewayGrantRetirementExhaustedError
+            ? GATEWAY_GRANT_RETIREMENT_FAILURE
+            : 'lane_crashed',
         detail: err?.message ?? String(err),
       });
     } finally {

@@ -65,6 +65,25 @@ export const captureSandboxSettings = (record) => {
   });
 };
 
+// The current policy a dispatcher resolved and sent as the payload's
+// `agentSandbox` (captured shape). Absent stays null; a malformed one is refused.
+export const dispatchedSandbox = (value) => {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    typeof value.enabled !== 'boolean' ||
+    (value.enabled && (!value.settings || typeof value.settings !== 'object'))
+  ) {
+    throw new Error('Invalid dispatched sandbox configuration');
+  }
+  return structuredClone({
+    enabled: value.enabled,
+    version: value.version ?? null,
+    settings: value.settings ?? DEFAULT_SANDBOX_CONFIG.settings,
+  });
+};
+
 // Dispatch and the runtime must select the same policy. Existing executions
 // retain their captured policy; drafts and standalone operations use the current one.
 export const resolveInvocationSandbox = async ({
@@ -72,6 +91,7 @@ export const resolveInvocationSandbox = async ({
   store = processStore,
   readSettings = () =>
     readSandboxSettings({ ddb: client, tableName: process.env.V2_PROCESS_TABLE }),
+  readCurrent = async () => captureSandboxSettings(await readSettings()),
 }) => {
   const executionId = payload.executionId || payload.intentId;
   if (executionId) {
@@ -83,7 +103,7 @@ export const resolveInvocationSandbox = async ({
       return structuredClone(meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG);
     }
   }
-  return captureSandboxSettings(await readSettings());
+  return readCurrent();
 };
 
 // The API validates config before this write. All operations compare the same

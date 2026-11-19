@@ -1,6 +1,6 @@
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { randomUUID } from 'node:crypto';
-import { fetchMembershipRole } from '../shared/trackers.js';
 import { getConnectionRow, verifyProject } from './providers/jira-cloud.js';
 import { ProviderError } from './providers/errors.js';
 
@@ -79,7 +79,7 @@ export const writeJiraBinding = async (g, { projectId, existing, data, userId, d
 
 const notReady = (reason) =>
   Object.assign(
-    new ProviderError(409, 'Jira binding needs reconnection by a space owner or admin', {
+    new ProviderError(409, 'Jira binding needs reconnection by a space owner', {
       code: 'TRACKER_BINDING_NOT_READY',
       invalidReason: reason,
     }),

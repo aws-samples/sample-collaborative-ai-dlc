@@ -1,4 +1,4 @@
-import { fetchMembershipRole } from './trackers.js';
+import { fetchMembershipRole } from './space-membership.js';
 
 const denied = (statusCode, error) => ({ denied: true, statusCode, error });
 

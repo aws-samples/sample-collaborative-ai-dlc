@@ -174,6 +174,42 @@ test('release configuration rejects missing domain or SSO settings before AWS cr
   assert.match(missingSso.stderr, /AUTH_MODE hybrid requires the SSO_CONFIG secret/);
 });
 
+test('release check ignores local tooling and worktrees but validates application manifests', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-release-local-folders-'));
+  const version = '2.0.0';
+  try {
+    mkdirSync(join(fixture, 'scripts'));
+    cpSync(join(root, 'scripts/release.mjs'), join(fixture, 'scripts/release.mjs'));
+    writeJson(join(fixture, 'package.json'), { name: 'aidlc', version, private: true });
+    writeJson(join(fixture, 'package-lock.json'), {
+      version,
+      packages: { '': { version } },
+    });
+    writeFileSync(join(fixture, 'CHANGELOG.md'), `# Changelog\n\n## [${version}] - TBD\n`);
+    for (const directory of ['.opencode', '.playwright-mcp', '.worktrees/other-branch']) {
+      mkdirSync(join(fixture, directory), { recursive: true });
+      writeJson(join(fixture, directory, 'package.json'), {
+        name: 'local-tool',
+        version: '1.0.0',
+      });
+    }
+    mkdirSync(join(fixture, 'frontend'));
+    writeJson(join(fixture, 'frontend/package.json'), { name: 'frontend', private: true });
+
+    const checked = run('node', ['scripts/release.mjs', 'check', version], { cwd: fixture });
+    assert.equal(checked.status, 0, checked.stderr);
+
+    writeJson(join(fixture, 'frontend/package.json'), { name: 'frontend', version: '1.0.0' });
+    const invalid = run('node', ['scripts/release.mjs', 'check', version], { cwd: fixture });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /frontend\/package\.json must not define a version/);
+    assert.match(invalid.stderr, /frontend\/package\.json must set private: true/);
+    assert.doesNotMatch(invalid.stderr, /\.opencode|\.playwright-mcp|\.worktrees/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test('release and main deployments use isolated protected environments and GitHub OIDC', () => {
   const release = readFileSync(releaseWorkflow, 'utf8');
   const deployment = readFileSync(demoWorkflow, 'utf8');
@@ -499,6 +535,29 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   const accepted = run('node', [inspector, retiredPlan]);
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
+});
+
+test('Terraform plan inspection allows deleting the Gateway grant retirement table, not replacing it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
+  const address = 'module.agentcore.aws_dynamodb_table.gateway_grant_retirements[0]';
+  const offPlan = join(dir, 'off.json');
+  const replacePlan = join(dir, 'replace.json');
+  writeJson(offPlan, {
+    resource_changes: [{ address, type: 'aws_dynamodb_table', change: { actions: ['delete'] } }],
+  });
+  writeJson(replacePlan, {
+    resource_changes: [
+      { address, type: 'aws_dynamodb_table', change: { actions: ['delete', 'create'] } },
+    ],
+  });
+
+  const accepted = run('node', [inspector, offPlan]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /Allowed Gateway grant retirement table removal/);
+
+  const rejected = run('node', [inspector, replacePlan]);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /protected persistent resources/);
 });
 
 test('Terraform teardown preparation only permits existing-resource protection updates', () => {

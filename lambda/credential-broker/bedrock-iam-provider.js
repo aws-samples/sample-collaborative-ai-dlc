@@ -13,8 +13,19 @@ export const BEDROCK_IAM_BROKER_PROVIDER = Object.freeze({
   id: 'bedrock-iam',
   adapters: {
     // `connection` is the stored row, or the signed binding when verifying an unsaved role.
-    'bedrock:assume-role': async ({ connection, claims, deps }) => {
-      const credentials = await assumeInferenceRole(claims, connection, deps.stsClient);
+    'bedrock:assume-role': async ({ connection, claims, request, deps, now }) => {
+      // A resolve starts the renewal window; a renewal token ends it. A verification lease
+      // ends with its short grant, so its session needs no clipping.
+      const deadline =
+        request === 'renew'
+          ? claims.expiresAt
+          : request === 'resolve'
+            ? claims.issuedAt + BEDROCK_IAM_RENEWAL.ttlSeconds
+            : null;
+      const credentials = await assumeInferenceRole(claims, connection, deps.stsClient, {
+        deadline,
+        now,
+      });
       return {
         material: { type: 'bedrock-iam', credentials },
         expiresAt: Date.parse(credentials.Expiration),

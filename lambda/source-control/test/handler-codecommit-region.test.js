@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // A chainable stand-in for the gremlin traversal: it records the steps and
 // answers toList() from the step names (membership query vs repository query).
 const graph = { role: 'owner', repos: [] };
+vi.mock('../../shared/space-membership.js', () => ({
+  fetchMembershipRole: async () => graph.role,
+}));
 const chain = (steps = []) =>
   new Proxy(
     {},
