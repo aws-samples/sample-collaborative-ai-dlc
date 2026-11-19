@@ -1,5 +1,6 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
 
 locals {
   # Provisioning a custom domain must not cut over existing SSO redirects before
@@ -83,11 +84,64 @@ module "sso_token_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
   attach_network_policy  = local.all_lambdas_in_vpc
 
+  # Records each federated sign-in's claims for member role calculation. Only
+  # USER# items, and only writes; KMS use is limited to DynamoDB. Attached by the
+  # module before the function is updated, so recording never runs unauthorized.
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      record_sso_claims = {
+        effect    = "Allow"
+        actions   = ["dynamodb:PutItem"]
+        resources = [var.access_table_arn]
+        condition = {
+          user_items = {
+            test     = "ForAllValues:StringLike"
+            variable = "dynamodb:LeadingKeys"
+            values   = ["USER#*"]
+          }
+        }
+      }
+    },
+    var.kms_key_arn == "" ? {} : {
+      use_dynamodb_encryption_key = {
+        effect    = "Allow"
+        actions   = ["kms:DescribeKey", "kms:Decrypt", "kms:Encrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*"]
+        resources = [var.kms_key_arn]
+        condition = {
+          via_dynamodb = {
+            test     = "StringLike"
+            variable = "kms:ViaService"
+            values   = ["dynamodb.*.${data.aws_partition.current.dns_suffix}"]
+          }
+        }
+      }
+      allow_dynamodb_resource_grant = {
+        effect    = "Allow"
+        actions   = ["kms:CreateGrant"]
+        resources = [var.kms_key_arn]
+        condition = {
+          via_dynamodb = {
+            test     = "StringLike"
+            variable = "kms:ViaService"
+            values   = ["dynamodb.*.${data.aws_partition.current.dns_suffix}"]
+          }
+          aws_resource_grant = {
+            test     = "Bool"
+            variable = "kms:GrantIsForAWSResource"
+            values   = ["true"]
+          }
+        }
+      }
+    },
+  )
+
   environment_variables = {
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     SSO_ROLE_CONFIG         = jsonencode(local.role_config)
+    ACCESS_TABLE            = var.access_table_name
   }
 }
 

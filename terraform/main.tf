@@ -414,6 +414,10 @@ module "auth" {
   id_token_validity_minutes     = var.auth_id_token_validity_minutes
   refresh_token_validity_hours  = var.auth_refresh_token_validity_hours
 
+  access_table_name = module.dynamodb.access_table_name
+  access_table_arn  = module.dynamodb.access_table_arn
+  kms_key_arn       = var.kms_key_arn
+
   custom_domain                 = var.auth_domain
   custom_domain_active          = var.auth_domain_active
   custom_domain_certificate_arn = var.auth_domain == "" ? "" : terraform_data.auth_parent_dns[var.auth_domain].output

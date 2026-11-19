@@ -8,6 +8,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
   TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -20,6 +21,12 @@ export const membershipKey = (spaceId, userId) => ({
 // Business-role mappings saved from the Platform admin UI: one item per
 // configured SSO connection. No userId field, so the by-user GSI skips it.
 export const ssoMappingKey = (providerId) => ({ pk: 'PLATFORM', sk: `SSO#${providerId}` });
+
+// SSO claims recorded at each federated sign-in (and once by the deployment
+// backfill): the provider and its raw claim values, never calculated roles, so
+// mapping changes apply on the next read. The subject is not named `userId`, so
+// the by-user GSI skips the item.
+export const ssoClaimsKey = (subject) => ({ pk: `USER#${subject}`, sk: 'SSO' });
 
 // Stay clearly below DynamoDB's 400 KB item limit for the mapping and its audit
 // record; the serialized form approximates the stored item size.
@@ -385,6 +392,58 @@ export const createMembershipStore = ({
     }
     return { roleMappings: mappings, revision: changeId };
   };
+  const ssoClaimsItem = ({ subject, providerName, claimValues, source }) => {
+    if (!subject || !providerName) throw new Error('SSO claims require a subject and a provider');
+    const item = {
+      ...ssoClaimsKey(subject),
+      subject,
+      providerName,
+      claimValues,
+      source,
+      recordedAt: now(),
+    };
+    if (Buffer.byteLength(JSON.stringify(item), 'utf8') > MAX_ITEM_BYTES)
+      throw new Error('SSO claims exceed the storage size limit');
+    return item;
+  };
+  // A sign-in always replaces the copy: it carries the provider's current claims.
+  const recordSsoClaims = async (claims) => {
+    await ddb.send(
+      new PutCommand({
+        TableName: accessTable,
+        Item: ssoClaimsItem({ ...claims, source: 'sign-in' }),
+      }),
+    );
+  };
+  // The deployment backfill never replaces a copy, so a sign-in during the
+  // backfill keeps its newer claims. Returns whether the copy was written.
+  const backfillSsoClaims = async (claims) => {
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: accessTable,
+          Item: ssoClaimsItem({ ...claims, source: 'backfill' }),
+          ConditionExpression: 'attribute_not_exists(pk)',
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
+  };
+  // Null when the user has never signed in through SSO since the backfill; read
+  // errors propagate so callers never treat a failed read as no SSO roles.
+  const getSsoClaims = async (subject) => {
+    const result = await ddb.send(
+      new GetCommand({
+        TableName: accessTable,
+        Key: ssoClaimsKey(subject),
+        ConsistentRead: true,
+      }),
+    );
+    return result.Item || null;
+  };
   // Keep the deleting owner until every other page has drained. A failed batch
   // leaves that owner's permission intact so the existing delete can be retried.
   const deleteSpaceMembers = async (
@@ -436,6 +495,9 @@ export const createMembershipStore = ({
     getRoleMappings,
     getRoleMappingRecord,
     saveRoleMappings,
+    recordSsoClaims,
+    backfillSsoClaims,
+    getSsoClaims,
     deleteSpaceMembers,
   };
 };
