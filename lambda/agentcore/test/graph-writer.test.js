@@ -647,6 +647,10 @@ describe('reads', () => {
     expect((await writer.getSection({ artifactId: 'ko-art', slug: '수용-기준-2' })).content).toBe(
       '두 번째 기준',
     );
+    // A repeated heading resolves to its first occurrence.
+    expect((await writer.getSection({ artifactId: 'ko-art', heading: '수용 기준' })).content).toBe(
+      '첫 번째 기준',
+    );
   });
 
   it('mirrors derived sections, typed items, and citation edges from artifact content', async () => {

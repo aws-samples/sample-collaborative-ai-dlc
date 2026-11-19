@@ -18,9 +18,12 @@ const sha256 = (value = '') =>
 // so it must be unique within the artifact. It keeps the letters and digits of
 // every script: methodology releases write headings in the conversation
 // language, and an ASCII-only slug collapsed every non-Latin heading into one.
+// Emoji go first, with the invisible variation selectors, joiners and keycap
+// marks that would otherwise survive as combining marks (`⚠️ Risks` → `risks`).
 const sectionSlug = (heading) =>
   String(heading)
     .normalize('NFKC')
+    .replace(/(?:\p{Extended_Pictographic}|\u200d|\ufe0e|\ufe0f|\u20e3)+/gu, ' ')
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '');

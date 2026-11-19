@@ -52,6 +52,13 @@ describe('artifact extractors', () => {
     expect(sections.map((s) => s.slug)).toEqual(['overview', 'section-2', 'section-3']);
   });
 
+  it('drops emoji and their invisible selectors and keycap marks from slugs', () => {
+    const sections = splitSections(
+      '## \u26a0\ufe0f Risks\na\n## \ud83d\udee0\ufe0f Tools\nb\n## 1\ufe0f\u20e3 Step\nc\n## \u2764\ufe0f\nd',
+    );
+    expect(sections.map((s) => s.slug)).toEqual(['risks', 'tools', '1-step', 'section-4']);
+  });
+
   it('harvests wikilink artifact citations', () => {
     expect(
       extractCitations(
