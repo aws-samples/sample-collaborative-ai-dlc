@@ -565,11 +565,12 @@ module "neptune" {
 
 # Lambda CRUD Functions
 module "lambda" {
-  source            = "./modules/api/lambda"
-  access_table_name = module.dynamodb.access_table_name
-  access_table_arn  = module.dynamodb.access_table_arn
-  audit_table_name  = module.dynamodb.audit_table_name
-  audit_table_arn   = module.dynamodb.audit_table_arn
+  source               = "./modules/api/lambda"
+  sso_token_lambda_arn = module.auth.sso_token_lambda_arn
+  access_table_name    = module.dynamodb.access_table_name
+  access_table_arn     = module.dynamodb.access_table_arn
+  audit_table_name     = module.dynamodb.audit_table_name
+  audit_table_arn      = module.dynamodb.audit_table_arn
 
   notification_events_enabled = var.notification_events_enabled
   notification_event_bus_name = var.notification_event_bus_name

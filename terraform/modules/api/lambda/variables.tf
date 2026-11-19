@@ -518,3 +518,9 @@ variable "gateway_grant_retirement_table_arn" {
   type        = string
   default     = null
 }
+
+variable "sso_token_lambda_arn" {
+  description = "SSO sign-in trigger that records federated claims; the backfill runs after it is deployed. Empty without SSO."
+  type        = string
+  default     = ""
+}
