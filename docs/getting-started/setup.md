@@ -461,6 +461,19 @@ Federated roles are mapped from the external IdP and cannot be changed in this
 UI or with downstream Cognito group membership. See
 [Enterprise SSO → Role and access mapping](enterprise-sso.md#role-and-access-mapping).
 
+### Local user passwords
+
+Users who sign in with a local Cognito account (`auth_mode` `local` or `hybrid`) manage their own password. Federated users manage theirs at the identity provider: Account Settings does not offer them a password change, and in `hybrid` mode the reset page tells them to use their identity provider.
+
+- **Account Settings → Sign-in password** changes the password of the signed-in user. It requires the current password.
+- **Forgot password?** on the sign-in page emails a verification code and sets a new password with it. An unknown address gets the same "code sent" response as an account with a verified email. An account without a verified email address gets an error that says so, which also confirms that the account exists.
+
+New passwords must meet the user pool policy: at least 12 characters with lowercase and uppercase letters, a number, and one of Cognito's special characters.
+
+A reset needs a verified email address. The installer creates the first administrator with one; when you create users with `aws cognito-idp admin-create-user`, set `email_verified=true`. After an operator runs `aws cognito-idp admin-reset-user-password`, Cognito emails the user a code, and their next sign-in with the old password opens the reset flow; **I already have a code** enters that code without requesting another one.
+
+Codes are sent with Cognito's default email sender (`email_sending_account = "COGNITO_DEFAULT"`), which Amazon Cognito limits to 50 messages a day per account, invitations included. The auth module does not configure Amazon SES for the user pool, so that limit applies to every reset; once it is reached, reset requests fail until the quota resets.
+
 ### Configure provider OAuth apps
 
 The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: a platform admin sets one shared connection to an IAM role in the repository account, and every space uses it (see [CodeCommit](#codecommit-code-host) below).

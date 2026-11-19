@@ -25,6 +25,15 @@ interface AuthContextType {
   loginWithSso: (providerName: string, returnTo: string) => Promise<void>;
   completeSsoLogin: () => Promise<string>;
   completeNewPassword: (newPassword: string) => Promise<void>;
+  // Password self-service leaves the session as it is, so unlike login these
+  // never toggle isLoading (which would unmount the protected page mid-form).
+  changePassword: (oldPassword: string, newPassword: string) => Promise<void>;
+  requestPasswordReset: (username: string) => Promise<void>;
+  confirmPasswordReset: (
+    username: string,
+    confirmationCode: string,
+    newPassword: string,
+  ) => Promise<void>;
   setDisplayName: (name: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -190,6 +199,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       loginWithSso,
       completeSsoLogin,
       completeNewPassword,
+      changePassword: authService.changePassword,
+      requestPasswordReset: authService.requestPasswordReset,
+      confirmPasswordReset: authService.confirmPasswordReset,
       setDisplayName,
       logout,
     }),

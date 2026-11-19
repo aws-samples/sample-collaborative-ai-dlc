@@ -10,10 +10,17 @@ import {
   confirmSignIn,
   signInWithRedirect,
   updateUserAttributes,
+  updatePassword,
+  resetPassword,
+  confirmResetPassword,
 } from 'aws-amplify/auth';
 import { cognitoUserPoolsTokenProvider } from 'aws-amplify/auth/cognito';
 import { clearPersistedCache } from '@/lib/persistentCache';
-import { normalizeSsoLoginError, SsoLoginTimeoutError } from './authErrors';
+import {
+  normalizeSsoLoginError,
+  PasswordResetRequiredError,
+  SsoLoginTimeoutError,
+} from './authErrors';
 
 export type AuthMode = 'local' | 'hybrid' | 'sso-only';
 
@@ -147,6 +154,33 @@ export interface AuthResult {
   nextStep?: 'NEW_PASSWORD_REQUIRED' | 'MFA_REQUIRED';
 }
 
+const errorName = (error: unknown) => (error instanceof Error ? error.name : '');
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : '');
+
+// NotAuthorizedException and InvalidParameterException each cover several
+// causes (disabled users, revoked or under-scoped tokens, malformed input), so
+// a specific wording is only given when Cognito's message names the cause.
+const isCognitoError = (error: unknown, name: string, pattern: RegExp) =>
+  errorName(error) === name && pattern.test(errorMessage(error));
+
+// Errors every Cognito password call can raise, with user-facing wording.
+// Anything unmapped keeps Cognito's own message, which for
+// InvalidPasswordException already names the unmet policy rule.
+const passwordError = (error: unknown, specific: Record<string, string> = {}): Error => {
+  const messages: Record<string, string> = {
+    TooManyRequestsException: 'Too many attempts. Wait a few minutes and try again.',
+    ...specific,
+  };
+  // LimitExceededException also reports the account's daily email quota
+  // ("Exceeded daily email limit…"), which waiting minutes does not fix.
+  if (isCognitoError(error, 'LimitExceededException', /attempt limit exceeded/i)) {
+    messages.LimitExceededException = 'Too many attempts. Wait a few minutes and try again.';
+  }
+  const message = messages[errorName(error)];
+  if (!message) return error instanceof Error ? error : new Error('Password request failed');
+  return new Error(message, { cause: error });
+};
+
 export const authService = {
   async login(username: string, password: string): Promise<AuthResult> {
     try {
@@ -179,8 +213,13 @@ export const authService = {
         return { nextStep: 'MFA_REQUIRED' };
       }
 
+      if (result.nextStep?.signInStep === 'RESET_PASSWORD') {
+        throw new PasswordResetRequiredError();
+      }
+
       throw new Error('Sign in failed');
     } catch (error: any) {
+      if (error instanceof PasswordResetRequiredError) throw error;
       console.error('Login error:', error);
       if (error.name === 'NotAuthorizedException') {
         throw new Error('Incorrect username or password', { cause: error });
@@ -255,6 +294,52 @@ export const authService = {
         throw new Error('Password does not meet requirements', { cause: error });
       }
       throw error;
+    }
+  },
+
+  // Signed-in local users only: ChangePassword needs an access token carrying
+  // aws.cognito.signin.user.admin, which hosted SSO tokens deliberately lack.
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    try {
+      await updatePassword({ oldPassword, newPassword });
+    } catch (error) {
+      if (isCognitoError(error, 'NotAuthorizedException', /incorrect username or password/i)) {
+        throw new Error('Current password is incorrect', { cause: error });
+      }
+      throw passwordError(error);
+    }
+  },
+
+  // The app client masks unknown accounts (prevent_user_existence_errors), so a
+  // resolved call does not mean the account exists; callers word it that way.
+  async requestPasswordReset(username: string): Promise<void> {
+    try {
+      await resetPassword({ username });
+    } catch (error) {
+      // Unlike an unknown address, an account without a verified email gets
+      // this error rather than a simulated delivery.
+      if (isCognitoError(error, 'InvalidParameterException', /verified email/i)) {
+        throw new Error(
+          'This account has no verified email address. Ask an administrator to reset your password.',
+          { cause: error },
+        );
+      }
+      throw passwordError(error);
+    }
+  },
+
+  async confirmPasswordReset(
+    username: string,
+    confirmationCode: string,
+    newPassword: string,
+  ): Promise<void> {
+    try {
+      await confirmResetPassword({ username, confirmationCode, newPassword });
+    } catch (error) {
+      throw passwordError(error, {
+        CodeMismatchException: 'The verification code is incorrect',
+        ExpiredCodeException: 'The verification code has expired. Request a new one.',
+      });
     }
   },
 
