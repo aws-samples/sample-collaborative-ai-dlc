@@ -525,6 +525,7 @@ module "neptune" {
   vpc_cidr                = module.networking.vpc_cidr_block
   private_subnet_ids      = module.networking.private_subnet_ids
   instance_class          = "db.t3.medium"
+  kms_key_arn             = var.kms_key_arn
   deletion_protection     = var.deletion_protection
   backup_retention_period = var.backup_retention_period
   skip_final_snapshot     = var.skip_final_snapshot
