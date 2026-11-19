@@ -95,8 +95,16 @@ With no baseline, mappings remain fully managed through the UI:
 - One business role can match several values (any match grants the role), and
   the same value may map to several business roles.
 - A saved mapping affects the next role calculation immediately. A change to a
-  user's company groups becomes visible after their next federated sign-in
-  refreshes the Cognito attributes.
+  user's company groups becomes visible after their next federated sign-in.
+- Each federated sign-in records the user's provider and raw values in the
+  access table (never the calculated roles). Business roles, including those
+  of members who are not signed in, are calculated from that copy with the
+  current mappings and `requiredClaimValues`, without reading Cognito. A user
+  who no longer has a required value keeps no SSO business roles. Token
+  refreshes do not update the copy; if it cannot be saved, the sign-in fails.
+- The first deployment of this behavior copies the values Cognito holds for
+  existing federated users before the member APIs use them. A copy saved by a
+  sign-in is never replaced by that backfill.
 - Business roles never grant sign-in access, space membership, or platform
   management rights. The `platform-admin` mapping and `requiredClaimValues`
   stay in the provider file and cannot be changed from this UI.

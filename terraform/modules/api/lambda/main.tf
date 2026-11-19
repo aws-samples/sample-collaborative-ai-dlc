@@ -195,13 +195,6 @@ resource "aws_iam_role_policy" "users" {
         Action   = ["dynamodb:Query", "dynamodb:UpdateItem"]
         Resource = [var.source_control_bindings_table_arn]
       },
-      {
-        # Trusted identity attributes for SSO business-role calculation
-        # (member lists and exclusion validation), including offline members.
-        Effect   = "Allow"
-        Action   = ["cognito-idp:ListUsers"]
-        Resource = var.cognito_user_pool_arn
-      },
     ]
   })
 }
@@ -1675,7 +1668,7 @@ module "projects_lambda" {
 
 # Users Lambda
 module "users_lambda" {
-  depends_on = [aws_lambda_invocation.membership_copy]
+  depends_on = [aws_lambda_invocation.membership_copy, aws_lambda_invocation.sso_claims_backfill]
 
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -1715,7 +1708,6 @@ module "users_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
-    COGNITO_USER_POOL_ID          = var.cognito_user_pool_id
     SSO_ROLE_CONFIG               = var.sso_role_config
   }
 }
