@@ -22,7 +22,7 @@ describe('WorkflowInsights', () => {
   it('surfaces unresolved rule refs as validation warnings', () => {
     render(<WorkflowInsights compiled={compiled(['ghost-rule'])} />);
     expect(screen.getByText('ghost-rule')).toBeInTheDocument();
-    expect(screen.getByText(/doesn't resolve to a rule block/)).toBeInTheDocument();
+    expect(screen.getByText(/matches no rule block, so runs skip it/)).toBeInTheDocument();
     expect(screen.queryByText(/No cycles, no orphan artifacts/)).not.toBeInTheDocument();
   });
 

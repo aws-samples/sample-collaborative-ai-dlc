@@ -108,7 +108,37 @@ describe('RuleStack', () => {
     expect(
       screen.getByRole('button', { name: 'Attach Stage Rule to the workflow' }),
     ).toBeDisabled();
-    expect(screen.getByText(/reserved and not applied/)).toBeInTheDocument();
+    expect(screen.getByText(/not applied to runs yet/)).toBeInTheDocument();
+  });
+
+  it('treats a rule as attached by id and shows one block per id, the library copy first', () => {
+    renderStack({
+      workflow: workflow([{ ruleId: 'team-language', layer: 'project', ruleTenant: 'default' }]),
+      ruleLib: [
+        ...ruleLib,
+        rule({ id: 'team-language', name: 'Team Language (SYSTEM)', layer: 'org' }),
+      ],
+      unresolved: [],
+    });
+    expect(screen.queryByText('Team Language (SYSTEM)')).not.toBeInTheDocument();
+    // Filed under project, applied at the block's team layer.
+    const team = screen.getByTestId('rule-layer-team');
+    expect(within(team).getByText(/filed under project/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Attach Team Language to the workflow' }),
+    ).toBeDisabled();
+  });
+
+  it('blocks a SYSTEM rule the release in force does not ship', () => {
+    renderStack({
+      workflow: workflow([]),
+      ruleLib: [rule({ id: 'legacy-rule', name: 'Legacy Rule', layer: 'org', notInRelease: true })],
+      unresolved: [],
+    });
+    expect(
+      screen.getByRole('button', { name: 'Attach Legacy Rule to the workflow' }),
+    ).toBeDisabled();
+    expect(screen.getByText(/Not in the release new intents run/)).toBeInTheDocument();
   });
 
   it('hides mutation controls when read-only', () => {

@@ -260,8 +260,24 @@ export const workflowsService = {
       scopeTenant,
     }),
 
-  addRuleRef: (id: string, ruleId: string, layer: RuleLayer, ruleTenant?: string) =>
-    api.post<RuleRef>(`/workflows/${id}/rules`, { ruleId, layer, ruleTenant }),
+  // `libraryRelease` checks the rule against that release's library, the one
+  // the composer previews and new intents run (see `compiled`).
+  addRuleRef: (
+    id: string,
+    ruleId: string,
+    layer: RuleLayer,
+    ruleTenant?: string,
+    libraryRelease?: string | null,
+  ) => {
+    const params = new URLSearchParams();
+    setLibraryReleaseParam(params, libraryRelease);
+    const qs = params.toString();
+    return api.post<RuleRef>(`/workflows/${id}/rules${qs ? `?${qs}` : ''}`, {
+      ruleId,
+      layer,
+      ruleTenant,
+    });
+  },
   removeRuleRef: (id: string, layer: RuleLayer, ruleId: string) =>
     api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`),
 

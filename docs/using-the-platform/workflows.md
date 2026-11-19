@@ -51,7 +51,11 @@ Each placement carries a **scope membership** map: for every scope, whether the 
 
 ### Rule stack
 
-The **Rules** tab lists the rules attached to the workflow, grouped by layer in the resolution chain (org → team → team-learnings → project → project-learnings → phase). At stage start the referenced rule bodies are concatenated in that order (alphabetical by rule id within a layer) into the stage's steering doc, so the tab shows the order agents read. Attach a rule from the SYSTEM baseline or the user library — the layer and owning tenant come from the rule block itself — or remove one. The API rejects a reference whose rule block doesn't exist in the named tenant or whose layer differs from the block's own layer. Stage-layer rules are reserved by the methodology and cannot be attached yet.
+The **Rules** tab lists the rules attached to the workflow, grouped by layer in the resolution chain (org → team → team-learnings → project → project-learnings → phase).
+
+- At stage start, the bodies of the attached rules are concatenated in that order, by rule id within a layer, into the stage's steering doc. Phase rules reach only the stages of their phase. Learned rules recorded by the learning loop are added after the authored rules of their tier at run time; the tab does not list them.
+- Runs find a rule by its id: a rule in the user library takes precedence over the SYSTEM rule (or the rule of the AI-DLC release in force) with the same id, and a rule applies at its block's own layer.
+- The picker attaches a rule from the user library, the SYSTEM baseline, or the release the composer checks against. The API rejects a rule that none of those holds, a rule without a layer, a layer that differs from the rule block's layer, a rule that is already attached, and the stage layer, which runs do not apply yet.
 
 ### Scope graph and insights
 
