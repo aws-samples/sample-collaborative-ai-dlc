@@ -40,6 +40,12 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$KIRO_CLI_SHA256_AMD64
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
     && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
+# The npm bundled with the Node base lags npm's own releases and their
+# bundled dependency fixes; the runtime keeps npm/npx for MCP servers.
+ARG NPM_VERSION=11.21.3
+RUN npm install -g --no-fund --no-audit "npm@${NPM_VERSION}" \
+    && npm --version | grep -Fx "${NPM_VERSION}" \
+    && npm cache clean --force
 ARG CLAUDE_CODE_VERSION=2.1.296
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
