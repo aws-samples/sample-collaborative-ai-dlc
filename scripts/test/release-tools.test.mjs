@@ -1844,6 +1844,50 @@ test('installer tracks an explicitly selected branch by immutable commit', () =>
   assert.match(status.stdout, /Source:\s+aidlc-v2@[0-9a-f]{12} \(non-release\)/);
 });
 
+test('installer applies configuration changes on an unchanged tracked branch', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-ref-config-'));
+  const env = managedEnv(dir, repository);
+  const installed = run('bash', [installer, 'install', '--ref', 'aidlc-v2'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  const currentLink = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
+  const checkout = readlinkSync(currentLink);
+
+  // Without changes the update is still a no-op.
+  const unchanged = run('bash', [installer, 'update'], { env });
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.match(unchanged.stdout, /Already on AI-DLC v[^ ]+ from aidlc-v2@/);
+
+  // Authentication options are applied although the branch did not move.
+  const ssoConfig = join(dir, 'sso.json');
+  writeJson(ssoConfig, {
+    providers: [
+      {
+        name: 'CorporateOIDC',
+        displayName: 'Corporate identity',
+        type: 'oidc',
+        issuerUrl: 'https://idp.example.com',
+        clientId: 'client-id',
+        clientSecretArn:
+          'arn:aws:secretsmanager:eu-central-1:111122223333:secret:aidlc/oidc-AbCdEf',
+        claims: { email: 'email' },
+      },
+    ],
+  });
+  const hybrid = run(
+    'bash',
+    [installer, 'update', '--auth-mode', 'hybrid', '--sso-config', ssoConfig],
+    { env },
+  );
+  assert.equal(hybrid.status, 0, hybrid.stderr);
+  assert.doesNotMatch(hybrid.stdout, /Already on/);
+  assert.equal(ssoTfvarsOf(env).auth_mode, 'hybrid');
+  assert.equal(ssoTfvarsOf(env).sso_providers.CorporateOIDC.display_name, 'Corporate identity');
+  assert.match(configOf(env), /AIDLC_AUTH_MODE=hybrid/);
+  assert.match(configOf(env), /AIDLC_REF=aidlc-v2/);
+  assert.equal(readlinkSync(currentLink), checkout);
+});
+
 const mockedCommandEnv = (dir, repository) => {
   const env = managedEnv(dir, repository);
   const bin = join(dir, 'bin');
