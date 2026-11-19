@@ -394,7 +394,7 @@ function IntentsView({
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
   const [showAll, setShowAll] = useState(false);
-  const isOwnerOrAdmin = project.userRole === 'owner' || project.userRole === 'admin';
+  const isOwnerOrAdmin = project.userRole === 'owner';
   const canDeleteIntents = isOwnerOrAdmin;
   const canEditSettings = isOwnerOrAdmin;
 
@@ -697,7 +697,7 @@ function IntentsView({
         </CardContent>
       </Card>
 
-      {hasUsage && usage && (project.userRole === 'owner' || project.userRole === 'admin') && (
+      {hasUsage && usage && project.userRole === 'owner' && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm">Usage &amp; cost</CardTitle>

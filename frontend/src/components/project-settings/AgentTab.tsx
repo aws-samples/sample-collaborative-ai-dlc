@@ -76,6 +76,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [globalMcpServerSecretRefs, setGlobalMcpServerSecretRefs] = useState<
     Record<string, string[]>
   >({});
+  const [mcpGatewayOnly, setMcpGatewayOnly] = useState(false);
 
   // Form state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>(project.agentCli ?? 'kiro');
@@ -125,6 +126,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         setGlobalCliModels(settings.cliModels || {});
         setGlobalMcpServerNames(settings.customMcpServerNames || []);
         setGlobalMcpServerSecretRefs(settings.globalMcpServerSecretRefs || {});
+        setMcpGatewayOnly(settings.runtimeMcpCredentials === 'gateway_only');
       })
       .catch(() => {
         /* non-fatal — placeholders fall back to generic defaults */
@@ -169,7 +171,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       });
   }, [project.id]);
 
-  // MCP secrets are owner/admin-only on the backend, so only fetch when canEdit.
+  // MCP secrets are owner-only on the backend, so only fetch when canEdit.
   useEffect(() => {
     if (!canEdit) return;
     projectsService
@@ -528,7 +530,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         </div>
       </SettingsCard>
 
-      {/* Custom MCP servers — owner/admin get the full editor; members get a
+      {/* Custom MCP servers — owner get the full editor; members get a
           read-only list of server names (the raw config may carry secrets). */}
       {canEdit ? (
         <>
@@ -542,6 +544,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             mcpSecretsSet={projectMcpSecretsSet}
             onSaveSecrets={saveProjectMcpSecrets}
             globalServerSecretRefs={globalMcpServerSecretRefs}
+            gatewayOnly={mcpGatewayOnly}
             description="Custom MCP servers injected into this space's agent sessions."
           />
 
@@ -577,7 +580,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       )}
 
       {/* Custom rules (steering docs) — visible to all members read-only; only
-          owners/admins get upload/delete controls and download URLs. */}
+          owners get upload/delete controls and download URLs. */}
       <CustomRulesSection
         docs={customRules}
         onPresign={presignCustomRules}

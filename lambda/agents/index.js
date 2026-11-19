@@ -49,7 +49,16 @@ import {
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
-import { fetchMembershipRole, getVal } from '../shared/trackers.js';
+import { getVal } from '../shared/trackers.js';
+import { fetchMembershipRole } from '../shared/space-membership.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+  gatewayOnlyMcp,
+} from '../shared/runtime-mcp-policy.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
 import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
@@ -82,6 +91,7 @@ import {
 } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
+import { issueMcpSecretVerificationGrant } from '../shared/mcp-secret-verification-grant.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -175,7 +185,7 @@ const probeRuntimeCapabilities = async ({
         runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities', agentSandbox: sandbox })),
       }),
     );
     runtimeCapabilities = JSON.parse(await probe.response.transformToString());
@@ -203,6 +213,7 @@ const probeRuntimeCapabilities = async ({
       payload: Buffer.from(
         JSON.stringify({
           command: 'capabilities',
+          agentSandbox: sandbox,
           ...(credentialBindings ? { credentialBindings } : {}),
           ...(projectId ? { projectId } : {}),
           ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
@@ -225,6 +236,7 @@ export const verifyMcpServers = async ({
   mcpServersByTier,
   projectId,
   unsavedSecrets,
+  verificationGrant,
   runtimeTarget = coreRuntimeTarget(),
 }) => {
   if (!runtimeTarget.agentRuntimeArn) {
@@ -240,10 +252,7 @@ export const verifyMcpServers = async ({
         context: { projectId: projectId ?? null },
       },
       async (runtimeSessionId) => {
-        const sandbox = await readSandboxSettings({
-          ddb,
-          tableName: process.env.V2_PROCESS_TABLE,
-        });
+        const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
         if (sandbox.enabled) {
           const probe = await agentcore.send(
             new InvokeAgentRuntimeCommand({
@@ -251,7 +260,9 @@ export const verifyMcpServers = async ({
               runtimeSessionId,
               contentType: 'application/json',
               accept: 'application/json',
-              payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+              payload: Buffer.from(
+                JSON.stringify({ command: 'capabilities', agentSandbox: sandbox }),
+              ),
             }),
           );
           assertSandboxRuntime(JSON.parse(await probe.response.transformToString()));
@@ -265,9 +276,11 @@ export const verifyMcpServers = async ({
             payload: Buffer.from(
               JSON.stringify({
                 command: 'verify-mcp',
+                agentSandbox: sandbox,
                 mcpServersByTier,
                 ...(projectId ? { projectId } : {}),
                 ...(unsavedSecrets ? { unsavedSecrets } : {}),
+                ...(verificationGrant ? { verificationGrant } : {}),
               }),
             ),
           }),
@@ -277,6 +290,10 @@ export const verifyMcpServers = async ({
     );
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
+    if (process.env.ENGINE_DATA_ENABLED === 'true') {
+      logger.error('[verify-mcp] runtime invoke failed');
+      return { error: 'MCP verification runtime invocation failed' };
+    }
     logger.error('[verify-mcp] runtime invoke failed', e);
     return { error: `Runtime invoke failed: ${e.message}` };
   }
@@ -384,11 +401,11 @@ const projectRuntimeAccess = async (event, projectId, { requireEditor = false } 
   return withNeptune(async (g) => {
     const role = await fetchMembershipRole(g, projectId, userId);
     if (!role) return { denied: true, statusCode: 403, error: 'Not a project member' };
-    if (requireEditor && role !== 'owner' && role !== 'admin') {
+    if (requireEditor && role !== 'owner') {
       return {
         denied: true,
         statusCode: 403,
-        error: 'Only project owners and admins can verify MCP servers',
+        error: 'Only project owners can verify MCP servers',
       };
     }
 
@@ -679,9 +696,9 @@ export const handler = async (event, context) => {
     if (projectId && path.endsWith('/agent-credentials')) {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
       const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
-      if (role !== 'owner' && role !== 'admin' && !isPlatformAdmin(event)) {
+      if (role !== 'owner' && !isPlatformAdmin(event)) {
         return response(403, {
-          error: 'Only space owners and admins can manage agent credentials',
+          error: 'Only space owners can manage agent credentials',
         });
       }
       if (httpMethod === 'GET') {
@@ -924,6 +941,8 @@ export const handler = async (event, context) => {
                 ),
               }
             : {}),
+          // Only in the strict profile, so the default response is unchanged.
+          ...(gatewayOnlyMcp() ? { runtimeMcpCredentials: 'gateway_only' } : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -991,6 +1010,25 @@ export const handler = async (event, context) => {
           }
           throw error;
         }
+      }
+
+      // gateway_only: refuse direct MCP servers and secret values before ANY
+      // setting in this request is written. An invalid config is left to the
+      // validation below.
+      try {
+        if (input.customMcpServers !== undefined) {
+          const raw =
+            typeof input.customMcpServers === 'string'
+              ? input.customMcpServers
+              : JSON.stringify(input.customMcpServers ?? {});
+          if (validateMcpServersJson(raw || '{}').valid) {
+            assertDirectMcpConfigAllowed(JSON.parse(raw || '{}'));
+          }
+        }
+        if (input.mcpSecrets !== undefined) assertMcpSecretWritesAllowed(input.mcpSecrets);
+      } catch (error) {
+        if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+        return response(400, { error: error.message, code: error.code });
       }
 
       if (input.authenticationChange) {
@@ -1278,7 +1316,7 @@ export const handler = async (event, context) => {
       // Authorization — the verifier spawns configured commands and probes
       // arbitrary URLs from inside the runtime (with its env), so gate it to
       // exactly who can EDIT the config, using the caller's Cognito identity:
-      //   projectId present → must be owner/admin of that project
+      //   projectId present → must be owner of that project
       //   projectId absent  → global config → platform admin
       const verifyProjectId = input.projectId;
       let runtimeTarget = coreRuntimeTarget();
@@ -1293,6 +1331,16 @@ export const handler = async (event, context) => {
         if (denied) {
           return response(denied.statusCode, { error: denied.error, code: denied.code });
         }
+      }
+
+      // gateway_only: the probe would connect from the runtime and resolve the
+      // config's secrets (saved or just typed) into it. Refused before any
+      // grant is issued or the runtime is invoked.
+      if (gatewayOnlyMcp()) {
+        return response(400, {
+          error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+          code: RUNTIME_MCP_GATEWAY_ONLY,
+        });
       }
 
       const raw =
@@ -1323,15 +1371,36 @@ export const handler = async (event, context) => {
       // are tier-scoped to the caller by the runtime resolver: a project verify's
       // unsavedSecrets bind to project refs only (never a global-named ref). Never
       // logged (see below).
-      const unsavedSecrets =
+      let unsavedSecrets =
         input.unsavedSecrets && typeof input.unsavedSecrets === 'object'
           ? input.unsavedSecrets
           : undefined;
+
+      let verificationGrant;
+      if (process.env.ENGINE_DATA_ENABLED === 'true') {
+        try {
+          verificationGrant = await issueMcpSecretVerificationGrant(ssm, {
+            projectId: verifyProjectId || null,
+            mcpServersByTier,
+          });
+          // The editor retains drafts for renamed/removed refs; only current editable refs travel.
+          if (unsavedSecrets) {
+            const editableRefs = extractSecretRefs(editedConfig).refs;
+            unsavedSecrets = Object.fromEntries(
+              Object.entries(unsavedSecrets).filter(([ref]) => editableRefs.has(ref)),
+            );
+          }
+        } catch {
+          logger.error('[verify-mcp] authorization failed');
+          return response(502, { error: 'MCP verification authorization failed' });
+        }
+      }
 
       const result = await verifyMcpServers({
         mcpServersByTier,
         projectId: verifyProjectId,
         unsavedSecrets,
+        ...(verificationGrant ? { verificationGrant } : {}),
         runtimeTarget,
       });
       if (result.error) return response(502, result);

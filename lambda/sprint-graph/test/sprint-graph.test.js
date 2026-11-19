@@ -1,3 +1,4 @@
+import { seedMembership } from '../../../test/seed-membership.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
@@ -41,18 +42,8 @@ const addSprint = async (sprintId) => {
   const projectId = `p-${randomUUID()}`;
   await g.addV('Project').property('id', projectId).next();
   await g.addV('User').property('id', USER_ID).next();
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .as('p')
-    .V()
-    .has('User', 'id', USER_ID)
-    .as('u')
-    .addE('HAS_MEMBER')
-    .from_('p')
-    .to('u')
-    .property('role', 'owner')
-    .next();
+
+  await seedMembership(projectId, USER_ID, 'owner');
   await g
     .V()
     .has('Project', 'id', projectId)

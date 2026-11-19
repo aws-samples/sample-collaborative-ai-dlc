@@ -1,3 +1,4 @@
+import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { inspectDelivery } from '../shared/delivery-provider.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -7,6 +8,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
+import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -26,12 +28,28 @@ import {
   resolveBindingCredential,
   verifyBindingCredential,
 } from '../shared/source-control-credentials.js';
+import { kmsPublicKeyResolver } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
+import {
+  RUNTIME_ALIAS_ERROR_CODES,
+  gatewayGrantVerifier,
+  handleRuntimeOperation,
+  isRuntimeAliasInvocation,
+} from './runtime-alias.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const sts = new STSClient({});
 const logger = new Logger({ persistentKeys: { component: 'source-control' } });
+const verifyRuntimeGrant = gatewayGrantVerifier(
+  kmsPublicKeyResolver({
+    kms: new KMSClient({}),
+    GetPublicKeyCommand,
+    allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').map((id) => id.trim()),
+  }),
+  gatewayGrantRetirementCheckFromEnv({ ddb }),
+);
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 
@@ -88,21 +106,6 @@ const fetchProjectRepositories = async (g, projectId) => {
     repo: graphValue(row, 'repo'),
     provider: graphValue(row, 'provider') || 'github',
   }));
-};
-
-const fetchMembershipRole = async (g, projectId, userId) => {
-  if (!userId) return null;
-  const rows = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('membership')
-    .inV()
-    .has('User', 'id', userId)
-    .select('membership')
-    .by(__.values('role'))
-    .toList();
-  return rows[0] || null;
 };
 
 const sameRepository = (a, b) => {
@@ -437,6 +440,22 @@ const reviewNumberFromPath = (path) =>
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
+  if (isRuntimeAliasInvocation(context)) {
+    try {
+      const result = await handleRuntimeOperation(event, {
+        ddbClient: ddb,
+        verifyGrant: verifyRuntimeGrant,
+        execute: executeSourceControlOperation,
+      });
+      return { ok: true, result };
+    } catch (error) {
+      const code = RUNTIME_ALIAS_ERROR_CODES.has(error?.code)
+        ? error.code
+        : loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
+      logger.error('runtime operation denied', { code });
+      return { ok: false, code };
+    }
+  }
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;
@@ -480,7 +499,7 @@ export const handler = async (event, context) => {
       fetchProjectRepositories(g, projectId),
     ]);
     if (!role) return response(403, { error: 'Access denied' });
-    const privileged = role === 'owner' || role === 'admin';
+    const privileged = role === 'owner';
     if (path.endsWith('/source-control')) {
       if (event.httpMethod === 'GET') {
         const bindings = await listProjectBindings(ddb, projectId);
@@ -488,7 +507,7 @@ export const handler = async (event, context) => {
       }
       if (!privileged) {
         return response(403, {
-          error: 'Only project owners and admins can configure source control',
+          error: 'Only project owners can configure source control',
         });
       }
       if (event.httpMethod === 'DELETE') {
@@ -638,7 +657,6 @@ export const handler = async (event, context) => {
 export {
   SOURCE_CONTROL_OPERATIONS,
   fetchProjectRepositories,
-  fetchMembershipRole,
   normalizeProviderSelections,
   isSupportedProvider,
   bindingStatusForProject,

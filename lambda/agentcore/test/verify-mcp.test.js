@@ -287,3 +287,33 @@ describe('verifyMcp — secret resolution', () => {
     expect(probe.seen[0]).toEqual({ command: 'uvx', env: { KEY: 'pv' } });
   });
 });
+
+describe('verifyMcp — runtime_mcp_credentials = gateway_only', () => {
+  it('refuses before resolving secrets or probing any server', async () => {
+    const previous = process.env.RUNTIME_MCP_CREDENTIALS;
+    process.env.RUNTIME_MCP_CREDENTIALS = 'gateway_only';
+    try {
+      const probe = recordingProbe();
+      let resolved = false;
+      const res = await verifyMcp(
+        {
+          mcpServers: { tool: { command: 'npx', env: { K: '${KEY}' } } },
+          unsavedSecrets: { KEY: 'sentinel-verify-secret' },
+        },
+        {
+          probeServer: probe,
+          resolveMcpSecrets: async () => {
+            resolved = true;
+            return { secretEnv: {} };
+          },
+        },
+      );
+      expect(res).toMatchObject({ code: 'runtime_mcp_gateway_only' });
+      expect(probe.seen).toEqual([]);
+      expect(resolved).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.RUNTIME_MCP_CREDENTIALS;
+      else process.env.RUNTIME_MCP_CREDENTIALS = previous;
+    }
+  });
+});

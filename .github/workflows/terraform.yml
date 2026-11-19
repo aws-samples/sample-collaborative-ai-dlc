@@ -71,6 +71,9 @@ jobs:
         # Mocked provider aliases are validated by the terraform test steps below.
         run: terraform validate -no-tests
 
+      - name: Membership and audit storage tests (mock providers)
+        run: terraform test -filter=tests/membership.tftest.hcl
+
       - name: Test Cognito domain provisioning and cutover
         run: terraform test -filter=tests/auth-domain.tftest.hcl
       - name: Test Cognito token lifetimes
@@ -96,6 +99,11 @@ jobs:
 
       - name: MCP Gateway interceptor and invocation isolation tests (mock providers)
         run: terraform test -filter=tests/mcp-gateway.tftest.hcl
+
+      - name: Customer MCP Gateway targets tests (mock providers)
+        run: terraform test -filter=tests/mcp-gateway-custom-targets.tftest.hcl
+      - name: AgentCore runtime role per engine-data rollout mode (mock providers)
+        run: terraform test -filter=tests/agentcore-runtime-role.tftest.hcl
 
       - name: Lambda packaging on clean runners (mock AWS)
         run: terraform test -filter=tests/lambda-packaging.tftest.hcl -parallelism=2

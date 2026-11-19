@@ -31,16 +31,16 @@ GitHub OAuth and GitHub App configuration remain available at the same time. The
 
 - A space owner or admin selects **GitHub OAuth** or **GitHub App** for that space's GitHub repositories.
 - A space may use only one GitHub authentication type, but different spaces may choose differently.
-- OAuth delegation is explicit. The owner/admin can delegate only their own connected identity and must confirm that the space may act through it.
+- OAuth delegation is explicit. The Owner can delegate only their own connected identity and must confirm that the space may act through it.
 - For GitHub App bindings, the platform discovers and stores the installation for each repository. No global installation ID is configured.
 - GitLab repositories use an explicitly delegated GitLab OAuth connection.
 - CodeCommit repositories use one shared **IAM role** in the repository account, set by a platform admin as a single connection (no OAuth, no personal connection, nothing per user). The platform assumes it per request with a session policy narrowed to the one repository and the actions that request needs. See [CodeCommit](#codecommit) below.
 
-Every repository is verified before any binding is written. Existing repository-backed spaces remain unbound after upgrade and cannot start until an owner/admin completes this step. Repository-free spaces are unaffected.
+Every repository is verified before any binding is written. Existing repository-backed spaces remain unbound after upgrade and cannot start until an Owner completes this step. Repository-free spaces are unaffected.
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a space uses it only after an owner/admin explicitly delegates it.
+Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a space uses it only after an Owner explicitly delegates it.
 
 - **GitHub**: from the dashboard (or the space-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the space-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
@@ -136,7 +136,7 @@ Jira delivery comments require `write:jira-work`. For connections created before
 
 ## Reconnecting a tracker
 
-If an OAuth token or refresh token is revoked, every dependent space source-control binding is marked invalid. Reconnect the personal account, then have a space owner/admin explicitly rebind the affected repositories. Removing the delegating member or uninstalling a GitHub App installation also invalidates dependent bindings.
+If an OAuth token or refresh token is revoked, every dependent space source-control binding is marked invalid. Reconnect the personal account, then have a Space Owner explicitly rebind the affected repositories. Removing the delegating member or uninstalling a GitHub App installation also invalidates dependent bindings.
 
 For GitLab and Bitbucket specifically, routine token expiry does **not** require reconnecting: their short-lived access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
 
@@ -148,7 +148,7 @@ Migration is **always optional** and **fully reversible-by-omission**: nothing i
 
 Three paths exist, all idempotent and equivalent:
 
-- **Per space, in-product**: open the affected space's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
+- **Per space, in-product**: open the affected space's page or settings. A "Migrate to the new tracker data model" banner appears for Owners. Click **Migrate now**. The banner self-dismisses on success.
 - **Bulk, from the Admin page**: open **Admin → Trackers → Tracker Migration**. The card displays a count of spaces and sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
 - **Bulk, from the CLI**: invoke the `migrate-tracker-fields` Lambda directly for installs that prefer shell access. Supports a `{"dryRun": true}` payload for previewing.
 
@@ -248,7 +248,7 @@ delivery rows, unit PR rows, events and human decisions are retained. Publicatio
 success means the PR was created or reconciled, not that it was merged. Graph
 projection failure does not erase the durable remote identity.
 
-`POST .../intents/{intentId}/delivery` requires project owner/admin membership and
+`POST .../intents/{intentId}/delivery` requires Space Owner membership and
 entity scope. `{"preview":true}` resolves the original methodology/plan and
 reads provider state. A run finalized under the completion policy carries a
 `completionValidation` receipt: when it names the current run, unit plan identity

@@ -8,6 +8,10 @@ import {
 import { normalizeCredentialLease } from '../shared/agent-credential-lease.js';
 import { AGENT_BROKER_PROVIDERS } from './agent-broker-providers.js';
 import { composeLease, signRenewal, verifyRenewal } from './agent-credential-renewal.js';
+import {
+  INVOCATION_ACCOUNTING_AUDIENCE,
+  signInvocationAccountingTicket,
+} from '../shared/invocation-accounting-ticket.js';
 
 export const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
 export const BASE_AGENT_CREDENTIAL_ERROR_CODES = Object.freeze([
@@ -18,8 +22,13 @@ export const BASE_AGENT_CREDENTIAL_ERROR_CODES = Object.freeze([
   'AGENT_AUTH_CHANGE_IN_PROGRESS',
 ]);
 const BROKER_FAILED = 'AGENT_CREDENTIAL_BROKER_FAILED';
-// index.js serves source control for every action it does not route here.
-const RESERVED_ACTIONS = Object.freeze([RESOLVE_AGENT_CREDENTIALS, 'source-control']);
+const RESERVED_ACTIONS = Object.freeze([
+  RESOLVE_AGENT_CREDENTIALS,
+  'source-control',
+  'heartbeat-invocation',
+  'finish-invocation',
+  'resolve-mcp-secrets',
+]);
 const PROVIDER_KEYS = Object.freeze([
   'id',
   'adapters',
@@ -69,7 +78,7 @@ const defineBrokerProvider = (provider) => {
     if (
       typeof renewal.audience !== 'string' ||
       !renewal.audience.trim() ||
-      renewal.audience === AGENT_CREDENTIAL_GRANT_AUDIENCE
+      [AGENT_CREDENTIAL_GRANT_AUDIENCE, INVOCATION_ACCOUNTING_AUDIENCE].includes(renewal.audience)
     )
       throw invalid('requires a renewal audience distinct from the grant audience');
     if (
@@ -175,12 +184,16 @@ export const createBrokerProviderRegistry = (providers) => {
     return dependencies.get(provider.id);
   };
   const bind =
-    (provider, adapter, { claims, request, key, presentedToken, overrides }) =>
+    (
+      provider,
+      adapter,
+      { claims, request, key, presentedToken, renewalAuthority, overrides, now = Date.now },
+    ) =>
     async ({ ssm, connection, binding }) => {
       const deps = { ...dependenciesOf(provider), ...overrides };
       let result;
       try {
-        result = await adapter({ ssm, connection, binding, claims, request, deps });
+        result = await adapter({ ssm, connection, binding, claims, request, deps, now });
       } catch (error) {
         throw classified(provider, error);
       }
@@ -190,7 +203,14 @@ export const createBrokerProviderRegistry = (providers) => {
         request,
         policy: provider.renewal,
         presentedToken,
-        issueRenewal: () => signRenewal({ claims, binding, policy: provider.renewal, key }),
+        issueRenewal: () =>
+          signRenewal({
+            claims,
+            binding,
+            policy: provider.renewal,
+            key,
+            gatewayGrant: renewalAuthority,
+          }),
       });
       return { lease };
     };
@@ -264,18 +284,28 @@ export const createAgentProviderContext = async (
       'AGENT_CREDENTIAL_GRANT_INVALID',
       'Connection verification is not supported for this mechanism',
     );
-  const adapters = registry.adaptersFor({
-    claims,
-    request: renewing ? 'renew' : verification ? 'verify' : 'resolve',
-    key,
-    presentedToken: renewing ? presentedToken : null,
-    provider: renewing ?? verifier,
-    overrides,
-  });
+  // `renewalAuthority`: the verified Gateway grant that authorized an execution handoff,
+  // named in the renewal tokens the handoff issues.
+  const adaptersWith = (renewalAuthority = null) =>
+    registry.adaptersFor({
+      claims,
+      request: renewing ? 'renew' : verification ? 'verify' : 'resolve',
+      key,
+      presentedToken: renewing ? presentedToken : null,
+      renewalAuthority: renewing ? null : renewalAuthority,
+      provider: renewing ?? verifier,
+      overrides,
+      now,
+    });
+  const adapters = adaptersWith();
   return {
     claims,
     verification,
+    renewing: Boolean(renewing),
+    signAccountingTicket: (ticketClaims) =>
+      signInvocationAccountingTicket(ticketClaims, key, { now }),
     adapters,
+    adaptersWith,
     // The signed binding stands in for the connection row: no repository read, and the
     // 'verify' lease carries no renewal and ends with the grant.
     verify: async (binding) => {

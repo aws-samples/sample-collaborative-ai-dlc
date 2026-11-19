@@ -239,7 +239,7 @@ bash /tmp/aidlc-install.sh adopt \
 bash /tmp/aidlc-install.sh update --version 2.1.0
 ```
 
-An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. v1 work stays viewable but read-only after the upgrade.
+An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. Updates automatically migrate space membership to DynamoDB and convert space Admins to Owners; see [membership migration](docs/development/membership-migration.md) for rollout and rollback details. v1 work stays viewable but read-only after the upgrade.
 
 ### Destroy infrastructure
 

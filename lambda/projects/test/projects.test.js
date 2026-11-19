@@ -1,3 +1,5 @@
+import { seedMembership, removeMembership } from '../../../test/seed-membership.js';
+import { membershipStore } from '../../shared/space-membership.js';
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
@@ -9,6 +11,7 @@ import {
   ScanCommand,
   BatchWriteCommand,
   GetCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -150,20 +153,14 @@ afterAll(async () => {
   await conn?.close();
 });
 
-// Seeds a HAS_MEMBER edge with the given role. The handler only ever creates
-// 'owner' edges, so this is the only path to exercise admin/member branches.
+// Seed canonical membership independently of graph resource metadata.
 const addMember = async (projectId, sub, role) => {
   const userExists = await g.V().has('User', 'id', sub).hasNext();
   if (!userExists) {
     await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
   }
-  await g
-    .V()
-    .has('Project', 'id', projectId)
-    .addE('HAS_MEMBER')
-    .property('role', role)
-    .to(gremlin.process.statics.V().has('User', 'id', sub))
-    .next();
+
+  await seedMembership(projectId, sub, role);
 };
 
 beforeEach(() => {
@@ -519,6 +516,81 @@ describe('GET /projects', () => {
       expect.objectContaining({ id: b.id, name: 'B', userRole: 'owner' }),
     ]);
   });
+
+  it('rechecks canonical access and roles when the user index contains stale rows', async () => {
+    const sub = `u-${randomUUID()}`;
+    const removed = await createProject(sub, { name: 'Removed' });
+    const demoted = await createProject(sub, { name: 'Demoted' });
+    const staleRows = (await membershipStore.listUserSpaces(sub)).items;
+    await removeMembership(removed.id, sub);
+    await seedMembership(demoted.id, sub, 'member');
+    const index = vi.spyOn(membershipStore, 'listUserSpaces').mockResolvedValue({
+      items: staleRows,
+      nextToken: 'continuation',
+    });
+    try {
+      const res = await handler({
+        httpMethod: 'GET',
+        queryStringParameters: { paged: '1' },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        items: [{ id: demoted.id, userRole: 'member' }],
+        nextToken: 'continuation',
+      });
+      expect(
+        (
+          await handler({
+            httpMethod: 'GET',
+            pathParameters: { projectId: removed.id },
+            ...claims(sub),
+          })
+        ).statusCode,
+      ).toBe(403);
+    } finally {
+      index.mockRestore();
+    }
+  });
+
+  it('keeps legacy lists complete beyond 50 spaces and returns bounded pages only when requested', async () => {
+    const sub = `u-${randomUUID()}`;
+    const ids = [];
+    for (let i = 0; i < 52; i++) {
+      const id = randomUUID();
+      ids.push(id);
+      await g.addV('Project').property('id', id).property('name', `Space ${i}`).next();
+      await seedMembership(id, sub);
+    }
+    const legacy = JSON.parse((await handler({ httpMethod: 'GET', ...claims(sub) })).body);
+    expect(Array.isArray(legacy)).toBe(true);
+    expect(legacy.map((project) => project.id).toSorted()).toEqual(ids.toSorted());
+    const first = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          queryStringParameters: { paged: '1' },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(first.items).toHaveLength(50);
+    expect(first.nextToken).toEqual(expect.any(String));
+    const second = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          queryStringParameters: { paged: '1', nextToken: first.nextToken },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(second.items).toHaveLength(2);
+    expect(second.nextToken).toBeNull();
+    expect([...first.items, ...second.items].map((project) => project.id).toSorted()).toEqual(
+      ids.toSorted(),
+    );
+  });
 });
 
 describe('PUT /projects/:id', () => {
@@ -757,7 +829,7 @@ describe('PUT /projects/:id', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can update settings',
+      error: 'Only project owners can update settings',
     });
   });
 
@@ -913,7 +985,7 @@ describe('GET/PUT /projects/:id/environment', () => {
       const response = await handler(event('PUT', id, memberSub, { environmentId: 'polyglot' }));
       expect(response.statusCode).toBe(403);
       expect(JSON.parse(response.body)).toEqual({
-        error: 'Only project owners and admins can assign environments',
+        error: 'Only project owners can assign environments',
       });
     } finally {
       if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
@@ -1009,6 +1081,33 @@ describe('DELETE /projects/:id', () => {
     expect(JSON.parse(fetched.body)).toEqual({ error: 'Access denied' });
   });
 
+  it('retains deletion permission for retry after graph teardown and keeps the audit history', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const memberId = `u-${randomUUID()}`;
+    await addMember(id, memberId, 'member');
+    const cleanup = membershipStore.deleteSpaceMembers;
+    const failure = vi
+      .spyOn(membershipStore, 'deleteSpaceMembers')
+      .mockImplementation(async (spaceId, actorId, options) => {
+        if (!options.keepActor) throw new Error('Unavailable');
+        return cleanup(spaceId, actorId, options);
+      });
+    const event = { httpMethod: 'DELETE', pathParameters: { projectId: id }, ...claims(sub) };
+    try {
+      expect((await handler(event)).statusCode).toBe(500);
+      expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
+      expect(await membershipStore.get(id, memberId)).toBeNull();
+      expect(await membershipStore.get(id, sub)).toMatchObject({ membershipRole: 'owner' });
+      expect((await handler({ ...event, httpMethod: 'GET' })).statusCode).toBe(403);
+    } finally {
+      failure.mockRestore();
+    }
+    expect((await handler(event)).statusCode).toBe(204);
+    expect((await membershipStore.listMembers(id)).items).toEqual([]);
+    expect((await membershipStore.listHistory(id)).items).toHaveLength(4);
+  });
+
   it('deletes both space agent credentials and tolerates an idempotent retry', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
@@ -1061,10 +1160,10 @@ describe('DELETE /projects/:id', () => {
       ...claims(otherSub),
     });
     expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Only project owners can delete projects' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Only Space Owners can delete spaces' });
   });
 
-  it('returns 403 when an admin (non-owner) tries to delete', async () => {
+  it('allows a former admin to delete as a Space Owner', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const adminSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);
@@ -1074,8 +1173,7 @@ describe('DELETE /projects/:id', () => {
       pathParameters: { projectId: id },
       ...claims(adminSub),
     });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Only project owners can delete projects' });
+    expect(res.statusCode).toBe(204);
   });
 
   it('returns 401 when sub is missing', async () => {
@@ -1215,6 +1313,51 @@ describe('DELETE /projects/:id', () => {
     expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
   });
 
+  it('retires each intent’s grants fenced on the run it read, and keeps an intent whose run changed', async () => {
+    vi.stubEnv('GATEWAY_GRANT_RETIREMENT_TABLE', 'retired-grants');
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentId = await seedIntent(id, { status: 'WAITING' });
+    projectExecs.get(id)[0].orchestratorRunId = 'run-listed';
+    const checks = [];
+    // A relaunch replaced the run id after the delete listed the intent.
+    ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+      const [{ ConditionCheck: check }, { Update: update }] = input.TransactItems;
+      checks.push({ check, update });
+      throw Object.assign(new Error('cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+      });
+    });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    try {
+      const res = await handler({
+        httpMethod: 'DELETE',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).intents).toEqual([intentId]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(checks).toHaveLength(1);
+    expect(checks[0].check).toMatchObject({
+      TableName: 'v2-proc-test',
+      Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :retiringRun',
+      ExpressionAttributeValues: { ':retiringRun': 'run-listed' },
+    });
+    expect(checks[0].update).toMatchObject({
+      TableName: 'retired-grants',
+      Key: { pk: `EXEC#${intentId}` },
+    });
+    // Nothing of the intent or the project was removed.
+    expect(await g.V().has('Intent', 'id', intentId).hasNext()).toBe(true);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+  });
+
   it('force-retires a RUNNING intent instead of refusing the project delete', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
@@ -1350,7 +1493,7 @@ describe('POST /projects/:id/migrate-tracker', () => {
     const res = await migrate(id, memberSub);
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can migrate trackers',
+      error: 'Only project owners can migrate trackers',
     });
   });
 
@@ -1817,7 +1960,7 @@ describe('POST /projects/:id/repos', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can add repositories',
+      error: 'Only Space Owners can add repositories',
     });
   });
 
@@ -1933,7 +2076,7 @@ describe('DELETE /projects/:id/repos', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can remove repositories',
+      error: 'Only Space Owners can remove repositories',
     });
   });
 
@@ -2724,6 +2867,71 @@ describe('GET/PUT /projects/:id/custom-mcp-servers/secrets', () => {
     await addMember(id, memberSub, 'member');
     const res = await handler({ ...projectSecretsEvent('GET', id), ...claims(memberSub) });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('runtime_mcp_credentials = gateway_only — space MCP settings', () => {
+  const SENTINEL = 'sentinel-space-mcp-secret-91c2';
+  // Back to the default profile; the file-level env stubs stay in place.
+  afterEach(() => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', ''));
+
+  it.each([
+    ['a remote server', { wiki: { type: 'http', url: 'https://wiki.example/mcp' } }],
+    ['a stdio server', { tool: { command: 'npx', env: { K: '${API_KEY}' } } }],
+  ])('refuses %s and keeps the stored config', async (_label, config) => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const res = await handler({
+      ...customMcpEvent('PUT', id, {
+        body: JSON.stringify({ customMcpServers: JSON.stringify(config) }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'runtime_mcp_gateway_only',
+      error: expect.stringContaining('Gateway target'),
+    });
+    const read = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(read.body)).toEqual({ customMcpServers: '{}' });
+  });
+
+  it('still reads and clears a config saved before the profile was enabled', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const legacy = JSON.stringify({ tool: { command: 'npx' } });
+    await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: legacy }) }),
+      ...claims(sub),
+    });
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const read = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(read.body)).toEqual({ customMcpServers: legacy });
+    const cleared = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: '{}' }) }),
+      ...claims(sub),
+    });
+    expect(cleared.statusCode).toBe(200);
+  });
+
+  it('refuses setting a space MCP secret but allows clearing one', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const set = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: SENTINEL } }),
+      }),
+      ...claims(sub),
+    });
+    expect(set.statusCode).toBe(400);
+    expect([...ssmParams.values()]).not.toContain(SENTINEL);
+    const cleared = await handler({
+      ...projectSecretsEvent('PUT', id, { body: JSON.stringify({ mcpSecrets: { API_KEY: '' } }) }),
+      ...claims(sub),
+    });
+    expect(cleared.statusCode).toBe(200);
   });
 });
 

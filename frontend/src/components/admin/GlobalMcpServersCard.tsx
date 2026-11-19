@@ -10,6 +10,7 @@ import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersS
 export function GlobalMcpServersCard() {
   const [value, setValue] = useState('{}');
   const [mcpSecretsSet, setMcpSecretsSet] = useState<Record<string, boolean>>({});
+  const [gatewayOnly, setGatewayOnly] = useState(false);
 
   useEffect(() => {
     agentsService
@@ -17,6 +18,7 @@ export function GlobalMcpServersCard() {
       .then((s) => {
         setValue(s.customMcpServers ?? '{}');
         setMcpSecretsSet(s.mcpSecretsSet ?? {});
+        setGatewayOnly(s.runtimeMcpCredentials === 'gateway_only');
       })
       .catch((e) => console.error('Failed to load global MCP servers:', e));
   }, []);
@@ -44,6 +46,7 @@ export function GlobalMcpServersCard() {
       description="Custom MCP servers injected into every agent session across all spaces. A space's own MCP servers are merged on top (space wins when names collide)."
       mcpSecretsSet={mcpSecretsSet}
       onSaveSecrets={saveSecrets}
+      gatewayOnly={gatewayOnly}
     />
   );
 }

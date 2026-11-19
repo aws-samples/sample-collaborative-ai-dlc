@@ -3,6 +3,7 @@ import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { ddb, openGraph, s3 } from './clients.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
 import {
   ENGINE_DATA_BLOB_PREFIX,
@@ -28,7 +29,10 @@ const publicKeyFor = kmsPublicKeyResolver({
   allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(','),
 });
 
-const verifyGrant = (token) => verifyGatewayGrant(token, { publicKeyFor });
+// Retirement is checked per call like every other grant claim. Writes the
+// engine makes before its stage callback carry a live grant and are unaffected.
+const isRetired = gatewayGrantRetirementCheckFromEnv({ ddb });
+const verifyGrant = (token) => verifyGatewayGrant(token, { publicKeyFor, isRetired });
 const createStore = () => createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
 const audit = (record) =>
   record.decision === 'deny'

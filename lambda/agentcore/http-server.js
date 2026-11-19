@@ -81,11 +81,14 @@ import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
-import { createCredentialSession } from './credential-session.js';
-import { accountCredentialInvocation } from './invocation-accounting.js';
+import { prepareCredentialInvocation } from './invocation-context.js';
 import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
 import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
-import { readSandboxSettings } from '../shared/sandbox-settings.js';
+import {
+  captureSandboxSettings,
+  dispatchedSandbox,
+  readSandboxSettings,
+} from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import {
   blobAccessFor,
@@ -315,12 +318,35 @@ export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
   return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
 };
 
-// The invocation's SRT policy: the execution's captured policy, or the current
-// settings for drafts and standalone operations.
+// The platform sandbox settings, read with the runtime role unless enforced
+// runtime grants stripped its process-table access (RUNTIME_DATA_ACCESS, set by
+// Terraform with that role). Until then an engine-data runtime still reads them,
+// so a payload from a dispatcher not yet sending `agentSandbox` keeps working.
+export const sandboxSettingsReaderFor = ({ env = process.env, ddb } = {}) =>
+  env.RUNTIME_DATA_ACCESS === 'engine_data_only'
+    ? null
+    : () => readSandboxSettings({ ddb, tableName: env.V2_PROCESS_TABLE });
+
+// The invocation's SRT policy: the execution's captured policy (read through the
+// store, never from the payload), or the current settings for drafts and
+// standalone operations. Those take the policy the dispatching control plane
+// resolved (`agentSandbox`), else the settings read with the runtime role; with
+// `readSettings` null (enforced grants) an invocation without one is refused.
 export const createSandboxPreparation =
   ({ store, readSettings }) =>
   async (payload) => {
-    const sandbox = await resolveInvocationSandbox({ payload, store, readSettings });
+    const sandbox = await resolveInvocationSandbox({
+      payload,
+      store,
+      readCurrent: async () => {
+        const dispatched = dispatchedSandbox(payload.agentSandbox);
+        if (dispatched) return dispatched;
+        if (!readSettings) {
+          throw new Error('This invocation carries no sandbox configuration');
+        }
+        return captureSandboxSettings(await readSettings());
+      },
+    });
     if (sandbox.enabled) sandbox.settings = validateSandboxConfig(sandbox.settings);
     logger.info('invocation sandbox configuration', {
       command: payload.command,
@@ -367,7 +393,6 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { authenticatedClis, resolveInvocationAgentAuth } = await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
@@ -383,43 +408,8 @@ const main = async () => {
   const catalog = catalogAccessFor({ env: process.env });
   const customRulePins = customRulePinsFor({ env: process.env, s3 });
   const installedClis = await discoverInstalledClis();
-  const invocationContext = async (payload, authMode) => {
-    const auth = await resolveInvocationAgentAuth({
-      payload,
-      authMode,
-      store,
-      env: process.env,
-    });
-    const credentialSession =
-      auth.credentialSession ??
-      createCredentialSession({
-        env: auth.env,
-        credentialEnvironment: auth.credentialEnvironment,
-        expiresAt: auth.expiresAt,
-        authorizationExpiresAt: auth.authorizationExpiresAt,
-        refresh: auth.refresh,
-      });
-    try {
-      await accountCredentialInvocation({
-        ddb,
-        tableName: process.env.V2_PROCESS_TABLE,
-        session: credentialSession,
-        payload: { ...payload, projectId: auth.projectId },
-        bindings: auth.bindings,
-      });
-    } catch (error) {
-      await credentialSession.release();
-      throw error;
-    }
-    return {
-      ...auth,
-      credentialSession,
-      availableClis: authenticatedClis({
-        installed: installedClis,
-        providers: auth.resolvedProviders,
-      }),
-    };
-  };
+  const invocationContext = (payload, authMode) =>
+    prepareCredentialInvocation({ payload, authMode, store, ddb, env: process.env, installedClis });
 
   // Publish a process-state payload on the intent's realtime channel. The
   // payload carries its own intentId (the command stamps it), so fan-out is keyed
@@ -623,7 +613,7 @@ const main = async () => {
     prepareInvocation: invocationContext,
     prepareSandbox: createSandboxPreparation({
       store,
-      readSettings: () => readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+      readSettings: sandboxSettingsReaderFor({ env: process.env, ddb }),
     }),
   });
   server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));

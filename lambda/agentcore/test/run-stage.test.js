@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { mockClient } from 'aws-sdk-client-mock';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import { runWithGatewayGrant } from '../mcp/gateway-context.js';
+import { authorizeMcpSecretRequest } from '../../credential-broker/mcp-secrets.js';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -18,7 +24,10 @@ import {
 import { repoCheckoutPath } from '../../shared/repo-validation.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { currentCredentialSession } from '../credential-session.js';
-import { renderRulesDoc } from '../stage-materializer.js';
+import {
+  materializeOpenCodeConfig as stageOpenCodeConfig,
+  renderRulesDoc,
+} from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { createRemoteProcessStore } from '../engine-data-client.js';
@@ -1235,6 +1244,134 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
     global: {},
     project: { tool: { command: 'npx', env: { API: '${MYSERVER_KEY}' } } },
   };
+
+  it.each([true, false])(
+    'uses the broker in enabled mode, success=%s, never local SSM or fallback',
+    async (success) => {
+      const lambda = mockClient(LambdaClient);
+      const ssm = mockClient(SSMClient);
+      const local = vi.fn(() => {
+        throw new Error('local resolver tripwire');
+      });
+      const { cap, spawnFn } = capturingSpawn();
+      vi.stubEnv('ENGINE_DATA_FUNCTION', 'engine-data');
+      vi.stubEnv('CREDENTIAL_BROKER_FUNCTION', 'credential-broker');
+      ssm.onAnyCommand().rejects(new Error('direct SSM tripwire'));
+      const deps = baseDeps({ spawnFn, resolveMcpSecrets: local, loadConductor: async () => '' });
+      const secretRead = vi.fn(async ({ input }) => {
+        expect(input).toEqual({
+          Name: '/app/dev/projects/p1/mcp-secrets/MYSERVER_KEY',
+          WithDecryption: true,
+        });
+        return { Parameter: { Value: 'broker-secret' } };
+      });
+      lambda.on(InvokeCommand).callsFake(async (input) => {
+        expect(input.FunctionName).toBe('credential-broker');
+        expect(JSON.parse(Buffer.from(input.Payload))).toEqual({
+          action: 'resolve-mcp-secrets',
+          gatewayGrant: 'stage-grant',
+          projectId: 'p1',
+          mcpServersByTier: serversByTier,
+        });
+        const request = JSON.parse(Buffer.from(input.Payload));
+        const result = success
+          ? await authorizeMcpSecretRequest(request, {
+              env: {
+                ENGINE_DATA_ENABLED: 'true',
+                V2_PROCESS_TABLE: 'process',
+                AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
+              },
+              verifyGrant: async () => ({
+                mode: 'stage',
+                projectId: baseArgs.projectId,
+                intentId: baseArgs.intentId,
+                executionId: baseArgs.executionId,
+                stageId: baseArgs.stageId,
+              }),
+              ddbClient: {
+                send: async ({ input: read }) => {
+                  expect(read.ConsistentRead).toBe(true);
+                  expect(read.Key.pk).toBe('EXEC#e1');
+                  if (read.Key.sk === 'META')
+                    return { Item: { ...baseArgs, mcpServersByTier: serversByTier } };
+                  const stage = deps.store.calls.find(([op]) => op === 'putStage')[1];
+                  expect(read.Key.sk).toBe(`STAGE#${stage.stageInstanceId}`);
+                  return { Item: stage };
+                },
+              },
+              ssmClient: { send: secretRead },
+            })
+          : { ok: false, code: 'MCP_SECRET_MISSING' };
+        return { Payload: Buffer.from(JSON.stringify(result)) };
+      });
+      try {
+        const result = await runWithGatewayGrant('stage-grant', () =>
+          runStage({ ...baseArgs, mcpServersByTier: serversByTier }, deps),
+        );
+        expect(result).toMatchObject(
+          success ? { ok: true, state: 'SUCCEEDED' } : { ok: false, reason: 'mcp_secret_error' },
+        );
+        expect(cap.env?.MYSERVER_KEY ?? null).toBe(success ? 'broker-secret' : null);
+        expect(local).not.toHaveBeenCalled();
+        expect(ssm.calls()).toHaveLength(0);
+        expect(lambda.calls()).toHaveLength(1);
+        expect(secretRead).toHaveBeenCalledTimes(success ? 1 : 0);
+      } finally {
+        lambda.restore();
+        ssm.restore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  describe('with runtime_mcp_credentials = gateway_only', () => {
+    const SENTINEL = 'sentinel-runtime-mcp-secret-e21b';
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([
+      ['a stdio server with a secret ref', serversByTier, undefined],
+      [
+        'a remote server with an inline header',
+        {
+          global: {
+            wiki: { type: 'http', url: 'https://wiki.example/mcp', headers: { A: SENTINEL } },
+          },
+          project: {},
+        },
+        undefined,
+      ],
+      ['a stdio server on resume', serversByTier, 'q-1'],
+    ])(
+      'fails the stage on %s before resolving secrets or spawning',
+      async (_l, byTier, resumeFrom) => {
+        vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+        const resolveMcpSecrets = vi.fn(async () => ({ secretEnv: { MYSERVER_KEY: SENTINEL } }));
+        const { cap, spawnFn } = capturingSpawn();
+        const deps = baseDeps({ spawnFn, resolveMcpSecrets });
+        const res = await runStage({ ...baseArgs, resumeFrom, mcpServersByTier: byTier }, deps);
+
+        expect(res).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+        expect(res.detail).toContain('mcp_gateway_custom_targets');
+        expect(resolveMcpSecrets).not.toHaveBeenCalled();
+        expect(cap.env).toBeNull();
+        expect(JSON.stringify(deps.store.calls)).not.toContain(SENTINEL);
+        expect(
+          deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+        ).toBe(true);
+      },
+    );
+
+    it('runs a stage without custom MCP servers unchanged', async () => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const { cap, spawnFn } = capturingSpawn();
+      const res = await runStage(
+        { ...baseArgs, mcpServersByTier: { global: {}, project: {} } },
+        baseDeps({ spawnFn, resolveMcpSecrets: async () => ({ secretEnv: {} }) }),
+      );
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(cap.env).not.toBeNull();
+    });
+  });
 
   it('injects the resolved secretEnv into the child spawn env', async () => {
     const { cap, spawnFn } = capturingSpawn();
@@ -3902,6 +4039,76 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     const argv = seen.find((value) => value.args);
     expect(argv.args[argv.args.indexOf('--session') + 1]).toBe('ses_old');
     expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  describe('under gateway_only, with the durable store in a single-repository checkout', () => {
+    // A Git hook's GIT_DIR/GIT_INDEX_FILE would point these commands at this repository.
+    const gitEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+    );
+    afterEach(() => vi.unstubAllEnvs());
+    const resume = async ({ tracked }) => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-ocstore-'));
+      // OpenCode's user config is under HOME: keep the developer's out.
+      vi.stubEnv('HOME', nodePath.join(root, 'home'));
+      const ws = nodePath.join(root, 'ws');
+      const stored = nodePath.join(ws, '.opencode-data', 'opencode');
+      await mkdir(stored, { recursive: true });
+      await writeFile(nodePath.join(stored, 'opencode.db'), 'sessions');
+      if (tracked) {
+        await writeFile(
+          nodePath.join(stored, 'auth.json'),
+          JSON.stringify({ 'https://config.example': { type: 'wellknown', key: 'K', token: 't' } }),
+        );
+      }
+      execFileSync('git', ['init', '-q'], { cwd: ws, env: gitEnv });
+      if (tracked) execFileSync('git', ['add', '.opencode-data'], { cwd: ws, env: gitEnv });
+      const local = nodePath.join(root, 'local');
+      const seen = [];
+      const res = runStage(
+        { ...baseArgs, workspaceDir: ws, requestedCli: 'opencode', resumeFrom: 'q-open' },
+        baseDeps({
+          availableClis: ['opencode'],
+          env: {
+            BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+            OPENCODE_XDG_DATA_HOME: local,
+            V2_OPENCODE_STORE_DIR: nodePath.join(ws, '.opencode-data'),
+          },
+          store: spyStore({
+            humanTask: { humanTaskId: 'q-open', status: 'answered', answer: { freeText: 'Go' } },
+            stage: { cli: 'opencode', cliSessionId: 'ses_old' },
+          }),
+          materializeOpenCodeConfig: stageOpenCodeConfig,
+          spawnFn: openCodeSpawn({
+            emitSession: false,
+            capture: (value) =>
+              value.args &&
+              seen.push({
+                args: value.args,
+                restored: readFileSync(nodePath.join(local, 'opencode', 'opencode.db'), 'utf8'),
+                auth: existsSync(nodePath.join(local, 'opencode', 'auth.json')),
+              }),
+          }),
+          hasOpenCodeStore: async () => true,
+        }),
+      );
+      return { res, seen };
+    };
+
+    it('refuses to resume from a store the repository tracks', async () => {
+      const { res, seen } = await resume({ tracked: true });
+      await expect(res).rejects.toMatchObject({ code: 'runtime_mcp_gateway_only' });
+      expect(seen).toEqual([]);
+    });
+
+    it('still resumes from the store the platform wrote', async () => {
+      const { res, seen } = await resume({ tracked: false });
+      await expect(res).resolves.toMatchObject({ ok: true, cli: 'opencode' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].args[seen[0].args.indexOf('--session') + 1]).toBe('ses_old');
+      expect(seen[0]).toMatchObject({ restored: 'sessions', auth: false });
+    });
   });
 
   it('persists the first observed Codex thread id before marking a parked stage waiting', async () => {

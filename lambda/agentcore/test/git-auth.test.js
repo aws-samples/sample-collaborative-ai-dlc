@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ASKPASS_BODY, resolveGitCommitter, withGitCredential } from '../git-auth.js';
+import { runWithGatewayGrant } from '../mcp/gateway-context.js';
+
+afterEach(() => vi.unstubAllEnvs());
 
 const context = {
   executionId: 'exec-1',
@@ -25,6 +28,38 @@ const fsHarness = () => {
 };
 
 describe('AgentCore git credential isolation', () => {
+  it('attaches the current invocation grant independently on every enabled-mode request', async () => {
+    vi.stubEnv('ENGINE_DATA_FUNCTION', 'engine-data');
+    const broker = vi.fn(async () => ({ committer: null, username: 'user', password: 'inert' }));
+    await Promise.all(
+      ['grant-one', 'grant-two'].map((grant) =>
+        runWithGatewayGrant(grant, async () => {
+          await resolveGitCommitter(context, { broker });
+          await withGitCredential({ ...context, requiredAccess: 'read' }, async () => {}, {
+            broker,
+            ...fsHarness(),
+          });
+        }),
+      ),
+    );
+    for (const gatewayGrant of ['grant-one', 'grant-two']) {
+      for (const requiredAccess of ['identity', 'read']) {
+        expect(broker).toHaveBeenCalledWith({
+          ...context,
+          requiredAccess,
+          action: 'source-control',
+          gatewayGrant,
+        });
+      }
+    }
+    await resolveGitCommitter(context, { broker });
+    expect(broker).toHaveBeenLastCalledWith({
+      ...context,
+      requiredAccess: 'identity',
+      action: 'source-control',
+      gatewayGrant: null,
+    });
+  });
   it('uses a temporary askpass helper and destroys its environment and directory', async () => {
     const secret = ['temporary', 'broker', 'secret'].join('-');
     const broker = vi.fn(async () => ({

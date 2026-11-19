@@ -100,6 +100,8 @@ echo "Disabling deletion protection for the confirmed teardown"
 PROTECTION_TARGETS=(
     -target=module.auth.aws_cognito_user_pool.main
     -target=module.neptune.aws_neptune_cluster.main
+    -target=module.dynamodb.aws_dynamodb_table.access
+    -target=module.dynamodb.aws_dynamodb_table.audit
     -target=module.dynamodb.aws_dynamodb_table.sessions
     -target=module.dynamodb.aws_dynamodb_table.notifications
     -target=module.dynamodb.aws_dynamodb_table.agent_questions

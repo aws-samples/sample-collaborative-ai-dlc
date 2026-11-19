@@ -8,16 +8,30 @@
 // override the target's credential or forge the context. A denial short-
 // circuits with a JSON-RPC error and the target is never invoked.
 //
+// A tools/call to a customer MCP target (mcp_gateway_custom_targets) is
+// forwarded with the minimal caller envelope instead of the built-in context:
+// grant-derived fields only, and never Authorization, which would replace the
+// credential the Gateway injects from AgentCore Identity. While customer
+// targets exist, every other allowed request sets the same header to the fixed
+// "no caller" value, so a caller-supplied envelope can never reach a customer
+// target whatever method the Gateway forwards to it.
+//
 // RESPONSE: tools/list is filtered with the same predicate tools/call enforces,
-// re-derived from the original request headers. A denial produced at REQUEST
+// built-in and customer tools alike, re-derived from the original request
+// headers; pagination and every other result field are kept. A denial produced at REQUEST
 // time, and every other method's response, passes through unchanged.
 import {
+  AIDLC_TARGET,
   GATEWAY_DENIAL_CODE,
   GatewayAccessDenied,
   splitQualifiedToolName,
-  toolAllowedForContext,
 } from '../shared/mcp/gateway-authorization.js';
 import { encodeGatewayContext } from '../shared/mcp/gateway-context.js';
+import {
+  CUSTOMER_CALLER_HEADER,
+  NO_CUSTOMER_CALLER,
+  encodeCustomerCaller,
+} from '../shared/mcp/gateway-custom-targets.js';
 
 export const INTERCEPTOR_VERSION = '1.0';
 
@@ -76,14 +90,26 @@ export const createGatewayInterceptor = ({ authorizer, audit = () => {} }) => {
       }
     }
     const authorized = await authorizer.authorize(request.headers, { qualifiedTool });
+    const customerTarget = Boolean(authorized.target) && authorized.target !== AIDLC_TARGET;
     let headers;
     try {
-      headers = encodeGatewayContext(authorized);
+      headers = customerTarget
+        ? encodeCustomerCaller(authorized.grant)
+        : {
+            ...encodeGatewayContext(authorized),
+            ...(authorized.hasCustomTargets
+              ? { [CUSTOMER_CALLER_HEADER]: NO_CUSTOMER_CALLER }
+              : {}),
+          };
     } catch {
       throw new GatewayAccessDenied('context_too_large', authorized.auditScope);
     }
     return {
-      record: { decision: 'allow', ...authorized.auditScope },
+      record: {
+        decision: 'allow',
+        ...(customerTarget ? { target: authorized.target } : {}),
+        ...authorized.auditScope,
+      },
       output: {
         interceptorOutputVersion: INTERCEPTOR_VERSION,
         mcp: { transformedGatewayRequest: { headers, body: request.body } },
@@ -106,7 +132,7 @@ export const createGatewayInterceptor = ({ authorizer, audit = () => {} }) => {
     const authorized = await authorizer.authorize(request.headers);
     const visible = tools.filter((entry) => {
       const { target, tool } = splitQualifiedToolName(entry?.name);
-      return toolAllowedForContext(authorized, target, tool);
+      return authorized.allowsTool(target, tool);
     });
     return {
       record: {
