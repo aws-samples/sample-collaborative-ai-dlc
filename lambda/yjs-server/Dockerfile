@@ -7,7 +7,10 @@ RUN apk upgrade --no-cache
 WORKDIR /app
 
 COPY --chown=node:node --chmod=0644 package.json package-lock.json ./
-RUN npm ci --omit=dev
+# npm is only needed to install the dependencies. Removing it keeps the
+# packages it bundles, and their CVEs, out of the runtime image.
+RUN npm ci --omit=dev \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --chown=node:node --chmod=0644 server.js service.js rooms.js protocol.js cluster.js aws-store.js config.js doc-name.js realtime-token.js ./
 
