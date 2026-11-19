@@ -26,6 +26,7 @@ const META_FIELDS = [
   'branch',
   'baseBranch',
   'baseBranches',
+  'sparseCheckout',
   'repos',
   'repoProviders',
   'gitProvider',

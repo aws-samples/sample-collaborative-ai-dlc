@@ -1658,9 +1658,16 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     if (slug) q = q.has('slug', slug);
     if (heading) q = q.has('heading', heading);
     // Client-side currency filter (see isCurrentRow) — a heading/slug lookup
-    // must never resolve to a section a re-derive removed.
+    // must never resolve to a section a re-derive removed. A heading can repeat
+    // within an artifact, so the earliest section wins rather than whichever
+    // row the store happens to return first.
     const rows = await q.valueMap(true).toList();
-    return rows.map(flattenValueMap).find(isCurrentRow) ?? null;
+    return (
+      rows
+        .map(flattenValueMap)
+        .filter(isCurrentRow)
+        .toSorted((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))[0] ?? null
+    );
   };
 
   const getItems = async ({ itemType = null, artifactType = null, limit = 100 } = {}) => {
