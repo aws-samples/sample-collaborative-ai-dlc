@@ -31,7 +31,10 @@
     "zod": "^4.6.6"
   },
   "overrides": {
-    "hono": "4.13.5",
+    "@anthropic-ai/sandbox-runtime": {
+      "zod": "$zod"
+    },
+    "hono": "4.13.18",
     "qs": "6.17.1"
   }
 }
