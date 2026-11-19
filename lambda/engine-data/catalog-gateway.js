@@ -81,6 +81,7 @@ const allowedQuery = (input) => {
   const values = input.ExpressionAttributeValues ?? {};
   if (input.IndexName === 'GSI1') {
     return (
+      input.ConsistentRead === undefined &&
       input.KeyConditionExpression === 'GSI1PK = :pk' &&
       onlyKeys(values, [':pk']) &&
       CATALOG_GSI1_PK.test(String(values[':pk']))
@@ -89,6 +90,7 @@ const allowedQuery = (input) => {
   const versionKey = WORKFLOW_CONDITIONS.get(input.KeyConditionExpression);
   return (
     input.IndexName === undefined &&
+    (input.ConsistentRead === undefined || input.ConsistentRead === true) &&
     Boolean(versionKey) &&
     onlyKeys(values, [':pk', versionKey]) &&
     WORKFLOW_PK.test(String(values[':pk'])) &&
@@ -121,6 +123,7 @@ const confinedDdb = (ddb, tableName) => ({
           'KeyConditionExpression',
           'ExpressionAttributeValues',
           'ExclusiveStartKey',
+          'ConsistentRead',
         ]) ||
         input.TableName !== tableName ||
         !allowedQuery(input)

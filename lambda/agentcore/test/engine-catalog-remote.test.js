@@ -242,6 +242,24 @@ describe('remote catalog — legacy (unpinned) catalog', () => {
     expect(remote.ops).toEqual(['catalog.loadLibrary']);
   });
 
+  it('preserves saved responsibility policies and role lists through the remote runtime catalog', async () => {
+    const storedPolicies = 'stored-policy-bytes';
+    const permissions = { decisionMakerRoles: ['developer'], contributorRoles: ['architect'] };
+    workflowRows[0].cedarPolicies = storedPolicies;
+    workflowRows[1].permissions = permissions;
+    try {
+      const result = await bothModes({ s3Mock, ddbMock }, remote, () =>
+        loadLibrary({ workflowId: WORKFLOW_ID, workflowVersion: 1 }),
+      );
+      expectEquivalent(result);
+      expect(result.remote.outcome.value.workflow.cedarPolicies).toBe(storedPolicies);
+      expect(result.remote.outcome.value.workflow.placements[0].permissions).toEqual(permissions);
+    } finally {
+      delete workflowRows[0].cedarPolicies;
+      delete workflowRows[1].permissions;
+    }
+  });
+
   it('returns the same miss for an unknown workflow', async () => {
     const result = await bothModes({ s3Mock, ddbMock }, remote, () =>
       loadLibrary({ workflowId: 'nope', workflowVersion: 9 }),

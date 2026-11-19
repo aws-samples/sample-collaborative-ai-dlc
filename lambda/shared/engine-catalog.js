@@ -50,10 +50,12 @@ export const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   const scopeRefs = [];
   const phases = [];
   let sourceRef = null;
+  let cedarPolicies = null;
   for (const it of items) {
     const sk = liveSk(it.sk);
     if (sk === 'META') {
       sourceRef = it.sourceRef ?? null;
+      cedarPolicies = it.cedarPolicies ?? null;
     } else if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
@@ -62,6 +64,7 @@ export const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
         order: it.order ?? 0,
         phasePath: it.phasePath ?? null,
         scopeMembership: it.scopeMembership ?? {},
+        ...(it.permissions != null ? { permissions: it.permissions } : {}),
       });
     } else if (sk.startsWith('RULEREF#')) {
       ruleRefs.push({ layer: it.layer, ruleId: it.ruleId });
@@ -75,6 +78,7 @@ export const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
     workflowId,
     workflowVersion: Number(workflowVersion),
     sourceRef,
+    ...(cedarPolicies != null ? { cedarPolicies } : {}),
     placements,
     ruleRefs,
     scopeRefs,
@@ -219,6 +223,7 @@ export const createEngineCatalog = ({ s3, ddb, bucket, blocksTable }) => {
     for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
       const items = await queryAll({
         TableName: blocksTable,
+        ConsistentRead: true,
         KeyConditionExpression: 'pk = :pk AND begins_with(sk, :vp)',
         ExpressionAttributeValues: {
           ':pk': workflowPk(tenant, workflowId),
