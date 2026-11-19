@@ -1,16 +1,12 @@
-// Opt-in (DELETE_UNUSED_INTENT_BRANCHES): when a run ends, delete the intent's
-// branches from each repository it never changed. init-ws publishes the intent
-// branch to every repository of the space and lanes publish their unit branches
-// to every repository, so a repository the intent never touches is otherwise
-// left with branches that only point at commits already on its base branch.
-// The source-control service decides per repository (unused-branch-cleanup.js);
-// a repository with any work keeps every branch. Best-effort: a failure is
-// logged and never changes the run's outcome. A rewind or restart re-creates a
-// missing intent branch (init-ws step 1b).
+// When a run ends, delete the intent's branches from each repository it never
+// changed. init-ws publishes the intent branch to every repository of the space
+// and lanes publish their unit branches to every repository, so a repository
+// the intent never touches is otherwise left with branches that only point at
+// commits already on its base branch. The source-control service decides per
+// repository (unused-branch-cleanup.js); a repository with any work keeps every
+// branch. Best-effort: a failure is logged and never changes the run's outcome.
+// A rewind or restart re-creates a missing intent branch (init-ws step 1b).
 import { repoProvider } from './repo-provider.js';
-
-export const deleteUnusedIntentBranchesEnabled = (env = process.env) =>
-  env.DELETE_UNUSED_INTENT_BRANCHES === 'true';
 
 export const deleteUnusedIntentBranches = async ({ meta, operation, logger = null }) => {
   if (!meta?.branch || !meta.projectId || !Array.isArray(meta.repos)) return [];

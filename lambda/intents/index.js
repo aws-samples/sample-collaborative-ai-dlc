@@ -47,7 +47,6 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
-import { deleteUnusedIntentBranchesEnabled } from '../shared/intent-branch-cleanup.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -3621,12 +3620,12 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
   await cleanUpUnusedIntentBranches({ ...meta, ...updated, executionId: intentId });
   return response(200, mapIntent(updated));
 };
-// Opt-in (DELETE_UNUSED_INTENT_BRANCHES): a cancelled or repaired-to-FAILED run
+// A cancelled or repaired-to-FAILED run
 // deletes its branches from repositories it never changed. The orchestrator
 // does it, as for runs it ends itself, in its own invocation so a cancel or a
 // repair never waits for provider calls. Never throws.
 const cleanUpUnusedIntentBranches = async (meta) => {
-  if (!deleteUnusedIntentBranchesEnabled() || !meta?.executionId) return;
+  if (!meta?.executionId) return;
   try {
     await invokeOrchestrator(
       {

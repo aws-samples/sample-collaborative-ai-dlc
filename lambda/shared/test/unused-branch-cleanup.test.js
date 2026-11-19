@@ -1,11 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getProvider } from '../git-providers.js';
 import { deleteUnusedBranches } from '../unused-branch-cleanup.js';
-import {
-  cleanupSummary,
-  deleteUnusedIntentBranches,
-  deleteUnusedIntentBranchesEnabled,
-} from '../intent-branch-cleanup.js';
+import { cleanupSummary, deleteUnusedIntentBranches } from '../intent-branch-cleanup.js';
 
 const BASE_SHA = 'base-sha';
 // An in-memory repository: branch -> head, the commits the base branch
@@ -282,14 +278,6 @@ describe('deleteUnusedIntentBranches', () => {
     repoProviders: { 'org/web': 'github' },
     baseBranches: { 'group/api': 'develop' },
   };
-
-  it('is off unless DELETE_UNUSED_INTENT_BRANCHES is true', () => {
-    expect(deleteUnusedIntentBranchesEnabled({})).toBe(false);
-    expect(deleteUnusedIntentBranchesEnabled({ DELETE_UNUSED_INTENT_BRANCHES: 'false' })).toBe(
-      false,
-    );
-    expect(deleteUnusedIntentBranchesEnabled({ DELETE_UNUSED_INTENT_BRANCHES: 'true' })).toBe(true);
-  });
 
   it('asks the source-control service about every repository and survives a failure', async () => {
     const operation = vi.fn(async ({ repo }) => {

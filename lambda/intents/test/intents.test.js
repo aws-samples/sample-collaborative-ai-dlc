@@ -14268,21 +14268,7 @@ describe('unused intent branch cleanup (opt-in)', () => {
     seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
     return { sub, projectId, intent, metaKey };
   };
-  const enable = () => {
-    process.env.DELETE_UNUSED_INTENT_BRANCHES = 'true';
-  };
-  afterEach(() => {
-    delete process.env.DELETE_UNUSED_INTENT_BRANCHES;
-  });
-
-  it('requests nothing on cancel unless the deployment enables it', async () => {
-    const { sub, projectId, intent } = await waitingIntent();
-    expect((await cancel(sub, projectId, intent.id)).statusCode).toBe(200);
-    expect(cleanupInvokes()).toEqual([]);
-  });
-
   it('hands the cleanup of a cancelled run to the orchestrator, without waiting for it', async () => {
-    enable();
     const { sub, projectId, intent } = await waitingIntent();
     const res = await cancel(sub, projectId, intent.id);
     expect(res.statusCode).toBe(200);
@@ -14301,7 +14287,6 @@ describe('unused intent branch cleanup (opt-in)', () => {
   });
 
   it('still cancels when the cleanup cannot be requested', async () => {
-    enable();
     const { sub, projectId, intent, metaKey } = await waitingIntent();
     lambdaMock.on(InvokeCommand, { FunctionName: 'orchestrator-test' }).rejects(new Error('down'));
     const res = await cancel(sub, projectId, intent.id);
@@ -14310,7 +14295,6 @@ describe('unused intent branch cleanup (opt-in)', () => {
   });
 
   it('requests a cleanup when an expired durable run is repaired to FAILED', async () => {
-    enable();
     const { sub, projectId, intent, metaKey } = await waitingIntent();
     const expired = new Error('callback timed out');
     expired.name = 'CallbackTimeoutException';

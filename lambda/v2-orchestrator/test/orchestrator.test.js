@@ -1734,7 +1734,7 @@ describe('unused intent branch cleanup (opt-in)', () => {
   };
   const start = () =>
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
-  it('takes no cleanup step unless the deployment enables it', async () => {
+  it('takes no cleanup step without a cleanup dependency (histories before it)', async () => {
     trackMeta();
     const names = stepNames();
     expect((await start()).ok).toBe(true);
@@ -1840,7 +1840,7 @@ describe('unused intent branch cleanup (opt-in)', () => {
     expect(res).toEqual({ ok: true, skipped: true });
     expect(deps.deleteUnusedBranches).not.toHaveBeenCalled();
   });
-  it('ignores a cleanup request when the deployment has it off', async () => {
+  it('ignores a cleanup request without a cleanup dependency', async () => {
     const res = await __durableHandler(
       {
         action: 'cleanup-branches',
@@ -1852,7 +1852,7 @@ describe('unused intent branch cleanup (opt-in)', () => {
       ctx,
       deps,
     );
-    expect(res).toEqual({ ok: false, reason: 'disabled' });
+    expect(res).toEqual({ ok: false, reason: 'unavailable' });
   });
   it('never fails the run when the cleanup fails', async () => {
     trackMeta();

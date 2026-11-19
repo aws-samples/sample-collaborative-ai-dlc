@@ -568,9 +568,6 @@ module "lambda" {
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
 
-  # Delete ended intents' branches from repositories they never changed.
-  delete_unused_intent_branches = var.delete_unused_intent_branches
-
   # Custom AI-DLC fork releases kept in GitLab (seed-blocks importRelease).
   aidlc_custom_source_gitlab_url              = var.aidlc_custom_source_gitlab_url
   aidlc_custom_source_gitlab_token_secret_arn = var.aidlc_custom_source_gitlab_token_secret_arn

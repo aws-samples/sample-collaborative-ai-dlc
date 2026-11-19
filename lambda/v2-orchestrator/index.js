@@ -113,11 +113,7 @@ import {
 import { runQuorumEdit } from './quorum-edit.js';
 import { openIntentPrs } from '../shared/intent-pr.js';
 import { publishFinalDelivery } from '../shared/final-delivery.js';
-import {
-  cleanupSummary,
-  deleteUnusedIntentBranches,
-  deleteUnusedIntentBranchesEnabled,
-} from '../shared/intent-branch-cleanup.js';
+import { cleanupSummary, deleteUnusedIntentBranches } from '../shared/intent-branch-cleanup.js';
 import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import {
   bindGateCallback,
@@ -332,10 +328,8 @@ const defaultDeps = () => ({
       }).loadPlan,
     }),
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
-  deleteUnusedBranches: deleteUnusedIntentBranchesEnabled()
-    ? (meta) =>
-        deleteUnusedIntentBranches({ meta, operation: defaultSourceControlOperation, logger })
-    : null,
+  deleteUnusedBranches: (meta) =>
+    deleteUnusedIntentBranches({ meta, operation: defaultSourceControlOperation, logger }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   issueGatewayGrant: gatewayGrantIssuer,
@@ -561,7 +555,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // here, after the API has answered: provider calls per repository could
   // outlast the request.
   if (event.action === 'cleanup-branches') {
-    if (typeof deps.deleteUnusedBranches !== 'function') return { ok: false, reason: 'disabled' };
+    if (typeof deps.deleteUnusedBranches !== 'function')
+      return { ok: false, reason: 'unavailable' };
     const result = await ctx.step('branches-clean', () =>
       cleanUpEndedRun({
         store,
@@ -640,8 +635,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // marker and retain their operation sequence; repair creates a new history.
     // laneWaitPolicyVersion 1: lanes read their integration turn in durable
     // steps (section.js waitForIntegrationTurn).
-    // unusedBranchCleanup: the run ends with a branch-cleanup step; pinned
-    // here so a later setting change never alters this history's steps.
+    // unusedBranchCleanup: the run ends with a branch-cleanup step; older
+    // histories have none and replay without it.
     return loaded
       ? {
           ...loaded,
@@ -815,7 +810,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return result;
   };
 
-  // Opt-in end-of-run cleanup (lambda/shared/intent-branch-cleanup.js). Only
+  // End-of-run cleanup (lambda/shared/intent-branch-cleanup.js). Only
   // histories that pinned `unusedBranchCleanup` in load-meta take this step.
   const cleanUpUnusedBranches = async (stepName) => {
     if (!meta.unusedBranchCleanup || typeof deleteUnusedBranches !== 'function') return;
