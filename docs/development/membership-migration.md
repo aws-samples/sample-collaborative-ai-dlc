@@ -132,8 +132,24 @@ Exclusions of SSO-inherited roles are stored the same way as `excludedRoles`
 roles the member currently inherits through SSO can be newly excluded; existing
 exclusions may always be kept or restored. Exclusions ride the membership item,
 so role changes carry them forward and removal deletes them with the item.
-Calculated SSO roles are never stored: they come from trusted Cognito attributes
+Calculated SSO roles are never stored: they come from the recorded SSO claims
 and the current mapping at read time.
+
+Each federated sign-in records its claims at `USER#<sub>` / `SSO` in the access
+table: `subject`, `providerName`, the raw `claimValues`, `source` (`sign-in` or
+`backfill`) and `recordedAt`. The Cognito pre token generation trigger writes it
+on every sign-in except token refresh, before checking `requiredClaimValues`, and
+a failed write fails the sign-in. Its role may only put items whose partition key
+starts with `USER#`. The item has no `userId`, so the `by-user` GSI skips it.
+
+On upgrade, Terraform invokes the migration Lambda once with
+`{"action":"backfill-sso-claims","version":1}` after the trigger is updated and
+before the users Lambda. It pages through the user pool and copies each federated
+user's current Cognito claims with a conditional put, so a copy written by a
+sign-in is never replaced. The invocation fails, and blocks the users Lambda
+update, when the directory cannot be read. It is safe to retry. From then on, a
+missing copy means the user has no SSO claims, and member APIs no longer read
+Cognito.
 
 Business-role mappings for SSO are one item per configured connection at
 `PLATFORM` / `SSO#<providerId>` in the access table, holding `roleMappings`
