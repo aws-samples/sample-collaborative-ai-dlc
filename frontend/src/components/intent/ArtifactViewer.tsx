@@ -11,6 +11,7 @@ import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/Ar
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { ArtifactContent } from '@/components/intent/ArtifactContent';
+import { ArtifactBodyStatus } from '@/components/intent/ArtifactBodyStatus';
 import { rendersAsHtml } from '@/components/intent/ArtifactHtmlFrame';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
@@ -34,10 +35,13 @@ export function ArtifactViewer({
   artifact,
   graphNeighbors = [],
   derivedItemCount = 0,
+  onRetryContent,
 }: {
   artifact: IntentArtifact;
   graphNeighbors?: GraphNeighbor[];
   derivedItemCount?: number;
+  /** Retries a body that failed to load. */
+  onRetryContent?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -113,6 +117,7 @@ export function ArtifactViewer({
           <ArtifactContentEditor artifact={artifact} onDone={() => setEditing(false)} />
         ) : (
           <>
+            <ArtifactBodyStatus artifact={artifact} onRetry={onRetryContent} className="mt-2" />
             {content && (
               <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
                 <ArtifactContent
