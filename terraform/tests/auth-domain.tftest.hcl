@@ -25,6 +25,8 @@ mock_provider "aws" {
 mock_provider "random" {}
 
 variables {
+  access_table_name             = "auth-domain-test-access"
+  access_table_arn              = "arn:aws:dynamodb:us-east-1:123456789012:table/auth-domain-test-access"
   aws_sdk_ua_app_id             = "Collaborative_AI-DLC-test"
   project_name                  = "auth-domain-test"
   environment                   = "test"

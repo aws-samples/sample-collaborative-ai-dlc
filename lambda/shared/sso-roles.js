@@ -84,18 +84,26 @@ export const parseRoleConfig = (raw = process.env.SSO_ROLE_CONFIG) => {
   }
 };
 
-export const evaluateSsoRoles = (attributes, config = parseRoleConfig()) => {
+/**
+ * The claims to record for a federated user: the provider and its raw claim
+ * values, independent of the current configuration. Null for local users.
+ */
+export const ssoClaimsFromAttributes = (attributes) => {
   const identity = parseFederatedIdentity(attributes?.identities);
-  if (!identity) {
-    return {
-      federated: false,
-      admitted: true,
-      identity: null,
-      claimValues: [],
-      roles: [],
-    };
-  }
+  if (!identity || !attributes?.sub) return null;
+  return {
+    subject: attributes.sub,
+    providerName: identity.providerName,
+    claimValues: parseClaimValues(attributes['custom:sso_roles']),
+  };
+};
 
+/**
+ * Admission and platform roles for one provider's claim values. Shared by the
+ * sign-in trigger (live Cognito attributes) and the member role resolver (the
+ * claims recorded at sign-in), so both apply the same rules.
+ */
+export const evaluateSsoClaims = ({ identity, claimValues }, config = parseRoleConfig()) => {
   const provider = config.providers?.[identity.providerName];
   if (!provider) {
     return {
@@ -108,7 +116,6 @@ export const evaluateSsoRoles = (attributes, config = parseRoleConfig()) => {
     };
   }
 
-  const claimValues = parseClaimValues(attributes?.['custom:sso_roles']);
   const claimSet = new Set(claimValues);
   const roles = Object.entries(provider.roleMappings || {})
     // Business roles are calculated per space, never injected into Cognito groups.
@@ -128,4 +135,21 @@ export const evaluateSsoRoles = (attributes, config = parseRoleConfig()) => {
     roles,
     reason: admitted ? null : 'required-claim-missing',
   };
+};
+
+export const evaluateSsoRoles = (attributes, config = parseRoleConfig()) => {
+  const identity = parseFederatedIdentity(attributes?.identities);
+  if (!identity) {
+    return {
+      federated: false,
+      admitted: true,
+      identity: null,
+      claimValues: [],
+      roles: [],
+    };
+  }
+  return evaluateSsoClaims(
+    { identity, claimValues: parseClaimValues(attributes?.['custom:sso_roles']) },
+    config,
+  );
 };
