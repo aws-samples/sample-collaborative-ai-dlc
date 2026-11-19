@@ -196,9 +196,9 @@ completion, and none of them changes that report.
 For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
 protected workflow engine owned by this project is the completion authority
 (NE-11, implemented, qualified locally and in the installed image, and deployed
-to the development stack, where its artifacts were independently verified on
-2026-11-16; no native execution has run there yet, see the dated records below
-for what is not yet qualified). The pinned engine's own records are not an
+to the development stack; the corrected image was redeployed on 2026-11-18 and
+independently verified on 2026-11-19, and the live acceptance on it has not
+run yet, see the dated records below for what is not yet qualified). The pinned engine's own records are not an
 independent authority, because the coding process can write the state and
 human-presence files its guards read. The protected engine therefore runs the
 same pinned engine code in a separate service with its own workspace and state:
@@ -2741,7 +2741,8 @@ preservation and retirement prerequisites.
 **Update 2026-11-17.** The retry loop described above is corrected in code and
 awaits deployment and one purge of the two queues (NE-25). Until then the
 queues stay as measured that day: about 100,900 projection and 6,070 execution
-pointers. Since NE-09 the store also requires the pinned inputs and repository
+pointers. Deployed on 2026-11-18 and purged on 2026-11-19; see the
+redeployment record of 2026-11-19. Since NE-09 the store also requires the pinned inputs and repository
 commit, so it now rejects all 35 development executions started before its
 deployment on 2026-11-11.
 
@@ -5665,6 +5666,104 @@ That criterion stays covered by tests and is reported as not exercised.
 - Whether an organization policy restricts the queue purge for the operator's
   role. Its own policy allows it and the queues have no resource policy.
 
+The image was built, qualified and published and the plan applied on
+2026-11-18; see the next section.
+
+## NE-11 redeployment — applied 2026-11-18, queues purged and deployment verified, 2026-11-19
+
+**The redeployment at `df8787b14d4639c8bb01587b645591ea76cc0de7` and the
+one-time queue purge are independently verified as deployed. NE-11 and NE-24
+stay open until the live acceptance. NE-25 has one part left: that a run open
+through the purge continues.** Verification used the `solution-read` role with
+evidence under `.native-evidence/ne11-2026-11-19-deployed-df8787b1/`. It
+changed nothing, received no message, invoked nothing and ran no plan.
+
+### What ran
+
+The image was built and qualified from `df8787b1` and published on 2026-11-18
+as tag `a64ba090932c1850`, index
+`sha256:6068db9fa5843153183cb7dad01ce06d7f99e5a24b24431d19c06f2dbd26c774`.
+The handoff's plan review then stopped the saved plan at both dead-letter
+queues: it read the provider's unknown-until-apply marker as a configured
+redrive policy. A corrected review
+(`.native-evidence/ne11-2026-11-18-dlq-plan-review/`) passed the same saved
+plan, `1148ca90…`, which was applied from 12:45 to 12:51 UTC; the frontend
+followed at 12:53. The four queues were purged on 2026-11-19 at 09:09 UTC.
+
+### Verified
+
+- **Plan and state.** The stopped attempt applied nothing. One apply ran, with
+  the reviewed plan, and reports what the plan held: 152 added, 59 changed,
+  150 destroyed. The backend holds serial **1544** of the same lineage, no
+  lock, nothing tainted or deposed, and **2,195** resources: the 2,193 verified
+  on 2026-11-16 and the two dead-letter queues. The state equals the plan's
+  known values. All 36 protected resources were planned unchanged and exist.
+  The previous image is still in the registry.
+- **Engine.** Version **2** equals `$LATEST` on the qualified ARM64 manifest
+  `sha256:1b1db4c3e165541d6aadb3f176093f56950c80e07ad5d2327de47dca4ee4e277`,
+  with the published index as producer identity. Version 1 is the object
+  verified on 2026-11-16, on the previous image, and the earlier run's alias
+  still names it; that run's record pins version 1. Version 2 has not been
+  invoked yet.
+- **New runs.** The five authority aliases name version **31**, which holds
+  the engine's ARN, the new index and engine version 2. The orchestrator's
+  `live` alias names version 121 and the credentials function has version 2.
+- **Runtime and check jobs.** The runtime and its `DEFAULT` endpoint are READY
+  at version **149** on the new index. The check job project is pinned to the
+  new index and otherwise unchanged; no build has run.
+- **Functions.** All 51 archives equal the archive the plan names and a
+  rebuild of `df8787b1`; the 48 ZIP functions the plan updates were modified
+  in the apply and no other. The bundles of **three** archives differ from
+  2026-11-16: authority, execution worker and projection worker. The
+  preparation record above expected six; the preparation worker, credentials
+  and result worker bundles are byte-identical to the earlier ones.
+- **Unchanged.** IAM, all 412 API methods and the stage. The frontend's 629
+  files match S3 and the CDN; three differ from the previous build and the
+  client configuration is the same.
+- **Queues.** The execution and projection queues redrive to their own
+  dead-letter queues after **10** receives. Neither dead-letter queue has an
+  outgoing redrive policy, and each is fed only by its source queue. The three
+  consumers are enabled, report item failures, allow recursive loops and carry
+  the correction. The sweep completed once every five minutes without an
+  error.
+
+### The backlog, the purge and what the queues do now
+
+After the apply the backlog did not return to the consumers: every pointer was
+already past ten receives and moved to the dead-letter queues, 4,012 on the
+execution side and 104,520 on the projection side, within a quarter of an hour
+of the redrive policy being set. Those counts then stayed flat. From 15:30 UTC
+until the purge, 17.5 hours, the two source queues took 211 and 6,752
+pointers; each was received once and deleted, nothing waited and nothing
+reached a dead-letter queue. On the day before the apply the same two
+consumers ran 603,416 and 12,110,318 times.
+
+CloudTrail holds one purge for each of the four queues, at 09:09:26 to
+09:09:29 UTC, and no other since the apply. Eighty samples at 30 second intervals from
+09:14:59 to 09:54:30 UTC found all seven native queues empty every time. Each
+sweep still sends about 33 pointers: 32 for stored executions the deployed
+contract rejects, which the consumers acknowledge with one log line each, and
+one that is served, which fits the readable run's pending projection. That is
+the sweep's work in transit, not a retry loop.
+
+### NE-25
+
+Observed: the corrected consumers and queue settings are deployed; the backlog
+was purged once; the queues and their dead-letter queues are empty apart from
+pointers in transit; and the one execution the deployed contract accepts,
+which has awaited its member since 2026-11-17, was open through the purge and
+is still readable through the product's stores. **Not observed: that it
+continues.** Its record has not changed, and showing it needs a member action
+on a run of the first attempt that is pinned to engine version 1. The other 35
+executions are rejected by the contract and are left alone by decision.
+
+### For the acceptance
+
+`pins.json` matches the deployed engine, version and image in every field.
+The acceptance's run record is still the one of the first attempt and has to
+be started fresh, as its run sheet says. The live acceptance and its preflight
+remain the operator's.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -5907,10 +6006,13 @@ the current contract for newly created executions.
       NE-24. **First live run 2026-11-17:** the engine refused
       every request at its membership lookup, because the image gave it a
       second copy of the graph library. Corrected in source with one install,
-      a build check and a line that records why a request is refused; not yet
-      built or deployed. **Known limit:** the engine's first start of a new
-      image version can exceed the 10 second init limit and answer after about
-      11 seconds.
+      a build check and a line that records why a request is refused.
+      **Redeployed 2026-11-18 and independently verified 2026-11-19** at
+      `df8787b14d4639c8bb01587b645591ea76cc0de7`: engine version 2 on the
+      corrected image, new runs pinned to it, the earlier run's pin to version 1
+      kept. The live acceptance on it has not run. **Known limit:** the
+      engine's first start of a new image version can exceed the 10 second init
+      limit and answer after about 11 seconds.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
       Git tree or an exact change set against the pinned source, including modes,
       deletions and excluded-entry rules. Use existing provider/credential owners
@@ -6051,8 +6153,9 @@ the current contract for newly created executions.
       Shown by service tests and, with the real pinned engine in the deployed
       image and the changed engine mounted over it, by an express run that
       reaches a verified completion in the same attempt after two such replies;
-      recorded above. Not built or deployed. **Still open:** the same on the
-      deployed stack with a coding CLI and a model.
+      recorded above. **Deployed 2026-11-18** in the image verified on
+      2026-11-19. **Still open:** the same on the deployed stack with a coding
+      CLI and a model.
 - [ ] **NE-25 — Stop retrying queue pointers that can never be served.** The
       execution, cancellation and projection consumers reported every thrown
       error as a batch item failure and their queues had no receive-count
@@ -6077,3 +6180,7 @@ the current contract for newly created executions.
       the backlog is purged once, both queues and their dead-letter queues are
       measured empty apart from the sweep's pointers in transit, and an
       execution that was open during the purge is still readable and continues.
+      **Deployed 2026-11-18, purged 2026-11-19 and independently verified:** all
+      of the above except the last part. The one readable execution was open
+      through the purge and is still readable; that it continues is not yet
+      observed.
