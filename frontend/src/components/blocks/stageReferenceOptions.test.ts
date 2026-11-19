@@ -115,6 +115,20 @@ describe('mergeReleaseLibraryBlocks', () => {
 });
 
 describe('loadStageReferenceOptions', () => {
+  it('returns the business role catalog from the existing stage-list request', async () => {
+    const roles = [{ id: 'architect', name: 'Architect' }];
+    list.mockImplementation((type) =>
+      Promise.resolve({
+        blocks: [],
+        ...(type === 'stage' ? { businessRoles: roles } : {}),
+      }),
+    );
+    stableCatalog.mockResolvedValue(null);
+    const result = await loadStageReferenceOptions();
+    expect(result.businessRoles).toEqual(roles);
+    expect(list.mock.calls.filter(([type]) => type === 'stage')).toHaveLength(1);
+  });
+
   beforeEach(() => {
     list
       .mockReset()

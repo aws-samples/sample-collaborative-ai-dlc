@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { BusinessRole } from './projects';
 
 // Workflows — the composition roots that reference and arrange library blocks.
 // A workflow has a phase tree (define-your-own, nestable, inline) and stage
@@ -9,6 +10,7 @@ export interface WorkflowSummary {
   workflowId: string;
   name: string;
   objective: string;
+  cedarPolicies?: string | null;
   owner: string;
   basedOn: string | null;
   defaultScope: string | null;
@@ -39,6 +41,12 @@ export interface PhaseNodeInput {
   kind?: string;
 }
 
+export interface StagePermissions {
+  decisionMakerRoles: string[];
+  contributorRoles: string[];
+  automatic?: boolean;
+}
+
 export interface Placement {
   stageId: string;
   stageTenant: string;
@@ -46,6 +54,7 @@ export interface Placement {
   phasePath: string | null;
   order: number;
   scopeMembership: Record<string, 'EXECUTE' | 'SKIP'>;
+  permissions?: StagePermissions | null;
 }
 
 export interface PlacementInput {
@@ -55,6 +64,7 @@ export interface PlacementInput {
   phasePath?: string | null;
   order?: number;
   scopeMembership?: Record<string, 'EXECUTE' | 'SKIP'>;
+  permissions?: StagePermissions | null;
 }
 
 export interface ScopeRef {
@@ -84,6 +94,9 @@ export interface RuleRef {
 
 // The full composition returned by GET /workflows/{id}.
 export interface Workflow extends WorkflowSummary {
+  businessRoles?: BusinessRole[];
+  /** Whether default mappings or a saved responsibilities policy still need initialization. */
+  needsDefaultResponsibilities?: boolean;
   phases: PhaseNode[];
   placements: Placement[];
   scopeRefs: ScopeRef[];
@@ -193,6 +206,7 @@ export interface CreateWorkflowInput {
 }
 
 export interface UpdateWorkflowInput {
+  applyDefaultPermissions?: boolean;
   name?: string;
   objective?: string;
   defaultScope?: string;

@@ -148,6 +148,11 @@ export default function WorkflowComposer() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  useEffect(() => {
+    if (!success) return;
+    const timer = window.setTimeout(() => setSuccess(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [success]);
   const [editingStageId, setEditingStageId] = useState<string | null>(null);
   const [editingPhasePath, setEditingPhasePath] = useState<string | null>(null);
   const [activeScope, setActiveScope] = useState<string | null>(null);
@@ -186,6 +191,7 @@ export default function WorkflowComposer() {
     setLibraryRelease(null);
     setStageLib([]);
     setScopeLib([]);
+    setSuccess(null);
     releaseScopesRef.current = null;
     if (!workflowId) return;
     setLoading(true);
@@ -936,9 +942,23 @@ export default function WorkflowComposer() {
           </div>
         )}
         {success && (
-          <div className="bg-agent-success/10 border border-agent-success/20 text-agent-success px-4 py-3 rounded-md flex items-start gap-2 text-sm">
-            <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
-            <span>{success}</span>
+          <div
+            role="status"
+            className="bg-agent-success/10 border border-agent-success/20 text-agent-success px-4 py-3 rounded-md flex items-start justify-between gap-3 text-sm"
+          >
+            <div className="flex items-start gap-2">
+              <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{success}</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              aria-label="Dismiss confirmation"
+              onClick={() => setSuccess(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
           </div>
         )}
 
@@ -954,6 +974,43 @@ export default function WorkflowComposer() {
           onObjectiveChange={setObjective}
           onSaveMeta={saveMeta}
         />
+
+        {!readOnly && workflow.needsDefaultResponsibilities && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+            <p className="text-sm text-muted-foreground">
+              Published workflow versions retain their stage role mappings and policies.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={saving}
+              onClick={async () => {
+                if (!workflowId) return;
+                setSaving(true);
+                try {
+                  const updated = await workflowsService.update(workflowId, {
+                    applyDefaultPermissions: true,
+                  });
+                  setWorkflow((current) =>
+                    current
+                      ? { ...current, ...updated, needsDefaultResponsibilities: false }
+                      : current,
+                  );
+                  await refresh();
+                  flash(
+                    'Default responsibilities saved in a new workflow version. Custom stages remain unmapped.',
+                  );
+                } catch (err) {
+                  fail(err);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              Add default responsibilities
+            </Button>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-3">
           <Tabs
@@ -1067,6 +1124,22 @@ export default function WorkflowComposer() {
           stageId={editingStageId}
           stageReleaseId={releaseOrigin(editingStageId ? stagesById[editingStageId] : undefined)}
           libraryReleaseId={libraryRelease?.explicit ? libraryRelease.releaseId : null}
+          responsibilities={
+            workflow.placements.some((placement) => placement.stageId === editingStageId)
+              ? {
+                  permissions:
+                    workflow.placements.find((placement) => placement.stageId === editingStageId)
+                      ?.permissions ?? null,
+                  roles: workflow.businessRoles ?? [],
+                  readOnly: workflow.readOnly,
+                  onSave: async (permissions) => {
+                    await workflowsService.updatePlacement(workflowId!, editingStageId!, {
+                      permissions,
+                    });
+                  },
+                }
+              : undefined
+          }
           onClose={() => setEditingStageId(null)}
           onSaved={refresh}
         />

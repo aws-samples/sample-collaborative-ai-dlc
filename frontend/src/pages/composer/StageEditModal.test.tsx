@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
+import type { ComponentProps } from 'react';
 
 const get = vi.fn();
 const update = vi.fn();
@@ -60,6 +61,7 @@ const renderModal = (
     stageReleaseId?: string | null;
     libraryReleaseId?: string | null;
     onSaved?: () => void;
+    responsibilities?: ComponentProps<typeof StageEditModal>['responsibilities'];
   } = {},
 ) => {
   const onClose = vi.fn();
@@ -72,6 +74,7 @@ const renderModal = (
         libraryReleaseId={props.libraryReleaseId === undefined ? RELEASE : props.libraryReleaseId}
         onClose={onClose}
         onSaved={onSaved}
+        responsibilities={props.responsibilities}
       />
     </MemoryRouter>,
   );
@@ -86,6 +89,70 @@ beforeEach(() => {
 });
 
 describe('StageEditModal stage provenance', () => {
+  it('edits and saves responsibilities when the underlying custom block is editable', async () => {
+    const blockPermissions = { decisionMakerRoles: ['developer'], contributorRoles: [] };
+    get.mockResolvedValue(stageBlock({ permissions: blockPermissions }));
+    update.mockResolvedValue({});
+    const saveResponsibilities = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const { onSaved } = renderModal({
+      responsibilities: {
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] },
+        roles: [{ id: 'architect', name: 'Architect' }],
+        readOnly: false,
+        onSave: saveResponsibilities,
+      },
+    });
+    expect(await screen.findByRole('button', { name: 'Save' })).toBeEnabled();
+    await user.click(screen.getByRole('tab', { name: 'Responsibilities' }));
+    expect(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' })).toBeChecked();
+    for (const checkbox of screen.getAllByRole('checkbox')) expect(checkbox).toBeEnabled();
+    await user.click(screen.getByRole('checkbox', { name: 'Contributors: Architect' }));
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['architect'] };
+    expect(update).toHaveBeenCalledWith(
+      'stage',
+      'requirements',
+      expect.objectContaining({ permissions: blockPermissions }),
+    );
+    expect(saveResponsibilities).toHaveBeenCalledWith(permissions);
+  });
+
+  it('keeps placement responsibilities locked in a read-only workflow while saving other block fields', async () => {
+    const blockPermissions = { decisionMakerRoles: ['developer'], contributorRoles: [] };
+    get.mockResolvedValue(stageBlock({ permissions: blockPermissions }));
+    update.mockResolvedValue({});
+    const saveResponsibilities = vi
+      .fn()
+      .mockRejectedValue(new Error('SYSTEM workflows are read-only'));
+    const user = userEvent.setup();
+    const { onSaved } = renderModal({
+      responsibilities: {
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] },
+        roles: [{ id: 'architect', name: 'Architect' }],
+        readOnly: true,
+        onSave: saveResponsibilities,
+      },
+    });
+    const phase = await screen.findByPlaceholderText('ideation');
+    await user.clear(phase);
+    await user.type(phase, 'construction');
+    await user.click(screen.getByRole('tab', { name: 'Responsibilities' }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Contributors: Architect' });
+    expect(checkbox).toBeDisabled();
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(saveResponsibilities).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(
+      'stage',
+      'requirements',
+      expect.objectContaining({ phase: 'construction', permissions: blockPermissions }),
+    );
+  });
+
   it('shows the release copy of a release-origin stage, not a live stage with the same id', async () => {
     get.mockResolvedValue(stageBlock({ name: 'Live requirements', phase: 'live-phase' }));
     releaseBlock.mockResolvedValue({
