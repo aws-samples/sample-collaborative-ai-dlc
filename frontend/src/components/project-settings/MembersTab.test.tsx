@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { Member } from '@/services/projects';
 
 const listMembers = vi.hoisted(() => vi.fn());
 const listAssignableUsers = vi.hoisted(() => vi.fn());
@@ -9,6 +10,11 @@ const removeMember = vi.hoisted(() => vi.fn());
 const listBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberExcludedRoles = vi.hoisted(() => vi.fn());
+const getResponsibilities = vi.hoisted(() => vi.fn());
+
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: { get: getResponsibilities },
+}));
 
 vi.mock('@/services/projects', () => ({
   projectsService: {
@@ -26,6 +32,13 @@ vi.mock('@/services/projects', () => ({
 import { MembersTab } from './MembersTab';
 
 beforeEach(() => {
+  getResponsibilities.mockReset().mockResolvedValue({
+    previewOnly: true,
+    workflowId: 'flow',
+    workflowVersion: 3,
+    roles: [],
+    stages: [],
+  });
   // Radix Select uses browser APIs that jsdom does not implement.
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
   window.HTMLElement.prototype.setPointerCapture = vi.fn();
@@ -63,7 +76,7 @@ beforeEach(() => {
       identityProvider: null,
     },
   ]);
-  addMember.mockReset().mockResolvedValue({});
+  addMember.mockReset().mockImplementation(async (_projectId, member) => member);
   removeMember.mockReset().mockResolvedValue({});
   listBusinessRoles.mockReset().mockResolvedValue([
     { id: 'architect', name: 'Architect' },
@@ -87,6 +100,155 @@ beforeEach(() => {
 });
 
 describe('space business roles', () => {
+  it('fetches updated responsibilities after adding and removing business roles', async () => {
+    const user = userEvent.setup();
+    const initialResponsibilities = {
+      previewOnly: true,
+      workflowId: 'flow',
+      workflowVersion: 3,
+      roles: [{ id: 'developer', name: 'Developer' }],
+      stages: [
+        {
+          stageId: 'code-generation',
+          stageInstanceId: null,
+          gateIds: [],
+          name: 'Code Generation',
+          permissions: { decisionMakerRoles: ['developer'], contributorRoles: [] },
+          reason: 'owners',
+          decisionMakers: [],
+          contributors: [],
+          missingDecisionMakerRoles: ['developer'],
+          missingContributorRoles: [],
+        },
+      ],
+    };
+    getResponsibilities.mockResolvedValue(initialResponsibilities);
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('Code Generation');
+    const row = () => screen.getByText('Code Generation').closest('tr')!;
+    expect(within(row()).queryByText('existing@example.com')).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Edit business roles for existing@example.com' }),
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Roles added in this space' }));
+    await user.click(screen.getByRole('option', { name: 'Developer' }));
+    // Draft edits must not update the saved preview.
+    expect(within(row()).queryByText('existing@example.com')).not.toBeInTheDocument();
+    getResponsibilities.mockResolvedValue({
+      ...initialResponsibilities,
+      stages: [
+        {
+          ...initialResponsibilities.stages[0],
+          reason: 'decision-makers',
+          decisionMakers: [
+            { userId: 'existing-sub', email: 'existing@example.com', roles: ['developer'] },
+          ],
+          missingDecisionMakerRoles: [],
+        },
+      ],
+    });
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(within(row()).getByText('existing@example.com')).toBeInTheDocument(),
+    );
+    expect(within(row()).getByText('Developer')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Edit business roles for existing@example.com' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Remove Developer' }));
+    getResponsibilities.mockResolvedValue(initialResponsibilities);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(within(row()).queryByText('existing@example.com')).not.toBeInTheDocument(),
+    );
+    expect(within(row()).getAllByRole('img', { name: 'No members' })).toHaveLength(2);
+    expect(getResponsibilities).toHaveBeenCalledTimes(3);
+    expect(listMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    'preserves policy-selected people when loading members fails=%s',
+    async (fails) => {
+      const response = {
+        previewOnly: true,
+        workflowId: 'flow',
+        workflowVersion: 3,
+        roles: [],
+        stages: [
+          {
+            stageId: 'design',
+            name: 'Design',
+            permissions: { decisionMakerRoles: ['product-owner'], contributorRoles: [] },
+            reason: 'decision-makers',
+            decisionMakers: [
+              { userId: 'architect', name: 'Policy-selected architect', roles: ['architect'] },
+            ],
+            contributors: [],
+          },
+        ],
+      };
+      getResponsibilities.mockResolvedValue(response);
+      if (fails) listMembers.mockRejectedValue(new Error('Members unavailable'));
+      else
+        listMembers.mockResolvedValue([
+          {
+            userId: 'po',
+            email: 'po@example.com',
+            role: 'member',
+            effectiveRoles: ['product-owner'],
+          },
+        ]);
+      render(<MembersTab projectId="project-1" userRole="owner" />);
+      await screen.findByText(fails ? 'Members unavailable' : 'po@example.com');
+      const row = (await screen.findByText('Design')).closest('tr')!;
+      expect(row).toHaveTextContent('Policy-selected architect');
+      expect(row).not.toHaveTextContent('po@example.com');
+      expect(row).not.toHaveTextContent('Space Owners decide');
+    },
+  );
+
+  it('refreshes responsibilities when local roles save but SSO exclusions fail', async () => {
+    const user = userEvent.setup();
+    listMembers.mockResolvedValue([
+      {
+        userId: 'alice',
+        email: 'alice@example.com',
+        role: 'member',
+        localRoles: [],
+        ssoRoles: ['architect'],
+        excludedRoles: [],
+      },
+    ]);
+    updateMemberExcludedRoles.mockRejectedValue(new Error('Exclusion failed'));
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit business roles for alice@example.com' }),
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Roles added in this space' }));
+    await user.click(screen.getByRole('option', { name: 'Developer' }));
+    await user.click(screen.getByRole('button', { name: 'Exclude Architect' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Exclusion failed');
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalledTimes(2));
+    expect(updateMemberBusinessRoles).toHaveBeenCalledWith('project-1', 'alice', ['developer']);
+  });
+
+  it('loads stage responsibilities in a separate block below Members without a popup', async () => {
+    render(<MembersTab projectId="project-1" userRole="member" />);
+    await screen.findByRole('columnheader', { name: 'Decision Makers' });
+    const members = screen.getByRole('heading', { name: 'Members' });
+    const responsibilities = screen.getByRole('heading', { name: 'Stage responsibilities' });
+    expect(
+      members.compareDocumentPosition(responsibilities) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(getResponsibilities).toHaveBeenCalledWith('project-1', {});
+    expect(
+      screen.queryByRole('button', { name: 'Stage responsibilities' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('flow · Version 3')).toBeInTheDocument();
+  });
+
   it('lets an Owner add multiple roles, save chips, and clear assignments', async () => {
     const user = userEvent.setup();
     render(<MembersTab projectId="project-1" userRole="owner" />);
@@ -310,6 +472,84 @@ describe('space business roles', () => {
 });
 
 describe('MembersTab assignable identity picker', () => {
+  it.each(['pending', 'failed'])(
+    'uses hydrated SSO roles while the responsibilities request is %s',
+    async (requestState) => {
+      const user = userEvent.setup();
+      const owner: Member = { userId: 'owner', email: 'owner@example.com', role: 'owner' };
+      listMembers.mockResolvedValueOnce([owner]);
+      let resolveMembers!: (members: Member[]) => void;
+      listMembers.mockImplementationOnce(
+        () =>
+          new Promise<Member[]>((resolve) => {
+            resolveMembers = resolve;
+          }),
+      );
+      addMember.mockResolvedValueOnce({
+        projectId: 'project-1',
+        userId: 'sso-sub',
+        role: 'member',
+      });
+      getResponsibilities.mockResolvedValueOnce({
+        previewOnly: true,
+        workflowId: 'flow',
+        workflowVersion: 3,
+        roles: [{ id: 'architect', name: 'Architect' }],
+        stages: [
+          {
+            stageId: 'design',
+            name: 'Design',
+            permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] },
+            reason: 'owners',
+            decisionMakers: [{ userId: owner.userId, email: owner.email, roles: [] }],
+            contributors: [],
+            missingDecisionMakerRoles: ['architect'],
+            missingContributorRoles: [],
+          },
+        ],
+      });
+      if (requestState === 'failed') {
+        getResponsibilities.mockRejectedValueOnce(new Error('Responsibilities unavailable'));
+      } else {
+        getResponsibilities.mockImplementationOnce(() => new Promise(() => {}));
+      }
+      render(<MembersTab projectId="project-1" userRole="owner" />);
+      const row = await screen.findByRole('row', { name: /Design/ });
+      const decisionMakers = within(row).getAllByRole('cell')[1];
+      expect(decisionMakers).toHaveTextContent('owner@example.com');
+      await user.click(screen.getByRole('button', { name: 'Add Member' }));
+      const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+      await user.click(within(dialog).getByPlaceholderText('Search by email or name...'));
+      await user.click(
+        await within(dialog).findByRole('button', { name: /SSO User · CorporateOIDC/ }),
+      );
+      await user.click(within(dialog).getByRole('button', { name: 'Add Member' }));
+      await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
+      expect(decisionMakers).toHaveTextContent('owner@example.com');
+      if (requestState === 'failed') {
+        await screen.findByText('Responsibilities unavailable');
+      }
+      await act(async () =>
+        resolveMembers([
+          owner,
+          {
+            userId: 'sso-sub',
+            email: 'shared@example.com',
+            role: 'member',
+            localRoles: [],
+            ssoRoles: ['architect'],
+            effectiveRoles: ['architect'],
+          },
+        ]),
+      );
+      expect(decisionMakers).toHaveTextContent('shared@example.com');
+      expect(decisionMakers).toHaveTextContent('Architect');
+      expect(decisionMakers).not.toHaveTextContent('owner@example.com');
+      expect(screen.queryByText('Loading responsibilities…')).not.toBeInTheDocument();
+      expect(getResponsibilities).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('shows local and federated identities and adds the SSO identity by sub', async () => {
     const user = userEvent.setup();
     render(<MembersTab projectId="project-1" userRole="owner" />);

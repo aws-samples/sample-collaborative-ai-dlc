@@ -34,7 +34,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Building2, Pencil, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
+import {
+  Building2,
+  Pencil,
+  Plus,
+  Trash2,
+  UserKey,
+  UserRound,
+  Users,
+  X,
+  XCircle,
+} from 'lucide-react';
 import {
   projectsService,
   type AssignableUser,
@@ -44,6 +54,7 @@ import {
 } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { businessRoleIcon } from './businessRoleIcons';
+import { StageResponsibilitiesTable } from '@/components/stage-responsibilities/StageResponsibilitiesTable';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -102,6 +113,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
   const [draftExcluded, setDraftExcluded] = useState<string[]>([]);
   const [savingRoles, setSavingRoles] = useState(false);
   const [rolesError, setRolesError] = useState<string | null>(null);
+  const [responsibilitiesVersion, setResponsibilitiesVersion] = useState(0);
 
   // Add member dialog
   const [showAddMember, setShowAddMember] = useState(false);
@@ -185,11 +197,13 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     setAddingMember(true);
     try {
-      await projectsService.addMember(projectId, {
+      const added = await projectsService.addMember(projectId, {
         userId: selectedUser.userId,
         email: selectedUser.email,
         role: newMemberRole,
       });
+      setMembers((current) => [...current, added]);
+      setResponsibilitiesVersion((version) => version + 1);
       setShowAddMember(false);
       setSelectedUser(null);
       setUserSearch('');
@@ -206,6 +220,10 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     try {
       await projectsService.updateMemberRole(projectId, userId, newRole);
+      setMembers((current) =>
+        current.map((member) => (member.userId === userId ? { ...member, role: newRole } : member)),
+      );
+      setResponsibilitiesVersion((version) => version + 1);
       setConfirmRoleChange(null);
       await load();
     } catch (err) {
@@ -217,6 +235,8 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     try {
       await projectsService.removeMember(projectId, userId);
+      setMembers((current) => current.filter((member) => member.userId !== userId));
+      setResponsibilitiesVersion((version) => version + 1);
       setConfirmRemove(null);
       await load();
     } catch (err) {
@@ -235,6 +255,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
     if (!editingMember || !canManageMembers || savingRoles) return;
     setSavingRoles(true);
     setRolesError(null);
+    let memberChanged = false;
     // Local additions and SSO exclusions are separate contracts with separate
     // audit entries, so the save issues one request per changed list.
     try {
@@ -246,6 +267,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
             draftRoles,
           ),
         );
+        memberChanged = true;
       }
       if (!sameRoles(draftExcluded, editingMember.excludedRoles || [])) {
         applyUpdatedMember(
@@ -255,12 +277,14 @@ function MembersTabContent({ projectId, userRole }: Props) {
             draftExcluded,
           ),
         );
+        memberChanged = true;
       }
       setEditingMember(null);
     } catch (err) {
       setRolesError(err instanceof Error ? err.message : 'Failed to save business roles');
       await load();
     } finally {
+      if (memberChanged) setResponsibilitiesVersion((version) => version + 1);
       setSavingRoles(false);
     }
   };
@@ -279,7 +303,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
     );
 
   return (
-    <>
+    <div className="space-y-6">
       <SettingsCard
         icon={<Users />}
         title="Members"
@@ -448,6 +472,18 @@ function MembersTabContent({ projectId, userRole }: Props) {
             ))}
           </div>
         </div>
+      </SettingsCard>
+
+      <SettingsCard
+        icon={<UserKey />}
+        title="Stage responsibilities"
+        description="Decision Makers and Contributors for this space's workflow."
+      >
+        <StageResponsibilitiesTable
+          projectId={projectId}
+          refreshVersion={responsibilitiesVersion}
+          members={loading ? undefined : members}
+        />
       </SettingsCard>
 
       <Dialog
@@ -795,6 +831,6 @@ function MembersTabContent({ projectId, userRole }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }
