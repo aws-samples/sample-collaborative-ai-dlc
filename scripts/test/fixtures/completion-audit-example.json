@@ -1,0 +1,30 @@
+[
+  {
+    "records": {
+      "meta": {
+        "projectId": "example",
+        "executionId": "example-incomplete",
+        "intentId": "example-incomplete",
+        "orchestratorRunId": "example-run",
+        "status": "SUCCEEDED",
+        "startedAt": "2026-10-01T00:00:00.000Z",
+        "methodologyPins": { "STAGE": { "implement": { "tenantId": "SYSTEM", "version": 1 } } }
+      },
+      "unitPlan": {
+        "units": [
+          { "slug": "foundation", "dependsOn": [] },
+          { "slug": "feature", "dependsOn": ["foundation"] }
+        ]
+      },
+      "units": [
+        { "sectionIndex": 1, "slug": "foundation", "state": "MERGED" },
+        { "sectionIndex": 1, "slug": "feature", "state": "BLOCKED" },
+        { "sectionIndex": 1, "slug": "previous-plan", "state": "PENDING" }
+      ]
+    },
+    "planResult": {
+      "valid": true,
+      "plan": { "stages": [{ "stageId": "implement", "parallelSection": 1 }] }
+    }
+  }
+]
