@@ -16,6 +16,7 @@ import {
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
+  discardUnpushedCommits,
   gitResultForCommitRefs,
   seedInitialCommit,
   parsePorcelainZ,
@@ -2572,5 +2573,121 @@ describe('shallow checkouts deepen on demand', () => {
     expect(fetches).toEqual(['origin --prune']);
     expect(await isShallowRepository({ dir: lane })).toBe(true);
     expect(res.conflicted).toBe(false);
+  });
+});
+
+describe('discardUnpushedCommits', () => {
+  // A remote that rejects any push whose history adds a line with SECRET, as
+  // push protection does. Every other git call is real.
+  const rejectingGit = (args, opts) => {
+    if (args[0] === 'push') {
+      return runGit(['log', '-p', '--format=', 'refs/remotes/origin/main..HEAD'], opts).then(
+        (log) =>
+          /^\+.*SECRET/m.test(log.stdout)
+            ? {
+                exitCode: 1,
+                stdout: '',
+                stderr: [
+                  'remote: PUSH BLOCKED: secrets detected',
+                  'remote: -- creds.txt:1 | token',
+                  ...Array.from({ length: 40 }, () => 'remote: ' + '-'.repeat(40)),
+                  ' ! [remote rejected] HEAD -> main (pre-receive hook declined)',
+                ].join('\n'),
+              }
+            : runGit(args, opts),
+      );
+    }
+    return runGit(args, opts);
+  };
+  const stageExit = (work, remote) =>
+    commitAndPushAll({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      executionId: 'e1',
+      message: 'aidlc(cg): e1',
+      urlsFor: () => laneUrls(remote),
+      git: rejectingGit,
+      ...quiet,
+    });
+
+  it('undoes rejected commits so the fixed tree pushes without them', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'creds.txt'), 'SECRET=abc\n');
+    await writeFile(path.join(work, 'app.js'), 'run()\n');
+    const rejected = await stageExit(work, remote);
+    const [result] = rejected.results;
+    expect(result).toMatchObject({ committed: true, pushed: false, reason: 'push_failed' });
+    // The findings come before the trailer, so only `output` keeps them.
+    expect(result.output).toContain('creds.txt:1');
+    expect(result.detail).not.toContain('creds.txt:1');
+
+    const discard = await discardUnpushedCommits({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+    });
+    expect(discard.results).toEqual([{ repo: 'o/r', discarded: true, shas: [result.sha] }]);
+    // The changes survive, uncommitted.
+    expect(await readFile(path.join(work, 'app.js'), 'utf8')).toBe('run()\n');
+    const head = await git(['rev-parse', 'HEAD'], work);
+    const remoteHead = await git(['rev-parse', 'refs/remotes/origin/main'], work);
+    expect(head.stdout).toBe(remoteHead.stdout);
+
+    await writeFile(path.join(work, 'creds.txt'), 'TOKEN_FROM_ENV\n');
+    const fixed = await stageExit(work, remote);
+    expect(fixed.ok).toBe(true);
+    const history = await git(['log', '-p', 'main'], remote);
+    expect(history.stdout).not.toContain('SECRET');
+    expect(history.stdout).toContain('run()');
+  });
+
+  it('reports nothing to undo on a branch level with its remote', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    const discard = await discardUnpushedCommits({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      urlsFor: () => laneUrls(remote),
+    });
+    expect(discard.results).toEqual([{ repo: 'o/r', discarded: 'none' }]);
+  });
+
+  it('refuses to reset onto a remote branch that has diverged', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'local.txt'), 'local\n');
+    await commitAll({ dir: work, message: 'local' });
+    await commitOnRemote(remote, 'main', 'peer.txt', 'peer\n');
+    const discard = await discardUnpushedCommits({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      urlsFor: () => laneUrls(remote),
+    });
+    expect(discard.results).toEqual([
+      { repo: 'o/r', discarded: false, reason: 'diverged', detail: 'main' },
+    ]);
+    const log = await git(['log', '--format=%s', '-1'], work);
+    expect(log.stdout.trim()).toBe('local');
+  });
+
+  it('reports a missing remote branch and a failed fetch as values', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    const missing = await discardUnpushedCommits({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'nope',
+      urlsFor: () => laneUrls(remote),
+    });
+    expect(missing.results[0]).toMatchObject({ discarded: false, reason: 'remote_branch_missing' });
+    const unreachable = await discardUnpushedCommits({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      urlsFor: () => ({ auth: path.join(root, 'nope.git'), clean: 'https://github.com/o/r.git' }),
+    });
+    expect(unreachable.results[0]).toMatchObject({ discarded: false, reason: 'fetch_failed' });
   });
 });

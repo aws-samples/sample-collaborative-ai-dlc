@@ -90,6 +90,7 @@ import {
 } from '../workspace.js';
 import {
   commitAndPushAll as defaultCommitAndPushAll,
+  discardUnpushedCommits as defaultDiscardUnpushedCommits,
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
@@ -1204,6 +1205,8 @@ const reviewerRepairMessage = ({ reviewerAgent, round, reviewerFindings }) =>
 // The WP2 durability rule as data: the failure a git result must turn into when
 // new work is at risk, or null. Shared by the stage commit and the repair-turn
 // commits so a repair cannot finish the stage with unpushed work.
+const multiRepo = (results) => new Set(results.map((r) => r.repo)).size > 1;
+
 const workAtRiskFailure = (gitResult) => {
   const atRiskRepos = gitResult?.ok
     ? []
@@ -1223,10 +1226,19 @@ const workAtRiskFailure = (gitResult) => {
     )
     .join('; ');
   const uncommitted = atRiskRepos.some((r) => r.committed !== true);
+  // The remote's fuller rejection text, for a retry's agent (pushBranch).
+  const output = atRiskRepos
+    .filter((r) => r.output)
+    .map((r) => (multiRepo(atRiskRepos) ? `${r.repo}:\n${r.output}` : r.output))
+    .join('\n\n');
   // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
   // 'git_commit_failed' is the new durability failure (work never became a
   // commit at all — the loss mode the engine exists to close).
-  return { code: uncommitted ? 'git_commit_failed' : 'push_failed', detail };
+  return {
+    code: uncommitted ? 'git_commit_failed' : 'push_failed',
+    detail,
+    ...(output ? { output } : {}),
+  };
 };
 
 // The post-agent sensor pass. Release mode splits the sensors into a write pass
@@ -1548,6 +1560,50 @@ const renderSteering = (rows = []) => {
   );
 };
 
+// Tell a retried stage why its last attempt failed, and pass on the human's
+// guidance. Git's output is remote text, so template tokens are neutralized.
+const RETRY_OUTPUT_MAX = 4000;
+// `undone`: how many unpushed commits this attempt undid, so the agent is only
+// told the commits were undone when they were.
+const renderRetry = (retry, { undone = 0 } = {}) => {
+  if (!retry) return '';
+  const reason = `${retry.reason || 'failed'}${retry.detail ? ` \u2014 ${retry.detail}` : ''}`;
+  const output = retry.output
+    ? neutralizeTokens(String(retry.output).slice(-RETRY_OUTPUT_MAX))
+    : '';
+  const guidance = typeof retry.guidance === 'string' ? retry.guidance.trim() : '';
+  return [
+    '## RETRY after a failed attempt',
+    '',
+    `The previous attempt of this stage failed: ${neutralizeTokens(reason)}`,
+    ...(output ? ['', 'Output from that failure:', '```', output, '```'] : []),
+    ...(retry.discardUnpushed
+      ? [
+          '',
+          ...(undone > 0
+            ? [
+                `The remote rejected the previous attempt\u2019s push, so the engine has undone its ${undone}`,
+                'unpushed commit(s). Their changes are still in the working tree, uncommitted, and',
+                'are committed again when this stage finishes.',
+              ]
+            : ['The remote rejected the previous attempt\u2019s push.']),
+          'Remove or replace whatever the remote rejected (for example a secret or credential',
+          'flagged by push protection) in the working tree, or the push is rejected again.',
+        ]
+      : []),
+    ...(guidance
+      ? [
+          '',
+          'The human team\u2019s guidance for this retry, which overrides any conflicting',
+          `earlier instruction:\n${guidance}`,
+        ]
+      : []),
+    '',
+    'Fix the cause of the failure as part of this stage, then finish the stage as normal',
+    '(edit files only \u2014 do NOT run git; the engine owns commits).',
+  ].join('\n');
+};
+
 // Deliver pending steering at this injection point: CAS each row pending →
 // consumed (a row another entry consumed concurrently is skipped), record the
 // delivery in the audit trail, and return the consumed rows for rendering.
@@ -1812,6 +1868,11 @@ const runStageAttempt = async (
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
     resumeFrom = null,
+    // A retry of this stage after it failed (the lane retry gate): { reason,
+    // detail, output, guidance, discardUnpushed }. The agent is told why the
+    // last attempt failed and given the human's guidance, if any; with
+    // discardUnpushed the commits the remote rejected are undone first.
+    retry = null,
     // Authenticated provider review selected in the AI-DLC UI. This is review
     // DATA, never instructions from a trusted actor: the orchestrator supplies
     // a delimited, scope-constrained message and asks this stage to revise its
@@ -1881,6 +1942,8 @@ const runStageAttempt = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Undo a rejected push's commits before a retry. Injected for tests.
+    discardUnpushedCommits = defaultDiscardUnpushedCommits,
     // Project committed files into Neptune after all stage gates pass. The
     // adapter detects traceability capability from a valid produced artifact,
     // never from workflowVersion, and is deliberately best-effort.
@@ -1943,6 +2006,8 @@ const runStageAttempt = async (
   // every post-commit failure persists them so a clean retry can reconstruct the
   // complete file set instead of losing traceability because Git has no new diff.
   let retainedCodeCommitRefs = null;
+  // Commits a retry undid (retry.discardUnpushed); their refs are not carried.
+  let discardedCommitShas = new Set();
 
   const emitLifecycleEvent = async ({
     type,
@@ -1974,7 +2039,12 @@ const runStageAttempt = async (
     await publish(livePayload);
   };
 
-  const fail = async (stageInstanceId, reason, detail, { clearPending = false } = {}) => {
+  const fail = async (
+    stageInstanceId,
+    reason,
+    detail,
+    { clearPending = false, output = null } = {},
+  ) => {
     // Every stage failure gets ONE structured operator line. Without it the only
     // trace of a FAILED run is a DynamoDB event row, so an operator reading logs
     // cannot correlate the failure code with the execution that produced it.
@@ -2025,7 +2095,8 @@ const runStageAttempt = async (
       state: 'FAILED',
       reason,
     });
-    return { ok: false, reason, detail };
+    // `output`: the fuller git output behind a push failure, for a retry.
+    return { ok: false, reason, detail, ...(output ? { output } : {}) };
   };
 
   // Disk preflight (2026-07 ENOSPC incident): the session mount is a fixed
@@ -2332,6 +2403,43 @@ const runStageAttempt = async (
         stageInstanceId,
         action: 'agent.workspace',
         payload: { state: 'RESTORED', repos: heal.repos },
+      });
+    }
+  }
+
+  // A retry after a rejected push: undo the unpushed commits, keeping their
+  // changes in the working tree, so this attempt's commit replaces them and the
+  // rejected content leaves the history the push carries.
+  if (retry?.discardUnpushed && repos.length > 0 && branch) {
+    const discard = await discardUnpushedCommits({
+      repos,
+      workspaceDir,
+      branch,
+      gitProvider,
+      repoProviders,
+      projectId,
+      executionId,
+    }).catch((error) => ({
+      results: [{ repo: '*', discarded: false, reason: 'engine_crashed', detail: error?.message }],
+    }));
+    const failed = discard.results.filter((r) => r.discarded === false);
+    if (failed.length > 0) {
+      return fail(
+        stageInstanceId,
+        'discard_unpushed_failed',
+        failed
+          .map((r) => `${r.repo}: ${r.reason ?? 'failed'}${r.detail ? ` — ${r.detail}` : ''}`)
+          .join('; '),
+      );
+    }
+    discardedCommitShas = new Set(discard.results.flatMap((r) => r.shas ?? []));
+    if (discardedCommitShas.size > 0) {
+      await emitLifecycleEvent({
+        type: 'v2.git.unpushed_discarded',
+        summary: `Undid ${discardedCommitShas.size} unpushed commit(s) before the retry; their changes stay in the working tree`,
+        stageInstanceId,
+        action: 'agent.workspace',
+        payload: { state: 'UNPUSHED_DISCARDED' },
       });
     }
   }
@@ -2703,7 +2811,7 @@ const runStageAttempt = async (
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
   const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
-    ? priorStageRow.pendingCodeCommitRefs
+    ? priorStageRow.pendingCodeCommitRefs.filter((ref) => !discardedCommitShas.has(ref?.sha))
     : [];
   retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
@@ -3328,7 +3436,12 @@ const runStageAttempt = async (
     stageInstanceId,
     publish,
   });
-  const steeringMessage = renderSteering(consumedSteering);
+  const steeringMessage = [
+    renderSteering(consumedSteering),
+    renderRetry(retry, { undone: discardedCommitShas.size }),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   // 3. Build the invocation. A fresh run materializes the full workspace (prompt +
   // rules + knowledge); a resume only re-attaches the MCP config (the parked
@@ -4646,7 +4759,9 @@ const runStageAttempt = async (
   // A parked stage (above) parks regardless — the human loop must not be
   // blocked by a push outage; the resume leg retries the push.
   const gitFailure = workAtRiskFailure(gitResult);
-  if (gitFailure) return fail(stageInstanceId, gitFailure.code, gitFailure.detail);
+  if (gitFailure) {
+    return fail(stageInstanceId, gitFailure.code, gitFailure.detail, { output: gitFailure.output });
+  }
   if (releaseBodyFailure) {
     return fail(
       stageInstanceId,
@@ -4838,7 +4953,9 @@ const runStageAttempt = async (
     });
     if (ladder.parked) return parkStage(ladder.parked);
     if (repairGitFailure) {
-      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail, {
+        output: repairGitFailure.output,
+      });
     }
     if (ladder.failure) {
       return fail(stageInstanceId, ladder.failure.code, ladder.failure.detail);
@@ -5043,7 +5160,9 @@ const runStageAttempt = async (
       if (repairParked) return parkStage(repairParked);
     }
     if (repairGitFailure) {
-      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail, {
+        output: repairGitFailure.output,
+      });
     }
     const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
     const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
@@ -5439,6 +5558,7 @@ const runStageImplementation = async (payload, deps) => {
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).
 export const __test = {
+  renderRetry,
   postAgentSensorPass,
   mergeLearningRules,
   composeKnowledge,

@@ -90,6 +90,26 @@ still enters halt-and-ask. Retry preserves integration; skip also omits the
 unintegrated dependent closure; abort fails the run. Partial delivery is presented
 separately from complete delivery.
 
+By default a lane whose stage fails ends there, and the section's halt-and-ask
+gate opens only once every other lane has finished, which can be a long wait in
+a large section. Set `lane_failure_policy = "ask"` to have the lane ask straight
+away, on a gate for that unit, whether to retry the failed stage. A retry runs
+the stage again on the same unit branch, keeping the stages already completed;
+units that depend on it wait rather than being blocked. While the gate is open
+the lane gives up its concurrency slot and its runtime session, and the gate
+parks only that unit: the intent stays running, so the other lanes carry on. `retry`
+runs the stage again, telling the agent why the last attempt failed (with git's
+output when a push was rejected) so it can fix the cause; `request-changes` does
+the same and passes on the human's feedback as guidance. When the failure was a
+rejected push, both first undo the unit branch's unpushed commits with
+`git reset --mixed` onto the remote branch: their changes stay in the working
+tree, the agent removes what the remote rejected (for example a secret flagged by
+push protection), and the stage's commit replaces them, so the rejected content
+never reaches the branch's history. Answering
+`leave-failed` ends the lane as before, so halt-and-ask still offers retry, skip
+and abort. The setting is read when a run starts, so a run in progress keeps
+the behaviour it started with; a repair starts a new run and picks it up.
+
 Provider comments never launch agents by themselves. A space member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
 
 ## Human gates, park and resume
