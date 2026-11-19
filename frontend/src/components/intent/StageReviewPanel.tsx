@@ -252,7 +252,7 @@ export function StageReviewPanel({
   onBack,
 }: StageReviewPanelProps) {
   const [submitting, setSubmitting] = useState(false);
-  const { stageNameOf, openItemPreview } = useIntent();
+  const { stageNameOf, openItemPreview, reload } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
   // Rides the approve answer as { decision: 'approve', skipTo } and is
@@ -586,7 +586,11 @@ export function StageReviewPanel({
               </AccordionTrigger>
               <AccordionContent className="space-y-3">
                 {artifacts.map((artifact) => (
-                  <ArtifactViewer key={artifact.id} artifact={artifact} />
+                  <ArtifactViewer
+                    key={artifact.id}
+                    artifact={artifact}
+                    onRetryContent={reload ? () => void reload() : undefined}
+                  />
                 ))}
               </AccordionContent>
             </AccordionItem>

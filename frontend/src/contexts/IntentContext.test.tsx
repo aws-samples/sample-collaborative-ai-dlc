@@ -27,11 +27,13 @@ const answerGate = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
 const outputs = vi.fn();
+const artifactContents = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
     outputs: (...a: unknown[]) => outputs(...a),
+    artifactContents: (...a: unknown[]) => artifactContents(...a),
   },
 }));
 vi.mock('@/services/workflows', () => ({
@@ -92,6 +94,49 @@ const renderProvider = () =>
       </Routes>
     </MemoryRouter>,
   );
+
+function ArtifactProbe() {
+  const { detail: current } = useIntent();
+  return (
+    <>
+      <div data-testid="bodies">
+        {(current?.artifacts ?? [])
+          .map((a) => `${a.id}=${a.content === undefined ? '(loading)' : String(a.content)}`)
+          .join('|')}
+      </div>
+      <div data-testid="unavailable">
+        {(current?.artifacts ?? []).map((a) => `${a.id}=${a.contentUnavailable ?? '-'}`).join('|')}
+      </div>
+    </>
+  );
+}
+
+const renderArtifactProbe = () =>
+  render(
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+      <Routes>
+        <Route
+          path="/space/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <ArtifactProbe />
+            </IntentProvider>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+const artifact = (id: string, over: Record<string, unknown> = {}) => ({
+  id,
+  artifactType: 'doc',
+  title: id,
+  createdByExecutionId: 'i1',
+  createdByStageInstanceId: 'si-1',
+  createdAt: '2026-01-01T00:00:00Z',
+  generation: 1,
+  ...over,
+});
 
 function CompiledProbe() {
   const { compiled: current } = useIntent();
@@ -165,6 +210,7 @@ describe('IntentContext', () => {
     get.mockReset();
     answerGate.mockReset();
     outputs.mockReset().mockResolvedValue({ outputs: [] });
+    artifactContents.mockReset().mockResolvedValue({ artifacts: [], nextCursor: null });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
   });
@@ -586,6 +632,39 @@ describe('IntentContext', () => {
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
   });
 
+  it('pages in a transcript too long for one response', async () => {
+    get.mockResolvedValue(detail());
+    const row = (seq: number, content: string) => ({
+      seq,
+      stageInstanceId: 'si-1',
+      kind: 'text',
+      content,
+    });
+    outputs
+      .mockResolvedValueOnce({ outputs: [row(1, 'a'), row(2, 'b')], cursor: 2, more: true })
+      .mockResolvedValueOnce({ outputs: [row(4, 'c')], cursor: 5, more: true })
+      // A cursor held at a gap ends the loop until the next poll.
+      .mockResolvedValueOnce({ outputs: [row(6, 'd')], cursor: 5, more: true });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+
+    expect(outputs).toHaveBeenCalledTimes(3);
+    expect(outputs).toHaveBeenNthCalledWith(1, 'p1', 'i1', { stageInstanceId: 'si-1' });
+    expect(outputs).toHaveBeenNthCalledWith(2, 'p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 2,
+    });
+    expect(outputs).toHaveBeenNthCalledWith(3, 'p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 5,
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=abcd');
+  });
+
   it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {
     // create_artifact broadcasts a v2.artifact.created note (agent.note); the
     // provider must refetch so the new artifact renders without waiting for
@@ -700,5 +779,134 @@ describe('IntentContext', () => {
     await waitFor(() =>
       expect(screen.getByTestId('phase-path')).toHaveTextContent('unknown-phase'),
     );
+  });
+  it('pages artifact bodies in after the detail loads', async () => {
+    get.mockResolvedValue({ ...detail(), artifacts: [artifact('a'), artifact('b')] });
+    artifactContents
+      .mockResolvedValueOnce({ artifacts: [{ id: 'a', content: '# A' }], nextCursor: 'c1' })
+      .mockResolvedValueOnce({ artifacts: [{ id: 'b', content: null }], nextCursor: null });
+    renderArtifactProbe();
+    await waitFor(() => expect(screen.getByTestId('bodies')).toHaveTextContent('a=# A|b=null'));
+    expect(artifactContents.mock.calls).toEqual([
+      ['p1', 'i1', null],
+      ['p1', 'i1', 'c1'],
+    ]);
+  });
+
+  it('retries a failed body page, then marks the bodies failed', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      get.mockResolvedValue({ ...detail(), artifacts: [artifact('a')] });
+      artifactContents.mockRejectedValue(new Error('403'));
+      renderArtifactProbe();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(artifactContents).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId('unavailable')).toHaveTextContent('a=error');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers when a retried body page succeeds', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue({ ...detail(), artifacts: [artifact('a')] });
+      artifactContents
+        .mockRejectedValueOnce(new Error('timeout'))
+        .mockResolvedValueOnce({ artifacts: [{ id: 'a', content: '# A' }], nextCursor: null });
+      renderArtifactProbe();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(screen.getByTestId('bodies')).toHaveTextContent('a=# A');
+      expect(screen.getByTestId('unavailable')).toHaveTextContent('a=-');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not refetch bodies on a reload when every body is still current', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue({ ...detail(), artifacts: [artifact('a')] });
+      artifactContents.mockResolvedValue({
+        artifacts: [{ id: 'a', content: '# A' }],
+        nextCursor: null,
+      });
+      renderArtifactProbe();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      expect(artifactContents).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        capturedOnEvent?.({ action: 'agent.note', noteType: 'v2.stage.running' });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBeGreaterThan(1);
+      expect(artifactContents).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('bodies')).toHaveTextContent('a=# A');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks a body the pages never returned as failed', async () => {
+    get.mockResolvedValue({ ...detail(), artifacts: [artifact('a'), artifact('gone')] });
+    artifactContents.mockResolvedValue({
+      artifacts: [{ id: 'a', content: '# A' }],
+      nextCursor: null,
+    });
+    renderArtifactProbe();
+    await waitFor(() =>
+      expect(screen.getByTestId('unavailable')).toHaveTextContent('a=-|gone=error'),
+    );
+  });
+
+  it('skips the body fetch for an intent with no artifacts', async () => {
+    get.mockResolvedValue(detail());
+    renderArtifactProbe();
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    await act(async () => {});
+    expect(artifactContents).not.toHaveBeenCalled();
+  });
+
+  it('keeps a loaded body across a reload until the artifact revision changes', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue({ ...detail(), artifacts: [artifact('a')] });
+      artifactContents.mockResolvedValue({
+        artifacts: [{ id: 'a', content: '# A' }],
+        nextCursor: null,
+      });
+      renderArtifactProbe();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      expect(screen.getByTestId('bodies')).toHaveTextContent('a=# A');
+
+      // Same revision: the body is kept and not refetched.
+      await act(async () => {
+        capturedOnEvent?.({ action: 'agent.note', noteType: 'v2.artifact.updated' });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(screen.getByTestId('bodies')).toHaveTextContent('a=# A');
+      expect(artifactContents).toHaveBeenCalledTimes(1);
+
+      // New revision: the stale body is not shown.
+      get.mockResolvedValue({ ...detail(), artifacts: [artifact('a', { generation: 2 })] });
+      artifactContents.mockReturnValueOnce(new Promise(() => {}));
+      await act(async () => {
+        capturedOnEvent?.({ action: 'agent.note', noteType: 'v2.artifact.created' });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(screen.getByTestId('bodies')).toHaveTextContent('a=(loading)');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

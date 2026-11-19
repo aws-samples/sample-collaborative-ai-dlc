@@ -1345,6 +1345,40 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.baseBranches).toBeNull();
   });
 
+  it('persists validated per-repository sparse checkout selections', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Scoped work',
+      prompt: 'Update API',
+      // A trailing slash names the same directory and is stored normalized.
+      sparseCheckout: { 'owner/repo': ['services/api/', 'packages/shared'] },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).sparseCheckout).toEqual({
+      'owner/repo': ['services/api', 'packages/shared'],
+    });
+  });
+
+  it.each([
+    { 'other/repo': ['src'] },
+    { 'owner/repo': ['../escape'] },
+    { 'owner/repo': 'src' },
+    { 'owner/repo': [' services/api'] },
+    { 'owner/repo': ['services/api '] },
+    { 'owner/repo': ['./services/api'] },
+  ])('rejects an invalid sparse checkout selection', async (sparseCheckout) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Scoped work',
+      prompt: 'Update API',
+      sparseCheckout,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('sparseCheckout');
+  });
+
   it('honors a caller-supplied per-repo baseBranches map', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -4748,6 +4782,52 @@ describe('GET list + detail', () => {
         .body,
     );
     expect(stale.cursor).toBe(5);
+  });
+
+  it('GET /outputs pages a transcript too large for one response', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const big = 'x'.repeat(1000);
+    for (let seq = 1; seq <= 9; seq += 1) {
+      seedOutput(intent.id, seq, {
+        stageInstanceId: seq % 3 === 0 ? 'si-other' : 'si-big',
+        content: `${seq}${big}`,
+      });
+    }
+    const budget = 2500;
+    vi.stubEnv('OUTPUTS_PAGE_BYTES', String(budget));
+    try {
+      const seen = [];
+      let res = JSON.parse(
+        (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-big' })).body,
+      );
+      const pages = [res];
+      while (res.more) {
+        res = JSON.parse(
+          (
+            await getOutputs(sub, projectId, intent.id, {
+              stageInstanceId: 'si-big',
+              afterSeq: String(res.cursor),
+            })
+          ).body,
+        );
+        pages.push(res);
+        if (pages.length > 20) throw new Error('paging did not finish');
+      }
+      for (const page of pages) {
+        seen.push(...page.outputs.map((o) => o.seq));
+        expect(Buffer.byteLength(JSON.stringify(JSON.stringify(page.outputs)))).toBeLessThan(
+          budget + 200,
+        );
+      }
+      expect(pages.length).toBeGreaterThan(2);
+      expect(pages[0].cursor).toBe(pages[0].outputs.at(-1).seq);
+      expect([...new Set(seen)]).toEqual([1, 2, 4, 5, 7, 8]);
+      expect(pages.at(-1).more).toBeUndefined();
+    } finally {
+      vi.stubEnv('OUTPUTS_PAGE_BYTES', undefined);
+    }
   });
 
   it('GET /outputs 404s across projects (membership enforced)', async () => {
@@ -8171,6 +8251,83 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     return { sub, projectId, intent, pk };
   };
 
+  it.each(['CANCELLED', 'FAILED'])(
+    'shows an unpinned %s abort on the read-only audit API',
+    async (status) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      setStatus(intent.id, {
+        status,
+        methodologyRelease: null,
+        methodologyPins: null,
+        ...(status === 'FAILED' ? { failure: { code: 'section_aborted' } } : {}),
+      });
+      if (status === 'FAILED') {
+        seedGate(intent.id, 'abort-gate', { status: 'answered' });
+        Object.assign(procStore.get(keyOf(pk, 'HUMAN#abort-gate')), {
+          orchestratorRunId: 'finished-run',
+          answer: 'abort',
+        });
+      }
+      const before = structuredClone([...procStore.entries()]);
+      planSpy.loadExecutionPlan.mockClear();
+      const response = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/audit`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).completion).toMatchObject({
+        state: 'aborted',
+        reason: 'execution_aborted',
+        integrated: 1,
+        total: 2,
+      });
+      expect(planSpy.loadExecutionPlan).not.toHaveBeenCalled();
+      expect([...procStore.entries()]).toEqual(before);
+    },
+  );
+
+  it('adds read-only completion diagnostics to the authorized audit route', async () => {
+    const { sub, projectId, intent } = await falseSuccess();
+    const request = (user = sub) => ({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/audit`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(user),
+    });
+    const before = structuredClone([...procStore.entries()]);
+    const result = await handler(request());
+    expect(result.statusCode).toBe(200);
+    const completion = JSON.parse(result.body).completion;
+    expect(completion.state).toBe('incomplete');
+    expect(completion.unresolved).toEqual(
+      expect.arrayContaining([expect.objectContaining({ slug: 'feature', state: 'BLOCKED' })]),
+    );
+    expect([...procStore.entries()]).toEqual(before);
+    expect((await handler(request(`stranger-${randomUUID()}`))).statusCode).toBe(403);
+  });
+
+  it.each(['RUNNING', 'WAITING'])(
+    'does not resolve a completion plan for a %s audit',
+    async (status) => {
+      const { sub, projectId, intent } = await falseSuccess();
+      setStatus(intent.id, { status });
+      planSpy.loadExecutionPlan.mockClear();
+      const before = structuredClone([...procStore.entries()]);
+      const result = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/audit`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body).completion).toBeNull();
+      expect(planSpy.loadExecutionPlan).not.toHaveBeenCalled();
+      expect([...procStore.entries()]).toEqual(before);
+    },
+  );
+
   it.each(['rewind', 'start'])(
     'completes publication after %s without rebuilding pre-deploy multi-repo integrated units',
     async (action) => {
@@ -9551,6 +9708,195 @@ describe('GET /artifacts/{id}/impact', () => {
   });
 });
 
+describe('GET /artifacts (paged artifact bodies)', () => {
+  const getDetail = (sub, projectId, intentId, query = { artifactContent: 'separate' }) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}`,
+      pathParameters: { projectId, intentId },
+      queryStringParameters: query,
+      ...claims(sub),
+    });
+  const getContents = (sub, projectId, intentId, cursor) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}/artifacts`,
+      pathParameters: { projectId, intentId },
+      queryStringParameters: cursor ? { cursor } : null,
+      ...claims(sub),
+    });
+  const readAll = async (sub, projectId, intentId) => {
+    const pages = [];
+    let cursor = null;
+    do {
+      const res = await getContents(sub, projectId, intentId, cursor);
+      expect(res.statusCode).toBe(200);
+      const page = JSON.parse(res.body);
+      pages.push(page.artifacts);
+      cursor = page.nextCursor;
+    } while (cursor && pages.length < 10);
+    return pages;
+  };
+
+  it('omits bodies from the intent detail and serves them separately', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const detail = JSON.parse((await getDetail(sub, projectId, intent.id)).body);
+    expect(detail.artifacts.map((a) => a.id).toSorted()).toEqual(['bvb', 'mr', 'trends']);
+    for (const artifact of detail.artifacts) expect(artifact).not.toHaveProperty('content');
+
+    const pages = await readAll(sub, projectId, intent.id);
+    expect(pages).toHaveLength(1);
+    expect(
+      pages[0]
+        .map(({ id, content }) => ({ id, content }))
+        .toSorted((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual([
+      { id: 'bvb', content: '# x' },
+      { id: 'mr', content: '# x' },
+      { id: 'trends', content: '# x' },
+    ]);
+    // Each body pairs with exactly one detail artifact.
+    const keys = new Map(detail.artifacts.map((a) => [a.contentKey, a.id]));
+    expect(keys.size).toBe(3);
+    for (const entry of pages[0]) expect(keys.get(entry.contentKey)).toBe(entry.id);
+  });
+
+  it('keeps bodies in the detail for a client that has not opted in', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    // A tab still running an older bundle never calls /artifacts: an empty body
+    // there would seed its editor and could be saved over the real one.
+    for (const query of [null, {}, { artifactContent: 'inline' }]) {
+      const detail = JSON.parse((await getDetail(sub, projectId, intent.id, query)).body);
+      expect(
+        detail.artifacts
+          .map(({ id, content }) => ({ id, content }))
+          .toSorted((a, b) => a.id.localeCompare(b.id)),
+      ).toEqual([
+        { id: 'bvb', content: '# x' },
+        { id: 'mr', content: '# x' },
+        { id: 'trends', content: '# x' },
+      ]);
+      for (const artifact of detail.artifacts)
+        expect(artifact.contentKey).toEqual(expect.any(String));
+    }
+  });
+
+  it('pages bodies within the byte budget without gaps or repeats', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '60');
+    try {
+      const pages = await readAll(sub, projectId, intent.id);
+      expect(pages.length).toBeGreaterThan(1);
+      expect(
+        pages
+          .flat()
+          .map((a) => a.id)
+          .toSorted(),
+      ).toEqual(['bvb', 'mr', 'trends']);
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+    }
+  });
+
+  it('gives a body over the page budget a page of its own', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const body = 'x'.repeat(250);
+    await seedArtifact(intent.id, 'big', { type: 'big-doc', content: body });
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '200');
+    vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', '1000');
+    try {
+      const pages = await readAll(sub, projectId, intent.id);
+      const bigPage = pages.find((page) => page.some((a) => a.id === 'big'));
+      expect(bigPage).toEqual([expect.objectContaining({ id: 'big', content: body })]);
+      expect(
+        pages
+          .flat()
+          .map((a) => a.id)
+          .toSorted(),
+      ).toEqual(['big', 'bvb', 'mr', 'trends']);
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+      vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', undefined);
+    }
+  });
+
+  it('marks a body too large for any response instead of failing the page', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await seedArtifact(intent.id, 'big', { type: 'big-doc', content: 'x'.repeat(500) });
+    vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', '200');
+    vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', '300');
+    try {
+      const entries = (await readAll(sub, projectId, intent.id)).flat();
+      expect(entries.find((a) => a.id === 'big')).toMatchObject({
+        id: 'big',
+        content: null,
+        contentOmitted: 'too_large',
+      });
+      expect(entries.find((a) => a.id === 'mr')).toMatchObject({ id: 'mr', content: '# x' });
+    } finally {
+      vi.stubEnv('ARTIFACT_CONTENT_PAGE_BYTES', undefined);
+      vi.stubEnv('ARTIFACT_CONTENT_ENTRY_BYTES', undefined);
+    }
+  });
+
+  it('keeps same-id artifacts from different lanes apart', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    for (const unit of ['alpha', 'beta']) {
+      const stage = `si-spec:unit-${unit}`;
+      await g
+        .addV('Artifact')
+        .property('id', 'spec')
+        .property('intent_id', intent.id)
+        .property('artifact_type', 'spec')
+        .property('unit_slug', unit)
+        .property('section_index', '1')
+        .property('created_by_stage_instance_id', stage)
+        .property('content', `# ${unit}`)
+        .next();
+      await g
+        .V()
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to(
+          gremlin.process.statics
+            .V()
+            .has('Artifact', 'id', 'spec')
+            .has('intent_id', intent.id)
+            .has('created_by_stage_instance_id', stage),
+        )
+        .next();
+    }
+
+    const detail = JSON.parse((await getDetail(sub, projectId, intent.id)).body);
+    const byUnit = new Map(detail.artifacts.map((a) => [a.unitSlug, a.contentKey]));
+    expect(byUnit.size).toBe(2);
+    expect(byUnit.get('alpha')).not.toBe(byUnit.get('beta'));
+    const bodies = new Map(
+      (await readAll(sub, projectId, intent.id)).flat().map((e) => [e.contentKey, e.content]),
+    );
+    expect(bodies.get(byUnit.get('alpha'))).toBe('# alpha');
+    expect(bodies.get(byUnit.get('beta'))).toBe('# beta');
+  });
+
+  it('404s an intent from another project and 403s a non-member', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const otherProjectId = await seedV2Project(sub);
+    expect((await getContents(sub, otherProjectId, intent.id)).statusCode).toBe(404);
+    expect((await getContents(`outsider-${randomUUID()}`, projectId, intent.id)).statusCode).toBe(
+      403,
+    );
+  });
+});
+
 const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =>
   handler({
     httpMethod: 'PUT',
@@ -9626,7 +9972,19 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
       ).body,
     );
     const mr = detail.artifacts.find((a) => a.id === 'mr');
-    expect(mr.content).toBe('# Market research\nEU focus.');
+    const contents = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}/artifacts`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(contents.artifacts.find((a) => a.id === 'mr').content).toBe(
+      '# Market research\nEU focus.',
+    );
     expect(mr.editOrigin).toBe('human');
     expect(mr.editedBy).toBe(sub);
     expect(mr.staleSince).toBeNull(); // the edited doc itself is never stale
@@ -12440,6 +12798,64 @@ describe('GET intent — timeline event fields', () => {
     const event = JSON.parse(res.body).events.find((row) => row.eventId === 'e1');
     expect(event).toBeDefined();
     expect(event.detail).toEqual({ round: 1, maxRounds: 2 });
+  });
+});
+
+describe('GET intent — sensor run detail', () => {
+  it('drops the per-artifact coverage records and provenance the UI never renders', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const sensorRow = (id, sensorId, detail) =>
+      procStore.set(keyOf(`EXEC#${intent.id}`, `SENSOR#T#${id}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `SENSOR#T#${id}`,
+        type: 'SensorRun',
+        executionId: intent.id,
+        sensorRunId: id,
+        stageInstanceId: 'si-1',
+        sensorId,
+        result: 'FAIL',
+        severity: 'blocking',
+        held: false,
+        detail,
+        timestamp: 'T1',
+      });
+    sensorRow('s1', 'upstream-coverage', {
+      artifacts: [
+        {
+          artifact: 'design',
+          id: 'design',
+          consumes: ['req'],
+          unreferenced: [],
+          findings_count: 0,
+        },
+        { artifact: 'spec', id: null, reason: 'not found in graph', headings: ['## A'] },
+      ],
+    });
+    sensorRow('s2', 'linter', {
+      reason: 'lint failed',
+      provenance: { files: ['a.js', 'b.js'] },
+      files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
+    });
+    sensorRow('s3', 'reviewer:arch', { verdict: 'NOT_READY', findings: 'fix it', round: 1 });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const byId = new Map(JSON.parse(res.body).sensorRuns.map((s) => [s.sensorRunId, s.detail]));
+    expect(byId.get('s1')).toEqual({
+      artifacts: [{ artifact: 'spec', reason: 'not found in graph', id: null }],
+    });
+    expect(byId.get('s2')).toEqual({
+      reason: 'lint failed',
+      files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
+    });
+    expect(byId.get('s3')).toEqual({ verdict: 'NOT_READY', findings: 'fix it', round: 1 });
   });
 });
 

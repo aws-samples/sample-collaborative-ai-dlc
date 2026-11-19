@@ -26,6 +26,12 @@ import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/servi
 import { realtimeService } from '@/services/realtime';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
+import {
+  applyArtifactContents,
+  artifactContentIdentities,
+  carryArtifactContent,
+  markArtifactContentsFailed,
+} from '@/contexts/artifactContent';
 
 // Shared state for the v2 intent experience (the SprintContext analog). The
 // provider is mounted once in AppShell — INERT off intent routes (no ids → no
@@ -185,6 +191,12 @@ interface IntentContextValue {
 // Uses LRU eviction (delete+re-insert on access moves key to Map iteration end).
 const INTENT_CACHE_MAX = 20;
 
+// Artifact-body page fetch: attempts and the base back-off between them.
+const ARTIFACT_CONTENT_ATTEMPTS = 3;
+const ARTIFACT_CONTENT_RETRY_MS = 500;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 interface IntentCacheEntry {
   detail: IntentDetail;
   compiled: CompiledWorkflow | null;
@@ -304,6 +316,14 @@ export function IntentProvider({
   }>();
 
   const [detail, setDetail] = useState<IntentDetail | null>(null);
+  // Latest committed detail, read by the async artifact-body sync.
+  const detailRef = useRef<IntentDetail | null>(null);
+  const commitDetail = useCallback((next: IntentDetail | null) => {
+    detailRef.current = next;
+    setDetail(next);
+  }, []);
+  // One artifact-body sync at a time; a load during a sync queues one more.
+  const contentSyncRef = useRef({ running: false, again: false });
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [workflowPhases, setWorkflowPhases] = useState<PhaseNode[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -337,12 +357,88 @@ export function IntentProvider({
   const fetchedWorkflowKeyRef = useRef<string | null>(null);
   activeIntentRef.current = intentId;
 
+  // The detail carries no artifact bodies: page them in after each load and
+  // attach each to the revision it was read for.
+  const syncArtifactContents = useCallback(async () => {
+    if (!projectId || !intentId) return;
+    const state = contentSyncRef.current;
+    if (state.running) {
+      state.again = true;
+      return;
+    }
+    state.running = true;
+    const forIntent = intentId;
+    const cacheKey = intentCacheKey(projectId, intentId);
+    const commit = (next: IntentDetail) => {
+      commitDetail(next);
+      const entry = intentCache.get(cacheKey);
+      if (entry) entry.detail = next;
+    };
+    const fetchPage = async (cursor: string | null) => {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await intentsService.artifactContents(projectId, forIntent, cursor);
+        } catch (err) {
+          if (attempt >= ARTIFACT_CONTENT_ATTEMPTS) throw err;
+          await delay(ARTIFACT_CONTENT_RETRY_MS * 2 ** (attempt - 1));
+          if (activeIntentRef.current !== forIntent) throw err;
+        }
+      }
+    };
+    let identities = new Map<string, string>();
+    try {
+      do {
+        state.again = false;
+        const start = detailRef.current;
+        if (!start || start.intent.id !== forIntent) break;
+        // Bodies carried over from the previous load are current (a rewrite or
+        // edit changes the revision identity), so fetch only when one is missing.
+        if (!start.artifacts.some((a) => a.content === undefined)) break;
+        identities = artifactContentIdentities(start);
+        let cursor: string | null = null;
+        do {
+          const page = await fetchPage(cursor);
+          if (activeIntentRef.current !== forIntent) return;
+          const current = detailRef.current;
+          if (current && current.intent.id === forIntent) {
+            const merged = applyArtifactContents(current, page.artifacts, identities);
+            if (merged !== current) commit(merged);
+          }
+          cursor = page.nextCursor;
+        } while (cursor);
+      } while (state.again && activeIntentRef.current === forIntent);
+      // A head the pages never returned (replaced meanwhile) shows Retry, not Loading.
+      if (activeIntentRef.current !== forIntent) return;
+      const after = detailRef.current;
+      if (after && after.intent.id === forIntent) {
+        const marked = markArtifactContentsFailed(after, identities);
+        if (marked !== after) commit(marked);
+      }
+    } catch (err) {
+      console.warn('Artifact content load failed', err);
+      if (activeIntentRef.current !== forIntent) return;
+      const current = detailRef.current;
+      if (current && current.intent.id === forIntent) {
+        const marked = markArtifactContentsFailed(current, identities);
+        if (marked !== current) commit(marked);
+      }
+    } finally {
+      state.running = false;
+    }
+  }, [projectId, intentId, commitDetail]);
+
   const load = useCallback(async () => {
     if (!projectId || !intentId) return;
     try {
-      const dto = await intentsService.get(projectId, intentId);
+      const fetched = await intentsService.get(projectId, intentId);
       if (activeIntentRef.current !== intentId) return;
-      setDetail(dto);
+      const previous = detailRef.current;
+      const dto = carryArtifactContent(
+        fetched,
+        previous?.intent.id === fetched.intent.id ? previous : null,
+      );
+      commitDetail(dto);
+      void syncArtifactContents();
       setError(null);
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
 
@@ -447,9 +543,10 @@ export function IntentProvider({
     } finally {
       if (activeIntentRef.current === intentId) setLoading(false);
     }
-  }, [projectId, intentId]);
+  }, [projectId, intentId, commitDetail, syncArtifactContents]);
 
   useEffect(() => {
+    contentSyncRef.current = { running: false, again: false };
     outputBufRef.current = new Map();
     outputRowsRef.current = new Map();
     panesRef.current = new Map();
@@ -462,7 +559,7 @@ export function IntentProvider({
     if (projectId && intentId) {
       const cached = intentCacheGet(intentCacheKey(projectId, intentId));
       if (cached) {
-        setDetail(cached.detail);
+        commitDetail(cached.detail);
         setCompiled(cached.compiled);
         setWorkflowPhases(cached.workflowPhases);
         setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
@@ -471,7 +568,7 @@ export function IntentProvider({
           fetchedWorkflowKeyRef.current = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
         }
       } else {
-        setDetail(null);
+        commitDetail(null);
         setCompiled(null);
         setWorkflowPhases(null);
         setLiveGates(new Map());
@@ -479,13 +576,13 @@ export function IntentProvider({
       }
       load();
     } else {
-      setDetail(null);
+      commitDetail(null);
       setCompiled(null);
       setWorkflowPhases(null);
       setLiveGates(new Map());
       setLoading(false);
     }
-  }, [projectId, intentId, load]);
+  }, [projectId, intentId, load, commitDetail]);
 
   // Polling backstop. Lifecycle/failure transitions are broadcast live by the
   // orchestrator, but WS frames can be dropped, so while a run is mid-flight
@@ -564,33 +661,38 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
       }
       const forIntent = intentId;
-      intentsService
-        .outputs(projectId, intentId, {
-          stageInstanceId: key,
-          ...(initial ? {} : { afterSeq: pane.cursor }),
-        })
-        .then(({ outputs: durable, cursor }) => {
-          if (activeIntentRef.current !== forIntent) return;
-          const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
-          durable.forEach((row) => bySeq.set(row.seq, row));
-          pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
-          pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
-          // A server without the cursor resumes from the pane's own last chunk.
-          // Catch-ups can overlap, so a late older response must not move the
-          // cursor back.
-          pane.cursor = Math.max(
-            pane.cursor,
-            typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
-          );
-          pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
-          pane.status = 'seeded';
-          renderPane(key);
-        })
-        .catch(() => {
-          if (activeIntentRef.current !== forIntent) return;
-          if (initial) pane.status = 'unseeded';
-          setOutputVersion((n) => n + 1);
-        });
+      // A long transcript arrives in pages: follow `more` while the cursor moves.
+      const fetchPage = (first: boolean): Promise<void> =>
+        intentsService
+          .outputs(projectId, forIntent, {
+            stageInstanceId: key,
+            ...(first && initial ? {} : { afterSeq: pane.cursor }),
+          })
+          .then(({ outputs: durable, cursor, more }): Promise<void> | undefined => {
+            if (activeIntentRef.current !== forIntent) return;
+            const before = first && initial ? -1 : pane.cursor;
+            const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
+            durable.forEach((row) => bySeq.set(row.seq, row));
+            pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
+            pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+            // A server without the cursor resumes from the pane's own last chunk.
+            // Catch-ups can overlap, so a late older response must not move the
+            // cursor back.
+            pane.cursor = Math.max(
+              pane.cursor,
+              typeof cursor === 'number' ? cursor : pane.maxSeededSeq,
+            );
+            pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
+            pane.status = 'seeded';
+            renderPane(key);
+            if (more && pane.cursor > before) return fetchPage(false);
+            return undefined;
+          });
+      fetchPage(true).catch(() => {
+        if (activeIntentRef.current !== forIntent) return;
+        if (initial && pane.status === 'loading') pane.status = 'unseeded';
+        setOutputVersion((n) => n + 1);
+      });
     },
     [projectId, intentId, paneOf, renderPane],
   );
