@@ -1,16 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
-import { mockClient } from 'aws-sdk-client-mock';
-import {
-  CognitoIdentityProviderClient,
-  ListUsersCommand,
-} from '@aws-sdk/client-cognito-identity-provider';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { membershipStore } from '../../shared/space-membership.js';
 import { seedMembership } from '../../../test/seed-membership.js';
-
-const cognitoMock = mockClient(CognitoIdentityProviderClient);
 
 const SSO_CONFIG = JSON.stringify({
   providers: {
@@ -23,22 +16,9 @@ const SSO_CONFIG = JSON.stringify({
   },
 });
 
-const federatedAttributes = (sub, claimValues, providerName = 'Entra') => [
-  { Name: 'sub', Value: sub },
-  { Name: 'email', Value: `${sub}@example.com` },
-  {
-    Name: 'identities',
-    Value: JSON.stringify([{ providerName, providerType: 'OIDC', userId: sub }]),
-  },
-  { Name: 'custom:sso_roles', Value: claimValues },
-];
-
-// Lookups are per-sub filtered ListUsers calls; answer only the requested sub.
-const mockDirectory = (usersBySub) =>
-  cognitoMock.on(ListUsersCommand).callsFake(({ Filter }) => {
-    const match = Object.entries(usersBySub).find(([sub]) => Filter?.includes(`"${sub}"`));
-    return { Users: match ? [{ Attributes: match[1] }] : [] };
-  });
+// The claims the sign-in trigger records for a federated member.
+const recordSignIn = (subject, claimValues, providerName = 'Entra') =>
+  membershipStore.recordSsoClaims({ subject, providerName, claimValues });
 
 const saveEntraMappings = async (roleMappings) =>
   membershipStore.saveRoleMappings({
@@ -90,7 +70,6 @@ beforeEach(async () => {
   await seedMembership(projectId, 'owner');
   cleanup.trackers.mockReset().mockResolvedValue(undefined);
   cleanup.sourceControl.mockReset().mockResolvedValue(undefined);
-  cognitoMock.reset();
   vi.stubEnv('COGNITO_USER_POOL_ID', 'eu-central-1_testpool');
   vi.stubEnv('SSO_ROLE_CONFIG', '{}');
 });
@@ -315,7 +294,8 @@ describe('space member API', () => {
     ).toBe(400);
   });
 
-  it('keeps local sign-in behavior without SSO and never contacts Cognito', async () => {
+  it('keeps local sign-in behavior without SSO and never reads recorded claims', async () => {
+    const claims = vi.spyOn(membershipStore, 'getSsoClaims');
     await seedMembership(projectId, 'member', 'member');
     await request('PUT', {
       route: 'members/member/business-roles',
@@ -329,7 +309,7 @@ describe('space member API', () => {
       localRoles: ['developer'],
       effectiveRoles: ['developer'],
     });
-    expect(cognitoMock.calls()).toHaveLength(0);
+    expect(claims).not.toHaveBeenCalled();
     // Without SSO there is nothing inherited, so new exclusions are rejected.
     expect(
       (
@@ -354,7 +334,7 @@ describe('space member API', () => {
         ...(source === 'ui' ? { developer: ['Engineering'] } : {}),
         architect: ['Engineering', 'Architects'],
       });
-      mockDirectory({ alice: federatedAttributes('alice', '[Engineering]') });
+      await recordSignIn('alice', ['Engineering']);
       await seedMembership(projectId, 'alice', 'member');
       const listed = JSON.parse((await request('GET')).body).find((m) => m.userId === 'alice');
       expect(listed).toMatchObject({
@@ -362,9 +342,6 @@ describe('space member API', () => {
         excludedRoles: [],
         effectiveRoles: ['architect', 'developer'],
       });
-      // Identity lookups are bounded by the requested members (owner + alice),
-      // not by the size of the rest of the directory.
-      expect(cognitoMock.commandCalls(ListUsersCommand).length).toBeLessThanOrEqual(2);
       const spaceA = JSON.parse(
         (
           await request('PUT', {
@@ -401,7 +378,7 @@ describe('space member API', () => {
   it('keeps a local assignment active when the same SSO role is excluded, then removes it independently', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
     await saveEntraMappings({ developer: ['Engineering'] });
-    mockDirectory({ leo: federatedAttributes('leo', '[Engineering]') });
+    await recordSignIn('leo', ['Engineering']);
     await seedMembership(projectId, 'leo', 'member');
     await request('PUT', {
       route: 'members/leo/business-roles',
@@ -438,9 +415,29 @@ describe('space member API', () => {
     });
   });
 
+  it('derives SSO roles from the recorded claims with the current mapping and access gate', async () => {
+    const config = JSON.parse(SSO_CONFIG);
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const [recorded, unrecorded] = [randomUUID(), randomUUID()];
+    await recordSignIn(recorded, ['Engineering', 'aidlc-user']);
+    await seedMembership(projectId, recorded, 'member');
+    await seedMembership(projectId, unrecorded, 'member');
+    const roles = async () =>
+      Object.fromEntries(
+        JSON.parse((await request('GET')).body).map((m) => [m.userId, m.ssoRoles]),
+      );
+    // A mapping saved after the sign-in applies without a new sign-in.
+    await saveEntraMappings({ developer: ['Engineering'] });
+    expect(await roles()).toMatchObject({ [recorded]: ['developer'], [unrecorded]: [] });
+    // Admission follows the current configuration, as at sign-in.
+    config.providers.Entra.requiredClaimValues = ['aidlc-admin'];
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect((await roles())[recorded]).toEqual([]);
+  });
+
   it('denies exclusion changes to Members and outsiders and rejects non-inherited roles', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
-    mockDirectory({ member: federatedAttributes('member', '[Quality]') });
+    await recordSignIn('member', ['Quality']);
     await seedMembership(projectId, 'member', 'member');
     for (const actor of ['member', 'outsider']) {
       expect(
@@ -470,18 +467,21 @@ describe('space member API', () => {
     ).toBe(405);
   });
 
-  it('fails member reads when identity or mapping lookups fail instead of returning empty roles', async () => {
+  it('fails member reads when claim or mapping lookups fail instead of returning empty roles', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
-    cognitoMock.on(ListUsersCommand).rejects(new Error('Cognito unavailable'));
+    const claims = vi
+      .spyOn(membershipStore, 'getSsoClaims')
+      .mockRejectedValue(new Error('Unavailable'));
     expect((await request('GET')).statusCode).toBe(500);
-    mockDirectory({ owner: federatedAttributes('owner', '[Engineering]') });
+    claims.mockRestore();
+    await recordSignIn('owner', ['Engineering']);
     vi.spyOn(membershipStore, 'getRoleMappings').mockRejectedValue(new Error('Unavailable'));
     expect((await request('GET')).statusCode).toBe(500);
   });
 
-  it('does not commit a local-role change when the identity lookup fails', async () => {
+  it('does not commit a local-role change when the claim lookup fails', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
-    cognitoMock.on(ListUsersCommand).rejects(new Error('Cognito unavailable'));
+    vi.spyOn(membershipStore, 'getSsoClaims').mockRejectedValue(new Error('Unavailable'));
     await seedMembership(projectId, 'member', 'member');
     expect(
       (

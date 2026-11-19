@@ -5,12 +5,8 @@ import {
   combineMemberRoles,
   computeSsoBusinessRoles,
 } from '../shared/business-roles.js';
-import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
+import { evaluateSsoClaims, parseRoleConfig } from '../shared/sso-roles.js';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import {
-  CognitoIdentityProviderClient,
-  ListUsersCommand,
-} from '@aws-sdk/client-cognito-identity-provider';
 import {
   membershipStore,
   fetchMembershipRole,
@@ -30,42 +26,18 @@ import { Logger } from '@aws-lambda-powertools/logger';
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const cognito = new CognitoIdentityProviderClient({});
 
-const attrsToMap = (attributes = []) => {
-  const attrs = {};
-  for (const attribute of attributes) attrs[attribute.Name] = attribute.Value;
-  return attrs;
-};
-
-const requireUserPool = () => {
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  if (!userPoolId) throw new Error('User pool not configured');
-  return userPoolId;
-};
-
-// One targeted lookup per requested member (covers offline members), so member
-// pages never depend on the size of the rest of the directory.
-const getAttrsForSub = async (userId) => {
-  const result = await cognito.send(
-    new ListUsersCommand({
-      UserPoolId: requireUserPool(),
-      Limit: 1,
-      Filter: `sub = "${String(userId).replaceAll('"', '')}"`,
-    }),
-  );
-  return attrsToMap(result.Users?.[0]?.Attributes);
-};
-
-// SSO business roles come from trusted Cognito attributes plus the infrastructure
-// baseline and saved additions for the provider. Identity and mapping reads are memoized
-// across members within one request; read failures propagate as errors instead
-// of degrading to empty role lists.
+// SSO business roles come from the claims recorded at each member's latest
+// federated sign-in, plus the infrastructure baseline and saved additions for
+// the provider. Admission uses the current configuration, like the sign-in
+// trigger. Claim and mapping reads are memoized across members within one
+// request; read failures propagate as errors instead of degrading to empty
+// role lists.
 const createSsoRoleResolver = () => {
   const config = parseRoleConfig();
   const ssoEnabled = Object.keys(config.providers || {}).length > 0;
   const mappings = new Map();
-  const attributes = new Map();
+  const claims = new Map();
   const mappingFor = async (providerId) => {
     if (!mappings.has(providerId)) {
       const additions = await membershipStore.getRoleMappings(providerId);
@@ -78,9 +50,18 @@ const createSsoRoleResolver = () => {
   };
   const forUser = async (userId) => {
     if (!ssoEnabled) return [];
-    if (!attributes.has(userId)) attributes.set(userId, await getAttrsForSub(userId));
-    const result = evaluateSsoRoles(attributes.get(userId) || {}, config);
-    if (!result.federated || !result.admitted) return [];
+    if (!claims.has(userId)) claims.set(userId, await membershipStore.getSsoClaims(userId));
+    const recorded = claims.get(userId);
+    // No copy: the member has not signed in through SSO, so no SSO roles.
+    if (!recorded) return [];
+    const result = evaluateSsoClaims(
+      {
+        identity: { providerName: recorded.providerName },
+        claimValues: recorded.claimValues || [],
+      },
+      config,
+    );
+    if (!result.admitted) return [];
     return computeSsoBusinessRoles(
       result.claimValues,
       await mappingFor(result.identity.providerName),
