@@ -103,13 +103,28 @@ test('Neptune and production S3 resources resist accidental deletion', () => {
     neptune,
     /final_snapshot_identifier\s+= var\.skip_final_snapshot \? null : "\$\{trim\(substr\(var\.name_prefix, 0, 39\), "-"\)\}-neptune-final-\$\{random_id\.final_snapshot_suffix\[0\]\.hex\}"/,
   );
-  assert.doesNotMatch(neptune, /storage_encrypted/);
 
   const s3 = read('terraform/modules/data/s3/main.tf');
   assert.equal(count(s3, /force_destroy = var\.environment != "prod"/g), 3);
 
   const frontend = read('terraform/modules/frontend/main.tf');
   assert.equal(count(frontend, /force_destroy = var\.environment != "prod"/g), 1);
+});
+
+test('new Neptune clusters are encrypted without replacing an existing cluster', () => {
+  const neptune = read('terraform/modules/data/neptune/main.tf');
+  assert.match(
+    neptune,
+    /resource "aws_neptune_cluster" "main" \{[\s\S]*?storage_encrypted = true[\s\S]*?kms_key_arn\s+= var\.kms_key_arn != "" \? var\.kms_key_arn : null[\s\S]*?lifecycle \{\s*ignore_changes = \[storage_encrypted, kms_key_arn\]\s*\}/,
+  );
+  assert.match(
+    read('terraform/modules/data/neptune/variables.tf'),
+    /variable "kms_key_arn"[\s\S]*?default\s+= ""/,
+  );
+  assert.match(
+    moduleBlock(read('terraform/main.tf'), 'neptune'),
+    /kms_key_arn\s+= var\.kms_key_arn/,
+  );
 });
 
 test('root KMS configuration accepts existing keys without owning their lifecycle', () => {
