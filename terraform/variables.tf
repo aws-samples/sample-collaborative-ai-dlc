@@ -263,7 +263,7 @@ variable "auth_id_token_validity_minutes" {
 }
 
 variable "auth_refresh_token_validity_hours" {
-  description = "Lifetime of Cognito refresh tokens, in whole hours from 1 to 87600. Sets when users must sign in again; it is not a hard session cap, because tokens already issued stay valid until they expire (see docs/getting-started/enterprise-sso.md). Null keeps 24 hours when enterprise SSO is enabled and 168 hours (7 days) in local mode."
+  description = "Lifetime of Cognito refresh tokens, in whole hours from 1 to 87600: how long after a sign-in Cognito permits refreshes. It is not a hard session cap: the last ID token stays valid until it expires, so a session, including one of a user removed at the identity provider, can last up to this value plus auth_id_token_validity_minutes (see docs/getting-started/enterprise-sso.md). Null keeps 24 hours when enterprise SSO is enabled and 168 hours (7 days) in local mode."
   type        = number
   default     = null
 }
