@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileQuestion, MoreHorizontal } from 'lucide-react';
+import { ClipboardCheck, FileQuestion, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { IntentGate } from '@/services/intents';
 import {
@@ -66,12 +66,23 @@ export function PendingQuestionsTabs({
 
   if (!selectedGate) return null;
 
+  // A validation gate means the run is waiting on a human review, so say so
+  // instead of the generic "Questions for you" header.
+  const isReview = selectedGate.kind === 'validation';
+  const headerLabel = isReview ? 'Review required' : 'Questions for you';
+  const HeaderIcon = isReview ? ClipboardCheck : FileQuestion;
+  const headerIconClass = cn('h-4 w-4', isReview ? 'text-primary' : 'text-muted-foreground');
+  const headerTextClass = cn(
+    'text-sm font-medium',
+    isReview ? 'text-foreground' : 'text-muted-foreground',
+  );
+
   if (gates.length === 1) {
     return (
       <div role="region" aria-label="Pending questions" className="space-y-2">
         <div className="flex items-center gap-2">
-          <FileQuestion className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+          <HeaderIcon className={headerIconClass} />
+          <span className={headerTextClass}>{headerLabel}</span>
           <Badge variant="secondary" className="h-4 px-1 text-[9px]">
             1
           </Badge>
@@ -88,8 +99,8 @@ export function PendingQuestionsTabs({
   return (
     <div role="region" aria-label="Pending questions" className="space-y-2">
       <div className="flex items-center gap-2">
-        <FileQuestion className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+        <HeaderIcon className={headerIconClass} />
+        <span className={headerTextClass}>{headerLabel}</span>
         <Badge variant="secondary" className="h-4 px-1 text-[9px]">
           {gates.length}
         </Badge>

@@ -101,3 +101,16 @@ describe('PendingQuestionsTabs — keyboard navigation', () => {
     expect(screen.getByRole('tab', { name: 'Question 1?' })).toHaveFocus();
   });
 });
+
+describe('PendingQuestionsTabs — section header', () => {
+  it('says "Questions for you" for question gates', () => {
+    renderTabs([gate()]);
+    expect(screen.getByText('Questions for you')).toBeInTheDocument();
+  });
+
+  it('says "Review required" when the selected gate is a validation gate', () => {
+    renderTabs([gate({ kind: 'validation', questions: null })]);
+    expect(screen.getByText('Review required')).toBeInTheDocument();
+    expect(screen.queryByText('Questions for you')).not.toBeInTheDocument();
+  });
+});

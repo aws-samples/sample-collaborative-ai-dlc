@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router';
+import { Link, Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
   type NativeExportHarness,
@@ -27,7 +27,8 @@ import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
 import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
 import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Badge, badgeVariants } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -425,6 +426,7 @@ export default function IntentView() {
         : null
     : null;
   const failureMessage = intent.failure?.message ?? intent.failureReason;
+  const reviewPendingGate = pendingGates.find((g) => g.kind === 'validation') ?? null;
 
   return (
     <div className="space-y-6">
@@ -454,6 +456,15 @@ export default function IntentView() {
             >
               Autonomous construction
             </Badge>
+          )}
+          {reviewPendingGate && (
+            <Link
+              to={`/space/${projectId}/intent/${intentId}/review/${reviewPendingGate.humanTaskId}`}
+              className={cn(badgeVariants(), 'text-[10px] shrink-0')}
+              data-testid="waiting-for-review-badge"
+            >
+              Waiting for review
+            </Link>
           )}
           {isActive && (
             <span
