@@ -5,8 +5,9 @@
 // only as a whole, and only when no branch in it carries a commit the base
 // branch lacks or is the source of an open pull request. A repository with any
 // work keeps every branch, so a rewind or a delivery retry finds what it left.
-// Deletion failures are reported per branch and never thrown: a refused delete
-// (for example a protected branch) is not a credential failure.
+// Deletion failures are reported per branch, with the provider's status, and
+// never thrown: a refused delete (for example a protected branch) is not a
+// credential failure.
 import { ProviderError } from './git-providers/errors.js';
 
 const KEEP = Object.freeze({
@@ -71,8 +72,14 @@ export const deleteUnusedBranches = async (provider, ctx, repo, { branch, baseBr
       }
       await provider.deleteBranch(ctx, repo, name);
       deleted.push(name);
-    } catch {
-      kept.push({ branch: name, reason: KEEP.DELETE_FAILED });
+    } catch (error) {
+      // The provider status (for example 403: the credential may not delete
+      // branches) says why; the provider's message never leaves the service.
+      kept.push({
+        branch: name,
+        reason: KEEP.DELETE_FAILED,
+        status: Number.isInteger(error?.status) ? error.status : null,
+      });
       break;
     }
   }

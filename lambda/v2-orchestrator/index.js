@@ -483,6 +483,53 @@ const publishTrackerDelivery = (store, meta, pullRequests) =>
     branch: meta.branch ?? null,
   });
 
+// Delete an ended run's branches from repositories it never changed, and note
+// it on the timeline. Best-effort: it never changes the run's outcome, and it
+// does nothing once a relaunch owns the execution, whose init-ws may already
+// have checked that the intent branch exists.
+const cleanUpEndedRun = async ({
+  store,
+  broadcast,
+  deleteUnusedBranches,
+  ids: { executionId, intentId, projectId },
+  runId,
+  statuses,
+}) => {
+  try {
+    const current = await store.getExecution(executionId, { consistentRead: true });
+    if (
+      !current ||
+      current.projectId !== projectId ||
+      current.orchestratorRunId !== runId ||
+      !statuses.includes(current.status)
+    )
+      return { skipped: true };
+    const results = await deleteUnusedBranches({ ...current, executionId });
+    const summary = cleanupSummary(results);
+    if (summary) {
+      try {
+        await store.appendEvent?.({
+          executionId,
+          type: 'v2.branches.cleaned',
+          actor: 'orchestrator',
+          summary,
+        });
+        await broadcast?.(intentId, {
+          intentId,
+          projectId,
+          ...livePayloadFor('v2.branches.cleaned', summary),
+        });
+      } catch {
+        /* the timeline note is best-effort */
+      }
+    }
+    return { repositories: results.length };
+  } catch (error) {
+    logger.error('unused intent branch cleanup failed', error);
+    return { failed: true };
+  }
+};
+
 const handler = async (event, ctx, deps = defaultDeps()) => {
   const {
     store,
@@ -509,6 +556,23 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // stage loop below (an edit is refused while a run is active anyway).
   if (event.action === 'quorum-edit') {
     return runQuorumEdit(event, ctx, deps);
+  }
+  // A run the intents API ended (cancel, durable-expiry repair) is cleaned up
+  // here, after the API has answered: provider calls per repository could
+  // outlast the request.
+  if (event.action === 'cleanup-branches') {
+    if (typeof deps.deleteUnusedBranches !== 'function') return { ok: false, reason: 'disabled' };
+    const result = await ctx.step('branches-clean', () =>
+      cleanUpEndedRun({
+        store,
+        broadcast,
+        deleteUnusedBranches: deps.deleteUnusedBranches,
+        ids: { executionId, intentId, projectId: event.projectId },
+        runId: event.runId ?? null,
+        statuses: ['CANCELLED', 'FAILED'],
+      }),
+    );
+    return { ok: true, ...result };
   }
   if (event.action === 'retry-delivery') {
     const retryMeta = await ctx.step('delivery-load', () =>
@@ -751,47 +815,20 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return result;
   };
 
-  // Opt-in end-of-run cleanup of the intent's branches in repositories it never
-  // changed (lambda/shared/intent-branch-cleanup.js). Only histories that
-  // pinned `unusedBranchCleanup` in load-meta take this step. Best-effort: it
-  // never changes the run's outcome, and it does nothing once a relaunch owns
-  // the execution, whose init-ws may already have checked the branch exists.
+  // Opt-in end-of-run cleanup (lambda/shared/intent-branch-cleanup.js). Only
+  // histories that pinned `unusedBranchCleanup` in load-meta take this step.
   const cleanUpUnusedBranches = async (stepName) => {
     if (!meta.unusedBranchCleanup || typeof deleteUnusedBranches !== 'function') return;
-    await ctx.step(stepName, async () => {
-      try {
-        const current = await store.getExecution(executionId, { consistentRead: true });
-        if (
-          !current ||
-          current.orchestratorRunId !== runId ||
-          !['SUCCEEDED', 'FAILED'].includes(current.status)
-        )
-          return { skipped: true };
-        const results = await deleteUnusedBranches({ ...current, executionId });
-        const summary = cleanupSummary(results);
-        if (summary) {
-          try {
-            await store.appendEvent?.({
-              executionId,
-              type: 'v2.branches.cleaned',
-              actor: 'orchestrator',
-              summary,
-            });
-            await broadcast?.(intentId, {
-              intentId,
-              projectId,
-              ...livePayloadFor('v2.branches.cleaned', summary),
-            });
-          } catch {
-            /* the timeline note is best-effort */
-          }
-        }
-        return { repositories: results.length };
-      } catch (error) {
-        logger.error('unused intent branch cleanup failed', error);
-        return { failed: true };
-      }
-    });
+    await ctx.step(stepName, () =>
+      cleanUpEndedRun({
+        store,
+        broadcast,
+        deleteUnusedBranches,
+        ids: { executionId, intentId, projectId },
+        runId,
+        statuses: ['SUCCEEDED', 'FAILED'],
+      }),
+    );
   };
 
   const fail = async (reason, detail, structuredFailure = null) => {

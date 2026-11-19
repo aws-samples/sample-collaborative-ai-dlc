@@ -38,10 +38,14 @@ export const deleteUnusedIntentBranches = async ({ meta, operation, logger = nul
       results.push({ repoId, deleted: [], kept: [], error: error?.code ?? 'cleanup_failed' });
     }
   }
+  // Why each branch was kept, so a refused delete (say a 403) can be traced.
   logger?.info?.('unused intent branch cleanup', {
     executionId: meta.executionId,
     deleted: results.reduce((n, r) => n + r.deleted.length, 0),
-    failedRepositories: results.filter((r) => r.error).length,
+    kept: results.flatMap((r) => r.kept.map((k) => ({ repoId: r.repoId, ...k }))),
+    failedRepositories: results
+      .filter((r) => r.error)
+      .map((r) => ({ repoId: r.repoId, error: r.error })),
   });
   return results;
 };

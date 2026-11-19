@@ -1788,6 +1788,72 @@ describe('unused intent branch cleanup (opt-in)', () => {
     expect((await start()).ok).toBe(true);
     expect(deps.deleteUnusedBranches).not.toHaveBeenCalled();
   });
+  it('cleans up a run the intents API cancelled, in its own invocation', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      status: 'CANCELLED',
+      orchestratorRunId: 'run-1',
+    }));
+    deps.deleteUnusedBranches = vi.fn(async () => [
+      { repoId: 'owner/repo', deleted: ['aidlc/i1'], kept: [] },
+    ]);
+    const names = stepNames();
+    const res = await __durableHandler(
+      {
+        action: 'cleanup-branches',
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'i1',
+        runId: 'run-1',
+      },
+      ctx,
+      deps,
+    );
+    expect(res).toEqual({ ok: true, repositories: 1 });
+    expect(names).toEqual(['branches-clean']);
+    expect(deps.deleteUnusedBranches.mock.calls[0][0]).toMatchObject({
+      executionId: 'i1',
+      status: 'CANCELLED',
+    });
+    expect(deps.store.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'v2.branches.cleaned' }),
+    );
+  });
+  it.each([
+    ['a relaunch owns the execution', { status: 'CANCELLED', orchestratorRunId: 'run-2' }],
+    ['the run is active again', { status: 'RUNNING', orchestratorRunId: 'run-1' }],
+    ['another space asked', { status: 'CANCELLED', orchestratorRunId: 'run-1', projectId: 'p2' }],
+  ])('cleans nothing up when %s', async (_label, patch) => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, ...patch }));
+    deps.deleteUnusedBranches = vi.fn(async () => []);
+    const res = await __durableHandler(
+      {
+        action: 'cleanup-branches',
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'i1',
+        runId: 'run-1',
+      },
+      ctx,
+      deps,
+    );
+    expect(res).toEqual({ ok: true, skipped: true });
+    expect(deps.deleteUnusedBranches).not.toHaveBeenCalled();
+  });
+  it('ignores a cleanup request when the deployment has it off', async () => {
+    const res = await __durableHandler(
+      {
+        action: 'cleanup-branches',
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'i1',
+        runId: 'run-1',
+      },
+      ctx,
+      deps,
+    );
+    expect(res).toEqual({ ok: false, reason: 'disabled' });
+  });
   it('never fails the run when the cleanup fails', async () => {
     trackMeta();
     deps.deleteUnusedBranches = vi.fn(async () => {

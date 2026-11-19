@@ -14246,22 +14246,14 @@ describe('unused intent branch cleanup (opt-in)', () => {
       pathParameters: { projectId, intentId },
       ...claims(sub),
     });
-  const cleanupRequests = () => {
-    const requests = [];
-    sourceControlOperationHandler = (request) => {
-      if (request.operation !== 'delete-unused-branches') return null;
-      requests.push(request);
-      return { deleted: [request.args.branch], kept: [] };
-    };
-    return requests;
-  };
-  const cleanedEvents = (intentId) =>
-    [...procStore.values()].filter(
-      (row) =>
-        row.pk === `EXEC#${intentId}` &&
-        row.type === 'Event' &&
-        row.eventType === 'v2.branches.cleaned',
-    );
+  const cleanupInvokes = () =>
+    orchestratorInvokes()
+      .map((call) => ({
+        name: call.args[0].input.DurableExecutionName,
+        type: call.args[0].input.InvocationType,
+        payload: JSON.parse(Buffer.from(call.args[0].input.Payload).toString()),
+      }))
+      .filter((invoke) => invoke.payload.action === 'cleanup-branches');
   const waitingIntent = async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -14272,10 +14264,6 @@ describe('unused intent branch cleanup (opt-in)', () => {
       status: 'WAITING',
       pendingHumanTaskId: 'h1',
       orchestratorRunId: 'run-1',
-      branch: 'aidlc/feature',
-      repos: ['owner/repo'],
-      baseBranch: 'main',
-      gitProvider: 'github',
     });
     seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
     return { sub, projectId, intent, metaKey };
@@ -14287,48 +14275,42 @@ describe('unused intent branch cleanup (opt-in)', () => {
     delete process.env.DELETE_UNUSED_INTENT_BRANCHES;
   });
 
-  it('deletes nothing on cancel unless the deployment enables it', async () => {
-    const requests = cleanupRequests();
+  it('requests nothing on cancel unless the deployment enables it', async () => {
     const { sub, projectId, intent } = await waitingIntent();
     expect((await cancel(sub, projectId, intent.id)).statusCode).toBe(200);
-    expect(requests).toEqual([]);
+    expect(cleanupInvokes()).toEqual([]);
   });
 
-  it('asks the source-control service to clean each repository after a cancel', async () => {
+  it('hands the cleanup of a cancelled run to the orchestrator, without waiting for it', async () => {
     enable();
-    const requests = cleanupRequests();
     const { sub, projectId, intent } = await waitingIntent();
     const res = await cancel(sub, projectId, intent.id);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).status).toBe('CANCELLED');
-    expect(requests).toEqual([
-      expect.objectContaining({
-        action: 'operate',
-        projectId,
-        provider: 'github',
-        repo: 'owner/repo',
-        operation: 'delete-unused-branches',
-        args: { branch: 'aidlc/feature', baseBranch: 'main' },
-      }),
-    ]);
-    expect(cleanedEvents(intent.id)).toHaveLength(1);
+    const [invoke, ...rest] = cleanupInvokes();
+    expect(rest).toEqual([]);
+    expect(invoke.type).toBe('Event');
+    expect(invoke.name).toMatch(/^branches-[0-9a-f]{32}$/);
+    expect(invoke.payload).toEqual({
+      action: 'cleanup-branches',
+      projectId,
+      intentId: intent.id,
+      executionId: intent.id,
+      runId: 'run-1',
+    });
   });
 
-  it('still cancels when the cleanup fails', async () => {
+  it('still cancels when the cleanup cannot be requested', async () => {
     enable();
-    sourceControlOperationHandler = () => {
-      throw new Error('provider down');
-    };
     const { sub, projectId, intent, metaKey } = await waitingIntent();
+    lambdaMock.on(InvokeCommand, { FunctionName: 'orchestrator-test' }).rejects(new Error('down'));
     const res = await cancel(sub, projectId, intent.id);
     expect(res.statusCode).toBe(200);
     expect(procStore.get(metaKey).status).toBe('CANCELLED');
-    expect(cleanedEvents(intent.id)).toHaveLength(0);
   });
 
-  it('cleans up when an expired durable run is repaired to FAILED', async () => {
+  it('requests a cleanup when an expired durable run is repaired to FAILED', async () => {
     enable();
-    const requests = cleanupRequests();
     const { sub, projectId, intent, metaKey } = await waitingIntent();
     const expired = new Error('callback timed out');
     expired.name = 'CallbackTimeoutException';
@@ -14336,7 +14318,8 @@ describe('unused intent branch cleanup (opt-in)', () => {
     const res = await answerGate(sub, projectId, intent.id, 'h1');
     expect(res.statusCode).toBe(409);
     expect(procStore.get(metaKey).status).toBe('FAILED');
-    expect(requests).toHaveLength(1);
-    expect(requests[0].args).toEqual({ branch: 'aidlc/feature', baseBranch: 'main' });
+    expect(cleanupInvokes().map((invoke) => invoke.payload)).toEqual([
+      expect.objectContaining({ executionId: intent.id, runId: 'run-1' }),
+    ]);
   });
 });

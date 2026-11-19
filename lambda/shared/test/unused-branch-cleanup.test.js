@@ -26,7 +26,7 @@ const fakeProvider = ({ branches, onBase = [BASE_SHA], openPrs = [], refuse = []
       openPrs.includes(sourceBranch) ? [{ state: 'open', sourceBranch }] : [],
     ),
     deleteBranch: vi.fn(async (_ctx, _repo, name) => {
-      if (refuse.includes(name)) throw new Error('protected');
+      if (refuse.includes(name)) throw Object.assign(new Error('protected'), { status: 403 });
       return heads.delete(name);
     }),
   };
@@ -111,7 +111,7 @@ describe('deleteUnusedBranches', () => {
     const result = await deleteUnusedBranches(provider, {}, 'org/repo', { branch: INTENT });
     expect(result.deleted).toEqual([]);
     expect(result.kept).toEqual([
-      { branch: UNIT, reason: 'delete_failed' },
+      { branch: UNIT, reason: 'delete_failed', status: 403 },
       { branch: INTENT, reason: 'family_has_work' },
     ]);
   });
@@ -321,6 +321,24 @@ describe('deleteUnusedIntentBranches', () => {
     expect(cleanupSummary(results)).toBe(
       'Deleted the unused intent branch from 1 unchanged repository: group/api',
     );
+  });
+
+  it('logs why each branch was kept', async () => {
+    const logger = { info: vi.fn() };
+    await deleteUnusedIntentBranches({
+      meta: { ...meta, repos: ['group/api'] },
+      operation: async () => ({
+        deleted: [],
+        kept: [{ branch: INTENT, reason: 'delete_failed', status: 403 }],
+      }),
+      logger,
+    });
+    expect(logger.info).toHaveBeenCalledWith('unused intent branch cleanup', {
+      executionId: 'exec-1',
+      deleted: 0,
+      kept: [{ repoId: 'group/api', branch: INTENT, reason: 'delete_failed', status: 403 }],
+      failedRepositories: [],
+    });
   });
 
   it('does nothing without a branch or repositories', async () => {

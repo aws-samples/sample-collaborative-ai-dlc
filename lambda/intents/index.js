@@ -47,11 +47,7 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
-import {
-  cleanupSummary,
-  deleteUnusedIntentBranches,
-  deleteUnusedIntentBranchesEnabled,
-} from '../shared/intent-branch-cleanup.js';
+import { deleteUnusedIntentBranchesEnabled } from '../shared/intent-branch-cleanup.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -3627,28 +3623,25 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
 };
 // Opt-in (DELETE_UNUSED_INTENT_BRANCHES): a cancelled or repaired-to-FAILED run
 // deletes its branches from repositories it never changed. The orchestrator
-// does the same for runs it ends itself. Never throws.
+// does it, as for runs it ends itself, in its own invocation so a cancel or a
+// repair never waits for provider calls. Never throws.
 const cleanUpUnusedIntentBranches = async (meta) => {
   if (!deleteUnusedIntentBranchesEnabled() || !meta?.executionId) return;
   try {
-    const results = await deleteUnusedIntentBranches({
-      meta,
-      operation: sourceControlOperation,
-      logger,
-    });
-    const summary = cleanupSummary(results);
-    if (summary)
-      await store.appendEvent({
+    await invokeOrchestrator(
+      {
+        action: 'cleanup-branches',
+        projectId: meta.projectId,
+        intentId: meta.intentId ?? meta.executionId,
         executionId: meta.executionId,
-        type: 'v2.branches.cleaned',
-        actor: 'system',
-        summary,
-      });
+        runId: meta.orchestratorRunId ?? null,
+      },
+      { durableExecutionName: `branches-${randomBytes(16).toString('hex')}` },
+    );
   } catch (err) {
-    logger.error('Unused intent branch cleanup failed', err);
+    logger.error('Unused intent branch cleanup could not be requested', err);
   }
 };
-
 // ── Composer (Adaptive Workflows) ────────────────────────────────────────
 // "LLM proposes, engine disposes": a compose request only ever produces a
 // COMPOSE row carrying a proposal + the plan resolver's authoritative
