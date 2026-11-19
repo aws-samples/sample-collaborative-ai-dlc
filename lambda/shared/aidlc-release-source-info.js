@@ -41,5 +41,10 @@ const SOURCE_INFO = Object.freeze({
     dateKind: 'release',
     url: 'https://github.com/awslabs/aidlc-workflows/releases/tag/v2.11.3',
   },
+  'v2.11.4': {
+    date: '2026-11-13T05:48:13Z',
+    dateKind: 'release',
+    url: 'https://github.com/awslabs/aidlc-workflows/releases/tag/v2.11.4',
+  },
 });
 export const releaseSourceInfo = (profileId) => SOURCE_INFO[profileId] ?? null;
