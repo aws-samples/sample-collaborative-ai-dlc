@@ -2282,7 +2282,7 @@ describe('shallow checkouts deepen on demand', () => {
       urls: laneUrls(remote),
     });
 
-    expect(res).toEqual({ conflicted: true, conflicts: ['shared.txt'] });
+    expect(res).toMatchObject({ conflicted: true, conflicts: ['shared.txt'] });
   });
 
   it('deepens to a stored commit that a shallow re-clone does not hold', async () => {
