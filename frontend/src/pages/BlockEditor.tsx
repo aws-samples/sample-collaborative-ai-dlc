@@ -9,6 +9,9 @@ import {
 } from '@/services/blocks';
 import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { SIMPLE_BLOCK_FORMS } from '@/components/blocks/blockFields';
+import { StageResponsibilitiesFields } from '@/components/blocks/StageResponsibilitiesFields';
+import type { BusinessRole } from '@/services/projects';
+import type { StagePermissions } from '@/services/workflows';
 import {
   StageEditor,
   type StageForm,
@@ -144,6 +147,7 @@ export default function BlockEditor() {
   const [pickerReleaseError, setPickerReleaseError] = useState<string | null>(null);
   const [pickerReleaseLoading, setPickerReleaseLoading] = useState(false);
   const [pickerRelease, setPickerRelease] = useState<StageReferenceRelease | null>(null);
+  const [businessRoles, setBusinessRoles] = useState<BusinessRole[]>([]);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -157,7 +161,11 @@ export default function BlockEditor() {
     const generation = ++loadGeneration.current;
     setError(null);
     setReadOnly(Boolean(releaseId));
-    setForm({});
+    setForm(
+      isNew && blockType === 'stage'
+        ? { permissions: { decisionMakerRoles: [], contributorRoles: [] } }
+        : {},
+    );
     setBody('');
     setScript('');
     if (isNew || !id) {
@@ -195,11 +203,13 @@ export default function BlockEditor() {
     setPickerReleaseLoading(true);
     setReferenceOptions({});
     setPickerRelease(null);
+    setBusinessRoles([]);
     loadStageReferenceOptions(id, requestedPickerRelease)
-      .then(({ options, release }) => {
+      .then(({ options, release, businessRoles: roles }) => {
         if (cancelled) return;
         setReferenceOptions(options);
         setPickerRelease(release);
+        setBusinessRoles(roles ?? []);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -351,6 +361,7 @@ export default function BlockEditor() {
           <TabsList className="flex h-auto flex-wrap">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="configuration">Configuration</TabsTrigger>
+            {isStage && <TabsTrigger value="responsibilities">Responsibilities</TabsTrigger>}
             {(isStage || typeForm?.bodyLabel) && <TabsTrigger value="content">Content</TabsTrigger>}
             {typeForm?.scriptLabel && <TabsTrigger value="script">Script</TabsTrigger>}
           </TabsList>
@@ -396,6 +407,32 @@ export default function BlockEditor() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {isStage && (
+            <TabsContent value="responsibilities">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Responsibilities</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {readOnly ? (
+                    <StageResponsibilitiesFields
+                      value={(form.permissions as StagePermissions | null | undefined) ?? null}
+                      roles={businessRoles}
+                      readOnly
+                    />
+                  ) : (
+                    <StageResponsibilitiesFields
+                      value={(form.permissions as StagePermissions | null | undefined) ?? null}
+                      roles={businessRoles}
+                      onChange={(value) => setField('permissions', value)}
+                      disabled={saving || pickerReleaseLoading || Boolean(pickerReleaseError)}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
 
           <TabsContent value="configuration">
             {isStage ? (

@@ -34,10 +34,10 @@ Because the baseline is commit-pinned, the platform inherits upstream methodolog
 A **workflow** composes blocks into an executable plan. It consists of:
 
 - An inline **phase tree** — nestable, ordered phases that group stages for humans (progress bars, diagrams).
-- One **placement** per stage — the stage's home phase plus a **scope membership** map: for each scope, `EXECUTE` or `SKIP`.
+- One **placement** per stage — its home phase, Decision Maker/Contributor roles, and a **scope membership** map: for each scope, `EXECUTE` or `SKIP`.
 - **Rule references** per layer of the rule chain.
 
-Every mutation writes an immutable version snapshot. When an intent starts, it **pins the exact workflow version**, so a running intent is never affected by later edits.
+Every mutation writes an immutable version snapshot. When an intent starts, it **pins the exact workflow version**, so a running intent is never affected by later edits. Stage responsibility defaults are copied into new placements; later block edits leave existing assignments unchanged.
 
 See the [blocks and workflows data model](data-model.md#dynamodb-blocks-and-workflows-model)
 for the DynamoDB partition, versioning, and S3-reference structure.
