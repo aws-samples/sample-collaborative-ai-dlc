@@ -8,6 +8,9 @@ const authMocks = vi.hoisted(() => ({
   getCurrentUser: vi.fn(),
   fetchAuthSession: vi.fn(),
   fetchUserAttributes: vi.fn(),
+  updatePassword: vi.fn(),
+  resetPassword: vi.fn(),
+  confirmResetPassword: vi.fn(),
 }));
 const hubMocks = vi.hoisted(() => ({
   listeners: [] as Array<
@@ -41,6 +44,9 @@ vi.mock('aws-amplify/auth', () => ({
   confirmSignIn: vi.fn(),
   signInWithRedirect: authMocks.signInWithRedirect,
   updateUserAttributes: vi.fn(),
+  updatePassword: authMocks.updatePassword,
+  resetPassword: authMocks.resetPassword,
+  confirmResetPassword: authMocks.confirmResetPassword,
 }));
 vi.mock('aws-amplify/auth/cognito', () => ({
   cognitoUserPoolsTokenProvider: {
@@ -49,7 +55,7 @@ vi.mock('aws-amplify/auth/cognito', () => ({
 }));
 
 import { authService as sessionAuthService, cognitoOauthScopes, parseSsoProviders } from './auth';
-import { isSsoAccessDeniedError } from './authErrors';
+import { isSsoAccessDeniedError, PasswordResetRequiredError } from './authErrors';
 
 function amplifyError(name: string): Error {
   const error = new Error(name);
@@ -320,5 +326,128 @@ describe('SSO frontend configuration', () => {
     await rejection;
     expect(getCurrentUser).toHaveBeenCalledTimes(40);
     expect(authMocks.clearTokens).toHaveBeenCalledOnce();
+  });
+});
+
+describe('authService password self-service', () => {
+  const cognitoError = (name: string, message: string) => {
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  };
+
+  beforeEach(() => {
+    authMocks.signIn.mockReset();
+    authMocks.updatePassword.mockReset();
+    authMocks.resetPassword.mockReset();
+    authMocks.confirmResetPassword.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('changes the password with the current one', async () => {
+    authMocks.updatePassword.mockResolvedValue(undefined);
+    await sessionAuthService.changePassword('Old-password-1', 'New-password-1');
+    expect(authMocks.updatePassword).toHaveBeenCalledWith({
+      oldPassword: 'Old-password-1',
+      newPassword: 'New-password-1',
+    });
+  });
+
+  it('reports a wrong current password without echoing Cognito wording', async () => {
+    authMocks.updatePassword.mockRejectedValue(
+      cognitoError('NotAuthorizedException', 'Incorrect username or password.'),
+    );
+    await expect(sessionAuthService.changePassword('wrong', 'New-password-1')).rejects.toThrow(
+      'Current password is incorrect',
+    );
+  });
+
+  it('keeps Cognito wording for other authorization failures', async () => {
+    authMocks.updatePassword.mockRejectedValue(
+      cognitoError('NotAuthorizedException', 'Access Token does not have required scopes'),
+    );
+    await expect(sessionAuthService.changePassword('old', 'New-password-1')).rejects.toThrow(
+      'Access Token does not have required scopes',
+    );
+  });
+
+  it('keeps the unmet policy rule and maps throttling failures', async () => {
+    authMocks.updatePassword.mockRejectedValueOnce(
+      cognitoError(
+        'InvalidPasswordException',
+        'Password did not conform with policy: Password must have symbol characters',
+      ),
+    );
+    await expect(sessionAuthService.changePassword('old', 'weak')).rejects.toThrow(
+      'Password must have symbol characters',
+    );
+    authMocks.updatePassword.mockRejectedValueOnce(
+      cognitoError('LimitExceededException', 'Attempt limit exceeded, please try after some time.'),
+    );
+    await expect(sessionAuthService.changePassword('old', 'New-password-1')).rejects.toThrow(
+      'Too many attempts',
+    );
+  });
+
+  it('keeps the daily email quota error instead of telling the user to wait minutes', async () => {
+    authMocks.resetPassword.mockRejectedValueOnce(
+      cognitoError(
+        'LimitExceededException',
+        'Exceeded daily email limit for the operation or the account.',
+      ),
+    );
+    await expect(sessionAuthService.requestPasswordReset('user@example.com')).rejects.toThrow(
+      'Exceeded daily email limit',
+    );
+  });
+
+  it('requests a reset code and explains an account without a verified email', async () => {
+    authMocks.resetPassword.mockResolvedValueOnce({ nextStep: {} });
+    await sessionAuthService.requestPasswordReset('user@example.com');
+    expect(authMocks.resetPassword).toHaveBeenCalledWith({ username: 'user@example.com' });
+
+    authMocks.resetPassword.mockRejectedValueOnce(
+      cognitoError(
+        'InvalidParameterException',
+        'Cannot reset password for the user as there is no registered/verified email or phone_number',
+      ),
+    );
+    await expect(sessionAuthService.requestPasswordReset('noemail@example.com')).rejects.toThrow(
+      'no verified email address',
+    );
+  });
+
+  it('confirms a reset and maps code failures', async () => {
+    authMocks.confirmResetPassword.mockResolvedValueOnce(undefined);
+    await sessionAuthService.confirmPasswordReset('user@example.com', '123456', 'New-password-1');
+    expect(authMocks.confirmResetPassword).toHaveBeenCalledWith({
+      username: 'user@example.com',
+      confirmationCode: '123456',
+      newPassword: 'New-password-1',
+    });
+
+    authMocks.confirmResetPassword.mockRejectedValueOnce(
+      cognitoError('CodeMismatchException', 'Invalid verification code provided'),
+    );
+    await expect(
+      sessionAuthService.confirmPasswordReset('user@example.com', '000000', 'New-password-1'),
+    ).rejects.toThrow('The verification code is incorrect');
+
+    authMocks.confirmResetPassword.mockRejectedValueOnce(
+      cognitoError('ExpiredCodeException', 'Invalid code provided, please request a code again.'),
+    );
+    await expect(
+      sessionAuthService.confirmPasswordReset('user@example.com', '123456', 'New-password-1'),
+    ).rejects.toThrow('has expired');
+  });
+
+  it('signals an operator-forced reset at sign-in', async () => {
+    authMocks.signIn.mockResolvedValue({
+      isSignedIn: false,
+      nextStep: { signInStep: 'RESET_PASSWORD' },
+    });
+    await expect(sessionAuthService.login('user@example.com', 'Old-password-1')).rejects.toThrow(
+      PasswordResetRequiredError,
+    );
   });
 });

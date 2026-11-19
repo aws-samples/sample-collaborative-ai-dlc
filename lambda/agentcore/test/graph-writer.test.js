@@ -608,6 +608,51 @@ describe('reads', () => {
     expect(toc.headings.map((h) => h.heading)).toEqual(['Title', 'A', 'A.1']);
   });
 
+  it('keeps every section of a non-English or repeated-heading artifact readable', async () => {
+    await writer.createArtifact({
+      artifactType: 'requirements',
+      id: 'ko-art',
+      title: '요구사항',
+      content: [
+        '## 개요',
+        '개요 본문',
+        '## 요구사항',
+        '### 수용 기준',
+        '첫 번째 기준',
+        '## 범위',
+        '### 수용 기준',
+        '두 번째 기준',
+      ].join('\n'),
+    });
+    const artifact = await writer.getArtifact({ id: 'ko-art' });
+    const extraction = extractArtifactStructure({
+      artifactType: artifact.artifact_type,
+      artifactId: artifact.id,
+      content: artifact.content,
+    });
+    const mirrored = await writer.mirrorArtifactDerivations({ artifact, extraction });
+    expect(mirrored.sections).toBe(5);
+
+    const toc = await writer.getArtifactToc({ id: 'ko-art' });
+    expect(toc.map((s) => [s.slug, s.heading])).toEqual([
+      ['개요', '개요'],
+      ['요구사항', '요구사항'],
+      ['수용-기준', '수용 기준'],
+      ['범위', '범위'],
+      ['수용-기준-2', '수용 기준'],
+    ]);
+    expect((await writer.getSection({ artifactId: 'ko-art', slug: '개요' })).content).toBe(
+      '개요 본문',
+    );
+    expect((await writer.getSection({ artifactId: 'ko-art', slug: '수용-기준-2' })).content).toBe(
+      '두 번째 기준',
+    );
+    // A repeated heading resolves to its first occurrence.
+    expect((await writer.getSection({ artifactId: 'ko-art', heading: '수용 기준' })).content).toBe(
+      '첫 번째 기준',
+    );
+  });
+
   it('mirrors derived sections, typed items, and citation edges from artifact content', async () => {
     await writer.createArtifact({ artifactType: 'requirements', id: 'req-art', title: 'Reqs' });
     await writer.createArtifact({

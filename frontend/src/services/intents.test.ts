@@ -45,7 +45,7 @@ describe('intentsService request paths', () => {
 
   it('get / create / start / answerGate', async () => {
     await intentsService.get('p1', 'i1');
-    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1');
+    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1?artifactContent=separate');
 
     await intentsService.create('p1', { title: 'T', prompt: 'P' });
     expect(post).toHaveBeenCalledWith('/projects/p1/intents', { title: 'T', prompt: 'P' });

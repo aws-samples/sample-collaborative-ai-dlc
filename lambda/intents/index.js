@@ -1,4 +1,5 @@
 import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
+import { validateSparseCheckout } from '../shared/sparse-checkout.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
@@ -127,6 +128,7 @@ import {
   artifactLogicalKeyFromRow,
   legacyVersionId,
   readCheckpointArtifactVersions,
+  readArtifactContents,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
@@ -1066,19 +1068,23 @@ const resolveWorkflowVersion = async (workflowId) => {
 
 // Read the intent's artifact subgraph (Intent --CONTAINS--> Artifact). Returns a
 // compact snapshot for the IntentView. Empty when the intent hasn't started.
-const fetchArtifacts = async (g, intentId) => {
-  const rows = await readIntentArtifactEntries(g, intentId);
+const readArtifactHeads = async (g, intentId, options) => {
+  const rows = await readIntentArtifactEntries(g, intentId, options);
   const groups = new Map();
   for (const row of rows) {
     const key = artifactLogicalKeyFromRow(row, intentId);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }
-  return [...groups.values()]
-    .map((group) => ({ group, head: selectCanonicalArtifact(group) }))
-    .filter(({ head }) => head && !head.superseded_at)
-    .map(({ group, head }) => mapArtifactHead(head, group.length - 1));
+  return [...groups.entries()]
+    .map(([logicalKey, group]) => ({ logicalKey, group, head: selectCanonicalArtifact(group) }))
+    .filter(({ head }) => head && !head.superseded_at);
 };
+
+const fetchArtifacts = async (g, intentId) =>
+  (await readArtifactHeads(g, intentId)).map(({ group, head }) =>
+    mapArtifactHead(head, group.length - 1),
+  );
 
 const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   id: row.id,
@@ -1360,6 +1366,22 @@ const timelineEventDetail = (detail) => {
   return Object.keys(picked).length > 0 ? { detail: picked } : {};
 };
 
+// Sensor `detail` as the detail DTO carries it. Coverage sensors record every
+// artifact they checked (headings, consumes, counts) and script sensors their
+// file provenance: megabytes on a long run, none of it rendered. Keep only the
+// artifact entries that explain a failure (`reason`), in the fields the UI reads.
+const sensorRunDetail = (detail) => {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return detail ?? null;
+  const { artifacts, provenance: _provenance, ...rest } = detail;
+  if (!Array.isArray(artifacts)) return artifacts === undefined ? rest : { ...rest, artifacts };
+  return {
+    ...rest,
+    artifacts: artifacts
+      .filter((a) => a && typeof a === 'object' && a.reason)
+      .map((a) => ({ artifact: a.artifact, reason: a.reason, id: a.id ?? null })),
+  };
+};
+
 const buildGateAnswerEvents = async (g, gates) => {
   const answered = gates.filter((gate) => gate.kind === 'question' && gate.answeredAt);
   const events = [];
@@ -1463,6 +1485,7 @@ const mapIntent = (meta) => ({
   branch: meta.branch ?? null,
   baseBranch: meta.baseBranch ?? null,
   baseBranches: meta.baseBranches ?? null,
+  sparseCheckout: meta.sparseCheckout ?? null,
   repos: meta.repos ?? null,
   repoProviders: meta.repoProviders ?? null,
   gitProvider: meta.gitProvider ?? null,
@@ -5990,7 +6013,12 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
   if (!records.meta || records.meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
-  return response(200, buildIntentAudit({ records }));
+  return response(200, {
+    ...buildIntentAudit({ records }),
+    completion: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
+      ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
+      : null,
+  });
 };
 
 // GET /projects/{projectId}/intents/{intentId}/outputs — the agent
@@ -6029,6 +6057,37 @@ const outputsCursor = (rows, afterSeq, nowMs) => {
   return cursor;
 };
 
+// A long run's transcript is tens of MB, so /outputs pages: a response holds
+// about OUTPUTS_PAGE_BYTES (as encoded in the Lambda response) and, when it
+// stops short, `more: true` with the `cursor` to send as the next afterSeq.
+const DEFAULT_OUTPUTS_PAGE_BYTES = 4 * 1024 * 1024;
+
+const outputsPageBytes = () => {
+  const configured = Number(process.env.OUTPUTS_PAGE_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_OUTPUTS_PAGE_BYTES;
+};
+
+const mapOutput = (o) => ({
+  seq: o.seq,
+  stageInstanceId: o.stageInstanceId ?? null,
+  unitSlug: o.unitSlug ?? null,
+  sectionIndex: o.sectionIndex ?? null,
+  kind: o.kind,
+  content: o.content,
+  timestamp: o.timestamp,
+  ...(o.display ? { display: o.display } : {}),
+});
+
+// The leading rows that fit `budget` (at least one); `next` is the first row left out.
+const fitOutputs = (rows, budget) => {
+  let used = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    used += envelopeBytes(rows[i]);
+    if (i > 0 && used > budget) return { rows: rows.slice(0, i), next: rows[i] };
+  }
+  return { rows, next: null };
+};
+
 const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -6045,40 +6104,134 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
     rawStage !== undefined
       ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
       : {};
-  let rows;
+  const budget = outputsPageBytes();
+  let page;
   let cursor;
+  let more;
   if (afterSeq == null) {
-    rows = await store.getOutputs(intentId, { ...stageFilter, afterSeq });
+    const read = await store.getOutputsPage(intentId, { ...stageFilter, maxBytes: budget });
+    page = fitOutputs(read.items.map(mapOutput), budget);
+    more = read.more || page.next !== null;
+    // Rows of other stages are not this pane's, so the last row returned is
+    // a complete cursor for it. (A read that found no rows drained the range.)
+    if (more) cursor = page.rows.at(-1).seq;
   } else {
     // Catch-up reads every chunk after the cursor (the stage filter is applied
     // here, not in DynamoDB) so the response can carry a `cursor` covering
     // other stages' chunks too. Without it a pane for a finished stage would
     // re-read every later chunk of the run on each poll.
-    const all = await store.getOutputs(intentId, { afterSeq });
-    cursor = outputsCursor(all, afterSeq, Date.now());
-    rows = stageFilter.filterByStage
-      ? all.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
-      : all;
+    const read = await store.getOutputsPage(intentId, { afterSeq, maxBytes: budget });
+    cursor = outputsCursor(read.items, afterSeq, Date.now());
+    const rows = stageFilter.filterByStage
+      ? read.items.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
+      : read.items;
+    page = fitOutputs(rows.map(mapOutput), budget);
+    // Never move the cursor past a row left out of this page.
+    if (page.next) cursor = Math.min(cursor, Number(page.next.seq) - 1);
+    more = read.more || page.next !== null;
   }
   return response(200, {
     ...(cursor !== undefined ? { cursor } : {}),
-    outputs: rows.map((o) => ({
-      seq: o.seq,
-      stageInstanceId: o.stageInstanceId ?? null,
-      unitSlug: o.unitSlug ?? null,
-      sectionIndex: o.sectionIndex ?? null,
-      kind: o.kind,
-      content: o.content,
-      timestamp: o.timestamp,
-      ...(o.display ? { display: o.display } : {}),
-    })),
+    ...(more ? { more: true } : {}),
+    outputs: page.rows,
   });
 };
 
-const handleGetIntent = async ({ projectId, intentId, g, response }) => {
-  // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED
-  // (see /outputs above): they dominate the partition's size and the UI
-  // fetches them lazily per pane. `outputs: []` keeps the DTO shape stable.
+// GET /projects/{projectId}/intents/{intentId}/artifacts — current artifact
+// bodies, paged so no response nears the 6 MB Lambda limit. Ordered by logical
+// key (unique per head; ids may repeat across lanes), returned as
+// `contentKey` to match the detail's artifacts; `cursor` is opaque. A body over
+// the page budget gets a page to itself; only one too large for any response is
+// returned as `content: null, contentOmitted`.
+const DEFAULT_ARTIFACT_CONTENT_PAGE_BYTES = 4 * 1024 * 1024;
+// Below the 6 MB Lambda response limit, with room for the envelope's headers.
+const DEFAULT_ARTIFACT_CONTENT_ENTRY_BYTES = 5.75 * 1024 * 1024;
+const ARTIFACT_CONTENT_BATCH = 25;
+
+const positiveEnvNumber = (name, fallback) => {
+  const configured = Number(process.env[name]);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+};
+const artifactContentPageBytes = () =>
+  positiveEnvNumber('ARTIFACT_CONTENT_PAGE_BYTES', DEFAULT_ARTIFACT_CONTENT_PAGE_BYTES);
+const artifactContentEntryBytes = () =>
+  Math.max(
+    artifactContentPageBytes(),
+    positiveEnvNumber('ARTIFACT_CONTENT_ENTRY_BYTES', DEFAULT_ARTIFACT_CONTENT_ENTRY_BYTES),
+  );
+
+// Bytes an entry adds to the proxy envelope: the body is JSON inside a JSON
+// string, so its escapes are escaped again.
+const envelopeBytes = (value) => Buffer.byteLength(JSON.stringify(JSON.stringify(value)));
+
+const handleIntentArtifactContents = async ({ event, projectId, intentId, g, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const rawCursor = event.queryStringParameters?.cursor;
+  let after = null;
+  if (rawCursor) {
+    after = Buffer.from(String(rawCursor), 'base64url').toString('utf8');
+    if (!after) return response(400, { error: 'cursor is invalid' });
+  }
+  const budget = artifactContentPageBytes();
+  const entryLimit = artifactContentEntryBytes();
+  // Heads come without bodies; bodies are read in small batches, so a page
+  // reads only (about) the bodies it returns.
+  const heads = (await readArtifactHeads(g, intentId, { withContent: false }))
+    .filter(({ logicalKey }) => after === null || logicalKey > after)
+    .toSorted((a, b) => (a.logicalKey < b.logicalKey ? -1 : a.logicalKey > b.logicalKey ? 1 : 0));
+  const artifacts = [];
+  let used = 0;
+  let last = null;
+  let full = false;
+  for (let start = 0; start < heads.length && !full; start += ARTIFACT_CONTENT_BATCH) {
+    const batch = heads.slice(start, start + ARTIFACT_CONTENT_BATCH);
+    const contents = await readArtifactContents(
+      g,
+      batch.map(({ head }) => head.vertexId),
+    );
+    for (const { logicalKey, head } of batch) {
+      const content = contents.get(head.vertexId) ?? null;
+      let entry = { id: head.id, contentKey: logicalKey, content };
+      let size = envelopeBytes(entry);
+      if (size > entryLimit) {
+        entry = { id: head.id, contentKey: logicalKey, content: null, contentOmitted: 'too_large' };
+        size = envelopeBytes(entry);
+      }
+      const alone = size > budget;
+      if (artifacts.length > 0 && (alone || used + size > budget)) {
+        full = true;
+        break;
+      }
+      artifacts.push(entry);
+      used += size;
+      last = logicalKey;
+      if (alone) {
+        full = true;
+        break;
+      }
+    }
+  }
+  const more = last !== null && heads.at(-1)?.logicalKey !== last;
+  return response(200, {
+    artifacts,
+    nextCursor: more ? Buffer.from(last, 'utf8').toString('base64url') : null,
+  });
+};
+
+const DETAIL_RESPONSE_WARN_BYTES = 4 * 1024 * 1024;
+
+const handleGetIntent = async ({ event, projectId, intentId, g, response }) => {
+  // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED: they
+  // dominate the payload; the UI fetches them lazily per pane (/outputs).
+  // `outputs: []` keeps the DTO shape stable. Artifact bodies are included
+  // unless the caller asks for `artifactContent=separate` and pages them from
+  // /artifacts instead, which keeps a large intent under the Lambda response
+  // limit. The default stays inline so a client that predates /artifacts never
+  // sees (and saves over) an empty body.
+  const separateContent = event?.queryStringParameters?.artifactContent === 'separate';
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
   if (!records.meta || records.meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
@@ -6086,7 +6239,15 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
   const completion = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
     ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
     : unitCompletion(records);
-  const artifacts = await fetchArtifacts(g, intentId);
+  // `contentKey` pairs each head with its body from /artifacts: ids can repeat
+  // across lanes, logical keys cannot.
+  const heads = await readArtifactHeads(g, intentId, { withContent: !separateContent });
+  const artifacts = heads.map(({ logicalKey, group, head }) => {
+    const { content, ...rest } = mapArtifactHead(head, group.length - 1);
+    return separateContent
+      ? { ...rest, contentKey: logicalKey }
+      : { ...rest, content, contentKey: logicalKey };
+  });
   const pullRequests = await fetchPullRequests(g, intentId);
   const stagesByInstance = new Map(
     (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
@@ -6101,7 +6262,7 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
   }));
   const answerEvents = await buildGateAnswerEvents(g, gates);
   const priceFor = await getPriceResolver();
-  return response(200, {
+  const dto = {
     intent: mapIntent(records.meta),
     stages: records.stages.map((stage) => ({
       ...mapStage(stage),
@@ -6151,7 +6312,7 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
       // upstreams, violations …). Surfaced so the UI can explain WHY a
       // non-PASS verdict fired — an advisory INCONCLUSIVE still matters even
       // though it did not hold the stage.
-      detail: s.detail ?? null,
+      detail: sensorRunDetail(s.detail),
       timestamp: s.timestamp,
     })),
     artifacts,
@@ -6172,7 +6333,14 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
     units: (records.units ?? []).map(mapUnit),
     unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
     feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
-  });
+  };
+  // The DTO still grows with the run (events, gates, sensor runs); say so
+  // before it reaches the Lambda response limit and the intent stops opening.
+  const bytes = envelopeBytes(dto);
+  if (bytes > DETAIL_RESPONSE_WARN_BYTES) {
+    logger.warn('Intent detail response is nearing the Lambda response limit', { bytes });
+  }
+  return response(200, dto);
 };
 
 // GET /projects/{projectId}/metrics — usage + cost rolled up across every
@@ -6862,6 +7030,11 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
   if (baseBranchesError) {
     return response(400, { error: baseBranchesError });
   }
+  const { value: sparseCheckout, error: sparseCheckoutError } = validateSparseCheckout(
+    data.sparseCheckout,
+    cfg.repos,
+  );
+  if (sparseCheckoutError) return response(400, { error: sparseCheckoutError });
   // Optional provenance — when the intent is kicked off from a tracker
   // issue, record which one. The imported text rides in `prompt`; this is
   // only the back-link. Validated against the project's actual bindings.
@@ -6947,6 +7120,7 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
     branch,
     baseBranch: data.baseBranch || cfg.baseBranch,
     baseBranches,
+    sparseCheckout,
     repos: cfg.repos,
     repoProviders: cfg.repoProviders,
     gitProvider: cfg.gitProvider,
@@ -7267,7 +7441,10 @@ export const handler = async (event, context) => {
       if (path?.endsWith('/outputs')) {
         return await handleIntentOutputs({ event, projectId, intentId, response });
       }
-      return await handleGetIntent({ projectId, intentId, g, response });
+      if (path?.endsWith('/artifacts')) {
+        return await handleIntentArtifactContents({ event, projectId, intentId, g, response });
+      }
+      return await handleGetIntent({ event, projectId, intentId, g, response });
     }
 
     if (httpMethod === 'GET' && !intentId && path?.endsWith('/intents/metrics')) {

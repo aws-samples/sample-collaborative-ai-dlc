@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { authConfiguration } from '@/services/auth';
+import { PasswordResetRequiredError } from '@/services/authErrors';
+import { PasswordResetForm } from '@/components/auth/PasswordResetForm';
+import { passwordPolicyError } from '@/lib/passwordPolicy';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +19,10 @@ export default function Login() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Forgot-password flow; `notice` is set when sign-in itself demanded a reset.
+  const [reset, setReset] = useState<{ notice?: string } | null>(null);
 
   const {
     login,
@@ -43,11 +49,17 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setIsSubmitting(true);
     try {
       await login(username, password);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      if (err instanceof PasswordResetRequiredError) {
+        setPassword('');
+        setReset({ notice: `${err.message} Request a verification code to set a new one.` });
+      } else {
+        setError(err instanceof Error ? err.message : 'Login failed');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -72,8 +84,9 @@ export default function Login() {
       setError('Passwords do not match');
       return;
     }
-    if (newPassword.length < 12) {
-      setError('Password must be at least 12 characters');
+    const policyError = passwordPolicyError(newPassword);
+    if (policyError) {
+      setError(policyError);
       return;
     }
     setIsSubmitting(true);
@@ -108,6 +121,39 @@ export default function Login() {
       <p className="text-sm text-destructive">{error}</p>
     </div>
   ) : null;
+
+  if (reset && localEnabled) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <CardTitle>Reset your password</CardTitle>
+            <CardDescription>We will email a verification code to your account</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PasswordResetForm
+              initialUsername={username}
+              notice={reset.notice}
+              onCancel={() => setReset(null)}
+              onDone={(resetUsername) => {
+                setUsername(resetUsername);
+                setPassword('');
+                setError('');
+                setInfo('Password reset. Sign in with your new password.');
+                setReset(null);
+              }}
+            />
+            {ssoEnabled && (
+              <p className="mt-4 text-xs text-muted-foreground">
+                This resets Cognito account passwords only. For an Enterprise SSO account, reset
+                your password with your identity provider.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (needsDisplayName) {
     return (
@@ -228,6 +274,14 @@ export default function Login() {
         </CardHeader>
         <CardContent className="space-y-5">
           {errorBanner}
+          {info && (
+            <div
+              role="status"
+              className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3"
+            >
+              <p className="text-sm text-emerald-700">{info}</p>
+            </div>
+          )}
           {ssoEnabled && (
             <section aria-labelledby="enterprise-sso-heading" className="space-y-3">
               <div className="flex items-center gap-2">
@@ -307,6 +361,19 @@ export default function Login() {
                   ) : (
                     'Sign in'
                   )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto w-full p-0 text-xs"
+                  disabled={isSubmitting}
+                  onClick={() => {
+                    setError('');
+                    setInfo('');
+                    setReset({});
+                  }}
+                >
+                  Forgot password?
                 </Button>
               </form>
             </section>
