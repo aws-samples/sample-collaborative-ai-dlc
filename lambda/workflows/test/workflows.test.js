@@ -457,6 +457,47 @@ describe('workflows handler', () => {
     expect(store.get(`WF#default#atomic-flow|V#${next}#META`).name).toBe('Second');
   });
 
+  it('does not let rows from a failed attempt reappear in the version published next', async () => {
+    await createWorkflow({ id: 'retry-flow', name: 'Retry' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'retry-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'retry-flow' }))).body;
+    const next = before.version + 1;
+    // A rename writes the next version's rows, then its commit fails.
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      throw new Error('Throttled');
+    });
+    const renamed = await handler(
+      event({ method: 'PUT', workflowId: 'retry-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(renamed).status).toBe(500);
+    expect(store.has(`WF#default#retry-flow|V#${next}#PLACEMENT#requirements-analysis`)).toBe(true);
+    installTransactWrites();
+    // Removing the stage publishes that same version number without it.
+    const removed = await handler(
+      event({
+        method: 'DELETE',
+        workflowId: 'retry-flow',
+        path: 'placement',
+        stageId: 'requirements-analysis',
+      }),
+    );
+    expect(parse(removed).status).toBe(204);
+    const pinned = parse(
+      await handler(
+        event({ method: 'GET', workflowId: 'retry-flow', query: { version: String(next) } }),
+      ),
+    ).body;
+    expect(pinned.placements).toEqual([]);
+    expect(pinned.cedarPolicies).not.toContain('Stage::"requirements-analysis"');
+  });
+
   it('exposes a version only after its whole snapshot is written', async () => {
     await createWorkflow({ id: 'partial-flow', name: 'Partial' });
     await handler(

@@ -271,16 +271,27 @@ const buildSnapshotItems = async (liveItems, version) => {
 // publishes a version the live META does not point to, and a concurrent save
 // that computed the same version number is rejected instead of replacing the
 // published META and its policies.
-const publishWorkflowVersion = async (version, snapshots, liveItems) => {
+const publishWorkflowVersion = async (tenant, workflowId, version, snapshots, liveItems) => {
   const markerSk = workflowVersionSk(version, META);
   const marker = snapshots.find((item) => item.sk === markerSk);
   const liveMeta = liveItems.find((item) => item.sk === META);
-  await batchWrite(
-    [
+  // Rows already under this version are either a published version (stop
+  // without writing) or the leftovers of a failed attempt, which must not
+  // survive into this snapshot, such as a stage deleted since.
+  const existing = await queryPartition(tenant, workflowId, {
+    skBeginsWith: workflowVersionPrefix(version),
+  });
+  if (existing.some((item) => item.sk === markerSk)) throw workflowChanged();
+  const snapshotKeys = new Set(snapshots.map((item) => item.sk));
+  await batchWrite([
+    ...existing
+      .filter((item) => !snapshotKeys.has(item.sk))
+      .map((item) => ({ DeleteRequest: { Key: { pk: item.pk, sk: item.sk } } })),
+    ...[
       ...snapshots.filter((item) => item !== marker),
       ...liveItems.filter((item) => item !== liveMeta),
     ].map((Item) => ({ PutRequest: { Item } })),
-  );
+  ]);
   assertWorkflowItemSize(marker);
   assertWorkflowItemSize(liveMeta);
   try {
@@ -303,11 +314,14 @@ const publishWorkflowVersion = async (version, snapshots, liveItems) => {
       error.name === 'TransactionCanceledException' &&
       error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed';
     if (!conflict) throw error;
-    throw Object.assign(new Error('The workflow changed while saving. Reload it and try again.'), {
-      statusCode: 409,
-    });
+    throw workflowChanged();
   }
 };
+
+const workflowChanged = () =>
+  Object.assign(new Error('The workflow changed while saving. Reload it and try again.'), {
+    statusCode: 409,
+  });
 
 const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
   const current = await loadMeta(tenant, workflowId);
@@ -329,7 +343,7 @@ const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
   const snapshots = await buildSnapshotItems(liveItems, meta.version);
   // Children were read for the snapshot, not changed by this save. Writing
   // them back would overwrite a concurrent placement update or deletion.
-  await publishWorkflowVersion(meta.version, snapshots, [meta]);
+  await publishWorkflowVersion(tenant, workflowId, meta.version, snapshots, [meta]);
   return meta;
 };
 
@@ -448,7 +462,7 @@ const createWorkflow = async (event, res, tenant) => {
       : generateStagePolicies(liveItems.filter((item) => item.type === 'StagePlacement'));
   validateStagePolicies(meta.cedarPolicies);
   const snapshotItems = await buildSnapshotItems(liveItems, meta.version);
-  await publishWorkflowVersion(meta.version, snapshotItems, liveItems);
+  await publishWorkflowVersion(tenant, id, meta.version, snapshotItems, liveItems);
   return res(201, metaToApi(meta));
 };
 
