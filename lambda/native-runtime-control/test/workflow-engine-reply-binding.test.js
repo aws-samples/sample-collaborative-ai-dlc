@@ -17,6 +17,7 @@ const fixture = () => {
     commandId: '11111111-1111-4111-8111-111111111111',
     interactionId: 'a'.repeat(64),
     contentSha256: 'b'.repeat(64),
+    publicationId: 'e'.repeat(64),
     actorId: 'member-one',
     sequence: 4,
     text,
@@ -24,7 +25,8 @@ const fixture = () => {
   };
   const state = { decisions: [], presentations: [], directive: null };
   const row = {
-    response: { commandId: response.commandId, interactionId: response.interactionId },
+    response: { ...response },
+    interaction: { id: response.interactionId, sequence: 3, publicationId: response.publicationId },
   };
   const executionStore = { response: vi.fn(async () => structuredClone(response)) };
   return { state, row, identity, executionStore, response };
@@ -32,6 +34,8 @@ const fixture = () => {
 const presentation = (f) => ({
   interactionId: f.response.interactionId,
   contentSha256: f.response.contentSha256,
+  publicationId: f.response.publicationId,
+  sequence: f.row.interaction.sequence,
 });
 
 describe('binding an accepted reply to a recorded question', () => {
@@ -54,6 +58,14 @@ describe('binding an accepted reply to a recorded question', () => {
     [
       'the recorded question had other content',
       (f) => f.state.presentations.push({ ...presentation(f), contentSha256: 'c'.repeat(64) }),
+    ],
+    [
+      'the recorded question belongs to another publication',
+      (f) => f.state.presentations.push({ ...presentation(f), publicationId: 'c'.repeat(64) }),
+    ],
+    [
+      'the recorded question belongs to an earlier turn',
+      (f) => f.state.presentations.push({ ...presentation(f), sequence: 2 }),
     ],
   ])('gives the reply no authority when %s, once', async (_label, arrange) => {
     const f = fixture();
@@ -80,6 +92,12 @@ describe('binding an accepted reply to a recorded question', () => {
     ['belongs to another command', (value) => ({ ...value, commandId: 'other' })],
     ['belongs to another turn', (value) => ({ ...value, sequence: 3 })],
     ['has other words than its digest', (value) => ({ ...value, text: 'Approve' })],
+    ['names another publication', (value) => ({ ...value, publicationId: 'f'.repeat(64) })],
+    ['names another interaction', (value) => ({ ...value, interactionId: 'f'.repeat(64) })],
+    [
+      'replaces the accepted words and their digest',
+      (value) => ({ ...value, text: 'Approve', textSha256: engineDigest('Approve') }),
+    ],
   ])(
     'refuses a reply record that %s, and leaves it alone when only observing',
     async (_label, alter) => {

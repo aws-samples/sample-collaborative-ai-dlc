@@ -334,9 +334,9 @@ export function NativePresentationNotice({ interaction }: { interaction: NativeI
         are saved.
       </p>
       <p>
-        Review the published response and files. If the choices or question are unclear, ask AI-DLC
-        to present the current questions again when this turn is open for a reply. Nothing has been
-        answered or approved automatically.
+        {interaction.presentation.reason === 'unbound_question'
+          ? 'The workflow engine did not confirm a question for this reply. You can ask it to show the question again. A written reply here selects or approves nothing.'
+          : 'Review the published response and files. If the choices or question are unclear, ask AI-DLC to present the current questions again when this turn is open for a reply. Nothing has been answered or approved automatically.'}
       </p>
     </div>
   );

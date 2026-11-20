@@ -16,7 +16,7 @@ import { openNativeEngineWorkspace } from './workspace.js';
 import { createNativeEngineRunner } from './runner.js';
 import { applyNativeEngineCommand } from './command-application.js';
 import { nativeEngineCompletionEvidence } from './evidence.js';
-import { nativeEnginePresentation } from './presentation.js';
+import { nativeEngineAskInput, nativeEnginePresentation } from './presentation.js';
 import { bindNativeEngineReply, nativeEngineReplyNotice } from './reply-binding.js';
 
 const same = isDeepStrictEqual;
@@ -105,6 +105,9 @@ const runNativeEngineCommand = async (context) => {
     inputSha256: nativeEngineFileDigest(files),
     filesSha256: nativeEngineFileDigest(outputFiles),
     patches: patches(files, outputFiles),
+    ...(request.action === 'mirror'
+      ? { pendingInput: nativeEngineAskInput(workspace.state.directive) }
+      : {}),
   };
 };
 
@@ -159,14 +162,13 @@ const finalizeNativeEnginePublication = async (context) => {
   // A turn may end without any workflow command. Its reply is still recorded
   // as one that decided nothing, so the evidence does not depend on a command.
   await bindNativeEngineReply({ ...context, state }, { strict: false });
-  if (request.interaction) {
-    const issued = nativeEnginePresentation(
-      state,
-      observed,
-      await presentedInteraction({ ...context, manifest }),
-    );
-    if (issued) state.presentations.push(issued);
-  }
+  const issued = request.interaction
+    ? nativeEnginePresentation(
+        state,
+        observed,
+        await presentedInteraction({ ...context, manifest }),
+      )
+    : null;
   const evidence = nativeEngineCompletionEvidence({
     identity,
     row,
@@ -181,6 +183,9 @@ const finalizeNativeEnginePublication = async (context) => {
     publicationId: request.publication.id,
     evidence: await objects.write(identity, request.requestId, 'evidence', evidence, 'output'),
   };
+  // Failed operations retain their partial workspace. Register the question
+  // only once its evidence is ready for the same journal commit.
+  if (issued) state.presentations.push(issued);
   return {
     proof,
     result: {
@@ -192,6 +197,7 @@ const finalizeNativeEnginePublication = async (context) => {
       stderr: '',
       patches: [],
       evidence: proof.evidence,
+      presentedInteractionId: issued?.interactionId ?? null,
     },
   };
 };

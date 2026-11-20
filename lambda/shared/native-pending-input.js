@@ -2,11 +2,10 @@
 //
 // A pending input is DISPLAY DATA, never authority: it lets members select the
 // exact option labels the workflow presented instead of typing numbers. It is
-// captured by the native runtime at turn end from deterministic workflow state
-// and the question spec the agent rendered this turn, written to a
-// runtime-reserved file. Options are never inferred from assistant prose or a
-// stage marker alone. The engine still validates every recorded answer, and
-// only a member's protected reply can carry the selection back.
+// captured by the native runtime at turn end. A pinned workflow engine supplies
+// its typed intake offer directly. Other forms use the turn's reserved question
+// file and workflow state. The protected engine records the exact presented
+// interaction before the runtime makes a structured form answerable.
 //
 // The selection shape is QuestionEditor's StructuredAnswer:
 //   { answers: [{ selectedOptions: number[], freeText?: string }] }
@@ -273,6 +272,7 @@ export const NATIVE_PRESENTATION_REASONS = Object.freeze([
   'invalid_schema',
   'unsupported_ask',
   'unsupported_methodology',
+  'unbound_question',
   'stale_spec',
   'read_failed',
 ]);

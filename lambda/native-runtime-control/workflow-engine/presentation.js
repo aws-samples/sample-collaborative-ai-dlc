@@ -15,6 +15,13 @@ const questionMatches = (pending, question) =>
     question.options,
   );
 
+// The engine keeps the full intake offer across turns, including its request-
+// bound commands. Only the existing bounded form travels to the renderer.
+export const nativeEngineAskInput = (directive) =>
+  directive?.kind === 'ask'
+    ? buildNativePendingInput({ spec: { version: 3, ask: directive } })
+    : null;
+
 // A picker is display data. Bind it to the actual protected question before
 // the genuine member hook may see a reply; matching option labels alone would
 // let a reply to one proposal approve a different policy or plan.
@@ -32,7 +39,7 @@ export const nativeEnginePresentation = (state, observed, interaction) => {
     };
     expected = interaction.pendingInput;
   } else if (directive?.kind === 'ask') {
-    expected = buildNativePendingInput({ spec: { version: 3, ask: directive } });
+    expected = nativeEngineAskInput(directive);
   } else if (interaction.pendingInput.kind === 'approval') {
     const stage = observed.effectivePlan?.stages.find(
       (stage) => stage.id === interaction.pendingInput.stage && stage.state === 'awaiting-approval',
@@ -72,6 +79,11 @@ export const nativeEnginePresentation = (state, observed, interaction) => {
   };
 };
 
-export const assertNativeEnginePresentedQuestion = (observed, presented) => {
+export const assertNativeEnginePresentedQuestion = (state, observed, presented) => {
   if (!isDeepStrictEqual(observed.protectedQuestion ?? null, presented.question ?? null)) fail();
+  if (
+    presented.directive?.kind === 'ask' &&
+    !isDeepStrictEqual(state.directive, presented.directive)
+  )
+    fail();
 };
