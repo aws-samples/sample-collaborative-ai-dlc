@@ -225,13 +225,12 @@ failed checks or concerns are shown beside it. Native adds no approval of its ow
 Executions started before this change, other packages and Kiro have no protected
 engine. Their results remain readable and remain **not verified**.
 
-Native Git delivery is not implemented. Source checkout, file comparison and
-result download do not create commits, branches or pull requests. The remaining
-work must bind the deliverable bytes, required workflow evidence, authorized
-member and destination, then confirm the provider's result. Tracker updates and
-merge handling also need an explicit policy. See the shared
-[Git integration guide](../using-the-platform/git-integration.md) for the platform
-backend's existing behavior; it does not automatically apply to native intents.
+In the local NE-12 implementation, members can compare a publication with its
+Start commit, inspect reviewer coverage, and prepare the exact changes as a Git
+bundle. They can check whether the connected repository's intent branch points
+to the prepared commit. Publishing the branch, opening a pull request, observing
+merges and updating trackers remain open. The platform backend's delivery rules
+are documented in the [Git integration guide](../using-the-platform/git-integration.md).
 
 ## Persistent workspace recovery
 
