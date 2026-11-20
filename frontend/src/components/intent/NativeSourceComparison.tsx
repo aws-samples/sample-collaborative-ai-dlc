@@ -1,7 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@/components/ui/button';
-import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
-import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
+import { useOptionalAuth } from '@/contexts/AuthContext';
+import {
+  getNativeListing,
+  nativeAccessDenied,
+  useNativeListingVersion,
+} from '@/hooks/useNativeIntents';
+import { currentSessionEpoch, isSessionActive, onSessionChanged } from '@/services/sessionExpiry';
+import type { NativeGitChange, NativeGitChangeSet } from '@/services/nativeGitChangeSet';
+import type { NativePublishedFile } from '@/services/nativeIntents';
 import {
   nativeHistoryService,
   type NativeRevision,
@@ -17,13 +24,91 @@ interface Props {
   onAccessFailure: (error: unknown) => void;
 }
 export function NativeSourceComparison(props: Props) {
+  useNativeListingVersion();
+  const session = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
+  const auth = useOptionalAuth();
+  const listing = getNativeListing(props.projectId);
+  if (!isSessionActive() || listing.denied) return null;
   return (
     <Comparison
-      key={`${props.projectId}:${props.executionId}:${props.revision.id}:${currentSessionEpoch()}`}
+      key={JSON.stringify([
+        props.projectId,
+        props.executionId,
+        props.revision.context.attemptId,
+        props.revision.id,
+        props.revision.sequence,
+        auth?.user?.userId,
+        session,
+        listing.accessRevision,
+      ])}
       {...props}
     />
   );
 }
+
+const modeName = (file: NonNullable<NativeGitChange['before']>) =>
+  file.mode === '100755' ? 'executable' : 'regular';
+function gitChangeLabel({ before, after }: NativeGitChange): string {
+  if (!before) return `Added (${modeName(after!)})`;
+  if (!after) return `Deleted (${modeName(before)})`;
+  const bytesChanged = before.sha256 !== after.sha256;
+  if (before.mode === after.mode) return 'Bytes changed';
+  return `${bytesChanged ? 'Bytes and mode changed' : 'Mode changed'} (${modeName(before)} → ${modeName(after)})`;
+}
+
+function GitEvidence({ git }: { git: NativeGitChangeSet }) {
+  const terminalLabel = {
+    matched: 'Exact match',
+    stale: 'Stale',
+    not_recorded:
+      git.reason === 'proof_unavailable'
+        ? 'Evidence unavailable'
+        : git.reason === 'proof_mismatch'
+          ? 'Evidence mismatch'
+          : 'Not recorded',
+  };
+  const reviewLabel = {
+    recorded: 'Reviews recorded',
+    not_required: 'No reviewer required',
+    not_verified: git.applicability === 'unknown' ? 'Requirements unknown' : 'Not verified',
+  };
+  return (
+    <section aria-label="Git change set evidence" className="space-y-2 text-sm">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        <dt>Workflow completion</dt>
+        <dd>{git.workflowCompletion?.replace('_', ' ') ?? 'Unavailable in this comparison'}</dd>
+        <dt>Terminal Git change set</dt>
+        <dd>{terminalLabel[git.terminal]}</dd>
+        <dt>Workflow reviewers</dt>
+        <dd>{reviewLabel[git.review]}</dd>
+        <dt>Delivery / PR readiness</dt>
+        <dd>Not assessed</dd>
+      </dl>
+      {git.reviews.length > 0 && (
+        <ul aria-label="Reviewer coverage" className="space-y-1">
+          {git.reviews.map((review, index) => (
+            <li key={index} className="break-words">
+              <span className="font-medium">{review.reviewer}</span>
+              {' · '}
+              {review.stage}
+              {review.unit && ` / ${review.unit}`} · {review.class}
+              <p>
+                {review.coverage === 'full'
+                  ? 'Full change set'
+                  : review.coverage === 'scoped'
+                    ? 'Stage-scoped changes'
+                    : 'Coverage unknown'}
+                {' · '}Verdict {review.verdict ?? 'not recorded'}
+                {' · '}Freshness {review.freshness.replace('_', ' ')}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function Comparison({ projectId, executionId, revision, onAccessFailure }: Props) {
   const [baseline, setBaseline] = useState<NativeSourceBaseline | null>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'missing' | 'failed'>('idle');
@@ -47,7 +132,7 @@ function Comparison({ projectId, executionId, revision, onAccessFailure }: Props
     live.current &&
     generation.current === request &&
     epoch.current === currentSessionEpoch() &&
-    !isSessionExpiryNotified() &&
+    isSessionActive() &&
     access.current === (getNativeListing(projectId).accessRevision ?? 0);
   const failed = (err: unknown, request: number) => {
     if (!current(request)) return;
@@ -58,15 +143,14 @@ function Comparison({ projectId, executionId, revision, onAccessFailure }: Props
     if (nativeAccessDenied(err)) onAccessFailure(err);
   };
   const load = async () => {
+    if (!current(generation.current)) return;
     const request = ++generation.current;
     setStatus('loading');
     setError(null);
+    setBaseline(null);
     setPair(null);
     try {
-      const source = await nativeHistoryService.source(projectId, executionId, {
-        publicationId: revision.id,
-        publicationSequence: revision.sequence,
-      });
+      const source = await nativeHistoryService.source(projectId, executionId, revision);
       if (current(request)) {
         setBaseline(source);
         setStatus(source ? 'ready' : 'missing');
@@ -75,8 +159,12 @@ function Comparison({ projectId, executionId, revision, onAccessFailure }: Props
       failed(err, request);
     }
   };
-  const compare = async (change: ReturnType<typeof compareInventory>[number]) => {
-    if (!baseline) return;
+  const compare = async (change: {
+    path: string;
+    before?: NativePublishedFile | null;
+    after?: NativePublishedFile | null;
+  }) => {
+    if (!baseline || !current(generation.current)) return;
     const request = ++generation.current;
     setPair(null);
     try {
@@ -93,31 +181,40 @@ function Comparison({ projectId, executionId, revision, onAccessFailure }: Props
       failed(err, request);
     }
   };
+  const git = baseline?.gitChangeSet;
+  const changes = git
+    ? git.changes.map((change) => ({ ...change, status: gitChangeLabel(change) }))
+    : baseline
+      ? compareInventory(baseline.files, revision.files)
+      : [];
   return (
     <section aria-label="Pinned source comparison" className="space-y-2">
       <Button variant="outline" disabled={status === 'loading'} onClick={() => void load()}>
         {status === 'loading' ? 'Loading pinned source…' : 'Compare with pinned source'}
       </Button>
       {status === 'missing' && (
-        <p>
-          No authoritative source baseline was retained for this publication. The pinned commit
-          alone does not supply original file bytes. A source diff is unavailable.
-        </p>
+        <p>No authoritative source baseline was retained for this publication.</p>
       )}
       {error && <p role="alert">{error}</p>}
       {baseline && (
         <>
           <p className="break-all text-xs">
-            Pinned source {baseline.repository.commit} · baseline {baseline.id}
+            Pinned source {git && `${git.repository.repository} · `}
+            {baseline.repository.branch} · {baseline.repository.commit} · baseline {baseline.id}
           </p>
-          <p className="text-xs">
-            Comparison covers the complete admitted public-file inventory. Harness, Git and private
-            control files are excluded.
-          </p>
+          {git && <GitEvidence git={git} />}
+          <h4 className="font-medium text-sm">
+            {git ? 'Captured Git changes' : 'Public file inventory'}
+          </h4>
+          {git && !changes.length && <p>No Git changes were captured.</p>}
           <ul>
-            {compareInventory(baseline.files, revision.files).map((change) => (
+            {changes.map((change) => (
               <li key={change.path}>
-                <Button variant="link" onClick={() => void compare(change)}>
+                <Button
+                  variant="link"
+                  className="h-auto max-w-full whitespace-normal break-all text-left"
+                  onClick={() => void compare(change)}
+                >
                   {change.status}: {change.path}
                 </Button>
               </li>

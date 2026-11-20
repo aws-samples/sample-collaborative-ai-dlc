@@ -1,4 +1,6 @@
 import { api } from './api';
+import { decodeNativeGitChangeSet, type NativeSourceBaseline } from './nativeGitChangeSet';
+export type { NativeSourceBaseline } from './nativeGitChangeSet';
 import {
   decodeNativeInteraction,
   decodeNativePublication,
@@ -29,12 +31,6 @@ export interface NativeRevisionFile
   encoding: 'utf8' | 'binary' | 'too_large';
   content: string | null;
   truncated: false;
-}
-export interface NativeSourceBaseline {
-  id: string;
-  repository: { commit: string; branch: string };
-  inventory: 'native-public-files';
-  files: NativePublishedFile[];
 }
 export interface NativePublicationPage {
   items: {
@@ -149,20 +145,24 @@ export const nativeHistoryService = {
   async source(
     projectId: string,
     intentId: string,
-    revision: NativeRevisionTarget,
+    revision: NativeRevision,
   ): Promise<NativeSourceBaseline | null> {
+    if (revision.context.projectId !== projectId || revision.context.executionId !== intentId)
+      invalid();
+    const target = { publicationId: revision.id, publicationSequence: revision.sequence };
     const value = await api.get<unknown>(
-      `${base(projectId, intentId)}/publication?${query(revision)}&source=1`,
+      `${base(projectId, intentId)}/publication?${query(target)}&source=1`,
     );
     if (
       !record(value) ||
       value.projectId !== projectId ||
       value.executionId !== intentId ||
-      value.publicationId !== revision.publicationId ||
-      value.publicationSequence !== revision.publicationSequence
+      value.publicationId !== revision.id ||
+      value.publicationSequence !== revision.sequence
     )
       invalid();
-    if (value.status === 'not_retained' && value.baseline === null) return null;
+    if (value.status === 'not_retained' && value.baseline === null && value.gitChangeSet == null)
+      return null;
     const b = value.baseline;
     if (
       value.status !== 'captured' ||
@@ -184,11 +184,18 @@ export const nativeHistoryService = {
       question: null,
       projectionStatus: 'pending',
     });
-    return {
+    const baseline = {
       id: b.id,
-      repository: b.repository as NativeSourceBaseline['repository'],
-      inventory: 'native-public-files',
+      repository: { commit: b.repository.commit, branch: b.repository.branch },
+      inventory: 'native-public-files' as const,
       files: inventory.files,
+    };
+    return {
+      ...baseline,
+      gitChangeSet:
+        value.gitChangeSet == null
+          ? null
+          : decodeNativeGitChangeSet(value.gitChangeSet, revision, baseline),
     };
   },
   async list(
@@ -303,7 +310,12 @@ export const nativeHistoryService = {
     sourceBaselineId?: string,
   ): Promise<NativeRevisionFile> {
     const target = { publicationId: revision.id, publicationSequence: revision.sequence };
-    if (!/^nf-[a-f0-9]{64}$/.test(file.id) || !sha(file.sha256)) invalid();
+    if (
+      !/^nf-[a-f0-9]{64}$/.test(file.id) ||
+      !sha(file.sha256) ||
+      (sourceBaselineId !== undefined && !sha(sourceBaselineId))
+    )
+      invalid();
     const value = await api.get<unknown>(
       `${base(projectId, intentId)}/files/${encodeURIComponent(file.id)}?${query(target)}&sha256=${file.sha256}${sourceBaselineId ? '&source=1' : ''}`,
     );
@@ -317,7 +329,7 @@ export const nativeHistoryService = {
       value.publicationId !== revision.id ||
       value.publicationSequence !== revision.sequence ||
       value.truncated !== false ||
-      (sourceBaselineId !== undefined && value.sourceBaselineId !== sourceBaselineId) ||
+      value.sourceBaselineId !== sourceBaselineId ||
       !['utf8', 'binary', 'too_large'].includes(String(value.encoding))
     )
       invalid();

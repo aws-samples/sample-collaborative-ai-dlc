@@ -13,7 +13,11 @@ import type {
   IntentOutput,
 } from './intents';
 
-export { publication as decodeNativePublication, interaction as decodeNativeInteraction };
+export {
+  publication as decodeNativePublication,
+  interaction as decodeNativeInteraction,
+  applicationSource as decodeNativeApplicationSource,
+};
 
 export interface NativeActivityEvent extends IntentActivityEvent {
   revision: number;
@@ -202,6 +206,7 @@ export interface NativePublishedFile {
   sha256: string;
   role: 'artifact' | 'code' | 'state' | 'question';
   mediaType: string;
+  mode?: '100644' | '100755';
 }
 
 export interface NativePublication {
@@ -937,6 +942,7 @@ function publication(value: unknown): NativePublication {
       !record(file) ||
       typeof file.role !== 'string' ||
       !['artifact', 'code', 'state', 'question'].includes(file.role) ||
+      (file.mode !== undefined && file.mode !== '100644' && file.mode !== '100755') ||
       ids.has(metadata.id) ||
       paths.has(metadata.path)
     ) {
@@ -944,7 +950,11 @@ function publication(value: unknown): NativePublication {
     }
     ids.add(metadata.id);
     paths.add(metadata.path);
-    return { ...metadata, role: file.role as NativePublishedFile['role'] };
+    return {
+      ...metadata,
+      role: file.role as NativePublishedFile['role'],
+      ...(file.mode !== undefined && { mode: file.mode }),
+    };
   });
   let question: NativePublication['question'] = null;
   if (value.question !== null) {
