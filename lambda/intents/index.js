@@ -3617,9 +3617,30 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
       summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
     })
     .catch((err) => logger.error('Cancel event append failed', err));
+  await cleanUpUnusedIntentBranches({ ...meta, ...updated, executionId: intentId });
   return response(200, mapIntent(updated));
 };
-
+// A cancelled or repaired-to-FAILED run
+// deletes its branches from repositories it never changed. The orchestrator
+// does it, as for runs it ends itself, in its own invocation so a cancel or a
+// repair never waits for provider calls. Never throws.
+const cleanUpUnusedIntentBranches = async (meta) => {
+  if (!meta?.executionId) return;
+  try {
+    await invokeOrchestrator(
+      {
+        action: 'cleanup-branches',
+        projectId: meta.projectId,
+        intentId: meta.intentId ?? meta.executionId,
+        executionId: meta.executionId,
+        runId: meta.orchestratorRunId ?? null,
+      },
+      { durableExecutionName: `branches-${randomBytes(16).toString('hex')}` },
+    );
+  } catch (err) {
+    logger.error('Unused intent branch cleanup could not be requested', err);
+  }
+};
 // ── Composer (Adaptive Workflows) ────────────────────────────────────────
 // "LLM proposes, engine disposes": a compose request only ever produces a
 // COMPOSE row carrying a proposal + the plan resolver's authoritative
@@ -7238,13 +7259,22 @@ export const handler = async (event, context) => {
     if (
       intentId &&
       (httpMethod === 'DELETE' ||
-        (httpMethod === 'POST' && /\/(rewind|recompose|cancel|repair)$/.test(path ?? '')))
+        (httpMethod === 'POST' && /\/(start|rewind|recompose|cancel|repair)$/.test(path ?? '')))
     ) {
       const current = await store.getExecution(intentId, { consistentRead: true });
-      if (current?.projectId === projectId && Date.parse(current.deliveryLeaseUntil) > Date.now()) {
+      const held = (until) => current?.projectId === projectId && Date.parse(until) > Date.now();
+      if (!path?.endsWith('/start') && held(current?.deliveryLeaseUntil)) {
         return response(409, {
           error: 'Delivery is in progress. Wait for it to finish before changing this execution.',
           code: 'delivery_in_progress',
+        });
+      }
+      // The ended run's unused-branch cleanup holds it (store claimBranchCleanup):
+      // a relaunch now could have a branch it re-created deleted.
+      if (held(current?.branchCleanupLeaseUntil)) {
+        return response(409, {
+          error: "The run's unused branches are being cleaned up. Try again in a moment.",
+          code: 'branch_cleanup_in_progress',
         });
       }
     }
@@ -7697,6 +7727,7 @@ const repairExpiredDurableExecution = async ({
       summary,
     })
     .catch((err) => logger.error('Durable expiry event append failed', err));
+  await cleanUpUnusedIntentBranches({ ...meta, ...updated, executionId });
   return updated;
 };
 

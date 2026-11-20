@@ -478,6 +478,62 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     ]);
     return item;
   };
+  // Hold an ended run for its unused-branch cleanup (shared/intent-branch-cleanup.js):
+  // the run must still own the execution in one of `statuses`. Until release,
+  // every status or run-ownership write (relaunch, rewind, cancel, repair)
+  // fails its condition, so no new run can re-create branches while this one
+  // deletes them. Returns the claimed META, or null when the run lost it.
+  const claimBranchCleanup = async ({ executionId, projectId, runId, statuses, leaseMs }) => {
+    const ts = now();
+    const leaseUntil = new Date(Date.parse(ts) + leaseMs).toISOString();
+    const values = {
+      ':run': runId,
+      ':project': projectId,
+      ':until': leaseUntil,
+      ':now': ts,
+    };
+    statuses.forEach((status, i) => {
+      values[`:s${i}`] = status;
+    });
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: executionMetaKey(executionId),
+          UpdateExpression: 'SET branchCleanupLeaseUntil = :until',
+          ConditionExpression: `orchestratorRunId = :run AND projectId = :project AND #status IN (${statuses
+            .map((_, i) => `:s${i}`)
+            .join(
+              ', ',
+            )}) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :now) AND (attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :now)`,
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: values,
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes ? { ...Attributes, branchCleanupLeaseUntil: leaseUntil } : null;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+  const releaseBranchCleanup = async ({ executionId, runId, leaseUntil }) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: executionMetaKey(executionId),
+          UpdateExpression: 'REMOVE branchCleanupLeaseUntil',
+          ConditionExpression: 'orchestratorRunId = :run AND branchCleanupLeaseUntil = :until',
+          ExpressionAttributeValues: { ':run': runId, ':until': leaseUntil },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
+  };
   const saveDelivery = async ({ delivery, finished = false, ifUnitPlan }) => {
     const ts = now();
     const item = { ...delivery, updatedAt: ts };
@@ -1003,8 +1059,11 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     if (Object.keys(names).length) params.ExpressionAttributeNames = names;
     const conditions = [];
     if (status !== undefined || orchestratorRunId !== undefined) {
+      // A delivery or a branch cleanup in progress holds the run: no relaunch,
+      // rewind, cancel or repair until it releases (or its lease expires).
       conditions.push(
         '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow)',
+        '(attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow)',
       );
       values[':deliveryNow'] = ts;
     }
@@ -3973,6 +4032,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getExecution,
     getDelivery,
     claimDelivery,
+    claimBranchCleanup,
+    releaseBranchCleanup,
     saveDelivery,
     putWorkflowCheckpoint,
     getWorkflowCheckpoint,
