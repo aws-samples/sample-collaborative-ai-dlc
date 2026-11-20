@@ -5803,6 +5803,27 @@ The final read-only result is in
 After the 15-minute management-event delay, every criterion and every
 publication matched the first collection.
 
+### Fresh-session resume correction, 2026-11-20
+
+Source commit `ac2af414` admits `aidlc engine orchestrate next --resume` and
+`aidlc next --resume` when the execution row identifies the member-confirmed
+replacement writer and its turn. The command can arrive while the writer is
+restoring or after it is running. The engine requires an existing protected
+workflow before resuming. Later replies use their own turn and member decision.
+
+Both commands reproduced `NATIVE_ENGINE_COMMAND_DENIED` in the previous ARM64
+image. The local image `ne11-qualified:8cd579634a617fd3` ran the pinned AI-DLC
+2.11.1 Claude engine with the production client and in-memory cloud transports.
+The `poc` plan returned to Intent Capture. The `express` plan returned to the
+open Requirements Analysis approval, preserved its decision history, and
+advanced to Code Generation after a new member approval. The service regression
+also exercises an approval whose delivery became uncertain before recovery,
+the old writer's rejection, and recovery without a protected workflow.
+
+Local build and qualification receipts are under
+`.native-evidence/ne11-2026-11-20-workspace-resume/`. Deployment and live J1
+and J4 acceptance on a new engine version are pending.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -6051,7 +6072,9 @@ the current contract for newly created executions.
       corrected image, new runs pinned to it, the earlier run's pin to version 1
       kept. The installed CLI drove engine version 2 during live acceptance
       on 2026-11-19 to 2026-11-20. Fresh-session recovery stopped J1 and J4
-      before any check build, isolated review or verified completion. **Known limit:** the
+      before any check build, isolated review or verified completion. The
+      resume correction passed local ARM64 qualification on 2026-11-20.
+      **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
