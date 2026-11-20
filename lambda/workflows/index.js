@@ -260,6 +260,42 @@ const buildSnapshotItems = async (liveItems, version) => {
   });
 };
 
+// A version becomes visible through its versioned META, which readers require.
+// Writing it last and only once means an interrupted save never exposes a
+// partial snapshot, and a concurrent save that computed the same version number
+// is rejected instead of replacing the published META and its policies. The live
+// META moves to the new version only after publication.
+const publishWorkflowVersion = async (version, snapshots, liveItems) => {
+  const markerSk = workflowVersionSk(version, META);
+  const marker = snapshots.find((item) => item.sk === markerSk);
+  const liveMeta = liveItems.find((item) => item.sk === META);
+  await batchWrite(
+    [
+      ...snapshots.filter((item) => item !== marker),
+      ...liveItems.filter((item) => item !== liveMeta),
+    ].map((Item) => ({ PutRequest: { Item } })),
+  );
+  assertWorkflowItemSize(marker);
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: blocksTable(),
+        Item: marker,
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }),
+    );
+  } catch (error) {
+    if (error.name !== 'ConditionalCheckFailedException') throw error;
+    throw Object.assign(new Error('The workflow changed while saving. Reload it and try again.'), {
+      statusCode: 409,
+    });
+  }
+  if (liveMeta) {
+    assertWorkflowItemSize(liveMeta);
+    await ddb.send(new PutCommand({ TableName: blocksTable(), Item: liveMeta }));
+  }
+};
+
 const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
   const current = await loadMeta(tenant, workflowId);
   if (!current) return null;
@@ -280,7 +316,7 @@ const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
   const snapshots = await buildSnapshotItems(liveItems, meta.version);
   // Children were read for the snapshot, not changed by this save. Writing
   // them back would overwrite a concurrent placement update or deletion.
-  await batchWrite([meta, ...snapshots].map((Item) => ({ PutRequest: { Item } })));
+  await publishWorkflowVersion(meta.version, snapshots, [meta]);
   return meta;
 };
 
@@ -399,8 +435,7 @@ const createWorkflow = async (event, res, tenant) => {
       : generateStagePolicies(liveItems.filter((item) => item.type === 'StagePlacement'));
   validateStagePolicies(meta.cedarPolicies);
   const snapshotItems = await buildSnapshotItems(liveItems, meta.version);
-  const requests = [...liveItems, ...snapshotItems].map((Item) => ({ PutRequest: { Item } }));
-  await batchWrite(requests);
+  await publishWorkflowVersion(meta.version, snapshotItems, liveItems);
   return res(201, metaToApi(meta));
 };
 
@@ -2213,8 +2248,9 @@ export const handler = async (event, context) => {
     // Log name + message (no PII in these handlers) so failures are diagnosable
     // from CloudWatch without a redeploy.
     logger.error('workflows handler error', err);
-    return res(err.statusCode === 400 ? 400 : 500, {
-      error: err.statusCode === 400 ? err.message : 'Internal server error',
+    const exposed = err.statusCode === 400 || err.statusCode === 409;
+    return res(exposed ? err.statusCode : 500, {
+      error: exposed ? err.message : 'Internal server error',
     });
   }
 };
