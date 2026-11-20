@@ -55,5 +55,29 @@ const stageIsNoopForUnit = (outputArtifacts, producesKinds, unitKind) => {
   return required.every((o) => !artifactAppliesToKind(producesKinds, o?.artifact ?? o, unitKind));
 };
 
-export { artifactAppliesToKind, pruneOutputArtifactsForUnit, stageIsNoopForUnit };
-export default { artifactAppliesToKind, pruneOutputArtifactsForUnit, stageIsNoopForUnit };
+// Why a per-unit stage instance is skipped, or null when it runs. The single
+// rule shared by the orchestrator, which records the SKIPPED row, and readers
+// such as the stage responsibilities preview:
+//   - 'matrix': the human-approved skip matrix lists the stage for the unit
+//     (CONDITIONAL stages only);
+//   - 'kind': every required output prunes away for the unit's kind.
+const unitStageSkipReason = (stage, unit, skipMatrix) => {
+  if ((skipMatrix?.[unit?.slug] ?? []).includes(stage.stageId) && stage.execution === 'CONDITIONAL')
+    return 'matrix';
+  if (stageIsNoopForUnit(stage.outputArtifacts, stage.producesKinds, unit?.kind ?? null))
+    return 'kind';
+  return null;
+};
+
+export {
+  artifactAppliesToKind,
+  pruneOutputArtifactsForUnit,
+  stageIsNoopForUnit,
+  unitStageSkipReason,
+};
+export default {
+  artifactAppliesToKind,
+  pruneOutputArtifactsForUnit,
+  stageIsNoopForUnit,
+  unitStageSkipReason,
+};
