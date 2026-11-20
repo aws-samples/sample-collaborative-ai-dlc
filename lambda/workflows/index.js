@@ -61,6 +61,7 @@ import {
   DeleteCommand,
   QueryCommand,
   BatchWriteCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
@@ -264,10 +265,12 @@ const buildSnapshotItems = async (liveItems, version) => {
 };
 
 // A version becomes visible through its versioned META, which readers require.
-// Writing it last and only once means an interrupted save never exposes a
-// partial snapshot, and a concurrent save that computed the same version number
-// is rejected instead of replacing the published META and its policies. The live
-// META moves to the new version only after publication.
+// The snapshot items are written first; the versioned META and the live META
+// are then committed together in one transaction, only if that version does not
+// exist yet. An interrupted save therefore never exposes a partial snapshot nor
+// publishes a version the live META does not point to, and a concurrent save
+// that computed the same version number is rejected instead of replacing the
+// published META and its policies.
 const publishWorkflowVersion = async (version, snapshots, liveItems) => {
   const markerSk = workflowVersionSk(version, META);
   const marker = snapshots.find((item) => item.sk === markerSk);
@@ -279,23 +282,30 @@ const publishWorkflowVersion = async (version, snapshots, liveItems) => {
     ].map((Item) => ({ PutRequest: { Item } })),
   );
   assertWorkflowItemSize(marker);
+  assertWorkflowItemSize(liveMeta);
   try {
     await ddb.send(
-      new PutCommand({
-        TableName: blocksTable(),
-        Item: marker,
-        ConditionExpression: 'attribute_not_exists(pk)',
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: blocksTable(),
+              Item: marker,
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+          { Put: { TableName: blocksTable(), Item: liveMeta } },
+        ],
       }),
     );
   } catch (error) {
-    if (error.name !== 'ConditionalCheckFailedException') throw error;
+    const conflict =
+      error.name === 'TransactionCanceledException' &&
+      error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed';
+    if (!conflict) throw error;
     throw Object.assign(new Error('The workflow changed while saving. Reload it and try again.'), {
       statusCode: 409,
     });
-  }
-  if (liveMeta) {
-    assertWorkflowItemSize(liveMeta);
-    await ddb.send(new PutCommand({ TableName: blocksTable(), Item: liveMeta }));
   }
 };
 

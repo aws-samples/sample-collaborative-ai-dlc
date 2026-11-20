@@ -9,6 +9,7 @@ import {
   DeleteCommand,
   QueryCommand,
   BatchWriteCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 
 const BLOCKS_TABLE = 'blocks-test';
@@ -20,6 +21,25 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 // on sk, and GSI1 (by GSI1PK).
 const store = new Map();
 const keyOf = (pk, sk) => `${pk}|${sk}`;
+
+// Applies every Put or none, like DynamoDB, failing on attribute_not_exists.
+const installTransactWrites = () =>
+  ddbMock.on(TransactWriteCommand).callsFake((input) => {
+    const puts = input.TransactItems.map(({ Put }) => Put);
+    const reasons = puts.map((put) =>
+      put.ConditionExpression === 'attribute_not_exists(pk)' &&
+      store.has(keyOf(put.Item.pk, put.Item.sk))
+        ? { Code: 'ConditionalCheckFailed' }
+        : { Code: 'None' },
+    );
+    if (reasons.some((reason) => reason.Code !== 'None'))
+      throw Object.assign(new Error('Transaction cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: reasons,
+      });
+    for (const put of puts) store.set(keyOf(put.Item.pk, put.Item.sk), { ...put.Item });
+    return {};
+  });
 
 const installFakes = () => {
   ddbMock.reset();
@@ -37,6 +57,8 @@ const installFakes = () => {
     store.set(key, { ...input.Item });
     return {};
   });
+
+  installTransactWrites();
 
   ddbMock.on(UpdateCommand).callsFake((input) => {
     const item = store.get(keyOf(input.Key.pk, input.Key.sk));
@@ -411,6 +433,28 @@ describe('workflows handler', () => {
       .filter((input) => input.Key.sk === 'META');
     expect(metaReads.length).toBeGreaterThan(0);
     expect(metaReads.every((input) => input.ConsistentRead === true)).toBe(true);
+  });
+
+  it('publishes the versioned and live META together, so a failed commit leaves nothing half done', async () => {
+    await createWorkflow({ id: 'atomic-flow', name: 'Atomic' });
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'atomic-flow' }))).body;
+    const next = before.version + 1;
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      throw new Error('Throttled');
+    });
+    const save = (name) =>
+      handler(event({ method: 'PUT', workflowId: 'atomic-flow', body: { name } }));
+    expect(parse(await save('First')).status).toBe(500);
+    expect(store.has(`WF#default#atomic-flow|V#${next}#META`)).toBe(false);
+    expect(store.get('WF#default#atomic-flow|META').version).toBe(before.version);
+    // The retry publishes that version normally.
+    installTransactWrites();
+    expect(parse(await save('Second')).status).toBe(200);
+    expect(store.get('WF#default#atomic-flow|META')).toMatchObject({
+      version: next,
+      name: 'Second',
+    });
+    expect(store.get(`WF#default#atomic-flow|V#${next}#META`).name).toBe('Second');
   });
 
   it('exposes a version only after its whole snapshot is written', async () => {
