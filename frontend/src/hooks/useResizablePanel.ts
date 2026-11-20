@@ -7,6 +7,9 @@ interface ResizablePanelOptions {
   maxWidth: number;
   // Never let the panel eat more than this fraction of the viewport.
   viewportFraction: number;
+  // Pixels of the viewport kept for the rest of the layout (other panels and
+  // the main column), so the panel can grow until only that is left.
+  reserveWidth?: number;
   // Which screen edge the panel is anchored to; drives the drag math and
   // which arrow key grows the panel.
   anchor: 'left' | 'right';
@@ -21,14 +24,19 @@ export function useResizablePanel({
   minWidth,
   maxWidth,
   viewportFraction,
+  reserveWidth = 0,
   anchor,
 }: ResizablePanelOptions) {
   const clamp = useCallback(
     (width: number) => {
-      const max = Math.min(maxWidth, Math.round(window.innerWidth * viewportFraction));
+      const max = Math.min(
+        maxWidth,
+        Math.round(window.innerWidth * viewportFraction),
+        window.innerWidth - reserveWidth,
+      );
       return Math.min(Math.max(width, minWidth), Math.max(max, minWidth));
     },
-    [minWidth, maxWidth, viewportFraction],
+    [minWidth, maxWidth, viewportFraction, reserveWidth],
   );
 
   const [width, setWidth] = useState(() => {

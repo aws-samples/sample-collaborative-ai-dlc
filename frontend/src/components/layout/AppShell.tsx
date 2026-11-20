@@ -50,14 +50,17 @@ export function shouldDefaultOpen(pathname: string): boolean {
 
 // Side panel sizing: user-resizable on large screens (drag the inner edge,
 // double-click to reset), persisted across sessions.
+// The activity panel can grow until only the sidebar and MAIN_MIN_WIDTH of
+// main content are left, so wide previews (tables, diagrams) fit beside it.
 const ACTIVITY_PANEL_SIZING = {
   storageKey: 'aidlc-activity-panel-width',
   defaultWidth: 380,
   minWidth: 300,
-  maxWidth: 1200,
-  viewportFraction: 0.45,
+  maxWidth: Number.POSITIVE_INFINITY,
+  viewportFraction: 1,
   anchor: 'right',
 } as const;
+const MAIN_MIN_WIDTH = 360;
 
 const SIDEBAR_SIZING = {
   storageKey: 'aidlc-sidebar-width',
@@ -113,8 +116,13 @@ export function AppShell() {
     () => !window.matchMedia('(min-width: 1024px)').matches,
   );
   const [commandOpen, setCommandOpen] = useState(false);
-  const activityPanel = useResizablePanel(ACTIVITY_PANEL_SIZING);
   const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
+  const activityPanel = useResizablePanel({
+    ...ACTIVITY_PANEL_SIZING,
+    reserveWidth:
+      MAIN_MIN_WIDTH +
+      (sidebarCollapsed ? 0 : Math.min(sidebarPanel.width, Math.round(window.innerWidth * 0.3))),
+  });
   const activityOverlayRef = useRef<HTMLElement | null>(null);
   const activityReturnFocusRef = useRef<HTMLElement | null>(null);
   const shouldFocusActivityOverlayRef = useRef(false);
@@ -175,10 +183,17 @@ export function AppShell() {
 
   // Grid columns only contain panels that render INLINE at the current
   // breakpoint — overlay panels must not reserve track space.
+  const sidebarColumn = `min(${sidebarPanel.width}px, 30vw)`;
   const gridColumns = [
-    showSidebar && panelsInline ? `min(${sidebarPanel.width}px, 30vw)` : null,
+    showSidebar && panelsInline ? sidebarColumn : null,
     'minmax(0, 1fr)',
-    showActivity && panelsInline ? `min(${activityPanel.width}px, 45vw)` : null,
+    // Never wider than what leaves the sidebar and MAIN_MIN_WIDTH, also after
+    // the window shrinks below a stored width.
+    showActivity && panelsInline
+      ? `min(${activityPanel.width}px, max(${ACTIVITY_PANEL_SIZING.minWidth}px, calc(100vw - ${
+          showSidebar ? `${sidebarColumn} - ` : ''
+        }${MAIN_MIN_WIDTH}px)))`
+      : null,
   ]
     .filter(Boolean)
     .join(' ');
