@@ -5,7 +5,10 @@
 // fail when they next invoke the runtime. Also refuses a plan that takes the
 // runtime off engine-data while executions are active: a warm session keeps
 // the runtime version it started with, and so keeps calling the engine-data
-// function the plan destroys.
+// function the plan destroys. Also refuses a plan that sets, changes or
+// removes the Bedrock gateway while executions are active: a session accepts
+// a saved Bedrock key only for the endpoint it started with, so a session from
+// before the apply is refused the key and its run fails.
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +29,10 @@ const ACTIVATIONS = [
 // The runtime environment variable whose removal destroys a resource that warm
 // sessions still call.
 const DEACTIVATIONS = [{ flag: 'enable_engine_data', variable: 'ENGINE_DATA_FUNCTION' }];
+
+// The runtime environment variable that decides which endpoint a saved
+// credential is accepted for. Setting, changing and removing it all count.
+const REROUTES = [{ flag: 'bedrock_gateway_url', variable: 'BEDROCK_GATEWAY_URL' }];
 
 const isRuntime = (change) =>
   change.mode === 'managed' &&
@@ -52,6 +59,19 @@ const loses = (change, variable) => {
   return !Object.hasOwn(after, variable) && !(unknown && Object.hasOwn(unknown, variable));
 };
 
+const reroutes = (change, variable) => {
+  if (gains(change, variable) || loses(change, variable)) return true;
+  const before = change.change?.before?.environment_variables;
+  const after = change.change?.after?.environment_variables;
+  return Boolean(
+    before &&
+    after &&
+    Object.hasOwn(before, variable) &&
+    Object.hasOwn(after, variable) &&
+    before[variable] !== after[variable],
+  );
+};
+
 const changedFlags = (plan, entries, changed) => {
   const runtime = (plan.resource_changes ?? []).find(isRuntime);
   if (!runtime) return [];
@@ -60,6 +80,7 @@ const changedFlags = (plan, entries, changed) => {
 
 export const activatedFlags = (plan) => changedFlags(plan, ACTIVATIONS, gains);
 export const deactivatedFlags = (plan) => changedFlags(plan, DEACTIVATIONS, loses);
+export const reroutedFlags = (plan) => changedFlags(plan, REROUTES, reroutes);
 
 // The process table as it exists before this apply; null on a fresh install.
 export const existingExecutionsTable = (plan) => {
@@ -75,20 +96,22 @@ export const existingExecutionsTable = (plan) => {
 };
 
 export const checkActiveExecutions = async ({ plan, listActiveExecutions, env = process.env }) => {
-  const flags = activatedFlags(plan);
-  const deactivated = deactivatedFlags(plan);
-  if (flags.length === 0 && deactivated.length === 0) return { ok: true, flags, deactivated };
+  const changes = {
+    flags: activatedFlags(plan),
+    deactivated: deactivatedFlags(plan),
+    rerouted: reroutedFlags(plan),
+  };
+  if (Object.values(changes).every((list) => list.length === 0)) return { ok: true, ...changes };
   const table = existingExecutionsTable(plan);
-  if (!table) return { ok: true, flags, deactivated };
+  if (!table) return { ok: true, ...changes };
   const active = (await listActiveExecutions(table)).filter((row) =>
     DRAINED_STATUSES.has(row.status),
   );
-  if (active.length === 0) return { ok: true, flags, deactivated };
+  if (active.length === 0) return { ok: true, ...changes };
   return {
     ok: env[OVERRIDE] === '1',
     overridden: env[OVERRIDE] === '1',
-    flags,
-    deactivated,
+    ...changes,
     active,
   };
 };
@@ -108,12 +131,19 @@ const listFromTable = async ({ name, region }) => {
   }
 };
 
-const report = ({ flags, deactivated, active, overridden }) => {
+const report = ({ flags, deactivated, rerouted, active, overridden }) => {
   const log = overridden ? console.warn : console.error;
   const changes = [
     flags.length && `turns on ${flags.join(', ')}`,
     deactivated.length && `turns off ${deactivated.join(', ')}`,
+    rerouted.length && `changes ${rerouted.join(', ')}`,
   ].filter(Boolean);
+  // Executions without grants, or on a removed function, fail outright; after
+  // a gateway change alone, only those that reach a session from before it do.
+  const stranded = flags.length > 0 || deactivated.length > 0;
+  const consequence = stranded
+    ? 'will fail when they next invoke the runtime'
+    : 'can fail when they next invoke the runtime';
   log(
     `${overridden ? 'Warning' : 'Refusing Terraform plan'}: it ${changes.join(' and ')} ` +
       `while ${active.length} execution(s) are running or parked:`,
@@ -122,15 +152,17 @@ const report = ({ flags, deactivated, active, overridden }) => {
     log(`  - ${row.executionId} (project ${row.projectId}, ${row.status})`);
   }
   if (overridden) {
-    log(`${OVERRIDE}=1 is set: these executions will fail when they next invoke the runtime.`);
+    log(`${OVERRIDE}=1 is set: these executions ${consequence}.`);
     return;
   }
-  log(
-    'Stop starting new intents until the deployment has succeeded, retries included. Wait for ' +
-      'RUNNING executions to park or finish, cancel the parked (WAITING) and queued (CREATED) ' +
-      'ones, re-plan and apply, then rewind each cancelled execution to its current stage (its ' +
-      'first stage if it had not reached one): the rewind relaunches it on the new runtime.',
-  );
+  if (stranded) {
+    log(
+      'Stop starting new intents until the deployment has succeeded, retries included. Wait for ' +
+        'RUNNING executions to park or finish, cancel the parked (WAITING) and queued (CREATED) ' +
+        'ones, re-plan and apply, then rewind each cancelled execution to its current stage (its ' +
+        'first stage if it had not reached one): the rewind relaunches it on the new runtime.',
+    );
+  }
   if (deactivated.length) {
     log(
       'After the apply, stop the remaining intent runtime sessions or wait until they idle out or ' +
@@ -138,10 +170,16 @@ const report = ({ flags, deactivated, active, overridden }) => {
         'and its calls to the removed engine-data function.',
     );
   }
-  log(
-    `To apply anyway, set ${OVERRIDE}=1; the executions listed will fail when they next invoke ` +
-      'the runtime.',
-  );
+  if (rerouted.length) {
+    log(
+      'A runtime session accepts a saved Bedrock key only for the endpoint it started with: the ' +
+        'gateway with bedrock_gateway_url, Amazon Bedrock without it. After the apply, a session ' +
+        'from before it is refused the key until it ends, and so is every managed environment ' +
+        'revision built before the apply. Finish or cancel these executions, re-plan and apply, ' +
+        'then follow docs/using-the-platform/bedrock-gateway.md.',
+    );
+  }
+  log(`To apply anyway, set ${OVERRIDE}=1; the executions listed ${consequence}.`);
 };
 
 if (
@@ -159,7 +197,7 @@ if (
   });
   if (result.active) report(result);
   if (!result.ok) process.exit(1);
-  if (result.flags.length || result.deactivated.length) {
+  if (result.flags.length || result.deactivated.length || result.rerouted.length) {
     console.log('Active execution check passed.');
   }
 }

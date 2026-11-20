@@ -57,6 +57,14 @@ bash /tmp/aidlc-install.sh update
 
 Preview and stable tags are listed by default. Install and update select the highest version by SemVer precedence unless `--version` is explicit; stable `2.0.0` supersedes `2.0.0-preview0`. Downgrades still require `--allow-downgrade`.
 
+`update` stops with `Already on AI-DLC v<version>.` when the release is unchanged. To change a Terraform variable of a managed deployment, edit `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc/terraform/environments/<environment>.tfvars` and deploy it with `--reapply`, which also deploys an unchanged release:
+
+```bash
+bash /tmp/aidlc-install.sh update --reapply
+```
+
+The installer keeps `environment`, `aws_region` and the custom-domain values in that file equal to its own configuration, so change those through its options.
+
 ### Test an unreleased branch
 
 Testers can explicitly track `aidlc-v2` before a release tag exists:
@@ -829,7 +837,7 @@ Two things to expect on a deployment with a custom domain:
 
 ## Updating a deployment
 
-For managed installations, run `bash /tmp/aidlc-install.sh update`. It creates a Terraform state backup and applies the release safeguards automatically.
+For managed installations, run `bash /tmp/aidlc-install.sh update`. It creates a Terraform state backup and applies the release safeguards automatically. Add `--reapply` to deploy an unchanged release again, for example after editing its `.tfvars` file.
 
 For advanced manual installations:
 

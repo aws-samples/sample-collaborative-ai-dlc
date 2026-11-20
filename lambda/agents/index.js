@@ -110,6 +110,10 @@ const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const inferenceRegion = () => process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1';
 const bedrock = new BedrockClient({ region: inferenceRegion(), maxAttempts: 3 });
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
+// The Bedrock gateway that API-key inference is sent to (Terraform bedrock_gateway_url). The
+// credential views report it so a Bedrock key is entered and described as a gateway key.
+const bedrockGatewayView = () =>
+  process.env.BEDROCK_GATEWAY_URL ? { bedrockGatewayUrl: process.env.BEDROCK_GATEWAY_URL } : {};
 // The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
 const pricing = new PricingClient({
   region: (process.env.AWS_REGION || '').startsWith('ap-') ? 'ap-south-1' : 'us-east-1',
@@ -648,6 +652,7 @@ export const handler = async (event, context) => {
           });
           return response(200, {
             ...status,
+            ...bedrockGatewayView(),
             ...(process.env.V2_PROCESS_TABLE
               ? {
                   authentication: await authenticationView({
@@ -715,6 +720,7 @@ export const handler = async (event, context) => {
           return response(200, {
             ...space,
             platformFallback,
+            ...bedrockGatewayView(),
             ...(process.env.V2_PROCESS_TABLE
               ? {
                   authentication: await authenticationView({
@@ -915,6 +921,7 @@ export const handler = async (event, context) => {
         return response(200, {
           ...platformCredentialStatus,
           bedrockRegion: inferenceRegion(),
+          ...bedrockGatewayView(),
           ...(process.env.V2_PROCESS_TABLE
             ? {
                 authentication: await authenticationView({

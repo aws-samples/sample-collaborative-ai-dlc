@@ -70,6 +70,7 @@ module "agents_lambda" {
     # runtime's `capabilities` command for Kiro's model list + auth state.
     AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
     BEDROCK_REGION                = var.bedrock_region
+    BEDROCK_GATEWAY_URL           = var.bedrock_gateway_url
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},

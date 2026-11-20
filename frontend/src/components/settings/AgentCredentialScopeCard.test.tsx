@@ -224,6 +224,64 @@ describe('AgentCredentialScopeCard', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/It goes in Kiro API Key/);
   });
 
+  describe('with a Bedrock gateway', () => {
+    it('takes a gateway key in the Bedrock field and says which agents can use it', async () => {
+      const user = userEvent.setup();
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockGatewayUrl: 'https://gateway.example.com/bedrock',
+        platformFallback: { bedrockBearerTokenSet: true, kiroApiKeySet: false },
+      });
+      render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
+
+      const key = await screen.findByLabelText(/Bedrock Gateway Key/);
+      expect(key).toHaveAttribute('placeholder', 'Enter the gateway key');
+      expect(
+        screen.getByText(
+          'Sent to the Bedrock gateway at gateway.example.com. Enables Claude Code; OpenCode and Codex cannot use a gateway. A platform fallback is available.',
+        ),
+      ).toBeVisible();
+      expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Enables Claude Code, OpenCode and Codex/)).not.toBeInTheDocument();
+
+      // The same write as a Bedrock key: the gateway changes where it is sent, not how it is stored.
+      await user.type(key, 'gateway-test-key');
+      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await waitFor(() =>
+        expect(updateProjectCredentials).toHaveBeenCalledWith('space-a', {
+          bedrockBearerToken: 'gateway-test-key',
+        }),
+      );
+    });
+
+    it('names the gateway key in the hint for a key in the wrong field', async () => {
+      const user = userEvent.setup();
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockGatewayUrl: 'https://gateway.example.com',
+      });
+      render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
+
+      await user.type(await screen.findByLabelText(/Bedrock Gateway Key/), 'ksk_example');
+      expect(screen.getByRole('status')).toHaveTextContent(
+        /this field takes a Bedrock gateway key/,
+      );
+    });
+
+    it('keeps the Bedrock wording when the backend reports no gateway', async () => {
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      expect(await screen.findByLabelText(/Bedrock Bearer Token/)).toHaveAttribute(
+        'placeholder',
+        'Enter AWS_BEARER_TOKEN_BEDROCK value',
+      );
+      expect(screen.getByText('Enables Claude Code, OpenCode and Codex.')).toBeVisible();
+      expect(screen.queryByText(/Bedrock gateway/)).not.toBeInTheDocument();
+    });
+  });
+
   it('surfaces a load failure and retries', async () => {
     getPersonalCredentials
       .mockRejectedValueOnce(new Error('Credential service unavailable'))

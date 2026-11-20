@@ -89,6 +89,14 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   // Bedrock / region control the drivers set.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  // Bedrock gateway routing and model pins the Claude driver sets. A ref named like the
+  // routing ones could also send the run's key to another endpoint.
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'OPENCODE_CONFIG_CONTENT',
   'OPENCODE_DISABLE_AUTOUPDATE',
   'IS_SANDBOX',

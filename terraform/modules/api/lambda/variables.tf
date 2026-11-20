@@ -328,6 +328,12 @@ variable "agent_credential_grant_secret_param_name" {
   type        = string
 }
 
+variable "bedrock_gateway_url" {
+  description = "Bedrock gateway that API-key inference is sent to. The credential broker then leases every Bedrock API key as a key of this gateway, which a runtime without the same setting refuses. Empty when inference goes to Amazon Bedrock"
+  type        = string
+  default     = ""
+}
+
 variable "discussion_locks_table_name" {
   description = "DynamoDB table name for discussion creation guards / message guards / assist locks"
   type        = string

@@ -49,6 +49,7 @@ export const prepareCredentialInvocation = async ({
       availableClis: authenticatedClis({
         installed: installedClis,
         providers: auth.resolvedProviders,
+        env: auth.env,
       }),
     };
   } catch (error) {

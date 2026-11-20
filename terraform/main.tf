@@ -640,6 +640,7 @@ module "lambda" {
   realtime_doc_secret_param_name           = module.realtime.realtime_doc_secret_param_name
   agent_credential_grant_secret_param_arn  = aws_ssm_parameter.agent_credential_grant_secret.arn
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
+  bedrock_gateway_url                      = var.bedrock_gateway_url
 
   # Discussions feature
   discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
@@ -722,6 +723,7 @@ module "api" {
   agents_lambda_role_arn                   = module.lambda.agents_orchestrator_role_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   bedrock_region                           = local.bedrock_region
+  bedrock_gateway_url                      = var.bedrock_gateway_url
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
   v2_executions_table_name                 = module.agentcore.v2_executions_table_name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
@@ -807,28 +809,31 @@ module "agentcore" {
   iam_role_path                = var.iam_role_path
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
-  aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
-  project_name                = var.project_name
-  environment                 = var.environment
-  powertools_service_name     = local.powertools_service_name
-  powertools_log_level        = var.powertools_log_level
-  aws_region                  = var.aws_region
-  docker_build_args           = var.docker_build_args
-  image_tag                   = var.agentcore_image_tag
-  build_amd64_image           = var.enable_instances_compute
-  neptune_endpoint            = module.neptune.cluster_endpoint
-  neptune_cluster_resource_id = module.neptune.cluster_resource_id
-  artifacts_bucket_name       = module.s3.artifacts_bucket_name
-  artifacts_bucket_arn        = module.s3.artifacts_bucket_arn
-  blocks_table_name           = module.dynamodb.blocks_table_name
-  blocks_table_arn            = module.dynamodb.blocks_table_arn
-  connections_table_name      = module.dynamodb.connections_table_name
-  connections_table_arn       = module.dynamodb.connections_table_arn
-  websocket_endpoint          = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
-  websocket_execution_arn     = module.realtime.websocket_execution_arn
-  aidlc_repo_ref              = var.aidlc_repo_ref
-  bedrock_model               = var.bedrock_model
-  bedrock_region              = local.bedrock_region
+  aws_sdk_ua_app_id                          = local.aws_sdk_ua_app_id
+  project_name                               = var.project_name
+  environment                                = var.environment
+  powertools_service_name                    = local.powertools_service_name
+  powertools_log_level                       = var.powertools_log_level
+  aws_region                                 = var.aws_region
+  docker_build_args                          = var.docker_build_args
+  image_tag                                  = var.agentcore_image_tag
+  build_amd64_image                          = var.enable_instances_compute
+  neptune_endpoint                           = module.neptune.cluster_endpoint
+  neptune_cluster_resource_id                = module.neptune.cluster_resource_id
+  artifacts_bucket_name                      = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn                       = module.s3.artifacts_bucket_arn
+  blocks_table_name                          = module.dynamodb.blocks_table_name
+  blocks_table_arn                           = module.dynamodb.blocks_table_arn
+  connections_table_name                     = module.dynamodb.connections_table_name
+  connections_table_arn                      = module.dynamodb.connections_table_arn
+  websocket_endpoint                         = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn                    = module.realtime.websocket_execution_arn
+  aidlc_repo_ref                             = var.aidlc_repo_ref
+  bedrock_model                              = var.bedrock_model
+  bedrock_region                             = local.bedrock_region
+  bedrock_gateway_url                        = var.bedrock_gateway_url
+  bedrock_gateway_disable_content_type_guard = var.bedrock_gateway_disable_content_type_guard
+  bedrock_model_aliases                      = var.bedrock_model_aliases
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,

@@ -6,6 +6,9 @@
 # Usage:
 #   BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
 #   ./scripts/agent-e2e-testing.sh --sandbox  # image tests, no credentials needed
+#   # Claude Code through a Bedrock gateway; BEDROCK_API_KEY is then the gateway key:
+#   BEDROCK_GATEWAY_URL=https://gateway.example.com BEDROCK_API_KEY=... E2E_CLIS=claude \
+#     ./scripts/agent-e2e-testing.sh
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +19,8 @@ CODEX_MODEL="${CODEX_MODEL:-openai.gpt-5.5}"
 E2E_CLIS="${E2E_CLIS:-claude,kiro,opencode,codex}"
 KEEP_E2E="${KEEP_E2E:-0}"
 BEDROCK_TOKEN="${BEDROCK_API_KEY:-${AWS_BEARER_TOKEN_BEDROCK:-}}"
+BEDROCK_GATEWAY_URL="${BEDROCK_GATEWAY_URL:-}"
+BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD="${BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD:-}"
 RUN_ID="$(date +%Y%m%d%H%M%S)-$$"
 LABEL="aidlc.e2e=$RUN_ID"
 NETWORK="aidlc-e2e-$RUN_ID"
@@ -121,6 +126,13 @@ preflight() {
     [ -n "$BEDROCK_TOKEN" ] ||
       fail "BEDROCK_API_KEY (or AWS_BEARER_TOKEN_BEDROCK) is required"
   fi
+  if [ -n "$BEDROCK_GATEWAY_URL" ]; then
+    [[ "$BEDROCK_GATEWAY_URL" =~ ^https:// ]] || fail "BEDROCK_GATEWAY_URL must be an HTTPS URL"
+    # A gateway key must never reach a CLI that calls AWS endpoints.
+    if is_selected opencode || is_selected codex; then
+      fail "OpenCode and Codex cannot use a Bedrock gateway; set E2E_CLIS=claude (or claude,kiro)"
+    fi
+  fi
   if is_selected kiro; then
     [ -n "${KIRO_API_KEY:-}" ] || fail "KIRO_API_KEY is required"
   fi
@@ -198,6 +210,11 @@ container_args() {
     --env "V2_QUESTION_PARK_GRACE_MS=300" \
     --env "E2E_SECRET_FILE=/run/secrets/aidlc-e2e.env" \
     --volume "$SECRET_FILE:/run/secrets/aidlc-e2e.env:ro"
+  if [ -n "$BEDROCK_GATEWAY_URL" ]; then
+    printf '%s\n' --env "BEDROCK_GATEWAY_URL=$BEDROCK_GATEWAY_URL"
+    [ -n "$BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD" ] && printf '%s\n' \
+      --env "BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD=$BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD"
+  fi
   for proxy_name in $DOCKER_PROXY_VARIABLES; do
     [ -n "${!proxy_name:-}" ] && printf '%s\n' --env "$proxy_name"
   done

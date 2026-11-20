@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  configuredModelAliases,
   resolveModelId,
   resolveStageModel,
   quorumCliModels,
@@ -59,9 +60,52 @@ describe('resolveModelId', () => {
     expect(resolveModelId('opus', { env })).toBe('us.anthropic.claude-opus-4-8');
   });
 
+  it('uses an alias target that already names where it runs as written', () => {
+    const env = {
+      BEDROCK_REGION: 'eu-central-1',
+      AIDLC_MODEL_ALIASES: JSON.stringify({
+        opus: 'global.anthropic.claude-opus-5-5',
+        sonnet: 'jp.anthropic.claude-sonnet-5-5',
+        haiku: 'eu.anthropic.claude-haiku-5-5',
+      }),
+    };
+    expect(resolveModelId('opus', { env })).toBe('global.anthropic.claude-opus-5-5');
+    expect(resolveModelId('sonnet', { env })).toBe('jp.anthropic.claude-sonnet-5-5');
+    expect(resolveModelId('haiku', { env })).toBe('eu.anthropic.claude-haiku-5-5');
+  });
+
+  it('keeps the built-in target for an alias whose override is not a model id', () => {
+    const env = { AWS_REGION: 'us-east-1', AIDLC_MODEL_ALIASES: '{"opus":7,"sonnet":""}' };
+    expect(resolveModelId('opus', { env })).toBe('us.anthropic.claude-opus-4-6-v1');
+    expect(resolveModelId('sonnet', { env })).toBe('us.anthropic.claude-sonnet-4-6');
+  });
+
   it('returns undefined for empty input', () => {
     expect(resolveModelId('', { env: {} })).toBeUndefined();
     expect(resolveModelId(null, { env: {} })).toBeUndefined();
+  });
+});
+
+describe('configuredModelAliases', () => {
+  it('lists only the aliases the deployment configured, as full ids', () => {
+    const env = {
+      BEDROCK_REGION: 'eu-central-1',
+      AIDLC_MODEL_ALIASES:
+        '{"sonnet":"anthropic.claude-sonnet-5-5","opus":"eu.anthropic.claude-opus-5-5"}',
+    };
+    expect(configuredModelAliases({ env })).toEqual({
+      sonnet: 'eu.anthropic.claude-sonnet-5-5',
+      opus: 'eu.anthropic.claude-opus-5-5',
+    });
+  });
+
+  it('is empty when nothing usable is configured, leaving the built-in table internal', () => {
+    for (const AIDLC_MODEL_ALIASES of [undefined, '', '{', 'null', '[]', '{"opus":7}'])
+      expect(configuredModelAliases({ env: { AIDLC_MODEL_ALIASES } })).toEqual({});
+    // The built-in table still resolves for --model.
+    expect(resolveModelId('opus', { env: { AWS_REGION: 'us-east-1' } })).toBe(
+      'us.anthropic.claude-opus-4-6-v1',
+    );
   });
 });
 

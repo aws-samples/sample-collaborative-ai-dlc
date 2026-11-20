@@ -48,7 +48,7 @@ Services are grouped by their main role in the platform. Optional features and c
 
 ### Amazon Bedrock model invocation
 
-Claude Code, OpenCode, and Codex support two authentication modes. **Keys** mode uses the Bedrock API key resolved from the credential hierarchy. **IAM** mode uses temporary credentials for a dedicated external inference role assumed by the credential broker. That role grants Bedrock model access, including Bedrock Mantle for Codex; the AgentCore runtime's own role has no model-invocation permissions or automatic fallback. Kiro uses its own API key in either mode. See [Agent authentication](../getting-started/prerequisites.md#agent-authentication) and [Bedrock IAM setup](../using-the-platform/bedrock-iam.md).
+Claude Code, OpenCode, and Codex support two authentication modes. **Keys** mode uses the Bedrock API key resolved from the credential hierarchy. **IAM** mode uses temporary credentials for a dedicated external inference role assumed by the credential broker. That role grants Bedrock model access, including Bedrock Mantle for Codex; the AgentCore runtime's own role has no model-invocation permissions or automatic fallback. Kiro uses its own API key in either mode. See [Agent authentication](../getting-started/prerequisites.md#agent-authentication) and [Bedrock IAM setup](../using-the-platform/bedrock-iam.md). A deployment can instead send Keys-mode inference for Claude Code to its own [Bedrock gateway](../using-the-platform/bedrock-gateway.md); the key is then a gateway key and no request reaches Amazon Bedrock directly.
 
 ### Amazon SQS
 
