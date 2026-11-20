@@ -609,6 +609,44 @@ describe('MembersTab assignable identity picker', () => {
     await waitFor(() => expect(removeMember).toHaveBeenCalledWith('project-1', 'other-owner'));
   });
 
+  it('explains that a member becoming a Viewer keeps business roles that no longer apply', async () => {
+    const user = userEvent.setup();
+    listMembers.mockResolvedValue([
+      {
+        userId: 'architect-sub',
+        email: 'architect@example.com',
+        role: 'member',
+        effectiveRoles: ['architect', 'developer'],
+      },
+    ]);
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('architect@example.com');
+    await user.click(
+      screen.getByRole('combobox', { name: 'Space access for architect@example.com' }),
+    );
+    await user.click(screen.getByRole('option', { name: 'Viewer' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Change Role' });
+    expect(dialog).toHaveTextContent('cannot decide or contribute to any stage');
+    expect(dialog).toHaveTextContent(
+      'Their business roles (Architect, Developer) stay assigned and apply again if they become a Member or Owner.',
+    );
+  });
+
+  it('shows a Viewer business roles as inactive', async () => {
+    listMembers.mockResolvedValue([
+      {
+        userId: 'viewer-sub',
+        email: 'viewer@example.com',
+        role: 'viewer',
+        effectiveRoles: ['architect'],
+      },
+    ]);
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('viewer@example.com');
+    expect(screen.getByText('Inactive while Viewer')).toBeInTheDocument();
+    expect(screen.getByText('Architect').closest('[class*="border-dashed"]')).not.toBeNull();
+  });
+
   it('shows membership without management controls for a Member', async () => {
     render(<MembersTab projectId="project-1" userRole="member" />);
     await screen.findByText('existing@example.com');
