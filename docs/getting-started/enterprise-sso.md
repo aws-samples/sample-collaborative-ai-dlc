@@ -108,6 +108,10 @@ With no baseline, mappings remain fully managed through the UI:
   current mappings and `requiredClaimValues`, without reading Cognito. A user
   who no longer has a required value keeps no SSO business roles. Token
   refreshes do not update the copy; if it cannot be saved, the sign-in fails.
+- Changing or removing a provider's source attribute (`claims.roles`)
+  invalidates the recorded values, so members get no SSO business roles until
+  they sign in again with the new attribute. Mapping changes for the same
+  attribute apply immediately.
 - The first deployment of this behavior copies the values Cognito holds for
   existing federated users before the member APIs use them. A copy saved by a
   sign-in is never replaced by that backfill.

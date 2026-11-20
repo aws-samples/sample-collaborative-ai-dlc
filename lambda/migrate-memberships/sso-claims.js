@@ -5,12 +5,19 @@
 // sign-in and is at least as recent. Safe to retry.
 
 import { ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
-import { ssoClaimsFromAttributes } from '../shared/sso-roles.js';
+import { parseRoleConfig, ssoClaimsFromAttributes } from '../shared/sso-roles.js';
 
 const attrsToMap = (attributes = []) =>
   Object.fromEntries(attributes.map(({ Name, Value }) => [Name, Value]));
 
-export const backfillSsoClaims = async ({ cognito, userPoolId, store }) => {
+// Cognito does not record which attribute a value was mapped from, so the
+// backfill stamps the currently configured source attribute.
+export const backfillSsoClaims = async ({
+  cognito,
+  userPoolId,
+  store,
+  config = parseRoleConfig(),
+}) => {
   if (!userPoolId) throw new Error('COGNITO_USER_POOL_ID is required');
   let scanned = 0;
   let written = 0;
@@ -22,7 +29,7 @@ export const backfillSsoClaims = async ({ cognito, userPoolId, store }) => {
     );
     for (const user of page.Users ?? []) {
       scanned += 1;
-      const claims = ssoClaimsFromAttributes(attrsToMap(user.Attributes));
+      const claims = ssoClaimsFromAttributes(attrsToMap(user.Attributes), config);
       if (!claims) continue;
       if (await store.backfillSsoClaims(claims)) written += 1;
       else kept += 1;

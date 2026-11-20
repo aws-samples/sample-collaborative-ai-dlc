@@ -85,8 +85,8 @@ export const parseRoleConfig = (raw = process.env.SSO_ROLE_CONFIG) => {
 };
 
 /**
- * The claims to record for a federated user: the provider and its raw claim
- * values, independent of the current configuration. Null for local users.
+ * The claims to record for a federated user: the provider, the configured
+ * source attribute and its raw claim values. Null for local users.
  *
  * TODO(hashicorp/terraform-provider-aws#47954): `custom:sso_roles` is the
  * Cognito profile after attribute mapping, and Cognito keeps a mapped value
@@ -97,12 +97,15 @@ export const parseRoleConfig = (raw = process.env.SSO_ROLE_CONFIG) => {
  * (hashicorp/terraform-provider-aws#49707). Until then the IdP must always send
  * the claim, even when it is empty.
  */
-export const ssoClaimsFromAttributes = (attributes) => {
+export const ssoClaimsFromAttributes = (attributes, config = parseRoleConfig()) => {
   const identity = parseFederatedIdentity(attributes?.identities);
   if (!identity || !attributes?.sub) return null;
   return {
     subject: attributes.sub,
     providerName: identity.providerName,
+    // The IdP attribute these values were mapped from. Values recorded from
+    // another source are never read under the current one.
+    sourceAttribute: config.providers?.[identity.providerName]?.roleClaim || '',
     claimValues: parseClaimValues(attributes['custom:sso_roles']),
   };
 };

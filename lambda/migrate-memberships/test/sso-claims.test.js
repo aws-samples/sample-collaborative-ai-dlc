@@ -47,12 +47,14 @@ describe('SSO claims backfill', () => {
       },
     };
 
-    const result = await backfillSsoClaims({ cognito, userPoolId: 'pool', store });
+    const config = { providers: { Entra: { roleClaim: 'groups' } } };
+    const result = await backfillSsoClaims({ cognito, userPoolId: 'pool', store, config });
 
     expect(result).toEqual({ backfilled: true, scanned: 3, written: 1, kept: 1 });
     expect(requests.map(({ PaginationToken }) => PaginationToken)).toEqual([undefined, 'page-2']);
     expect(await store.getSsoClaims(newcomer)).toMatchObject({
       providerName: 'Entra',
+      sourceAttribute: 'groups',
       claimValues: ['Engineering'],
       source: 'backfill',
     });

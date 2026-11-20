@@ -23,9 +23,9 @@ export const membershipKey = (spaceId, userId) => ({
 export const ssoMappingKey = (providerId) => ({ pk: 'PLATFORM', sk: `SSO#${providerId}` });
 
 // SSO claims recorded at each federated sign-in (and once by the deployment
-// backfill): the provider and its raw claim values, never calculated roles, so
-// mapping changes apply on the next read. The subject is not named `userId`, so
-// the by-user GSI skips the item.
+// backfill): the provider, the configured source attribute and its raw claim
+// values, never calculated roles, so mapping changes apply on the next read.
+// The subject is not named `userId`, so the by-user GSI skips the item.
 export const ssoClaimsKey = (subject) => ({ pk: `USER#${subject}`, sk: 'SSO' });
 
 // Stay clearly below DynamoDB's 400 KB item limit for the mapping and its audit
@@ -392,12 +392,13 @@ export const createMembershipStore = ({
     }
     return { roleMappings: mappings, revision: changeId };
   };
-  const ssoClaimsItem = ({ subject, providerName, claimValues, source }) => {
+  const ssoClaimsItem = ({ subject, providerName, sourceAttribute, claimValues, source }) => {
     if (!subject || !providerName) throw new Error('SSO claims require a subject and a provider');
     const item = {
       ...ssoClaimsKey(subject),
       subject,
       providerName,
+      sourceAttribute: sourceAttribute ?? '',
       claimValues,
       source,
       recordedAt: now(),
