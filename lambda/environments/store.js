@@ -34,17 +34,18 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
 
+const compatibilityVersion = () =>
+  process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
+const revisionDockerfile = (recipe, flattenedRecipe) =>
+  recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
+    ? generateCatalogEnvironmentDockerfile(recipe)
+    : generateDockerfile(flattenedRecipe);
+
 export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createEnvironmentStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.ENVIRONMENT_REGISTRY_TABLE;
   const now = () => (clock ? clock() : new Date().toISOString());
   const nextId = () => (ids ? ids() : randomUUID());
-  const compatibilityVersion = () =>
-    process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
-  const revisionDockerfile = (recipe, flattenedRecipe) =>
-    recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
-      ? generateCatalogEnvironmentDockerfile(recipe)
-      : generateDockerfile(flattenedRecipe);
 
   const getEnvironment = async (environmentId) => {
     const { Item } = await ddb.send(
