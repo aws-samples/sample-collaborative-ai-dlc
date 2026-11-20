@@ -3,7 +3,6 @@ import {
   normalizeStagePermissions,
   generateStagePolicies,
   assertWorkflowItemSize,
-  validateStagePolicies,
 } from '../shared/stage-responsibilities.js';
 import { BUSINESS_ROLES } from '../shared/business-roles.js';
 // Composition over the block library: a workflow references and arranges
@@ -406,11 +405,9 @@ const createWorkflow = async (event, res, tenant) => {
 
   // Fork: copy the source workflow's grouping tree + placements + refs.
   let sourceItems = [];
-  let sourcePolicies = null;
   if (input.basedOn) {
     const src = await resolveWorkflow(tenant, input.basedOn);
     if (!src) return res(400, { error: 'basedOn workflow not found' });
-    sourcePolicies = src.meta.cedarPolicies ?? null;
     sourceItems = (await queryLivePartition(src.owner, input.basedOn)).filter((i) => i.sk !== META);
   }
 
@@ -450,17 +447,11 @@ const createWorkflow = async (event, res, tenant) => {
         : {}),
     });
   }
-  const mappingsAdded = sourceItems.some(
-    (item) =>
-      item.type === 'StagePlacement' &&
-      item.permissions === undefined &&
-      DEFAULT_STAGE_PERMISSIONS[item.stageId],
+  // A copy is a new workflow: like every new version, it generates and stores
+  // its own policy from the roles copied onto its placements.
+  meta.cedarPolicies = generateStagePolicies(
+    liveItems.filter((item) => item.type === 'StagePlacement'),
   );
-  meta.cedarPolicies =
-    sourcePolicies && !mappingsAdded
-      ? sourcePolicies
-      : generateStagePolicies(liveItems.filter((item) => item.type === 'StagePlacement'));
-  validateStagePolicies(meta.cedarPolicies);
   const snapshotItems = await buildSnapshotItems(liveItems, meta.version);
   await publishWorkflowVersion(tenant, id, meta.version, snapshotItems, liveItems);
   return res(201, metaToApi(meta));
