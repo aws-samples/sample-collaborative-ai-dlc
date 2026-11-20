@@ -88,12 +88,25 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    Promise.all([environmentsService.list(true), projectsService.getEnvironment(project.id)])
+    Promise.all([
+      environmentsService.list(true),
+      // A failed assignment read (a backend from before the unavailable
+      // marker answers 409 for a retired assignment) must not take the
+      // published list down with it — the user needs it to recover.
+      projectsService.getEnvironment(project.id).catch(() => null),
+    ])
       .then(([available, current]) => {
         if (!active) return;
         setEnvironments(available);
-        setAssignment(current);
-        setSelectedId(current.environmentId || 'standard');
+        const resolved = current ?? {
+          environmentId: project.environmentId ?? 'standard',
+          environment: null,
+          revision: null,
+        };
+        setAssignment(resolved);
+        // A retired assignment is absent from the published list; leave the
+        // selection empty so replacing it is a deliberate choice.
+        setSelectedId(resolved.environment ? resolved.environmentId || 'standard' : '');
       })
       .catch((err) => {
         if (active) setError(err instanceof Error ? err.message : 'Failed to load environments');
@@ -104,7 +117,7 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
     return () => {
       active = false;
     };
-  }, [project.id]);
+  }, [project.id, project.environmentId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -128,6 +141,7 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   const tools = useMemo(() => includedTools(detail), [detail]);
   const warnings = useMemo(() => compatibilityWarnings(project, detail), [project, detail]);
+  const assignmentUnavailable = !loading && assignment !== null && !assignment.environment;
   const changed = selectedId !== (assignment?.environmentId ?? project.environmentId ?? 'standard');
 
   const save = async () => {
@@ -167,9 +181,16 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
         </div>
       ) : (
         <div className="space-y-4">
+          {assignmentUnavailable && (
+            <p className="flex items-start gap-1.5 border-l-2 border-amber-500/60 pl-3 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              The assigned environment is no longer available — it may have been retired. New
+              intents cannot start until a published environment is assigned.
+            </p>
+          )}
           <Select value={selectedId} onValueChange={setSelectedId} disabled={!canEdit || saving}>
             <SelectTrigger aria-label="Environment" className="h-9">
-              <SelectValue />
+              <SelectValue placeholder="Select an environment" />
             </SelectTrigger>
             <SelectContent>
               {environments.map((environment) => (
@@ -236,7 +257,12 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
           {error && <p className="text-xs text-destructive">{error}</p>}
 
           {canEdit && (
-            <Button size="sm" onClick={save} disabled={!changed || saving} className="gap-1.5">
+            <Button
+              size="sm"
+              onClick={save}
+              disabled={!changed || !selectedId || saving}
+              className="gap-1.5"
+            >
               {saving ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : saved ? (

@@ -213,4 +213,43 @@ describe('EnvironmentTab', () => {
     expect(assignEnvironment).toHaveBeenCalledWith('p1', 'rust-ci');
     expect(onProjectUpdated).toHaveBeenCalledWith({ environmentId: 'rust-ci' });
   });
+
+  it('lets the space recover when its assigned environment was retired', async () => {
+    getEnvironment.mockResolvedValue({
+      environmentId: 'legacy-tooling',
+      environment: null,
+      revision: null,
+      unavailable: {
+        code: 'ENVIRONMENT_NOT_PUBLISHED',
+        message: 'Assigned environment is not published',
+      },
+    });
+    const user = userEvent.setup();
+    const onProjectUpdated = vi.fn();
+    render(<EnvironmentTab project={project} canEdit onProjectUpdated={onProjectUpdated} />);
+
+    expect(
+      await screen.findByText(/assigned environment is no longer available/i),
+    ).toBeInTheDocument();
+    const assign = screen.getByRole('button', { name: 'Assign Environment' });
+    expect(assign).toBeDisabled();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Environment' }), 'rust-ci');
+    await user.click(screen.getByRole('button', { name: 'Assign Environment' }));
+    expect(assignEnvironment).toHaveBeenCalledWith('p1', 'rust-ci');
+    expect(onProjectUpdated).toHaveBeenCalledWith({ environmentId: 'rust-ci' });
+  });
+
+  it('keeps the published environments selectable when the assignment read fails', async () => {
+    // A backend from before the unavailable marker answers 409 for a retired
+    // assignment; the published list must still load so the space can recover.
+    getEnvironment.mockRejectedValue(new Error('Assigned environment is not published'));
+    render(<EnvironmentTab project={project} canEdit onProjectUpdated={vi.fn()} />);
+
+    expect(
+      await screen.findByText(/assigned environment is no longer available/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Environment' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Rust CI/ })).toBeInTheDocument();
+  });
 });
