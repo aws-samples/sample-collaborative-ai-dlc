@@ -69,9 +69,11 @@ const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9+.-]*$/;
 const VERSION_PATTERN = /^[0-9][0-9A-Za-z.+:~_-]*$/;
 const VARIABLE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-const NODE = { version: '24.15.0', source: 'base' };
-const PYTHON = { version: '3.11', source: 'base' };
-const RUST_APT_PACKAGES = [{ name: 'build-essential', version: '12.9' }];
+// Base tools describe what the core image ships (lambda/agentcore/Dockerfile);
+// keep them and the apt pins in step with its Node.js image and Debian release.
+const NODE = { version: '24.22.3', source: 'base' };
+const PYTHON = { version: '3.13', source: 'base' };
+const RUST_APT_PACKAGES = [{ name: 'build-essential', version: '12.12' }];
 
 const baseRecipe = (tools = {}, buildTools = {}, aptPackages = []) => ({
   schemaVersion: FIXED_TOOL_RECIPE_SCHEMA_VERSION,
