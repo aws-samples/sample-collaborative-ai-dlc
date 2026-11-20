@@ -225,7 +225,7 @@ failed checks or concerns are shown beside it. Native adds no approval of its ow
 Executions started before this change, other packages and Kiro have no protected
 engine. Their results remain readable and remain **not verified**.
 
-In the local NE-12 implementation, members can compare a publication with its
+The dev deployment lets members compare a publication with its
 Start commit, inspect reviewer coverage, and prepare the exact changes as a Git
 bundle. They can check whether the connected repository's intent branch points
 to the prepared commit. Publishing the branch, opening a pull request, observing
@@ -6150,6 +6150,9 @@ the current contract for newly created executions.
       original and resulting files within its stage scope. The API reports coverage, freshness and verdict
       separately, including plans without reviewers. Members can prepare a Git bundle for a named publication
       against its retained Start commit and observe the pinned intent branch. Provider writes and tracker policy remain open.
+      **Dev milestone, 2026-11-20.** Independent verification passed all 109 deployment checks for
+      `39676857` (engine v5, state serial 1580). Supplemental preflight reads found no blocker.
+      The `ReadOnly` preflight awaits Midway sign-in. A fresh member run through completion and bundle download is pending.
 - [ ] **NE-13 — Finish shared history, status and traceability integration.** Reuse
       the implemented revision history, decision records, comparisons and graph
       links throughout the shared Intent shell and project/dashboard/sidebar views.
