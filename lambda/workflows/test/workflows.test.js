@@ -157,6 +157,29 @@ beforeEach(() => {
 const createWorkflow = (body) => handler(event({ method: 'POST', body }));
 
 describe('workflows handler', () => {
+  it('places a stage saved without a role mapping as unmapped, even under a default stage ID', async () => {
+    const pk = 'BLOCK#default#STAGE#requirements-analysis';
+    store.set(`${pk}|V#latest`, {
+      pk,
+      blockId: 'requirements-analysis',
+      version: 1,
+      permissions: null,
+    });
+    await createWorkflow({ id: 'unmapped-flow', name: 'Unmapped' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'unmapped-flow',
+          path: 'placements',
+          body: { stageId: 'requirements-analysis' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.permissions).toBeNull();
+  });
+
   it('copies custom stage defaults only when adding a placement, retaining existing workflow mappings', async () => {
     const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] };
     const pk = 'BLOCK#default#STAGE#custom-stage';
