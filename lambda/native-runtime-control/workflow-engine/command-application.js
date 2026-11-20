@@ -17,6 +17,7 @@ import {
 } from './commands.js';
 import { assertNativeEnginePresentedQuestion } from './presentation.js';
 import { bindNativeEngineReply, noteNativeEngineOpenGate } from './reply-binding.js';
+import { observedEngineGitDelta } from './git-evidence.js';
 import { completeNativeEngineReview } from './review.js';
 
 const decode = (result) => {
@@ -192,6 +193,8 @@ export const applyNativeEngineCommand = async (context) => {
   if (selected.review)
     result = await completeNativeEngineReview({
       requested: result,
+      gitInput: context.gitInput,
+      publications: context.publications,
       workspace,
       runner,
       jobs,
@@ -210,10 +213,13 @@ export const applyNativeEngineCommand = async (context) => {
     ['WORKFLOW_COMPLETED', 'WORKFLOW_FAILED'].includes(event.event),
   );
   if (terminal) {
+    const files = await workspace.publicFiles();
+    const delta = observedEngineGitDelta(context.gitInput, files);
     state.terminalResult = {
+      ...(delta ? { gitDelta: delta } : {}),
       auditSha256: terminal.sha256,
       stateSha256: observed.workflow.stateSha256,
-      filesSha256: nativeEngineFileDigest(await workspace.publicFiles()),
+      filesSha256: nativeEngineFileDigest(files),
     };
   }
   state.operations.push({

@@ -415,6 +415,190 @@ describe('protected workflow engine service', () => {
       expect(t.memberMessages()).toBe(scenario === 'no snapshot' ? 0 : 1);
     },
   );
+  it('does not let a later command supply the base that preparation could not observe', async () => {
+    const t = await setup({ git: true });
+    const initial = await t.request('mirror');
+    const { files, filesSha256, schemaVersion } = await t.objects.read(
+      initial.identity,
+      initial.input,
+      'input',
+    );
+    initial.input = await t.objects.write(
+      initial.identity,
+      initial.requestId,
+      'files',
+      { files: files.map(({ mode: _mode, ...file }) => file), filesSha256, schemaVersion },
+      'input',
+    );
+    expect((await t.send(initial)).result.exitCode).toBe(0);
+    const opened = await toGate(t);
+    await approve(t, opened);
+    expect((await t.command(['next'])).result.exitCode).toBe(0);
+    const done = await t.publish();
+    await t.admit(done);
+    expect((await t.sourceView(done)).gitChangeSet).toMatchObject({
+      workflowCompletion: 'complete',
+      terminal: 'not_recorded',
+      review: 'not_required',
+    });
+  });
+
+  it('binds a gated no-review plan to the admitted modes and explicit deletions and preserves historical proof', async () => {
+    const t = await setup({ git: true });
+    expect((await t.send(await t.request('mirror'))).result.exitCode).toBe(0);
+    t.modes.set('README.md', '100755');
+    t.project.delete('removed.bin');
+    const input = await t.request('mirror');
+    const submitted = await t.objects.read(input.identity, input.input, 'input');
+    expect(submitted.git.deleted).toEqual(['removed.bin']);
+    for (const [modify, failure] of [
+      [
+        (body) => {
+          body.git.deleted = [];
+        },
+        'NATIVE_ENGINE_INPUT_INVALID',
+      ],
+      [
+        (body) => {
+          body.files.find((file) => file.path === 'README.md').mode = '100644';
+        },
+        'NATIVE_ENGINE_INPUT_INVALID',
+      ],
+      [
+        (body) => {
+          body.sourceBaseline.receipt.manifest.versionId = 'wrong';
+        },
+        'NATIVE_ENGINE_SOURCE_MISMATCH',
+      ],
+    ]) {
+      const request = await t.request('mirror');
+      const value = structuredClone(submitted);
+      modify(value);
+      request.input = await t.objects.write(
+        request.identity,
+        request.requestId,
+        'files',
+        value,
+        'input',
+      );
+      expect((await t.send(request)).result.failure).toBe(failure);
+    }
+    const opened = await toGate(t);
+    await approve(t, opened);
+    expect((await t.command(['next'])).result.exitCode).toBe(0);
+    const owner = nativeEngineIdentity(await t.row());
+    const head = await t.journal.get(owner);
+    const snapshot = await t.objects.read(owner, head.snapshot);
+    expect(snapshot.state.terminalResult.gitDelta).toMatchObject({
+      sourceBaseline: { id: t.sourceBaseline.receipt.id },
+      repository: { commit: t.f.configuration.repository.commit },
+      changes: expect.arrayContaining([
+        { path: 'removed.bin', before: expect.objectContaining({ bytes: 2 }), after: null },
+      ]),
+    });
+    const completed = await t.publish();
+    const manifest = await t.f.publications.read(await t.identity(), completed.receipt);
+    const wrongBase = structuredClone(t.sourceBaseline);
+    wrongBase.receipt.manifest.versionId = 'another-source-version';
+    const divergent = await t.f.turn(completed.receipt.sequence, {
+      sourceBaseline: wrongBase,
+      git: manifest.git,
+      filesystemPolicy: manifest.filesystemPolicy,
+      files: manifest.files.map((file) => ({ ...file, content: t.project.get(file.path) })),
+    });
+    const refused = await t.send(
+      await t.request('finalize', {
+        publication: divergent.receipt,
+        interaction: divergent.interactionReceipt,
+      }),
+    );
+    expect(refused.result.failure).toBe('NATIVE_ENGINE_PUBLICATION_INVALID');
+    expect(await t.proof(divergent)).toBeNull();
+    await t.admit(completed);
+    const result = (await t.sourceView(completed)).gitChangeSet;
+    expect(result).toMatchObject({
+      terminal: 'matched',
+      review: 'not_required',
+      reviews: [],
+      workflowCompletion: 'complete',
+      sourceBaselineId: t.sourceBaseline.receipt.id,
+    });
+    expect(result.changes.find((change) => change.path === 'README.md')).toMatchObject({
+      before: { mode: '100644' },
+      after: { mode: '100755' },
+    });
+    expect(result.changes.find((change) => change.path === 'removed.bin').after).toBeNull();
+    expect((await t.sourceView(opened)).gitChangeSet).toMatchObject({
+      terminal: 'not_recorded',
+      review: 'not_verified',
+    });
+    const nextTurn = async () => {
+      await t.f.respond();
+      const claim = await t.execution.claim(t.f.bindingIdentity);
+      await t.execution.release({ row: await t.execution.dispatched({ row: claim.row }) });
+    };
+    await nextTurn();
+    const excludedPath = 'aidlc/work/.aidlc-engine/diagnostic.json';
+    t.project.set(excludedPath, Buffer.from('{}'));
+    const excluded = await t.publish();
+    await t.admit(excluded);
+    expect((await t.sourceView(excluded)).gitChangeSet).toMatchObject({
+      sha256: result.sha256,
+      terminal: 'matched',
+      workflowCompletion: 'not_verified',
+    });
+    await nextTurn();
+    t.project.delete(excludedPath);
+    t.modes.set('README.md', '100644');
+    const late = await t.publish();
+    await t.admit(late);
+    expect((await t.sourceView(late)).gitChangeSet).toMatchObject({
+      workflowCompletion: 'complete',
+      terminal: 'stale',
+      review: 'not_required',
+    });
+    expect((await t.sourceView(completed)).gitChangeSet).toEqual(result);
+    const target = {
+      publicationId: completed.receipt.id,
+      publicationSequence: completed.receipt.sequence,
+      source: true,
+    };
+    const evidence = await t.proof(completed);
+    const readWith = (completionProof) =>
+      t.f.makeApi(true, completionProof).revision(t.f.prepared, target, t.f.recheck);
+    expect(
+      (
+        await readWith(async () => ({
+          ...evidence,
+          gitObservation: { ...evidence.gitObservation, publicationSha256: '0'.repeat(64) },
+        }))
+      ).gitChangeSet,
+    ).toMatchObject({ review: 'not_verified', reason: 'proof_mismatch' });
+    expect(
+      (
+        await readWith(async () => {
+          throw new Error('temporarily unavailable');
+        })
+      ).gitChangeSet,
+    ).toMatchObject({
+      review: 'not_verified',
+      reason: 'proof_unavailable',
+      changes: result.changes,
+    });
+    const legacy = { ...evidence };
+    delete legacy.gitObservation;
+    expect((await readWith(async () => legacy)).gitChangeSet).toMatchObject({
+      review: 'not_verified',
+      terminal: 'not_recorded',
+    });
+    await expect(
+      readWith(async () => {
+        t.f.authorization.member = false;
+        return evidence;
+      }),
+    ).rejects.toMatchObject({ code: 'NATIVE_PREPARATION_FORBIDDEN' });
+  });
+
   it('reports completion only from applied gates, observed checks and the exact published files', async () => {
     const t = await setup();
     try {

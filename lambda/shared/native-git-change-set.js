@@ -31,6 +31,9 @@ export const nativeGitInventorySha256 = (files) =>
     )
     .digest('hex');
 
+export const nativeGitDeltaSha256 = (delta) =>
+  createHash('sha256').update(canonicalJson(delta)).digest('hex');
+
 // Both manifests have already passed the publication codec. A deleted path
 // must name a base file positively observed absent by the result capture.
 const version = ({ mode, bytes, sha256 }) => ({ mode, bytes, sha256 });

@@ -1,3 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
+import { isValidRepoPath } from './repo-validation.js';
+import { canonicalNativePath } from './native-project-files.js';
+import { nativeGitExcludedRoot, nativeGitDeltaSha256 } from './native-git-change-set.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 import {
   engineDigest,
@@ -25,6 +29,25 @@ export const NATIVE_ENGINE_JOB_BUILD_SPEC = JSON.stringify({
 const sha = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const text = (value, limit) =>
   typeof value === 'string' && value.length <= limit && !value.includes('\0');
+const fileVersion = (file) =>
+  file ? { mode: file.mode, sha256: file.sha256, bytes: file.bytes } : null;
+const validGitSource = (delta) => {
+  const source = delta?.sourceBaseline;
+  const repo = delta?.repository;
+  return (
+    sha(source?.id) &&
+    text(source.versionId, 1024) &&
+    source.versionId.length > 0 &&
+    source.versionId !== 'null' &&
+    Number.isSafeInteger(source.epoch) &&
+    source.epoch >= 1 &&
+    ['github', 'bitbucket', 'gitlab'].includes(repo?.provider) &&
+    isValidRepoPath(repo.repository) &&
+    typeof repo.branch === 'string' &&
+    repo.branch.length > 0 &&
+    /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(repo.commit)
+  );
+};
 export const nativeEngineJob = (value) => {
   if (
     !value ||
@@ -70,6 +93,34 @@ export const nativeEngineJob = (value) => {
     )
   )
     throw engineFailure('NATIVE_ENGINE_JOB_INVALID');
+  if (value.gitDelta || value.beforeFiles) {
+    if (value.kind !== 'review') throw engineFailure('NATIVE_ENGINE_JOB_INVALID');
+    const beforeFiles = nativeEngineFiles(value.beforeFiles);
+    const before = new Map(beforeFiles.map((f) => [f.path, f]));
+    const after = new Map(files.map((f) => [f.path, f]));
+    const changes = value.gitDelta?.changes;
+    if (
+      !validGitSource(value.gitDelta) ||
+      files.length + beforeFiles.length > 20_000 ||
+      !Array.isArray(changes) ||
+      changes.length > 20_000 ||
+      files.reduce((n, f) => n + f.bytes, 0) + beforeFiles.reduce((n, f) => n + f.bytes, 0) >
+        128 * 1024 * 1024 ||
+      changes.filter((c) => c?.before).length !== before.size ||
+      changes.some(
+        (c, i) =>
+          !canonicalNativePath(c?.path) ||
+          nativeGitExcludedRoot(c.path) ||
+          (i && c.path <= changes[i - 1].path) ||
+          !(c.before || c.after) ||
+          !isDeepStrictEqual(c.before, fileVersion(before.get(c.path))) ||
+          !isDeepStrictEqual(c.after, fileVersion(after.get(c.path))) ||
+          [c.before, c.after].some((v) => v && !['100644', '100755'].includes(v.mode)),
+      )
+    )
+      throw engineFailure('NATIVE_ENGINE_JOB_INVALID');
+    return { ...structuredClone(value), files, beforeFiles };
+  }
   return { ...structuredClone(value), files };
 };
 
@@ -94,7 +145,8 @@ export const nativeEngineJobResult = (value, job) => {
   if (
     job.kind === 'review' &&
     value.exitCode === 0 &&
-    (!text(value.review, 1024 * 1024) ||
+    ((job.gitDelta && value.gitSha256 !== nativeGitDeltaSha256(job.gitDelta)) ||
+      !text(value.review, 1024 * 1024) ||
       !value.review.trim() ||
       !text(value.nativeSessionId, 512) ||
       !value.nativeSessionId ||

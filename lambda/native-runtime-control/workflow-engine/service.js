@@ -15,6 +15,8 @@ import { nativeEngineIdentity, nativeEngineRequestSha256 } from './store.js';
 import { openNativeEngineWorkspace } from './workspace.js';
 import { createNativeEngineRunner } from './runner.js';
 import { applyNativeEngineCommand } from './command-application.js';
+import { engineGitDelta, engineGitSource, openEngineGitInput } from './git-evidence.js';
+import { nativeGitDeltaSha256 } from '../../shared/native-git-change-set.js';
 import { nativeEngineCompletionEvidence } from './evidence.js';
 import { nativeEngineAskInput, nativeEnginePresentation } from './presentation.js';
 import { bindNativeEngineReply, nativeEngineReplyNotice } from './reply-binding.js';
@@ -57,18 +59,29 @@ const operationSignal = (context) =>
   AbortSignal.timeout(
     Math.min(840_000, Math.max(1, (context.getRemainingTimeInMillis?.() ?? 900_000) - 60_000)),
   );
-const patches = (before, after) => {
+const patches = (before, after, captureModes) => {
   const from = new Map(before.map((file) => [file.path, file]));
   const to = new Map(after.map((file) => [file.path, file]));
   return [...new Set([...from.keys(), ...to.keys()])].toSorted().flatMap((path) => {
     const old = from.get(path);
     const value = to.get(path);
+    // Keep an existing coding mode when the engine only mirrors its policy/ledger bytes.
+    // A different protected mode remains a visible proof mismatch.
     if (old?.sha256 === value?.sha256) return [];
     // Unowned caller files stay visible. The engine never deletes an extra
     // repository file merely because it is outside its authority projection.
     if (!value) return [];
     return [
-      { path, beforeSha256: old?.sha256 ?? null, after: encodeNativeEngineFiles([value])[0] },
+      {
+        path,
+        beforeSha256: old?.sha256 ?? null,
+        ...(captureModes && old ? { beforeMode: old.mode } : {}),
+        after: encodeNativeEngineFiles([
+          captureModes
+            ? { ...value, mode: old?.mode ?? value.mode }
+            : { path, content: value.content },
+        ])[0],
+      },
     ];
   });
 };
@@ -81,6 +94,7 @@ const runNativeEngineCommand = async (context) => {
   const { request, identity, row, snapshot, workspace, runner, git, objects, sessionId } = context;
   const submitted = await objects.read(identity, request.input, 'input');
   const files = nativeEngineFiles(submitted.files);
+  const gitInput = await openEngineGitInput(context, submitted, files);
   const inputSha256 = await workspace.importAuthored(submitted.files, runner, sessionId);
   if (!snapshot)
     await git.initialize(
@@ -89,7 +103,12 @@ const runNativeEngineCommand = async (context) => {
     );
   const result =
     request.action === 'execute'
-      ? await applyNativeEngineCommand({ ...context, state: workspace.state, inputSha256 })
+      ? await applyNativeEngineCommand({
+          ...context,
+          state: workspace.state,
+          inputSha256,
+          gitInput,
+        })
       : { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   const outputFiles = await workspace.publicFiles();
   return {
@@ -104,7 +123,7 @@ const runNativeEngineCommand = async (context) => {
     ),
     inputSha256: nativeEngineFileDigest(files),
     filesSha256: nativeEngineFileDigest(outputFiles),
-    patches: patches(files, outputFiles),
+    patches: patches(files, outputFiles, Boolean(gitInput)),
     ...(request.action === 'mirror'
       ? { pendingInput: nativeEngineAskInput(workspace.state.directive) }
       : {}),
@@ -153,7 +172,14 @@ const finalizeNativeEnginePublication = async (context) => {
   if (
     manifest.sequence !== identity.sequence ||
     manifest.packageId !== row.configuration.packageId ||
-    manifest.repository.commit !== row.configuration.repository.commit
+    manifest.repository.commit !== row.configuration.repository.commit ||
+    (manifest.git &&
+      (!manifest.git.deleted ||
+        manifest.repository.branch !== row.configuration.repository.branch ||
+        manifest.git.provider !== row.configuration.repository.provider ||
+        manifest.git.repository !== row.configuration.repository.repository ||
+        (workspace.state.gitSource &&
+          !same(workspace.state.gitSource, engineGitSource(manifest.sourceBaseline)))))
   )
     throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
   const state = workspace.state;
@@ -169,7 +195,11 @@ const finalizeNativeEnginePublication = async (context) => {
         await presentedInteraction({ ...context, manifest }),
       )
     : null;
+  const source = manifest.git ? await publications.source(identity, manifest) : null;
+  const publicationDelta =
+    source?.changes && engineGitDelta(manifest.sourceBaseline, source.manifest, source.changes);
   const evidence = nativeEngineCompletionEvidence({
+    publicationGitSha256: publicationDelta && nativeGitDeltaSha256(publicationDelta),
     identity,
     row,
     publication: request.publication,

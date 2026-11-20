@@ -6,6 +6,20 @@ import {
   NATIVE_ENGINE_PROFILE,
 } from '../../shared/native-workflow-protocol.js';
 import { nativeEngineUnappliedReplies } from './reply-binding.js';
+import {
+  nativeGitInventorySha256,
+  nativeGitDeltaSha256,
+  nativeGitExcludedRoot,
+} from '../../shared/native-git-change-set.js';
+
+const eligibleInventory = (files) =>
+  nativeGitInventorySha256(files.filter((file) => !nativeGitExcludedRoot(file.path)));
+const gitObservation = ({ publicationSha256, terminalResult, current, applicability }) => ({
+  publicationSha256,
+  terminalSha256: terminalResult?.gitDelta ? nativeGitDeltaSha256(terminalResult.gitDelta) : null,
+  terminalMatch: Boolean(current),
+  applicability: applicability ? 'captured' : 'unknown',
+});
 
 const latest = (items, predicate) => items.findLast(predicate);
 const sameUnit = (a, b) => (a ?? null) === (b ?? null);
@@ -24,6 +38,7 @@ export const nativeEngineCompletionEvidence = ({
   row,
   publication,
   manifest,
+  publicationGitSha256,
   workspace,
   observed,
 }) => {
@@ -127,6 +142,19 @@ export const nativeEngineCompletionEvidence = ({
                 ? 'ready'
                 : 'concerns',
         verdict: event?.verdict ?? null,
+        ...(invocation?.git &&
+        event &&
+        event.verdict === invocation.verdict &&
+        event.reviewer === invocation.reviewer &&
+        event.stage === invocation.stage &&
+        sameUnit(event.unit, invocation.unit)
+          ? {
+              git: {
+                ...invocation.git,
+                currentDirective: invocation.git.directiveSha256 === requirement.directiveSha256,
+              },
+            }
+          : {}),
         requestId: event?.requestId ?? null,
         auditSha256: event?.sha256 ?? null,
         buildId: invocation?.buildId ?? null,
@@ -196,10 +224,13 @@ export const nativeEngineCompletionEvidence = ({
   const failed = terminal?.event === 'WORKFLOW_FAILED' && terminalStatus === 'Failed';
   const fileMatch =
     nativeEngineFileDigest(workspace.files) === nativeEngineFileDigest(manifest.files);
+  const terminalIdentityMatch =
+    terminal &&
+    state.terminalResult?.auditSha256 === terminal.sha256 &&
+    state.terminalResult?.stateSha256 === observed.workflow?.stateSha256;
   const terminalMatch =
-    state.terminalResult?.auditSha256 === terminal?.sha256 &&
-    state.terminalResult?.stateSha256 === observed.workflow?.stateSha256 &&
-    state.terminalResult?.filesSha256 === nativeEngineFileDigest(manifest.files);
+    terminalIdentityMatch &&
+    state.terminalResult.filesSha256 === nativeEngineFileDigest(manifest.files);
   const missing =
     !planComplete ||
     !applicabilityComplete ||
@@ -236,6 +267,18 @@ export const nativeEngineCompletionEvidence = ({
     sourceCommit: row.configuration.repository.commit,
     methodologySettings: state.sourceSettings ?? null,
     workflowCompletion: verdict,
+    ...(publicationGitSha256
+      ? {
+          gitObservation: gitObservation({
+            publicationSha256: publicationGitSha256,
+            terminalResult: state.terminalResult,
+            current:
+              terminalIdentityMatch &&
+              eligibleInventory(workspace.files) === eligibleInventory(manifest.files),
+            applicability: planComplete && applicabilityComplete,
+          }),
+        }
+      : {}),
     reason:
       !fileMatch || (terminal && !terminalMatch)
         ? 'result_files_changed'

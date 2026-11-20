@@ -252,11 +252,12 @@ export const createNativeEngineJobs = ({
       );
       return { ...result, stdout: Buffer.from(result.stdout), stderr: Buffer.from(result.stderr) };
     },
-    async review({ files, instructions, prompt }) {
+    async review({ files, instructions, prompt, gitDelta, beforeFiles }) {
       const access = await reviewRole(identity);
       return run(
         {
           kind: 'review',
+          ...(gitDelta ? { gitDelta, beforeFiles } : {}),
           files,
           instructions,
           prompt,

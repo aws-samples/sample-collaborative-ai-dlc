@@ -934,15 +934,28 @@ export const createNativeExecutor = ({
     }
     timing(turn, 'installationCompleted');
     await ensureTurnInputs(turn);
-    const workflowEngine = await attachWorkflowEngine({ payload, forbiddenBytes, signal, baseEnv });
+    const workflowEngine = await attachWorkflowEngine({
+      payload,
+      sourceBaseline: owner.sourceBaseline,
+      forbiddenBytes,
+      signal,
+      baseEnv,
+    });
     return { pkg, forbiddenBytes, auth, baseEnv, workflowEngine };
   };
 
-  const attachWorkflowEngine = async ({ payload, forbiddenBytes, signal, baseEnv }) => {
+  const attachWorkflowEngine = async ({
+    payload,
+    sourceBaseline,
+    forbiddenBytes,
+    signal,
+    baseEnv,
+  }) => {
     if (!payload.configuration.workflowEngine) return null;
     if (typeof prepareWorkflowEngine !== 'function') fail('native_execution_preparation_invalid');
     const engine = await prepareWorkflowEngine({
       payload,
+      sourceBaseline,
       project,
       control,
       forbiddenBytes,

@@ -1,4 +1,4 @@
-import { mkdir, lstat, readdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, lstat, readdir, readFile, writeFile, rm, rmdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareNativeEngine } from './package.js';
@@ -22,6 +22,20 @@ const write = async (root, files) => {
     const path = join(root, file.path);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, file.content, { mode: 0o600 });
+    if (file.mode) await chmod(path, file.mode === '100755' ? 0o700 : 0o600);
+  }
+};
+const removeAuthored = async (project, path) => {
+  const file = join(project, path);
+  await rm(file, { force: true });
+  // Permit a later regular file to replace a directory emptied by explicit edits.
+  for (let parent = dirname(file); parent !== project; parent = dirname(parent)) {
+    try {
+      await rmdir(parent);
+    } catch (error) {
+      if (['ENOTEMPTY', 'ENOENT', 'EEXIST'].includes(error.code)) break;
+      throw error;
+    }
   }
 };
 const collect = async (root, include = () => true) => {
@@ -42,7 +56,11 @@ const collect = async (root, include = () => true) => {
         if (!include(rel)) continue;
         if (stat.size > 16 * 1024 * 1024 || (bytes += stat.size) > 128 * 1024 * 1024)
           throw engineFailure('NATIVE_ENGINE_WORKSPACE_LIMIT');
-        files.push({ path: rel, content: await readFile(path) });
+        files.push({
+          path: rel,
+          mode: stat.mode & 0o100 ? '100755' : '100644',
+          content: await readFile(path),
+        });
       } else throw engineFailure('NATIVE_ENGINE_WORKSPACE_INVALID');
     }
   };
@@ -157,7 +175,11 @@ export const openNativeEngineWorkspace = async ({
         const old = prior.get(path);
         // Authored stage outputs outside the current directive are retained as
         // read-only engine inputs. Removing a prior capability never deletes them.
-        if (!nativeEngineAuthoredPath(path, artifacts) || next?.sha256 === old?.sha256) continue;
+        if (
+          !nativeEngineAuthoredPath(path, artifacts) ||
+          (next?.sha256 === old?.sha256 && (!next?.mode || next.mode === old?.mode))
+        )
+          continue;
         if (old || state.initialMessage) {
           const input = {
             hook_event_name: 'PreToolUse',
@@ -175,11 +197,11 @@ export const openNativeEngineWorkspace = async ({
           }
         }
         if (next) await write(project, [next]);
-        else await rm(join(project, path), { force: true });
+        else await removeAuthored(project, path);
       }
       state.authored = [
         ...state.authored.filter((file) => !nativeEngineAuthoredPath(file.path, artifacts)),
-        ...selected.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
+        ...selected.map(({ content: _content, ...file }) => file),
       ];
       // Repository records outside the active engine's ownership remain
       // public data. They are never restored into its private ledger or used

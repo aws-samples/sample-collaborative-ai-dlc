@@ -6147,7 +6147,9 @@ the current contract for newly created executions.
       block unrelated history access.
       The source comparison API returns an exact change set for supported new publications,
       with Git modes and observed deletions against the Start commit, or `null` when evidence is insufficient.
-      Protected workflow evidence covers file bytes. Git change-set review and remote delivery remain open.
+      New protected terminal observations bind the exact delta. Each applicable reviewer receives the
+      original and resulting files within its stage scope. The API reports coverage, freshness and verdict
+      separately, including plans without reviewers. Provider delivery and tracker policy remain open.
 - [ ] **NE-13 — Finish shared history, status and traceability integration.** Reuse
       the implemented revision history, decision records, comparisons and graph
       links throughout the shared Intent shell and project/dashboard/sidebar views.

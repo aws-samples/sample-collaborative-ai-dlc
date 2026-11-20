@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
+import { nativeGitDeltaSha256 } from '../../shared/native-git-change-set.js';
+import { runNativeCommand } from '../native/command-runner.js';
 import { createNativeEngineJobRunner } from '../native/workflow-job.mjs';
 import {
   NATIVE_ENGINE_JOB_BUILD_SPEC,
@@ -62,6 +64,34 @@ const reviewJob = (overrides = {}) => ({
   },
   ...overrides,
 });
+const gitReviewJob = () => {
+  const beforeFiles = encodeNativeEngineFiles([
+    { path: 'run.sh', mode: '100644', content: Buffer.from('run') },
+    { path: 'removed.bin', mode: '100755', content: Buffer.from([0, 255]) },
+  ]);
+  const afterFiles = [{ ...beforeFiles[0], mode: '100755' }];
+  const version = ({ mode, bytes, sha256 }) => ({ mode, bytes, sha256 });
+  const gitDelta = {
+    repository: {
+      provider: 'github',
+      repository: 'owner/repo',
+      branch: 'main',
+      commit: 'c'.repeat(40),
+    },
+    sourceBaseline: { id: 'a'.repeat(64), epoch: 1, versionId: 'retained' },
+    changes: [
+      { path: 'removed.bin', before: version(beforeFiles[1]), after: null },
+      { path: 'run.sh', before: version(beforeFiles[0]), after: version(afterFiles[0]) },
+    ],
+  };
+  return reviewJob({
+    harness: 'codex',
+    files: afterFiles,
+    filesSha256: nativeEngineFileDigest(afterFiles),
+    beforeFiles,
+    gitDelta,
+  });
+};
 const invalidJob = (value) =>
   expect(() => nativeEngineJob(value)).toThrow(
     expect.objectContaining({ code: expect.stringMatching(/^NATIVE_ENGINE_/) }),
@@ -126,6 +156,51 @@ describe('native workflow job build specification', () => {
 });
 
 describe('native workflow job contract', () => {
+  it('rejects a delta that describes different materialized files and a result for another delta', () => {
+    const job = gitReviewJob();
+    expect(nativeEngineJob(job).beforeFiles).toHaveLength(2);
+    for (const mutate of [
+      (candidate) => {
+        candidate.files[0].mode = '100644';
+      },
+      (candidate) => {
+        candidate.beforeFiles.pop();
+      },
+      (candidate) => {
+        candidate.gitDelta.changes[0].after = candidate.gitDelta.changes[0].before;
+      },
+      (candidate) => {
+        candidate.gitDelta.changes.reverse();
+      },
+      (candidate) => {
+        candidate.gitDelta.repository.commit = 'main';
+      },
+    ]) {
+      const value = structuredClone(job);
+      mutate(value);
+      invalidJob(value);
+    }
+    const review = '**Verdict:** READY';
+    const result = {
+      schemaVersion: 1,
+      jobId: job.jobId,
+      kind: 'review',
+      filesSha256: job.filesSha256,
+      producerSha256: job.producerSha256,
+      exitCode: 0,
+      timedOut: false,
+      cleanupComplete: true,
+      stdout: '',
+      stderr: '',
+      review,
+      reviewSha256: sha(review),
+      nativeSessionId: 'fixture',
+    };
+    expect(() => nativeEngineJobResult(result, job)).toThrow('NATIVE_ENGINE_JOB_RESULT_INVALID');
+    expect(() => nativeEngineJobResult({ ...result, gitSha256: 'b'.repeat(64) }, job)).toThrow(
+      'NATIVE_ENGINE_JOB_RESULT_INVALID',
+    );
+  });
   it('accepts a check job and returns its verified file bytes', () => {
     const value = checkJob();
     const job = nativeEngineJob(value);
@@ -362,6 +437,58 @@ const observer = (() => {
 })();
 
 describe.runIf(observer)('isolated reviewer on a Linux observer', () => {
+  it('lets a separate reviewer inspect the root-owned executable and deleted bytes and returns their observed delta', async () => {
+    const job = gitReviewJob();
+    const input = gzipSync(Buffer.from(JSON.stringify(job)));
+    const inspect = `
+      const fs = require('node:fs'); const assert = require('node:assert/strict');
+      const root = ${JSON.stringify(NATIVE_ENGINE_JOB_ROOT)};
+      assert.equal(process.getuid(),1000);
+      const delta = JSON.parse(fs.readFileSync(root+'/git-changes.json'));
+      assert.equal(delta.changes[0].after,null);
+      assert.equal(fs.existsSync(root+'/project/removed.bin'),false);
+      assert.deepEqual(fs.readFileSync(root+'/before/removed.bin'),Buffer.from([0,255]));
+      assert.ok(fs.statSync(root+'/project/run.sh').mode & 0o100);
+      assert.equal(fs.statSync(root+'/before/run.sh').mode & 0o100,0);
+      assert.throws(()=>fs.writeFileSync(root+'/project/run.sh','replacement'),{code:'EACCES'});
+      fs.writeFileSync(root+'/review-output/review.md','**Verdict:** READY');
+      for (const event of [{type:'thread.started',thread_id:'offline-review'},{type:'turn.started'},
+        {type:'item.completed',item:{id:'m',type:'agent_message',text:'Review written.'}},{type:'turn.completed',usage:{}}]) console.log(JSON.stringify(event));`;
+    const runner = createNativeEngineJobRunner({
+      fetcher: async () => new Response(input),
+      lambda: {
+        send: async () => ({
+          Payload: Buffer.from(
+            JSON.stringify({
+              ok: true,
+              ...job.credentialScope,
+              model: { value: 'fixture-model-value' },
+            }),
+          ),
+        }),
+      },
+      run: (invocation) =>
+        runNativeCommand({
+          ...invocation,
+          args: [
+            ...invocation.args.slice(0, invocation.args.indexOf('--') + 1),
+            process.execPath,
+            '-e',
+            inspect,
+          ],
+        }),
+    });
+    await runner.prepare({
+      NATIVE_WORKFLOW_JOB_INPUT: 'fixture',
+      NATIVE_WORKFLOW_JOB_INPUT_SHA256: sha(input),
+    });
+    expect(await runner.run()).toMatchObject({
+      exitCode: 0,
+      gitSha256: nativeGitDeltaSha256(job.gitDelta),
+      nativeSessionId: 'offline-review',
+      review: '**Verdict:** READY',
+    });
+  });
   // Codex and OpenCode take their instructions from files in the reviewer's
   // home. Those files are written by the observer and require the home to be
   // observer-private at that moment; it is handed to the worker afterwards.

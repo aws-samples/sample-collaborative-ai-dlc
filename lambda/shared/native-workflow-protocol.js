@@ -88,9 +88,8 @@ export const nativeEngineObjectPrefix = (identity, purpose = 'state') => {
   return `native-workflow-${purpose}/v1/${pk.slice(7)}/${identity.bindingId}/${identity.attemptId}/${identity.epoch}/`;
 };
 
-// Exact regular-file bytes cross the service boundary. Links, file modes and
-// arbitrary host paths cannot be represented by this protocol. It is not the
-// Git-tree/delivery contract and does not hydrate ignored dependencies.
+// Legacy snapshots carry bytes only. New observations also preserve the Git
+// executable bit. Neither format represents links or arbitrary host paths.
 export const nativeEngineFiles = (value) => {
   if (!Array.isArray(value) || value.length > 20_000)
     throw engineFailure('NATIVE_ENGINE_INPUT_INVALID');
@@ -100,7 +99,11 @@ export const nativeEngineFiles = (value) => {
   return value
     .map((file) => {
       if (
-        !shape(file, ['path', 'bytes', 'sha256', 'content']) ||
+        !(
+          shape(file, ['path', 'bytes', 'sha256', 'content']) ||
+          (['100644', '100755'].includes(file?.mode) &&
+            shape(file, ['path', 'bytes', 'sha256', 'content', 'mode']))
+        ) ||
         !canonicalNativePath(file.path) ||
         seen.has(file.path) ||
         directories.has(file.path) ||
@@ -128,7 +131,7 @@ export const nativeEngineFiles = (value) => {
         directories.add(parent);
       }
       seen.add(file.path);
-      return { path: file.path, bytes: file.bytes, sha256: file.sha256, content };
+      return { ...file, content };
     })
     .toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 };
@@ -141,8 +144,9 @@ export const nativeEngineFileDigest = (files) =>
     ),
   );
 export const encodeNativeEngineFiles = (files) =>
-  files.map(({ path, content }) => ({
+  files.map(({ path, content, mode }) => ({
     path,
+    ...(mode === undefined ? {} : { mode }),
     bytes: content.length,
     sha256: engineDigest(content),
     content: Buffer.from(content).toString('base64'),

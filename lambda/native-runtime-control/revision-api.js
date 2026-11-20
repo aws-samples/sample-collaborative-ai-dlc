@@ -6,6 +6,7 @@ import {
   nativeVerificationSummary,
   nativeWorkflowDefinition,
 } from '../shared/native-completion-evidence.js';
+import { engineGitVerification, engineGitDelta } from './workflow-engine/git-evidence.js';
 import { nativeEngineVerificationSummary } from './workflow-engine/proof-reader.js';
 
 const invalid = () => {
@@ -127,6 +128,29 @@ export const createNativeRevisionApi = ({
       }
       if (target.source) {
         const repo = row.configuration.repository;
+        let verification;
+        if (baseline?.changes) {
+          const delta = engineGitDelta(
+            manifest.sourceBaseline,
+            baseline.manifest,
+            baseline.changes,
+          );
+          try {
+            const evidence =
+              row.configuration.workflowEngine && completionProof
+                ? await completionProof({ row, found, manifest })
+                : null;
+            verification = engineGitVerification(evidence, delta);
+          } catch (error) {
+            verification = {
+              ...engineGitVerification(null, delta),
+              reason:
+                error.code === 'NATIVE_ARTIFACT_REVISION_INVALID'
+                  ? 'proof_mismatch'
+                  : 'proof_unavailable',
+            };
+          }
+        }
         await finish(draft, row, recheck);
         return {
           projectId: row.scope.projectId,
@@ -143,9 +167,7 @@ export const createNativeRevisionApi = ({
                   repository: repo.repository,
                   ...manifest.repository,
                 },
-                // The protected engine inspects path/length/content digests. Its
-                // terminal verdict and scoped reviews do not attest Git metadata.
-                review: 'not_verified',
+                ...verification,
                 changes: baseline.changes,
               }
             : null,

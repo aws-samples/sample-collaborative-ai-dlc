@@ -15,6 +15,7 @@ import {
   encodeNativeEngineFiles,
   nativeEngineFileDigest,
 } from '../../shared/native-workflow-protocol.js';
+import { createNativePublications } from '../../shared/native-publication.js';
 import { snapshotNativeExecutionFiles } from './execution-files.js';
 import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
 
@@ -34,14 +35,18 @@ const safeDirectory = async (path) => {
   if (!stat.isDirectory() || stat.isSymbolicLink() || (await realpath(path)) !== path)
     throw engineFailure('NATIVE_ENGINE_WORKSPACE_CHANGED');
 };
-const currentDigest = async (path) => {
+const currentVersion = async (path) => {
   try {
     const stat = await lstat(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024)
       throw engineFailure('NATIVE_ENGINE_WORKSPACE_CHANGED');
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      return engineDigest(await handle.readFile());
+      const opened = await handle.stat();
+      return {
+        sha256: engineDigest(await handle.readFile()),
+        mode: opened.mode & 0o100 ? '100755' : '100644',
+      };
     } finally {
       await handle.close();
     }
@@ -53,7 +58,7 @@ const currentDigest = async (path) => {
 const applyPatches = async (project, patches) => {
   if (!Array.isArray(patches) || patches.length > 20_000) throw engineFailure();
   const files = nativeEngineFiles(patches.map((patch) => patch.after));
-  const expected = new Map(patches.map((patch) => [patch.path, patch.beforeSha256]));
+  const expected = new Map(patches.map((patch) => [patch.path, patch]));
   if (expected.size !== patches.length || files.some((file) => !expected.has(file.path)))
     throw engineFailure();
   for (const file of files) {
@@ -67,14 +72,22 @@ const applyPatches = async (project, patches) => {
       await safeDirectory(parent);
     }
     const path = join(project, file.path);
-    const before = await currentDigest(path);
-    if (before === file.sha256) continue; // Replay after a lost local acknowledgement.
-    if (before !== expected.get(file.path)) throw engineFailure('NATIVE_ENGINE_WORKSPACE_CHANGED');
+    const before = await currentVersion(path);
+    if (before?.sha256 === file.sha256 && (!file.mode || before.mode === file.mode)) continue; // Replay after a lost local acknowledgement.
+    const patch = expected.get(file.path);
+    if (
+      (before?.sha256 ?? null) !== patch.beforeSha256 ||
+      (patch.beforeMode && before?.mode !== patch.beforeMode)
+    )
+      throw engineFailure('NATIVE_ENGINE_WORKSPACE_CHANGED');
     const temporary = join(parent, `.native-engine-${randomUUID()}`);
     try {
-      await writeFile(temporary, file.content, { flag: 'wx', mode: 0o600 });
+      await writeFile(temporary, file.content, {
+        flag: 'wx',
+        mode: file.mode === '100755' ? 0o700 : 0o600,
+      });
       await safeDirectory(parent);
-      if ((await currentDigest(path)) !== before)
+      if (!same(await currentVersion(path), before))
         throw engineFailure('NATIVE_ENGINE_WORKSPACE_CHANGED');
       await rename(temporary, path);
     } finally {
@@ -107,12 +120,23 @@ const localLock = async (directory) => {
   return () => unlink(path);
 };
 
+const readGitBaseline = (context, s3) =>
+  context.sourceBaseline?.receipt
+    ? createNativePublications({ s3, bucket: context.bucket, accountId: context.accountId })
+        .read(
+          { ...context.identity, epoch: context.sourceBaseline.epoch },
+          context.sourceBaseline.receipt,
+        )
+        .catch(() => null)
+    : null;
+
 export const createNativeEngineClient = ({
   context,
   lambda = new LambdaClient({}),
   s3 = new S3Client({}),
   forbiddenBytes = [],
   snapshot = snapshotNativeExecutionFiles,
+  gitBaseline,
   signal,
 }) => {
   const pin = nativeEnginePin(context.engine);
@@ -224,6 +248,7 @@ export const createNativeEngineClient = ({
         let input;
         if (action !== 'finalize') {
           const files = await snapshot({
+            gitBaseline: gitBaseline ?? (await readGitBaseline(context, s3)),
             project: context.project,
             forbiddenBytes,
             signal,
@@ -235,7 +260,12 @@ export const createNativeEngineClient = ({
             'files',
             {
               schemaVersion: 1,
-              files: encodeNativeEngineFiles(files.files),
+              files: encodeNativeEngineFiles(
+                files.git
+                  ? files.files
+                  : files.files.map(({ path, content }) => ({ path, content })),
+              ),
+              ...(files.git ? { sourceBaseline: context.sourceBaseline, git: files.git } : {}),
               filesSha256: nativeEngineFileDigest(files.files),
             },
             'input',
@@ -263,11 +293,12 @@ export const createNativeEngineClient = ({
 
 export const prepareNativeEngineClient = async ({
   payload,
+  sourceBaseline,
   env,
   project,
   control,
   forbiddenBytes,
-  s3,
+  s3 = new S3Client({}),
   lambda,
   signal,
 }) => {
@@ -294,6 +325,7 @@ export const prepareNativeEngineClient = async ({
   const context = {
     schemaVersion: 1,
     identity,
+    ...(sourceBaseline?.receipt ? { sourceBaseline } : {}),
     directory,
     project,
     engine: payload.configuration.workflowEngine,
@@ -307,7 +339,20 @@ export const prepareNativeEngineClient = async ({
     if (error.code !== 'EEXIST') throw error;
   }
   if (!same(await json(path), context)) throw engineFailure('NATIVE_ENGINE_CONFIGURATION_CHANGED');
-  const client = createNativeEngineClient({ context, forbiddenBytes, s3, lambda, signal });
+  const gitBaseline = await readGitBaseline(context, s3);
+  const client = createNativeEngineClient({
+    context,
+    forbiddenBytes,
+    s3,
+    lambda,
+    signal,
+    gitBaseline,
+  });
+  if (payload.command === 'native-start' && sourceBaseline) {
+    // Seal the preparer's source, including an unavailable capture, before coding starts.
+    const mirrored = await client.command([], { action: 'mirror' });
+    if (mirrored.exitCode !== 0) throw engineFailure('NATIVE_ENGINE_SOURCE_MISMATCH');
+  }
   return { client, contextPath: path };
 };
 

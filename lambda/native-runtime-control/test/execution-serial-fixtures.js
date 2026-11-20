@@ -95,6 +95,7 @@ export const serialFixture = ({ source = SERIAL_SOURCE, ...fixtureOptions } = {}
       packageId: f.configuration.packageId,
       outcome: 'STOPPED',
       repository: source,
+      git: options.git,
       ...(options.filesystemPolicy ? { filesystemPolicy: options.filesystemPolicy } : {}),
       ...(options.sourceBaseline ? { sourceBaseline: options.sourceBaseline } : {}),
       files: options.files ?? [

@@ -24,6 +24,8 @@ import {
   nativeEngineFiles,
 } from '../../shared/native-workflow-protocol.js';
 import { serialFixture } from './execution-serial-fixtures.js';
+import { nativeGitInventorySha256 } from '../../shared/native-git-change-set.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
 import { TABLE } from './fixtures.js';
 
 const STATE_FILE = 'aidlc/spaces/default/intents/fixture/aidlc-state.md';
@@ -139,7 +141,9 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
       nativeEngineFiles(
         encodeNativeEngineFiles([
           ...authored.filter((file) => file.path !== STATE_FILE),
-          ...(state.engine.status ? [{ path: STATE_FILE, content: stateBytes(state.engine) }] : []),
+          ...(state.engine.status
+            ? [{ path: STATE_FILE, mode: '100644', content: stateBytes(state.engine) }]
+            : []),
         ]),
       );
     current = {
@@ -388,7 +392,54 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
   });
   // The coding workspace as the runtime client sees it.
   const project = new Map([['README.md', Buffer.from('A finite fixture.\n')]]);
-  const files = () => [...project].map(([path, content]) => ({ path, content }));
+  const modes = new Map();
+  const files = () =>
+    [...project].map(([path, content]) => ({
+      path,
+      content,
+      ...(fixtureOptions?.git ? { mode: modes.get(path) ?? '100644' } : {}),
+    }));
+  let sourceBaseline;
+  let original;
+  if (fixtureOptions?.git) {
+    project.set('removed.bin', Buffer.from([0, 255]));
+    const repository = f.configuration.repository;
+    const captured = encodeNativeEngineFiles(files());
+    const receipt = await f.publications.write({
+      identity: await identity(),
+      packageId: NATIVE_ENGINE_PROFILE.packageId,
+      nativeSessionId: null,
+      outcome: 'STOPPED',
+      sequence: 1,
+      repository: { branch: repository.branch, commit: repository.commit },
+      filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
+      files: files().map((file) => ({ ...file, role: 'code' })),
+      git: {
+        provider: repository.provider,
+        repository: repository.repository,
+        inventorySha256: nativeGitInventorySha256(captured),
+        preservedDirectories: [],
+      },
+    });
+    sourceBaseline = { epoch: 1, receipt };
+    original = await f.publications.read(await identity(), receipt);
+  }
+  const gitInput = (encoded) =>
+    original
+      ? {
+          sourceBaseline,
+          git: {
+            provider: original.git.provider,
+            repository: original.git.repository,
+            inventorySha256: nativeGitInventorySha256(encoded),
+            deleted: original.files
+              .filter((file) => !project.has(file.path))
+              .map((file) => file.path)
+              .toSorted(),
+          },
+        }
+      : {};
+
   const request = async (action, extra = {}) => {
     const current = await identity();
     const status = await handler(
@@ -410,7 +461,12 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
         current,
         requestId,
         'files',
-        { schemaVersion: 1, files: encoded, filesSha256: nativeEngineFileDigest(encoded) },
+        {
+          schemaVersion: 1,
+          files: encoded,
+          filesSha256: nativeEngineFileDigest(encoded),
+          ...gitInput(encoded),
+        },
         'input',
       );
       body.args = extra.args ?? [];
@@ -441,6 +497,8 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
     }
     const sequence = (await row()).turnSequence;
     const produced = await f.turn(sequence, {
+      ...gitInput(encodeNativeEngineFiles(files())),
+      ...(original ? { filesystemPolicy: NATIVE_DEPENDENCY_POLICY } : {}),
       files: files().map((file) => ({
         ...file,
         role: file.path.startsWith('aidlc/') ? 'artifact' : 'code',
@@ -524,6 +582,18 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
     // How often the pinned engine's member hook has recorded a person's words.
     memberMessages: () => current.state.engine.messages,
     project,
+    modes,
+    sourceBaseline,
+    sourceView: (produced) =>
+      api.revision(
+        f.prepared,
+        {
+          publicationId: produced.receipt.id,
+          publicationSequence: produced.receipt.sequence,
+          source: true,
+        },
+        f.recheck,
+      ),
     row,
     identity,
     context,

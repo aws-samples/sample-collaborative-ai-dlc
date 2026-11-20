@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,8 @@ import {
   nativeEngineContext,
   prepareNativeEngineClient,
 } from '../native/workflow-client.js';
+import { captureNativeSourceBaseline } from '../native/source-baseline.js';
+import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeEngineObjects } from '../../shared/native-workflow-objects.js';
 import {
   NATIVE_ENGINE_PROFILE,
@@ -277,6 +279,21 @@ describe('native workflow engine client commands', () => {
       JSON.parse(await fs.readFile(join(directory, `${request.requestId}.json`), 'utf8')),
     ).toEqual({ request, observed: backend.operations.get(request.requestId) });
     expect((await fs.readdir(join(project, 'src'))).toSorted()).toEqual(['app.js']);
+  });
+
+  it('checks mode as well as bytes when applying or reconciling a sealed patch', async () => {
+    const change = patch('src/app.js', 'old application\n', 'new application\n');
+    change.beforeMode = '100755';
+    change.after.mode = '100755';
+    backend.respond = async () => ({ patches: [change] });
+    await expect(client().command(['next'])).rejects.toThrow('NATIVE_ENGINE_WORKSPACE_CHANGED');
+    expect(await read('src/app.js')).toBe('old application\n');
+    await fs.chmod(join(project, 'src/app.js'), 0o700);
+    await client().command(['next']);
+    expect((await fs.stat(join(project, 'src/app.js'))).mode & 0o100).toBe(0o100);
+    await client().command(['next']);
+    await fs.chmod(join(project, 'src/app.js'), 0o600);
+    await expect(client().command(['next'])).rejects.toThrow('NATIVE_ENGINE_WORKSPACE_CHANGED');
   });
 
   it('uses the version reported by the service for each new request', async () => {
@@ -828,6 +845,62 @@ describe('native workflow engine client preparation', () => {
     });
   beforeEach(async () => {
     await fs.mkdir(join(temp, 'control'), { mode: 0o700 });
+  });
+
+  it('seals an unavailable Start baseline before returning the coding client', async () => {
+    await prepare(payload(), { sourceBaseline: { unavailable: 'snapshot_limit' } });
+    const [request] = backend.operationsSent();
+    expect(request.action).toBe('mirror');
+    const input = await backend.objects.read(identity, request.input, 'input');
+    expect(input).not.toHaveProperty('git');
+    expect(input).not.toHaveProperty('sourceBaseline');
+  });
+
+  it('anchors the real checkout before returning the coding client and observes chmod and deletion on its next command', async () => {
+    const git = (...args) =>
+      execFileSync(
+        '/usr/bin/git',
+        ['-c', 'user.email=fixture@example.invalid', '-c', 'user.name=Fixture', ...args],
+        {
+          cwd: project,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          encoding: 'utf8',
+          env: { PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+        },
+      );
+    git('init', '-q', '-b', 'main');
+    git('add', '--all');
+    git('commit', '-qm', 'source');
+    const commit = git('rev-parse', 'HEAD').trim();
+    const sourceBaseline = await captureNativeSourceBaseline({
+      project,
+      identity,
+      packageId: NATIVE_ENGINE_PROFILE.packageId,
+      repository: { branch: 'main', commit, provider: 'github', repository: 'owner/repo' },
+      readTree: () => git('ls-tree', '--full-tree', '-rtz', commit),
+      publications: createNativePublications({ s3, bucket, accountId }),
+    });
+    const prepared = await prepare(payload(), { sourceBaseline });
+    expect(backend.operationsSent().map((request) => request.action)).toEqual(['mirror']);
+    await fs.chmod(join(project, 'src/app.js'), 0o700);
+    await fs.unlink(join(project, 'README.md'));
+    const launched = createNativeEngineClient({
+      context: await nativeEngineContext(prepared.contextPath),
+      s3,
+      lambda: backend.lambda,
+    });
+    await launched.command(['next']);
+    const inputs = await Promise.all(
+      backend
+        .operationsSent()
+        .map((request) => backend.objects.read(identity, request.input, 'input')),
+    );
+    expect(inputs[0]).toMatchObject({ sourceBaseline, git: { deleted: [] } });
+    expect(inputs[1]).toMatchObject({
+      sourceBaseline,
+      git: { deleted: ['README.md'] },
+      files: [{ path: 'src/app.js', mode: '100755', sha256: inputs[0].files[1].sha256 }],
+    });
   });
 
   it('returns nothing and creates nothing without a workflow engine configuration', async () => {

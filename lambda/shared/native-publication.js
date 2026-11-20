@@ -314,13 +314,10 @@ export const createNativePublications = ({
     if (digest && digest.digest('hex') !== verifySha256) fail();
     return chunks ? Buffer.concat(chunks) : null;
   };
-  const verifyFile = async (identity, manifest, fileId, { signal } = {}) => {
-    const checked = validateManifest(manifest, identity);
-    const file = checked.files.find((f) => f.id === fileId);
-    if (!file) fail();
+  const readFileBytes = async (file, signal) => {
     const bytes = await get(file.object, file.bytes, signal);
     if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) fail();
-    return { file, bytes };
+    return bytes;
   };
   const api = {
     async write({
@@ -479,7 +476,22 @@ export const createNativePublications = ({
         );
       return manifest;
     },
-    file: verifyFile,
+    async file(identity, manifest, fileId, { signal } = {}) {
+      const file = validateManifest(manifest, identity).files.find((file) => file.id === fileId);
+      if (!file) fail();
+      return { file, bytes: await readFileBytes(file, signal) };
+    },
+    async reviewFiles(identity, manifest, paths) {
+      const files = validateManifest(manifest, identity).files.filter((file) =>
+        paths.has(file.path),
+      );
+      if (files.length !== paths.size) fail();
+      const result = [];
+      await eachFile(files, async (file, index) => {
+        result[index] = { path: file.path, mode: file.mode, content: await readFileBytes(file) };
+      });
+      return result;
+    },
     async source(identity, manifest, { verifyFiles = false } = {}) {
       const checked = validateManifest(manifest, identity);
       if (!checked.sourceBaseline || checked.sourceBaseline.unavailable) return null;

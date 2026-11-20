@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { inspectNativeRuntimeArchive } from '../../shared/native-runtime-package.js';
+import { nativeGitDeltaSha256 } from '../../shared/native-git-change-set.js';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 import {
   NATIVE_ENGINE_PROFILE,
@@ -83,9 +84,40 @@ const storeFiles = async (directory, files, worker = false) => {
           throw engineFailure('NATIVE_ENGINE_JOB_INPUT_INVALID');
       }
     }
-    await writeFile(path, file.content, { flag: 'wx', mode: 0o644 });
+    await writeFile(path, file.content, {
+      flag: 'wx',
+      mode: file.mode === '100755' ? 0o755 : 0o644,
+    });
     if (worker) await chown(path, workerUid, workerGid);
   }
+};
+// Re-observe the root-owned trees and the exact instructions' change list.
+// A directory may replace a deleted file, or a file may replace its ancestor.
+const reviewedVersion = async (directory, path) => {
+  try {
+    const filename = join(directory, path);
+    const stat = await lstat(filename);
+    if (stat.isDirectory()) return null;
+    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== 0 || stat.size > 16 * 1024 * 1024)
+      throw engineFailure('NATIVE_ENGINE_JOB_INPUT_INVALID');
+    const content = await readFile(filename);
+    return {
+      mode: stat.mode & 0o100 ? '100755' : '100644',
+      bytes: content.length,
+      sha256: engineDigest(content),
+    };
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    throw error;
+  }
+};
+const reviewedGitSha256 = async () => {
+  const delta = JSON.parse(await readFile(join(root, 'git-changes.json'), 'utf8'));
+  for (const change of delta.changes) {
+    change.before = await reviewedVersion(join(root, 'before'), change.path);
+    change.after = await reviewedVersion(project, change.path);
+  }
+  return nativeGitDeltaSha256(delta);
 };
 const isolatedInvocation = (input) => ({
   ...input,
@@ -225,7 +257,18 @@ export const createNativeEngineJobRunner = ({
     }
     // Native public input excludes harness roots. An overlap is refused by wx;
     // a project cannot replace a pinned sensor entry before it is invoked.
-    await storeFiles(project, job.files, true);
+    // Both trees of a Git review are root-owned throughout the isolated invocation.
+    if (job.gitDelta) await chmod(project, 0o755);
+    await storeFiles(project, job.files, !job.gitDelta);
+    if (job.gitDelta) {
+      const before = join(root, 'before');
+      await mkdir(before, { mode: 0o755 });
+      await storeFiles(before, job.beforeFiles);
+      await writeFile(join(root, 'git-changes.json'), canonicalJson(job.gitDelta), {
+        flag: 'wx',
+        mode: 0o644,
+      });
+    }
     await writeFile(
       join(root, 'sensor.bunfig.toml'),
       'env = false\n[install]\nauto = "disable"\n',
@@ -365,6 +408,7 @@ export const createNativeEngineJobRunner = ({
         stderr: result.stderr,
         ...(result.review
           ? {
+              ...(job.gitDelta ? { gitSha256: await reviewedGitSha256() } : {}),
               review: result.review,
               reviewSha256: result.reviewSha256,
               nativeSessionId: result.nativeSessionId,

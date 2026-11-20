@@ -17,6 +17,10 @@ import {
   engineDigest,
   nativeEngineFiles,
 } from '../../shared/native-workflow-protocol.js';
+import { engineGitVerification, observedEngineGitDelta } from '../workflow-engine/git-evidence.js';
+import { nativeEngineDirectiveSha } from '../workflow-engine/commands.js';
+import { nativeEngineCompletionEvidence } from '../workflow-engine/evidence.js';
+import { nativeGitDeltaSha256 } from '../../shared/native-git-change-set.js';
 import { NATIVE_ENGINE_JOB_ROOT } from '../../shared/native-workflow-job.js';
 
 const STAGE = 'requirements-analysis';
@@ -182,7 +186,7 @@ const fixture = async () => {
     jobs,
     workspace,
     authorize,
-    run: (requested = out(f.request)) =>
+    run: (requested = out(f.request), options = {}) =>
       completeNativeEngineReview({
         requested,
         workspace,
@@ -190,6 +194,7 @@ const fixture = async () => {
         jobs,
         sessionId: 'engine-session',
         authorize,
+        ...options,
       }),
     logged: () => runner.tool.mock.calls.filter(([name]) => name === 'aidlc-log.ts'),
   });
@@ -216,6 +221,117 @@ describe('independent review completion', () => {
     expect(f.runner.observe).not.toHaveBeenCalled();
     expect(f.runner.tool).not.toHaveBeenCalled();
     await untouched(f);
+  });
+
+  it('gives the independent reviewer the scoped before and after trees, modes and deletions and binds its verdict through the audit', async () => {
+    const f = await fixture();
+    const all = (await f.workspace.publicFiles()).map((file) => ({
+      ...file,
+      mode: file.path === 'src/main.js' ? '100755' : '100644',
+    }));
+    f.workspace.publicFiles.mockResolvedValue(all);
+    const removed = nativeEngineFiles(
+      encodeNativeEngineFiles([
+        { path: 'src/removed.bin', mode: '100755', content: Buffer.from([0, 255]) },
+      ]),
+    )[0];
+    const original = [
+      ...all
+        .filter((file) => file.path !== `${RECORD}/inception/undeclared.md`)
+        .map((file) => ({ ...file, mode: '100644' })),
+      removed,
+    ];
+    const git = { provider: 'github', repository: 'owner/repo', deleted: [removed.path] };
+    const base = {
+      repository: { branch: 'main', commit: 'a'.repeat(40) },
+      git: { ...git, preservedDirectories: [] },
+      files: original,
+    };
+    const gitInput = {
+      base,
+      git,
+      pointer: {
+        epoch: 1,
+        receipt: { id: 'b'.repeat(64), manifest: { versionId: 'source-version' } },
+      },
+    };
+    const publications = {
+      reviewFiles: async (_scope, _base, paths) => original.filter((file) => paths.has(file.path)),
+    };
+    f.jobs.review.mockImplementation(async (input) => {
+      expect(input.instructions).toContain('git-changes.json');
+      expect(input.gitDelta.changes.map((change) => change.path)).toEqual([
+        'src/main.js',
+        'src/removed.bin',
+      ]);
+      expect(input.gitDelta.changes[0]).toMatchObject({
+        before: { mode: '100644' },
+        after: { mode: '100755' },
+      });
+      expect(input.gitDelta.changes[1].after).toBeNull();
+      expect(nativeEngineFiles(input.beforeFiles).at(-1).content).toEqual(removed.content);
+      expect(input.files.some((file) => file.path === removed.path)).toBe(false);
+      return { ...f.result, gitSha256: nativeGitDeltaSha256(input.gitDelta) };
+    });
+    await f.run(undefined, { gitInput, publications });
+    const state = f.workspace.state;
+    state.decisions = [];
+    state.requirements = [
+      {
+        stage: STAGE,
+        unit: null,
+        reviewer: REVIEWER,
+        reviewClass: 'advisory',
+        directiveSha256: nativeEngineDirectiveSha(f.directive),
+        sensors: [],
+        gate: false,
+      },
+    ];
+    const observed = {
+      audit: f.audit,
+      effectivePlan: { stages: [{ id: STAGE, action: 'EXECUTE', state: 'completed' }] },
+      reviews: [{ stage: STAGE, units: [] }],
+    };
+    const evaluate = (files) => {
+      const delta = observedEngineGitDelta(gitInput, files);
+      const evidence = nativeEngineCompletionEvidence({
+        identity: {},
+        row: { configuration: { workflowEngine: {}, repository: base.repository, inputs: {} } },
+        publication: { manifest: {} },
+        manifest: { files },
+        workspace: { state, files },
+        observed,
+        publicationGitSha256: nativeGitDeltaSha256(delta),
+      });
+      return engineGitVerification(evidence, delta);
+    };
+    expect(evaluate(all)).toMatchObject({
+      review: 'recorded',
+      reviews: [{ class: 'advisory', coverage: 'scoped', freshness: 'current', verdict: 'READY' }],
+    });
+    expect(evaluate(all.filter((file) => !file.path.endsWith('/undeclared.md')))).toMatchObject({
+      reviews: [{ coverage: 'full', freshness: 'current' }],
+    });
+    expect(evaluate(all.map((file) => ({ ...file, mode: '100644' })))).toMatchObject({
+      review: 'not_verified',
+      reviews: [{ status: 'ready', freshness: 'stale', coverage: 'unknown' }],
+    });
+    state.requirements[0].directiveSha256 = nativeEngineDirectiveSha({
+      ...f.directive,
+      produces: [],
+    });
+    expect(evaluate(all)).toMatchObject({
+      review: 'not_verified',
+      reviews: [{ status: 'ready', freshness: 'stale' }],
+    });
+    state.requirements[0].directiveSha256 = nativeEngineDirectiveSha(f.directive);
+    observed.reviews[0].stale = true;
+    expect(evaluate(all)).toMatchObject({ reviews: [{ status: 'stale', freshness: 'stale' }] });
+    f.audit[0].requestId = 'other-review';
+    expect(evaluate(all)).toMatchObject({
+      review: 'not_verified',
+      reviews: [{ status: 'not_recorded', freshness: 'not_recorded' }],
+    });
   });
 
   it.each(['READY', 'NOT-READY'])(
