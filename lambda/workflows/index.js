@@ -215,11 +215,14 @@ const queryWorkflowItems = async (tenant, workflowId, version = null) =>
     ? queryLivePartition(tenant, workflowId)
     : querySnapshotPartition(tenant, workflowId, version);
 
+// Strongly consistent: a save chooses the next version from this read, so it
+// must see the version a previous request just published.
 const loadMeta = async (tenant, workflowId) => {
   const { Item } = await ddb.send(
     new GetCommand({
       TableName: blocksTable(),
       Key: { pk: workflowPk(tenant, workflowId), sk: META },
+      ConsistentRead: true,
     }),
   );
   return Item || null;
