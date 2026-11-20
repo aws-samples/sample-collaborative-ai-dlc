@@ -31,7 +31,10 @@ const installFakes = () => {
   });
 
   ddbMock.on(PutCommand).callsFake((input) => {
-    store.set(keyOf(input.Item.pk, input.Item.sk), { ...input.Item });
+    const key = keyOf(input.Item.pk, input.Item.sk);
+    if (input.ConditionExpression === 'attribute_not_exists(pk)' && store.has(key))
+      throw Object.assign(new Error('Item exists'), { name: 'ConditionalCheckFailedException' });
+    store.set(key, { ...input.Item });
     return {};
   });
 
@@ -357,11 +360,41 @@ describe('workflows handler', () => {
     } finally {
       finishSnapshot.resolve();
     }
-    expect(parse(await saving).status).toBe(200);
+    // Both saves computed the same version: the deletion published it first,
+    // so the rename is rejected instead of replacing the published version.
+    const saved = parse(await saving);
+    expect(saved.status).toBe(409);
+    expect(saved.body.error).toMatch(/Reload it and try again/);
     expect(parse(deletion).status).toBe(204);
     const current = parse(await handler(event({ method: 'GET', workflowId: 'overlap-flow' })));
     expect(current.body.placements).toEqual([]);
+    expect(current.body.name).toBe('Overlap');
     expect(store.has('WF#default#overlap-flow|PLACEMENT#requirements-analysis')).toBe(false);
+    expect(store.get(`WF#default#overlap-flow|V#${current.body.version}#META`).name).toBe(
+      'Overlap',
+    );
+  });
+
+  it('exposes a version only after its whole snapshot is written', async () => {
+    await createWorkflow({ id: 'partial-flow', name: 'Partial' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'partial-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'partial-flow' }))).body;
+    const next = before.version + 1;
+    // The snapshot batch fails after the version number was computed.
+    ddbMock.on(BatchWriteCommand).rejects(new Error('Throttled'));
+    const failed = await handler(
+      event({ method: 'PUT', workflowId: 'partial-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(failed).status).toBe(500);
+    expect(store.has(`WF#default#partial-flow|V#${next}#META`)).toBe(false);
+    expect(store.get('WF#default#partial-flow|META').version).toBe(before.version);
   });
 
   it('publishes responsibilities in new complete snapshots and preserves older versions and copied policy bytes', async () => {
