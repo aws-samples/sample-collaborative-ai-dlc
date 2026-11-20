@@ -7,13 +7,15 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
-FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
+FROM public.ecr.aws/docker/library/node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 
+# Security updates first: the pinned base can lag Debian's security fixes.
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
 # archives), jq, procps, bubblewrap/socat/ripgrep/util-linux (SRT),
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 bubblewrap socat ripgrep util-linux \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
@@ -38,6 +40,12 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$KIRO_CLI_SHA256_AMD64
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
     && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
+# The npm bundled with the Node base lags npm's own releases and their
+# bundled dependency fixes; the runtime keeps npm/npx for MCP servers.
+ARG NPM_VERSION=11.21.3
+RUN npm install -g --no-fund --no-audit "npm@${NPM_VERSION}" \
+    && npm --version | grep -Fx "${NPM_VERSION}" \
+    && npm cache clean --force
 ARG CLAUDE_CODE_VERSION=2.1.296
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
