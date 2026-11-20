@@ -105,9 +105,12 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'AWS_ROLE_ARN',
   // Runtime-owned local integration endpoint.
   'DYNAMODB_LOCAL_ENDPOINT',
-  // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV +
-  // the process essentials a hijack could weaponize).
+  // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV, the
+  // pnpm store locations of the node_modules redirect + the process essentials
+  // a hijack could weaponize).
   'npm_config_cache',
+  'npm_config_store_dir',
+  'npm_config_virtual_store_dir',
   'YARN_CACHE_FOLDER',
   'PNPM_HOME',
   'PIP_CACHE_DIR',

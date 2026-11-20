@@ -339,6 +339,45 @@ describe('dispatchPersona — process groups', () => {
   });
 });
 
+// A persona session installs into the same workspace as the lead, so it carries
+// the same pnpm store locations (workspace.js redirectHeavyDirs).
+describe('dispatchPersona — redirect environment', () => {
+  const envOf = async (overrides) => {
+    const seen = [];
+    await dispatchPersona({
+      ...baseDeps({
+        spawnFn: (_command, _args, options) => {
+          seen.push(options.env);
+          return okSpawn();
+        },
+      }),
+      role: 'support',
+      personaScope: { agentRef: 'aidlc-support-agent' },
+      brief: 'brief',
+      ...overrides,
+    });
+    return seen[0];
+  };
+
+  it('adds the pnpm store locations to the off-mount cache environment', async () => {
+    const redirectEnv = {
+      npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store',
+      npm_config_virtual_store_dir: '/tmp/aidlc-node-modules/root/.pnpm',
+    };
+    expect(await envOf({ redirectEnv })).toMatchObject({
+      npm_config_cache: '/tmp/aidlc-cache/npm',
+      ...redirectEnv,
+    });
+  });
+
+  it('sets no pnpm variable when the caller passes none', async () => {
+    const env = await envOf({});
+    expect(env.npm_config_cache).toBe('/tmp/aidlc-cache/npm');
+    expect(env).not.toHaveProperty('npm_config_store_dir');
+    expect(env).not.toHaveProperty('npm_config_virtual_store_dir');
+  });
+});
+
 describe('dispatchPersona — the trusted scope of a dispatched persona', () => {
   const POLICY = { summaryConfirmation: 'required', learnings: 'off' };
 

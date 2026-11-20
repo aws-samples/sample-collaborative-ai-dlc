@@ -5822,6 +5822,69 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(ev[1].summary).toContain('1 GiB mount');
   });
 
+  // A pnpm install root keeps a real node_modules; the redirect then reports
+  // where pnpm's stores go, and every CLI the stage spawns has to carry it.
+  const PNPM_ENV = {
+    npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store',
+    npm_config_virtual_store_dir: '/tmp/aidlc-node-modules/root/.pnpm',
+  };
+  const reviewedStage = () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].reviewer = 'aidlc-reviewer-agent';
+    lib.stagesById['requirements-analysis'].humanValidation = 'none';
+    lib.agentsById['aidlc-reviewer-agent'] = {
+      id: 'aidlc-reviewer-agent',
+      modelOverride: null,
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+    const store = spyStore();
+    store.listSensorRuns = async () => [
+      {
+        sensorRunId: 'review-1',
+        sensorId: 'reviewer:aidlc-reviewer-agent',
+        kind: 'reviewer',
+        result: 'PASS',
+        detail: { verdict: 'READY', findings: '' },
+      },
+    ];
+    return { store, loadLibrary: async () => ({ workflow: workflow(), library: lib }) };
+  };
+  const spawnEnvs = async (redirectResult) => {
+    const envs = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      ...reviewedStage(),
+      spawnFn: (_command, _args, options) => {
+        envs.push(options.env);
+        return okSpawn();
+      },
+      redirectHeavyDirs: async () => redirectResult,
+    });
+    expect(await runStage(gitArgs, deps)).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    return envs;
+  };
+
+  it('gives the lead and the reviewer CLI the pnpm store locations the redirect reports', async () => {
+    const envs = await spawnEnvs({ links: [{ dir: '/ws', action: 'skipped' }], env: PNPM_ENV });
+    expect(envs).toHaveLength(2);
+    for (const env of envs) {
+      expect(env).toMatchObject({ npm_config_cache: '/tmp/aidlc-cache/npm', ...PNPM_ENV });
+    }
+  });
+
+  it.each([
+    ['reports no pnpm root', { links: [{ dir: '/ws', action: 'kept' }], env: {} }],
+    ['returns no environment', { links: [] }],
+  ])('sets no pnpm variable when the redirect %s', async (_label, redirectResult) => {
+    const envs = await spawnEnvs(redirectResult);
+    expect(envs).toHaveLength(2);
+    for (const env of envs) {
+      expect(env.npm_config_cache).toBe('/tmp/aidlc-cache/npm');
+      expect(env).not.toHaveProperty('npm_config_store_dir');
+      expect(env).not.toHaveProperty('npm_config_virtual_store_dir');
+    }
+  });
+
   it('invokes the hook once after the CLI exits, with the clone inputs and a deterministic message', async () => {
     const calls = [];
     const deps = baseDeps({

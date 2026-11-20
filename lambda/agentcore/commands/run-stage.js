@@ -583,6 +583,7 @@ const runReviewer = async ({
   cliModels,
   tierModels,
   env,
+  redirectEnv,
   workspaceDir,
   spawnFn,
   mcpEntry,
@@ -634,6 +635,7 @@ const runReviewer = async ({
     cliModels,
     tierModels,
     env,
+    redirectEnv,
     workspaceDir,
     spawnFn,
     mcpEntry,
@@ -2367,11 +2369,15 @@ const runStageAttempt = async (
   // Idempotent, heals dangling links after a container swap, replaces real
   // dirs left by pre-fix sessions. Best-effort: a redirect failure never
   // blocks the stage (the ENOSPC commit self-heal remains the backstop), but
-  // it is recorded so ops can see the shield was down.
+  // it is recorded so ops can see the shield was down. A pnpm install root keeps
+  // a real node_modules instead (pnpm refuses a symlinked one); `redirectEnv`
+  // then points pnpm's stores off the mount for every CLI this stage spawns.
+  let redirectEnv = {};
   if (repos.length > 0) {
     const redirect = await redirectHeavyDirs({ workspaceDir }).catch((e) => ({
       links: [{ action: 'failed', detail: e?.message }],
     }));
+    redirectEnv = redirect?.env ?? {};
     const failedLinks = (redirect?.links ?? []).filter((l) => l.action === 'failed');
     if (failedLinks.length > 0) {
       await store
@@ -3704,6 +3710,7 @@ const runStageAttempt = async (
   // namespace shared by custom stdio servers; see mcp-secret-resolver.js.
   const childEnv = {
     ...OFF_MOUNT_CACHE_ENV,
+    ...redirectEnv,
     ...mcpSecretEnv,
     ...invocation.env,
     ...driver.envForAuth(env),
@@ -4205,6 +4212,7 @@ const runStageAttempt = async (
         cliModels,
         tierModels,
         env,
+        redirectEnv,
         workspaceDir,
         spawnFn,
         mcpEntry,
@@ -5015,6 +5023,7 @@ const runStageAttempt = async (
         cliModels,
         tierModels,
         env,
+        redirectEnv,
         workspaceDir,
         spawnFn,
         mcpEntry,

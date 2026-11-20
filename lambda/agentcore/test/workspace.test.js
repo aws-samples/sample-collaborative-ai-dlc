@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, lstat, readlink, readFile, stat } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  writeFile,
+  lstat,
+  readlink,
+  readFile,
+  stat,
+  symlink as createSymlink,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -346,5 +356,201 @@ describe('redirectHeavyDirs', () => {
     const actions = res.links.map((l) => l.action).toSorted();
     expect(actions).toEqual(['created', 'failed']);
     expect(res.links.find((l) => l.action === 'failed').detail).toContain('EACCES');
+  });
+
+  it('sets no pnpm environment for npm and yarn projects', async () => {
+    await pkg(ws);
+    await pkg(path.join(ws, 'frontend'));
+    await writeFile(path.join(ws, 'package-lock.json'), '{}');
+    await writeFile(path.join(ws, 'frontend', 'yarn.lock'), '');
+    await writeFile(
+      path.join(ws, 'frontend', 'package.json'),
+      '{"name":"x","packageManager":"yarn@4.5.0"}',
+    );
+
+    const res = await redirectHeavyDirs({ workspaceDir: ws, offMountRoot: off });
+    expect(res.links.map((l) => l.action)).toEqual(['created', 'created']);
+    expect(res.env).toEqual({});
+  });
+});
+
+// pnpm refuses a symlinked node_modules, so a pnpm install root keeps a real
+// directory and the redirect moves pnpm's stores off the mount instead.
+describe('redirectHeavyDirs — pnpm install roots', () => {
+  const store = () => path.join(root, 'cache', 'pnpm-store');
+  const redirect = () =>
+    redirectHeavyDirs({ workspaceDir: ws, offMountRoot: off, pnpmStoreDir: store() });
+  const absent = (p) =>
+    lstat(p).then(
+      () => false,
+      () => true,
+    );
+
+  const markers = {
+    'pnpm-lock.yaml': (dir) =>
+      writeFile(path.join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n"),
+    'pnpm-workspace.yaml': (dir) =>
+      writeFile(path.join(dir, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n"),
+    'a pnpm packageManager field': (dir) =>
+      writeFile(path.join(dir, 'package.json'), '{"name":"x","packageManager":"pnpm@10.34.9"}'),
+  };
+
+  it.each(Object.keys(markers))(
+    'creates no link for a root marked by %s and points both pnpm stores off the mount',
+    async (marker) => {
+      await pkg(ws);
+      await markers[marker](ws);
+
+      const res = await redirect();
+
+      expect(res.links).toEqual([{ dir: ws, action: 'skipped' }]);
+      expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
+      expect(res.env).toEqual({
+        npm_config_store_dir: store(),
+        npm_config_virtual_store_dir: path.join(off, 'root', '.pnpm'),
+      });
+    },
+  );
+
+  it.each([
+    ['another package manager', '{"name":"x","packageManager":"npm@11.6.0"}'],
+    ['a packageManager that is not a string', '{"name":"x","packageManager":{"name":"pnpm@10"}}'],
+    ['a package.json that is not valid JSON', '{"packageManager":"pnpm@10.34.9"'],
+  ])('still links a root with %s', async (_label, packageJson) => {
+    await pkg(ws);
+    await writeFile(path.join(ws, 'package.json'), packageJson);
+
+    const res = await redirect();
+
+    expect(res.links.map((l) => l.action)).toEqual(['created']);
+    expect((await lstat(path.join(ws, 'node_modules'))).isSymbolicLink()).toBe(true);
+    expect(res.env).toEqual({});
+  });
+
+  it('removes the link an earlier run created, so pnpm can create a real directory', async () => {
+    await pkg(ws);
+    // The broken state: the engine linked the root before it knew about pnpm,
+    // and an install wrote through the link.
+    await redirect();
+    await mkdir(path.join(ws, 'node_modules', 'left-pad'), { recursive: true });
+    await markers['pnpm-lock.yaml'](ws);
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([{ dir: ws, action: 'unlinked' }]);
+    expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
+    // Only the link went; what it pointed at is untouched.
+    expect((await stat(path.join(off, 'root', 'node_modules', 'left-pad'))).isDirectory()).toBe(
+      true,
+    );
+    // The next run finds nothing to heal.
+    expect((await redirect()).links).toEqual([{ dir: ws, action: 'skipped' }]);
+  });
+
+  it('removes a dangling engine link after a container swap', async () => {
+    await pkg(ws);
+    await redirect();
+    await rm(off, { recursive: true, force: true });
+    await markers['pnpm-lock.yaml'](ws);
+
+    expect((await redirect()).links).toEqual([{ dir: ws, action: 'unlinked' }]);
+    expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
+  });
+
+  it('keeps a real node_modules directory of a pnpm root', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(ws, 'node_modules', '.bin'), { recursive: true });
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([{ dir: ws, action: 'skipped' }]);
+    expect((await lstat(path.join(ws, 'node_modules'))).isDirectory()).toBe(true);
+    expect((await stat(path.join(ws, 'node_modules', '.bin'))).isDirectory()).toBe(true);
+  });
+
+  it.each([
+    ['absolute', () => path.join(root, 'elsewhere')],
+    ['relative', () => path.join('..', 'elsewhere')],
+  ])('keeps a link that points outside the off-mount root (%s target)', async (_label, to) => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(root, 'elsewhere'));
+    await createSymlink(to(), path.join(ws, 'node_modules'), 'dir');
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([{ dir: ws, action: 'skipped' }]);
+    expect(await readlink(path.join(ws, 'node_modules'))).toBe(to());
+  });
+
+  it('keys the virtual store by the directory of a nested pnpm root and leaves npm neighbours linked', async () => {
+    await pkg(ws);
+    const app = path.join(ws, 'apps', 'web');
+    await pkg(app);
+    await markers['pnpm-lock.yaml'](app);
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', 'node_modules'), action: 'created' },
+      { dir: app, action: 'skipped' },
+    ]);
+    expect(await absent(path.join(app, 'node_modules'))).toBe(true);
+    expect(res.env).toEqual({
+      npm_config_store_dir: store(),
+      npm_config_virtual_store_dir: path.join(off, 'apps__web', '.pnpm'),
+    });
+  });
+
+  it('keeps the link of a workspace member that has no pnpm marker of its own', async () => {
+    await pkg(ws);
+    await markers['pnpm-workspace.yaml'](ws);
+    const member = path.join(ws, 'packages', 'a');
+    await pkg(member);
+
+    const res = await redirect();
+
+    expect(res.links.map((l) => l.action)).toEqual(['skipped', 'created']);
+    expect((await lstat(path.join(member, 'node_modules'))).isSymbolicLink()).toBe(true);
+    expect(res.env.npm_config_virtual_store_dir).toBe(path.join(off, 'root', '.pnpm'));
+  });
+
+  it('shares the store but sets no virtual store when the workspace has two pnpm roots', async () => {
+    const first = path.join(ws, 'owner', 'first');
+    const second = path.join(ws, 'owner', 'second');
+    await pkg(first);
+    await pkg(second);
+    await markers['pnpm-lock.yaml'](first);
+    await markers['a pnpm packageManager field'](second);
+
+    const res = await redirect();
+
+    expect(res.links.map((l) => l.action)).toEqual(['skipped', 'skipped']);
+    expect(res.env).toEqual({ npm_config_store_dir: store() });
+  });
+
+  it('reports a link it cannot remove as a failure and still sets the environment', async () => {
+    await pkg(ws);
+    await redirect();
+    await markers['pnpm-lock.yaml'](ws);
+
+    const res = await redirectHeavyDirs({
+      workspaceDir: ws,
+      offMountRoot: off,
+      pnpmStoreDir: store(),
+      log: () => {},
+      fsOps: {
+        rm: async () => {
+          throw new Error('EACCES boom');
+        },
+      },
+    });
+
+    expect(res.links).toEqual([{ dir: ws, action: 'failed', detail: 'EACCES boom' }]);
+    expect(res.env).toEqual({
+      npm_config_store_dir: store(),
+      npm_config_virtual_store_dir: path.join(off, 'root', '.pnpm'),
+    });
   });
 });
