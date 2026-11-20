@@ -5,6 +5,10 @@ import QuestionEditor, { type QuestionReferences } from '@/components/QuestionEd
 import type { Question } from '@/services/questions';
 
 const setSelection = vi.fn();
+const access = vi.hoisted(() => ({ readOnly: false }));
+vi.mock('@/contexts/SpacePermissionsContext', () => ({
+  useSpacePermissions: () => access,
+}));
 
 vi.mock('@/hooks/useCollaborativeStructuredAnswer', () => ({
   useCollaborativeStructuredAnswer: () => ({
@@ -50,7 +54,28 @@ const items = [
 ];
 
 describe('QuestionEditor references', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    access.readOnly = false;
+  });
+
+  it('keeps questions readable while denying selection and submission for a Viewer', () => {
+    access.readOnly = true;
+    const onAnswer = vi.fn();
+    render(
+      <QuestionEditor
+        question={question}
+        scope={{ kind: 'intent', id: 'i', projectId: 'p' }}
+        userName="u"
+        onAnswer={onAnswer}
+      />,
+    );
+    expect(screen.getByText('Use server sessions')).toBeVisible();
+    fireEvent.click(screen.getByText('Use server sessions'));
+    expect(setSelection).not.toHaveBeenCalled();
+    for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
 
   it('keeps question and option text unlinked without references', () => {
     render(

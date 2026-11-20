@@ -336,7 +336,7 @@ describe('MembersTab assignable identity picker', () => {
     );
   });
 
-  it('lets an Owner manage another Owner with only the two membership roles', async () => {
+  it('lets an Owner manage another Owner with the three membership roles', async () => {
     const user = userEvent.setup();
     listMembers.mockResolvedValue([
       { userId: 'other-owner', email: 'owner@example.com', role: 'owner' },
@@ -351,6 +351,7 @@ describe('MembersTab assignable identity picker', () => {
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Owner',
       'Member',
+      'Viewer',
     ]);
     await user.click(screen.getByRole('option', { name: 'Member' }));
     const roleDialog = screen.getByRole('alertdialog', { name: 'Change Role' });

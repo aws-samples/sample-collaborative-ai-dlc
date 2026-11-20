@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useRef, useState } from 'react';
 import { Check, Loader2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,7 @@ export function ArtifactContentEditor({
   onDone: () => void;
 }) {
   const { projectId, intentId, reload } = useIntent();
+  const { readOnly } = useSpacePermissions();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [finishing, setFinishing] = useState(false);
@@ -111,7 +113,7 @@ export function ArtifactContentEditor({
           size="sm"
           className="h-7 gap-1.5"
           onClick={finish}
-          disabled={finishing || !synced || !contentLoaded}
+          disabled={readOnly || finishing || !synced || !contentLoaded}
         >
           {finishing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
           Done

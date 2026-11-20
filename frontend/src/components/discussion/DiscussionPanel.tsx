@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -56,6 +57,7 @@ const ENTITY_LABELS: Record<string, string> = {
 
 export function DiscussionPanel() {
   const ctx = useDiscussions();
+  const { readOnly: accessReadOnly } = useSpacePermissions();
   // The discussion scope (sprint or intent) comes from the provider, derived
   // from the route. A null scope (off a scoped route) disables the hook's I/O.
   const scope = ctx?.scope ?? null;
@@ -68,7 +70,10 @@ export function DiscussionPanel() {
   const discussion = ctx?.activeDiscussion ?? null;
   const role = ctx?.role ?? null;
   // v1 sprint discussions are read-only — every write affordance is hidden.
-  const readOnly = scope?.kind === 'sprint';
+  const readOnly = accessReadOnly || scope?.kind === 'sprint';
+  const readOnlyReason = accessReadOnly
+    ? 'You have view-only access to this space.'
+    : 'Discussions in retired sprints are read-only.';
   const canRedact = !readOnly && role === 'owner';
 
   const {
@@ -250,7 +255,7 @@ export function DiscussionPanel() {
           {resolved
             ? `Resolved${discussion?.resolvedByName ? ` by ${discussion.resolvedByName}` : ''}`
             : readOnly
-              ? 'v1 discussions are read-only.'
+              ? readOnlyReason
               : 'Team discussion — messages are saved to the sprint graph.'}
         </p>
       </div>
@@ -316,9 +321,7 @@ export function DiscussionPanel() {
             </div>
           )}
           {readOnly ? (
-            <p className="border-t px-3 py-2 text-[11px] text-muted-foreground">
-              v1 discussions are read-only.
-            </p>
+            <p className="border-t px-3 py-2 text-[11px] text-muted-foreground">{readOnlyReason}</p>
           ) : (
             <>
               <div className="border-t px-3 py-2">

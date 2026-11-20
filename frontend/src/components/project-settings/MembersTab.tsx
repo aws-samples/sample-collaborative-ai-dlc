@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 // Project Settings → Members tab: member list with role management and the
 // add-member flow. Self-contained — loads members and the Cognito user
 // directory itself; the page only provides projectId and the viewer's role.
@@ -47,11 +48,13 @@ import { businessRoleIcon } from './businessRoleIcons';
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
   member: 'Member',
+  viewer: 'Viewer',
 };
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage space, members, and settings',
   member: 'Create intents, answer questions, and collaborate',
+  viewer: 'Read space content, questions, discussions, and history',
 };
 
 const BusinessRoleIcon = ({ id }: { id: string }) => {
@@ -87,7 +90,8 @@ export function MembersTab({ projectId, userRole }: Props) {
 }
 
 function MembersTabContent({ projectId, userRole }: Props) {
-  const canManageMembers = userRole === 'owner';
+  const { canManage } = useSpacePermissions();
+  const canManageMembers = canManage ?? userRole === 'owner';
 
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -387,7 +391,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {(['owner', 'member'] as const).map((role) => (
+                                {(['owner', 'member', 'viewer'] as const).map((role) => (
                                   <SelectItem key={role} value={role}>
                                     {ROLE_LABELS[role]}
                                   </SelectItem>
@@ -712,7 +716,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(['owner', 'member'] as const).map((role) => (
+                    {(['owner', 'member', 'viewer'] as const).map((role) => (
                       <SelectItem key={role} value={role}>
                         {ROLE_LABELS[role]}
                       </SelectItem>

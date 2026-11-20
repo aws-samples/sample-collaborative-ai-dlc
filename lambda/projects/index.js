@@ -1,3 +1,5 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
+import { realtimePermissions } from '../shared/realtime-permissions.js';
 import { fetchMembershipRole, membershipStore } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -1191,7 +1193,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       (await g.V().has('Project', 'id', projectId).valueMap('git_repo').next()).value,
       'git_repo',
     );
-    await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+    if (spacePermissions(role).write) await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
     const repos = await fetchRepos(g, projectId);
     return response(200, repos);
   }
@@ -1318,9 +1320,20 @@ export const handler = async (event, context) => {
       );
     }
 
+    if (event.action === 'realtime-permissions' && !event.httpMethod && !event.requestContext) {
+      return await realtimePermissions(g, store, event);
+    }
+
     const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
+    if (projectId && httpMethod !== 'GET') {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const currentRole = await fetchMembershipRole(g, projectId, userId);
+      // Route handlers retain their resource/Owner checks, including deletion
+      // retries after graph teardown that use the retained membership record.
+      if (currentRole && !spacePermissions(currentRole).write) return response(403, VIEWER_DENIED);
+    }
     logger.appendKeys({
       ...(projectId && { projectId }),
       ...(userId && { userId }),
@@ -1440,7 +1453,8 @@ export const handler = async (event, context) => {
           const legacyGitRepo = getVal(v, 'git_repo');
 
           // Lazy migration: ensure legacy git_repo has a corresponding Repository vertex
-          await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+          if (spacePermissions(role).write)
+            await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
           const repos = await fetchRepos(g, projectId);
           const project = {
             id: getVal(v, 'id') || projectId,
@@ -1454,7 +1468,8 @@ export const handler = async (event, context) => {
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             // Legacy projects created before updated_at existed fall back to created_at.
             updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-            userRole: role || 'member',
+            userRole: role,
+            permissions: spacePermissions(role),
             trackers: trackerMaps.map(mapBinding),
             repos,
             ...readV2Settings(v),
@@ -1492,7 +1507,8 @@ export const handler = async (event, context) => {
                 (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
               const legacyGitRepo = getVal(v, 'git_repo');
 
-              await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
+              if (spacePermissions(role).write)
+                await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
               const repos = await fetchRepos(g, pid);
 
               return withLegacyTracker({
@@ -1507,7 +1523,8 @@ export const handler = async (event, context) => {
                 createdAt: getVal(v, 'created_at') || new Date().toISOString(),
                 // Legacy projects created before updated_at existed fall back to created_at.
                 updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-                userRole: role || 'member',
+                userRole: role,
+                permissions: spacePermissions(role),
                 trackers: trackerMaps.map(mapBinding),
                 repos,
                 ...readV2Settings(v),

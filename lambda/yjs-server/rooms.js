@@ -11,6 +11,7 @@ import {
   CAPABILITY,
   FLUSH,
   SAVED,
+  PERMISSIONS,
   awarenessMessage,
   closeConnection,
   persistenceMessage,
@@ -19,8 +20,9 @@ import {
 } from './protocol.js';
 
 export class RoomManager {
-  constructor({ config, cluster = null, logger = console }) {
+  constructor({ config, cluster = null, logger = console, authorize = null }) {
     this.config = config;
+    this.authorize = authorize;
     this.cluster = cluster;
     this.logger = logger;
     this.rooms = new Map();
@@ -169,7 +171,7 @@ export class RoomManager {
     }
   }
 
-  attach(room, conn, tokenExp) {
+  attach(room, conn, tokenExp, permissionTarget = null, permissions = { read: true, write: true }) {
     if (room.closing || (this.cluster && !this.cluster.owns(room.lease))) {
       closeConnection(conn, 1012, 'document moving; reconnect');
       return;
@@ -185,6 +187,9 @@ export class RoomManager {
     expiryTimer?.unref?.();
     room.connections.set(conn, { clientId: null, expiryTimer, flushing: false });
     conn.on('error', () => conn.terminate());
+    let pending = Promise.resolve();
+    let queuedBytes = 0;
+    this.send(conn, persistenceMessage(PERMISSIONS, permissions.write ? 1 : 0));
     conn.on('message', (message, binary) => {
       if (!binary) {
         closeConnection(conn, 1003, 'binary messages required');
@@ -194,12 +199,65 @@ export class RoomManager {
         closeConnection(conn, 1012, 'document moving; reconnect');
         return;
       }
-      try {
-        this.receive(room, conn, new Uint8Array(message));
-      } catch (error) {
-        this.logger.warn('Yjs message rejected:', error.message);
-        closeConnection(conn, 1008, 'invalid or oversized collaboration message');
+      queuedBytes += message.byteLength;
+      if (queuedBytes > this.config.maxBufferedBytes) {
+        closeConnection(conn, 1013, 'permission queue full; reconnect');
+        return;
       }
+      // Preserve wire order while authorization is in flight. In particular a
+      // flush receipt must never overtake an update awaiting its membership read.
+      pending = pending
+        .then(async () => {
+          if (conn.readyState !== 1 || room.closing || !room.connections.has(conn)) return;
+          if (this.cluster && !this.cluster.owns(room.lease)) {
+            closeConnection(conn, 1012, 'document moving; reconnect');
+            return;
+          }
+          const bytes = new Uint8Array(message);
+          const decoder = decoding.createDecoder(bytes);
+          const type = decoding.readVarUint(decoder);
+          // Awareness is ephemeral presence; sync step 1 only requests server state.
+          // Both step 2 and update contain client writes, including offline edits.
+          if (this.authorize && (type === SYNC || type === PERSISTENCE)) {
+            let current;
+            try {
+              current = await this.authorize(permissionTarget);
+            } catch (error) {
+              this.logger.warn('Yjs membership lookup unavailable:', error.name);
+              closeConnection(conn, 1013, 'permissions unavailable; reconnect');
+              return;
+            }
+            if (!current.read) {
+              closeConnection(conn, 4403, 'space access removed');
+              return;
+            }
+            if (current.write !== permissions.write) {
+              permissions = current;
+              this.send(conn, persistenceMessage(PERMISSIONS, current.write ? 1 : 0));
+            }
+            const subtype = decoding.readVarUint(decoder);
+            if (
+              !current.write &&
+              (type === PERSISTENCE || subtype !== syncProtocol.messageYjsSyncStep1)
+            ) {
+              return; // Reject before applyUpdate, broadcast, or persistence.
+            }
+          }
+          // The lookup may outlive the connection or the room ownership lease.
+          if (conn.readyState !== 1 || room.closing || !room.connections.has(conn)) return;
+          if (this.cluster && !this.cluster.owns(room.lease)) {
+            closeConnection(conn, 1012, 'document moving; reconnect');
+            return;
+          }
+          this.receive(room, conn, bytes);
+        })
+        .catch((error) => {
+          this.logger.warn('Yjs message rejected:', error.message);
+          closeConnection(conn, 1008, 'invalid or unauthorized collaboration message');
+        })
+        .finally(() => {
+          queuedBytes -= message.byteLength;
+        });
     });
     conn.on('close', () => {
       const state = room.connections.get(conn);

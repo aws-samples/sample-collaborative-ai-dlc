@@ -39,10 +39,10 @@ locals {
   # tree into each affected module's `hash_extra`, so any shared-file edit forces
   # a rebuild. Covers nested dirs (e.g. git-providers/) via the "**" glob.
   shared_dir = "${path.module}/../../../../lambda/shared"
-  shared_sources_hash = sha256(join("", [
-    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+  shared_sources_hash = sha256(join("", concat([
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json,cedar}")) :
     filesha256("${local.shared_dir}/${f}")
-  ]))
+  ], [filesha256("${path.module}/../../../../scripts/package-cedar.mjs")])))
 
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
