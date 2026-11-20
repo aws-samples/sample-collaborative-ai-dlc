@@ -100,6 +100,24 @@ describe('protected workflow command capabilities', () => {
     expect(() => command(['next', '--scope', 'feature'], state())).toThrow();
     expect(() => command(['next', '--guard-policy', 'off'], state())).toThrow();
   });
+  it('admits only the pinned next --resume spelling on a confirmed workspace resume', () => {
+    const input = state();
+    const recovery = { workspaceResume: true, member: null };
+    const canonical = ['engine', 'orchestrate', 'next', '--resume'];
+    for (const args of [canonical, ['next', '--resume']]) {
+      expect(() => command(args, input)).toThrow('NATIVE_ENGINE_COMMAND_DENIED');
+      expect(command(args, input, recovery)).toMatchObject({ args: canonical, member: false });
+    }
+    for (const args of [
+      ['next', '--resume=true'],
+      ['next', '--resume', '--resume'],
+      ['next', '--resume', '--scope', 'express'],
+      ['next', '--stage', 'code-generation', '--resume'],
+      ['next', '--resume', '--', 'Approve'],
+      ['next', '--resume', '--project-dir', '/other-workspace'],
+    ])
+      expect(() => command(args, input, recovery)).toThrow('NATIVE_ENGINE_COMMAND_DENIED');
+  });
   it('does not expose workflow setters, forged review verdicts, or hook entrypoints', () => {
     for (const args of [
       ['engine', 'state', 'set', 'Status', 'Completed'],

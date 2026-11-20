@@ -7,6 +7,10 @@ import {
 } from '../../shared/native-workflow-protocol.js';
 import { nativeDraftPrompt } from '../draft-prompt.js';
 import {
+  nativeConfirmedWorkspaceResume,
+  nativeRunningWorkspaceResume,
+} from '../execution-store.js';
+import {
   nativeEngineCommand,
   nativeEngineDirectiveSha,
   nativeEngineSelectedCommand,
@@ -49,6 +53,11 @@ const recordDirective = (state, directive, filesSha256) => {
 };
 const selectCommand = async (context, before) => {
   const { state, row, draft, identity, runner, sessionId, request, workspace } = context;
+  const workspaceResume =
+    nativeConfirmedWorkspaceResume(row) ||
+    (row.response === undefined && nativeRunningWorkspaceResume(row));
+  if (workspaceResume && (!state.initialMessage || before.status !== 'recorded'))
+    throw engineFailure('NATIVE_ENGINE_STATE_UNAVAILABLE');
   let selected;
   let member = null;
   if (!state.initialMessage) {
@@ -107,6 +116,7 @@ const selectCommand = async (context, before) => {
       args: effective,
       state,
       project: workspace.project,
+      workspaceResume,
       memberCommand: member?.selectedCommand,
       member,
     });

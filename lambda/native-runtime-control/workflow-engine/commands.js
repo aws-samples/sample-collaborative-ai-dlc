@@ -182,7 +182,8 @@ const ALLOWED = {
   ],
   validate: ['outputs'],
 };
-const validateNext = (args, state) => {
+const validateNext = (args, state, workspaceResume) => {
+  if (workspaceResume && args.length === 4 && args[3] === '--resume') return;
   // A no-argument next is ordinary scheduling. A human-owned intake,
   // plan change or restart is selected through its protected presentation.
   const proposal =
@@ -194,9 +195,9 @@ const validateNext = (args, state) => {
     !state.directive?.stage;
   if (args.length !== 3 && !proposal) fail();
 };
-const validateOrchestration = (args, state, project) => {
+const validateOrchestration = (args, state, project, workspaceResume) => {
   const verb = args[2];
-  if (verb === 'next') validateNext(args, state);
+  if (verb === 'next') validateNext(args, state, workspaceResume);
   if (verb === 'continue') {
     if (
       state.directive?.kind !== 'load-steering' ||
@@ -259,6 +260,7 @@ export const nativeEngineCommand = ({
   args,
   state,
   project,
+  workspaceResume = false,
   memberCommand = null,
   member = null,
 }) => {
@@ -292,7 +294,7 @@ export const nativeEngineCommand = ({
     return { args, member: false, creation: true };
   }
   if (!ALLOWED[route]?.includes(verb)) fail();
-  if (route === 'orchestrate') validateOrchestration(args, state, project);
+  if (route === 'orchestrate') validateOrchestration(args, state, project, workspaceResume);
   if (route === 'log') validateLog(args, state, member);
   return { args, member: false, review: route === 'log' && verb === 'review' };
 };

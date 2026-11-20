@@ -394,6 +394,14 @@ export const nativeConfirmedWorkspaceResume = (row) =>
   row.dispatch === undefined &&
   row.recoveryCheckpoint === undefined &&
   row.recovery.checkpointId === undefined;
+// After the replacement writer is admitted, recovered() retains the episode
+// on the row. Its permission to resume belongs to that writer's exact turn.
+export const nativeRunningWorkspaceResume = (row) =>
+  row.status === 'RUNNING' &&
+  nativeWorkspaceRecovery(row.configuration) &&
+  row.workspaceResume?.id === row.lastRecoveryId &&
+  row.workspaceResume?.sequence === nativeTurnSequence(row) &&
+  row.workspaceResume?.writerGeneration === nativeWriterGeneration(row);
 const RECOVERY_REASONS = [
   'SESSION_LOST',
   'RESTORE_FAILED',

@@ -40,7 +40,11 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ID, UUID_V4, matches } from './store.js';
-import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js';
+import {
+  nativeRunningWorkspaceResume,
+  nativeTurnSequence,
+  nativeWriterGeneration,
+} from './execution-store.js';
 import { createExecutionRuntimeUpgrade, executionIdentity } from './execution-runtime.js';
 import { nativeDeploymentFromEnv } from './worker.js';
 import { createNativePublications } from '../shared/native-publication.js';
@@ -507,14 +511,8 @@ export const createNativeExecutionSupervisor =
           if (state.row.status === 'RECOVERING') return await requireRecovery('RESTORE_FAILED');
           // A confirmed workspace resume runs without a Start/Continue dispatch.
           // Its current episode, turn and writer still identify in-flight work.
-          const resumedWorkspace =
-            state.row.status === 'RUNNING' &&
-            nativeWorkspaceRecovery(state.row.configuration) &&
-            state.row.workspaceResume?.id === state.row.lastRecoveryId &&
-            state.row.workspaceResume?.sequence === nativeTurnSequence(state.row) &&
-            state.row.workspaceResume?.writerGeneration === nativeWriterGeneration(state.row);
           if (
-            resumedWorkspace ||
+            nativeRunningWorkspaceResume(state.row) ||
             (state.row.dispatch && ['DISPATCHING', 'RUNNING'].includes(state.row.status))
           )
             return await requireRecovery('DELIVERY_UNCERTAIN');

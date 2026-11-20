@@ -545,7 +545,83 @@ const approve = async (t, opened) => {
   await t.execution.release({ row: await t.execution.dispatched({ row: claim.row }) });
 };
 
+const stopForWorkspaceRecovery = async (t) => {
+  const claimed = await t.execution.claim(t.f.bindingIdentity);
+  return t.execution.recoveryRequired({
+    row: claimed.row,
+    reason: 'DELIVERY_UNCERTAIN',
+    workflowResumeState: 'created',
+    stoppedSessionId: claimed.row.runtimeSessionId,
+  });
+};
+const confirmWorkspaceRecovery = async (t, stopped) => {
+  await t.execution.recover({
+    ...t.f.bindingIdentity,
+    request: {
+      requestId: randomUUID(),
+      recoveryId: stopped.recovery.id,
+      confirmWorkspaceResume: true,
+    },
+  });
+  return t.execution.claim(t.f.bindingIdentity);
+};
 describe('protected workflow engine service', () => {
+  it('resumes the open stage only for the confirmed writer and turn, without replaying its lost approval', async () => {
+    const t = await setup();
+    const opened = await toGate(t);
+    // The member submitted an approval, but its delivery became uncertain.
+    await approve(t, opened);
+    const previous = await t.request('execute', { args: ['next', '--resume'] });
+    const stopped = await stopForWorkspaceRecovery(t);
+    await expect(t.send(previous)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_WRITER_CHANGED' });
+    const replacement = await confirmWorkspaceRecovery(t, stopped);
+    await expect(t.request('execute', { args: ['next', '--resume'] })).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
+    });
+    const restoring = await t.execution.recoveryStopped({ row: replacement.row });
+    await expect(t.send(previous)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
+    const memberMessages = t.memberMessages();
+    const resumed = await t.command(['engine', 'orchestrate', 'next', '--resume']);
+    expect(resumed.result.exitCode).toBe(0);
+    expect(JSON.parse(resumed.result.stdout)).toMatchObject({ stage: 'build', gate: true });
+    expect(t.calls.at(-1)).toEqual(['aidlc-orchestrate.ts', 'next', '--resume']);
+
+    await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
+    expect((await t.command(['next', '--resume'])).result.exitCode).toBe(0);
+    expect(t.calls.at(-1)).toEqual(['aidlc-orchestrate.ts', 'next', '--resume']);
+    expect(t.memberMessages()).toBe(memberMessages);
+    const held = await t.publish(gate());
+    expect(await t.proof(held)).toMatchObject({
+      humanApproval: 'incomplete',
+      workflowCompletion: 'not_verified',
+      engineApplication: [],
+    });
+
+    await approve(t, held);
+    expect((await t.command(['next', '--resume'])).result.failure).toBe(
+      'NATIVE_ENGINE_COMMAND_DENIED',
+    );
+    expect((await t.command(['next'])).result.exitCode).toBe(0);
+    expect(await t.proof(await t.publish())).toMatchObject({ humanApproval: 'applied' });
+  });
+  it.each(['no snapshot', 'intake only'])(
+    'cannot restart intake on recovery with %s',
+    async (scenario) => {
+      const t = await setup();
+      if (scenario === 'intake only') {
+        t.hooks.orchestrate = () => ({ kind: 'print', message: 'Choose a plan.' });
+        await t.command([]);
+      }
+      const replacement = await confirmWorkspaceRecovery(t, await stopForWorkspaceRecovery(t));
+      await t.execution.recoveryStopped({ row: replacement.row });
+      const priorCalls = t.calls.length;
+      expect((await t.command(['next', '--resume'])).result.failure).toBe(
+        'NATIVE_ENGINE_STATE_UNAVAILABLE',
+      );
+      expect(t.calls).toHaveLength(priorCalls);
+      expect(t.memberMessages()).toBe(scenario === 'no snapshot' ? 0 : 1);
+    },
+  );
   it('reports completion only from applied gates, observed checks and the exact published files', async () => {
     const t = await setup();
     try {
