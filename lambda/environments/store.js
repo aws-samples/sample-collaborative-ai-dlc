@@ -34,6 +34,17 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
 
+// A rescan that only re-evaluates the same result is not rewritten.
+const sortedCounts = (counts = {}) =>
+  Object.fromEntries(
+    Object.entries(counts ?? {}).toSorted(([left], [right]) => left.localeCompare(right)),
+  );
+const sameScanResult = (current, next) =>
+  current?.imageDigest === next?.imageDigest &&
+  current?.status === next?.status &&
+  JSON.stringify(sortedCounts(current?.severityCounts)) ===
+    JSON.stringify(sortedCounts(next?.severityCounts));
+
 const compatibilityVersion = () =>
   process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
 const revisionDockerfile = (recipe, flattenedRecipe) =>
@@ -719,6 +730,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
     coreAmd64Image = null,
+    coreScanFindings = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
@@ -733,6 +745,10 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
           ? { imageSizeBytes: coreImageSizeBytes }
           : {}),
         ...(!published.amd64Image && coreAmd64Image ? { amd64Image: coreAmd64Image } : {}),
+        // The core image keeps being rescanned after publication; follow it.
+        ...(coreScanFindings && !sameScanResult(published.scanFindings, coreScanFindings)
+          ? { scanFindings: coreScanFindings }
+          : {}),
       };
       if (Object.keys(backfill).length) {
         await updateRevision('standard', published.revisionId, backfill);
@@ -744,7 +760,14 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       .replace(/^sha256:/, '')
       .slice(0, 12)}`;
     const existing = await getRevision('standard', revisionId);
-    if (existing) return existing;
+    if (existing) {
+      // A staged update can be created before its image scan finishes; the
+      // admin reviewing it should see the scan once it is there.
+      if (coreScanFindings && !sameScanResult(existing.scanFindings, coreScanFindings)) {
+        return updateRevision('standard', revisionId, { scanFindings: coreScanFindings });
+      }
+      return existing;
+    }
 
     const createdAt = now();
     const recipe = {
@@ -784,7 +807,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         source: 'core-runtime',
         completedAt: createdAt,
       },
-      scanFindings: null,
+      scanFindings: coreScanFindings,
     };
     try {
       await ddb.send(
