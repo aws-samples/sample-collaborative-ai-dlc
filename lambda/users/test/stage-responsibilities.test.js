@@ -174,6 +174,42 @@ describe('responsibilities member reads', () => {
     },
   );
 
+  it('omits unit instances the orchestrator skips because no output applies to the unit kind', async () => {
+    const stage = {
+      sk: 'V#3#PLACEMENT#functional-design',
+      stageId: 'functional-design',
+      permissions: DEFAULT_STAGE_PERMISSIONS['functional-design'],
+      execution: 'ALWAYS',
+      parallelSection: 2,
+      outputArtifacts: [{ artifact: 'frontend-components' }],
+      producesKinds: { 'frontend-components': ['ui'] },
+    };
+    loadPlan.mockResolvedValue({ valid: true, plan: { namespace: 'flow@3', stages: [stage] } });
+    ddb.send.mockImplementation(async (command) => {
+      if (command.input.Key)
+        return {
+          Item:
+            command.input.Key.sk === 'UNITPLAN'
+              ? {
+                  units: [
+                    { slug: 'backend', kind: 'service' },
+                    { slug: 'web', kind: 'ui' },
+                  ],
+                }
+              : { projectId: 'space', workflowId: 'flow', workflowVersion: 3 },
+        };
+      if (command.input.ExpressionAttributeValues[':pk'].startsWith('WF#'))
+        return {
+          Items: [{ sk: 'V#3#META', cedarPolicies: generateStagePolicies([stage]) }, stage],
+        };
+      return { Items: [] };
+    });
+    const preview = await load({ ...event, queryStringParameters: { intentId: 'intent' } });
+    expect(preview.stages.map((row) => row.stageInstanceId)).toEqual([
+      stageInstanceId('flow@3', stage.stageId, 'web', 2),
+    ]);
+  });
+
   it.each([
     { execution: 'CONDITIONAL', skipMatrix: { backend: ['functional-design'] }, skipped: true },
     { execution: 'ALWAYS', skipMatrix: { backend: ['functional-design'] }, skipped: false },

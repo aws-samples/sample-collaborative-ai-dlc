@@ -11,6 +11,7 @@ import {
 } from '../shared/intent-methodology.js';
 import { executionMetaKey, executionPk, unitPlanKey } from '../shared/v2-process-keys.js';
 import { stageInstanceId } from '../shared/v2-execution-plan.js';
+import { unitStageSkipReason } from '../shared/unit-kind-pruning.js';
 import { previewStageResponsibilities } from '../shared/stage-responsibilities.js';
 
 const s3 = new S3Client({});
@@ -126,34 +127,31 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
       // UNITPLAN contains selected lanes, including ones that have not started.
       // Stage rows describe execution progress; they are not the selected plan.
       if (stage.parallelSection != null && unitPlan.Item) {
-        return (unitPlan.Item.units ?? [])
-          .filter(
-            (unit) =>
-              !(
-                (unitPlan.Item.skipMatrix?.[unit.slug] ?? []).includes(stage.stageId) &&
-                stage.execution === 'CONDITIONAL'
-              ),
-          )
-          .map((unit) => {
-            const plannedId = stageInstanceId(
-              namespace,
-              stage.stageId,
-              unit.slug,
-              stage.parallelSection,
-            );
-            const instance =
-              instances.find((row) => row.sk === `STAGE#${plannedId}`) ??
-              instances.find(
-                (row) =>
-                  row.stageId === stage.stageId &&
-                  row.unitSlug === unit.slug &&
-                  row.sectionIndex == null,
+        return (
+          (unitPlan.Item.units ?? [])
+            // Same rule the orchestrator uses to record SKIPPED instances.
+            .filter((unit) => !unitStageSkipReason(stage, unit, unitPlan.Item.skipMatrix))
+            .map((unit) => {
+              const plannedId = stageInstanceId(
+                namespace,
+                stage.stageId,
+                unit.slug,
+                stage.parallelSection,
               );
-            return {
-              ...stage,
-              stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? plannedId,
-            };
-          });
+              const instance =
+                instances.find((row) => row.sk === `STAGE#${plannedId}`) ??
+                instances.find(
+                  (row) =>
+                    row.stageId === stage.stageId &&
+                    row.unitSlug === unit.slug &&
+                    row.sectionIndex == null,
+                );
+              return {
+                ...stage,
+                stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? plannedId,
+              };
+            })
+        );
       }
       const instance = instances.find((row) => row.stageId === stage.stageId && !row.unitSlug);
       return [

@@ -62,7 +62,7 @@ import {
   unitCompletion,
   completionMessage,
 } from '../shared/unit-completion.js';
-import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
+import { unitStageSkipReason } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from '../shared/pr-attribution.js';
 import { bindGateCallback, releaseUnusedGateCallback, unparkGate } from './gate-callback.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
@@ -1972,12 +1972,13 @@ export const runParallelSection = async (segment, toolkit) => {
         //   - kind pruning (produces_kinds): every required output of the
         //     stage is narrowed to kinds this unit is not — the stage has
         //     nothing to produce for this unit and never spawns.
-        const matrixSkipped =
-          (decisions.skipMatrix[slug] ?? []).includes(stage.stageId) &&
-          stage.execution === 'CONDITIONAL';
-        const kindSkipped =
-          !matrixSkipped &&
-          stageIsNoopForUnit(stage.outputArtifacts, stage.producesKinds, unit?.kind ?? null);
+        const skipReason = unitStageSkipReason(
+          stage,
+          { slug, kind: unit?.kind ?? null },
+          decisions.skipMatrix,
+        );
+        const matrixSkipped = skipReason === 'matrix';
+        const kindSkipped = skipReason === 'kind';
         if (matrixSkipped || kindSkipped) {
           await laneCtx.step(`skip-${stage.stageId}-u-${slug}${rTag}`, async () => {
             try {
