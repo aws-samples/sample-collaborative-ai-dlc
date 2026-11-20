@@ -196,8 +196,23 @@ export const openNativeEngineWorkspace = async ({
             if (checked.exitCode !== 0) throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
           }
         }
-        if (next) await write(project, [next]);
-        else await removeAuthored(project, path);
+        if (!next) {
+          await removeAuthored(project, path);
+          continue;
+        }
+        await write(project, [next]);
+        // The pinned reviewer checks whether a stage document was written
+        // under the current summary confirmation in this protected workspace.
+        if (artifacts.includes(path) && next.sha256 !== old?.sha256) {
+          const recorded = await runner.hook('aidlc-write-audit-log.ts', {
+            hook_event_name: 'PostToolUse',
+            session_id: sessionId,
+            cwd: project,
+            tool_name: 'Write',
+            tool_input: { file_path: join(project, path) },
+          });
+          if (recorded.exitCode !== 0) throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+        }
       }
       state.authored = [
         ...state.authored.filter((file) => !nativeEngineAuthoredPath(file.path, artifacts)),
