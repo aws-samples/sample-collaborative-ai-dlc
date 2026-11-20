@@ -31,6 +31,19 @@ describe('ArtifactMarkdown', () => {
     );
   });
 
+  it('lets a wide table scroll sideways inside its own block', () => {
+    render(
+      <ArtifactMarkdown
+        content={
+          '| Need | Method |\n| --- | --- |\n| List | `getParameterByType`, `getParameterById` |'
+        }
+      />,
+    );
+    const table = screen.getByRole('table');
+    expect(table.parentElement).toHaveClass('overflow-x-auto', 'max-w-full');
+    expect(screen.getByRole('cell', { name: /getParameterByType/ })).toBeInTheDocument();
+  });
+
   it('keeps non-Mermaid code fences as code blocks', () => {
     render(<ArtifactMarkdown content={`\`\`\`ts\nconst answer = 42;\n\`\`\``} />);
 

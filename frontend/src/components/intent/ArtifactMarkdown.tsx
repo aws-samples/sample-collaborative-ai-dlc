@@ -10,6 +10,8 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cn } from '@/lib/utils';
+import { MermaidDiagramActions } from '@/components/intent/MermaidDiagramViewer';
 import type { PluggableList } from 'unified';
 import {
   buildReferenceDefinitions,
@@ -257,6 +259,17 @@ type MermaidState =
   | { status: 'error'; svg?: undefined; error: string };
 
 const markdownComponents: Components = {
+  // A table wider than its column scrolls on its own instead of being clipped
+  // by the preview's vertical-only scroll area.
+  table(props) {
+    const { node, ...rest } = props;
+    void node;
+    return (
+      <div className="my-4 max-w-full overflow-x-auto">
+        <table {...rest} className={cn('my-0', rest.className)} />
+      </div>
+    );
+  },
   pre(props) {
     const { children, node, ...rest } = props;
     void node;
@@ -457,6 +470,7 @@ function MermaidDiagram({ source }: { source: string }) {
   const reactId = useId();
   const diagramId = `mermaid-${reactId.replace(/:/g, '')}`;
   const containerRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<MermaidState>({ status: 'idle' });
 
   useEffect(() => {
@@ -508,16 +522,25 @@ function MermaidDiagram({ source }: { source: string }) {
   }
 
   return (
-    <div className="not-prose my-3 overflow-x-auto rounded-md border bg-background p-3">
-      {state.status === 'ready' ? (
-        <div
-          ref={containerRef}
-          className="mermaid-diagram"
-          dangerouslySetInnerHTML={{ __html: state.svg }}
+    <div ref={frameRef} className="not-prose my-3 rounded-md border bg-background">
+      {state.status === 'ready' && (
+        <MermaidDiagramActions
+          svg={state.svg}
+          diagramId={diagramId}
+          backgroundFrom={() => frameRef.current}
         />
-      ) : (
-        <p className="text-xs text-muted-foreground">Rendering diagram...</p>
       )}
+      <div className="overflow-x-auto p-3">
+        {state.status === 'ready' ? (
+          <div
+            ref={containerRef}
+            className="mermaid-diagram"
+            dangerouslySetInnerHTML={{ __html: state.svg }}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">Rendering diagram...</p>
+        )}
+      </div>
     </div>
   );
 }
