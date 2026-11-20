@@ -17,8 +17,8 @@ const SSO_CONFIG = JSON.stringify({
 });
 
 // The claims the sign-in trigger records for a federated member.
-const recordSignIn = (subject, claimValues, providerName = 'Entra') =>
-  membershipStore.recordSsoClaims({ subject, providerName, claimValues });
+const recordSignIn = (subject, claimValues, providerName = 'Entra', sourceAttribute = 'groups') =>
+  membershipStore.recordSsoClaims({ subject, providerName, sourceAttribute, claimValues });
 
 const saveEntraMappings = async (roleMappings) =>
   membershipStore.saveRoleMappings({
@@ -433,6 +433,31 @@ describe('space member API', () => {
     config.providers.Entra.requiredClaimValues = ['aidlc-admin'];
     vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
     expect((await roles())[recorded]).toEqual([]);
+  });
+
+  it('never reads recorded values under another or a removed source attribute', async () => {
+    const config = JSON.parse(SSO_CONFIG);
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const member = randomUUID();
+    await recordSignIn(member, ['Engineering']);
+    await seedMembership(projectId, member, 'member');
+    await saveEntraMappings({ developer: ['Engineering'] });
+    const roles = async () =>
+      JSON.parse((await request('GET')).body).find((m) => m.userId === member).ssoRoles;
+    expect(await roles()).toEqual(['developer']);
+    // Same value, new source: the old group strings are not reinterpreted.
+    config.providers.Entra.roleClaim = 'roles';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect(await roles()).toEqual([]);
+    // No source: saved UI additions no longer grant anything.
+    config.providers.Entra.roleClaim = '';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect(await roles()).toEqual([]);
+    // A sign-in under the new source applies the mappings again.
+    config.providers.Entra.roleClaim = 'roles';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    await recordSignIn(member, ['Engineering'], 'Entra', 'roles');
+    expect(await roles()).toEqual(['developer']);
   });
 
   it('denies exclusion changes to Members and outsiders and rejects non-inherited roles', async () => {

@@ -13,6 +13,7 @@ const config = {
         'platform-admin': ['aidlc-admin'],
       },
       requiredClaimValues: ['aidlc-user'],
+      roleClaim: 'groups',
     },
   },
 };
@@ -191,6 +192,7 @@ describe('recorded SSO claims', () => {
     expect(recordSsoClaims).toHaveBeenCalledWith({
       subject: 'user-1',
       providerName: 'EnterpriseOIDC',
+      sourceAttribute: 'groups',
       claimValues: ['aidlc-user', 'Engineering'],
     });
   });

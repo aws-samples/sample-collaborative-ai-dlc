@@ -13,14 +13,15 @@ export const createHandler =
   async (event, context) => {
     if (context) logger.addContext(context);
     const attributes = event.request?.userAttributes || {};
-    const result = evaluateSsoRoles(attributes, parseRoleConfig());
+    const config = parseRoleConfig();
+    const result = evaluateSsoRoles(attributes, config);
     if (!result.federated) return event;
 
     // Record before admission: a user who lost the required claim must not
     // keep the business roles of an earlier sign-in. A failed write fails the
     // sign-in rather than leaving a stale copy unnoticed.
     if (event.triggerSource !== REFRESH_SOURCE) {
-      const claims = ssoClaimsFromAttributes(attributes);
+      const claims = ssoClaimsFromAttributes(attributes, config);
       if (!claims) throw new Error('Federated user attributes are incomplete');
       await store.recordSsoClaims(claims);
     }

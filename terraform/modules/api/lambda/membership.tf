@@ -120,6 +120,7 @@ module "membership_migration_lambda" {
     ACCESS_TABLE            = var.access_table_name
     AUDIT_TABLE             = var.audit_table_name
     COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
+    SSO_ROLE_CONFIG         = var.sso_role_config
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level

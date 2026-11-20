@@ -26,6 +26,9 @@ locals {
           if contains(jsondecode(file("${path.module}/../../../config/platform-roles.json")), role)
         }
         requiredClaimValues = provider.required_claim_values
+        # Recorded with each sign-in's claims, so a later source change cannot
+        # reinterpret values mapped from the previous attribute.
+        roleClaim = provider.role_claim
       }
     }
   }

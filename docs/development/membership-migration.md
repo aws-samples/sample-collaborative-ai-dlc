@@ -136,8 +136,12 @@ Calculated SSO roles are never stored: they come from the recorded SSO claims
 and the current mapping at read time.
 
 Each federated sign-in records its claims at `USER#<sub>` / `SSO` in the access
-table: `subject`, `providerName`, the raw `claimValues`, `source` (`sign-in` or
-`backfill`) and `recordedAt`. The Cognito pre token generation trigger writes it
+table: `subject`, `providerName`, `sourceAttribute` (the provider's configured
+`role_claim`), the raw `claimValues`, `source` (`sign-in` or `backfill`) and
+`recordedAt`. Values count only while `sourceAttribute` matches the provider's
+current `role_claim`: changing or removing the source attribute invalidates every
+copy until the member signs in again, while mapping edits for the same source
+apply immediately. The backfill stamps the source configured at deployment. The Cognito pre token generation trigger writes it
 on every sign-in except token refresh, before checking `requiredClaimValues`, and
 a failed write fails the sign-in. Its role may only put items whose partition key
 starts with `USER#`. The item has no `userId`, so the `by-user` GSI skips it.

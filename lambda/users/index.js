@@ -54,6 +54,11 @@ const createSsoRoleResolver = () => {
     const recorded = claims.get(userId);
     // No copy: the member has not signed in through SSO, so no SSO roles.
     if (!recorded) return [];
+    // Values only count under the source attribute they were mapped from. A
+    // removed or changed source invalidates the copy until the next sign-in,
+    // so values from the old attribute never match the current mappings.
+    const sourceAttribute = config.providers?.[recorded.providerName]?.roleClaim;
+    if (!sourceAttribute || recorded.sourceAttribute !== sourceAttribute) return [];
     const result = evaluateSsoClaims(
       {
         identity: { providerName: recorded.providerName },
