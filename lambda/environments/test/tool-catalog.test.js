@@ -52,7 +52,7 @@ describe('managed tool catalog', () => {
     ]);
     expect(SYSTEM_TOOL_TEMPLATES.map((tool) => tool.version.version)).toEqual([
       '21.0.8',
-      '1.24.6',
+      '1.27.4',
       '1.89.0',
       '3.9.11',
       '9.0.0',
