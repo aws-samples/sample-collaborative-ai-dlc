@@ -1710,7 +1710,21 @@ describe('retired-run ownership', () => {
   });
 });
 
-describe('unused intent branch cleanup (opt-in)', () => {
+describe('unused intent branch cleanup', () => {
+  // The store's lease claim, over whatever getExecution returns: the same
+  // run must own the execution, in the same space, in one of `statuses`.
+  beforeEach(() => {
+    deps.store.claimBranchCleanup = vi.fn(async ({ runId, projectId, statuses }) => {
+      const current = await deps.store.getExecution('i1', { consistentRead: true });
+      return current &&
+        current.orchestratorRunId === runId &&
+        current.projectId === projectId &&
+        statuses.includes(current.status)
+        ? { ...current, branchCleanupLeaseUntil: new Date(Date.now() + 600_000).toISOString() }
+        : null;
+    });
+    deps.store.releaseBranchCleanup = vi.fn(async () => true);
+  });
   // META as the store holds it: the claim's token and terminal status land
   // here, so the cleanup step's consistent re-read sees this run's outcome.
   const trackMeta = () => {
@@ -1811,6 +1825,10 @@ describe('unused intent branch cleanup (opt-in)', () => {
     );
     expect(res).toEqual({ ok: true, repositories: 1 });
     expect(names).toEqual(['branches-clean']);
+    expect(deps.store.claimBranchCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', statuses: ['CANCELLED', 'FAILED'] }),
+    );
+    expect(deps.store.releaseBranchCleanup).toHaveBeenCalledOnce();
     expect(deps.deleteUnusedBranches.mock.calls[0][0]).toMatchObject({
       executionId: 'i1',
       status: 'CANCELLED',

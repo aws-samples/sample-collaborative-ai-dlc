@@ -14294,6 +14294,33 @@ describe('unused intent branch cleanup (opt-in)', () => {
     expect(procStore.get(metaKey).status).toBe('CANCELLED');
   });
 
+  it('refuses a restart, rewind or cancel while the ended run is being cleaned up', async () => {
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'CANCELLED',
+      branchCleanupLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    for (const action of ['start', 'rewind', 'cancel']) {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/${action}`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({}),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('branch_cleanup_in_progress');
+    }
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      branchCleanupLeaseUntil: new Date(Date.now() - 1000).toISOString(),
+    });
+    // Once the lease lapses the request reaches its own checks again.
+    const after = await cancel(sub, projectId, intent.id);
+    expect(JSON.parse(after.body).code).not.toBe('branch_cleanup_in_progress');
+  });
+
   it('requests a cleanup when an expired durable run is repaired to FAILED', async () => {
     const { sub, projectId, intent, metaKey } = await waitingIntent();
     const expired = new Error('callback timed out');

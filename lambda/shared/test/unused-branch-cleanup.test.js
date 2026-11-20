@@ -244,6 +244,22 @@ describe('provider branch primitives', () => {
     ).toEqual([UNIT]);
   });
 
+  it('codecommit refuses a branch listing truncated at its page limit', async () => {
+    const provider = getProvider('codecommit');
+    const arn = 'arn:aws:codecommit:eu-west-3:123456789012:demo-repo';
+    let pages = 0;
+    const client = {
+      send: async () => {
+        pages += 1;
+        return { branches: [`${INTENT}--task-${pages}`], nextToken: `t${pages}` };
+      },
+    };
+    await expect(
+      provider.listBranchesWithPrefix({ client }, arn, `${INTENT}--`),
+    ).rejects.toMatchObject({ code: 'BRANCH_LISTING_TRUNCATED' });
+    expect(pages).toBe(50);
+  });
+
   it('codecommit filters its branch listing and treats a missing branch as deleted', async () => {
     const provider = getProvider('codecommit');
     const arn = 'arn:aws:codecommit:eu-west-3:123456789012:demo-repo';
@@ -326,6 +342,27 @@ describe('deleteUnusedIntentBranches', () => {
       deleted: 0,
       kept: [{ repoId: 'group/api', branch: INTENT, reason: 'delete_failed', status: 403 }],
       failedRepositories: [],
+    });
+  });
+
+  it("starts no repository once the caller's lease is nearly over", async () => {
+    const operation = vi.fn(async () => ({ deleted: [INTENT], kept: [] }));
+    let clock = 0;
+    const results = await deleteUnusedIntentBranches({
+      meta,
+      operation: async (input) => {
+        clock = 8 * 60_000; // the first repository took most of a 10-minute lease
+        return operation(input);
+      },
+      until: 10 * 60_000,
+      now: () => clock,
+    });
+    expect(operation).toHaveBeenCalledOnce();
+    expect(results[1]).toEqual({
+      repoId: 'org/web',
+      deleted: [],
+      kept: [],
+      error: 'lease_expiring',
     });
   });
 

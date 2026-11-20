@@ -328,8 +328,8 @@ const defaultDeps = () => ({
       }).loadPlan,
     }),
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
-  deleteUnusedBranches: (meta) =>
-    deleteUnusedIntentBranches({ meta, operation: defaultSourceControlOperation, logger }),
+  deleteUnusedBranches: (meta, { until } = {}) =>
+    deleteUnusedIntentBranches({ meta, operation: defaultSourceControlOperation, logger, until }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   issueGatewayGrant: gatewayGrantIssuer,
@@ -481,6 +481,9 @@ const publishTrackerDelivery = (store, meta, pullRequests) =>
 // it on the timeline. Best-effort: it never changes the run's outcome, and it
 // does nothing once a relaunch owns the execution, whose init-ws may already
 // have checked that the intent branch exists.
+// Long enough for several repositories' provider calls; a run whose cleanup
+// stopped is free to relaunch once it expires.
+const BRANCH_CLEANUP_LEASE_MS = 10 * 60_000;
 const cleanUpEndedRun = async ({
   store,
   broadcast,
@@ -489,16 +492,23 @@ const cleanUpEndedRun = async ({
   runId,
   statuses,
 }) => {
+  let claimed = null;
   try {
-    const current = await store.getExecution(executionId, { consistentRead: true });
-    if (
-      !current ||
-      current.projectId !== projectId ||
-      current.orchestratorRunId !== runId ||
-      !statuses.includes(current.status)
-    )
-      return { skipped: true };
-    const results = await deleteUnusedBranches({ ...current, executionId });
+    // The lease fences relaunches, rewinds, cancels and repairs (store
+    // updateExecution) until it is released, so no new run can re-create a
+    // branch while this one deletes it.
+    claimed = await store.claimBranchCleanup({
+      executionId,
+      projectId,
+      runId,
+      statuses,
+      leaseMs: BRANCH_CLEANUP_LEASE_MS,
+    });
+    if (!claimed) return { skipped: true };
+    const results = await deleteUnusedBranches(
+      { ...claimed, executionId },
+      { until: Date.parse(claimed.branchCleanupLeaseUntil) },
+    );
     const summary = cleanupSummary(results);
     if (summary) {
       try {
@@ -521,6 +531,15 @@ const cleanUpEndedRun = async ({
   } catch (error) {
     logger.error('unused intent branch cleanup failed', error);
     return { failed: true };
+  } finally {
+    if (claimed)
+      await store
+        .releaseBranchCleanup({
+          executionId,
+          runId,
+          leaseUntil: claimed.branchCleanupLeaseUntil,
+        })
+        .catch((error) => logger.error('unused intent branch cleanup release failed', error));
   }
 };
 

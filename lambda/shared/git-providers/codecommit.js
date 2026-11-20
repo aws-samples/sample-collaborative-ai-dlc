@@ -811,9 +811,28 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
-// Every branch whose name starts with `prefix`.
-const listBranchesWithPrefix = async (ctx, repoId, prefix) =>
-  (await listBranches(ctx, repoId)).filter((name) => name.startsWith(prefix));
+// Every branch whose name starts with `prefix`, from every page; throws instead
+// of returning a partial list (listBranches stops quietly at its page limit).
+const listBranchesWithPrefix = async (ctx, repoId, prefix) => {
+  const { repositoryName } = parseRepo(repoId);
+  const client = clientFor(ctx, repoId);
+  const names = [];
+  let nextToken;
+  for (let page = 0; page < LIST_BRANCH_PAGES; page += 1) {
+    const res = await call(
+      client,
+      new ListBranchesCommand({ repositoryName, nextToken }),
+      'ListBranches',
+    );
+    names.push(...(res.branches ?? []).filter((name) => name.startsWith(prefix)));
+    nextToken = res.nextToken;
+    if (!nextToken) return names;
+  }
+  throw new ProviderError(502, 'Branch listing exceeds the inspection limit', {
+    action: 'ListBranches',
+    code: 'BRANCH_LISTING_TRUNCATED',
+  });
+};
 
 // Delete a branch. Returns false when it no longer exists.
 const deleteBranch = async (ctx, repoId, branch) => {

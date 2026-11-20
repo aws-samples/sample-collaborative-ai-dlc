@@ -8,12 +8,26 @@
 // A rewind or restart re-creates a missing intent branch (init-ws step 1b).
 import { repoProvider } from './repo-provider.js';
 
-export const deleteUnusedIntentBranches = async ({ meta, operation, logger = null }) => {
+// A repository is only started with this much of the caller's lease left: one
+// source-control operation is bounded by that service's timeout.
+const LEASE_MARGIN_MS = 3 * 60_000;
+
+export const deleteUnusedIntentBranches = async ({
+  meta,
+  operation,
+  logger = null,
+  until = null,
+  now = () => Date.now(),
+}) => {
   if (!meta?.branch || !meta.projectId || !Array.isArray(meta.repos)) return [];
   const results = [];
   for (const entry of meta.repos) {
     const repoId = typeof entry === 'string' ? entry : entry?.url;
     if (!repoId) continue;
+    if (until != null && now() > until - LEASE_MARGIN_MS) {
+      results.push({ repoId, deleted: [], kept: [], error: 'lease_expiring' });
+      continue;
+    }
     try {
       const result = await operation({
         projectId: meta.projectId,

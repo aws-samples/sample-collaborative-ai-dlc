@@ -7259,13 +7259,22 @@ export const handler = async (event, context) => {
     if (
       intentId &&
       (httpMethod === 'DELETE' ||
-        (httpMethod === 'POST' && /\/(rewind|recompose|cancel|repair)$/.test(path ?? '')))
+        (httpMethod === 'POST' && /\/(start|rewind|recompose|cancel|repair)$/.test(path ?? '')))
     ) {
       const current = await store.getExecution(intentId, { consistentRead: true });
-      if (current?.projectId === projectId && Date.parse(current.deliveryLeaseUntil) > Date.now()) {
+      const held = (until) => current?.projectId === projectId && Date.parse(until) > Date.now();
+      if (!path?.endsWith('/start') && held(current?.deliveryLeaseUntil)) {
         return response(409, {
           error: 'Delivery is in progress. Wait for it to finish before changing this execution.',
           code: 'delivery_in_progress',
+        });
+      }
+      // The ended run's unused-branch cleanup holds it (store claimBranchCleanup):
+      // a relaunch now could have a branch it re-created deleted.
+      if (held(current?.branchCleanupLeaseUntil)) {
+        return response(409, {
+          error: "The run's unused branches are being cleaned up. Try again in a moment.",
+          code: 'branch_cleanup_in_progress',
         });
       }
     }
