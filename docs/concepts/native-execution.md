@@ -6145,6 +6145,9 @@ the current contract for newly created executions.
       deliver the reviewed result and see its confirmed remote identity/status;
       provider failures cannot retarget results, replay an uncertain write or
       block unrelated history access.
+      The source comparison API returns an exact change set for supported new publications,
+      with Git modes and observed deletions against the Start commit, or `null` when evidence is insufficient.
+      Protected workflow evidence covers file bytes. Git change-set review and remote delivery remain open.
 - [ ] **NE-13 — Finish shared history, status and traceability integration.** Reuse
       the implemented revision history, decision records, comparisons and graph
       links throughout the shared Intent shell and project/dashboard/sidebar views.

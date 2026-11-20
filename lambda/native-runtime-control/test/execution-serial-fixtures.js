@@ -16,9 +16,9 @@ export const SERIAL_SOURCE = { branch: 'develop', commit: 'e'.repeat(40) };
 
 // Uses the production authority store and both immutable S3 codecs. Only AWS
 // transport is local; no canned manifests, interaction hashes or receipt IDs.
-export const serialFixture = (fixtureOptions) => {
+export const serialFixture = ({ source = SERIAL_SOURCE, ...fixtureOptions } = {}) => {
   const f = executionFixture(fixtureOptions);
-  Object.assign(f.configuration.repository, SERIAL_SOURCE);
+  Object.assign(f.configuration.repository, source);
   const projection = createNativeProjectionStore({
     ddb: f.ddb,
     tableName: TABLE,
@@ -71,13 +71,14 @@ export const serialFixture = (fixtureOptions) => {
   });
   const enqueue = vi.fn(async () => {});
   const configure = vi.fn(async () => f.configuration);
-  const makeApi = (enabled = true) =>
+  const makeApi = (enabled = true, completionProof) =>
     createNativeExecutionApi({
       enabled,
       store: f.store,
       projectionStatus: (row) => nativeProjectionStatus(f.ddb, TABLE, row),
       publications,
       revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
+      completionProof,
       interactions,
       enqueue,
       configure,
@@ -93,7 +94,7 @@ export const serialFixture = (fixtureOptions) => {
       nativeSessionId,
       packageId: f.configuration.packageId,
       outcome: 'STOPPED',
-      repository: SERIAL_SOURCE,
+      repository: source,
       ...(options.filesystemPolicy ? { filesystemPolicy: options.filesystemPolicy } : {}),
       ...(options.sourceBaseline ? { sourceBaseline: options.sourceBaseline } : {}),
       files: options.files ?? [
@@ -123,8 +124,8 @@ export const serialFixture = (fixtureOptions) => {
       patch: {
         status: 'DISPATCHING',
         target: f.target(claim.row),
-        sourceBranch: SERIAL_SOURCE.branch,
-        sourceCommit: SERIAL_SOURCE.commit,
+        sourceBranch: source.branch,
+        sourceCommit: source.commit,
       },
     });
     const running = await f.store.advance({ row: dispatching, patch: { status: 'RUNNING' } });

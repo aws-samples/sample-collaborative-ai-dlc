@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
+import { nativeGitInventorySha256 } from '../native-git-change-set.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createNativePublications,
@@ -71,6 +72,27 @@ const setup = () => {
     },
   };
 };
+it('retains a bounded public manifest when only its optional Git metadata exceeds the limit', async () => {
+  const { store } = setup();
+  const receipt = await store.write({
+    ...input(),
+    files: [],
+    questionPath: null,
+    outcome: 'STOPPED',
+    nativeSessionId: null,
+    filesystemPolicy: 'node-dependencies-v1',
+    git: {
+      provider: 'github',
+      repository: 'owner/repo',
+      inventorySha256: nativeGitInventorySha256([]),
+      preservedDirectories: Array.from(
+        { length: 1000 },
+        (_, i) => `${String(i).padStart(3, '0')}/${'a'.repeat(1048)}`,
+      ),
+    },
+  });
+  expect(await store.read(identity, receipt)).toMatchObject({ schemaVersion: 3, files: [] });
+});
 it('records the versioned dependency policy without reinterpreting legacy inventories', async () => {
   const { store } = setup();
   const data = input();

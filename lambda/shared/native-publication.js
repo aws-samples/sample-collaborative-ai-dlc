@@ -5,6 +5,12 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { NATIVE_DEPENDENCY_POLICY } from './native-project-files.js';
 import { canonicalNativePath, nativeFileExclusion } from './native-project-files.js';
+import { isValidRepoPath } from './repo-validation.js';
+import {
+  nativeGitChanges,
+  nativeGitExcludedRoot,
+  nativeGitInventorySha256,
+} from './native-git-change-set.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -90,6 +96,38 @@ const media = (path) =>
             ? 'image/jpeg'
             : 'application/octet-stream';
 
+const validateGitInventory = (manifest, publishedPaths) => {
+  const { git } = manifest;
+  const baseline = manifest.nativeSessionId === null;
+  const list = baseline ? 'preservedDirectories' : 'deleted';
+  if (
+    !exact(git, ['provider', 'repository', 'inventorySha256', list]) ||
+    !['github', 'gitlab', 'bitbucket'].includes(git.provider) ||
+    !isValidRepoPath(git.repository) ||
+    (baseline
+      ? manifest.sourceBaseline !== null || manifest.sequence !== 1
+      : !manifest.sourceBaseline?.receipt) ||
+    !Array.isArray(git[list]) ||
+    git[list].length > NATIVE_PUBLICATION_LIMITS.files ||
+    git[list].some(
+      (path, i, paths) =>
+        !canonicalNativePath(path) ||
+        nativeGitExcludedRoot(path) ||
+        publishedPaths.has(path) ||
+        (i > 0 && path <= paths[i - 1]),
+    ) ||
+    git.inventorySha256 !== nativeGitInventorySha256(manifest.files)
+  )
+    fail();
+  for (const path of publishedPaths) {
+    const parts = path.split('/');
+    while (parts.length > 1) {
+      parts.pop();
+      if (publishedPaths.has(parts.join('/'))) fail();
+    }
+  }
+};
+
 const validateManifest = (value, identity) => {
   const scope = nativePublicationScope(identity);
   if (
@@ -104,11 +142,12 @@ const validateManifest = (value, identity) => {
       'repository',
       'files',
       'question',
-      ...([2, 3].includes(value.schemaVersion) ? ['sourceBaseline'] : []),
-      ...(value.schemaVersion === 3 ? ['filesystemPolicy'] : []),
+      ...(value.schemaVersion >= 2 ? ['sourceBaseline'] : []),
+      ...(value.schemaVersion >= 3 ? ['filesystemPolicy'] : []),
+      ...(value.schemaVersion === 4 ? ['git'] : []),
     ]) ||
-    ![1, 2, 3].includes(value.schemaVersion) ||
-    (value.schemaVersion === 3 && value.filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) ||
+    ![1, 2, 3, 4].includes(value.schemaVersion) ||
+    (value.schemaVersion >= 3 && value.filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) ||
     canonicalJson(value.scope) !==
       canonicalJson({
         projectId: scope.projectId,
@@ -135,7 +174,7 @@ const validateManifest = (value, identity) => {
     value.files.length > NATIVE_PUBLICATION_LIMITS.files
   )
     fail();
-  if (value.schemaVersion === 2 || (value.schemaVersion === 3 && value.sourceBaseline !== null)) {
+  if (value.schemaVersion === 2 || (value.schemaVersion >= 3 && value.sourceBaseline !== null)) {
     const baseline = value.sourceBaseline;
     const absent =
       exact(baseline, ['unavailable']) &&
@@ -154,7 +193,17 @@ const validateManifest = (value, identity) => {
   let total = 0;
   for (const file of value.files) {
     if (
-      !exact(file, ['id', 'path', 'bytes', 'sha256', 'role', 'mediaType', 'object']) ||
+      !exact(file, [
+        'id',
+        'path',
+        'bytes',
+        'sha256',
+        'role',
+        'mediaType',
+        'object',
+        ...(value.schemaVersion === 4 ? ['mode'] : []),
+      ]) ||
+      (value.schemaVersion === 4 && !['100644', '100755'].includes(file.mode)) ||
       paths.has(nativePublicationPath(file.path)) ||
       nativeFileExclusion(file.path, value.filesystemPolicy) ||
       file.id !== nativeFileId(scope, file.path) ||
@@ -172,6 +221,7 @@ const validateManifest = (value, identity) => {
     paths.add(file.path);
     total += file.bytes;
   }
+  if (value.schemaVersion === 4) validateGitInventory(value, paths);
   if (total > NATIVE_PUBLICATION_LIMITS.totalBytes) fail();
   if (value.question !== null) {
     if (!exact(value.question, ['fileId', 'path', 'sha256'])) fail();
@@ -284,6 +334,7 @@ export const createNativePublications = ({
       sequence = 1,
       sourceBaseline,
       filesystemPolicy,
+      git,
     }) {
       const scope = nativePublicationScope(identity);
       if (filesystemPolicy !== undefined && filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) fail();
@@ -304,6 +355,7 @@ export const createNativePublications = ({
           bytes: file.content.length,
           sha256: hash(file.content),
           role: file.role,
+          ...(git ? { mode: file.mode } : {}),
           mediaType: media(file.path),
           content: Buffer.from(file.content),
         };
@@ -313,7 +365,8 @@ export const createNativePublications = ({
       // are only used in this prospective validation, never published or returned.
       const manifest = validateManifest(
         {
-          schemaVersion: filesystemPolicy ? 3 : sourceBaseline ? 2 : 1,
+          schemaVersion: git ? 4 : filesystemPolicy ? 3 : sourceBaseline ? 2 : 1,
+          ...(git ? { git } : {}),
           ...(filesystemPolicy
             ? { filesystemPolicy, sourceBaseline: sourceBaseline ?? null }
             : sourceBaseline
@@ -351,7 +404,14 @@ export const createNativePublications = ({
           file.mediaType,
         );
       });
-      const data = Buffer.from(canonicalJson(manifest));
+      let data = Buffer.from(canonicalJson(manifest));
+      if (git && data.length > NATIVE_PUBLICATION_LIMITS.manifestBytes) {
+        // Optional Git metadata must not displace an otherwise usable NE-10 result.
+        const { git: _git, ...publicManifest } = manifest;
+        publicManifest.schemaVersion = 3;
+        publicManifest.files = manifest.files.map(({ mode: _mode, ...file }) => file);
+        data = Buffer.from(canonicalJson(publicManifest));
+      }
       if (data.length > NATIVE_PUBLICATION_LIMITS.manifestBytes) fail();
       const sha256 = hash(data);
       const pointer = await put(
@@ -428,7 +488,7 @@ export const createNativePublications = ({
         verifyFiles,
       });
       if (
-        ![1, 3].includes(baseline.schemaVersion) ||
+        ![1, 3, 4].includes(baseline.schemaVersion) ||
         Boolean(baseline.sourceBaseline) ||
         baseline.sequence !== 1 ||
         baseline.nativeSessionId !== null ||
@@ -437,10 +497,13 @@ export const createNativePublications = ({
         canonicalJson(baseline.repository) !== canonicalJson(checked.repository)
       )
         fail();
+      const changes = nativeGitChanges(baseline, checked);
+      if (checked.git && !changes) fail();
       return {
         identity: sourceIdentity,
         receipt: checked.sourceBaseline.receipt,
         manifest: baseline,
+        changes,
       };
     },
   };

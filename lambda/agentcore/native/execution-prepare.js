@@ -22,6 +22,7 @@ import { withGitCredential } from '../git-auth.js';
 import { isValidRepoPath } from '../../shared/repo-validation.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
 import { captureNativeSourceBaseline } from './source-baseline.js';
+import { snapshotNativeExecutionFiles } from './execution-files.js';
 
 const fail = (code) => {
   throw Object.assign(new Error(code), { code });
@@ -116,7 +117,21 @@ export const createNativeExecutionPorts = ({
     )
       fail('native_execution_recovery_unconfirmed');
   };
+  const publicationStore = () =>
+    publicationFactory({
+      s3,
+      bucket: env.NATIVE_PUBLICATION_BUCKET,
+      accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+    });
   return {
+    async snapshot({ identity, sourceBaseline, ...input }) {
+      const gitBaseline = sourceBaseline?.receipt
+        ? await publicationStore()
+            .read({ ...identity, epoch: sourceBaseline.epoch }, sourceBaseline.receipt)
+            .catch(() => null) // Insufficient Git evidence leaves the public capture available.
+        : null;
+      return snapshotNativeExecutionFiles({ ...input, gitBaseline });
+    },
     prepareWorkflowEngine: (input) => prepareNativeEngineClient({ ...input, env, s3 }),
     async prepareInputs({ payload, project, signal }) {
       checkIdentity(env, payload);
@@ -434,15 +449,20 @@ export const createNativeExecutionPorts = ({
       const sourceBaseline = await captureNativeSourceBaseline({
         project,
         identity: executionScope(dispatch),
-        repository: { commit, branch: repo.branch },
+        repository: repo,
+        readTree: async () => {
+          try {
+            return await runGit(['ls-tree', '--full-tree', '-rtz', commit]);
+          } catch (error) {
+            if (error.code !== 'native_execution_checkout_failed') throw error;
+            await recheck();
+            return null;
+          }
+        },
         packageId: pin.packageId,
         signal,
         forbiddenBytes: [git.password, model.value],
-        publications: publicationFactory({
-          s3,
-          bucket: env.NATIVE_PUBLICATION_BUCKET,
-          accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
-        }),
+        publications: publicationStore(),
       });
       await recheck();
       return {
@@ -475,15 +495,11 @@ export const createNativeExecutionPorts = ({
       sequence = 1,
       sourceBaseline,
       filesystemPolicy,
+      git,
     }) {
       checkIdentity(env, identity);
       checkAbort(signal);
-      const publications = publicationFactory({
-        s3,
-        bucket: env.NATIVE_PUBLICATION_BUCKET,
-        accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
-      });
-      const receipt = await publications.write({
+      const receipt = await publicationStore().write({
         identity,
         packageId,
         nativeSessionId,
@@ -494,6 +510,7 @@ export const createNativeExecutionPorts = ({
         sequence,
         ...(sourceBaseline ? { sourceBaseline } : {}),
         ...(filesystemPolicy ? { filesystemPolicy } : {}),
+        git,
       });
       checkAbort(signal);
       return { uploaded: true, receipt };

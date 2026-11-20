@@ -263,6 +263,12 @@ describe('native execution preparation with real local Git and versioned package
     });
     await fs.writeFile(join(f.project, 'game.js'), 'changed after trusted preparation\n');
     expect(baseline.repository.commit).toBe(f.commit);
+    expect(baseline.git).toMatchObject({
+      provider: 'github',
+      repository: 'owner/flappy-bird',
+      preservedDirectories: [],
+    });
+    expect(baseline.files[0].mode).toBe('100644');
     expect(baseline.files.map((file) => file.path)).toEqual(['game.js']);
     expect(
       (await publications.file(f.identity, baseline, baseline.files[0].id)).bytes.toString(),
@@ -291,6 +297,26 @@ describe('native execution preparation with real local Git and versioned package
     const exclude = await fs.readFile(join(f.project, '.git/info/exclude'), 'utf8');
     expect(exclude).toContain('aidlc/**/.aidlc-engine/');
     expect(exclude).toContain('aidlc/.aidlc-sessions/');
+  });
+
+  it('keeps a transformed checkout readable without recording it as the Git blob', async () => {
+    const f = await fixture();
+    await fs.writeFile(join(f.origin, '.gitattributes'), 'game.js text eol=crlf\n');
+    await gitAt(f.origin, 'add', '.gitattributes');
+    await gitAt(f.origin, 'commit', '-m', 'Checkout with CRLF');
+    f.input.payload.configuration.repository.commit = await gitAt(f.origin, 'rev-parse', 'HEAD');
+    const prepared = await f.ports.prepare(f.input);
+    const publications = createNativePublications({
+      s3: f.memory.s3,
+      bucket: f.env.NATIVE_PUBLICATION_BUCKET,
+      accountId: account,
+    });
+    const baseline = await publications.read(f.identity, prepared.sourceBaseline.receipt);
+    expect(baseline.git).toBeUndefined();
+    const game = baseline.files.find((file) => file.path === 'game.js');
+    expect((await publications.file(f.identity, baseline, game.id)).bytes.toString()).toContain(
+      '\r\n',
+    );
   });
 
   it.each(['attemptId', 'bindingId', 'runtimeSessionId', 'projectId', 'epoch'])(

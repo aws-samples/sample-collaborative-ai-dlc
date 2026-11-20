@@ -148,6 +148,7 @@ export function linuxDockerArgs({
     'lambda/agentcore/test/native-input-materialization.test.js',
     'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
     'lambda/native-runtime-control/test/public-files.test.js',
+    'lambda/native-runtime-control/test/git-change-set.test.js',
   ];
 }
 

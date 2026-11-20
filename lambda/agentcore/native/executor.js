@@ -968,6 +968,9 @@ export const createNativeExecutor = ({
         project,
         signal,
         forbiddenBytes,
+        ...(phase === 'final' && owner.sourceBaseline?.receipt
+          ? { identity: owner.identity, sourceBaseline: owner.sourceBaseline }
+          : {}),
         filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
         onDiagnostic: (details) => {
           const safe = nativeSnapshotDiagnostic(details);
@@ -1173,6 +1176,7 @@ export const createNativeExecutor = ({
         commit: configuration.repository.commit,
       },
       files: files.files,
+      git: files.git,
       filesystemPolicy: files.filesystemPolicy,
       ...(owner.sourceBaseline ? { sourceBaseline: owner.sourceBaseline } : {}),
       questionPath,

@@ -2,12 +2,72 @@
 // Never reconstruct a missing baseline from the first generated publication.
 import { snapshotNativeExecutionFiles } from './execution-files.js';
 import { NATIVE_PUBLICATION_LIMITS } from '../../shared/native-publication.js';
-import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
+import {
+  canonicalNativePath,
+  NATIVE_DEPENDENCY_POLICY,
+} from '../../shared/native-project-files.js';
+import {
+  nativeGitExcludedRoot,
+  nativeGitInventorySha256,
+} from '../../shared/native-git-change-set.js';
+import { createHash } from 'node:crypto';
+
+// The preparer reads the complete tree of the fetched commit before any
+// package command. Checkout attributes can transform bytes. Such a checkout
+// remains a readable source baseline, but cannot establish this Git base.
+const checkoutGitBase = (files, tree, source) => {
+  if (typeof tree !== 'string' || (tree && !tree.endsWith('\0'))) return undefined;
+  const checked = new Map(
+    files.filter((f) => !nativeGitExcludedRoot(f.path)).map((f) => [f.path, f]),
+  );
+  const preserved = new Set();
+  const algorithm = source.commit.length === 40 ? 'sha1' : 'sha256';
+  const emptyTree = createHash(algorithm).update('tree 0\0').digest('hex');
+  for (const entry of tree ? tree.slice(0, -1).split('\0') : []) {
+    // A nested empty Git tree has no regular-file representation in an index.
+    if (entry.startsWith(`040000 tree ${emptyTree}\t`)) return undefined;
+    if (entry.startsWith('040000 tree ')) continue;
+    const match = /^(100644|100755) blob ([a-f0-9]+)\t(.*)$/su.exec(entry);
+    if (!match) return undefined;
+    const [, mode, oid, path] = match;
+    if (
+      !canonicalNativePath(path) ||
+      path.includes('\uFFFD') ||
+      oid.length !== source.commit.length
+    )
+      return undefined;
+    const excluded = nativeGitExcludedRoot(path);
+    if (excluded) {
+      const parents = excluded.split('/').slice(0, -1);
+      while (parents.length) {
+        preserved.add(parents.join('/'));
+        parents.pop();
+      }
+      continue;
+    }
+    const file = checked.get(path);
+    if (!file || mode !== file.mode) return undefined;
+    const blob = createHash(algorithm)
+      .update(`blob ${file.bytes}\0`)
+      .update(file.content)
+      .digest('hex');
+    if (blob !== oid) return undefined;
+    checked.delete(path);
+  }
+  if (checked.size || preserved.size > NATIVE_PUBLICATION_LIMITS.files) return undefined;
+  return {
+    provider: source.provider,
+    repository: source.repository,
+    inventorySha256: nativeGitInventorySha256(files),
+    preservedDirectories: [...preserved].toSorted(),
+  };
+};
 
 export const captureNativeSourceBaseline = async ({
   project,
   identity,
   repository,
+  readTree,
   packageId,
   publications,
   signal,
@@ -30,13 +90,14 @@ export const captureNativeSourceBaseline = async ({
     return { unavailable: 'snapshot_limit' };
   const receipt = await publications.write({
     identity,
-    repository,
+    repository: { branch: repository?.branch, commit: repository?.commit },
     packageId,
     nativeSessionId: null,
     outcome: 'STOPPED',
     sequence: 1,
     files: snapshot.files,
     filesystemPolicy: snapshot.filesystemPolicy,
+    git: checkoutGitBase(snapshot.files, await readTree?.(), repository),
   });
   return { epoch: identity.epoch, receipt };
 };

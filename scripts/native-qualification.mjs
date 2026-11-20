@@ -45,6 +45,7 @@ if (!options.installedOnly) {
     'lambda/native-runtime-control/test/execution-image-policy.test.js',
     'lambda/native-runtime-control/test/revision-history.test.js',
     'lambda/native-runtime-control/test/public-files.test.js',
+    'lambda/native-runtime-control/test/git-change-set.test.js',
     'lambda/native-runtime-control/test/activity-store.test.js',
     'lambda/native-runtime-control/test/execution-diagnostics.test.js',
     'lambda/agentcore/test/native-executor.test.js',

@@ -533,11 +533,17 @@ export const verifyCompletedNativeTurn = async ({
     manifest.packageId !== state.row.configuration.packageId ||
     manifest.repository.commit !== state.row.sourceCommit ||
     manifest.repository.branch !== state.row.sourceBranch ||
+    (manifest.git &&
+      (manifest.git.provider !== state.row.configuration.repository.provider ||
+        manifest.git.repository !== state.row.configuration.repository.repository ||
+        !manifest.git.deleted)) ||
     receipt.sequence !== nativeTurnSequence(state.row)
   )
     fail('NATIVE_PUBLICATION_INVALID');
-  if (manifest.sourceBaseline && !state.row.publication)
-    await publications.source(executionIdentity(state.row), manifest, { verifyFiles: true });
+  if (manifest.sourceBaseline && (!state.row.publication || manifest.git))
+    await publications.source(executionIdentity(state.row), manifest, {
+      verifyFiles: !state.row.publication,
+    });
   if (state.row.publication) {
     const previous = await publications.read(
       {

@@ -31,6 +31,7 @@ it('retains the real pre-turn baseline separately from generated publications, i
   const source = await f.api.revision(f.prepared, target, f.recheck);
   expect(source).toMatchObject({
     status: 'captured',
+    gitChangeSet: null,
     baseline: { id: receipt.id, repository: SERIAL_SOURCE },
   });
   expect(source.baseline.files.map((file) => file.path)).toEqual(files.map((file) => file.path));
@@ -85,7 +86,7 @@ it('does not manufacture baseline data from a retained first publication or an u
       },
       f.recheck,
     ),
-  ).toMatchObject({ status: 'not_retained', baseline: null });
+  ).toMatchObject({ status: 'not_retained', baseline: null, gitChangeSet: null });
 });
 
 it.each(['preserved', 'replaced', 'dropped'])(

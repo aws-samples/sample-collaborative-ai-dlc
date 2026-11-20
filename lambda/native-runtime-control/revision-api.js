@@ -26,7 +26,9 @@ export const createNativeRevisionApi = ({
   const locate = async (draft, target, recheck) => {
     const row = await read(draft, recheck);
     if (!row?.publication || !revisions) invalid();
-    const located = await revisions.publication(row, target);
+    const located = target.source
+      ? await revisions.source(row, target)
+      : await revisions.publication(row, target);
     return { row, ...located };
   };
   const finish = async (draft, row, recheck) => {
@@ -73,10 +75,9 @@ export const createNativeRevisionApi = ({
       return page;
     },
     async revision(draft, target, recheck) {
-      const { row, found, manifest } = await locate(draft, target, recheck);
-      const protectedEvidence = completionProof
-        ? await completionProof({ row, found, manifest })
-        : null;
+      const { row, found, manifest, baseline } = await locate(draft, target, recheck);
+      const protectedEvidence =
+        completionProof && !target.source ? await completionProof({ row, found, manifest }) : null;
       if (target.evidence) {
         const { interaction, facts } = await decision(row, found, manifest);
         const memberDecision = nativeMemberDecision(interaction, facts?.response);
@@ -125,13 +126,29 @@ export const createNativeRevisionApi = ({
         };
       }
       if (target.source) {
-        const { baseline } = await revisions.source(row, target);
+        const repo = row.configuration.repository;
         await finish(draft, row, recheck);
         return {
           projectId: row.scope.projectId,
           executionId: row.scope.executionId,
           publicationId: found.receipt.id,
           publicationSequence: manifest.sequence,
+          gitChangeSet: baseline?.changes
+            ? {
+                publicationId: found.receipt.id,
+                publicationSequence: manifest.sequence,
+                sourceBaselineId: baseline.receipt.id,
+                repository: {
+                  provider: repo.provider,
+                  repository: repo.repository,
+                  ...manifest.repository,
+                },
+                // The protected engine inspects path/length/content digests. Its
+                // terminal verdict and scoped reviews do not attest Git metadata.
+                review: 'not_verified',
+                changes: baseline.changes,
+              }
+            : null,
           baseline: baseline
             ? {
                 id: baseline.receipt.id,

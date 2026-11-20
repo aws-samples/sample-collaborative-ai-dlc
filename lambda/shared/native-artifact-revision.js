@@ -125,7 +125,16 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
     } catch {
       throw unavailable();
     }
-    if (manifest.packageId !== execution.configuration?.packageId) throw unavailable();
+    const repository = execution.configuration?.repository;
+    if (
+      manifest.packageId !== execution.configuration?.packageId ||
+      (manifest.git &&
+        (manifest.git.provider !== repository?.provider ||
+          manifest.git.repository !== repository?.repository ||
+          manifest.repository.commit !== repository?.commit ||
+          manifest.repository.branch !== repository?.branch))
+    )
+      throw unavailable();
     return { found, manifest };
   };
   const locate = async (execution, revision) => {

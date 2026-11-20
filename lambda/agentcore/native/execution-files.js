@@ -10,6 +10,10 @@ import { nativePublicationPath } from '../../shared/native-publication.js';
 import { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 import { nativeSnapshotDiagnostic } from '../../shared/native-execution-failure.js';
 import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
+import {
+  nativeGitExcludedRoot,
+  nativeGitInventorySha256,
+} from '../../shared/native-git-change-set.js';
 export { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 
 export const NATIVE_SNAPSHOT_LIMITS = Object.freeze({
@@ -69,7 +73,7 @@ const rejectLink = (path, counts, onDiagnostic) => {
 
 /**
  * snapshotNativeExecutionFiles({project, signal?, limits?, io?, onDiagnostic?}) returns
- * {schemaVersion:1, complete:true, files:[{path,bytes,sha256,role,content:Buffer}],
+ * {schemaVersion:1, complete:true, files:[{path,bytes,sha256,mode,role,content:Buffer}],
  * totalBytes, exclusions:[{path,reason}]}. Contents are exact, including binary
  * files, empty files, BOMs and CRLF. No text decoding or redaction is performed.
  * io exists for deterministic race tests; production uses node:fs/promises.
@@ -82,6 +86,7 @@ export const snapshotNativeExecutionFiles = async ({
   io = fs,
   onDiagnostic,
   filesystemPolicy,
+  gitBaseline,
 } = {}) => {
   const limits = { ...NATIVE_SNAPSHOT_LIMITS, ...overrides };
   if (
@@ -200,6 +205,7 @@ export const snapshotNativeExecutionFiles = async ({
           bytes: content.length,
           sha256: createHash('sha256').update(content).digest('hex'),
           role: nativeFileRole(name),
+          mode: before.mode & 0o100n ? '100755' : '100644',
           content,
         });
         totalBytes += content.length;
@@ -208,6 +214,32 @@ export const snapshotNativeExecutionFiles = async ({
       }
     };
     await walk('', root, 0);
+    let git;
+    if (
+      gitBaseline?.git?.preservedDirectories &&
+      !gitBaseline.git.preservedDirectories.some((path) => inventory.get(path)?.isFile())
+    ) {
+      const deleted = [];
+      for (const { path } of gitBaseline.files) {
+        if (nativeGitExcludedRoot(path) || inventory.get(path)?.isFile()) continue;
+        // A filtered list alone cannot establish a deletion. A directory
+        // replacing a tracked file, ENOENT, or a file replacing its ancestor can.
+        try {
+          const observed = await observe(join(project, path));
+          if (!inventory.get(path)?.isDirectory() || !equalStat(inventory.get(path), observed))
+            fail('native_snapshot_changed');
+        } catch (error) {
+          if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+        }
+        deleted.push(path);
+      }
+      git = {
+        provider: gitBaseline.git.provider,
+        repository: gitBaseline.git.repository,
+        inventorySha256: nativeGitInventorySha256(files),
+        deleted: deleted.toSorted(),
+      };
+    }
     // Detect late changes to previously read files and additions/deletions in
     // any traversed directory, not just changes during an individual read.
     for (const [path, stat] of inventory) await unchanged(path, stat);
@@ -219,6 +251,7 @@ export const snapshotNativeExecutionFiles = async ({
       files,
       totalBytes,
       exclusions,
+      ...(git ? { git } : {}),
       ...(filesystemPolicy ? { filesystemPolicy } : {}),
     };
   } catch (error) {
