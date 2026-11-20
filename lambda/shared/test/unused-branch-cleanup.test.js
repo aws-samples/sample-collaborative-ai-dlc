@@ -112,6 +112,59 @@ describe('deleteUnusedBranches', () => {
     ]);
   });
 
+  it('checks and deletes nothing once the deadline has passed', async () => {
+    const provider = fakeProvider({
+      branches: { main: BASE_SHA, [INTENT]: BASE_SHA, [UNIT]: BASE_SHA },
+    });
+    const result = await deleteUnusedBranches(
+      provider,
+      {},
+      'org/repo',
+      { branch: INTENT, deadline: 1000 },
+      { now: () => 1000 },
+    );
+    expect(result.deleted).toEqual([]);
+    expect(result.kept).toEqual([
+      { branch: UNIT, reason: 'deadline' },
+      { branch: INTENT, reason: 'deadline' },
+    ]);
+    expect(provider.getBranchHead).not.toHaveBeenCalled();
+    expect(provider.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('stops deleting at the deadline and keeps the rest, intent branch included', async () => {
+    const provider = fakeProvider({
+      branches: { main: BASE_SHA, [INTENT]: BASE_SHA, [UNIT]: BASE_SHA, [TASK]: BASE_SHA },
+    });
+    let clock = 0;
+    provider.deleteBranch.mockImplementation(async (_ctx, _repo, name) => {
+      clock = 2000; // the first delete used up the time
+      return provider.heads.delete(name);
+    });
+    const result = await deleteUnusedBranches(
+      provider,
+      {},
+      'org/repo',
+      { branch: INTENT, deadline: 1000 },
+      { now: () => clock },
+    );
+    expect(result.deleted).toEqual([UNIT]);
+    expect(result.kept).toEqual([
+      { branch: TASK, reason: 'deadline' },
+      { branch: INTENT, reason: 'family_has_work' },
+    ]);
+    expect([...provider.heads.keys()]).toEqual(['main', INTENT, TASK]);
+  });
+
+  it('refuses a deadline that is not a time', async () => {
+    await expect(
+      deleteUnusedBranches(fakeProvider({ branches: {} }), {}, 'org/repo', {
+        branch: INTENT,
+        deadline: 'soon',
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
   it('skips branches that are already gone', async () => {
     const provider = fakeProvider({ branches: { main: BASE_SHA } });
     const result = await deleteUnusedBranches(provider, {}, 'org/repo', { branch: INTENT });
@@ -351,13 +404,14 @@ describe('deleteUnusedIntentBranches', () => {
     const results = await deleteUnusedIntentBranches({
       meta,
       operation: async (input) => {
-        clock = 8 * 60_000; // the first repository took most of a 10-minute lease
+        clock = 9.5 * 60_000; // the first repository took most of a 10-minute lease
         return operation(input);
       },
       until: 10 * 60_000,
       now: () => clock,
     });
     expect(operation).toHaveBeenCalledOnce();
+    expect(operation.mock.calls[0][0].args.deadline).toBe(9 * 60_000);
     expect(results[1]).toEqual({
       repoId: 'org/web',
       deleted: [],

@@ -364,6 +364,7 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
       return deleteUnusedBranches(provider, ctx, repo, {
         branch: args.branch,
         baseBranch: args.baseBranch,
+        deadline: args.deadline ?? null,
       });
     default:
       throw Object.assign(new Error('Unsupported source-control operation'), {

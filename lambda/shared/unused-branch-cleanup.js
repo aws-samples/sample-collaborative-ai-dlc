@@ -7,7 +7,8 @@
 // work keeps every branch, so a rewind or a delivery retry finds what it left.
 // Deletion failures are reported per branch, with the provider's status, and
 // never thrown: a refused delete (for example a protected branch) is not a
-// credential failure.
+// credential failure. With a `deadline` (epoch ms, the caller's fence), no
+// branch is checked or deleted once it has passed; what is left is kept.
 import { ProviderError } from './git-providers/errors.js';
 
 const KEEP = Object.freeze({
@@ -17,11 +18,21 @@ const KEEP = Object.freeze({
   CHANGED: 'branch_changed',
   FAMILY: 'family_has_work',
   DELETE_FAILED: 'delete_failed',
+  DEADLINE: 'deadline',
 });
 
-export const deleteUnusedBranches = async (provider, ctx, repo, { branch, baseBranch } = {}) => {
+export const deleteUnusedBranches = async (
+  provider,
+  ctx,
+  repo,
+  { branch, baseBranch, deadline = null } = {},
+  { now = Date.now } = {},
+) => {
   if (typeof branch !== 'string' || !branch.trim())
     throw new ProviderError(400, 'A branch is required');
+  if (deadline != null && !Number.isFinite(deadline))
+    throw new ProviderError(400, 'The deadline must be a time in milliseconds');
+  const expired = () => deadline != null && now() >= deadline;
   const defaultBranch = await provider.getDefaultBranch(ctx, repo);
   const base = baseBranch || defaultBranch;
   if (!base) throw new ProviderError(409, 'The base branch is unknown');
@@ -36,6 +47,13 @@ export const deleteUnusedBranches = async (provider, ctx, repo, { branch, baseBr
   const heads = new Map();
   const kept = [];
   for (const name of family) {
+    // Out of time before the family is known to be unused: delete nothing.
+    if (expired())
+      return {
+        baseBranch: base,
+        deleted: [],
+        kept: family.map((member) => ({ branch: member, reason: KEEP.DEADLINE })),
+      };
     const head = await provider.getBranchHead(ctx, repo, name);
     if (!head) continue; // already gone
     if (!(await provider.isCommitAncestor(ctx, repo, head, base))) {
@@ -61,6 +79,10 @@ export const deleteUnusedBranches = async (provider, ctx, repo, { branch, baseBr
 
   const deleted = [];
   for (const [name, head] of heads) {
+    if (expired()) {
+      kept.push({ branch: name, reason: KEEP.DEADLINE });
+      break;
+    }
     try {
       // The provider APIs cannot delete conditionally; re-read the head so a
       // push since the checks above keeps the branch.
@@ -68,6 +90,10 @@ export const deleteUnusedBranches = async (provider, ctx, repo, { branch, baseBr
       if (!current) continue;
       if (current !== head) {
         kept.push({ branch: name, reason: KEEP.CHANGED });
+        break;
+      }
+      if (expired()) {
+        kept.push({ branch: name, reason: KEEP.DEADLINE });
         break;
       }
       await provider.deleteBranch(ctx, repo, name);
