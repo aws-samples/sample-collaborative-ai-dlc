@@ -87,6 +87,15 @@ export const parseRoleConfig = (raw = process.env.SSO_ROLE_CONFIG) => {
 /**
  * The claims to record for a federated user: the provider and its raw claim
  * values, independent of the current configuration. Null for local users.
+ *
+ * TODO(hashicorp/terraform-provider-aws#47954): `custom:sso_roles` is the
+ * Cognito profile after attribute mapping, and Cognito keeps a mapped value
+ * when the IdP stops sending the claim, so a user who left their last group can
+ * still read as a member of it. Only the inbound federation trigger sees the raw
+ * assertion and can map an absent claim to an empty value. Add it once the AWS
+ * provider supports it natively; the CLI workaround is unreliable
+ * (hashicorp/terraform-provider-aws#49707). Until then the IdP must always send
+ * the claim, even when it is empty.
  */
 export const ssoClaimsFromAttributes = (attributes) => {
   const identity = parseFederatedIdentity(attributes?.identities);

@@ -301,6 +301,9 @@ resource "aws_cognito_identity_provider" "main" {
   attribute_mapping = merge(
     { email = var.sso_providers[each.key].email_claim },
     var.sso_providers[each.key].name_claim != "" ? { name = var.sso_providers[each.key].name_claim } : {},
+    # Cognito keeps this value when the IdP omits the claim. TODO: map an absent
+    # claim to empty with the inbound federation trigger once the provider
+    # supports it (hashicorp/terraform-provider-aws#47954).
     var.sso_providers[each.key].role_claim != "" ? { "custom:sso_roles" = var.sso_providers[each.key].role_claim } : {},
     lower(var.sso_providers[each.key].type) == "oidc" ? { username = "sub" } : {},
   )

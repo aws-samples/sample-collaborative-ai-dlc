@@ -96,6 +96,12 @@ With no baseline, mappings remain fully managed through the UI:
   the same value may map to several business roles.
 - A saved mapping affects the next role calculation immediately. A change to a
   user's company groups becomes visible after their next federated sign-in.
+- **Configure the IdP to always send the source attribute, even when it is
+  empty.** Cognito keeps the stored value when a sign-in omits the attribute,
+  so a user removed from their last group would keep that group, and with it
+  their platform roles, business roles, and `requiredClaimValues` access,
+  until the attribute is sent again. Some IdPs omit a group claim when the
+  user has no group; check this before relying on group removal.
 - Each federated sign-in records the user's provider and raw values in the
   access table (never the calculated roles). Business roles, including those
   of members who are not signed in, are calculated from that copy with the
