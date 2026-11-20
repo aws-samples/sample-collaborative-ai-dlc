@@ -5821,8 +5821,27 @@ also exercises an approval whose delivery became uncertain before recovery,
 the old writer's rejection, and recovery without a protected workflow.
 
 Local build and qualification receipts are under
-`.native-evidence/ne11-2026-11-20-workspace-resume/`. Deployment and live J1
-and J4 acceptance on a new engine version are pending.
+`.native-evidence/ne11-2026-11-20-workspace-resume/`.
+
+The operator deployed the fix to dev on November 20. Independent reads matched
+engine version 3 to the qualified ARM64 manifest `sha256:1ec5bca6addb6cf67324bf7c576ee65e208447230240174e5561c886e0e3a5b3`.
+All five authority aliases serve version 32, which pins new runs to engine v3.
+The four existing per-run aliases still resolve to their original v1 or v2
+engines. AgentCore endpoint `DEFAULT` serves runtime version 150. The runtime
+and the unprivileged CodeBuild project use the published index
+`sha256:e9c1051963a5947fe623393bf2bb693463f840f195d0dab474a9aba8287fa18e`.
+
+The 12 updated ZIP functions match the archives named in the reviewed plan.
+All 13 updated functions match the applied environment and log groups. The
+frontend origin matched all 629 built files, and the CDN served the same entry
+page and its referenced assets. Both native pointer queues and their dead-letter
+queues were empty at inspection. The Terraform backend reached serial 1549 on
+the same lineage, with all 36 protected resource identities preserved.
+Deployment evidence is under `.native-evidence/ne11-2026-11-20-deployed-ac2af414/`.
+The read-only acceptance preflight returned `READY` with zero blocking or unknown
+checks. Its receipt is `observations/preflight-007.json` under
+`.native-evidence/ne11-2026-11-16-live-acceptance/`. Fresh J4 and J1 live
+acceptance is pending. The J2 cancellation criterion passed on engine v2.
 
 ## Integration and simplification checklist
 
@@ -6073,7 +6092,8 @@ the current contract for newly created executions.
       kept. The installed CLI drove engine version 2 during live acceptance
       on 2026-11-19 to 2026-11-20. Fresh-session recovery stopped J1 and J4
       before any check build, isolated review or verified completion. The
-      resume correction passed local ARM64 qualification on 2026-11-20.
+      resume correction was deployed and independently verified on 2026-11-20
+      as engine version 3. Fresh J4 and J1 live acceptance is pending.
       **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
