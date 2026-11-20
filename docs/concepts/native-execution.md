@@ -6150,9 +6150,9 @@ the current contract for newly created executions.
       original and resulting files within its stage scope. The API reports coverage, freshness and verdict
       separately, including plans without reviewers. Members can prepare a Git bundle for a named publication
       against its retained Start commit and observe the pinned intent branch. Provider writes and tracker policy remain open.
-      **Dev milestone, 2026-11-20.** Independent verification passed all 109 deployment checks for
-      `39676857` (engine v5, state serial 1580). Supplemental preflight reads found no blocker.
-      The `ReadOnly` preflight awaits Midway sign-in. A fresh member run through completion and bundle download is pending.
+      **Dev milestone, 2026-11-20.** Engine v5 (`39676857`) passed all 109 independent deployment checks.
+      The release tooling reused the qualified image. The full repeat plan at state serial 1581 proposed zero cloud changes.
+      The `ReadOnly` acceptance preflight returned `READY`. A fresh member run through completion and Git bundle download is pending.
 - [ ] **NE-13 — Finish shared history, status and traceability integration.** Reuse
       the implemented revision history, decision records, comparisons and graph
       links throughout the shared Intent shell and project/dashboard/sidebar views.
