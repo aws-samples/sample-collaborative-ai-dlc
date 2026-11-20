@@ -6129,6 +6129,10 @@ the current contract for newly created executions.
       result but left its journal entry unfinished. The poc run also displayed
       a plan question whose text differed from the one the engine issued.
       Both runs were cancelled and the member saw `not verified` on each.
+      **Engine v4, 2026-11-20.** The installed image recovered a saved command
+      without replay and applied the first `poc` selection once. Independent
+      verification passed for `1eb8e9e8` in dev, and the acceptance preflight
+      returned `READY`. A fresh member run to verified completion is pending.
       **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
