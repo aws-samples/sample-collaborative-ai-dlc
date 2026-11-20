@@ -350,24 +350,25 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
       files: [],
       filesSha256: nativeEngineFileDigest([]),
     }),
-    jobsFactory: () => ({
-      check: async (request) => {
-        const value = await jobs.check(request);
-        return {
-          stdout: Buffer.alloc(0),
-          stderr: Buffer.alloc(0),
-          observation: {
-            kind: 'check',
-            jobId: randomUUID(),
-            buildId: 'native-workflow-job:fixture-build',
-          },
-          ...value,
-        };
+    jobsFactory: (input) =>
+      hooks.jobsFactory?.(input) ?? {
+        check: async (request) => {
+          const value = await jobs.check(request);
+          return {
+            stdout: Buffer.alloc(0),
+            stderr: Buffer.alloc(0),
+            observation: {
+              kind: 'check',
+              jobId: randomUUID(),
+              buildId: 'native-workflow-job:fixture-build',
+            },
+            ...value,
+          };
+        },
+        review: async () => {
+          throw new Error('This plan requires no reviewer');
+        },
       },
-      review: async () => {
-        throw new Error('This plan requires no reviewer');
-      },
-    }),
     env: {
       NATIVE_WORKFLOW_ENGINE_ARN: pin.functionArn,
       NATIVE_WORKFLOW_ENGINE_SHA256: pin.producerSha256,
@@ -573,6 +574,7 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
     execution,
     journal,
     objects,
+    s3,
     handler,
     calls,
     hooks,

@@ -21,5 +21,21 @@ try {
     ? error.code
     : 'NATIVE_ENGINE_UNAVAILABLE';
   process.stderr.write(`${code}\n`);
+  if (code === 'NATIVE_ENGINE_RESULT_SAVED')
+    process.stderr.write(
+      'The originating writer can recover the saved result by replaying its retained request.\n',
+    );
+  if (
+    [
+      'NATIVE_ENGINE_PENDING',
+      'NATIVE_ENGINE_BUSY',
+      'NATIVE_ENGINE_JOB_UNCERTAIN',
+      'NATIVE_ENGINE_CANCELLED',
+      'NATIVE_ENGINE_TIMEOUT',
+    ].includes(code)
+  )
+    process.stderr.write(
+      "Inspect with aidlc engine operation pending. To discard that unfinished operation, run aidlc engine operation abandon '<exact pending JSON>'.\n",
+    );
   process.exitCode = 1;
 }

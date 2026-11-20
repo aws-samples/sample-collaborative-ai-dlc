@@ -496,6 +496,46 @@ describe('native workflow engine client lost acknowledgements', () => {
 });
 
 describe('native workflow engine client pending operations', () => {
+  it('inspects and explicitly retires only the identified retained request, including after a lost reply', async () => {
+    // The status read succeeds before the command is sent.
+    backend.transport = async (request, handle) => {
+      if (request.action === 'status') return reply(await handle(request));
+      throw new Error('Lost request reply');
+    };
+    await expect(client().command(['next'])).rejects.toThrow('Lost request reply');
+    const retained = JSON.parse(await fs.readFile(pendingPath(), 'utf8'));
+    const operation = {
+      requestId: retained.requestId,
+      token: randomUUID(),
+      expectedVersion: 0,
+      writerGeneration: 1,
+      sequence: 1,
+    };
+    let attempts = 0;
+    backend.transport = async (request, handle) => {
+      if (request.action === 'pending') return reply({ ok: true, operation });
+      if (request.action !== 'abandon') return reply(await handle(request));
+      if (request.operation.token !== operation.token)
+        return reply({ ok: false, code: 'NATIVE_ENGINE_REQUEST_CONFLICT' });
+      backend.version = 1;
+      if (++attempts === 1) throw new Error('Lost abandonment reply');
+      return reply({ ok: true, status: 'abandoned', requestId: operation.requestId, version: 1 });
+    };
+    const { stdout } = await client().command(['engine', 'operation', 'pending']);
+    const discard = (target) => client().command(['engine', 'operation', 'abandon', target]);
+    await expect(discard(JSON.stringify({ ...operation, token: randomUUID() }))).rejects.toThrow(
+      'NATIVE_ENGINE_REQUEST_CONFLICT',
+    );
+    await expect(discard(stdout)).rejects.toThrow('Lost abandonment reply');
+    expect(JSON.parse(await fs.readFile(pendingPath(), 'utf8'))).toEqual(retained);
+    expect(JSON.parse((await discard(stdout)).stdout)).toMatchObject({ status: 'abandoned' });
+    expect(await exists(pendingPath())).toBe(false);
+    expect(s3.puts).toHaveLength(1);
+    expect((await client().command(['engine', 'state', 'show'])).version).toBe(2);
+    expect(backend.executed).toHaveLength(1);
+    expect(backend.executed[0]).not.toBe(retained.requestId);
+  });
+
   it('keeps the retained request while the service still reports it pending', async () => {
     backend.respond = async () => ({
       patches: [patch('src/app.js', 'old application\n', 'new application\n')],

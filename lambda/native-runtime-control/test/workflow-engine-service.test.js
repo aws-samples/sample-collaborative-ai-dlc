@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { nativeEngineIdentity } from '../workflow-engine/store.js';
+import { createNativeEngineJobs } from '../workflow-engine/jobs.js';
+import { prepareNativeEngineClient } from '../../agentcore/native/workflow-client.js';
 import {
   NATIVE_ENGINE_PROFILE,
   engineDigest,
@@ -105,6 +110,429 @@ const interruptFinish = (t, body) => {
     if (['completed', 'failed'].includes(journalWrite(command, body))) throw timeout();
   };
 };
+const recoveryCommand = async (t, action, operation, identity) =>
+  t.handler(
+    {
+      schemaVersion: 1,
+      identity: identity ?? (await t.identity()),
+      action,
+      ...(operation ? { operation } : {}),
+    },
+    await t.context(),
+  );
+const pendingOperation = async (t) => (await recoveryCommand(t, 'pending')).operation;
+const abandon = (t, operation, identity) => recoveryCommand(t, 'abandon', operation, identity);
+const operationRow = (t, requestId) =>
+  [...t.f.rows.values()].find((row) => row.sk.endsWith(`#OP#${requestId}`));
+const useCheckJob = (t, send, sign = async () => 'https://fixture.invalid/job') => {
+  t.hooks.jobsFactory = (input) =>
+    createNativeEngineJobs({
+      ...input,
+      codebuild: { send },
+      s3: t.s3,
+      objects: t.objects,
+      journal: t.journal,
+      workspace: { ...input.workspace, inspectionFiles: input.workspace.publicFiles },
+      env: { NATIVE_WORKFLOW_JOB_PROJECT: 'fixture', NATIVE_WORKFLOW_CHECK_ROLE: 'fixture-role' },
+      sign,
+    });
+};
+
+describe('explicit abandonment of a protected engine operation', () => {
+  it.each(['timeout', 'uncertain job', 'cancelled operation'])(
+    'continues from the prior snapshot after %s with no new decision or check receipt',
+    async (fault) => {
+      const t = await setup();
+      await t.command([]);
+      t.project.set('src/app.js', Buffer.from('export default 1'));
+      const identity = nativeEngineIdentity(await t.row());
+      const prior = await t.journal.get(identity);
+      const body = await t.request('execute', {
+        args: ['engine', 'sensor', 'fire', '--stage', 'build'],
+      });
+      const sendBuild = vi.fn(async () => {
+        throw timeout();
+      });
+      useCheckJob(t, sendBuild);
+      if (fault === 'timeout')
+        t.hooks.tool = () => {
+          throw timeout();
+        };
+      let context;
+      if (fault === 'cancelled operation') {
+        context = { getRemainingTimeInMillis: () => 60_001 };
+        t.hooks.jobsFactory = ({ signal }) => ({
+          check: async () => {
+            if (!signal.aborted)
+              await new Promise((resolve) =>
+                signal.addEventListener('abort', resolve, { once: true }),
+              );
+            throw new DOMException('Operation interrupted', 'AbortError');
+          },
+        });
+      }
+      const interruption =
+        fault === 'timeout'
+          ? 'NATIVE_ENGINE_TIMEOUT'
+          : fault === 'uncertain job'
+            ? 'NATIVE_ENGINE_JOB_UNCERTAIN'
+            : 'NATIVE_ENGINE_CANCELLED';
+      await expect(t.send(body, context)).rejects.toMatchObject({ code: interruption });
+      expect((await t.send(body)).response.status).toBe('pending');
+      await expect(t.command(['next'])).rejects.toMatchObject({ code: 'NATIVE_ENGINE_BUSY' });
+      const operation = await pendingOperation(t);
+      expect(operation).toMatchObject({
+        requestId: body.requestId,
+        expectedVersion: prior.version,
+        sequence: 1,
+        writerGeneration: 1,
+      });
+      for (const changed of [
+        { requestId: randomUUID() },
+        { token: randomUUID() },
+        { attemptId: randomUUID() },
+        { epoch: 2 },
+        { sequence: 2 },
+        { writerGeneration: 2 },
+        { expectedVersion: 0 },
+      ])
+        await expect(abandon(t, { ...operation, ...changed })).rejects.toMatchObject({
+          code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+        });
+      t.access.allowed = false;
+      await expect(abandon(t, operation)).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_FORBIDDEN',
+      });
+      t.access.allowed = true;
+      t.f.hooks.after = (command) => {
+        if (
+          command.input.TransactItems?.some(
+            (item) => item.Update?.ExpressionAttributeValues?.[':abandoned'],
+          )
+        )
+          throw timeout();
+      };
+      const receipt = await abandon(t, operation);
+      expect(receipt).toMatchObject({
+        status: 'abandoned',
+        requestId: body.requestId,
+        version: prior.version + 1,
+        abandonedAt: t.f.now(),
+      });
+      t.f.hooks.after = null;
+      const row = operationRow(t, body.requestId);
+      expect(row).toMatchObject({
+        identity,
+        abandonedBy: identity,
+        abandonedAt: receipt.abandonedAt,
+        status: 'abandoned',
+      });
+      expect(row).not.toHaveProperty('result');
+      expect(row).not.toHaveProperty('snapshot');
+      if (fault === 'uncertain job') {
+        expect(Object.values(row.jobs)).toMatchObject([{ status: 'uncertain' }]);
+        const [jobId] = Object.keys(row.jobs);
+        await expect(
+          t.journal.recordJob(row, jobId, { status: 'finished' }, 'uncertain'),
+        ).rejects.toThrow();
+      }
+      expect(sendBuild).toHaveBeenCalledTimes(Number(fault === 'uncertain job'));
+      expect((await t.journal.get(identity)).snapshot).toEqual(prior.snapshot);
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+      t.hooks.tool = null;
+      expect(JSON.parse((await t.command(['next'])).result.stdout)).toMatchObject({
+        stage: 'build',
+        gate: true,
+      });
+      expect(await abandon(t, operation)).toEqual(receipt);
+      const proof = await t.proof(await t.publish());
+      expect(proof).toMatchObject({
+        workflowCompletion: 'not_verified',
+        requiredChecks: 'incomplete',
+        engineApplication: [],
+      });
+      expect(sendBuild).toHaveBeenCalledTimes(Number(fault === 'uncertain job'));
+      expect(operationRow(t, body.requestId)).toEqual(row);
+    },
+  );
+  it.each(['original', 'replay'])(
+    'lets a late %s win the abandonment transaction',
+    async (winner) => {
+      const t = await setup();
+      const body = await t.request('execute');
+      const paused = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      const saved = Promise.withResolvers();
+      const acknowledged = Promise.withResolvers();
+      t.hooks.afterPut = async ({ Key }) => {
+        if (winner === 'replay' && Key.endsWith('/result.json.gz')) {
+          saved.resolve();
+          await acknowledged.promise;
+        }
+      };
+      t.hooks.tool = () => {
+        paused.resolve();
+        return release.promise;
+      };
+      const original = t.send(body);
+      await paused.promise;
+      const target = await pendingOperation(t);
+      t.f.hooks.before = async (command) => {
+        if (
+          command.input.TransactItems?.some(
+            (item) => item.Update?.ExpressionAttributeValues?.[':abandoned'],
+          )
+        ) {
+          release.resolve();
+          if (winner === 'replay') {
+            await saved.promise;
+            expect((await t.send(body)).response.status).toBe('completed');
+            acknowledged.resolve();
+          }
+          await original;
+        }
+      };
+      await expect(abandon(t, target)).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_HEAD_CHANGED',
+      });
+      expect(await t.send(body)).toEqual(await original);
+      expect(operationRow(t, body.requestId)).toMatchObject({ status: 'completed' });
+      expect(t.calls).toHaveLength(1);
+    },
+  );
+  it.each(['before launch', 'during launch'])(
+    'fences the isolated job %s and rejects its late acknowledgement',
+    async (phase) => {
+      const t = await setup();
+      await t.command([]);
+      t.project.set('src/app.js', Buffer.from('export default 1'));
+      const body = await t.request('execute', {
+        args: ['engine', 'sensor', 'fire', '--stage', 'build'],
+      });
+      const discard = async () => abandon(t, await pendingOperation(t));
+      const send = vi.fn(async (command) => {
+        if (command.constructor.name === 'StopBuildCommand') {
+          expect(command.input.id).toBe('fixture:old');
+          return {};
+        }
+        expect(command.constructor.name).toBe('StartBuildCommand');
+        await discard();
+        return { build: { id: 'fixture:old' } };
+      });
+      useCheckJob(t, send, async (_s3, command) => {
+        if (phase === 'before launch' && command.constructor.name === 'PutObjectCommand')
+          await discard();
+        return 'https://fixture.invalid/job';
+      });
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+      expect(send).toHaveBeenCalledTimes(phase === 'before launch' ? 0 : 2);
+      expect(Object.values(operationRow(t, body.requestId).jobs).map((job) => job.status)).toEqual(
+        phase === 'before launch' ? [] : ['prepared'],
+      );
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+      expect(await t.proof(await t.publish())).toMatchObject({
+        requiredChecks: 'incomplete',
+        workflowCompletion: 'not_verified',
+      });
+    },
+  );
+  it('keeps an abandoned finalize and its late evidence out of the same and later publications', async () => {
+    const t = await setup();
+    const prior = await toGate(t);
+    await approve(t, prior);
+    const history = await t.proof(prior);
+    const produced = await t.f.turn(2);
+    const body = await t.request('finalize', {
+      publication: produced.receipt,
+      interaction: produced.interactionReceipt,
+    });
+    let receipt;
+    t.hooks.beforeObject = async (command) => {
+      if (
+        command.constructor.name === 'PutObjectCommand' &&
+        command.input.Key.endsWith(`${body.requestId}/result.json.gz`)
+      ) {
+        receipt = await abandon(t, await pendingOperation(t));
+      }
+    };
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+    await expect(
+      t.send({ ...body, requestId: randomUUID(), expectedVersion: receipt.version }),
+    ).rejects.toMatchObject({ code: 'NATIVE_ENGINE_PUBLICATION_ABANDONED' });
+    expect(await t.proof(produced)).toBeNull();
+    expect(await t.proof(prior)).toEqual(history);
+    expect(
+      [...t.f.rows.values()]
+        .filter((row) => row.sk.includes('#PUBLICATION#'))
+        .map((row) => row.publicationId),
+    ).toEqual([prior.receipt.id]);
+    expect((await t.command(['next'])).result.exitCode).toBe(0);
+    const late = await t.objects.observeOperationObject(body.identity, body.requestId, 'result');
+    const later = await t.f.turn(2, {
+      files: [...t.project].map(([path, content]) => ({ path, content, role: 'code' })),
+    });
+    const next = await t.request('finalize', {
+      publication: later.receipt,
+      interaction: later.interactionReceipt,
+    });
+    const finish = t.journal.finish;
+    t.journal.finish = (input) =>
+      finish({ ...input, publication: { ...input.publication, evidence: late.value.evidence } });
+    await expect(t.send(next)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_PUBLICATION_INVALID' });
+    expect(await t.proof(later)).toBeNull();
+    t.journal.finish = finish;
+    expect((await t.send(next)).response.status).toBe('completed');
+    expect(await t.proof(later)).toMatchObject({ publicationId: later.receipt.id });
+    expect(await t.proof(produced)).toBeNull();
+  });
+  it('holds saved output or an inconclusive lookup for ordinary exact-request recovery', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    interruptFinish(t, body);
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    // V4/V5 operation rows predate the optional action / publication identity.
+    delete operationRow(t, body.requestId).action;
+    const target = await pendingOperation(t);
+    t.hooks.checksum = () => '';
+    await expect(abandon(t, target)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_OBJECT_INVALID',
+    });
+    t.hooks.checksum = null;
+    await expect(abandon(t, target)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_RESULT_SAVED' });
+    expect(await pendingOperation(t)).toEqual(target);
+    t.f.hooks.before = null;
+    expect((await t.send(body)).response.status).toBe('completed');
+    expect(t.calls).toHaveLength(1);
+  });
+  it('admits the replacement CLI only after member confirmation and stop fencing, then resumes the open gate', async () => {
+    const t = await setup();
+    const prior = await toGate(t);
+    await approve(t, prior);
+    const history = await t.proof(prior);
+    const body = await t.request('execute', { args: ['next'] });
+    t.hooks.tool = () => {
+      throw timeout();
+    };
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_TIMEOUT' });
+    t.hooks.tool = null;
+    const original = await pendingOperation(t);
+    const stopped = await stopForWorkspaceRecovery(t);
+    const request = {
+      requestId: randomUUID(),
+      recoveryId: stopped.recovery.id,
+      confirmWorkspaceResume: true,
+    };
+    t.f.authorization.member = false;
+    await expect(t.f.api.recover(t.f.prepared, request, t.f.recheck)).rejects.toMatchObject({
+      code: 'NATIVE_PREPARATION_FORBIDDEN',
+    });
+    t.f.authorization.member = true;
+    await t.f.api.recover(t.f.prepared, request, t.f.recheck);
+    await expect(abandon(t, original)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
+    });
+    const replacement = await t.execution.claim(t.f.bindingIdentity);
+    const restoring = await t.execution.recoveryStopped({ row: replacement.row });
+    await expect(abandon(t, original, body.identity)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_FORBIDDEN',
+    });
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'native-abandon-')));
+    try {
+      const project = join(root, 'project');
+      await mkdir(project, { mode: 0o700 });
+      const { client } = await prepareNativeEngineClient({
+        project,
+        control: join(root, 'control'),
+        s3: t.s3,
+        forbiddenBytes: [],
+        payload: {
+          ...(await t.identity()),
+          command: 'native-resume',
+          configuration: { workflowEngine: t.pin },
+        },
+        env: {
+          NATIVE_RUNTIME_ACCOUNT_ID: t.f.configuration.accountId,
+          NATIVE_PUBLICATION_BUCKET: t.f.configuration.publicationBucket,
+        },
+        lambda: {
+          send: async ({ input }) => {
+            const reply = await t.handler(
+              JSON.parse(input.Payload),
+              await t.context({ invokedFunctionArn: input.FunctionName }),
+            );
+            return { Payload: Buffer.from(JSON.stringify(reply)) };
+          },
+        },
+      });
+      const { stdout } = await client.command(['engine', 'operation', 'pending']);
+      expect(JSON.parse(stdout)).toEqual(original);
+      const cmd = ['engine', 'operation', 'abandon', stdout];
+      const abandoned = await client.command(cmd);
+      expect(JSON.parse(abandoned.stdout)).toMatchObject({
+        status: 'abandoned',
+        requestId: body.requestId,
+      });
+      expect(await client.command(cmd)).toEqual(abandoned);
+      expect(operationRow(t, body.requestId).abandonedBy).toEqual(nativeEngineIdentity(restoring));
+      expect(JSON.parse((await client.command(['next', '--resume'])).stdout)).toMatchObject({
+        stage: 'build',
+        gate: true,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+    await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
+    expect(await t.proof(prior)).toEqual(history);
+    expect(await t.proof(await t.publish(gate()))).toMatchObject({
+      humanApproval: 'incomplete',
+      workflowCompletion: 'not_verified',
+      engineApplication: [],
+    });
+  });
+  it('cannot abandon or resume a terminally cancelled execution', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    t.hooks.tool = () => {
+      throw timeout();
+    };
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_TIMEOUT' });
+    const target = await pendingOperation(t);
+    t.f.hooks.before = async (command) => {
+      if (
+        command.input.TransactItems?.some(
+          (item) => item.Update?.ExpressionAttributeValues?.[':abandoned'],
+        )
+      ) {
+        t.f.hooks.before = null;
+        await t.execution.cancel(t.f.bindingIdentity);
+      }
+    };
+    await expect(abandon(t, target)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
+    });
+    const stopper = await t.execution.claim(t.f.bindingIdentity);
+    const cancelled = await t.execution.advance({
+      row: stopper.row,
+      patch: { status: 'CANCELLED' },
+    });
+    expect(cancelled.epoch).toBe(body.identity.epoch + 1);
+    await expect(abandon(t, target, body.identity)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_FORBIDDEN',
+    });
+    await expect(abandon(t, target)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
+    });
+    await expect(
+      t.f.api.recover(
+        t.f.prepared,
+        { requestId: randomUUID(), recoveryId: randomUUID(), confirmWorkspaceResume: true },
+        t.f.recheck,
+      ),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CANCELLED' });
+    expect(operationRow(t, body.requestId).status).toBe('running');
+  });
+});
 describe('protected workflow engine journal recovery', () => {
   it('retries rejected begin and finish transactions without dispatching the sensor twice', async () => {
     const t = await setup();
@@ -326,6 +754,9 @@ describe('protected workflow engine journal recovery', () => {
     await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
     await expect(t.send({ ...body, identity: await t.identity() })).rejects.toMatchObject({
       code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+    });
+    await expect(abandon(t, await pendingOperation(t))).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_RESULT_SAVED',
     });
     await expect(t.send(await t.request('execute'))).rejects.toMatchObject({
       code: 'NATIVE_ENGINE_BUSY',

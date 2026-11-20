@@ -88,7 +88,6 @@ export const createNativeEngineJobs = ({
       roleArn,
       image: row.configuration.image.uri,
     };
-    await journal.recordJob(operation, jobId, record);
     const inputUrl = await sign(
       s3,
       new GetObjectCommand({
@@ -135,6 +134,9 @@ export const createNativeEngineJobs = ({
       },
     };
     await authorize();
+    // Admit this unique launch under the operation token immediately before
+    // dispatch. Abandonment during capability preparation fences this write.
+    await journal.recordJob(operation, jobId, record);
     let buildId;
     try {
       // One attempt only. A lost StartBuild acknowledgement is not retried
@@ -148,10 +150,10 @@ export const createNativeEngineJobs = ({
       throw engineFailure('NATIVE_ENGINE_JOB_UNCERTAIN');
     }
     const running = { ...record, status: 'running', buildId };
-    await journal.recordJob(operation, jobId, running, 'prepared');
     const expected = { id: buildId, projectName, roleArn, image: record.image };
     let build;
     try {
+      await journal.recordJob(operation, jobId, running, 'prepared');
       while (true) {
         await authorize();
         const response = await codebuild.send(new BatchGetBuildsCommand({ ids: [buildId] }), {

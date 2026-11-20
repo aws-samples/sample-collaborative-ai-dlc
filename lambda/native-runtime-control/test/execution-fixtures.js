@@ -125,14 +125,16 @@ export const executionFixture = ({
     });
   };
   const update = (operation) => {
-    const set = /^SET ([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(operation.UpdateExpression);
-    if (!set) throw new Error(`Unknown test update ${operation.UpdateExpression}`);
     const item = read(operation.Key);
-    const parts = set[1]
-      .split('.')
-      .map((part) => operation.ExpressionAttributeNames?.[part] ?? part);
-    const parent = parts.slice(0, -1).reduce((value, part) => value[part], item);
-    parent[parts.at(-1)] = clone(operation.ExpressionAttributeValues[set[2]]);
+    for (const assignment of operation.UpdateExpression.replace(/^SET /, '').split(', ')) {
+      const set = /^([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(assignment);
+      if (!set) throw new Error(`Unknown test update ${operation.UpdateExpression}`);
+      const parts = set[1]
+        .split('.')
+        .map((part) => operation.ExpressionAttributeNames?.[part] ?? part);
+      const parent = parts.slice(0, -1).reduce((value, part) => value[part], item);
+      parent[parts.at(-1)] = clone(operation.ExpressionAttributeValues[set[2]]);
+    }
     rows.set(key(item), item);
   };
   const ddb = {

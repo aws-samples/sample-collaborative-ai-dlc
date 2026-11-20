@@ -31,22 +31,28 @@ const decode = (result) => {
   }
 };
 const requestValue = (request) => {
-  const allowed = [
-    'schemaVersion',
-    'identity',
-    'action',
-    'requestId',
-    'expectedVersion',
-    'input',
-    'args',
-    'publication',
-    'interaction',
-  ];
+  const base = ['schemaVersion', 'identity', 'action'];
+  const allowed =
+    request?.action === 'abandon'
+      ? [...base, 'operation']
+      : request?.action === 'pending'
+        ? base
+        : [
+            'schemaVersion',
+            'identity',
+            'action',
+            'requestId',
+            'expectedVersion',
+            'input',
+            'args',
+            'publication',
+            'interaction',
+          ];
   if (
     !request ||
     request.schemaVersion !== 1 ||
     Object.keys(request).some((key) => !allowed.includes(key)) ||
-    !['status', 'execute', 'mirror', 'finalize'].includes(request.action) ||
+    !['status', 'pending', 'abandon', 'execute', 'mirror', 'finalize'].includes(request.action) ||
     !request.identity ||
     Object.keys(request.identity).toSorted().join(',') !==
       'attemptId,bindingId,epoch,executionId,projectId,sequence,writerGeneration'
@@ -237,6 +243,13 @@ const failureCode = (error) =>
     ? error.code
     : 'NATIVE_ENGINE_UNAVAILABLE';
 
+const interruptionCode = (error, signal) => {
+  if (error?.name === 'TimeoutError' || error?.code === 'NATIVE_ENGINE_TIMEOUT')
+    return 'NATIVE_ENGINE_TIMEOUT';
+  if (signal.aborted || error?.name === 'AbortError' || error?.code === 'NATIVE_ENGINE_CANCELLED')
+    return 'NATIVE_ENGINE_CANCELLED';
+  return error?.code === 'NATIVE_ENGINE_JOB_UNCERTAIN' ? error.code : null;
+};
 const operationResponse = (operation) => ({
   ok: true,
   status: operation.status,
@@ -367,6 +380,24 @@ export const createNativeWorkflowEngine =
       return current;
     };
     await authorize();
+    if (request.action === 'pending') {
+      return { ok: true, operation: await journal.pending(identity, pin.producerSha256) };
+    }
+    if (request.action === 'abandon') {
+      const receipt = await journal.abandon({
+        identity,
+        target: request.operation,
+        producerSha256: pin.producerSha256,
+        beforeAbandon: async (original) => {
+          // A missing snapshot alone is inconclusive. The per-request result
+          // is written last. A failed lookup must never imply absence.
+          if (await objects.observeOperationObject(original.identity, original.requestId, 'result'))
+            throw engineFailure('NATIVE_ENGINE_RESULT_SAVED');
+          await authorize();
+        },
+      });
+      return { ok: true, ...receipt };
+    }
     if (request.action === 'status') {
       const head = await journal.get(identity);
       return {
@@ -377,13 +408,21 @@ export const createNativeWorkflowEngine =
     }
     const opened = await journal.begin({
       identity,
+      action: request.action,
       requestId: request.requestId,
       expectedVersion: request.expectedVersion,
       requestSha256: nativeEngineRequestSha256(request),
       producerSha256: pin.producerSha256,
+      ...(request.action === 'finalize' && request.publication?.sequence === identity.sequence
+        ? { publicationId: request.publication.id }
+        : {}),
     });
     const operation = opened.operation;
     if (opened.replay) return replayOperation({ ...opened, request, objects, journal, authorize });
+    const authorizeOperation = async () => {
+      await authorize();
+      await journal.requireRunning(operation);
+    };
     const signal = operationSignal(context);
     let workspace;
     let result;
@@ -400,7 +439,14 @@ export const createNativeWorkflowEngine =
         );
       }
       const git = gitFactory({ project: workspace.project, home: workspace.home, signal });
-      const jobs = jobsFactory({ row, operation, workspace, archive, authorize, signal });
+      const jobs = jobsFactory({
+        row,
+        operation,
+        workspace,
+        archive,
+        authorize: authorizeOperation,
+        signal,
+      });
       const sessionId = row.attemptId;
       const runner = await runnerFactory({
         project: workspace.project,
@@ -433,11 +479,12 @@ export const createNativeWorkflowEngine =
         ({ result, proof } = await finalizeNativeEnginePublication(operationContext));
       else result = await runNativeEngineCommand(operationContext);
     } catch (error) {
-      failure = failureCode(error);
-      if (failure === 'NATIVE_ENGINE_JOB_UNCERTAIN') {
+      const interrupted = interruptionCode(error, signal);
+      if (interrupted) {
         await workspace?.close();
-        throw engineFailure(failure);
+        throw engineFailure(interrupted);
       }
+      failure = failureCode(error);
       // Persist partial protected state with its failure; never rerun this
       // operation or label an incomplete job/check as passing. The caller sees
       // only the code; the entry records which step raised what.
@@ -461,10 +508,12 @@ export const createNativeWorkflowEngine =
       };
     }
     try {
-      await authorize();
+      if (signal.aborted) throw engineFailure('NATIVE_ENGINE_CANCELLED');
+      await authorizeOperation();
       const snapshot = workspace
         ? await objects.write(identity, request.requestId, 'snapshot', await workspace.snapshot())
         : (opened.snapshot ?? null);
+      if (signal.aborted) throw engineFailure('NATIVE_ENGINE_CANCELLED');
       const output = await objects.write(identity, request.requestId, 'result', result, 'output');
       const finished = await journal.finish({
         operation,

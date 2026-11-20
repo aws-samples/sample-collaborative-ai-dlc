@@ -378,7 +378,8 @@ describe('isolated project check invocation', () => {
   it('authorizes immediately before the build starts and before its outcome is recorded', async () => {
     const f = fixture();
     await f.api.check(check());
-    expect(f.events.at(f.events.indexOf('StartBuild') - 1)).toBe('authorize');
+    const launch = f.events.indexOf('StartBuild');
+    expect(f.events.slice(launch - 2, launch)).toEqual(['authorize', 'journal:prepared']);
     expect(f.events.at(f.events.indexOf('journal:finished') - 1)).toBe('authorize');
     for (const [index, event] of f.events.entries())
       if (event === 'BatchGetBuilds') expect(f.events[index - 1]).toBe('authorize');
@@ -387,7 +388,7 @@ describe('isolated project check invocation', () => {
     denied.authorize.mockRejectedValue(Object.assign(new Error('revoked'), code('REVOKED')));
     await expect(denied.api.check(check())).rejects.toMatchObject(code('REVOKED'));
     expect(denied.sent('StartBuild')).toEqual([]);
-    expect(denied.transitions).toEqual(['prepared']);
+    expect(denied.transitions).toEqual([]);
 
     const late = fixture();
     late.authorize

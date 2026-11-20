@@ -209,6 +209,66 @@ export const createNativeEngineClient = ({
     }
     return { ...result, version: observed.version };
   };
+  const pendingPath = join(directory, 'pending.json');
+  const readPending = () =>
+    json(pendingPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      return null;
+    });
+  const submit = async (request) => {
+    try {
+      return await accept(request, await invoke(request));
+    } catch (error) {
+      // Only the service can retire this exact request. Surface its refusal
+      // to this caller; a later CLI invocation can submit a new command.
+      if (['NATIVE_ENGINE_ABANDONED', 'NATIVE_ENGINE_PUBLICATION_ABANDONED'].includes(error.code))
+        await unlink(pendingPath);
+      throw error;
+    }
+  };
+  const recoverOperation = async (args) => {
+    const [verb, serialized] = args;
+    const envelope = { schemaVersion: 1, identity };
+    let response;
+    if (verb === 'pending' && args.length === 1) {
+      response = (await invoke({ ...envelope, action: 'pending' })).operation;
+    } else {
+      if (verb !== 'abandon' || args.length !== 2) throw engineFailure();
+      let operation;
+      try {
+        operation = JSON.parse(serialized);
+      } catch {
+        throw engineFailure();
+      }
+      response = await invoke({ ...envelope, action: 'abandon', operation });
+      if (
+        response.status !== 'abandoned' ||
+        response.requestId !== operation?.requestId ||
+        response.version !== operation.expectedVersion + 1
+      )
+        throw engineFailure('NATIVE_ENGINE_RESULT_INVALID');
+      // A live client may still be waiting for the late invocation. It owns
+      // pending.json until it receives the journal refusal and releases its lock.
+      const release = await localLock(directory).catch((error) => {
+        if (error.code !== 'NATIVE_ENGINE_BUSY') throw error;
+        return null;
+      });
+      if (release) {
+        try {
+          const retained = await readPending();
+          if (
+            retained?.requestId === operation.requestId &&
+            same(retained.identity, identity) &&
+            retained.expectedVersion === operation.expectedVersion
+          )
+            await unlink(pendingPath);
+        } finally {
+          await release();
+        }
+      }
+    }
+    return { exitCode: 0, stdout: `${JSON.stringify(response)}\n`, stderr: '' };
+  };
   return {
     async command(
       args = [],
@@ -216,18 +276,15 @@ export const createNativeEngineClient = ({
     ) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await safeDirectory(directory);
+      if (action === 'execute' && args[0] === 'engine' && args[1] === 'operation')
+        return recoverOperation(args.slice(2));
       const release = await localLock(directory);
       try {
-        let pending;
-        try {
-          pending = await json(join(directory, 'pending.json'));
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-        }
+        const pending = await readPending();
         if (pending) {
           if (!same(pending.identity, identity))
             throw engineFailure('NATIVE_ENGINE_RESULT_INVALID');
-          const reconciled = await accept(pending, await invoke(pending));
+          const reconciled = await submit(pending);
           if (
             pending.action === action &&
             same(pending.args ?? [], args) &&
@@ -283,7 +340,7 @@ export const createNativeEngineClient = ({
           flag: 'wx',
           mode: 0o600,
         });
-        return await accept(request, await invoke(request));
+        return await submit(request);
       } finally {
         await release();
       }

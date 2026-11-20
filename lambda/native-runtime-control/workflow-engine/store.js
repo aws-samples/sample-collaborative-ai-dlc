@@ -10,7 +10,11 @@ import {
   nativeConfirmedWorkspaceResume,
 } from '../execution-store.js';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
-import { engineDigest, engineFailure } from '../../shared/native-workflow-protocol.js';
+import {
+  engineDigest,
+  engineFailure,
+  nativeEngineObjectPrefix,
+} from '../../shared/native-workflow-protocol.js';
 import { retryTransactionConflicts } from '../../shared/dynamodb-transaction-conflicts.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -52,13 +56,14 @@ const checkedIdentity = (value) => {
   nativeExecutionKey(scope);
   return structuredClone(value);
 };
+const attemptPrefix = (attemptId, epoch) => `ENGINE#${attemptId}#${epoch}`;
 export const nativeEngineKeys = (input, requestId) => {
   const identity = checkedIdentity(input);
   const { pk } = nativeExecutionKey({
     projectId: identity.projectId,
     executionId: identity.executionId,
   });
-  const prefix = `ENGINE#${identity.attemptId}#${identity.epoch}`;
+  const prefix = attemptPrefix(identity.attemptId, identity.epoch);
   if (requestId !== undefined && !valid(requestId, UUID)) throw engineFailure();
   return {
     head: { pk, sk: `${prefix}#HEAD` },
@@ -75,7 +80,7 @@ export const nativeEnginePublicationKey = (scope, attemptId, epoch, publicationI
     throw engineFailure();
   return {
     ...nativeExecutionKey(scope),
-    sk: `ENGINE#${attemptId}#${epoch}#PUBLICATION#${publicationId}`,
+    sk: `${attemptPrefix(attemptId, epoch)}#PUBLICATION#${publicationId}`,
   };
 };
 const writerCondition = (tableName, identity, row) => ({
@@ -130,6 +135,56 @@ const pendingHead = (head, operation) => {
     throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
   return head;
 };
+const operationTarget = ({
+  requestId,
+  token,
+  expectedVersion,
+  identity,
+  action,
+  publicationId,
+}) => ({
+  requestId,
+  token,
+  expectedVersion,
+  attemptId: identity.attemptId,
+  epoch: identity.epoch,
+  sequence: identity.sequence,
+  writerGeneration: identity.writerGeneration,
+  ...(action ? { action } : {}),
+  ...(publicationId ? { publicationId } : {}),
+});
+const completeHead = (tableName, head, operation, changes = {}) => {
+  const { pending, ...previous } = pendingHead(head, operation);
+  return {
+    Put: {
+      TableName: tableName,
+      Item: { ...previous, ...changes, version: operation.expectedVersion + 1 },
+      ConditionExpression:
+        'pending = :pending AND #version = :version AND producerSha256 = :producer',
+      ExpressionAttributeNames: { '#version': 'version' },
+      ExpressionAttributeValues: {
+        ':pending': pending,
+        ':version': operation.expectedVersion,
+        ':producer': operation.producerSha256,
+      },
+    },
+  };
+};
+// A second finalize request must not backfill an abandoned publication. Scope
+// the refusal to its originating turn; existing proof remains independent.
+const abandonedPublicationKey = (identity, publicationId) => {
+  if (!valid(publicationId, SHA)) throw engineFailure();
+  return {
+    pk: nativeEngineKeys(identity).head.pk,
+    sk: `${attemptPrefix(identity.attemptId, identity.epoch)}#ABANDONED_PUBLICATION#${identity.sequence}#${publicationId}`,
+  };
+};
+const abandonmentReceipt = ({ requestId, status, version, abandonedAt }) => ({
+  requestId,
+  status,
+  version,
+  abandonedAt,
+});
 const receipt = (value) => {
   if (
     !value ||
@@ -176,12 +231,36 @@ export const createNativeEngineStore = ({
       !operation ||
       operation.schemaVersion !== 1 ||
       !valid(operation.token, UUID) ||
-      !['running', 'completed', 'failed'].includes(operation.status) ||
+      !['running', 'completed', 'failed', 'abandoned'].includes(operation.status) ||
       operation.requestId !== input.requestId ||
       !same(operation.identity, input.identity) ||
       operation.requestSha256 !== input.requestSha256 ||
       operation.producerSha256 !== input.producerSha256 ||
       operation.expectedVersion !== input.expectedVersion
+    )
+      throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
+    if (operation.status === 'abandoned') throw engineFailure('NATIVE_ENGINE_ABANDONED');
+    return operation;
+  };
+  const readTarget = async (identity, requestId, producerSha256) => {
+    const operation = await read(nativeEngineKeys(identity, requestId).operation);
+    if (!operation) throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
+    const owner = checkedIdentity(operation.identity);
+    if (
+      operation.schemaVersion !== 1 ||
+      operation.requestId !== requestId ||
+      operation.producerSha256 !== producerSha256 ||
+      !valid(operation.token, UUID) ||
+      !valid(operation.requestSha256, SHA) ||
+      !Number.isSafeInteger(operation.expectedVersion) ||
+      operation.expectedVersion < 0 ||
+      owner.writerGeneration > identity.writerGeneration ||
+      (owner.writerGeneration === identity.writerGeneration &&
+        owner.sequence > identity.sequence) ||
+      !same(
+        { ...owner, writerGeneration: identity.writerGeneration, sequence: identity.sequence },
+        identity,
+      )
     )
       throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
     return operation;
@@ -211,6 +290,102 @@ export const createNativeEngineStore = ({
       await authorize(identity);
       const head = validateHead(await read(nativeEngineKeys(identity).head), identity);
       return head ?? null;
+    },
+    async pending(identity, producerSha256) {
+      identity = checkedIdentity(identity);
+      await authorize(identity);
+      const head = validateHead(await read(nativeEngineKeys(identity).head), identity);
+      if (!head?.pending) return null;
+      const operation = await readTarget(identity, head.pending.requestId, producerSha256);
+      if (operation.status !== 'running') throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
+      pendingHead(head, operation);
+      return operationTarget(operation);
+    },
+    async abandon({ identity, target, producerSha256, beforeAbandon }) {
+      identity = checkedIdentity(identity);
+      await authorize(identity);
+      if (!valid(target?.requestId, UUID)) throw engineFailure();
+      const keys = nativeEngineKeys(identity, target.requestId);
+      // Read the head first. If another abandonment commits between reads,
+      // the immutable operation below supplies its original acknowledgement.
+      const head = validateHead(await read(keys.head), identity);
+      const operation = await readTarget(identity, target.requestId, producerSha256);
+      if (!same(operationTarget(operation), target))
+        throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
+      const duplicate = (stored) =>
+        stored?.status === 'abandoned' &&
+        stored.token === target.token &&
+        same(stored.abandonedBy, identity);
+      if (duplicate(operation)) return abandonmentReceipt(operation);
+      if (operation.status !== 'running') throw engineFailure('NATIVE_ENGINE_OPERATION_FINISHED');
+      const nextHead = completeHead(tableName, head, operation);
+      await beforeAbandon(operation);
+      const row = await authorize(identity);
+      const acknowledgement = abandonmentReceipt({
+        requestId: operation.requestId,
+        status: 'abandoned',
+        version: nextHead.Put.Item.version,
+        abandonedAt: now(),
+      });
+      try {
+        await ddb.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              writerCondition(tableName, identity, row),
+              {
+                Update: {
+                  TableName: tableName,
+                  Key: keys.operation,
+                  // Keep every recorded job, including one updated after our read.
+                  UpdateExpression:
+                    'SET #status = :abandoned, abandonedBy = :writer, abandonedAt = :at, #version = :next',
+                  ConditionExpression:
+                    '#status = :running AND #token = :token AND expectedVersion = :version AND #identity = :owner',
+                  ExpressionAttributeNames: {
+                    '#status': 'status',
+                    '#token': 'token',
+                    '#version': 'version',
+                    '#identity': 'identity',
+                  },
+                  ExpressionAttributeValues: {
+                    ':abandoned': 'abandoned',
+                    ':writer': identity,
+                    ':at': acknowledgement.abandonedAt,
+                    ':next': acknowledgement.version,
+                    ':running': 'running',
+                    ':token': target.token,
+                    ':version': target.expectedVersion,
+                    ':owner': operation.identity,
+                  },
+                },
+              },
+              ...(operation.publicationId
+                ? [
+                    {
+                      Put: {
+                        TableName: tableName,
+                        Item: {
+                          ...abandonedPublicationKey(operation.identity, operation.publicationId),
+                          requestId: operation.requestId,
+                        },
+                        ConditionExpression: 'attribute_not_exists(pk)',
+                      },
+                    },
+                  ]
+                : []),
+              nextHead,
+            ],
+          }),
+        );
+      } catch (error) {
+        const observed = await read(keys.operation);
+        if (duplicate(observed)) {
+          await authorize(identity);
+          return abandonmentReceipt(observed);
+        }
+        throw transactionFailure(error);
+      }
+      return acknowledgement;
     },
     async begin(input) {
       const identity = checkedIdentity(input.identity);
@@ -262,6 +437,8 @@ export const createNativeEngineStore = ({
         requestSha256: input.requestSha256,
         expectedVersion: input.expectedVersion,
         producerSha256: input.producerSha256,
+        ...(input.action ? { action: input.action } : {}),
+        ...(input.publicationId ? { publicationId: input.publicationId } : {}),
         token: randomUUID(),
         status: 'running',
         jobs: {},
@@ -288,6 +465,17 @@ export const createNativeEngineStore = ({
           new TransactWriteCommand({
             TransactItems: [
               writerCondition(tableName, identity, row),
+              ...(input.publicationId
+                ? [
+                    {
+                      ConditionCheck: {
+                        TableName: tableName,
+                        Key: abandonedPublicationKey(identity, input.publicationId),
+                        ConditionExpression: 'attribute_not_exists(pk)',
+                      },
+                    },
+                  ]
+                : []),
               {
                 Put: {
                   TableName: tableName,
@@ -320,9 +508,21 @@ export const createNativeEngineStore = ({
         // A lost transaction response is resolved by its immutable request ID.
         const observed = await read(keys.operation);
         if (observed) return opened(observed, operation.token);
+        if (
+          input.publicationId &&
+          error?.CancellationReasons?.[0]?.Code === 'None' &&
+          error.CancellationReasons[1]?.Code === 'ConditionalCheckFailed'
+        )
+          throw engineFailure('NATIVE_ENGINE_PUBLICATION_ABANDONED');
         throw transactionFailure(error);
       }
       return { replay: false, operation, snapshot: head?.snapshot ?? null };
+    },
+    async requireRunning(operation) {
+      const key = nativeEngineKeys(operation.identity, operation.requestId).operation;
+      const stored = committed(await read(key), operation);
+      if (stored.status !== 'running' || stored.token !== operation.token)
+        throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
     },
     async recordJob(operation, jobId, value, previousStatus = null) {
       const identity = checkedIdentity(operation.identity);
@@ -385,15 +585,13 @@ export const createNativeEngineStore = ({
           throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
         return existing;
       }
-      pendingHead(head, operation);
-      const nextHead = { ...head, snapshot, version: operation.expectedVersion + 1 };
-      delete nextHead.pending;
+      const nextHead = completeHead(tableName, head, operation, { snapshot });
       const finished = {
         ...existing,
         status,
         snapshot,
         result,
-        version: nextHead.version,
+        version: nextHead.Put.Item.version,
         finishedAt: now(),
       };
       let proof;
@@ -401,7 +599,10 @@ export const createNativeEngineStore = ({
         if (
           publication.identity.configurationSha256 !== identity.configurationSha256 ||
           !same(publication.identity, identity) ||
-          publication.producerSha256 !== operation.producerSha256
+          publication.producerSha256 !== operation.producerSha256 ||
+          (existing.publicationId && publication.publicationId !== existing.publicationId) ||
+          publication.evidence?.key !==
+            `${nativeEngineObjectPrefix(identity, 'output')}${operation.requestId}/evidence.json.gz`
         )
           throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
         proof = {
@@ -444,25 +645,14 @@ export const createNativeEngineStore = ({
                     },
                   ]
                 : []),
-              {
-                Put: {
-                  TableName: tableName,
-                  Item: nextHead,
-                  ConditionExpression:
-                    'pending = :pending AND #version = :version AND producerSha256 = :producer',
-                  ExpressionAttributeNames: { '#version': 'version' },
-                  ExpressionAttributeValues: {
-                    ':pending': head.pending,
-                    ':version': operation.expectedVersion,
-                    ':producer': operation.producerSha256,
-                  },
-                },
-              },
+              nextHead,
             ],
           }),
         );
       } catch (error) {
         const observed = await read(keys.operation);
+        if (observed?.token === operation.token && observed.status === 'abandoned')
+          throw engineFailure('NATIVE_ENGINE_ABANDONED');
         if (
           observed?.token === operation.token &&
           observed.status === status &&

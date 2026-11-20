@@ -6247,6 +6247,9 @@ the current contract for newly created executions.
       and a replayed request for the abandoned operation are refused; no proof is
       written for it and affected revisions stay not verified; and the journal
       shows who abandoned what and when.
+      Implemented locally. The admitted writer inspects with `aidlc engine operation pending`
+      and discards with `aidlc engine operation abandon '<exact pending JSON>'`. A saved
+      result stays available to its originating writer. Installed and deployed qualification remain open.
 - [ ] **NE-24 — Keep a turn usable after a reply the engine cannot bind.** A
       structured form exists only when the agent writes its question file. When
       a turn ends without one, the application accepts any written reply, but

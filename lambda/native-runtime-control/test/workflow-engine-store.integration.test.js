@@ -116,7 +116,51 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
         committed,
       );
       expect(await store.begin(winningInput)).toMatchObject({ replay: true, operation: committed });
-      const next = await store.begin({ ...input, requestId: randomUUID(), expectedVersion: 1 });
+      const interrupted = {
+        ...input,
+        requestId: randomUUID(),
+        expectedVersion: 1,
+        publicationId: 'f'.repeat(64),
+      };
+      const pending = await store.begin(interrupted);
+      const target = await store.pending(identity, input.producerSha256);
+      const jobId = randomUUID();
+      const abandon = () =>
+        store.abandon({
+          identity,
+          target,
+          producerSha256: input.producerSha256,
+          beforeAbandon: async () => {
+            await store.recordJob(pending.operation, jobId, { status: 'prepared' });
+            loseAcknowledgement = true;
+          },
+        });
+      const abandoned = await abandon();
+      const { Item: retained } = await document.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: nativeEngineKeys(identity, interrupted.requestId).operation,
+          ConsistentRead: true,
+        }),
+      );
+      expect(retained).toMatchObject({
+        status: 'abandoned',
+        version: 2,
+        jobs: { [jobId]: { status: 'prepared' } },
+        abandonedBy: identity,
+      });
+      expect(await abandon()).toEqual(abandoned);
+      await expect(store.begin(interrupted)).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_ABANDONED',
+      });
+      await expect(
+        store.finish({ operation: pending.operation, snapshot, result }),
+      ).rejects.toMatchObject({ code: 'NATIVE_ENGINE_ABANDONED' });
+      expect(await store.get(identity)).toMatchObject({ version: 2, snapshot });
+      await expect(
+        store.begin({ ...interrupted, requestId: randomUUID(), expectedVersion: 2 }),
+      ).rejects.toMatchObject({ code: 'NATIVE_ENGINE_PUBLICATION_ABANDONED' });
+      const next = await store.begin({ ...input, requestId: randomUUID(), expectedVersion: 2 });
       cancelDuringCommit = true;
       await expect(
         store.finish({ operation: next.operation, snapshot, result }),
@@ -128,7 +172,7 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
           ConsistentRead: true,
         }),
       );
-      expect(head.version).toBe(1);
+      expect(head.version).toBe(2);
       expect(head.pending.token).toBe(next.operation.token);
     } finally {
       await raw.send(new DeleteTableCommand({ TableName: tableName }));
