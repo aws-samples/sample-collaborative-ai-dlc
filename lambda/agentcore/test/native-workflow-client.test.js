@@ -324,6 +324,21 @@ describe('native workflow engine client commands', () => {
     expect(submitted.files.map((file) => file.path)).toEqual(['README.md', 'src/app.js']);
   });
 
+  it('refuses to finalize a form across a change to the mirrored engine head', async () => {
+    const mirror = await client().command([], { action: 'mirror' });
+    await client().command(['next']);
+    await expect(
+      client().command([], {
+        action: 'finalize',
+        publication: { id: 'a'.repeat(64) },
+        interaction: { id: 'b'.repeat(64) },
+        expectedVersion: mirror.version,
+      }),
+    ).rejects.toThrow('NATIVE_ENGINE_HEAD_CHANGED');
+    expect(backend.executed).toHaveLength(2);
+    expect(await exists(pendingPath())).toBe(false);
+  });
+
   it.each([
     ['an unsupported context version', { schemaVersion: 2 }],
     ['a relative project', { project: 'project' }],
@@ -443,6 +458,23 @@ describe('native workflow engine client lost acknowledgements', () => {
     await finalize({ id: 'e'.repeat(64) });
     expect(backend.executed).toHaveLength(2);
     expect(backend.operationsSent().at(-1).publication).toEqual({ id: 'e'.repeat(64) });
+  });
+
+  it('does not accept a lost finalize acknowledgement for another interaction of the same publication', async () => {
+    backend.respond = async () => ({});
+    loseFirstAcknowledgement();
+    const publication = { id: 'c'.repeat(64) };
+    const finalize = (id) =>
+      client().command([], {
+        action: 'finalize',
+        publication,
+        interaction: { id },
+        expectedVersion: 0,
+      });
+    await expect(finalize('d'.repeat(64))).rejects.toThrow();
+    await expect(finalize('e'.repeat(64))).rejects.toThrow('NATIVE_ENGINE_HEAD_CHANGED');
+    expect(backend.executed).toHaveLength(1);
+    expect(await exists(pendingPath())).toBe(false);
   });
 });
 

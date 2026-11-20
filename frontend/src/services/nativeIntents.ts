@@ -146,6 +146,7 @@ export interface NativeInteractionView {
       | 'invalid_schema'
       | 'unsupported_ask'
       | 'unsupported_methodology'
+      | 'unbound_question'
       | 'stale_spec'
       | 'read_failed';
   };
@@ -847,6 +848,7 @@ async function interaction(value: unknown): Promise<NativeInteractionView> {
         'invalid_schema',
         'unsupported_ask',
         'unsupported_methodology',
+        'unbound_question',
         'stale_spec',
         'read_failed',
       ].includes(String(p.reason)) ||

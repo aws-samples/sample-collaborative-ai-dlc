@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildNativePendingInput } from '../../shared/native-pending-input.js';
 import { engineDigest } from '../../shared/native-workflow-protocol.js';
+import { capturedPlanAsk } from '../../shared/test/fixtures/native-plan-ask.js';
 import {
   nativeEnginePresentation,
   assertNativeEnginePresentedQuestion,
@@ -49,7 +50,7 @@ describe('a displayed native decision names its protected engine question', () =
       question: f.observed.protectedQuestion,
       directive: { kind: 'protected-question', stage: 'code-generation' },
     });
-    expect(() => assertNativeEnginePresentedQuestion(f.observed, presented)).not.toThrow();
+    expect(() => assertNativeEnginePresentedQuestion(f.state, f.observed, presented)).not.toThrow();
   });
   it.each(['prompt', 'options'])(
     'rejects another %s even when its approval label is identical',
@@ -70,14 +71,32 @@ describe('a displayed native decision names its protected engine question', () =
       const presented = nativeEnginePresentation(f.state, f.observed, f.interaction);
       if (field === 'missing') f.observed.protectedQuestion = null;
       else f.observed.protectedQuestion = { ...f.observed.protectedQuestion, [field]: 'changed' };
-      expect(() => assertNativeEnginePresentedQuestion(f.observed, presented)).toThrow(
+      expect(() => assertNativeEnginePresentedQuestion(f.state, f.observed, presented)).toThrow(
         'NATIVE_ENGINE_PRESENTATION_MISMATCH',
       );
     },
   );
   it('does not reuse an ordinary authored answer for a newly minted policy question', () => {
     const f = fixture();
-    expect(() => assertNativeEnginePresentedQuestion(f.observed, { question: null })).toThrow(
+    expect(() =>
+      assertNativeEnginePresentedQuestion(f.state, f.observed, { question: null }),
+    ).toThrow('NATIVE_ENGINE_PRESENTATION_MISMATCH');
+  });
+  it('refuses a different intake request with identical visible prompt and choices', () => {
+    const f = fixture();
+    f.state.directive = structuredClone(capturedPlanAsk);
+    f.observed.protectedQuestion = null;
+    f.interaction.pendingInput = buildNativePendingInput({
+      spec: { version: 3, ask: capturedPlanAsk },
+    });
+    const presented = nativeEnginePresentation(f.state, f.observed, f.interaction);
+    f.state.directive = JSON.parse(
+      JSON.stringify(capturedPlanAsk).replaceAll('6b26fb88', '11223344'),
+    );
+    expect(buildNativePendingInput({ spec: { version: 3, ask: f.state.directive } })).toEqual(
+      f.interaction.pendingInput,
+    );
+    expect(() => assertNativeEnginePresentedQuestion(f.state, f.observed, presented)).toThrow(
       'NATIVE_ENGINE_PRESENTATION_MISMATCH',
     );
   });

@@ -80,7 +80,8 @@ const selectCommand = async (context, before) => {
     const bound = await bindNativeEngineReply(context);
     if (bound) {
       const { response, presented } = bound;
-      assertNativeEnginePresentedQuestion(before, presented);
+      assertNativeEnginePresentedQuestion(state, before, presented);
+      const selectedCommand = nativeEngineSelectedCommand(presented, response);
       const recorded = decode(
         await runner.member({
           commandId: response.commandId,
@@ -96,7 +97,7 @@ const selectCommand = async (context, before) => {
         presentationSha256: presented.sha256,
         stage: presented.directive.stage ?? null,
         unit: presented.directive.unit ?? null,
-        selectedCommand: nativeEngineSelectedCommand(presented, response),
+        selectedCommand,
         application: 'pending',
       };
       state.decisions.push(member);

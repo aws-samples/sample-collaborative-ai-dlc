@@ -31,7 +31,13 @@ export const bindNativeEngineReply = async (
   if (
     !response ||
     response.commandId !== pointer.commandId ||
+    response.interactionId !== pointer.interactionId ||
+    response.contentSha256 !== pointer.contentSha256 ||
+    response.textSha256 !== pointer.textSha256 ||
+    response.actorId !== pointer.actorId ||
     response.sequence !== identity.sequence ||
+    (response.publicationId !== undefined &&
+      response.publicationId !== row.interaction?.publicationId) ||
     engineDigest(response.text) !== response.textSha256
   ) {
     if (strict) throw engineFailure('NATIVE_ENGINE_DECISION_MISMATCH');
@@ -40,7 +46,9 @@ export const bindNativeEngineReply = async (
   const presented = state.presentations.find(
     (item) =>
       item.interactionId === response.interactionId &&
-      item.contentSha256 === response.contentSha256,
+      item.contentSha256 === response.contentSha256 &&
+      item.publicationId === row.interaction?.publicationId &&
+      item.sequence + 1 === response.sequence,
   );
   if (presented) return { response, presented };
   unapplied(state).push({

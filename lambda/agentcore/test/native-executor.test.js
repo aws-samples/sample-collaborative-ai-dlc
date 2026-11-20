@@ -17,7 +17,13 @@ import { runNativeCommand } from '../native/command-runner.js';
 import { classifyNativeFirstWait } from '../native/turn-interaction.js';
 import { inspectNativeInitialization } from '../native/initialization-evidence.js';
 import { nativePublicationScope } from '../../shared/native-publication.js';
-import { nativeAnswerText } from '../../shared/native-pending-input.js';
+import { buildNativePendingInput, nativeAnswerText } from '../../shared/native-pending-input.js';
+import {
+  capturedPlanAsk,
+  capturedPlanFormSpec,
+} from '../../shared/test/fixtures/native-plan-ask.js';
+import { createNativeInteractions } from '../../shared/native-interaction.js';
+import { memoryNativeObjects } from '../../native-runtime-control/test/memory-objects.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
 import createdWorkflow from './fixtures/native-created-workflow-2.11.1.json' with { type: 'json' };
 
@@ -1883,6 +1889,72 @@ describe('protected workflow engine wiring', () => {
     expect(finalize.publication).toEqual((await ports.publish.mock.results[0].value).receipt);
     expect(finalize.interaction).toEqual(await ports.publishInteraction.mock.results[0].value);
   });
+
+  it.each(['confirmed', 'refused', 'unavailable', 'other interaction'])(
+    'admits the mirrored J1 picker only when the engine records this interaction: %s',
+    async (outcome) => {
+      const input = buildNativePendingInput({ spec: { version: 3, ask: capturedPlanAsk } });
+      const storage = { bucket: 'test-native-interactions', accountId: '123456789012' };
+      const interactions = createNativeInteractions({
+        ...storage,
+        s3: memoryNativeObjects(storage).s3,
+      });
+      const e = engine({
+        command: async (_args, options) => {
+          if (options.action === 'mirror') return { exitCode: 0, version: 3, pendingInput: input };
+          if (outcome === 'unavailable') throw new Error('Unavailable');
+          return {
+            exitCode: outcome === 'refused' ? 1 : 0,
+            presentedInteractionId:
+              outcome === 'confirmed' ? options.interaction.id : 'a'.repeat(64),
+          };
+        },
+      });
+      const request = pinned();
+      const { executor, ports } = make({
+        request,
+        ports: {
+          prepareWorkflowEngine: e.prepareWorkflowEngine,
+          publishInteraction: vi.fn(interactions.write),
+        },
+      });
+      const run = ports.commandRunner.getMockImplementation();
+      ports.commandRunner.mockImplementation(async (invocation) => {
+        if (invocation.timeoutMs === null)
+          await fs.writeFile(
+            join(root, 'project/.native-control/pending-question.json'),
+            JSON.stringify(capturedPlanFormSpec),
+          );
+        return run(invocation);
+      });
+      await executor.start(request);
+      const report = await executor.settle();
+      expect(report.status).toBe('publication_ready');
+      const candidate = await ports.publishInteraction.mock.results[0].value;
+      expect(e.command.mock.calls.at(-1)[1]).toMatchObject({
+        action: 'finalize',
+        expectedVersion: 3,
+        interaction: candidate,
+      });
+      const identity = ports.publishInteraction.mock.calls[0][0].identity;
+      const first = await interactions.read(identity, candidate);
+      expect(first.pendingInput).toEqual(input);
+      const admitted = await interactions.read(identity, report.interaction);
+      if (outcome === 'confirmed') {
+        expect(report.interaction.id).toBe(candidate.id);
+        expect(admitted.pendingInput.questions[0].prompt).toBe(capturedPlanAsk.question);
+      } else {
+        expect(report.interaction.id).not.toBe(candidate.id);
+        expect(admitted).toMatchObject({
+          pendingInput: null,
+          presentation: { status: 'degraded', reason: 'unbound_question' },
+          messages: first.messages,
+          publicationId: first.publicationId,
+        });
+        expect(admitted.contentSha256).not.toBe(first.contentSha256);
+      }
+    },
+  );
 
   it.each([
     ['no engine port', () => undefined],

@@ -183,10 +183,13 @@ export const createNativeEngineClient = ({
     } finally {
       await unlink(join(directory, 'pending.json'));
     }
-    return result;
+    return { ...result, version: observed.version };
   };
   return {
-    async command(args = [], { action = 'execute', publication, interaction } = {}) {
+    async command(
+      args = [],
+      { action = 'execute', publication, interaction, expectedVersion } = {},
+    ) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await safeDirectory(directory);
       const release = await localLock(directory);
@@ -204,12 +207,19 @@ export const createNativeEngineClient = ({
           if (
             pending.action === action &&
             same(pending.args ?? [], args) &&
-            (action !== 'finalize' || pending.publication.id === publication?.id)
+            (action !== 'finalize' ||
+              (pending.publication.id === publication?.id &&
+                pending.interaction?.id === interaction?.id &&
+                (expectedVersion === undefined || pending.expectedVersion === expectedVersion)))
           )
             return reconciled;
         }
         const status = await invoke({ schemaVersion: 1, identity, action: 'status' });
         if (status.pending) throw engineFailure('NATIVE_ENGINE_PENDING');
+        // The publisher rendered the offer at the mirrored version. Even a
+        // new offer with identical labels can name a different engine request.
+        if (expectedVersion !== undefined && expectedVersion !== status.version)
+          throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
         const requestId = randomUUID();
         let input;
         if (action !== 'finalize') {

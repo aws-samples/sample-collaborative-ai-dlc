@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   buildNativePendingInput,
+  nativePendingInput,
   NATIVE_AIDLC_INTERACTION_CONTRACT,
   NATIVE_PENDING_INPUT_LIMITS,
   NATIVE_PENDING_SPEC_PATH,
@@ -260,6 +261,7 @@ export const decodeNativeTurnInteraction = ({
   interactionContract,
   snapshot,
   rendered,
+  enginePendingInput,
   messages,
   forbiddenBytes = [],
   onDiagnostic = () => {},
@@ -267,7 +269,9 @@ export const decodeNativeTurnInteraction = ({
   const renderedSpec = rendered.spec;
   const supported = interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT;
   const pendingInput = supported
-    ? buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
+    ? enginePendingInput
+      ? nativePendingInput(enginePendingInput)
+      : buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
     : null;
   const presentation = pendingInput
     ? null

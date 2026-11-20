@@ -1069,11 +1069,13 @@ export const createNativeExecutor = ({
     );
     timing(turn, 'harnessCompleted');
     const completed = output.finish();
+    let mirror;
     if (workflowEngine) {
       try {
         const synchronized = await workflowEngine.client.command([], { action: 'mirror' });
-        if (synchronized.exitCode !== 0)
-          activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+        if (synchronized.exitCode === 0)
+          mirror = { pendingInput: synchronized.pendingInput, version: synchronized.version };
+        else activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
       } catch {
         activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
       }
@@ -1100,7 +1102,9 @@ export const createNativeExecutor = ({
     const { pendingInput, presentation } = decodeNativeTurnInteraction({
       interactionContract: pkg.interactionContract,
       snapshot: files,
-      rendered,
+      rendered:
+        workflowEngine && !mirror ? { spec: null, reason: 'unbound_question', bytes: 0 } : rendered,
+      enginePendingInput: mirror?.pendingInput,
       messages: completed.messages,
       forbiddenBytes,
       onDiagnostic: (diagnostic) => {
@@ -1129,6 +1133,7 @@ export const createNativeExecutor = ({
       files,
       pendingInput,
       presentation,
+      mirrorVersion: mirror?.version,
       nativeSessionId,
       outcome,
       nextPromptEvidence,
@@ -1139,7 +1144,16 @@ export const createNativeExecutor = ({
   const publishNativeTurn = async (
     turn,
     { pkg, workflowEngine },
-    { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
+    {
+      completed,
+      files,
+      pendingInput,
+      presentation,
+      mirrorVersion,
+      nativeSessionId,
+      outcome,
+      nextPromptEvidence,
+    },
   ) => {
     const { owner, signal, activity: activityTurn } = turn;
     const configuration = turn.payload.configuration;
@@ -1206,45 +1220,66 @@ export const createNativeExecutor = ({
     };
     timing(turn, 'interactionUploadStarted');
     activityTurn.lifecycle({ title: 'Saving response and form' });
-    const interaction = nativeInteractionReceipt(
-      await publishInteraction({
-        identity: owner.identity,
-        packageId: pkg.packageId,
-        sequence: turn.report.sequence,
-        harness: configuration.harness,
-        nativeSessionId,
-        publicationId: receipt.id,
-        messages: completed.messages,
-        pendingInput,
-        presentation,
-        signal,
-      }),
-      owner.identity,
-    );
-    checkCancelled(turn);
-    if (
-      interaction.sequence !== receipt.sequence ||
-      interaction.publicationId !== receipt.id ||
-      interaction.nativeSessionId !== nativeSessionId
-    )
-      fail('native_execution_interaction_unconfirmed');
+    const saveInteraction = async (input, display) => {
+      const interaction = nativeInteractionReceipt(
+        await publishInteraction({
+          identity: owner.identity,
+          packageId: pkg.packageId,
+          sequence: turn.report.sequence,
+          harness: configuration.harness,
+          nativeSessionId,
+          publicationId: receipt.id,
+          messages: completed.messages,
+          pendingInput: input,
+          presentation: display,
+          signal,
+        }),
+        owner.identity,
+      );
+      checkCancelled(turn);
+      if (
+        interaction.sequence !== receipt.sequence ||
+        interaction.publicationId !== receipt.id ||
+        interaction.nativeSessionId !== nativeSessionId
+      )
+        fail('native_execution_interaction_unconfirmed');
+      return interaction;
+    };
+    let interaction = await saveInteraction(pendingInput, presentation);
     timing(turn, 'interactionUploadCompleted');
     if (workflowEngine) {
       activityTurn.lifecycle({ title: 'Recording workflow evidence' });
+      let finalized;
       try {
-        const finalized = await workflowEngine.client.command([], {
+        finalized = await workflowEngine.client.command([], {
           action: 'finalize',
           publication: receipt,
           interaction,
+          ...(pendingInput ? { expectedVersion: mirrorVersion } : {}),
         });
-        if (finalized.exitCode !== 0)
-          activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
       } catch {
         // Publication is independently useful. Only the protected service
         // can add verified completion; missing proof remains not verified.
-        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
       }
       checkCancelled(turn);
+      if (finalized?.exitCode !== 0)
+        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
+      if (
+        pendingInput &&
+        (finalized?.exitCode !== 0 || finalized.presentedInteractionId !== interaction.id)
+      ) {
+        // Only the receipt passed to publication_ready becomes answerable.
+        // An unconfirmed candidate stays immutable and never receives a reply.
+        interaction = await saveInteraction(null, {
+          status: 'degraded',
+          reason: 'unbound_question',
+        });
+        Object.assign(turn.report.presentation, {
+          reason: 'unbound_question',
+          questions: 0,
+          options: 0,
+        });
+      }
     }
     const continuation = {
       promptEvidence: nextPromptEvidence ?? null,
