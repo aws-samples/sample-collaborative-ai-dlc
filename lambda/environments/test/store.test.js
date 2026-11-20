@@ -149,6 +149,104 @@ describe('environment registry store', () => {
     });
   });
 
+  it('records the core image scan on Standard revisions and follows rescans', async () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const newDigest = `sha256:${'b'.repeat(64)}`;
+    const scan = (digestValue, counts, evaluatedAt) => ({
+      status: 'ACTIVE',
+      severityCounts: counts,
+      findings: [],
+      findingsTruncated: false,
+      evaluatedAt,
+      imageDigest: digestValue,
+    });
+    const items = new Map([
+      [
+        'ENV#standard|META',
+        {
+          pk: 'ENV#standard',
+          sk: 'META',
+          environmentId: 'standard',
+          currentRevisionId: 'core-1',
+          publishedRevisionId: 'core-1',
+          status: 'PUBLISHED',
+        },
+      ],
+      [
+        'ENV#standard|REV#core-1',
+        {
+          pk: 'ENV#standard',
+          sk: 'REV#core-1',
+          environmentId: 'standard',
+          revisionId: 'core-1',
+          status: 'PUBLISHED',
+          recipe: { schemaVersion: 1, base: { environmentId: 'core' }, tools: {} },
+          imageDigest: digest,
+          imageSizeBytes: 1,
+          amd64Image: { imageUri: 'core-amd64', imageDigest: digest },
+          scanFindings: null,
+        },
+      ],
+    ]);
+    const ddb = createDdb(items);
+    const store = createEnvironmentStore({
+      ddb,
+      tableName: 'registry',
+      clock: () => '2026-11-20T00:00:00.000Z',
+    });
+    const stage = (coreImageDigest, coreScanFindings) =>
+      store.stageCoreRevision({
+        coreImageUri: 'core-repository',
+        coreImageDigest,
+        coreRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
+        coreRuntimeVersion: '1',
+        coreScanFindings,
+      });
+    const updates = () =>
+      ddb.send.mock.calls.filter(([command]) => command.constructor.name === 'UpdateCommand')
+        .length;
+
+    // The published revision of the running core gains the scan it never had.
+    await stage(digest, scan(digest, { HIGH: 2 }, '2026-11-20T00:00:00.000Z'));
+    expect(items.get('ENV#standard|REV#core-1').scanFindings).toMatchObject({
+      severityCounts: { HIGH: 2 },
+      imageDigest: digest,
+    });
+    expect(updates()).toBe(1);
+
+    // The same result evaluated later is not rewritten.
+    await stage(digest, scan(digest, { HIGH: 2 }, '2026-11-20T01:00:00.000Z'));
+    expect(updates()).toBe(1);
+
+    // A rescan with different counts replaces it.
+    await stage(digest, scan(digest, { CRITICAL: 1, HIGH: 2 }, '2026-11-20T02:00:00.000Z'));
+    expect(items.get('ENV#standard|REV#core-1').scanFindings.severityCounts).toEqual({
+      CRITICAL: 1,
+      HIGH: 2,
+    });
+    expect(updates()).toBe(2);
+
+    // No scan available leaves the stored result alone.
+    await stage(digest, null);
+    expect(updates()).toBe(2);
+
+    // A core update staged while its scan is still pending...
+    const staged = await stage(newDigest, null);
+    expect(staged.scanFindings).toBeNull();
+
+    // ...gains the scan on a later seed, before anyone publishes it.
+    await stage(newDigest, scan(newDigest, { HIGH: 1 }, '2026-11-20T03:00:00.000Z'));
+    expect(items.get(`ENV#standard|REV#${staged.revisionId}`).scanFindings).toMatchObject({
+      severityCounts: { HIGH: 1 },
+      imageDigest: newDigest,
+    });
+    expect(updates()).toBe(3);
+
+    // The same result is not rewritten on the staged revision either.
+    await stage(newDigest, scan(newDigest, { HIGH: 1 }, '2026-11-20T04:00:00.000Z'));
+    expect(updates()).toBe(3);
+  });
+
   it('marks an unpublished dependent when its current revision uses an older base', async () => {
     const environment = {
       environmentId: 'go',
