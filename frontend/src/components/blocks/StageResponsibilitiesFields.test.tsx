@@ -9,12 +9,22 @@ const roles = [
   { id: 'architect', name: 'Architect' },
   { id: 'developer', name: 'Developer' },
 ];
+const changes: Array<StagePermissions | null> = [];
 function Harness() {
   const [value, setValue] = useState<StagePermissions | null>({
     decisionMakerRoles: ['architect'],
     contributorRoles: ['developer'],
   });
-  return <StageResponsibilitiesFields value={value} roles={roles} onChange={setValue} />;
+  return (
+    <StageResponsibilitiesFields
+      value={value}
+      roles={roles}
+      onChange={(next) => {
+        changes.push(next);
+        setValue(next);
+      }}
+    />
+  );
 }
 
 describe('stage responsibility fields', () => {
@@ -25,8 +35,11 @@ describe('stage responsibility fields', () => {
     await user.click(architect);
     await user.click(screen.getByRole('checkbox', { name: 'Contributors: Developer' }));
     for (const checkbox of screen.getAllByRole('checkbox')) expect(checkbox).not.toBeChecked();
+    // Clearing the last role removes the mapping rather than saving empty lists.
+    expect(changes.at(-1)).toBeNull();
     await user.click(architect);
     expect(architect).toBeChecked();
+    expect(changes.at(-1)).toEqual({ decisionMakerRoles: ['architect'], contributorRoles: [] });
   });
 
   it('does not allow selecting responsibilities without a role catalog', () => {

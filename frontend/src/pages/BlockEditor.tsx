@@ -161,11 +161,9 @@ export default function BlockEditor() {
     const generation = ++loadGeneration.current;
     setError(null);
     setReadOnly(Boolean(releaseId));
-    setForm(
-      isNew && blockType === 'stage'
-        ? { permissions: { decisionMakerRoles: [], contributorRoles: [] } }
-        : {},
-    );
+    // A new stage has no role mapping until roles are chosen: empty role lists
+    // would be a configured mapping that makes Space Owners decide.
+    setForm(isNew && blockType === 'stage' ? { permissions: null } : {});
     setBody('');
     setScript('');
     if (isNew || !id) {

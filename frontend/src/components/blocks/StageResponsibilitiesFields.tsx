@@ -21,7 +21,11 @@ export function StageResponsibilitiesFields({
   const setValue = (next: StagePermissions) => {
     if (!readOnly) {
       const { automatic: _, ...assigned } = next;
-      onChange(assigned);
+      // Clearing the last role removes the mapping instead of saving empty
+      // lists, which would make Space Owners decide.
+      onChange(
+        assigned.decisionMakerRoles.length || assigned.contributorRoles.length ? assigned : null,
+      );
     }
   };
   return (

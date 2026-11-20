@@ -234,6 +234,27 @@ describe('BlockLibrary with a stable release', () => {
 });
 
 describe('BlockEditor', () => {
+  it('creates a stage without a role mapping when Responsibilities is left untouched', async () => {
+    list.mockImplementation((type) =>
+      Promise.resolve({
+        blocks: [],
+        ...(type === 'stage' ? { businessRoles: [{ id: 'architect', name: 'Architect' }] } : {}),
+      }),
+    );
+    create.mockResolvedValue({});
+    get.mockResolvedValue(block('plain-stage', 'default', { blockType: 'STAGE' }));
+    const user = userEvent.setup();
+    renderAt('/blocks/stage/new');
+    await user.type(screen.getByPlaceholderText('kebab-case-id'), 'plain-stage');
+    await user.type(screen.getByPlaceholderText('Stage name'), 'Plain stage');
+    await user.click(screen.getByRole('button', { name: 'Create Stage' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(
+      'stage',
+      expect.objectContaining({ id: 'plain-stage', permissions: null }),
+    );
+  });
+
   it('creates a stage with responsibility defaults and retains the draft after a failed save', async () => {
     const roles = [
       { id: 'architect', name: 'Architect' },
