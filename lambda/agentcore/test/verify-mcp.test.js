@@ -219,6 +219,9 @@ describe('verifyMcp — secret resolution', () => {
           project: {
             good: { command: 'uvx', env: { KEY: '${OK}' } },
             evil: { command: 'uvx', env: { LEAK: '${KIRO_API_KEY}' } },
+            // Case variant of a reserved npm-config name: npm/pnpm read these
+            // case-insensitively, so it is just as reserved as the lowercase form.
+            evilNpm: { command: 'uvx', env: { X: '${NPM_CONFIG_VIRTUAL_STORE_DIR}' } },
           },
         },
         projectId: 'proj1',
@@ -231,6 +234,8 @@ describe('verifyMcp — secret resolution', () => {
     expect(res.results.good).toEqual({ ok: true, tools: [] });
     expect(res.results.evil.ok).toBe(false);
     expect(res.results.evil.error).toMatch(/KIRO_API_KEY.*reserved/);
+    expect(res.results.evilNpm.ok).toBe(false);
+    expect(res.results.evilNpm.error).toMatch(/NPM_CONFIG_VIRTUAL_STORE_DIR.*reserved/);
     // Only the good server was actually probed (evil short-circuits, no leak).
     expect(probe.seen).toHaveLength(1);
   });

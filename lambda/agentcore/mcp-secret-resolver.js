@@ -3,6 +3,7 @@ import {
   computeSurvivors,
   resolveMcpSecrets as resolveLocal,
   RESERVED_MCP_ENV_KEYS as sharedReservedKeys,
+  isReservedMcpEnvKey as isReservedSharedKey,
 } from '../shared/mcp-secret-policy.js';
 import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 
@@ -11,6 +12,9 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   ...sharedReservedKeys,
   ...CREDENTIAL_ADAPTER_ENV_NAMES,
 ]);
+// The shared predicate bound to the agentcore-extended set, so every agentcore
+// check keeps the shared case rules (lowercase-stored names match any case).
+export const isReservedMcpEnvKey = (name) => isReservedSharedKey(name, RESERVED_MCP_ENV_KEYS);
 
 const assertLocal = () => {
   if (process.env.ENGINE_DATA_FUNCTION)
@@ -37,4 +41,4 @@ export const resolveMcpSecrets = async (args = {}) => {
   });
 };
 
-export default { computeSurvivors, resolveMcpSecrets, RESERVED_MCP_ENV_KEYS };
+export default { computeSurvivors, resolveMcpSecrets, RESERVED_MCP_ENV_KEYS, isReservedMcpEnvKey };

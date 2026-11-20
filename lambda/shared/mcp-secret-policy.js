@@ -107,7 +107,10 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'DYNAMODB_LOCAL_ENDPOINT',
   // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV, the
   // pnpm store locations of the node_modules redirect + the process essentials
-  // a hijack could weaponize).
+  // a hijack could weaponize). The lowercase entries are the npm env-config
+  // family, which npm and pnpm read CASE-INSENSITIVELY (pnpm prefers
+  // NPM_CONFIG_STORE_DIR over npm_config_store_dir) — isReservedMcpEnvKey
+  // matches every case variant of these; uppercase entries stay exact-match.
   'npm_config_cache',
   'npm_config_store_dir',
   'npm_config_virtual_store_dir',
@@ -127,6 +130,16 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'LD_LIBRARY_PATH',
   'NODE_OPTIONS',
 ]);
+
+// Whether an MCP `${VAR}` name shadows a reserved child-env key. An entry
+// stored in LOWERCASE (the `npm_config_*` family) matches case-insensitively:
+// npm-family CLIs read that env configuration in any case, and pnpm prefers the
+// uppercase form, so `${NPM_CONFIG_STORE_DIR}` (or any case mix — ref names
+// allow both cases) would out-rank the runtime's npm_config_store_dir in the
+// flat child env. Entries stored in uppercase stay exact-match: their consumers
+// (AWS SDK, yarn, pip, the CLI drivers) read only the exact name.
+export const isReservedMcpEnvKey = (name, reserved = RESERVED_MCP_ENV_KEYS) =>
+  reserved.has(name) || reserved.has(String(name).toLowerCase());
 
 /**
  * Compute the surviving servers for a merge where the PROJECT tier overrides the
@@ -152,7 +165,9 @@ export const inspectMcpSecretRefs = (survivingGlobal, survivingProject, reserved
   return {
     globalRefs,
     projectRefs,
-    reservedRefs: new Set([...globalRefs, ...projectRefs].filter((ref) => reserved.has(ref))),
+    reservedRefs: new Set(
+      [...globalRefs, ...projectRefs].filter((ref) => isReservedMcpEnvKey(ref, reserved)),
+    ),
     collidingRefs: new Set([...globalRefs].filter((ref) => projectRefs.has(ref))),
     refsByServer: Object.fromEntries(
       [survivingGlobal, survivingProject].flatMap((tier) =>
@@ -252,4 +267,4 @@ export const resolveMcpSecrets = async ({
   return { secretEnv };
 };
 
-export default { computeSurvivors, resolveMcpSecrets, RESERVED_MCP_ENV_KEYS };
+export default { computeSurvivors, resolveMcpSecrets, RESERVED_MCP_ENV_KEYS, isReservedMcpEnvKey };
