@@ -5764,6 +5764,45 @@ The acceptance's run record is still the one of the first attempt and has to
 be started fresh, as its run sheet says. The live acceptance and its preflight
 remain the operator's.
 
+## NE-11 live acceptance on engine version 2, 2026-11-19 to 2026-11-20
+
+**The live acceptance failed.** The installed Claude Code CLI drove the
+protected engine on multiple turns (C1 passed). All eight publications across
+the three runs had valid engine evidence and reported `not_verified`. The three
+headings recorded from the browser agreed with that evidence.
+
+- **J2, express.** The member reached the Requirements Analysis approval form
+  and cancelled at revision 2. The cancellation criterion passed (C5).
+- **J4, express.** The service accepted the member's free-text reply to
+  revision 2 asking for a form. After fresh-session recovery, revision 3 had
+  neither a form nor the notice explaining that the reply decided nothing.
+  The collector reported NE-24 as `NOT_EXERCISED` because the engine evidence
+  contained no `unappliedReplies` entry. The member did exercise the free-text
+  path. Its effect across recovery remains unverified.
+- **J1, poc.** The run reached the intent-capture questions. Fresh-session
+  recovery stopped at revision 3. The member saw `not verified` and cancelled.
+  Both J1 and J4 recorded two `NATIVE_ENGINE_COMMAND_DENIED` operations on
+  their recovery turn. Their saved responses named `aidlc engine orchestrate
+  next --resume` and its shorthand `aidlc next --resume`. The recovery prompt
+  requests `/aidlc --resume`, and the protected command validator rejects both
+  reported command forms.
+
+The journal also records four command denials on revision 2 across the three
+runs. The collector captured their failure codes. Only the saved revision 3
+responses identify the two resume command spellings.
+
+No check build or model-backed review ran. C2 and C3 therefore failed. C4
+also failed because the run produced no completed revision whose served
+response could be saved and compared. The deployed engine startup and
+workspace persistence checks passed. NE-11 and NE-24 remain open.
+
+The operator observations are in
+`.native-evidence/ne11-2026-11-16-live-acceptance/run/run-record.json`.
+The final read-only result is in
+`.native-evidence/ne11-2026-11-16-live-acceptance/collected/002/acceptance-result.json`.
+After the 15-minute management-event delay, every criterion and every
+publication matched the first collection.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -6010,7 +6049,9 @@ the current contract for newly created executions.
       **Redeployed 2026-11-18 and independently verified 2026-11-19** at
       `df8787b14d4639c8bb01587b645591ea76cc0de7`: engine version 2 on the
       corrected image, new runs pinned to it, the earlier run's pin to version 1
-      kept. The live acceptance on it has not run. **Known limit:** the
+      kept. The installed CLI drove engine version 2 during live acceptance
+      on 2026-11-19 to 2026-11-20. Fresh-session recovery stopped J1 and J4
+      before any check build, isolated review or verified completion. **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
 - [ ] **NE-12 — Implement native Git delivery and tracker policy.** Admit a complete
@@ -6154,8 +6195,10 @@ the current contract for newly created executions.
       image and the changed engine mounted over it, by an express run that
       reaches a verified completion in the same attempt after two such replies;
       recorded above. **Deployed 2026-11-18** in the image verified on
-      2026-11-19. **Still open:** the same on the deployed stack with a coding
-      CLI and a model.
+      2026-11-19. **In live acceptance J4,** the service accepted the free-text
+      reply. Recovery stopped before a new form. Revision 3 lacked the
+      `unappliedReplies` entry and its member-facing notice. Continued progress
+      and verified completion after that reply remain open.
 - [ ] **NE-25 — Stop retrying queue pointers that can never be served.** The
       execution, cancellation and projection consumers reported every thrown
       error as a batch item failure and their queues had no receive-count
