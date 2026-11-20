@@ -90,6 +90,7 @@ module "dynamodb_kms_runtime_access" {
     agents_orchestrator  = aws_iam_role.agents_orchestrator.name
     bitbucket_connector  = aws_iam_role.bitbucket_connector.name
     blocks               = aws_iam_role.blocks.name
+    cognito_reader       = aws_iam_role.cognito_reader.name
     credential_broker    = aws_iam_role.credential_broker.name
     discussions          = aws_iam_role.discussions.name
     github_connector     = aws_iam_role.github_connector.name
@@ -440,6 +441,18 @@ resource "aws_iam_role_policy" "cognito_reader" {
           "cognito-idp:AdminRemoveUserFromGroup",
         ]
         Resource = var.cognito_user_pool_arn
+      },
+      {
+        # SSO business-role mappings: the PLATFORM/SSO#<provider> item and its
+        # audit entry are written in one transaction from the admin API.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Resource = [var.access_table_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = [var.audit_table_arn]
       }
     ]
   })
@@ -1655,7 +1668,7 @@ module "projects_lambda" {
 
 # Users Lambda
 module "users_lambda" {
-  depends_on = [aws_lambda_invocation.membership_copy]
+  depends_on = [aws_lambda_invocation.membership_copy, aws_lambda_invocation.sso_claims_backfill]
 
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -1695,6 +1708,7 @@ module "users_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
+    SSO_ROLE_CONFIG               = var.sso_role_config
   }
 }
 
@@ -2770,6 +2784,8 @@ module "cognito_users_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
     SSO_ROLE_CONFIG             = var.sso_role_config
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
   }
 
   depends_on = [aws_iam_role_policy_attachment.cognito_reader_vpc]

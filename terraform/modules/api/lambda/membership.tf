@@ -83,6 +83,12 @@ resource "aws_iam_role_policy" "membership_migration" {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
         Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user", var.audit_table_arn]
+      },
+      {
+        # One pass over the directory to backfill federated users' SSO claims.
+        Effect   = "Allow"
+        Action   = ["cognito-idp:ListUsers"]
+        Resource = var.cognito_user_pool_arn
       }
     ]
   })
@@ -113,6 +119,8 @@ module "membership_migration_lambda" {
     NEPTUNE_ENDPOINT        = var.neptune_endpoint
     ACCESS_TABLE            = var.access_table_name
     AUDIT_TABLE             = var.audit_table_name
+    COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
+    SSO_ROLE_CONFIG         = var.sso_role_config
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
@@ -136,6 +144,33 @@ resource "aws_lambda_invocation" "membership_copy" {
     postcondition {
       condition     = try(jsondecode(self.result).verified, false)
       error_message = "Membership copy/verification failed. Application cutover is blocked; inspect the migration Lambda logs."
+    }
+  }
+}
+
+locals {
+  sso_claims_enabled = length(keys(try(jsondecode(var.sso_role_config).providers, {}))) > 0
+}
+
+# The sign-in trigger records claims before the backfill runs, so a sign-in
+# during the deployment is either recorded or copied by the backfill.
+resource "terraform_data" "sso_claims_recorder" {
+  count = local.sso_claims_enabled ? 1 : 0
+  input = var.sso_token_lambda_arn
+}
+
+# Runs once on upgrade, before the users Lambda reads recorded claims: from then
+# on a missing copy means the user has no SSO claims. Existing copies are kept.
+resource "aws_lambda_invocation" "sso_claims_backfill" {
+  count           = local.sso_claims_enabled ? 1 : 0
+  function_name   = module.membership_migration_lambda.lambda_function_name
+  input           = jsonencode({ action = "backfill-sso-claims", version = 1 })
+  lifecycle_scope = "CREATE_ONLY"
+  depends_on      = [aws_iam_role_policy.membership_migration, terraform_data.sso_claims_recorder]
+  lifecycle {
+    postcondition {
+      condition     = try(jsondecode(self.result).backfilled, false)
+      error_message = "SSO claims backfill failed. The users Lambda update is blocked; inspect the migration Lambda logs."
     }
   }
 }

@@ -8,6 +8,7 @@ const addMember = vi.hoisted(() => vi.fn());
 const removeMember = vi.hoisted(() => vi.fn());
 const listBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberBusinessRoles = vi.hoisted(() => vi.fn());
+const updateMemberExcludedRoles = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/projects', () => ({
   projectsService: {
@@ -18,6 +19,7 @@ vi.mock('@/services/projects', () => ({
     removeMember: (...args: unknown[]) => removeMember(...args),
     listBusinessRoles: (...args: unknown[]) => listBusinessRoles(...args),
     updateMemberBusinessRoles: (...args: unknown[]) => updateMemberBusinessRoles(...args),
+    updateMemberExcludedRoles: (...args: unknown[]) => updateMemberExcludedRoles(...args),
   },
 }));
 
@@ -75,6 +77,13 @@ beforeEach(() => {
       role: 'member',
       localRoles,
     }));
+  updateMemberExcludedRoles
+    .mockReset()
+    .mockImplementation(async (_projectId, userId, excludedRoles) => ({
+      userId,
+      role: 'member',
+      excludedRoles,
+    }));
 });
 
 describe('space business roles', () => {
@@ -82,11 +91,17 @@ describe('space business roles', () => {
     const user = userEvent.setup();
     render(<MembersTab projectId="project-1" userRole="owner" />);
     await user.click(
-      await screen.findByRole('button', { name: 'Edit business roles for existing@example.com' }),
+      await screen.findByRole('button', {
+        name: 'Edit business roles for existing@example.com',
+      }),
     );
     const dialog = screen.getByRole('dialog', { name: 'Edit business roles' });
     for (const name of ['Developer', 'Architect']) {
-      await user.click(within(dialog).getByRole('combobox', { name: 'Add a business role' }));
+      await user.click(
+        within(dialog).getByRole('combobox', {
+          name: 'Roles added in this space',
+        }),
+      );
       await user.click(screen.getByRole('option', { name }));
     }
     await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
@@ -99,7 +114,9 @@ describe('space business roles', () => {
     expect(screen.getByText('Architect')).toBeInTheDocument();
     expect(screen.getByText('Developer')).toBeInTheDocument();
     await user.click(
-      screen.getByRole('button', { name: 'Edit business roles for existing@example.com' }),
+      screen.getByRole('button', {
+        name: 'Edit business roles for existing@example.com',
+      }),
     );
     await user.click(screen.getByRole('button', { name: 'Remove Architect' }));
     await user.click(screen.getByRole('button', { name: 'Remove Developer' }));
@@ -116,7 +133,11 @@ describe('space business roles', () => {
       { userId: 'member', role: 'member', localRoles: ['architect'] },
     ]);
     render(<MembersTab projectId="project-1" userRole="owner" />);
-    await user.click(await screen.findByRole('button', { name: 'Edit business roles for member' }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Edit business roles for member',
+      }),
+    );
     await user.click(screen.getByRole('button', { name: 'Remove Architect' }));
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(updateMemberBusinessRoles).not.toHaveBeenCalled();
@@ -126,7 +147,7 @@ describe('space business roles', () => {
     updateMemberBusinessRoles.mockRejectedValue(new Error('Space Owner access required'));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Space Owner access required');
-    expect(screen.getByText('No business roles assigned.')).toBeInTheDocument();
+    expect(screen.getByText('No roles added in this space.')).toBeInTheDocument();
     expect(screen.getByText('Architect')).toBeInTheDocument();
   });
 
@@ -149,6 +170,119 @@ describe('space business roles', () => {
     expect(
       screen.getByText(/Business roles describe responsibilities for now/),
     ).toBeInTheDocument();
+  });
+
+  it('lets an Owner exclude and restore inherited SSO roles while local roles use Remove', async () => {
+    const user = userEvent.setup();
+    const alice = {
+      userId: 'alice',
+      email: 'alice@example.com',
+      role: 'member' as const,
+      localRoles: ['product-owner'],
+      ssoRoles: ['architect', 'developer'],
+      excludedRoles: [],
+      effectiveRoles: ['architect', 'developer', 'product-owner'],
+    };
+    listMembers.mockResolvedValue([alice]);
+    updateMemberExcludedRoles.mockResolvedValue({
+      userId: 'alice',
+      role: 'member',
+      localRoles: ['product-owner'],
+      ssoRoles: ['architect', 'developer'],
+      excludedRoles: ['developer'],
+      effectiveRoles: ['architect', 'product-owner'],
+    });
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Edit business roles for alice@example.com',
+      }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit business roles' });
+    // Company roles offer Exclude/Restore; only local roles have Remove.
+    expect(within(dialog).getByRole('button', { name: 'Exclude Developer' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', {
+        name: 'Remove Product Owner / Product Manager',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: 'Remove Developer' }),
+    ).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Exclude Developer' }));
+    expect(within(dialog).getByRole('button', { name: 'Restore Developer' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(updateMemberExcludedRoles).toHaveBeenCalledWith('project-1', 'alice', ['developer']),
+    );
+    // Only the exclusion changed, so local assignments are not re-saved.
+    expect(updateMemberBusinessRoles).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // The row now shows the effective roles (SSO − excluded + local).
+    expect(screen.getByText('Architect')).toBeInTheDocument();
+    expect(screen.getByText('Product Owner / Product Manager')).toBeInTheDocument();
+    expect(screen.queryByText('Developer')).not.toBeInTheDocument();
+  });
+
+  it('keeps a persisted exclusion editable when the role is no longer received from SSO', async () => {
+    const user = userEvent.setup();
+    listMembers.mockResolvedValue([
+      {
+        userId: 'member',
+        email: 'member@example.com',
+        role: 'member',
+        localRoles: [],
+        ssoRoles: [],
+        excludedRoles: ['developer'],
+        effectiveRoles: [],
+      },
+    ]);
+    updateMemberExcludedRoles.mockResolvedValue({
+      userId: 'member',
+      role: 'member',
+      localRoles: [],
+      ssoRoles: [],
+      excludedRoles: [],
+      effectiveRoles: [],
+    });
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit business roles for member@example.com' }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit business roles' });
+    // The dormant exclusion is visible, flagged, and restorable.
+    expect(within(dialog).getByText('(not currently received)')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Restore Developer' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(updateMemberExcludedRoles).toHaveBeenCalledWith('project-1', 'member', []),
+    );
+  });
+
+  it('keeps the draft and shows the error when an exclusion save is denied', async () => {
+    const user = userEvent.setup();
+    listMembers.mockResolvedValue([
+      {
+        userId: 'member',
+        role: 'member',
+        localRoles: [],
+        ssoRoles: ['developer'],
+        excludedRoles: [],
+        effectiveRoles: ['developer'],
+      },
+    ]);
+    updateMemberExcludedRoles.mockRejectedValue(new Error('Space Owner access required'));
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Edit business roles for member',
+      }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit business roles' });
+    await user.click(within(dialog).getByRole('button', { name: 'Exclude Developer' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Space Owner access required');
+    expect(within(dialog).getByRole('button', { name: 'Restore Developer' })).toBeInTheDocument();
   });
 
   it('clears the role editor and ignores old member loads when switching spaces', async () => {
@@ -209,7 +343,11 @@ describe('MembersTab assignable identity picker', () => {
     ]);
     render(<MembersTab projectId="project-1" userRole="owner" />);
     await screen.findByText('owner@example.com');
-    await user.click(screen.getByRole('combobox', { name: 'Space access for owner@example.com' }));
+    await user.click(
+      screen.getByRole('combobox', {
+        name: 'Space access for owner@example.com',
+      }),
+    );
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Owner',
       'Member',

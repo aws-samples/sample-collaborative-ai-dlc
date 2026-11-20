@@ -168,3 +168,19 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "access_table_name" {
+  description = "Access table where the SSO sign-in trigger records federated users' claims"
+  type        = string
+}
+
+variable "access_table_arn" {
+  description = "ARN of the access table the SSO sign-in trigger writes to"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "Customer managed KMS key encrypting the access table, or empty for the AWS owned key"
+  type        = string
+  default     = ""
+}

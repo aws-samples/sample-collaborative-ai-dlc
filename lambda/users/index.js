@@ -1,5 +1,11 @@
 import gremlin from 'gremlin';
-import { BUSINESS_ROLES } from '../shared/business-roles.js';
+import {
+  BUSINESS_ROLES,
+  businessRoleMappingView,
+  combineMemberRoles,
+  computeSsoBusinessRoles,
+} from '../shared/business-roles.js';
+import { evaluateSsoClaims, parseRoleConfig } from '../shared/sso-roles.js';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import {
   membershipStore,
@@ -20,6 +26,74 @@ import { Logger } from '@aws-lambda-powertools/logger';
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+// SSO business roles come from the claims recorded at each member's latest
+// federated sign-in, plus the infrastructure baseline and saved additions for
+// the provider. Admission uses the current configuration, like the sign-in
+// trigger. Claim and mapping reads are memoized across members within one
+// request; read failures propagate as errors instead of degrading to empty
+// role lists.
+const createSsoRoleResolver = () => {
+  const config = parseRoleConfig();
+  const ssoEnabled = Object.keys(config.providers || {}).length > 0;
+  const mappings = new Map();
+  const claims = new Map();
+  const mappingFor = async (providerId) => {
+    if (!mappings.has(providerId)) {
+      const additions = await membershipStore.getRoleMappings(providerId);
+      mappings.set(
+        providerId,
+        businessRoleMappingView(config.providers[providerId], additions).effectiveRoleMappings,
+      );
+    }
+    return mappings.get(providerId);
+  };
+  const forUser = async (userId) => {
+    if (!ssoEnabled) return [];
+    if (!claims.has(userId)) claims.set(userId, await membershipStore.getSsoClaims(userId));
+    const recorded = claims.get(userId);
+    // No copy: the member has not signed in through SSO, so no SSO roles.
+    if (!recorded) return [];
+    // Values only count under the source attribute they were mapped from. A
+    // removed or changed source invalidates the copy until the next sign-in,
+    // so values from the old attribute never match the current mappings.
+    const sourceAttribute = config.providers?.[recorded.providerName]?.roleClaim;
+    if (!sourceAttribute || recorded.sourceAttribute !== sourceAttribute) return [];
+    const result = evaluateSsoClaims(
+      {
+        identity: { providerName: recorded.providerName },
+        claimValues: recorded.claimValues || [],
+      },
+      config,
+    );
+    if (!result.admitted) return [];
+    return computeSsoBusinessRoles(
+      result.claimValues,
+      await mappingFor(result.identity.providerName),
+    );
+  };
+  return {
+    forUser,
+    forMembers: async (userIds) => {
+      const roles = new Map();
+      for (const id of userIds) roles.set(id, await forUser(id));
+      return roles;
+    },
+  };
+};
+
+const memberRoleView = (member, ssoRoles = []) => ({
+  userId: member.userId,
+  role: member.membershipRole,
+  localRoles: member.localRoles || [],
+  excludedRoles: member.excludedRoles || [],
+  ssoRoles,
+  effectiveRoles: combineMemberRoles({
+    ssoRoles,
+    localRoles: member.localRoles || [],
+    excludedRoles: member.excludedRoles || [],
+  }),
+});
 
 const logger = new Logger({ persistentKeys: { component: 'users' } });
 
@@ -68,6 +142,7 @@ export const handler = async (event, context) => {
 
     const route = event.resource || event.path || '';
     const businessRolesRoute = route.endsWith('/business-roles');
+    const excludedRolesRoute = route.endsWith('/excluded-roles');
     const historyRoute = route.endsWith('/membership-history');
     if (historyRoute) {
       if (httpMethod !== 'GET') return response(405, { error: 'Method not allowed' });
@@ -80,25 +155,25 @@ export const handler = async (event, context) => {
     if (businessRolesRoute && httpMethod === 'GET' && !targetUserId) {
       return response(200, BUSINESS_ROLES);
     }
-    if (businessRolesRoute && (httpMethod !== 'PUT' || !targetUserId))
+    if ((businessRolesRoute || excludedRolesRoute) && (httpMethod !== 'PUT' || !targetUserId))
       return response(405, { error: 'Method not allowed' });
 
     if (httpMethod === 'GET') {
       const params = event.queryStringParameters || {};
       const paged = params.paged === '1';
+      const resolver = createSsoRoleResolver();
       const members = [];
       let nextToken = paged ? params.nextToken : undefined;
       do {
         const page = await membershipStore.listMembers(projectId, nextToken);
+        const ssoRoles = await resolver.forMembers(page.items.map((member) => member.userId));
         members.push(
           ...(await Promise.all(
             page.items.map(async (member) => {
               const user = await g.V().has('User', 'id', member.userId).valueMap('email').next();
               return {
-                userId: member.userId,
                 email: getVal(user.value, 'email'),
-                role: member.membershipRole,
-                localRoles: member.localRoles || [],
+                ...memberRoleView(member, ssoRoles.get(member.userId)),
               };
             }),
           )),
@@ -125,18 +200,29 @@ export const handler = async (event, context) => {
     if (typeof userId !== 'string' || !userId.trim())
       return response(400, { error: 'userId is required' });
     if (businessRolesRoute) {
+      // Resolve SSO roles before the fenced write: a failed lookup must surface
+      // as an error without having committed the role change.
+      const ssoRoles = await createSsoRoleResolver().forUser(userId);
       const member = await membershipStore.changeLocalRoles({
         spaceId: projectId,
         userId,
         actorId,
         localRoles: data.localRoles,
       });
-      return response(200, {
-        projectId,
+      return response(200, { projectId, ...memberRoleView(member, ssoRoles) });
+    }
+    if (excludedRolesRoute) {
+      // New exclusions must target roles the member currently inherits through
+      // SSO, so the inherited list is resolved before the fenced write.
+      const ssoRoles = await createSsoRoleResolver().forUser(userId);
+      const member = await membershipStore.changeExcludedRoles({
+        spaceId: projectId,
         userId,
-        role: member.membershipRole,
-        localRoles: member.localRoles,
+        actorId,
+        excludedRoles: data.excludedRoles,
+        inheritedSsoRoles: ssoRoles,
       });
+      return response(200, { projectId, ...memberRoleView(member, ssoRoles) });
     }
     const role =
       httpMethod === 'DELETE'

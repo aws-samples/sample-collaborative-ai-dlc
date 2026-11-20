@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { evaluateSsoRoles, parseClaimValues } from '../../shared/sso-roles.js';
+
+const recordSsoClaims = vi.hoisted(() => vi.fn());
+vi.mock('../../shared/space-membership.js', () => ({ membershipStore: { recordSsoClaims } }));
+
 import { handler } from '../index.js';
 
 const config = {
@@ -9,6 +13,7 @@ const config = {
         'platform-admin': ['aidlc-admin'],
       },
       requiredClaimValues: ['aidlc-user'],
+      roleClaim: 'groups',
     },
   },
 };
@@ -16,6 +21,10 @@ const config = {
 const identities = JSON.stringify([
   { providerName: 'EnterpriseOIDC', providerType: 'OIDC', userId: 'user-1' },
 ]);
+
+beforeEach(() => {
+  recordSsoClaims.mockReset().mockResolvedValue(undefined);
+});
 
 afterEach(() => {
   vi.resetModules();
@@ -100,6 +109,33 @@ describe('SSO role evaluation', () => {
 });
 
 describe('pre-token handler', () => {
+  it.each(['OIDC', 'SAML'])(
+    'never injects business roles into %s tokens or bypasses admission',
+    async (providerType) => {
+      const mixed = structuredClone(config);
+      mixed.providers.EnterpriseOIDC.roleMappings.developer = ['Engineers'];
+      mixed.providers.EnterpriseOIDC.roleMappings.architect = ['Engineers'];
+      vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(mixed));
+      const attributes = {
+        sub: 'user-1',
+        identities: JSON.stringify([{ providerName: 'EnterpriseOIDC', providerType }]),
+        'custom:sso_roles': '[aidlc-user,Engineers]',
+      };
+      const event = { request: { userAttributes: attributes }, response: {} };
+      await handler(event);
+      expect(event.response.claimsOverrideDetails.groupOverrideDetails.groupsToOverride).toEqual(
+        [],
+      );
+      attributes['custom:sso_roles'] = '[aidlc-user,Engineers,aidlc-admin]';
+      await handler(event);
+      expect(event.response.claimsOverrideDetails.groupOverrideDetails.groupsToOverride).toEqual([
+        'platform-admin',
+      ]);
+      attributes['custom:sso_roles'] = 'Engineers';
+      await expect(handler(event)).rejects.toThrow('SSO_ACCESS_DENIED');
+    },
+  );
+
   it('preserves a local token unchanged', async () => {
     vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
     const event = { request: { userAttributes: { email: 'local@example.com' } }, response: {} };
@@ -112,6 +148,7 @@ describe('pre-token handler', () => {
     const event = {
       request: {
         userAttributes: {
+          sub: 'user-1',
           identities,
           'custom:sso_roles': '[aidlc-user,aidlc-admin]',
         },
@@ -135,9 +172,50 @@ describe('pre-token handler', () => {
     vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
     await expect(
       handler({
-        request: { userAttributes: { identities, 'custom:sso_roles': 'other' } },
+        request: { userAttributes: { sub: 'user-1', identities, 'custom:sso_roles': 'other' } },
         response: {},
       }),
     ).rejects.toThrow('SSO_ACCESS_DENIED');
+  });
+});
+
+describe('recorded SSO claims', () => {
+  const signIn = (claims, triggerSource = 'TokenGeneration_HostedAuth') => ({
+    triggerSource,
+    request: { userAttributes: { sub: 'user-1', identities, 'custom:sso_roles': claims } },
+    response: {},
+  });
+  beforeEach(() => vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config)));
+
+  it('records the raw claims of every federated sign-in, not calculated roles', async () => {
+    await handler(signIn('[aidlc-user,Engineering]'));
+    expect(recordSsoClaims).toHaveBeenCalledWith({
+      subject: 'user-1',
+      providerName: 'EnterpriseOIDC',
+      sourceAttribute: 'groups',
+      claimValues: ['aidlc-user', 'Engineering'],
+    });
+  });
+
+  it('records a denied sign-in so earlier claims no longer grant roles', async () => {
+    await expect(handler(signIn('Engineering'))).rejects.toThrow('SSO_ACCESS_DENIED');
+    expect(recordSsoClaims).toHaveBeenCalledWith(
+      expect.objectContaining({ claimValues: ['Engineering'] }),
+    );
+  });
+
+  it('does not record on token refresh, which does not contact the provider', async () => {
+    await handler(signIn('aidlc-user', 'TokenGeneration_RefreshTokens'));
+    expect(recordSsoClaims).not.toHaveBeenCalled();
+  });
+
+  it('fails the sign-in when the claims cannot be recorded', async () => {
+    recordSsoClaims.mockRejectedValue(new Error('Unavailable'));
+    await expect(handler(signIn('aidlc-user'))).rejects.toThrow('Unavailable');
+  });
+
+  it('records nothing for a local user', async () => {
+    await handler({ request: { userAttributes: { sub: 'local', email: 'l@example.com' } } });
+    expect(recordSsoClaims).not.toHaveBeenCalled();
   });
 });

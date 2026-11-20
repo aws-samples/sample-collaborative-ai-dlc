@@ -1672,6 +1672,11 @@ const createReleaseRepository = () => {
   mkdirSync(join(repository, 'lambda/yjs-server'), { recursive: true });
   cpSync(join(root, 'scripts/sso-config.mjs'), join(repository, 'scripts/sso-config.mjs'));
   cpSync(join(root, 'config/platform-roles.json'), join(repository, 'config/platform-roles.json'));
+  mkdirSync(join(repository, 'lambda/shared'), { recursive: true });
+  cpSync(
+    join(root, 'lambda/shared/business-role-catalog.json'),
+    join(repository, 'lambda/shared/business-role-catalog.json'),
+  );
   writeJson(join(repository, 'frontend/package.json'), { name: 'frontend', private: true });
   writeFileSync(join(repository, 'lambda/yjs-server/server.js'), 'console.log("ready");\n');
   writeFileSync(

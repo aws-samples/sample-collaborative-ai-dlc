@@ -129,11 +129,15 @@ locals {
 
   sso_enabled = var.auth_mode != "local"
 
+  # Infrastructure mappings and connection metadata. Business roles combine this
+  # read-only baseline with UI additions stored independently in DynamoDB.
   sso_role_config = {
     providers = {
       for name, provider in var.sso_providers : name => {
         roleMappings        = provider.role_mappings
         requiredClaimValues = provider.required_claim_values
+        roleClaim           = provider.role_claim
+        displayName         = provider.display_name
       }
     }
   }
@@ -191,10 +195,24 @@ resource "terraform_data" "sso_preconditions" {
       condition = alltrue(flatten([
         for provider in values(var.sso_providers) : [
           for role in keys(provider.role_mappings) :
-          contains(jsondecode(file("${path.module}/../config/platform-roles.json")), role)
+          contains(concat(
+            jsondecode(file("${path.module}/../config/platform-roles.json")),
+            [for entry in jsondecode(file("${path.module}/../lambda/shared/business-role-catalog.json")) : entry.id]
+          ), role)
         ]
       ]))
       error_message = "SSO role mappings may only target roles implemented by this release."
+    }
+
+    precondition {
+      condition = alltrue(flatten([
+        for provider in values(var.sso_providers) : [
+          for claims in values(provider.role_mappings) : [
+            for value in claims : (trimspace(value) != "")
+          ]
+        ]
+      ]))
+      error_message = "SSO role mapping values must not be empty or whitespace-only."
     }
 
     precondition {
@@ -396,6 +414,10 @@ module "auth" {
   id_token_validity_minutes     = var.auth_id_token_validity_minutes
   refresh_token_validity_hours  = var.auth_refresh_token_validity_hours
 
+  access_table_name = module.dynamodb.access_table_name
+  access_table_arn  = module.dynamodb.access_table_arn
+  kms_key_arn       = var.kms_key_arn
+
   custom_domain                 = var.auth_domain
   custom_domain_active          = var.auth_domain_active
   custom_domain_certificate_arn = var.auth_domain == "" ? "" : terraform_data.auth_parent_dns[var.auth_domain].output
@@ -543,11 +565,12 @@ module "neptune" {
 
 # Lambda CRUD Functions
 module "lambda" {
-  source            = "./modules/api/lambda"
-  access_table_name = module.dynamodb.access_table_name
-  access_table_arn  = module.dynamodb.access_table_arn
-  audit_table_name  = module.dynamodb.audit_table_name
-  audit_table_arn   = module.dynamodb.audit_table_arn
+  source               = "./modules/api/lambda"
+  sso_token_lambda_arn = module.auth.sso_token_lambda_arn
+  access_table_name    = module.dynamodb.access_table_name
+  access_table_arn     = module.dynamodb.access_table_arn
+  audit_table_name     = module.dynamodb.audit_table_name
+  audit_table_arn      = module.dynamodb.audit_table_arn
 
   notification_events_enabled = var.notification_events_enabled
   notification_event_bus_name = var.notification_event_bus_name
