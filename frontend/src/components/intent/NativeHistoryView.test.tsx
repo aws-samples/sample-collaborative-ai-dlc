@@ -153,6 +153,7 @@ it('keeps large current files obtainable without attempting the inline transport
   await screen.findByText(current.files[0].path);
   fireEvent.click(screen.getByRole('button', { name: new RegExp(current.files[0].path) }));
   await screen.findByText(/File exceeds the 3 MiB inline limit/);
+  expect(screen.getByRole('button', { name: 'Prepare Git bundle' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Prepare file download' })).toBeInTheDocument();
   expect(mocks.file).not.toHaveBeenCalled();
 });
@@ -231,6 +232,37 @@ it('compares the selected historical publication with its pinned source while a 
   expect(mocks.publication).not.toHaveBeenCalled();
   expect(mocks.file).not.toHaveBeenCalled();
 });
+it('requests the selected history entry’s Git bundle while the run awaits input at a later head', async () => {
+  mount('?nativeHistory=1');
+  fireEvent.click(await screen.findByRole('link', { name: 'Open publication 1' }));
+  const prepare = await screen.findByRole('button', { name: 'Prepare Git bundle' });
+  expect(mocks.request).not.toHaveBeenCalled();
+  const message = 'The Git objects for the pinned Start source were not retained';
+  mocks.request.mockRejectedValueOnce(
+    new ApiError(409, message, { code: 'NATIVE_RESULT_GIT_BASE_UNAVAILABLE', error: message }),
+  );
+  fireEvent.click(prepare);
+  expect(await screen.findByRole('alert')).toHaveTextContent(message);
+  expect(mocks.request).toHaveBeenCalledExactlyOnceWith(
+    intent.projectId,
+    intent.id,
+    { ...selected, format: 'git', requestId: expect.any(String) },
+    expect.objectContaining({ source: intent.execution!.repository, outcome: 'STOPPED' }),
+  );
+  expect(screen.getByRole('button', { name: 'Prepare result archive' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Compare with pinned source' })).toBeVisible();
+  expect(mocks.status).not.toHaveBeenCalled();
+  expect(mocks.source).not.toHaveBeenCalled();
+  expect(mocks.publication).not.toHaveBeenCalled();
+});
+it('withholds current result actions when the publication sequence disagrees with the admitted head', async () => {
+  mount('', { ...intent, execution: { ...intent.execution!, publicationSequence: 1 } });
+  await screen.findByRole('alert');
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Files' }), { button: 0, ctrlKey: false });
+  expect(screen.queryByRole('button', { name: 'Prepare Git bundle' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Prepare result archive' })).toBeNull();
+  expect(mocks.request).not.toHaveBeenCalled();
+});
 it('inspection uses the admitted publication, original request and immutable answer without dispatching a historical answer', async () => {
   mocks.decision.mockResolvedValueOnce({
     interaction: { harness: 'codex', messages: [{ type: 'text', text: 'Uncertain proposal' }] },
@@ -256,6 +288,7 @@ it('inspection uses the admitted publication, original request and immutable ans
     publicationSequence: 2,
   });
   expect(screen.getByRole('button', { name: 'Prepare result archive' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Prepare Git bundle' })).toBeVisible();
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   expect(
     screen.queryByRole('button', { name: /Send reply|Start agent|Recover session/ }),
@@ -292,6 +325,7 @@ it('inspection does not infer stop or publication sequence from an old terminal 
   expect(await screen.findByRole('link', { name: 'Open publication 1' })).toBeVisible();
   expect(mocks.revision).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Prepare result archive' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Prepare Git bundle' })).not.toBeInTheDocument();
 });
 it('a missing last admitted revision in inspection never falls back to current bytes', async () => {
   mocks.revision.mockRejectedValueOnce(new Error('named revision missing'));
@@ -311,6 +345,7 @@ it.each([401, 403, 404])(
     expect(
       screen.queryByRole('button', { name: 'Prepare result archive' }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare Git bundle' })).not.toBeInTheDocument();
   },
 );
 it('inspection discards a late revision after leaving inspection', async () => {

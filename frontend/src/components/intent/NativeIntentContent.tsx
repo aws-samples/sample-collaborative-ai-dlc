@@ -106,6 +106,7 @@ export function NativeIntentContent({
           key={JSON.stringify([
             ...identity,
             intent.execution?.publicationId,
+            intent.execution?.publicationSequence,
             intent.execution?.interactionId,
           ])}
           intent={intent}
@@ -143,6 +144,7 @@ function NativePublicationContent({
 }: NativeContentProps) {
   const { projectId, id: intentId } = intent;
   const publicationId = intent.execution?.publicationId ?? null;
+  const publicationSequence = intent.execution?.publicationSequence;
   const interactionId = intent.execution?.interactionId ?? null;
   const [tab, setTab] = useState('overview');
   const [publication, setPublication] = useState<NativePublication | null>(null);
@@ -209,7 +211,10 @@ function NativePublicationContent({
       .publication(projectId, intentId)
       .then((value) => {
         if (!active || !current(requestGeneration)) return;
-        if (value.id !== publicationId) {
+        if (
+          value.id !== publicationId ||
+          (publicationSequence != null && value.sequence !== publicationSequence)
+        ) {
           throw new Error('The committed revision changed. Refresh status to load its files.');
         }
         setPublication(value);
@@ -220,7 +225,7 @@ function NativePublicationContent({
     return () => {
       active = false;
     };
-  }, [projectId, intentId, publicationId, reloadRevision, current, failed]);
+  }, [projectId, intentId, publicationId, publicationSequence, reloadRevision, current, failed]);
 
   const turnSequence = intent.execution?.turnSequence;
   const executionStatus = intent.execution?.status;
@@ -514,6 +519,7 @@ function NativePublicationContent({
                   publicationId: publication.id,
                   publicationSequence: publication.sequence,
                 }}
+                git={intent.execution ? { source: intent.execution.repository } : undefined}
                 onAccessFailure={onAccessFailure}
               />
             )

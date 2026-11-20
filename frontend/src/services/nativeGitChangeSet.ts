@@ -81,7 +81,7 @@ function reviewer(row: unknown, delta: string) {
   };
 }
 
-function verification(value: Record<string, unknown>) {
+export function decodeNativeGitVerification(value: Record<string, unknown>) {
   if (value.sha256 === undefined) {
     // The first Git API supplied only an unverified review status. Later APIs
     // identify missing or unreadable proof explicitly and still return the changes.
@@ -198,7 +198,7 @@ export function decodeNativeGitChangeSet(
     sourceBaselineId: baseline.id,
     repository: { provider, repository, ...baseline.repository },
     changes,
-    ...verification(value),
+    ...decodeNativeGitVerification(value),
   };
 }
 
