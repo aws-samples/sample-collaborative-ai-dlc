@@ -144,6 +144,9 @@ export function StageEditModal({
           name: stageName,
           ...form,
         });
+        // A retry after a failed placement save compares against what the
+        // block now holds, not what the dialog first loaded.
+        setLoadedBlock({ name: stageName, form });
       }
       if (responsibilitiesChanged) await responsibilities.onSave(permissions);
       onSaved();
