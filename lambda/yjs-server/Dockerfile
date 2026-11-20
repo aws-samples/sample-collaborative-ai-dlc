@@ -1,9 +1,16 @@
-FROM public.ecr.aws/docker/library/node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
+FROM public.ecr.aws/docker/library/node:24.22.3-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+
+# The pinned base can lag Alpine's security fixes, so apply the ones the
+# release repository already has.
+RUN apk upgrade --no-cache
 
 WORKDIR /app
 
 COPY --chown=node:node --chmod=0644 package.json package-lock.json ./
-RUN npm ci --omit=dev
+# npm is only needed to install the dependencies. Removing it keeps the
+# packages it bundles, and their CVEs, out of the runtime image.
+RUN npm ci --omit=dev \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --chown=node:node --chmod=0644 server.js service.js rooms.js protocol.js cluster.js aws-store.js config.js doc-name.js realtime-token.js ./
 
