@@ -375,6 +375,21 @@ describe('workflows handler', () => {
     );
   });
 
+  it('chooses the next version from a strongly consistent read of the workflow', async () => {
+    await createWorkflow({ id: 'consistent-flow', name: 'Consistent' });
+    ddbMock.resetHistory();
+    const saved = await handler(
+      event({ method: 'PUT', workflowId: 'consistent-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(saved).status).toBe(200);
+    const metaReads = ddbMock
+      .commandCalls(GetCommand)
+      .map((call) => call.args[0].input)
+      .filter((input) => input.Key.sk === 'META');
+    expect(metaReads.length).toBeGreaterThan(0);
+    expect(metaReads.every((input) => input.ConsistentRead === true)).toBe(true);
+  });
+
   it('exposes a version only after its whole snapshot is written', async () => {
     await createWorkflow({ id: 'partial-flow', name: 'Partial' });
     await handler(
