@@ -5840,8 +5840,29 @@ the same lineage, with all 36 protected resource identities preserved.
 Deployment evidence is under `.native-evidence/ne11-2026-11-20-deployed-ac2af414/`.
 The read-only acceptance preflight returned `READY` with zero blocking or unknown
 checks. Its receipt is `observations/preflight-007.json` under
-`.native-evidence/ne11-2026-11-16-live-acceptance/`. Fresh J4 and J1 live
-acceptance is pending. The J2 cancellation criterion passed on engine v2.
+`.native-evidence/ne11-2026-11-16-live-acceptance/`. The J2 cancellation
+criterion passed on engine v2.
+
+### Engine version 3 live acceptance, 2026-11-20
+
+J4 accepted the member's answer to the express plan offer. Turn 2 stopped
+before the first post-plan question. The member cancelled at revision 2 and
+saw **Workflow completion: not verified**. The read-only collector confirmed
+`CANCELLED` at 10:10:38 UTC and reproduced that verdict for both publications.
+The cancellation criterion failed on one condition, an unfinished engine
+operation. J4 never reached the free-text reply or fresh-session resume.
+J1 has not started on engine v3.
+
+The pending operation wrote its snapshot and an output with exit code 0.
+The engine journal kept the request as `running` at head version 5.
+At 10:07 UTC the engine logged `NATIVE_ENGINE_HEAD_CHANGED` and
+`NATIVE_ENGINE_WRITER_CHANGED`. DynamoDB counted two transaction conflicts
+on the native runs table in that minute. The metric has no request IDs.
+Injecting transaction conflicts into the deployed journal code locally
+reproduced both errors and the pending operation with a constant writer.
+
+The member record, collector verdict, object metadata and local reproduction
+are in `.native-evidence/ne11-2026-11-16-live-acceptance/run/engine-v3/`.
 
 ## Integration and simplification checklist
 
@@ -6093,7 +6114,8 @@ the current contract for newly created executions.
       on 2026-11-19 to 2026-11-20. Fresh-session recovery stopped J1 and J4
       before any check build, isolated review or verified completion. The
       resume correction was deployed and independently verified on 2026-11-20
-      as engine version 3. Fresh J4 and J1 live acceptance is pending.
+      as engine version 3. On v3, J4 stopped at revision 2 with an unfinished
+      journal operation. The member cancelled and saw `not verified`. J1 is pending.
       **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
