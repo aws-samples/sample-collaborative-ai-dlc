@@ -270,6 +270,11 @@ export function NativeHistoryView({
                   projectId={intent.projectId}
                   executionId={intent.id}
                   target={target(revision)}
+                  git={
+                    intent.execution
+                      ? { source: intent.execution.repository, outcome: revision.outcome }
+                      : undefined
+                  }
                   onAccessFailure={onAccessFailure}
                 />
                 <NativeCompletionEvidence
