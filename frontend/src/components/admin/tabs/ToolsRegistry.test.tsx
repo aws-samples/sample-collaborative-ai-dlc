@@ -392,7 +392,7 @@ describe('ToolsRegistry', () => {
           mode: 'script',
           script: expect.stringContaining('--disable-ldconfig'),
         }),
-        aptPackages: [{ name: 'build-essential', version: '12.9' }],
+        aptPackages: [{ name: 'build-essential', version: '12.12' }],
         verification: expect.objectContaining({ preset: 'rust' }),
       }),
     );

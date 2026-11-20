@@ -178,7 +178,7 @@ const presetDefaults = (
       ],
       argv: ['rustc', '--version'],
       expected: version,
-      aptPackages: 'build-essential=12.9',
+      aptPackages: 'build-essential=12.12',
       installerScript: rustInstallerScript(architecture),
     },
     maven: {
