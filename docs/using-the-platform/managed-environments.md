@@ -12,6 +12,12 @@ DOCX, and XLSX files already present in their workspace. Agents invoke
 `markitdown path/to/document.pdf` when needed; the platform does not run an
 automatic conversion step.
 
+Standard does not build an image of its own: it uses the core AgentCore image.
+Its **Image check** shows that image's ECR scan, read when the environments
+service starts, on the published revision and on a core update that is waiting
+to be published. Basic scanning scans the image once, on push; with ECR enhanced
+scanning, later rescans show up as well.
+
 Java, Go, Rust, Maven, and Gradle are shipped as tool definitions, not as
 predefined JVM, Go, Rust, or Polyglot environments. Administrators can add other
 tools, such as a .NET SDK, without changing the application source.

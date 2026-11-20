@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
+import { ECRClient } from '@aws-sdk/client-ecr';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -18,7 +19,7 @@ import {
   rebuildCatalogEnvironmentRecipe,
   resolveCatalogEnvironmentRecipe,
 } from './catalog-recipe.js';
-import { uploadBuildContext } from './build-lifecycle.js';
+import { uploadBuildContext, readImageScanFindings } from './build-lifecycle.js';
 import {
   actorFrom,
   createRetryableInitializer,
@@ -43,6 +44,11 @@ import { isEnvironmentResolutionError } from '../shared/environment-snapshot.js'
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
+// Only read during seeding: a slow ECR call must not hold up a cold start.
+const ecr = new ECRClient({
+  maxAttempts: 2,
+  requestHandler: { connectionTimeout: 2000, requestTimeout: 5000 },
+});
 const defaultStore = createEnvironmentStore({ ddb });
 const defaultToolStore = createToolStore({ ddb });
 
@@ -63,7 +69,22 @@ const configuredCore = () => ({
       : null,
 });
 
-const ensureSeeded = async (store) => {
+// The Standard revision reuses the core image, so its image check is that
+// image's ECR scan. A missing or pending scan must not block the API.
+const coreScanFindings = async (ecrClient, core) => {
+  try {
+    return await readImageScanFindings({
+      ecrClient,
+      imageUri: core.coreImageUri,
+      imageDigest: core.coreImageDigest,
+    });
+  } catch (error) {
+    logger.warn('Core image scan unavailable', { error });
+    return null;
+  }
+};
+
+const ensureSeeded = async (store, { ecrClient = ecr } = {}) => {
   const core = configuredCore();
   if (!core.coreImageUri || !core.coreImageDigest || !core.coreRuntimeArn) {
     throw Object.assign(new Error('Managed environment core runtime is not configured'), {
@@ -71,7 +92,10 @@ const ensureSeeded = async (store) => {
     });
   }
   await store.seedSystemEnvironments(core);
-  await store.stageCoreRevision(core);
+  await store.stageCoreRevision({
+    ...core,
+    coreScanFindings: await coreScanFindings(ecrClient, core),
+  });
   await store.reconcileBaseUpdates();
 };
 
@@ -373,10 +397,11 @@ export const createHandler = ({
   toolStore = defaultToolStore,
   s3Client = s3,
   codebuildClient = codebuild,
+  ecrClient = ecr,
   eventLogger = logger,
 } = {}) => {
   const deps = { s3: s3Client, codebuild: codebuildClient };
-  const initialize = createRetryableInitializer(() => ensureSeeded(store));
+  const initialize = createRetryableInitializer(() => ensureSeeded(store, { ecrClient }));
   return async (event, context) => {
     if (context) logger.addContext(context);
     if (event?.httpMethod) logSafeEventIfEnabled(eventLogger, event);
