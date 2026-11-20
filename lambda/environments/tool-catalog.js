@@ -111,7 +111,7 @@ archive_root="rust-\${TOOL_VERSION}-${triple}"
 components="rustc,rust-std-${triple},cargo,rustfmt-preview"
 mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
-tar -xzf "$TOOL_SOURCE" -C "$staging" \\
+tar -xzf "$TOOL_SOURCE" -C "$staging" --no-same-owner \\
   "$archive_root/install.sh" \\
   "$archive_root/components" \\
   "$archive_root/rust-installer-version" \\
@@ -708,8 +708,8 @@ case "$TOOL_ARCHIVE_FORMAT" in
     done
     cp -a "$source"/. "$TOOL_OUTPUT"/
     ;;
-  tar.gz) tar -xzf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=${stripComponents};;
-  tar.xz) tar -xJf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=${stripComponents};;
+  tar.gz) tar -xzf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=${stripComponents} --no-same-owner;;
+  tar.xz) tar -xJf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=${stripComponents} --no-same-owner;;
   *) printf 'unsupported archive format: %s\\n' "$TOOL_ARCHIVE_FORMAT" >&2; exit 1;;
 esac
 `;
