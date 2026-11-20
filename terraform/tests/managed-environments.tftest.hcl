@@ -154,3 +154,34 @@ run "status_reads_only_the_sandbox_settings" {
     error_message = "The status lambda may only GetItem the SETTINGS#SANDBOX item of the process table."
   }
 }
+
+run "control_reads_only_the_core_image_scan" {
+  command = plan
+  module {
+    source = "./modules/compute/managed-environments"
+  }
+
+  # The control policy also names these ARNs, which are unknown during plan.
+  override_resource {
+    target          = aws_s3_bucket.build_context
+    override_during = plan
+    values          = { arn = "arn:aws:s3:::test-build-context" }
+  }
+  override_resource {
+    target          = aws_codebuild_project.managed_environments
+    override_during = plan
+    values          = { arn = "arn:aws:codebuild:us-east-1:123456789012:project/test-environments" }
+  }
+
+  assert {
+    condition = [
+      for s in jsondecode(aws_iam_role_policy.control.policy).Statement : s
+      if contains(flatten([s.Action]), "ecr:DescribeImageScanFindings")
+      ] == [{
+        Effect   = "Allow"
+        Action   = ["ecr:DescribeImageScanFindings"]
+        Resource = "arn:aws:ecr:us-east-1:123456789012:repository/core"
+    }]
+    error_message = "The control lambda may read scan findings only from the core image repository."
+  }
+}

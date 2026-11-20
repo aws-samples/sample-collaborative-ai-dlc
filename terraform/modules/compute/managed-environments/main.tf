@@ -361,6 +361,25 @@ resource "aws_iam_role_policy" "control" {
         Action   = ["codebuild:StartBuild"]
         Resource = aws_codebuild_project.managed_environments.arn
       },
+      {
+        # The Standard revision reuses the core image; its image check is
+        # that image's ECR scan.
+        Effect   = "Allow"
+        Action   = ["ecr:DescribeImageScanFindings"]
+        Resource = var.core_repository_arn
+      },
+      {
+        # In accounts with ECR enhanced scanning, DescribeImageScanFindings is
+        # served by Amazon Inspector and the caller also needs inspector2 read
+        # access. Inspector2 does not support resource-level scoping for these
+        # list actions.
+        Effect = "Allow"
+        Action = [
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }

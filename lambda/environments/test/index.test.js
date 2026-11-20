@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHandler } from '../index.js';
 
+vi.mock('@aws-sdk/client-ecr', async (importOriginal) => ({
+  ...(await importOriginal()),
+  // Handlers built without an ECR client must not reach AWS from unit tests;
+  // seeding then sees no core image scan.
+  ECRClient: class {
+    send = async () => ({});
+  },
+}));
+
 const BASE = {
   environmentId: 'standard',
   revisionId: 'core-1',
@@ -80,6 +89,61 @@ describe('managed environment handler', () => {
     expect(JSON.parse(logged.body).recipe.environmentVariables).toEqual({
       SERVICE_TOKEN: '[REDACTED]',
     });
+  });
+
+  it('records the core image scan on the Standard revision while seeding', async () => {
+    const store = {
+      ...storeBase(),
+      listEnvironments: vi.fn().mockResolvedValue([]),
+    };
+    const ecrClient = {
+      send: vi.fn().mockResolvedValue({
+        imageScanStatus: { status: 'ACTIVE' },
+        imageScanFindings: {
+          findingSeverityCounts: { CRITICAL: 1, HIGH: 2 },
+          findings: [{ name: 'CVE-1', severity: 'HIGH' }],
+        },
+      }),
+    };
+    const handler = createHandler({ store, ecrClient });
+
+    const response = await handler({ httpMethod: 'GET', path: '/environments', ...claims() });
+
+    expect(response.statusCode).toBe(200);
+    expect(ecrClient.send.mock.calls[0][0].input).toEqual({
+      repositoryName: 'core',
+      imageId: { imageDigest: BASE.imageDigest },
+    });
+    expect(store.stageCoreRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        coreImageDigest: BASE.imageDigest,
+        coreScanFindings: expect.objectContaining({
+          status: 'ACTIVE',
+          severityCounts: { CRITICAL: 1, HIGH: 2 },
+          imageDigest: BASE.imageDigest,
+        }),
+      }),
+    );
+  });
+
+  it('keeps serving when the core image scan cannot be read', async () => {
+    const store = {
+      ...storeBase(),
+      listEnvironments: vi.fn().mockResolvedValue([]),
+    };
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' })),
+    };
+    const handler = createHandler({ store, ecrClient });
+
+    const response = await handler({ httpMethod: 'GET', path: '/environments', ...claims() });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.stageCoreRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ coreScanFindings: null }),
+    );
   });
 
   it('allows authenticated users to list only published environments', async () => {
