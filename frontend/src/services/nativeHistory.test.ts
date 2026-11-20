@@ -189,7 +189,7 @@ it('reads a named source baseline and binds original bytes to its exact receipt'
       files: [descriptor],
     },
   });
-  const source = await nativeHistoryService.source('project', 'run', target);
+  const source = await nativeHistoryService.source('project', 'run', revision);
   expect(source?.id).toBe('b'.repeat(64));
   expect(get.mock.calls[0][0]).toContain('&source=1');
   get.mockResolvedValue({ ...content(), sourceBaselineId: source!.id });
@@ -209,9 +209,138 @@ it('distinguishes an unretained source baseline from an unreadable one', async (
     status: 'not_retained',
     baseline: null,
   });
-  expect(await nativeHistoryService.source('project', 'run', target)).toBeNull();
+  expect(await nativeHistoryService.source('project', 'run', revision)).toBeNull();
   get.mockRejectedValue(new Error('Unavailable'));
-  await expect(nativeHistoryService.source('project', 'run', target)).rejects.toThrow(
+  await expect(nativeHistoryService.source('project', 'run', revision)).rejects.toThrow(
     'Unavailable',
   );
+});
+
+const baselineId = 'b'.repeat(64);
+const pin = { commit: 'c'.repeat(40), branch: 'main' };
+const executable = { ...descriptor, mode: '100755' as const };
+const gitRevision = { ...revision, files: [executable] };
+const change = {
+  fileId: descriptor.id,
+  path: descriptor.path,
+  before: { bytes: descriptor.bytes, sha256: descriptor.sha256, mode: '100644' },
+  after: { bytes: descriptor.bytes, sha256: descriptor.sha256, mode: '100755' },
+};
+const git = {
+  ...target,
+  sourceBaselineId: baselineId,
+  repository: { ...pin, provider: 'gitlab', repository: 'group/team/repo' },
+  changes: [change],
+  sha256: '1'.repeat(64),
+  terminalSha256: '1'.repeat(64),
+  terminal: 'matched',
+  workflowCompletion: 'complete',
+  applicability: 'captured',
+  review: 'not_required',
+  reviews: [],
+};
+const sourceView = {
+  projectId: 'project',
+  executionId: 'run',
+  ...target,
+  status: 'captured',
+  reason: null,
+  baseline: {
+    id: baselineId,
+    repository: pin,
+    inventory: 'native-public-files',
+    files: [{ ...descriptor, mode: '100644' }],
+  },
+  gitChangeSet: git,
+};
+const readGit = () => nativeHistoryService.source('project', 'run', gitRevision);
+
+it('requires the selected revision context and a valid baseline ID before a read', async () => {
+  await expect(nativeHistoryService.source('other', 'run', gitRevision)).rejects.toThrow();
+  await expect(nativeHistoryService.source('project', 'other', gitRevision)).rejects.toThrow();
+  await expect(
+    nativeHistoryService.file('project', 'run', gitRevision, executable, ''),
+  ).rejects.toThrow();
+  expect(get).not.toHaveBeenCalled();
+});
+it.each([
+  { publicationId: 'c'.repeat(64) },
+  { publicationSequence: 2 },
+  { sourceBaselineId: 'c'.repeat(64) },
+  { repository: { ...git.repository, commit: 'e'.repeat(40) } },
+  { repository: { ...git.repository, branch: 'different' } },
+  { repository: { ...git.repository, provider: 'unknown' } },
+  { changes: [change, change] },
+  { changes: [{ ...change, path: 'foreign.txt' }] },
+  { changes: [{ ...change, fileId: `nf-${'9'.repeat(64)}` }] },
+  { changes: [{ ...change, before: null }] },
+  { changes: [{ ...change, after: null }] },
+  { changes: [{ ...change, after: { ...change.after, bytes: 0 } }] },
+  { changes: [{ ...change, before: { ...change.before, sha256: '1'.repeat(64) } }] },
+  { changes: [{ ...change, before: { ...change.before, mode: '100755' } }] },
+  { changes: [{ ...change, after: { ...change.after, mode: '120000' } }] },
+  { terminalSha256: '2'.repeat(64) },
+  { applicability: 'unknown' },
+  { review: 'recorded' },
+])(
+  'rejects Git changes or claims that do not bind to the selected inventories: %j',
+  async (patch) => {
+    get.mockResolvedValue({ ...sourceView, gitChangeSet: { ...git, ...patch } });
+    await expect(readGit()).rejects.toThrow('could not be verified');
+  },
+);
+it.each([
+  { publicationId: 'c'.repeat(64) },
+  { publicationSequence: 2 },
+  { executionId: 'other' },
+  { projectId: 'other' },
+  { baseline: null, status: 'not_retained' },
+])('rejects a mismatched source response before exposing its evidence: %j', async (patch) => {
+  get.mockResolvedValue({ ...sourceView, ...patch });
+  await expect(readGit()).rejects.toThrow();
+});
+it.each([
+  'proof_not_recorded',
+  'git_observations_not_retained',
+  'proof_mismatch',
+  'proof_unavailable',
+])('keeps captured changes visible when protected proof reports %s', async (reason) => {
+  const {
+    sha256: _sha,
+    terminalSha256: _terminal,
+    workflowCompletion: _completion,
+    ...unverified
+  } = git;
+  get.mockResolvedValue({
+    ...sourceView,
+    gitChangeSet: {
+      ...unverified,
+      reason,
+      terminal: 'not_recorded',
+      applicability: 'unknown',
+      review: 'not_verified',
+    },
+  });
+  expect((await readGit())?.gitChangeSet).toMatchObject({
+    terminal: 'not_recorded',
+    review: 'not_verified',
+    reviews: [],
+    changes: [{ path: descriptor.path, before: { mode: '100644' }, after: { mode: '100755' } }],
+  });
+});
+it('retains the changes from the original Git API without inferring a reviewer requirement', async () => {
+  get.mockResolvedValue({
+    ...sourceView,
+    gitChangeSet: {
+      ...target,
+      sourceBaselineId: baselineId,
+      repository: git.repository,
+      changes: [change],
+      review: 'not_verified',
+    },
+  });
+  expect((await readGit())?.gitChangeSet).toMatchObject({
+    review: 'not_verified',
+    applicability: 'unknown',
+  });
 });

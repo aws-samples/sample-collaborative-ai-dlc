@@ -12,6 +12,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
+  source: vi.fn(),
   revision: vi.fn(),
   decision: vi.fn(),
   file: vi.fn(),
@@ -220,6 +221,15 @@ const uncertainIntent = (): NativeIntent => ({
     recovery: { id: 'uncertain', reason: 'DELIVERY_UNCERTAIN', canRecover: false },
     stopStatus: { state: 'confirmed', confirmedAt: stamp },
   },
+});
+it('compares the selected historical publication with its pinned source while a later head exists', async () => {
+  mocks.source.mockResolvedValueOnce(null);
+  mount(nativeHistorySearch('', { revision: selected }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Compare with pinned source' }));
+  await screen.findByText(/No authoritative source baseline/);
+  expect(mocks.source).toHaveBeenCalledWith(intent.projectId, intent.id, revision(1));
+  expect(mocks.publication).not.toHaveBeenCalled();
+  expect(mocks.file).not.toHaveBeenCalled();
 });
 it('inspection uses the admitted publication, original request and immutable answer without dispatching a historical answer', async () => {
   mocks.decision.mockResolvedValueOnce({
