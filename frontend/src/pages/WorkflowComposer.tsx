@@ -499,21 +499,21 @@ export default function WorkflowComposer() {
 
     setSaving(true);
     try {
-      const calls: Promise<unknown>[] = [];
+      // Each placement update publishes a new workflow version, and the backend
+      // rejects a save that computed a version another save already published.
+      // Sending the updates one at a time keeps a reorder from conflicting with
+      // its own requests.
       for (const u of targetUpdates) {
-        calls.push(
-          workflowsService.updatePlacement(workflowId, u.stageId, {
-            phasePath: u.phasePath,
-            order: u.order,
-          }),
-        );
+        await workflowsService.updatePlacement(workflowId, u.stageId, {
+          phasePath: u.phasePath,
+          order: u.order,
+        });
       }
       for (const u of sourceUpdates) {
         if (!targetUpdates.some((t) => t.stageId === u.stageId)) {
-          calls.push(workflowsService.updatePlacement(workflowId, u.stageId, { order: u.order }));
+          await workflowsService.updatePlacement(workflowId, u.stageId, { order: u.order });
         }
       }
-      await Promise.all(calls);
       await refresh();
     } catch (e) {
       fail(e);
