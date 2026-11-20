@@ -60,7 +60,8 @@ For a federated user:
 - `requiredClaimValues` is an optional, independent access gate. When configured,
   every user, including an administrator, must have at least one required value.
 - Role and access changes at the IdP take effect after platform logout and a new
-  federated sign-in. Refresh tokens are valid for one day in SSO-enabled modes.
+  federated sign-in. Refresh tokens are valid for one day in SSO-enabled modes
+  unless configured otherwise; see [Token lifetimes](#token-lifetimes).
 - The Admin user list marks these roles **Managed by `<provider>`** and read-only.
 
 Local Cognito users keep their normal Cognito groups. In `sso-only` mode, the
@@ -74,6 +75,52 @@ address or upstream username. A federated user must complete one successful
 sign-in before appearing in **Space Settings → Members**. The member picker
 labels local Cognito accounts separately from enterprise identities and excludes
 identities that are disabled or do not pass the configured access gate.
+
+## Token lifetimes
+
+After every sign-in, local or federated, Cognito issues the tokens the web app
+uses. Their lifetimes decide how often the web app must refresh its session,
+when a new sign-in is required, and how long a user removed at the identity
+provider keeps access. When your organization's identity policy caps
+session or token lifetimes, set them in the environment's `.tfvars`:
+
+```hcl
+auth_access_token_validity_minutes = 60 # 5-1440
+auth_id_token_validity_minutes     = 60 # 5-1440
+auth_refresh_token_validity_hours  = 24 # 1-87600
+```
+
+| Variable                             | Default                                     |
+| ------------------------------------ | ------------------------------------------- |
+| `auth_access_token_validity_minutes` | 60                                          |
+| `auth_id_token_validity_minutes`     | 60                                          |
+| `auth_refresh_token_validity_hours`  | 24 with enterprise SSO, 168 in `local` mode |
+
+- The web app resolves the Cognito session before every API request and every
+  realtime connection, and sends the ID token. Amplify refreshes expired ID and
+  access tokens with the refresh token, so shorter values add token refreshes
+  but do not sign users out.
+- The refresh token lifetime is how long after a sign-in Cognito permits
+  refreshes. When it ends, the web app can no longer refresh and the user must
+  sign in again. Refresh expiry is not a hard session cap: it stops future
+  refreshes but does not invalidate tokens already issued.
+  - An ID token issued by a refresh just before the deadline stays valid for the
+    full ID token lifetime. A session can therefore keep working for up to the
+    refresh token lifetime plus the ID token lifetime after sign-in.
+  - Realtime connections are authorized when they open. The web app reconnects
+    before its ten-minute realtime scope token expires, and reconnecting
+    requires a valid ID token, but the servers do not close a connection that
+    is already open when its tokens expire.
+- Lifetimes are not revocation. A Cognito refresh does not check the identity
+  provider again, so a user disabled or removed there keeps refreshing until
+  the refresh token expires, then keeps using the last ID token until it
+  expires. Access after a removal can therefore last up to the refresh token
+  lifetime plus the ID token lifetime. Size both for the longest access you
+  accept after a removal.
+- The values apply to the single app client, so they also cover local Cognito
+  accounts in `hybrid` mode.
+- A change applies to tokens issued after the next apply. Tokens already issued
+  keep their original expiry.
 
 ## Bootstrap sequence
 
