@@ -73,3 +73,17 @@ it('rejects duplicate query identities before result work', async () => {
   expect((await f.api(request)).statusCode).toBe(400);
   expect(f.read).not.toHaveBeenCalled();
 });
+
+it.each([
+  { branch: 'other' },
+  { base: 'a'.repeat(40) },
+  { commit: 'b'.repeat(40) },
+  { observe: '1' },
+  { sha256: 'b'.repeat(64) },
+])('accepts only the publication and request identities for Git preparation', async (extra) => {
+  const f = await fixture();
+  const request = route('POST');
+  request.body = JSON.stringify({ ...input, format: 'git', ...extra });
+  expect((await f.api(request)).statusCode).toBe(400);
+  expect(f.read).not.toHaveBeenCalled();
+});

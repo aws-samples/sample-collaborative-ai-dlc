@@ -8,6 +8,7 @@ import {
 } from '../../shared/native-project-files.js';
 import {
   nativeGitExcludedRoot,
+  nativeGitObjectFormat,
   nativeGitInventorySha256,
 } from '../../shared/native-git-change-set.js';
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ const checkoutGitBase = (files, tree, source) => {
     files.filter((f) => !nativeGitExcludedRoot(f.path)).map((f) => [f.path, f]),
   );
   const preserved = new Set();
-  const algorithm = source.commit.length === 40 ? 'sha1' : 'sha256';
+  const algorithm = nativeGitObjectFormat(source.commit);
   const emptyTree = createHash(algorithm).update('tree 0\0').digest('hex');
   for (const entry of tree ? tree.slice(0, -1).split('\0') : []) {
     // A nested empty Git tree has no regular-file representation in an index.
@@ -68,6 +69,7 @@ export const captureNativeSourceBaseline = async ({
   identity,
   repository,
   readTree,
+  readCommit,
   packageId,
   publications,
   signal,
@@ -88,6 +90,35 @@ export const captureNativeSourceBaseline = async ({
   }
   if (snapshot.files.length > NATIVE_PUBLICATION_LIMITS.files)
     return { unavailable: 'snapshot_limit' };
+  const tree = await readTree?.();
+  const git = checkoutGitBase(snapshot.files, tree, repository);
+  if (git && readCommit) {
+    // Preserve the original commit and tree entries before the coding harness starts.
+    // No excluded blob bytes enter the result store. Verify the raw commit object ID.
+    const commit = await readCommit();
+    const index = tree
+      .split('\0')
+      .filter((entry) => /^(100644|100755) blob /.test(entry))
+      .join('\0');
+    if (
+      Buffer.isBuffer(commit) &&
+      createHash(nativeGitObjectFormat(repository.commit))
+        .update(`commit ${Buffer.byteLength(commit)}\0`)
+        .update(commit)
+        .digest('hex') === repository.commit &&
+      !(forbiddenBytes ?? []).some(
+        (value) => value && (commit.includes(value) || Buffer.from(index).includes(value)),
+      )
+    ) {
+      const objects = await publications
+        .writeGitBase(identity, {
+          commit: commit.toString('base64'),
+          index: index ? `${index}\0` : '',
+        })
+        .catch(() => null);
+      if (objects) git.baseObjects = objects;
+    }
+  }
   const receipt = await publications.write({
     identity,
     repository: { branch: repository?.branch, commit: repository?.commit },
@@ -97,7 +128,7 @@ export const captureNativeSourceBaseline = async ({
     sequence: 1,
     files: snapshot.files,
     filesystemPolicy: snapshot.filesystemPolicy,
-    git: checkoutGitBase(snapshot.files, await readTree?.(), repository),
+    git,
   });
   return { epoch: identity.epoch, receipt };
 };

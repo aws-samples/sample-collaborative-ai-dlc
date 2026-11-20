@@ -54,6 +54,7 @@ module "authority" {
     WORKFLOW_SOURCE_BINDINGS_TABLE     = var.workflow_source_bindings_table_name
     NATIVE_PACKAGE_JOBS_TABLE          = var.package_jobs_table_name
     NATIVE_EXECUTION_QUEUE_URL         = aws_sqs_queue.execution[0].url
+    NATIVE_GIT_RESULT_FUNCTION         = aws_lambda_function.git_result.arn
     NATIVE_RESULT_FUNCTION             = module.results.lambda_function_arn
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     SOURCE_CONTROL_FUNCTION            = var.source_control_function_arn

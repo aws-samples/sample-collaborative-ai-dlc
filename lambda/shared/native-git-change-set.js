@@ -2,6 +2,17 @@ import { nativeFileExclusion, NATIVE_DEPENDENCY_POLICY } from './native-project-
 import { createHash } from 'node:crypto';
 import { canonicalJson } from './workflow-checkpoint.js';
 
+export const nativeGitObjectFormat = (commit) => (commit.length === 40 ? 'sha1' : 'sha256');
+
+export const nativeGitResultBranch = (executionId, sourceBranch) => {
+  if (
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(executionId ?? '')
+  )
+    throw new Error('Invalid native execution identity');
+  const branch = `aidlc/native-${executionId}`;
+  return branch === sourceBranch ? `${branch}-result` : branch;
+};
+
 // The publication walker prunes whole directories. The native checkout also
 // reserves engine and session records that members can inspect in publications.
 export const nativeGitExcludedRoot = (path) => {

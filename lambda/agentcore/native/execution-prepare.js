@@ -19,6 +19,7 @@ import { loadNativePackage } from './package-loader.js';
 import { prepareNativeEngineClient } from './workflow-client.js';
 import { runNativeCommand } from './command-runner.js';
 import { withGitCredential } from '../git-auth.js';
+import { nativeGitObjectFormat } from '../../shared/native-git-change-set.js';
 import { isValidRepoPath } from '../../shared/repo-validation.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
 import { captureNativeSourceBaseline } from './source-baseline.js';
@@ -311,9 +312,19 @@ export const createNativeExecutionPorts = ({
         GIT_TERMINAL_PROMPT: '0',
         GIT_LFS_SKIP_SMUDGE: '1',
       };
-      const runGit = async (args, extraEnv = {}, stdin) => {
+      const runGit = async (args, extraEnv = {}, stdin, raw = false) => {
         await recheck();
+        const chunks = [];
+        let captured = 0;
         const result = await commandRunner({
+          ...(raw
+            ? {
+                onStdoutChunk(chunk) {
+                  captured += chunk.length;
+                  if (captured <= 1024 * 1024) chunks.push(chunk);
+                },
+              }
+            : {}),
           command: '/usr/bin/git',
           args: [
             '-c',
@@ -349,9 +360,9 @@ export const createNativeExecutionPorts = ({
         )
           fail('native_execution_checkout_failed');
         await recheck();
-        return result.stdout.trim();
+        return raw ? Buffer.concat(chunks) : result.stdout.trim();
       };
-      await runGit(['init', '--quiet']);
+      await runGit(['init', '--quiet', `--object-format=${nativeGitObjectFormat(repo.commit)}`]);
       await runGit([
         'remote',
         'add',
@@ -450,6 +461,14 @@ export const createNativeExecutionPorts = ({
         project,
         identity: executionScope(dispatch),
         repository: repo,
+        readCommit: async () => {
+          try {
+            return await runGit(['cat-file', 'commit', commit], {}, undefined, true);
+          } catch (error) {
+            if (error.code !== 'native_execution_checkout_failed') throw error;
+            return null;
+          }
+        },
         readTree: async () => {
           try {
             return await runGit(['ls-tree', '--full-tree', '-rtz', commit]);

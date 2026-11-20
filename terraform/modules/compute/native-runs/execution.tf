@@ -39,7 +39,7 @@ locals {
       Sid      = "BuildNativeResult"
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
-      Resource = module.results.lambda_function_arn
+      Resource = [module.results.lambda_function_arn, aws_lambda_function.git_result.arn]
     },
     {
       Sid      = "DownloadGeneratedNativeResult"

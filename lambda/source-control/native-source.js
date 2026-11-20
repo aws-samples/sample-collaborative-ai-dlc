@@ -3,6 +3,7 @@ import { getBinding, canonicalRepo, ACTIVE } from '../shared/source-control-bind
 import { getGitConnection, assertCurrentGitConnection } from '../shared/git-connection-store.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { workflowSourceIdentity } from '../shared/workflow-source-bindings.js';
+import { nativeGitResultBranch } from '../shared/native-git-change-set.js';
 import { resolveNativeSourceCommit } from '../shared/native-application-source.js';
 import { sourceCredentialIdentity } from '../shared/source-credential-identity.js';
 import { readNativeWorkflowSettings } from '../shared/native-workflow-settings.js';
@@ -23,6 +24,7 @@ export const captureNativeSource = async ({
   resolveCommit = resolveNativeSourceCommit,
   metadataOnly = false,
   workflowSettings = false,
+  deliveryRef = false,
   readSettings = readNativeWorkflowSettings,
 }) => {
   const { projectId, userId, provider, repository, bindingRevision } = input;
@@ -52,6 +54,12 @@ export const captureNativeSource = async ({
     throw denied();
   const connection = oauth ? await getGitConnection(ddb, binding.connectionUserId, provider) : null;
   if (oauth && !connection) throw denied();
+  const credentialIdentity = sourceCredentialIdentity(binding, connection);
+  if (
+    deliveryRef &&
+    (input.credentialIdentity !== credentialIdentity || binding.revision !== bindingRevision)
+  )
+    throw denied();
   const credential = await resolveBindingCredential({
     ddb,
     ssm,
@@ -70,7 +78,17 @@ export const captureNativeSource = async ({
       }
     : metadataOnly
       ? {}
-      : await resolveCommit({ provider, repository, token: credential.token });
+      : await resolveCommit({
+          provider,
+          repository,
+          token: credential.token,
+          ...(deliveryRef
+            ? {
+                branch: nativeGitResultBranch(input.executionId, input.sourceBranch),
+                allowMissing: true,
+              }
+            : {}),
+        });
   await assertAccess();
   if (oauth) {
     if (!['owner', 'admin', 'member'].includes(await membership(binding.connectionUserId)))
@@ -82,6 +100,6 @@ export const captureNativeSource = async ({
   return {
     ...source,
     bindingRevision: binding.revision,
-    credentialIdentity: sourceCredentialIdentity(binding, connection),
+    credentialIdentity,
   };
 };

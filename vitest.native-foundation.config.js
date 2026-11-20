@@ -99,6 +99,7 @@ export default defineConfig({
       'lambda/shared/test/source-control-bindings.test.js',
       'lambda/shared/test/source-control-credentials.test.js',
       'lambda/source-control/test/source-control.test.js',
+      'lambda/source-control/test/native-source.test.js',
       'lambda/credential-broker/test/credential-broker.test.js',
       'frontend/src/lib/executionCapabilities.test.ts',
       'frontend/src/services/workflowSources.test.ts',

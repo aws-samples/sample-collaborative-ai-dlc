@@ -41,6 +41,11 @@ const ERRORS = {
   ],
   NATIVE_INPUT_UNAVAILABLE: [503, 'The input change could not be confirmed. Refresh the draft'],
   NATIVE_RESULT_INVALID: [400, 'Invalid native result request'],
+  NATIVE_RESULT_GIT_DELTA_UNAVAILABLE: [409, 'This publication has no exact Git change set'],
+  NATIVE_RESULT_GIT_BASE_UNAVAILABLE: [
+    409,
+    'The Git objects for the pinned Start source were not retained',
+  ],
   NATIVE_RESULT_CONFLICT: [409, 'The result request names different immutable bytes'],
   NATIVE_RESULT_UNAVAILABLE: [
     503,
@@ -606,7 +611,7 @@ export const createNativeRuntimeApi = ({
         query: nativeResultQuery,
         handle: (context) =>
           resultResponse(context, () =>
-            execution.result(context.row, context.query, context.recheck),
+            execution.result(context.row, context.query, context.recheck, context.actorId),
           ),
       },
       POST: {

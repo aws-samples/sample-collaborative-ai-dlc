@@ -42,3 +42,33 @@ module "results" {
   cloudwatch_logs_retention_in_days = 7
   depends_on                        = [aws_iam_role_policy.results, aws_iam_role_policy_attachment.results_basic]
 }
+
+# Git plumbing runs on the qualified image with the existing derived-result role.
+# The builder reads captured source objects and has no provider credentials.
+resource "aws_lambda_function" "git_result" {
+  function_name = "${local.name}-git-result"
+  role          = aws_iam_role.results.arn
+  package_type  = "Image"
+  image_uri     = "${var.image_repository_url}@${var.image_arm64_manifest_digest}"
+  architectures = ["arm64"]
+  memory_size   = 1024
+  timeout       = 900
+  ephemeral_storage { size = 1024 }
+  image_config {
+    entry_point       = ["/usr/bin/env", "LAMBDA_TASK_ROOT=/opt/native-runtime-control", "_HANDLER=result-worker.handler", "/usr/local/bin/node", "/opt/native-lambda-interface/node_modules/aws-lambda-ric/index.mjs"]
+    command           = ["result-worker.handler"]
+    working_directory = "/opt/native-runtime-control"
+  }
+  vpc_config {
+    subnet_ids         = var.api_subnet_ids
+    security_group_ids = var.api_security_group_ids
+  }
+  environment { variables = merge(local.base_environment, local.execution_environment) }
+  tags       = var.tags
+  depends_on = [aws_ecr_repository_policy.workflow_engine, aws_iam_role_policy.results, aws_cloudwatch_log_group.git_result]
+}
+resource "aws_cloudwatch_log_group" "git_result" {
+  name              = "/aws/lambda/${local.name}-git-result"
+  retention_in_days = 7
+  tags              = var.tags
+}

@@ -10,6 +10,7 @@ import { SSMClient } from '@aws-sdk/client-ssm';
 import { fetchWorkflowSourceMembership } from '../shared/workflow-source-membership.js';
 import { createWorkflowSourceService } from '../shared/workflow-source-service.js';
 import { createNativePackageJobs } from '../shared/native-package-jobs.js';
+import { isNativeSourceCommit } from '../shared/native-application-source.js';
 import { createNativeRuntimeApi, nativePreparationInternalError } from './api.js';
 import { createNativeInputApi } from './input-api.js';
 import { invokeNativeInputOwner } from './input-access.js';
@@ -154,11 +155,36 @@ export const createNativeRuntimeLambda =
             bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
             accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
           }),
-          enqueue: async (input) => {
-            if (!env.NATIVE_RESULT_FUNCTION) throw resultFailure();
+          observeBranch: async ({ row, actorId, branch }) => {
+            const pin = row.configuration.repository;
+            const reply = await invokeInputOwner(env.SOURCE_CONTROL_FUNCTION, {
+              action: 'native-delivery-ref',
+              sourceBranch: pin.branch,
+              projectId: row.scope.projectId,
+              userId: actorId,
+              executionId: row.scope.executionId,
+              provider: pin.provider,
+              repository: pin.repository,
+              bindingRevision: pin.bindingRevision,
+              credentialIdentity: pin.credentialIdentity,
+            });
+            if (
+              !reply.ok ||
+              reply.source?.branch !== branch ||
+              reply.source.bindingRevision !== pin.bindingRevision ||
+              reply.source.credentialIdentity !== pin.credentialIdentity ||
+              (reply.source.commit !== null && !isNativeSourceCommit(reply.source.commit))
+            )
+              throw resultFailure();
+            return reply.source.commit;
+          },
+          enqueue: async (input, format) => {
+            const functionName =
+              format === 'git' ? env.NATIVE_GIT_RESULT_FUNCTION : env.NATIVE_RESULT_FUNCTION;
+            if (!functionName) throw resultFailure();
             const invocation = await lambda.send(
               new InvokeCommand({
-                FunctionName: env.NATIVE_RESULT_FUNCTION,
+                FunctionName: functionName,
                 InvocationType: 'Event',
                 Payload: Buffer.from(JSON.stringify(input)),
               }),

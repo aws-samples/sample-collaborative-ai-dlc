@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import { S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
@@ -8,7 +9,7 @@ import { nativeAuthorityPort } from './authority-client.js';
 import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeArtifactRevisions } from '../shared/native-artifact-revision.js';
 import { createNativeResultStorage } from './result-storage.js';
-import { buildNativeResultArchive, resultEligibleFiles } from './result-archive.js';
+import { buildNativeGitResult } from './git-result.js';
 import { resultFailure, resultJobMatches } from './result-store.js';
 import { nativeVerificationSummary } from '../shared/native-completion-evidence.js';
 
@@ -37,7 +38,7 @@ export const nativeResultProvenance = (execution, manifest, request, files) => (
 });
 
 export const createNativeResultWorker =
-  ({ executions, jobs, revisions, storage }) =>
+  ({ executions, jobs, revisions, storage, publications }) =>
   async (input) => {
     const { projectId, executionId, requestId } = input ?? {};
     if (
@@ -57,8 +58,7 @@ export const createNativeResultWorker =
     try {
       const execution = await executions.get(scope);
       if (!resultJobMatches(claim, execution, claim.request)) throw resultFailure('CONFLICT');
-      const { manifest } = await revisions.publication(execution, claim.request);
-      const files = resultEligibleFiles(manifest, claim.request);
+
       directory = await mkdtemp(join(tmpdir(), 'native-result-'));
       const path = join(directory, 'result');
       const readFile = (file) => {
@@ -75,18 +75,36 @@ export const createNativeResultWorker =
         );
       };
       let content;
-      if (claim.request.fileId) {
-        const bytes = await readFile(files[0]);
-        await writeFile(path, bytes, { flag: 'wx', mode: 0o600, signal });
-        content = { bytes: files[0].bytes, sha256: files[0].sha256 };
-      } else {
-        content = await buildNativeResultArchive({
+      if (claim.request.format === 'git') {
+        const located = await revisions.source(execution, claim.request);
+        content = await buildNativeGitResult({
+          execution,
+          located,
+          publications,
+          directory,
           destination: path,
-          files,
-          readFile,
           signal,
-          provenance: nativeResultProvenance(execution, manifest, claim.request, files),
         });
+        if (claim.preparedGit && !isDeepStrictEqual(claim.preparedGit, content.git))
+          throw resultFailure('CONFLICT');
+      } else {
+        const { buildNativeResultArchive, resultEligibleFiles } =
+          await import('./result-archive.js');
+        const { manifest } = await revisions.publication(execution, claim.request);
+        const files = resultEligibleFiles(manifest, claim.request);
+        if (claim.request.fileId) {
+          const bytes = await readFile(files[0]);
+          await writeFile(path, bytes, { flag: 'wx', mode: 0o600, signal });
+          content = { bytes: files[0].bytes, sha256: files[0].sha256 };
+        } else {
+          content = await buildNativeResultArchive({
+            destination: path,
+            files,
+            readFile,
+            signal,
+            provenance: nativeResultProvenance(execution, manifest, claim.request, files),
+          });
+        }
       }
       signal.throwIfAborted();
       artifact = await storage.upload(claim, path, content, signal);
@@ -121,6 +139,7 @@ export const handler = async (event) => {
       accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
     });
     worker = createNativeResultWorker({
+      publications,
       executions: nativeAuthorityPort('results', 'execution', ['get']),
       jobs: nativeAuthorityPort('results', 'results', ['claim', 'finish']),
       revisions: createNativeArtifactRevisions({

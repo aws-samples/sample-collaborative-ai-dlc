@@ -72,9 +72,10 @@ const fixture = (provider = 'github') => {
     repository: 'owner/repo',
     bindingRevision: state.binding.revision,
   };
-  const run = () =>
+  const run = (deliveryRef = false) =>
     captureNativeSource({
       input,
+      deliveryRef,
       ddb,
       ssm: {},
       secrets: {},
@@ -163,3 +164,45 @@ it.each([
   expect(credentials.resolve).not.toHaveBeenCalled();
   expect(f.fetchImpl).not.toHaveBeenCalled();
 });
+
+it.each(['github', 'gitlab', 'bitbucket'])(
+  'observes only the original native branch via the pinned %s delegation',
+  async (provider) => {
+    const f = fixture(provider);
+    f.input.executionId = '10000000-0000-4000-8000-000000000001';
+    f.input.credentialIdentity = sourceCredentialIdentity(f.state.binding, f.state.connection);
+    const branch = `aidlc/native-${f.input.executionId}`;
+    const body =
+      provider === 'github'
+        ? { commit: { sha: f.state.commit } }
+        : provider === 'gitlab'
+          ? { commit: { id: f.state.commit } }
+          : { target: { hash: f.state.commit } };
+    f.fetchImpl.mockImplementationOnce(async (url, options) => {
+      expect(url).toMatch(new RegExp(encodeURIComponent(branch) + '$'));
+      expect(options.method).toBe('GET');
+      return Response.json({ ...body, name: branch });
+    });
+    expect(await f.run(true)).toMatchObject({ branch, commit: f.state.commit });
+    f.fetchImpl
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        Response.json({ full_name: 'owner/repo', path_with_namespace: 'owner/repo' }),
+      );
+    expect(await f.run(true)).toMatchObject({ branch, commit: null });
+    f.fetchImpl
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    await expect(f.run(true)).rejects.toMatchObject({ code: 'NATIVE_SOURCE_RESOLUTION_FAILED' });
+    f.fetchImpl.mockResolvedValueOnce(Response.json({ ...body, name: 'other' }));
+    await expect(f.run(true)).rejects.toThrow();
+    f.fetchImpl.mockResolvedValueOnce(Response.json({ ...body, name: branch }));
+    f.state.afterResolve = () => f.state.members.delete('starter');
+    await expect(f.run(true)).rejects.toMatchObject({ code: 'NATIVE_SOURCE_UNAVAILABLE' });
+    f.state.members.add('starter');
+    f.input.credentialIdentity = 'replaced';
+    f.fetchImpl.mockClear();
+    await expect(f.run(true)).rejects.toMatchObject({ code: 'NATIVE_SOURCE_UNAVAILABLE' });
+    expect(f.fetchImpl).not.toHaveBeenCalled();
+  },
+);

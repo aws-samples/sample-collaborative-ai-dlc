@@ -171,7 +171,9 @@ RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules \
 # above is not locked, so npm may also nest a second copy of the graph library
 # inside the one tree when a dependent package asks for another version range:
 # exactly one copy may be installed.
-RUN test "$(readlink -f /opt/shared/node_modules)" = /opt/agentcore/node_modules \
+RUN /usr/bin/git --version \
+    && node -e "import('/opt/native-runtime-control/result-worker.js').then((entry) => process.exit(typeof entry.handler === 'function' ? 0 : 1))" \
+    && test "$(readlink -f /opt/shared/node_modules)" = /opt/agentcore/node_modules \
     && test "$(readlink -f /opt/native-runtime-control/node_modules)" = /opt/agentcore/node_modules \
     && test -z "$(find /opt/shared /opt/native-runtime-control -mindepth 2 -name node_modules -print -quit)" \
     && test "$(find /opt/agentcore/node_modules -type d -path '*/node_modules/gremlin' | wc -l)" -eq 1 \

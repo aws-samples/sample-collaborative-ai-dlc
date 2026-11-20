@@ -60,7 +60,7 @@ const gitAt = async (cwd, ...args) => {
   );
   return stdout.trim();
 };
-const fixture = async () => {
+const fixture = async (algorithm = 'sha1') => {
   const root = join(temp, 'mount');
   const project = join(root, 'project');
   const home = join(temp, 'home');
@@ -68,7 +68,7 @@ const fixture = async () => {
   const askpassRoot = join(temp, 'askpass');
   for (const path of [root, project, home, origin, askpassRoot])
     await fs.mkdir(path, { mode: 0o700 });
-  await gitAt(origin, 'init', '--quiet', '-b', 'main');
+  await gitAt(origin, 'init', '--quiet', `--object-format=${algorithm}`, '-b', 'main');
   await fs.writeFile(join(origin, 'game.js'), 'original exact source\n');
   await gitAt(origin, 'add', 'game.js');
   await gitAt(origin, 'commit', '--quiet', '-m', 'original');
@@ -229,6 +229,22 @@ const fixture = async () => {
 };
 
 describe('native execution preparation with real local Git and versioned package bytes', () => {
+  it('retains the tree and raw commit of a pinned SHA-256 repository', async () => {
+    const f = await fixture('sha256');
+    const prepared = await f.ports.prepare(f.input);
+    expect(prepared.repositoryCommit).toBe(f.commit);
+    const publications = createNativePublications({
+      s3: f.memory.s3,
+      bucket: f.env.NATIVE_PUBLICATION_BUCKET,
+      accountId: account,
+    });
+    const baseline = await publications.read(f.identity, prepared.sourceBaseline.receipt);
+    const { commit } = await publications.gitBase(f.identity, baseline);
+    const bytes = Buffer.from(commit, 'base64');
+    expect(
+      createHash('sha256').update(`commit ${bytes.length}\0`).update(bytes).digest('hex'),
+    ).toBe(f.commit);
+  });
   it('restores the exact archived package, accepts mode 0500, and checks out the exact SHA rather than branch tip', async () => {
     const f = await fixture();
     const prepared = await f.ports.prepare(f.input);
@@ -263,6 +279,12 @@ describe('native execution preparation with real local Git and versioned package
     });
     await fs.writeFile(join(f.project, 'game.js'), 'changed after trusted preparation\n');
     expect(baseline.repository.commit).toBe(f.commit);
+    const gitBase = await publications.gitBase(f.identity, baseline);
+    const commit = Buffer.from(gitBase.commit, 'base64');
+    expect(
+      createHash('sha1').update(`commit ${commit.length}\0`).update(commit).digest('hex'),
+    ).toBe(f.commit);
+    expect(gitBase.index).toContain('\tgame.js\0');
     expect(baseline.git).toMatchObject({
       provider: 'github',
       repository: 'owner/flappy-bird',

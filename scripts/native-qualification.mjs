@@ -46,6 +46,8 @@ if (!options.installedOnly) {
     'lambda/native-runtime-control/test/revision-history.test.js',
     'lambda/native-runtime-control/test/public-files.test.js',
     'lambda/native-runtime-control/test/git-change-set.test.js',
+    'lambda/native-runtime-control/test/result-rest.test.js',
+    'lambda/source-control/test/native-source.test.js',
     'lambda/native-runtime-control/test/workflow-engine-service.test.js',
     'lambda/native-runtime-control/test/workflow-engine-review.test.js',
     'lambda/agentcore/test/native-workflow-client.test.js',

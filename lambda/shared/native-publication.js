@@ -19,6 +19,7 @@ export const NATIVE_PUBLICATION_LIMITS = Object.freeze({
   fileBytes: 32 * 1024 * 1024,
   totalBytes: 256 * 1024 * 1024,
   manifestBytes: 1024 * 1024,
+  gitBaseBytes: 4 * 1024 * 1024,
 });
 const fail = () => {
   throw Object.assign(new Error('Native publication could not be verified'), {
@@ -100,8 +101,28 @@ const validateGitInventory = (manifest, publishedPaths) => {
   const { git } = manifest;
   const baseline = manifest.nativeSessionId === null;
   const list = baseline ? 'preservedDirectories' : 'deleted';
+  const hasObjects = baseline && object(git) && Object.hasOwn(git, 'baseObjects');
+  if (hasObjects) {
+    const p = git.baseObjects;
+    if (
+      !exact(p, ['key', 'versionId', 'sha256', 'bytes']) ||
+      !SHA.test(p.sha256) ||
+      !safeVersion(p.versionId) ||
+      p.key !== `${nativePublicationScope(manifest.scope).prefix}git-base/${p.sha256}.json` ||
+      !Number.isSafeInteger(p.bytes) ||
+      p.bytes < 1 ||
+      p.bytes > NATIVE_PUBLICATION_LIMITS.gitBaseBytes
+    )
+      fail();
+  }
   if (
-    !exact(git, ['provider', 'repository', 'inventorySha256', list]) ||
+    !exact(git, [
+      'provider',
+      'repository',
+      'inventorySha256',
+      list,
+      ...(hasObjects ? ['baseObjects'] : []),
+    ]) ||
     !['github', 'gitlab', 'bitbucket'].includes(git.provider) ||
     !isValidRepoPath(git.repository) ||
     (baseline
@@ -320,6 +341,20 @@ export const createNativePublications = ({
     return bytes;
   };
   const api = {
+    async writeGitBase(identity, content) {
+      const bytes = Buffer.from(canonicalJson(content));
+      if (bytes.length > NATIVE_PUBLICATION_LIMITS.gitBaseBytes) return null;
+      const sha256 = hash(bytes);
+      const key = `${nativePublicationScope(identity).prefix}git-base/${sha256}.json`;
+      return { ...(await put(key, bytes, 'application/json')), bytes: bytes.length, sha256 };
+    },
+    async gitBase(identity, manifest, signal) {
+      const pointer = validateManifest(manifest, identity).git?.baseObjects;
+      if (!pointer) fail();
+      const bytes = await get(pointer, pointer.bytes, signal);
+      if (bytes.length !== pointer.bytes || hash(bytes) !== pointer.sha256) fail();
+      return JSON.parse(bytes.toString('utf8'));
+    },
     async write({
       identity,
       packageId,
@@ -402,6 +437,10 @@ export const createNativePublications = ({
         );
       });
       let data = Buffer.from(canonicalJson(manifest));
+      if (git?.baseObjects && data.length > NATIVE_PUBLICATION_LIMITS.manifestBytes) {
+        delete manifest.git.baseObjects;
+        data = Buffer.from(canonicalJson(manifest));
+      }
       if (git && data.length > NATIVE_PUBLICATION_LIMITS.manifestBytes) {
         // Optional Git metadata must not displace an otherwise usable NE-10 result.
         const { git: _git, ...publicManifest } = manifest;
@@ -476,10 +515,18 @@ export const createNativePublications = ({
         );
       return manifest;
     },
-    async file(identity, manifest, fileId, { signal } = {}) {
-      const file = validateManifest(manifest, identity).files.find((file) => file.id === fileId);
-      if (!file) fail();
-      return { file, bytes: await readFileBytes(file, signal) };
+    fileReader(identity, manifest) {
+      const files = new Map(
+        validateManifest(manifest, identity).files.map((file) => [file.id, file]),
+      );
+      return async (fileId, { signal } = {}) => {
+        const file = files.get(fileId);
+        if (!file) fail();
+        return { file, bytes: await readFileBytes(file, signal) };
+      };
+    },
+    async file(identity, manifest, fileId, options) {
+      return api.fileReader(identity, manifest)(fileId, options);
     },
     async reviewFiles(identity, manifest, paths) {
       const files = validateManifest(manifest, identity).files.filter((file) =>

@@ -15,6 +15,29 @@ const invalid = () => {
   });
 };
 
+export const nativeRevisionGitProof = async ({
+  completionProof,
+  row,
+  found,
+  manifest,
+  baseline,
+}) => {
+  const delta = engineGitDelta(manifest.sourceBaseline, baseline.manifest, baseline.changes);
+  try {
+    const evidence =
+      row.configuration.workflowEngine && completionProof
+        ? await completionProof({ row, found, manifest })
+        : null;
+    return engineGitVerification(evidence, delta);
+  } catch (error) {
+    return {
+      ...engineGitVerification(null, delta),
+      reason:
+        error.code === 'NATIVE_ARTIFACT_REVISION_INVALID' ? 'proof_mismatch' : 'proof_unavailable',
+    };
+  }
+};
+
 // Reads use admitted bytes and structured authority receipts only. No runtime,
 // projection, image-policy or mutable project configuration is consulted.
 export const createNativeRevisionApi = ({
@@ -128,29 +151,9 @@ export const createNativeRevisionApi = ({
       }
       if (target.source) {
         const repo = row.configuration.repository;
-        let verification;
-        if (baseline?.changes) {
-          const delta = engineGitDelta(
-            manifest.sourceBaseline,
-            baseline.manifest,
-            baseline.changes,
-          );
-          try {
-            const evidence =
-              row.configuration.workflowEngine && completionProof
-                ? await completionProof({ row, found, manifest })
-                : null;
-            verification = engineGitVerification(evidence, delta);
-          } catch (error) {
-            verification = {
-              ...engineGitVerification(null, delta),
-              reason:
-                error.code === 'NATIVE_ARTIFACT_REVISION_INVALID'
-                  ? 'proof_mismatch'
-                  : 'proof_unavailable',
-            };
-          }
-        }
+        const verification = baseline?.changes
+          ? await nativeRevisionGitProof({ completionProof, row, found, manifest, baseline })
+          : null;
         await finish(draft, row, recheck);
         return {
           projectId: row.scope.projectId,

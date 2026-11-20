@@ -378,7 +378,7 @@ class NativeExecutionWiring(unittest.TestCase):
         condition = policy.split("Condition = {", 1)[1]
         self.assertRegex(
             condition,
-            r'ArnLike\s*=\s*\{ "aws:SourceArn" = \[local\.workflow_engine_arn, "\$\{local\.workflow_engine_arn\}:\*"\] \}',
+            r'ArnLike\s*=\s*\{ "aws:SourceArn" = \[local\.workflow_engine_arn, "\$\{local\.workflow_engine_arn\}:\*", local\.git_result_arn, "\$\{local\.git_result_arn\}:\*"\] \}',
         )
         self.assertNotIn("SourceAccount", condition)
         self.assertEqual(condition.count("aws:"), 1)
@@ -538,6 +538,19 @@ class NativeExecutionWiring(unittest.TestCase):
         for source in [api, facade, preparation_worker]:
             for action in ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]:
                 self.assertFalse(permits_s3(source, action, fence))
+
+    def test_git_result_runs_the_pinned_git_image_with_only_derived_result_access(self):
+        results = (MODULE / "results.tf").read_text()
+        worker = block(results, 'resource "aws_lambda_function" "git_result"')
+        self.assertRegex(worker, r'role\s*=\s*aws_iam_role.results.arn')
+        self.assertIn('image_uri     = "${var.image_repository_url}@${var.image_arm64_manifest_digest}"', worker)
+        self.assertIn('"_HANDLER=result-worker.handler"', worker)
+        self.assertIn('NATIVE_GIT_RESULT_FUNCTION', (MODULE / 'authority.tf').read_text())
+        role = block(results, 'resource "aws_iam_role_policy" "results"')
+        self.assertNotIn('SOURCE_CONTROL', role)
+        self.assertIn('${local.base_environment.NATIVE_AUTHORITY_FUNCTION}:results', role)
+        self.assertNotIn('secretsmanager:', role)
+        self.assertNotIn('ssm:', role)
 
     def test_missing_fence_lookup_can_return_404_only_to_the_controller(self):
         worker = block(EXECUTION, 'resource "aws_iam_role_policy" "execution_worker"')

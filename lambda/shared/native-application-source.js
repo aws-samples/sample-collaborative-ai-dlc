@@ -56,6 +56,7 @@ export const resolveNativeSourceCommit = async ({
   provider,
   repository,
   branch = null,
+  allowMissing = false,
   token,
   fetchImpl = globalThis.fetch,
 }) => {
@@ -90,7 +91,7 @@ export const resolveNativeSourceCommit = async ({
         : `${adapter.apiBase}/${provider === 'github' ? 'repos' : 'repositories'}/${identity.repository}`;
     let allowedUrl = repoPath;
     let count = 0;
-    const read = async (url) => {
+    const read = async (url, missing = false) => {
       // The provider's default-branch helper gets this exact-route adapter;
       // pagination, changed hosts, redirects and incidental writes cannot use it.
       if (
@@ -113,11 +114,15 @@ export const resolveNativeSourceCommit = async ({
       });
       if (
         controller.signal.aborted ||
-        response?.status !== 200 ||
+        (response?.status !== 200 && !(missing === true && response?.status === 404)) ||
         response.redirected ||
         (response.url && response.url !== url)
       )
         throw failure();
+      if (response.status === 404) {
+        void response.body?.cancel?.().catch(() => {});
+        return null;
+      }
       const value = await boundedJson(response, controller.signal);
       return { ok: true, status: 200, json: async () => value };
     };
@@ -126,7 +131,17 @@ export const resolveNativeSourceCommit = async ({
         branch ?? (await adapter.getDefaultBranch({ token, fetchImpl: read }, identity.repository));
       if (!isNativeSourceBranch(resolvedBranch)) throw failure();
       allowedUrl = `${repoPath}/${provider === 'gitlab' ? 'repository/branches' : provider === 'bitbucket' ? 'refs/branches' : 'branches'}/${encodeURIComponent(resolvedBranch)}`;
-      const body = await (await read(allowedUrl)).json();
+      const response = await read(allowedUrl, allowMissing && branch !== null);
+      if (!response) {
+        // Private providers may return 404 for a repository the caller cannot see.
+        allowedUrl = repoPath;
+        const repo = await (await read(repoPath)).json();
+        const name = provider === 'gitlab' ? repo.path_with_namespace : repo.full_name;
+        if (typeof name !== 'string' || name.toLowerCase() !== identity.repository.toLowerCase())
+          throw failure();
+        return { branch: resolvedBranch, commit: null };
+      }
+      const body = await response.json();
       const commit =
         provider === 'github'
           ? body.commit?.sha

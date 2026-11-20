@@ -1,4 +1,9 @@
 import { expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { buildNativeGitResult } from '../git-result.js';
+import { createNativeResultApi } from '../result-api.js';
+import { createNativeResultStore } from '../result-store.js';
+import { createNativeResultWorker } from '../result-worker.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -12,7 +17,8 @@ import { createNativeArtifactRevisions } from '../../shared/native-artifact-revi
 import { verifyCompletedNativeTurn } from '../execution-lifecycle.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { serialFixture } from './execution-serial-fixtures.js';
-import { TABLE } from './fixtures.js';
+import { createNativeRuntimeApi } from '../api.js';
+import { TABLE, MEMBERSHIP, event } from './fixtures.js';
 
 const git = (cwd, args, input) =>
   execFileSync(
@@ -26,12 +32,13 @@ const git = (cwd, args, input) =>
     },
   );
 
-const fixture = async (project) => {
+const fixture = async (project, retain = true, algorithm = 'sha1') => {
   const write = async (path, content) => {
     await fs.mkdir(dirname(join(project, path)), { recursive: true });
     await fs.writeFile(join(project, path), content);
   };
-  git(project, ['init', '--quiet', '-b', 'main']);
+  git(project, ['init', '--quiet', `--object-format=${algorithm}`, '-b', 'main']);
+  git(project, ['commit', '--quiet', '--allow-empty', '-m', 'older history']);
   for (const [path, bytes] of [
     ['run.sh', 'run\n'],
     ['plain.sh', 'plain\n'],
@@ -55,6 +62,7 @@ const fixture = async (project) => {
   const sourceBaseline = await captureNativeSourceBaseline({
     project,
     identity,
+    readCommit: retain ? () => git(project, ['cat-file', 'commit', source.commit]) : undefined,
     readTree: () => git(project, ['ls-tree', '--full-tree', '-rtz', source.commit]).toString(),
     repository: row.configuration.repository,
     packageId: row.configuration.packageId,
@@ -133,12 +141,16 @@ const fixture = async (project) => {
   return { f, project, identity, source, sourceBaseline, snapshot, write, publish, admit, read };
 };
 
-it('reconstructs the named result from its Start commit and immutable files with Git', async () => {
+it.each(['sha1', 'sha256'])('prepares and observes a pinned %s bundle', async (algorithm) => {
   const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-git-result-')));
   const project = join(root, 'project');
   await fs.mkdir(project, { mode: 0o700 });
   try {
-    const { f, source, snapshot, write, publish, admit, read } = await fixture(project);
+    const { f, source, snapshot, write, publish, admit, read } = await fixture(
+      project,
+      true,
+      algorithm,
+    );
     await fs.chmod(join(project, 'run.sh'), 0o755);
     await fs.chmod(join(project, 'plain.sh'), 0o644);
     await fs.rm(join(project, 'delete.bin'));
@@ -199,7 +211,6 @@ it('reconstructs the named result from its Start commit and immutable files with
 
     const reconstruct = join(root, 'reconstruct');
     git(root, ['clone', '-q', '--no-checkout', project, reconstruct]);
-    git(reconstruct, ['read-tree', source.commit]);
     const revisions = createNativeArtifactRevisions({
       ddb: f.ddb,
       nativeTable: TABLE,
@@ -222,17 +233,9 @@ it('reconstructs the named result from its Start commit and immutable files with
       ).gitChangeSet,
     ).toEqual(first.gitChangeSet);
     expect(unavailableProof).not.toHaveBeenCalled();
-    for (const { path } of changes.filter((c) => !c.after))
-      git(reconstruct, ['update-index', '--force-remove', '--', path]);
-    for (const { path, fileId, after } of changes.filter((c) => c.after)) {
-      const bytes = await revisions.bytes(f.row(), { ...target, fileId, sha256: after.sha256 });
-      const oid = git(reconstruct, ['hash-object', '-w', '--stdin'], bytes).toString().trim();
-      git(reconstruct, ['update-index', '--add', '--cacheinfo', after.mode, oid, path]);
-    }
     // Independently construct the expected tree from the real later commit,
     // restoring the excluded tracked assets and removing generated private data.
     const expected = git(project, ['rev-parse', 'HEAD']).toString().trim();
-    const actualTree = git(reconstruct, ['write-tree']).toString().trim();
     git(reconstruct, ['read-tree', expected]);
     git(reconstruct, [
       'restore',
@@ -244,7 +247,138 @@ it('reconstructs the named result from its Start commit and immutable files with
       '.native-control',
       'aidlc',
     ]);
-    expect(actualTree).toBe(git(reconstruct, ['write-tree']).toString().trim());
+    const expectedTree = git(reconstruct, ['write-tree']).toString().trim();
+
+    const jobs = createNativeResultStore({ ddb: f.ddb, tableName: TABLE });
+    const bundle = join(root, 'prepared.bundle');
+    const bare = join(root, 'provider.git');
+    git(root, ['clone', '--quiet', '--bare', project, bare]);
+    const observeBranch = vi.fn(async ({ branch, actorId }) => {
+      expect(actorId).toBe('member');
+      const ref = `refs/heads/${branch}`;
+      const observed = git(bare, ['for-each-ref', '--format=%(refname) %(objectname)', ref])
+        .toString()
+        .trim();
+      return observed ? observed.split(' ')[1] : null;
+    });
+    const storage = {
+      upload: async (_job, path, content) => {
+        await fs.copyFile(path, bundle);
+        return { ...content, versionId: 'git-result-version' };
+      },
+      download: vi.fn(async () => ({ filename: 'result.bundle' })),
+    };
+    const enqueue = vi.fn();
+    const api = createNativeResultApi({
+      read: async (draft, recheck) => {
+        await recheck(draft);
+        return f.row();
+      },
+      jobs,
+      revisions,
+      storage,
+      enqueue,
+      observeBranch,
+    });
+    const worker = createNativeResultWorker({
+      executions: f.store,
+      jobs,
+      revisions,
+      storage,
+      publications: f.publications,
+    });
+    const request = { ...target, format: 'git', requestId: randomUUID() };
+    const prepare = async (named) => {
+      await api.requestResult(f.prepared, named, f.recheck);
+      await worker({ ...f.row().scope, requestId: named.requestId });
+      return api.result(f.prepared, named, f.recheck);
+    };
+    const prepared = await prepare(request);
+    expect(prepared).toMatchObject({
+      status: 'ready',
+      delivery: {
+        tree: expectedTree,
+        repository: first.gitChangeSet.repository,
+        changeCount: changes.length,
+        verification: { terminal: 'not_recorded', review: 'not_verified' },
+      },
+    });
+    const { branch, commit } = prepared.delivery;
+    expect((await prepare({ ...request, requestId: randomUUID() })).delivery).toEqual(
+      prepared.delivery,
+    );
+    expect(observeBranch).not.toHaveBeenCalled();
+    const router = createNativeRuntimeApi({
+      enabled: true,
+      store: f.preparationStore,
+      execution: api,
+      getMembershipSnapshot: async () => (f.authorization.member ? MEMBERSHIP : null),
+    });
+    const routed = async (method, query = {}) => {
+      const input = event('get');
+      input.httpMethod = method;
+      input.resource += '/results';
+      input.path += '/results';
+      input.requestContext.authorizer.claims.sub = 'member';
+      if (method === 'GET')
+        input.queryStringParameters = Object.fromEntries(
+          Object.entries({ ...request, ...query }).map(([k, v]) => [k, String(v)]),
+        );
+      else input.body = JSON.stringify({ ...request, ...query });
+      return router(input);
+    };
+    expect(JSON.parse((await routed('POST')).body)).toMatchObject({
+      status: 'ready',
+      delivery: { commit },
+    });
+    expect((await routed('POST', { commit })).statusCode).toBe(400);
+    expect((await routed('GET', { branch: 'other' })).statusCode).toBe(400);
+    const observed = async () => JSON.parse((await routed('GET', { observe: '1' })).body);
+    expect((await observed()).delivery.observation).toEqual({ status: 'absent' });
+    // A disposable provider accepted this exact branch update, but the caller lost its reply.
+    git(bare, ['bundle', 'verify', bundle]);
+    git(bare, ['fetch', '--quiet', bundle, `refs/heads/${branch}:refs/heads/${branch}`]);
+    expect(
+      git(bare, ['rev-parse', `${commit}^`])
+        .toString()
+        .trim(),
+    ).toBe(source.commit);
+    expect(
+      git(bare, ['rev-parse', `${commit}^{tree}`])
+        .toString()
+        .trim(),
+    ).toBe(expectedTree);
+    expect((await observed()).delivery.observation).toEqual({ status: 'matched', commit });
+    // Reconciliation still uses the first prepared commit while a download is rebuilt.
+    storage.download.mockRejectedValueOnce(new Error('unavailable bundle'));
+    expect(await observed()).toMatchObject({
+      status: 'retryable',
+      delivery: { observation: { status: 'matched', commit } },
+    });
+    const ready = await jobs.get(f.row().scope, request.requestId);
+    await jobs.rebuild(ready);
+    const lease = await jobs.claim(f.row().scope, request.requestId);
+    expect(
+      await jobs.finish(lease, {
+        ...ready.artifact,
+        git: { ...ready.preparedGit, commit: expected },
+      }),
+    ).toBe(false);
+    expect(await jobs.finish(lease, { ...ready.artifact, git: ready.preparedGit })).toBe(true);
+    git(bare, ['update-ref', `refs/heads/${branch}`, expected]);
+    expect((await observed()).delivery.observation).toEqual({
+      status: 'different',
+      commit: expected,
+    });
+    observeBranch.mockRejectedValueOnce(new Error('private provider error'));
+    expect((await observed()).delivery.observation).toEqual({ status: 'unavailable' });
+    expect((await api.result(f.prepared, request, f.recheck)).delivery.commit).toBe(commit);
+    observeBranch.mockImplementationOnce(async () => {
+      f.authorization.member = false;
+      return commit;
+    });
+    expect((await routed('GET', { observe: '1' })).statusCode).toBe(403);
+    f.authorization.member = true;
 
     await f.respond();
     const claim = await f.store.claim(f.bindingIdentity);
@@ -262,6 +396,14 @@ it('reconstructs the named result from its Start commit and immutable files with
       changes: changes.filter((change) => change.path !== 'run.sh'),
     });
     expect((await read(receipt)).gitChangeSet).toEqual(first.gitChangeSet);
+    expect((await api.result(f.prepared, request, f.recheck)).delivery.commit).toBe(commit);
+    await expect(
+      api.requestResult(
+        f.prepared,
+        { ...request, publicationId: second.receipt.id, publicationSequence: 2 },
+        f.recheck,
+      ),
+    ).rejects.toMatchObject({ code: 'NATIVE_RESULT_CONFLICT' });
     await expect(
       f.api.revision(f.prepared, { ...target, publicationSequence: 2, source: true }, f.recheck),
     ).rejects.toThrow();
@@ -334,5 +476,84 @@ it('requires an observed absence and a complete capture, and preserves excluded 
     expect(await read(receipt)).toMatchObject({ status: 'captured', gitChangeSet: null });
   } finally {
     await fs.rm(project, { recursive: true, force: true });
+  }
+});
+
+it('preserves historical reads when a Start checkout did not retain its Git objects', async () => {
+  const project = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-git-history-')));
+  try {
+    const t = await fixture(project, false);
+    const { receipt } = await t.publish(await t.snapshot());
+    await t.admit(receipt);
+    expect((await t.read(receipt)).gitChangeSet.changes).toEqual([]);
+    const request = {
+      requestId: randomUUID(),
+      format: 'git',
+      publicationId: receipt.id,
+      publicationSequence: 1,
+    };
+    const api = createNativeResultApi({
+      read: () => t.f.row(),
+      revisions: createNativeArtifactRevisions({
+        ddb: t.f.ddb,
+        nativeTable: TABLE,
+        publications: t.f.publications,
+      }),
+    });
+    await expect(api.requestResult(t.f.prepared, request, t.f.recheck)).rejects.toMatchObject({
+      code: 'NATIVE_RESULT_GIT_BASE_UNAVAILABLE',
+    });
+    await expect(
+      api.requestResult(t.f.prepared, { ...request, base: t.source.commit }, t.f.recheck),
+    ).rejects.toMatchObject({ code: 'NATIVE_RESULT_INVALID' });
+  } finally {
+    await fs.rm(project, { recursive: true, force: true });
+  }
+});
+
+it('rejects a substituted Git commit or incomplete source index before producing a bundle', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-git-objects-')));
+  const project = join(root, 'project');
+  await fs.mkdir(project, { mode: 0o700 });
+  try {
+    const t = await fixture(project);
+    const { receipt } = await t.publish(await t.snapshot());
+    await t.admit(receipt);
+    const execution = t.f.row();
+    const revisions = createNativeArtifactRevisions({
+      ddb: t.f.ddb,
+      nativeTable: TABLE,
+      publications: t.f.publications,
+    });
+    const located = await revisions.source(execution, {
+      publicationId: receipt.id,
+      publicationSequence: receipt.sequence,
+    });
+    const source = await t.f.publications.gitBase(
+      located.baseline.identity,
+      located.baseline.manifest,
+    );
+    for (const [field, value] of [
+      ['commit', Buffer.from('different commit').toString('base64')],
+      ['index', source.index.split('\0').slice(1).join('\0')],
+    ]) {
+      const directory = join(root, field);
+      await fs.mkdir(directory);
+      const destination = join(directory, 'result.bundle');
+      await expect(
+        buildNativeGitResult({
+          execution,
+          located,
+          directory,
+          destination,
+          signal: AbortSignal.timeout(10000),
+          publications: { ...t.f.publications, gitBase: () => ({ ...source, [field]: value }) },
+        }),
+      ).rejects.toThrow();
+      await expect(fs.stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect((await t.read(receipt)).gitChangeSet.changes).toEqual([]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
   }
 });

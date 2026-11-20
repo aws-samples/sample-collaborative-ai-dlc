@@ -206,6 +206,7 @@ export const createNativeExecutionApi = ({
       ? createNativeResultApi({
           read: (draft, recheck) => read(draft, recheck, false),
           revisions,
+          completionProof,
           ...results,
         })
       : {}),

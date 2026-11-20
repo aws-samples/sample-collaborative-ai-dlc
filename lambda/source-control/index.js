@@ -431,9 +431,12 @@ const reviewNumberFromPath = (path) =>
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   if (
-    ['native-source-snapshot', 'native-source-access', 'native-workflow-settings'].includes(
-      event?.action,
-    )
+    [
+      'native-source-snapshot',
+      'native-source-access',
+      'native-workflow-settings',
+      'native-delivery-ref',
+    ].includes(event?.action)
   ) {
     let conn;
     try {
@@ -443,6 +446,7 @@ export const handler = async (event, context) => {
         input: event,
         metadataOnly: event.action === 'native-source-access',
         workflowSettings: event.action === 'native-workflow-settings',
+        deliveryRef: event.action === 'native-delivery-ref',
         ddb,
         ssm,
         secrets,

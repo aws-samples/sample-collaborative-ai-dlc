@@ -8,8 +8,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
-import { resultFailure } from './result-store.js';
-import { RESULT_ARCHIVE_BYTES } from './result-archive.js';
+import { resultFailure, RESULT_MAX_BYTES } from './result-store.js';
 
 export const RESULT_URL_SECONDS = 300;
 const SHA = /^[a-f0-9]{64}$/;
@@ -31,7 +30,7 @@ const valid = (artifact) =>
   version(artifact.versionId) &&
   Number.isSafeInteger(artifact.bytes) &&
   artifact.bytes >= 0 &&
-  artifact.bytes <= RESULT_ARCHIVE_BYTES;
+  artifact.bytes <= RESULT_MAX_BYTES;
 export const createNativeResultStorage = ({
   s3,
   bucket,
@@ -50,7 +49,10 @@ export const createNativeResultStorage = ({
             Key: artifactKey(job, content),
             Body: stream,
             ContentLength: content.bytes,
-            ContentType: job.request.fileId ? 'application/octet-stream' : 'application/zip',
+            ContentType:
+              job.request.fileId || job.request.format === 'git'
+                ? 'application/octet-stream'
+                : 'application/zip',
             ChecksumSHA256: Buffer.from(content.sha256, 'hex').toString('base64'),
           }),
           { abortSignal: signal },
@@ -85,12 +87,15 @@ export const createNativeResultStorage = ({
         throw resultFailure();
       const filename = job.request.fileId
         ? `${job.request.fileId}-${artifact.sha256.slice(0, 12)}.bin`
-        : `native-result-${job.request.publicationSequence}-${job.request.publicationId.slice(0, 12)}.zip`;
+        : `native-result-${job.request.publicationSequence}-${job.request.publicationId.slice(0, 12)}.${job.request.format === 'git' ? 'bundle' : 'zip'}`;
       const downloadUrl = await presign(
         s3,
         new GetObjectCommand({
           ...object,
-          ResponseContentType: job.request.fileId ? 'application/octet-stream' : 'application/zip',
+          ResponseContentType:
+            job.request.fileId || job.request.format === 'git'
+              ? 'application/octet-stream'
+              : 'application/zip',
           ResponseContentDisposition: `attachment; filename="${filename}"`,
           ResponseCacheControl: 'private, no-store',
         }),

@@ -9,6 +9,21 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{1
 const SHA = /^[a-f0-9]{64}$/;
 export const RESULT_LEASE_MS = 15 * 60 * 1000;
 export const RESULT_MAX_BYTES = 260 * 1024 * 1024;
+export const nativePreparedGit = (git) => {
+  if (
+    Object.keys(git ?? {})
+      .toSorted()
+      .join(',') !== 'base,branch,commit,deltaSha256,tree' ||
+    !/^aidlc\/native-[a-f0-9-]{36}(?:-result)?$/.test(git.branch) ||
+    !SHA.test(git.deltaSha256) ||
+    !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(git.base) ||
+    ![git.commit, git.tree].every(
+      (id) => typeof id === 'string' && id.length === git.base.length && /^[a-f0-9]+$/.test(id),
+    )
+  )
+    throw resultFailure('INVALID');
+  return structuredClone(git);
+};
 export const nativeResultArtifact = (result) => {
   if (
     !result ||
@@ -31,11 +46,13 @@ export const resultFailure = (code = 'UNAVAILABLE') =>
   });
 export const nativeResultRequest = (input) => {
   const file = input?.fileId !== undefined;
+  const git = input?.format === 'git' && !file;
   const keys = [
     'requestId',
     'publicationId',
     'publicationSequence',
     ...(file ? ['fileId', 'sha256'] : []),
+    ...(git ? ['format'] : []),
   ];
   if (
     !input ||
@@ -71,7 +88,13 @@ export const nativeResultQuery = (event) => {
     !/^[1-9][0-9]{0,15}$/.test(query.publicationSequence ?? '')
   )
     throw resultFailure('INVALID');
-  return nativeResultRequest({ ...query, publicationSequence: Number(query.publicationSequence) });
+  const observe = query.format === 'git' && query.observe === '1';
+  if (observe) delete query.observe;
+  const request = nativeResultRequest({
+    ...query,
+    publicationSequence: Number(query.publicationSequence),
+  });
+  return observe ? { ...request, observe: true } : request;
 };
 const key = (scope, requestId) => {
   if (!UUID.test(requestId ?? '')) throw resultFailure('INVALID');
@@ -177,7 +200,14 @@ export const createNativeResultStore = ({ ddb, tableName, now = Date.now, uuid =
       const row = await get(claim.identity.scope, claim.request.requestId);
       if (row?.version !== claim.version || row.status !== 'building' || row.leaseUntil <= now())
         return false;
+      let preparedGit = row.preparedGit;
       if (result) {
+        if (row.request.format === 'git') {
+          const { git, ...artifact } = result;
+          preparedGit = nativePreparedGit(git);
+          if (row.preparedGit && !same(row.preparedGit, preparedGit)) return false;
+          result = artifact;
+        }
         result = nativeResultArtifact(result);
         if (row.request.fileId && result.sha256 !== row.request.sha256)
           throw resultFailure('INVALID');
@@ -189,6 +219,7 @@ export const createNativeResultStore = ({ ddb, tableName, now = Date.now, uuid =
         updatedAt: now(),
         status: result ? 'ready' : 'failed',
         ...(result ? { artifact: result } : {}),
+        ...(preparedGit ? { preparedGit } : {}),
       };
       return Boolean(await put(next, row));
     },

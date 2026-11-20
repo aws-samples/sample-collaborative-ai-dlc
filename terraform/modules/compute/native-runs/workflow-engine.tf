@@ -2,6 +2,7 @@
 # Each check/reviewer gets a fresh CodeBuild boundary and one input/output
 # capability. Coding roles can invoke only their immutable binding alias.
 locals {
+  git_result_arn          = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.name}-git-result"
   workflow_engine_name    = "${local.name}-workflow"
   workflow_engine_arn     = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.workflow_engine_name}"
   workflow_job_name       = "${local.name}-workflow-job"
@@ -251,11 +252,10 @@ resource "aws_ecr_repository_policy" "workflow_engine" {
       Action    = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
       # Lambda documents one condition for its image retrieval: the function
       # ARN in aws:SourceArn (its example admits `function:*`). It does not say
-      # whether a published version presents a qualified ARN, or that it sends
-      # aws:SourceAccount. Admit this function and its qualifiers only; the ARN
-      # already names the account.
+      # whether a published version presents a qualified ARN. Scope retrieval
+      # to the protected engine and the derived Git result builder.
       Condition = {
-        ArnLike = { "aws:SourceArn" = [local.workflow_engine_arn, "${local.workflow_engine_arn}:*"] }
+        ArnLike = { "aws:SourceArn" = [local.workflow_engine_arn, "${local.workflow_engine_arn}:*", local.git_result_arn, "${local.git_result_arn}:*"] }
       }
     }]
   })

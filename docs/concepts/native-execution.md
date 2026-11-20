@@ -6149,7 +6149,8 @@ the current contract for newly created executions.
       with Git modes and observed deletions against the Start commit, or `null` when evidence is insufficient.
       New protected terminal observations bind the exact delta. Each applicable reviewer receives the
       original and resulting files within its stage scope. The API reports coverage, freshness and verdict
-      separately, including plans without reviewers. Provider delivery and tracker policy remain open.
+      separately, including plans without reviewers. Members can prepare a Git bundle for a named publication
+      against its retained Start commit and observe the pinned intent branch. Provider writes and tracker policy remain open.
 - [ ] **NE-13 — Finish shared history, status and traceability integration.** Reuse
       the implemented revision history, decision records, comparisons and graph
       links throughout the shared Intent shell and project/dashboard/sidebar views.
