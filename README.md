@@ -223,7 +223,7 @@ bash /tmp/aidlc-install.sh install --version 2.1.0 ...
 bash /tmp/aidlc-install.sh update
 ```
 
-Downgrades require `--allow-downgrade`.
+Downgrades require `--allow-downgrade`. `update` does nothing when the release is unchanged; `update --reapply` deploys it again, for example after editing the managed `tfvars`.
 
 ### Adopt an existing v1 deployment
 

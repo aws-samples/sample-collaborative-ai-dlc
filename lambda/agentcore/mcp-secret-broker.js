@@ -1,7 +1,7 @@
 import { invokeCredentialBroker } from './clients.js';
 import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { isMcpRecord, mcpSecretConfigAuthority } from '../shared/mcp-secret-config.js';
-import { RESERVED_MCP_ENV_KEYS } from './mcp-secret-resolver.js';
+import { isReservedMcpEnvKey } from './mcp-secret-resolver.js';
 
 const SAFE_FAILURES = {
   MCP_SECRET_RESERVED: 'A secret reference uses a reserved runtime variable. Rename it.',
@@ -26,7 +26,7 @@ const resolve = async (request, broker) => {
       Object.entries(result.secretEnv).some(
         ([ref, value]) =>
           !refs.has(ref) ||
-          RESERVED_MCP_ENV_KEYS.has(ref) ||
+          isReservedMcpEnvKey(ref) ||
           policy.collidingRefs.has(ref) ||
           typeof value !== 'string',
       )

@@ -14,6 +14,7 @@ import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/servi
 import { agentsService, type AgentCapabilities } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
+import { BEDROCK_GATEWAY_UNAVAILABLE } from '@/lib/bedrockGateway';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
@@ -980,7 +981,9 @@ function IntentComposePageContent() {
                       ? 'not installed'
                       : status?.authed === false || !source
                         ? 'no credential'
-                        : 'unavailable';
+                        : status?.unavailableReason === 'bedrock-gateway'
+                          ? BEDROCK_GATEWAY_UNAVAILABLE
+                          : 'unavailable';
                   return (
                     <button
                       key={cli}

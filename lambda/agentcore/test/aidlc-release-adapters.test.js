@@ -683,11 +683,18 @@ describe('annex reach, against the prompts the runtime really builds', () => {
 // so a body type no prompt builder annexes would fail here rather than be
 // quietly admitted.
 // 2.11.1 carries every 2.11.0 command plus a sensor run-on-request. 2.11.3 adds
-// explicit refusals for dynamic repository/checkout changes and one-off plan review.
+// explicit refusals for dynamic repository/checkout changes and one-off plan review,
+// and 2.11.4 invokes the same commands.
+const LATER_211_RELEASES = new Set(['v2.11.3', 'v2.11.4']);
 const RELEASE_211_ADDED_REFUSED = Object.freeze({
   'v2.11.0': [],
   'v2.11.1': ['engine sensor-traceability --stage'],
   'v2.11.3': [
+    'engine intent add-checkout',
+    'engine intent add-repo',
+    'engine sensor-traceability --stage',
+  ],
+  'v2.11.4': [
     'engine intent add-checkout',
     'engine intent add-repo',
     'engine sensor-traceability --stage',
@@ -763,7 +770,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
         'engine worktree restore',
       ].filter(
         (command) =>
-          PROFILE !== 'v2.11.3' ||
+          !LATER_211_RELEASES.has(PROFILE) ||
           !['engine recompose', 'engine testing-posture restore'].includes(command),
       ),
     );
@@ -872,7 +879,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
           'engine orchestrate',
           'engine recompose',
           'engine state',
-          ...(PROFILE === 'v2.11.3'
+          ...(LATER_211_RELEASES.has(PROFILE)
             ? ['engine plan first']
             : ['engine intent add-checkout', 'engine intent add-repo', 'engine plan first']),
           // The honoured set names a family, the release the command it invokes.
@@ -882,7 +889,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
               : command,
           ),
           ...(PROFILE === 'v2.11.0' ? ['engine sensor-<id> --stage'] : []),
-          ...(PROFILE === 'v2.11.3' ? ['engine testing-posture restore'] : []),
+          ...(LATER_211_RELEASES.has(PROFILE) ? ['engine testing-posture restore'] : []),
         ].toSorted(),
       );
     });

@@ -572,6 +572,9 @@ E2E_CLIS=kiro ./scripts/agent-e2e-testing.sh
 
 # Codex only.
 E2E_CLIS=codex ./scripts/agent-e2e-testing.sh
+
+# Claude through a Bedrock gateway. BEDROCK_API_KEY is then the gateway key.
+BEDROCK_GATEWAY_URL=https://gateway.example.com E2E_CLIS=claude ./scripts/agent-e2e-testing.sh
 ```
 
 The examples assume the corresponding key was already exported.
@@ -588,9 +591,16 @@ The examples assume the corresponding key was already exported.
 | `KIRO_MODEL`               | `auto`                                               | Kiro model ID                                      |
 | `CODEX_MODEL`              | `openai.gpt-5.5`                                     | Exact Codex-on-Bedrock model ID (`openai.*`)       |
 | `E2E_CLIS`                 | `claude,kiro,opencode,codex`                         | CLIs to run, in execution order                    |
+| `BEDROCK_GATEWAY_URL`      | none                                                 | Bedrock gateway that Claude calls instead of AWS   |
 | `AGENTCORE_IMAGE`          | none                                                 | Existing local ARM64 image; skips the image build  |
 | `KEEP_E2E`                 | `0`                                                  | Set to `1` to retain resources after a failed run  |
 | `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports                          |
+
+With `BEDROCK_GATEWAY_URL`, `BEDROCK_API_KEY` is the key of that
+[Bedrock gateway](../using-the-platform/bedrock-gateway.md), and OpenCode and Codex
+cannot be selected because they can only call AWS endpoints. Set
+`BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD=true` for a gateway that changes the
+stream `Content-Type`.
 
 Do not prefix `BEDROCK_MODEL` with `amazon-bedrock/`. The harness adds that
 provider prefix for OpenCode and passes the bare value to Claude.

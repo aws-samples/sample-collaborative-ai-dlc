@@ -129,6 +129,22 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.4 changes the CLI harnesses and installer; its authored methodology
+  // keeps 2.11.3's frontmatter dialect, engine commands and sensors, including
+  // the requirements-analysis outputs value that needs quoting.
+  'v2.11.4': Object.freeze({
+    id: 'v2.11.4',
+    releaseId: 'aidlc:61fdb122428d86b56b7e8d598787095f2c97d3e1',
+    fixtureDigest: 'a4e5a65596d45e6d2205e0737e5bd24f8785da0022a2f3ff69c1ce3cfb89181c',
+    label: 'AI-DLC 2.11.4',
+    upstreamVersion: '2.11.4',
+    upstreamRef: '61fdb122428d86b56b7e8d598787095f2c97d3e1',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {

@@ -510,7 +510,7 @@ describe('seed-blocks prepareRelease mode', () => {
     );
   });
 
-  it('prepares all eight versions through the actual deployment caller contract', async () => {
+  it('prepares all nine versions through the actual deployment caller contract', async () => {
     const { prepareSupportedReleases } =
       await import('../../../scripts/prepare-aidlc-releases.mjs');
     const results = await prepareSupportedReleases({
@@ -519,7 +519,7 @@ describe('seed-blocks prepareRelease mode', () => {
         Payload: Buffer.from(JSON.stringify(await handler(event))),
       }),
     });
-    expect(results).toHaveLength(8);
+    expect(results).toHaveLength(9);
     expect(registerReleaseMock.mock.calls.map(([input]) => input.profileId)).toEqual(
       profiles.map((profile) => profile.id),
     );

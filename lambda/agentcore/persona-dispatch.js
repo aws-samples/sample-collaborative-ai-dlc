@@ -151,6 +151,9 @@ export const dispatchPersona = async ({
   cliModels,
   tierModels,
   env,
+  // The pnpm store locations the node_modules redirect chose for this workspace
+  // (workspace.js redirectHeavyDirs); empty when it has no pnpm install root.
+  redirectEnv = {},
   workspaceDir,
   spawnFn,
   mcpEntry,
@@ -278,7 +281,12 @@ export const dispatchPersona = async ({
       runChild({
         command: invocation.command,
         args: invocation.args,
-        env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
+        env: {
+          ...OFF_MOUNT_CACHE_ENV,
+          ...redirectEnv,
+          ...invocation.env,
+          ...driver.envForAuth(env),
+        },
         cwd: workspaceDir,
         prompt,
         promptViaStdin: invocation.promptViaStdin,

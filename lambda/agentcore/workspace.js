@@ -7,7 +7,7 @@
 // <workspaceDir>/<owner>/<repo>; single-repo clones into <workspaceDir> directly.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { mkdir, stat, readdir, rm, symlink, lstat, readFile } from 'node:fs/promises';
+import { mkdir, stat, readdir, rm, symlink, lstat, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
@@ -404,6 +404,28 @@ const hasCheckout = async (targetDir, statFn) => {
 //     repo-local runtime excludes (git-engine.js RUNTIME_EXCLUDES).
 //   - best-effort per directory: one failed link never blocks the stage (the
 //     engine's ENOSPC commit self-heal remains the backstop).
+//
+// pnpm install roots are the exception. pnpm refuses a symlinked node_modules
+// ("ENOTDIR: not a directory, mkdir …/node_modules") and no pnpm setting changes
+// that, so such a root keeps a REAL node_modules directory and the engine
+// redirects one level down instead: node_modules/.pnpm — pnpm's virtual store,
+// where the package files actually land — is an engine-owned symlink to the
+// off-mount directory, leaving only the top-level symlinks and .bin shims
+// (~KBs) on the mount (verified with pnpm 10.34.9, including a second install,
+// --force and a workspace with members). The virtual store stays at pnpm's
+// DEFAULT location on purpose rather than being moved via environment
+// configuration: env is process-wide, so a `pnpm dlx` temp project would treat
+// the shared path as its own virtual store and prune the root's packages
+// (verified). The default is per install root by construction, works for any
+// number of pnpm roots, and .modules.yaml records only the relative ".pnpm",
+// so a fresh microVM (empty /tmp) heals with a plain silent reinstall.
+// An installation whose .modules.yaml no longer matches the engine's store
+// (or that was populated by another tool) is purged up front: pnpm would stop
+// at an interactive confirmation no agent session can answer
+// (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY, not settable via env), and
+// node_modules is never committed, so it safely reinstalls from the lockfile.
+// Only the install root is exempt: a pnpm workspace member without a marker of
+// its own keeps the whole-directory link, which pnpm accepts there (verified).
 const HEAVY_DIR = 'node_modules';
 const WALK_SKIP = new Set([
   '.git',
@@ -419,25 +441,77 @@ const WALK_SKIP = new Set([
   '.next',
 ]);
 
+const PNPM_MARKER_FILES = new Set(['pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+const REDIRECT_FS_OPS = { mkdir, readdir, rm, symlink, lstat, readlink, readFile };
+
+// A directory pnpm installs into: it has a pnpm lockfile or workspace file, or
+// its package.json pins pnpm as the package manager.
+const isPnpmRoot = async (dir, entries, ops) => {
+  if (entries.some((e) => e.isFile() && PNPM_MARKER_FILES.has(e.name))) return true;
+  try {
+    const { packageManager } = JSON.parse(
+      await ops.readFile(path.join(dir, 'package.json'), 'utf8'),
+    );
+    return typeof packageManager === 'string' && packageManager.startsWith('pnpm@');
+  } catch {
+    return false; // unreadable or malformed package.json: treated as npm/yarn
+  }
+};
+
+const isInside = (parent, child) => {
+  const rel = path.relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+};
+
+// Whether an existing real node_modules of a pnpm root must be purged so the
+// next install runs through without an interactive prompt. True when pnpm's
+// .modules.yaml records a different content store or a non-default virtual
+// store, when it is unreadable, or when the directory holds foreign content
+// (e.g. an npm install) without a .modules.yaml. A directory the engine just
+// prepared (only the .pnpm link, no install yet) is kept.
+const pnpmModulesNeedPurge = async (modulesDir, entries, pnpmStoreDir, ops) => {
+  if (entries.some((e) => e.name === '.modules.yaml')) {
+    try {
+      const yaml = await ops.readFile(path.join(modulesDir, '.modules.yaml'), 'utf8');
+      const field = (name) => yaml.match(new RegExp(`"?${name}"?\\s*:\\s*"?([^",\\n]+)`))?.[1];
+      const storeDir = field('storeDir');
+      const virtualStoreDir = field('virtualStoreDir');
+      return (
+        virtualStoreDir !== '.pnpm' ||
+        !storeDir ||
+        (storeDir !== pnpmStoreDir && !isInside(pnpmStoreDir, storeDir))
+      );
+    } catch {
+      return true;
+    }
+  }
+  return entries.some((e) => e.name !== '.pnpm');
+};
+
 export const redirectHeavyDirs = async ({
   workspaceDir,
   offMountRoot = '/tmp/aidlc-node-modules',
+  // pnpm's content-addressable store, beside the other package-manager caches
+  // (persona-dispatch.js OFF_MOUNT_CACHE_ENV).
+  pnpmStoreDir = '/tmp/aidlc-cache/pnpm-store',
   maxDepth = 5,
   maxPackages = 50,
-  fsOps = { mkdir, readdir, rm, symlink, lstat },
+  fsOps = {},
   log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
+  const ops = { ...REDIRECT_FS_OPS, ...fsOps };
   // Find every directory holding a package.json (each is an install root).
   const pkgDirs = [];
   const walk = async (dir, depth) => {
     if (depth > maxDepth || pkgDirs.length >= maxPackages) return;
     let entries;
     try {
-      entries = await fsOps.readdir(dir, { withFileTypes: true });
+      entries = await ops.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
-    if (entries.some((e) => e.isFile() && e.name === 'package.json')) pkgDirs.push(dir);
+    if (entries.some((e) => e.isFile() && e.name === 'package.json'))
+      pkgDirs.push({ dir, pnpm: await isPnpmRoot(dir, entries, ops) });
     for (const e of entries) {
       if (!e.isDirectory() || WALK_SKIP.has(e.name)) continue;
       await walk(path.join(dir, e.name), depth + 1);
@@ -446,20 +520,88 @@ export const redirectHeavyDirs = async ({
   await walk(workspaceDir, 0);
 
   const links = [];
-  for (const dir of pkgDirs) {
+  let hasPnpmRoot = false;
+  for (const { dir, pnpm } of pkgDirs) {
     const linkPath = path.join(dir, HEAVY_DIR);
     const rel = path.relative(workspaceDir, dir);
-    const target = path.join(
+    const offMountDir = path.join(
       offMountRoot,
       rel === '' ? 'root' : rel.split(path.sep).join('__'),
-      HEAVY_DIR,
     );
+    const target = path.join(offMountDir, HEAVY_DIR);
+    if (pnpm) {
+      hasPnpmRoot = true;
+      const vstoreLink = path.join(linkPath, '.pnpm');
+      const vstoreTarget = path.join(offMountDir, '.pnpm');
+      try {
+        let existing = null;
+        try {
+          existing = await ops.lstat(linkPath);
+        } catch {
+          /* absent */
+        }
+        if (existing?.isSymbolicLink()) {
+          // A user-created link pointing elsewhere is left alone (pnpm refuses
+          // it exactly as it would outside the platform); the engine's own
+          // whole-directory link is removed — the link only, never its target.
+          if (!isInside(offMountRoot, path.resolve(dir, await ops.readlink(linkPath)))) {
+            links.push({ dir, action: 'skipped' });
+            continue;
+          }
+          await ops.rm(linkPath, { force: true });
+          existing = null;
+        }
+        let action = 'linked';
+        if (existing && !existing.isDirectory()) {
+          await ops.rm(linkPath, { force: true });
+          existing = null;
+          action = 'purged';
+        }
+        if (existing) {
+          const entries = await ops.readdir(linkPath, { withFileTypes: true });
+          if (await pnpmModulesNeedPurge(linkPath, entries, pnpmStoreDir, ops)) {
+            await ops.rm(linkPath, { recursive: true, force: true });
+            existing = null;
+            action = 'purged';
+          } else {
+            action = 'kept';
+          }
+        }
+        // Always ensure the target exists — also the fresh-microVM heal.
+        await ops.mkdir(vstoreTarget, { recursive: true });
+        if (!existing) await ops.mkdir(linkPath, { recursive: true });
+        let vstore = null;
+        try {
+          vstore = await ops.lstat(vstoreLink);
+        } catch {
+          /* absent */
+        }
+        if (vstore?.isSymbolicLink()) {
+          if (path.resolve(linkPath, await ops.readlink(vstoreLink)) !== vstoreTarget) {
+            await ops.rm(vstoreLink, { force: true });
+            vstore = null;
+          }
+        } else if (vstore) {
+          // A real .pnpm (an install from before the redirect): replace it with
+          // the link; pnpm reinstalls the missing packages from the lockfile
+          // without a prompt, since the recorded virtualStoreDir stays ".pnpm".
+          await ops.rm(vstoreLink, { recursive: true, force: true });
+          vstore = null;
+        }
+        if (!vstore) await ops.symlink(vstoreTarget, vstoreLink, 'dir');
+        links.push({ dir, target: vstoreTarget, action });
+      } catch (e) {
+        log(`node_modules redirect failed for ${dir}: ${e?.message}`);
+        links.push({ dir, action: 'failed', detail: e?.message });
+      }
+      continue;
+    }
     try {
       // Always ensure the target exists — this is also the dangling-link heal.
-      await fsOps.mkdir(target, { recursive: true });
+      await ops.mkdir(target, { recursive: true });
       let existing = null;
       try {
-        existing = await fsOps.lstat(linkPath);
+        existing = await ops.lstat(linkPath);
       } catch {
         /* absent */
       }
@@ -467,15 +609,22 @@ export const redirectHeavyDirs = async ({
         links.push({ dir, target, action: 'kept' });
         continue;
       }
-      if (existing) await fsOps.rm(linkPath, { recursive: true, force: true });
-      await fsOps.symlink(target, linkPath, 'dir');
+      if (existing) await ops.rm(linkPath, { recursive: true, force: true });
+      await ops.symlink(target, linkPath, 'dir');
       links.push({ dir, target, action: existing ? 'replaced' : 'created' });
     } catch (e) {
       log(`node_modules redirect failed for ${dir}: ${e?.message}`);
       links.push({ dir, target, action: 'failed', detail: e?.message });
     }
   }
-  return { links };
+
+  // pnpm reads the content-addressable store location from the plain
+  // environment; it is content-addressed and safe to share between projects and
+  // `pnpm dlx`. The virtual store is NOT set through the environment — see the
+  // comment above: the engine owns it as the node_modules/.pnpm link instead.
+  const env = {};
+  if (hasPnpmRoot) env.npm_config_store_dir = pnpmStoreDir;
+  return { links, env };
 };
 
 // Self-heal the source checkout. AgentCore managed session storage (/mnt/workspace)

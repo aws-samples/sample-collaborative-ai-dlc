@@ -15,6 +15,7 @@
 // so the command is unit-tested without a real kiro-cli.
 
 import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/drivers.js';
+import { blockedByBedrockGateway } from '../cli/backend-adapters.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
 import {
@@ -64,12 +65,20 @@ export const capabilities = async (_payload, deps = {}) => {
 
   // Per-CLI availability: installed AND authed. The UI uses `available` to gate
   // selection (running an un-authed CLI just fails), and surfaces `installed` /
-  // `authed` so it can explain WHY a CLI is unavailable.
+  // `authed` so it can explain WHY a CLI is unavailable. A CLI whose key belongs
+  // to a Bedrock gateway it cannot reach is authed but not available, and says so.
   const clis = SUPPORTED_CLIS.map((cli) => {
     const isInstalled = installed.includes(cli);
     const provider = credentialProviderForCli(cli);
     const isAuthed = provider ? authenticatedProviders.includes(provider) : true;
-    return { cli, installed: isInstalled, authed: isAuthed, available: isInstalled && isAuthed };
+    const gatewayBlocked = isAuthed && blockedByBedrockGateway(cli, env);
+    return {
+      cli,
+      installed: isInstalled,
+      authed: isAuthed,
+      available: isInstalled && isAuthed && !gatewayBlocked,
+      ...(gatewayBlocked ? { unavailableReason: 'bedrock-gateway' } : {}),
+    };
   });
 
   // Kiro models — only when kiro is installed (the binary must exist to ask it).

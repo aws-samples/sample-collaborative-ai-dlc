@@ -105,6 +105,9 @@ describe('fixed-tool environment recipes', () => {
     });
     expect(context.files['verification.sh']).toContain('npm init -y');
     expect(context.files['verification.sh']).toContain('python3 -m py_compile');
+    expect(context.files['installers/install-archive.sh']).toContain(
+      'tar -xzf "$archive" -C "$destination" --strip-components="$strip" --no-same-owner',
+    );
   });
 
   it('flattens tools, packages, variables, and ordered commands', () => {

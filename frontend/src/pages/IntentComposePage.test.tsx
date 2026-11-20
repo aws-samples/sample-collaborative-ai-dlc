@@ -689,6 +689,30 @@ describe('IntentComposePage', () => {
     expect(screen.getByTestId('agent-cli-kiro')).toBeEnabled();
   });
 
+  it('says a CLI is unavailable because of the Bedrock gateway, not for a missing credential', async () => {
+    const cli = (name: string, available: boolean) => ({
+      cli: name,
+      installed: true,
+      authed: true,
+      available,
+      enabled: true,
+      credentialSource: 'platform',
+      ...(available ? {} : { unavailableReason: 'bedrock-gateway' }),
+    });
+    getProjectCapabilities.mockResolvedValue({
+      available: ['claude'],
+      runtimeClis: [cli('claude', true), cli('opencode', false), cli('codex', false)],
+      credentialSources: { bedrock: 'platform', kiro: null },
+    });
+
+    renderPage();
+
+    expect(await screen.findAllByText('not supported by the Bedrock gateway')).toHaveLength(2);
+    expect(screen.getByTestId('agent-cli-opencode')).toBeDisabled();
+    expect(screen.getByTestId('agent-cli-codex')).toBeDisabled();
+    expect(screen.getByTestId('agent-cli-claude')).toBeEnabled();
+  });
+
   it('shows a loader and placeholders while agent CLIs are loading', async () => {
     let resolveCapabilities: (value: unknown) => void = () => {};
     getProjectCapabilities.mockReturnValue(

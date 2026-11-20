@@ -50,6 +50,7 @@ PERSISTED_AUTH_MODE="local"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
+REAPPLY=0
 
 usage() {
     cat <<'EOF'
@@ -74,6 +75,9 @@ Options:
   --include-prereleases        Compatibility option; prereleases are included
   --allow-prerelease           Compatibility option; prereleases are allowed
   --allow-downgrade            Permit an explicit downgrade
+  --reapply                    With update, deploy again when the release is
+                               unchanged, for example after editing the
+                               environment's .tfvars file
   --yes                        Accept non-secret prompts
 
 Authentication:
@@ -130,6 +134,7 @@ while [[ $# -gt 0 ]]; do
         --yes) ASSUME_YES=1; shift ;;
         --include-prereleases|--allow-prerelease) shift ;;
         --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
+        --reapply) REAPPLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -1180,14 +1185,17 @@ update_command() {
     # Authentication and domain options change the deployment even when the
     # source does not, so they must not be skipped as a no-op update.
     local config_changes="$AUTH_MODE_EXPLICIT$SSO_CONFIG_EXPLICIT$APP_DOMAIN_EXPLICIT$APP_DOMAIN_ALIASES_EXPLICIT$ACM_CERTIFICATE_ARN_EXPLICIT$ROUTE53_ZONE_ID_EXPLICIT"
+    # An unchanged release is deployed again only on request: the installer
+    # does not track edits to the environment's tfvars file.
+    local reapply_hint="To deploy it again, for example after editing the .tfvars file, run update --reapply."
     if [[ -n "$REF" ]]; then
-        if [[ "$RESOLVED_COMMIT" == "$old_commit" && -z "$config_changes" ]]; then
-            echo "Already on $(target_description)."
+        if [[ "$RESOLVED_COMMIT" == "$old_commit" && "$REAPPLY" != 1 && -z "$config_changes" ]]; then
+            echo "Already on $(target_description). $reapply_hint"
             exit 0
         fi
     else
-        if [[ "$VERSION" == "$old_version" && -z "$config_changes" ]]; then
-            echo "Already on AI-DLC v$VERSION."
+        if [[ "$VERSION" == "$old_version" && "$REAPPLY" != 1 && -z "$config_changes" ]]; then
+            echo "Already on AI-DLC v$VERSION. $reapply_hint"
             exit 0
         fi
     fi
@@ -1203,7 +1211,11 @@ update_command() {
         echo "Warning: update is following mutable branch '$REF'."
     fi
     validate_domain_config "$old_checkout"
-    confirm "Update AI-DLC from v$old_version to $(target_description)?" || exit 1
+    if [[ "$REAPPLY" == 1 && "$RESOLVED_COMMIT" == "$old_commit" ]]; then
+        confirm "Deploy $(target_description) again?" || exit 1
+    else
+        confirm "Update AI-DLC from v$old_version to $(target_description)?" || exit 1
+    fi
     configure_environment "$checkout"
     plan_id="v$old_version-to-v$VERSION"
     [[ -n "$REF" ]] && plan_id="${REF//\//-}-${RESOLVED_COMMIT:0:12}"

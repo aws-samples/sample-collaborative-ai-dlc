@@ -16,7 +16,7 @@ archive_root="rust-\${TOOL_VERSION}-${triple}"
 components="rustc,rust-std-${triple},cargo,rustfmt-preview"
 mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
-tar -xzf "$TOOL_SOURCE" -C "$staging" \\
+tar -xzf "$TOOL_SOURCE" -C "$staging" --no-same-owner \\
   "$archive_root/install.sh" \\
   "$archive_root/components" \\
   "$archive_root/rust-installer-version" \\

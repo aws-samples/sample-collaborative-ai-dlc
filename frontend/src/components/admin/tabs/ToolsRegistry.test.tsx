@@ -770,6 +770,10 @@ describe('ToolsRegistry', () => {
       const script = submittedScript();
       expect(script).toContain('x86_64-unknown-linux-gnu');
       expect(script).not.toContain('aarch64');
+      // Literal pin, not just preset equality: the install container drops
+      // CAP_CHOWN, so extracting without --no-same-owner fails on archives
+      // recording non-root ownership (mirrors lambda/environments/tool-catalog.js).
+      expect(script).toContain('--no-same-owner');
       expect(script).toBe(rustInstallerScript('x86_64'));
     });
 
@@ -797,6 +801,7 @@ describe('ToolsRegistry', () => {
       const script = submittedScript();
       expect(script).toContain('x86_64-unknown-linux-gnu');
       expect(script).not.toContain('aarch64');
+      expect(script).toContain('--no-same-owner');
     });
 
     it('keeps a hand-edited installer script on Add x86_64 build', async () => {

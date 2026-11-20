@@ -299,6 +299,9 @@ export interface ProjectEnvironmentAssignment {
   environmentId: string;
   environment: ManagedEnvironment | null;
   revision: EnvironmentRevision | null;
+  // Set when the assigned environment can no longer be resolved (for example
+  // it was retired after assignment); environment and revision are null then.
+  unavailable?: { code: string; message: string };
   updatedAt?: string;
 }
 

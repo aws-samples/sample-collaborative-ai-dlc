@@ -1497,6 +1497,8 @@ module "credential_broker_lambda" {
     CODECOMMIT_EXTERNAL_ID              = var.codecommit_external_id
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+    # Bedrock API keys are leased as keys of this gateway (empty: of Amazon Bedrock).
+    BEDROCK_GATEWAY_URL = var.bedrock_gateway_url
     }, var.enable_engine_data ? {
     ENGINE_DATA_ENABLED            = "true"
     GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn

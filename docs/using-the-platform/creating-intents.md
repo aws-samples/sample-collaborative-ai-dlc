@@ -182,7 +182,7 @@ intents keep their pinned environment.
 
 ### Agent CLI
 
-Explicitly choose one of the CLIs available to you through your effective personal, space, or platform credentials. The space recommendation is labeled **recommended** but is not selected for you. Unavailable CLIs show why: disabled by an admin, not installed, or no credential.
+Explicitly choose one of the CLIs available to you through your effective personal, space, or platform credentials. The space recommendation is labeled **recommended** but is not selected for you. Unavailable CLIs show why: disabled by an admin, not installed, no credential, or not supported by the [Bedrock gateway](bedrock-gateway.md).
 
 ### Scope
 

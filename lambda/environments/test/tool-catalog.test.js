@@ -69,6 +69,7 @@ describe('managed tool catalog', () => {
       'https://go.dev/dl/?mode=json&include=all',
     );
     expect(rustTemplate.version.installer.script).toContain('--components="$components"');
+    expect(rustTemplate.version.installer.script).toContain('--no-same-owner');
     expect(rustTemplate.version.installer.script).toContain(
       'staging="$TOOL_OUTPUT/.rust-installer"',
     );
@@ -178,6 +179,12 @@ describe('managed tool catalog', () => {
       'publisher checksum evidence exceeds 4 MiB',
     );
     expect(context.files['Dockerfile.tool']).toContain('/opt/tool-metadata/sbom.spdx.json');
+    expect(context.files['install.sh']).toContain(
+      'tar -xzf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=1 --no-same-owner',
+    );
+    expect(context.files['install.sh']).toContain(
+      'tar -xJf "$TOOL_SOURCE" -C "$TOOL_OUTPUT" --strip-components=1 --no-same-owner',
+    );
     expect(context.manifest).toMatchObject({
       coreImageDigest: `sha256:${'a'.repeat(64)}`,
       runtimeCompatibilityVersion: '1',

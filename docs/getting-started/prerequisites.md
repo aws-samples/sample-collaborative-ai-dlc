@@ -127,6 +127,10 @@ For Codex, additionally enable access to the OpenAI models (`openai.gpt-5.*`) in
 
 In **IAM** mode, the credential broker assumes a dedicated external inference role and supplies temporary credentials to Claude Code, OpenCode, and Codex. Platform administrators configure a platform connection and optional space overrides; personal Bedrock keys do not apply. The inference account and Region can differ from the deployment. See [Bedrock IAM](../using-the-platform/bedrock-iam.md) for setup, trust policies, and permissions.
 
+### Bedrock gateway (Keys mode through your own gateway)
+
+If your organization routes Bedrock traffic through a gateway that accepts the Bedrock `InvokeModel` API with a Bearer key, set `bedrock_gateway_url`. The **Bedrock Bearer Token** field is then labelled **Bedrock Gateway Key** and takes a gateway key, and Claude Code sends inference to the gateway instead of Amazon Bedrock. OpenCode and Codex cannot use a gateway key. See [Bedrock gateway](../using-the-platform/bedrock-gateway.md) for the requirements and the setup steps, including the order to follow on a deployment that is already in use.
+
 ### Where API keys are stored
 
 API keys are stored in **AWS Systems Manager Parameter Store** as `SecureString` parameters:

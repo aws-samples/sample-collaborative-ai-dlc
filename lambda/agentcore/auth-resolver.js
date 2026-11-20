@@ -26,6 +26,7 @@ import { invokeCredentialBroker } from './clients.js';
 import { randomUUID } from 'node:crypto';
 import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { brokerInvocationAccounting } from './invocation-accounting.js';
+import { blockedByBedrockGateway } from './cli/backend-adapters.js';
 
 const bindingKey = bindingIdentity;
 const grantMismatch = () =>
@@ -116,9 +117,14 @@ const bindingResolvers = Object.freeze({
 });
 
 // A CLI is authenticated only by a lease prepared for this invocation, never by env,
-// so ambient values cannot fake it. `providers` is the resolver's resolvedProviders.
-export const authenticatedClis = ({ installed = [], providers = [] } = {}) =>
-  installed.filter((cli) => providers.includes(credentialProviderForCli(cli)));
+// so ambient values cannot fake it. `providers` is the resolver's resolvedProviders and
+// `env` its prepared environment: a key that belongs to a Bedrock gateway authenticates
+// only the CLIs that can reach the gateway.
+export const authenticatedClis = ({ installed = [], providers = [], env = {} } = {}) =>
+  installed.filter(
+    (cli) =>
+      providers.includes(credentialProviderForCli(cli)) && !blockedByBedrockGateway(cli, env),
+  );
 
 export const resolveInvocationAgentAuth = async ({
   payload = {},

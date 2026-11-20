@@ -16,6 +16,9 @@ export const KIRO_API_KEY_PREFIX = 'ksk_';
 export function agentCredentialFormatWarning(
   field: AgentCredentialField,
   value: string,
+  // With a Bedrock gateway the Bedrock field is labelled Bedrock Gateway Key and takes a
+  // gateway key.
+  bedrockGateway = false,
 ): string | null {
   const trimmed = value.trim();
   if (trimmed === '') return null;
@@ -23,10 +26,14 @@ export function agentCredentialFormatWarning(
   // No warning while someone is still typing the prefix itself ("k", "ks", "ksk").
   const typingPrefix = KIRO_API_KEY_PREFIX.startsWith(trimmed);
   if (field === 'kiroApiKey' && !looksLikeKiroKey && !typingPrefix) {
-    return `This does not look like a Kiro API key, which starts with "${KIRO_API_KEY_PREFIX}" (create one in the Kiro portal). An Amazon Bedrock API key goes in Bedrock Bearer Token.`;
+    const bedrockField = bedrockGateway
+      ? 'A Bedrock gateway key goes in Bedrock Gateway Key.'
+      : 'An Amazon Bedrock API key goes in Bedrock Bearer Token.';
+    return `This does not look like a Kiro API key, which starts with "${KIRO_API_KEY_PREFIX}" (create one in the Kiro portal). ${bedrockField}`;
   }
   if (field === 'bedrockBearerToken' && looksLikeKiroKey) {
-    return `This looks like a Kiro API key ("${KIRO_API_KEY_PREFIX}…"). It goes in Kiro API Key; this field takes an Amazon Bedrock API key.`;
+    const bedrockKey = bedrockGateway ? 'a Bedrock gateway key' : 'an Amazon Bedrock API key';
+    return `This looks like a Kiro API key ("${KIRO_API_KEY_PREFIX}…"). It goes in Kiro API Key; this field takes ${bedrockKey}.`;
   }
   return null;
 }

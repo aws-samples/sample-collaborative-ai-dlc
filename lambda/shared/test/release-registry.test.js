@@ -2313,7 +2313,7 @@ describe('a 2.9.0 whose developer persona carries the engine command', () => {
 // administrator may take it: `selectable`, then `certified`, then the `stable`
 // channel.
 // 2.11.1 adds a sensor-on-request command. 2.11.3 adds the upstream Unit/Bolt
-// lifecycle commands; this list makes the runtime's complete answer surface
+// lifecycle commands, which 2.11.4 keeps; this list makes the runtime's complete answer surface
 // explicit so a future profile cannot silently omit commands from its closure.
 const REAL_211_RELEASES = Object.freeze([
   {
@@ -2334,6 +2334,12 @@ const REAL_211_RELEASES = Object.freeze([
     VERSION: '2.11.3',
     ADDED: ['engine intent add-checkout', 'engine intent add-repo', 'engine sensor-<id> --stage'],
   },
+  {
+    PROFILE: 'v2.11.4',
+    SHA: '61fdb122428d86b56b7e8d598787095f2c97d3e1',
+    VERSION: '2.11.4',
+    ADDED: ['engine intent add-checkout', 'engine intent add-repo', 'engine sensor-<id> --stage'],
+  },
 ]);
 for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
   describe(`a deployment admitting the real AI-DLC ${VERSION}`, () => {
@@ -2342,7 +2348,9 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     // answered. Listed verbatim: a command that stopped being answered, or a new
     // one that started being honoured without an answer, must fail here.
     const REMOVED_ENGINE_COMMANDS =
-      PROFILE === 'v2.11.3' ? ['engine recompose', 'engine testing-posture restore'] : [];
+      PROFILE === 'v2.11.3' || PROFILE === 'v2.11.4'
+        ? ['engine recompose', 'engine testing-posture restore']
+        : [];
     const ANSWERED_ENGINE_COMMANDS = Object.freeze(
       [
         'engine config set',

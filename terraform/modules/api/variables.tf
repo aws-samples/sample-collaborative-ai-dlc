@@ -214,6 +214,12 @@ variable "bedrock_region" {
   type        = string
 }
 
+variable "bedrock_gateway_url" {
+  description = "Bedrock gateway that API-key inference is sent to. The agents Lambda reports it in agent settings so the UI can label keys as gateway keys. Empty when inference goes to Amazon Bedrock"
+  type        = string
+  default     = ""
+}
+
 variable "environment_registry_table_name" {
   description = "Managed environment registry table used to resolve project runtime targets"
   type        = string

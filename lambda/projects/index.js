@@ -1069,12 +1069,26 @@ const handleProjectEnvironment = async (g, response, httpMethod, projectId, user
       const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
       if (result.done) return response(404, { error: 'Project not found' });
       const environmentId = getVal(result.value, 'environment_id') || 'standard';
-      const published = await readPublishedEnvironment(environmentId);
-      return response(200, {
-        environmentId,
-        environment: published.environment,
-        revision: published.revision,
-      });
+      try {
+        const published = await readPublishedEnvironment(environmentId);
+        return response(200, {
+          environmentId,
+          environment: published.environment,
+          revision: published.revision,
+        });
+      } catch (error) {
+        if (!isEnvironmentResolutionError(error)) throw error;
+        // The read must stay available when the assigned environment was
+        // retired or unpublished after assignment — the settings page needs
+        // the current state to offer a replacement. Assigning (PUT) keeps
+        // refusing unresolvable environments.
+        return response(200, {
+          environmentId,
+          environment: null,
+          revision: null,
+          unavailable: { code: error.code, message: error.message },
+        });
+      }
     }
 
     if (httpMethod === 'PUT') {
