@@ -185,6 +185,13 @@ const CALLS = {
   recordCommitDescriptionUse: [
     { executionId: 'e-1', stageInstanceId: 'si-1', descriptionId: 'd-1', repos: ['o/r'] },
   ],
+  setStageUsageTotals: [
+    {
+      executionId: 'e-1',
+      stageInstanceId: 'si-1',
+      cliUsageTotals: { sessionId: 'sess-1', totals: { m: { tokensCacheRead: 10 } } },
+    },
+  ],
 };
 
 // The scope reads engine-data adds before running the op: META, then each
@@ -204,6 +211,7 @@ const scopeReads = (method) => {
     setLoopBackRecommendation: 1,
     getReceipt: 1,
     recordCommitDescriptionUse: 1,
+    setStageUsageTotals: 1,
   };
   return 1 + (stageArgs[method] ?? 0);
 };
@@ -735,6 +743,16 @@ describe('stage grants act only as their own stage', () => {
         'recordCommitDescriptionUse',
         [{ executionId: 'e-1', stageInstanceId: OWN, descriptionId: 'd-1', repos: ['o/r'] }],
       ],
+      [
+        'setStageUsageTotals',
+        [
+          {
+            executionId: 'e-1',
+            stageInstanceId: OWN,
+            cliUsageTotals: { sessionId: 's', totals: { m: { tokensInput: 1 } } },
+          },
+        ],
+      ],
     ]) {
       const { response } = await call(STAGE_GRANT, method, args);
       expect(response.error?.name, method).not.toBe('EngineDataAccessDenied');
@@ -794,6 +812,14 @@ describe('stage grants act only as their own stage', () => {
     [
       'recordCommitDescriptionUse',
       { executionId: 'e-1', stageInstanceId: OTHER, descriptionId: 'd-1', repos: ['o/r'] },
+    ],
+    [
+      'setStageUsageTotals',
+      {
+        executionId: 'e-1',
+        stageInstanceId: OTHER,
+        cliUsageTotals: { sessionId: 's', totals: { m: { tokensInput: 1 } } },
+      },
     ],
     [
       'claimStageAttempt',

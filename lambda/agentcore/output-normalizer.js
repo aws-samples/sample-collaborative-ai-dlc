@@ -1,7 +1,16 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
 import { createKiroJsonlParser } from './cli/kiro-parser.js';
-import { claudeUsageMetrics } from './cli/claude-usage.js';
+import {
+  claudeModelUsageTotals,
+  claudeResultHasUsage,
+  claudeUsageMetrics,
+  claudeUsageSince,
+  createClaudeStepUsage,
+  nextClaudeSessionTotals,
+  withClaudeStepTotals,
+  withOneHourWrites,
+} from './cli/claude-usage.js';
 import { basename } from 'node:path';
 import { SUPPORTED_CLIS } from './cli/drivers.js';
 import { redactCredentialText, sensitiveEnvironmentValues } from '../shared/safe-event-logger.js';
@@ -489,6 +498,13 @@ export const createCliOutputSink = ({
   onError = () => {},
   usageBaseline = {},
   onTool = () => {},
+  // Claude: the session's usage totals already recorded (`totals`, per model),
+  // shared by every run of one session so a resume or a repair turn records
+  // only its own spend; `onSessionTotals` is told each new running total.
+  // `claudeModel` is the main loop's model, the key its totals are kept under.
+  claudeSession = null,
+  onSessionTotals = () => {},
+  claudeModel = null,
 }) => {
   if (PARSED_SINKS[cli]) {
     return createParsedSink({
@@ -506,14 +522,33 @@ export const createCliOutputSink = ({
   // Claude's stream-json is JSONL. Forward only human-readable assistant text,
   // plus completed tool calls paired by tool_use id.
   const pendingTools = new Map();
+  // Usage: the result's modelUsage (the whole tree, subagents included), as
+  // the spend since the session's totals last recorded; its `usage` (the
+  // top-level loop only) for an older Claude Code. With no usable result, the
+  // top-level loop's steps (createClaudeStepUsage), on flush.
+  const session = claudeSession ?? { totals: {} };
+  const steps = createClaudeStepUsage();
+  let usageRecorded = false;
+  const recordResultUsage = (event) => {
+    if (!claudeResultHasUsage(event)) return;
+    usageRecorded = true;
+    const totals = claudeModelUsageTotals(event);
+    if (!totals) {
+      const metrics = claudeUsageMetrics(event.usage);
+      if (metrics) onUsage(metrics, event);
+      return;
+    }
+    const since = withOneHourWrites(claudeUsageSince(totals, session.totals), event);
+    session.totals = nextClaudeSessionTotals(session.totals, totals);
+    onSessionTotals(session.totals);
+    for (const [model, metrics] of Object.entries(since)) onUsage(metrics, event, { model });
+  };
   const consumeLine = (line) => {
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
-      if (event.type === 'result') {
-        const metrics = claudeUsageMetrics(event.usage);
-        if (metrics) onUsage(metrics, event);
-      }
+      if (event.type === 'assistant') steps.add(event);
+      if (event.type === 'result') recordResultUsage(event);
       const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {
         emitEvent(emit, text, displayForMessage(text));
@@ -577,9 +612,20 @@ export const createCliOutputSink = ({
       pending = lines.pop() ?? '';
       for (const line of lines) consumeLine(line);
     },
-    flush() {
+    // `cliExited`: the CLI exited by itself rather than being killed, so Claude
+    // Code saved the session's spend (see withClaudeStepTotals).
+    flush({ cliExited = false } = {}) {
       if (pending) consumeLine(pending);
       pending = '';
+      const fallback = usageRecorded ? null : steps.get();
+      if (fallback) {
+        usageRecorded = true;
+        onUsage(fallback, null, { partial: true });
+        if (cliExited && claudeModel) {
+          session.totals = withClaudeStepTotals(session.totals, claudeModel, fallback);
+          onSessionTotals(session.totals);
+        }
+      }
     },
   };
 };

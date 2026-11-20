@@ -4990,6 +4990,7 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm1',
       resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      measured: true,
       metrics: {
         tokensInput: 1_000_000,
         tokensOutput: 1_000_000,
@@ -5007,6 +5008,9 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm2',
       // No own stamp — model must be joined from the stage row.
+      // The CLI ended without its usage report: a lower bound.
+      measured: true,
+      incomplete: true,
       metrics: { tokensInput: 500_000 },
       timestamp: '2026-01-01T00:00:01Z',
     });
@@ -5031,6 +5035,10 @@ describe('GET list + detail', () => {
     expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m2.cost.totalCost).toBeCloseTo(1.65);
     expect(byId.m2.metrics.tokensInput).toBe(500_000);
+    // Measured and incomplete samples say so; complete ones carry no flag.
+    expect(byId.m1).toMatchObject({ measured: true });
+    expect(byId.m1.incomplete).toBeUndefined();
+    expect(byId.m2).toMatchObject({ measured: true, incomplete: true });
   });
 
   it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {

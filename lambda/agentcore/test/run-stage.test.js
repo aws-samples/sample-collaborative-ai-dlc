@@ -5343,6 +5343,126 @@ describe('runStage — measured token usage', () => {
     };
     expect(await runStage(baseArgs, deps)).toMatchObject({ ok: true });
   });
+  it('records a resumed session’s spend since its saved totals, and saves the new totals', async () => {
+    const model = 'us.anthropic.claude-sonnet-4-6';
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          stdout: JSON.stringify({
+            type: 'result',
+            usage,
+            modelUsage: {
+              [model]: {
+                inputTokens: 18,
+                outputTokens: 2700,
+                cacheReadInputTokens: 50000,
+              },
+            },
+          }),
+        }),
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { perQuestion: [{ text: 'Scope?', answer: 'MVP' }] },
+        },
+        stage: {
+          cli: 'claude',
+          cliSessionId: 'sess-7',
+          cliUsageTotals: {
+            sessionId: 'sess-7',
+            totals: {
+              [model]: {
+                tokensInput: 10,
+                tokensOutput: 1000,
+                tokensCacheRead: 20000,
+              },
+            },
+          },
+        },
+      }),
+    });
+    deps.store.setStageUsageTotals = async (args) =>
+      deps.store.calls.push(['setStageUsageTotals', args]);
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+    expect(tokenRows(deps).map(([, row]) => [row.resolvedModel, row.metrics])).toEqual([
+      [model, { tokensInput: 8, tokensOutput: 1700, tokensCacheRead: 30000 }],
+    ]);
+    expect(deps.store.calls).toContainEqual([
+      'setStageUsageTotals',
+      expect.objectContaining({
+        cliUsageTotals: {
+          sessionId: 'sess-7',
+          totals: {
+            [model]: {
+              tokensInput: 18,
+              tokensOutput: 2700,
+              tokensCacheRead: 50000,
+            },
+          },
+        },
+      }),
+    ]);
+  });
+
+  it('records the top-level steps when the CLI ends without a result', async () => {
+    const step = (id) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { id, content: [], usage },
+      });
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          exitCode: 1,
+          stdout: [step('m1'), step('m1'), step('m2')].join('\n'),
+        }),
+    });
+    await runStage(baseArgs, deps);
+    expect(tokenRows(deps)).toHaveLength(1);
+    expect(tokenRows(deps)[0][1]).toMatchObject({ measured: true, incomplete: true });
+    expect(tokenRows(deps)[0][1].metrics).toEqual({
+      tokensInput: 16,
+      tokensCacheRead: 60000,
+      tokensCacheWrite: 4000,
+    });
+  });
+
+  it.each([
+    ['exited by itself', 1, true],
+    ['was killed', null, false],
+  ])(
+    'saves the steps as the session’s totals only when the CLI %s',
+    async (_label, exitCode, saved) => {
+      const step = JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [], usage } });
+      const deps = baseDeps({ spawnFn: () => kiroChild({ exitCode, stdout: step }) });
+      deps.store.setStageUsageTotals = async (args) =>
+        deps.store.calls.push(['setStageUsageTotals', args]);
+      await runStage(baseArgs, deps);
+      const saves = deps.store.calls.filter(([name]) => name === 'setStageUsageTotals');
+      expect(saves).toEqual(
+        saved
+          ? [
+              [
+                'setStageUsageTotals',
+                expect.objectContaining({
+                  cliUsageTotals: {
+                    sessionId: expect.any(String),
+                    totals: {
+                      'us.anthropic.claude-sonnet-4-6': {
+                        tokensInput: 8,
+                        tokensCacheRead: 30000,
+                        tokensCacheWrite: 2000,
+                      },
+                    },
+                  },
+                }),
+              ],
+            ]
+          : [],
+      );
+    },
+  );
 });
 
 describe('runStage — Kiro credit capture (stream metering → credits metric)', () => {

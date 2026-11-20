@@ -125,6 +125,7 @@ describe('CLI usage recording', () => {
       expect(store.recordMetric).toHaveBeenCalledExactlyOnceWith({
         ...scope,
         resolvedModel: 'model',
+        measured: true,
         metrics: expected,
         ...(cli === 'kiro' ? { creditRate: 0.04 } : {}),
       });
@@ -138,4 +139,57 @@ describe('CLI usage recording', () => {
       if (cli === 'codex') expect(parseCodexJsonl(stdout).metrics).toEqual(expected);
     },
   );
+});
+
+describe('usage by model', () => {
+  it('records one sample per model, each priced as itself', async () => {
+    const store = { recordMetric: vi.fn(async () => ({ metricId: 'm' })) };
+    const usage = createUsageRecorder({
+      store,
+      scope: { executionId: 'e', stageInstanceId: 's' },
+      model: 'eu.anthropic.claude-opus-5-5',
+      env: {},
+    });
+    usage.onUsage({ tokensInput: 5 }, null, {
+      model: 'eu.anthropic.claude-opus-5-5',
+    });
+    usage.onUsage({ tokensInput: 2 }, null, {
+      model: 'eu.anthropic.claude-haiku-5-5',
+    });
+    usage.onUsage({ tokensOutput: 7 });
+    await usage.flush();
+    expect(store.recordMetric).toHaveBeenCalledTimes(2);
+    expect(store.recordMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolvedModel: 'eu.anthropic.claude-opus-5-5',
+        metrics: { tokensInput: 5, tokensOutput: 7 },
+      }),
+    );
+    expect(store.recordMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolvedModel: 'eu.anthropic.claude-haiku-5-5',
+        metrics: { tokensInput: 2 },
+      }),
+    );
+    await usage.flush();
+    expect(store.recordMetric).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks every sample measured, and one from a partial delta incomplete', async () => {
+    const store = { recordMetric: vi.fn(async () => ({ metricId: 'm' })) };
+    const usage = createUsageRecorder({
+      store,
+      scope: { executionId: 'e', stageInstanceId: 's' },
+      model: 'eu.anthropic.claude-opus-5-5',
+      env: {},
+    });
+    usage.onUsage({ tokensInput: 4, tokensCacheRead: 900 }, null, { partial: true });
+    await usage.flush();
+    usage.onUsage({ tokensInput: 6 });
+    await usage.flush();
+    expect(store.recordMetric.mock.calls.map(([row]) => [row.measured, row.incomplete])).toEqual([
+      [true, true],
+      [true, undefined],
+    ]);
+  });
 });

@@ -2424,6 +2424,9 @@ const runStageAttempt = async (
   // Claude's fresh id is forced up front; Kiro's is captured after the run.
   let cli;
   let cliSessionId = null;
+  // A resumed Claude session's usage totals so far (cli/claude-usage.js), read
+  // with its session id so the resume records only its own spend.
+  let claudeSessionTotals = null;
   let resumeAnswer = null;
   let resumeGate = null;
   // The review the resumed gate's revision refers to, read with the gate.
@@ -2662,6 +2665,9 @@ const runStageAttempt = async (
       cliSessionId = cli === 'claude' ? ids() : null;
     } else {
       cliSessionId = priorSessionId;
+      if (row?.cliUsageTotals?.sessionId === priorSessionId) {
+        claudeSessionTotals = row.cliUsageTotals.totals ?? null;
+      }
     }
 
     // Did the parked conversation survive the mount? Both CLIs keep it on
@@ -3780,11 +3786,34 @@ const runStageAttempt = async (
   // Error events the JSON-output CLIs report on stdout (never agent text or
   // tool output), kept for failure classification next to the stderr tail.
   const reportedErrors = [];
+  // One Claude session shares its usage totals across this run and its repair
+  // turns, and keeps them on the stage row for a later resume.
+  const claudeSession = {
+    totals: (cli === 'claude' && !freshRun ? claudeSessionTotals : null) ?? {},
+  };
+  const saveClaudeSessionTotals = (totals) => {
+    if (cli !== 'claude' || !cliSessionId || !store.setStageUsageTotals) return;
+    const sessionId = cliSessionId;
+    sessionUpdateQueue = sessionUpdateQueue
+      .then(() =>
+        store.setStageUsageTotals({
+          executionId,
+          stageInstanceId,
+          cliUsageTotals: { sessionId, totals },
+        }),
+      )
+      .catch((error) =>
+        logger.warn('claude usage totals not saved', { stageInstanceId, error: error?.message }),
+      );
+  };
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
     onUsage: usage.onUsage,
     usageBaseline: cli === 'codex' && !freshRun ? codexUsageBaseline : {},
+    claudeSession,
+    onSessionTotals: saveClaudeSessionTotals,
+    claudeModel: model,
     onError: (message) => {
       reportedErrors.push(message);
       if (reportedErrors.length > 8) reportedErrors.shift();
@@ -3852,7 +3881,7 @@ const runStageAttempt = async (
   } catch (e) {
     spawnError = e;
   }
-  cliOutput.flush();
+  cliOutput.flush({ cliExited: result?.exitCode != null });
   await usage.flush();
   await outputQueue;
   await sessionUpdateQueue;
@@ -4824,6 +4853,9 @@ const runStageAttempt = async (
           cli,
           emit: emitCliOutput,
           onUsage: usage.onUsage,
+          claudeSession,
+          onSessionTotals: saveClaudeSessionTotals,
+          claudeModel: model,
         });
         const spawnRepair = () =>
           runChild({
@@ -4838,21 +4870,23 @@ const runStageAttempt = async (
             onStdout: (chunk) => repairSink.write(chunk),
             spawnFn,
           });
+        let repairResult = null;
         try {
           if (cli === 'opencode') {
-            await withOpenCodeStore({
+            repairResult = await withOpenCodeStore({
               env,
               operation: spawnRepair,
               restore: restoreOpenCodeStore,
               persist: persistOpenCodeStore,
             });
           } else {
-            await spawnRepair();
+            repairResult = await spawnRepair();
           }
         } finally {
-          repairSink.flush();
+          repairSink.flush({ cliExited: repairResult?.exitCode != null });
           await usage.flush();
           await outputQueue;
+          await sessionUpdateQueue;
           if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
         }
         // The repair turn re-saves artifacts, so the tree moved: commit it, or
