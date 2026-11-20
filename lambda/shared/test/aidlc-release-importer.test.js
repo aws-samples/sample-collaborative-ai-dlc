@@ -32,6 +32,7 @@ const PROFILES = Object.freeze([
   'v2.11.0',
   'v2.11.1',
   'v2.11.3',
+  'v2.11.4',
 ]);
 
 // Catalog digests every vendored fixture maps to under importer revision 2.
@@ -73,6 +74,7 @@ const CATALOG_GOLDENS = Object.freeze({
   }),
   // Revision 5 changes the dependency closure, not the mappers: every catalog
   // is unchanged, and only 2.11.3's recorded compatibility evidence differs.
+  // 2.11.4 is first imported at this revision.
   5: Object.freeze({
     'current-stable': 'e755d11af6ac83b558c93367e66760a2422bb90a90101e71fdc783542456cdf6',
     'v2.6.18': 'c96da502d523da21a2e19c661908c8dce43ddfe1f1dc95c36a50c89488f4f974',
@@ -82,6 +84,7 @@ const CATALOG_GOLDENS = Object.freeze({
     'v2.11.0': 'c289301158ffb6f6ad002d14af637f61bbec1997ed7eef0668d3649fdf3da58f',
     'v2.11.1': '4e7b502baabd3b717e98b8c0b6f7ecd559ebde1394156c8daf5dcda1d8346104',
     'v2.11.3': '811faa9795d2b2cd760380bb1d51f0cad7cfcf39a72951922ad1cdb24bb1e5fb',
+    'v2.11.4': '5e7f13060ccaedb2c20ca7a204f0191abfed174bdf0f2b3db2e793e9ab040085',
   }),
 });
 

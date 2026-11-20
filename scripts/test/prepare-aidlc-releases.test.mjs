@@ -28,7 +28,7 @@ test('prepares every allowlisted version without requesting approval or channel 
       return responseFor(AIDLC_COMPATIBILITY_PROFILES[event.profile]);
     },
   });
-  assert.equal(result.length, 8);
+  assert.equal(result.length, 9);
   assert.deepEqual(
     calls,
     profiles.map((profile) => ({
@@ -115,8 +115,8 @@ test('reports a version kept on its older closure and still prepares the others'
     onPrepared: (profile) => prepared.push(profile.id),
     onKept: (profile, response) => keptOnOlder.push([profile.id, response.upgradeRefusal]),
   });
-  assert.equal(result.length, 8);
+  assert.equal(result.length, 9);
   assert.deepEqual(keptOnOlder, [[kept.id, 'release_channel_pinned']]);
-  assert.equal(prepared.length, 7);
+  assert.equal(prepared.length, 8);
   assert.ok(!prepared.includes(kept.id));
 });
