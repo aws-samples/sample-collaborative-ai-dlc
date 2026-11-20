@@ -5,7 +5,7 @@
 // journal's DynamoDB behaviour has its own container-backed integration test.
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createNativeEngineStore, nativeEngineIdentity } from '../workflow-engine/store.js';
 import { createNativeWorkflowEngine } from '../workflow-engine/service.js';
 import { createNativeEngineProofReader } from '../workflow-engine/proof-reader.js';
@@ -57,20 +57,45 @@ const setup = async () => {
     now: f.now,
   });
   const stored = new Map();
+  const hooks = {};
   let version = 0;
   const s3 = {
     async send(command) {
       const input = command.input;
+      const intercepted = await hooks.beforeObject?.(command);
+      if (intercepted) return intercepted;
       if (command.constructor.name === 'PutObjectCommand') {
         const VersionId = `engine-${++version}`;
         stored.set(`${input.Key}\0${VersionId}`, Buffer.from(input.Body));
+        await hooks.afterPut?.(input);
         return { VersionId };
+      }
+      expect(input.ExpectedBucketOwner).toBe(f.configuration.accountId);
+      if (command.constructor.name === 'ListObjectVersionsCommand') {
+        expect(input.MaxKeys).toBe(1);
+        const latest = [...stored.keys()].findLast((key) => key.startsWith(`${input.Prefix}\0`));
+        return {
+          Versions: latest
+            ? [
+                {
+                  Key: input.Prefix,
+                  VersionId: latest.split('\0')[1],
+                  Size: stored.get(latest).length,
+                  IsLatest: true,
+                },
+              ]
+            : [],
+          IsTruncated: false,
+        };
       }
       const bytes = stored.get(`${input.Key}\0${input.VersionId}`);
       if (!bytes) throw new Error('Unknown immutable object version');
+      const checksum = Buffer.from(engineDigest(bytes), 'hex').toString('base64');
       return {
         VersionId: input.VersionId,
         ContentLength: bytes.length,
+        ChecksumSHA256:
+          input.ChecksumMode === 'ENABLED' ? (hooks.checksum?.(checksum) ?? checksum) : undefined,
         Body: Readable.from([bytes]),
       };
     },
@@ -83,7 +108,6 @@ const setup = async () => {
 
   // A scripted stand-in for the pinned engine: one gated stage with one check.
   const calls = [];
-  const hooks = {};
   const access = { allowed: true };
   let current;
   const sha = (event) => engineDigest(JSON.stringify(event));
@@ -307,7 +331,10 @@ const setup = async () => {
       if (!access.allowed) throw engineFailure('NATIVE_ENGINE_FORBIDDEN');
     },
     reportFailure: (error, code) => failures.push({ thrown: error?.code ?? error?.name, code }),
-    loadArchive: async () => Buffer.from('pinned archive'),
+    loadArchive: async () => {
+      await hooks.archive?.();
+      return Buffer.from('pinned archive');
+    },
     loadSettings: async ({ row }) => ({
       schemaVersion: 1,
       commit: row.configuration.repository.commit,
@@ -472,6 +499,7 @@ const setup = async () => {
     f,
     pin,
     execution,
+    objects,
     journal,
     handler,
     calls,
@@ -565,6 +593,282 @@ const confirmWorkspaceRecovery = async (t, stopped) => {
   });
   return t.execution.claim(t.f.bindingIdentity);
 };
+
+const journalWrite = (command, body) =>
+  command.input.TransactItems?.find(
+    (item) => item.Put?.Item.requestId === body.requestId && item.Put.Item.sk.includes('#OP#'),
+  )?.Put.Item.status;
+const conflict = (command) =>
+  Object.assign(new Error('Journal contention'), {
+    name: 'TransactionCanceledException',
+    CancellationReasons: command.input.TransactItems.map((_, i) => ({
+      Code: i === 0 ? 'TransactionConflict' : 'None',
+    })),
+  });
+const timeout = () => Object.assign(new Error('Lost acknowledgement'), { name: 'TimeoutError' });
+const journalStatus = async (t) =>
+  t.handler(
+    { schemaVersion: 1, identity: await t.identity(), action: 'status' },
+    await t.context(),
+  );
+const interruptFinish = (t, body) => {
+  t.f.hooks.before = (command) => {
+    if (['completed', 'failed'].includes(journalWrite(command, body))) throw timeout();
+  };
+};
+describe('protected workflow engine journal recovery', () => {
+  it('retries rejected begin and finish transactions without dispatching the sensor twice', async () => {
+    const t = await setup();
+    await t.command([]);
+    t.project.set('src/app.js', Buffer.from('export default 1'));
+    t.jobs.check = vi.fn(t.jobs.check);
+    const body = await t.request('execute', {
+      args: ['engine', 'sensor', 'fire', '--stage', 'build'],
+    });
+    const attempts = { running: 0, completed: 0 };
+    t.f.hooks.before = (command) => {
+      const phase = journalWrite(command, body);
+      if (phase && ++attempts[phase] === 1) throw conflict(command);
+    };
+    const first = await t.send(body);
+    expect(first.result.exitCode).toBe(0);
+    expect(await t.send(body)).toEqual(first);
+    expect(attempts).toEqual({ running: 2, completed: 2 });
+    expect(t.jobs.check).toHaveBeenCalledTimes(1);
+    expect(t.calls).toHaveLength(2);
+    expect(await journalStatus(t)).toEqual({ ok: true, version: 2, pending: null });
+
+    const next = await t.request('execute', { args: body.args });
+    t.f.hooks.before = (command) => {
+      if (journalWrite(command, next) === 'completed') throw conflict(command);
+    };
+    await expect(t.send(next)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    expect(await journalStatus(t)).toMatchObject({ version: 2, pending: next.requestId });
+    t.f.hooks.before = null;
+    expect((await t.send(next)).response).toMatchObject({ status: 'completed', version: 3 });
+    expect(t.jobs.check).toHaveBeenCalledTimes(2);
+    expect(t.calls).toHaveLength(3);
+  });
+
+  it('recognizes its own begin token and finished result after both write replies are lost', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    const writes = [];
+    t.f.hooks.after = (command) => {
+      const phase = journalWrite(command, body);
+      if (phase) {
+        writes.push(phase);
+        throw timeout();
+      }
+    };
+    const first = await t.send(body);
+    expect(first.response).toMatchObject({ status: 'completed', version: 1 });
+    expect(await t.send(body)).toEqual(first);
+    expect(writes).toEqual(['running', 'completed']);
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it('keeps a concurrent duplicate pending before output and lets both finish from the same saved versions', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    const competitor = await t.request('mirror');
+    t.hooks.tool = async () => {
+      expect(await t.send(body)).toMatchObject({ response: { status: 'pending' } });
+      await expect(t.send(competitor)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_BUSY' });
+      await expect(t.send({ ...body, args: ['next'] })).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+      });
+    };
+    let recovered;
+    t.hooks.afterPut = async (input) => {
+      if (input.Key.endsWith('/result.json.gz')) recovered = await t.send(body);
+    };
+    const original = await t.send(body);
+    expect(recovered).toEqual(original);
+    expect(original.response).toMatchObject({ status: 'completed', version: 1 });
+    expect(t.calls).toHaveLength(1);
+    expect(t.memberMessages()).toBe(1);
+  });
+
+  it.each([
+    ['execute', ['next'], 'completed', 0],
+    ['mirror', [], 'completed', 0],
+    ['finalize', [], 'completed', 0],
+    ['execute', ['next', '--force'], 'failed', 1],
+    ['execute', ['engine', 'state', 'get'], 'completed', 2],
+  ])('recovers persisted %s %j as %s with exitCode %i', async (action, args, status, exitCode) => {
+    const t = await setup();
+    await t.command([]);
+    let produced;
+    if (action === 'finalize')
+      produced = await t.f.turn(1, {
+        files: [...t.project].map(([path, content]) => ({ path, content, role: 'code' })),
+      });
+    const body = await t.request(
+      action,
+      produced
+        ? { publication: produced.receipt, interaction: produced.interactionReceipt }
+        : { args },
+    );
+    interruptFinish(t, body);
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    expect(await journalStatus(t)).toMatchObject({ version: 1, pending: body.requestId });
+    if (produced) expect(await t.proof(produced)).toBeNull();
+    const calls = t.calls.length;
+    t.f.hooks.before = null;
+    t.hooks.archive = vi.fn();
+    t.hooks.afterPut = vi.fn();
+    const recovered = await t.send(body);
+    expect(recovered.response).toMatchObject({ status, version: 2 });
+    expect(recovered.result).toMatchObject({ requestId: body.requestId, exitCode });
+    if (produced)
+      expect(await t.proof(produced)).toMatchObject({ publicationId: produced.receipt.id });
+    expect(await t.send(body)).toEqual(recovered);
+    expect(t.calls).toHaveLength(calls);
+    expect(t.hooks.archive).not.toHaveBeenCalled();
+    expect(t.hooks.afterPut).not.toHaveBeenCalled();
+    expect(await journalStatus(t)).toMatchObject({ version: 2, pending: null });
+  });
+
+  it.each([false, true])(
+    'retains the previous snapshot for a saved failure before workspace creation (prior workspace %s)',
+    async (prior) => {
+      const t = await setup();
+      if (prior) await t.command([]);
+      const identity = nativeEngineIdentity(await t.row());
+      const previous = (await t.journal.get(identity))?.snapshot ?? null;
+      t.hooks.archive = () => {
+        throw engineFailure('NATIVE_ENGINE_ARCHIVE_UNAVAILABLE');
+      };
+      const body = await t.request('execute');
+      interruptFinish(t, body);
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+      t.f.hooks.before = null;
+      const resumed = await t.send(body);
+      expect(resumed.response.status).toBe('failed');
+      expect(resumed.result.failure).toBe('NATIVE_ENGINE_ARCHIVE_UNAVAILABLE');
+      expect((await t.journal.get(identity)).snapshot).toEqual(previous);
+      expect(t.calls).toHaveLength(Number(prior));
+    },
+  );
+
+  it('requires a readable result and snapshot before clearing a pending command', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    t.hooks.beforeObject = (command) => {
+      if (
+        command.constructor.name === 'PutObjectCommand' &&
+        command.input.Key.endsWith('/result.json.gz')
+      )
+        throw timeout();
+    };
+    await expect(t.send(body)).rejects.toThrow('Lost acknowledgement');
+    expect((await t.send(body)).response.status).toBe('pending');
+    expect(t.calls).toHaveLength(1);
+    expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
+  });
+
+  it('recovers a lost S3 result write acknowledgement only after exact version readback succeeds', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    t.hooks.afterPut = (input) => {
+      if (input.Key.endsWith('/result.json.gz')) throw timeout();
+    };
+    await expect(t.send(body)).rejects.toThrow('Lost acknowledgement');
+    t.hooks.beforeObject = (command) => {
+      if (command.input.Key?.endsWith('/snapshot.json.gz')) throw timeout();
+    };
+    await expect(t.send(body)).rejects.toThrow('Lost acknowledgement');
+    expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
+    t.hooks.beforeObject = null;
+    expect(await t.send(body)).toMatchObject({
+      response: { status: 'completed', version: 1 },
+      result: { exitCode: 0 },
+    });
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['missing snapshot', 'NATIVE_ENGINE_STATE_UNAVAILABLE'],
+    ['invalid checksum', 'NATIVE_ENGINE_OBJECT_INVALID'],
+    ['foreign result', 'NATIVE_ENGINE_RESULT_INVALID'],
+  ])('holds the pending head with %s', async (fault, code) => {
+    const t = await setup();
+    const body = await t.request('execute');
+    interruptFinish(t, body);
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    t.f.hooks.before = null;
+    const identity = nativeEngineIdentity(await t.row());
+    if (fault === 'foreign result') {
+      await t.objects.write(
+        identity,
+        body.requestId,
+        'result',
+        {
+          schemaVersion: 1,
+          identity: { ...identity, sequence: identity.sequence + 1 },
+          requestId: body.requestId,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          patches: [],
+        },
+        'output',
+      );
+    } else if (fault === 'missing snapshot') {
+      t.hooks.beforeObject = ({ input }) => {
+        if (input.Prefix?.endsWith('/snapshot.json.gz')) return { IsTruncated: false };
+      };
+    } else t.hooks.checksum = () => '';
+    await expect(t.send(body)).rejects.toMatchObject({ code });
+    expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it('does not let a confirmed replacement writer finish the previous writer’s saved output', async () => {
+    const t = await setup();
+    const body = await t.request('execute');
+    interruptFinish(t, body);
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+    t.f.hooks.before = null;
+    const stopped = await stopForWorkspaceRecovery(t);
+    const replacement = await confirmWorkspaceRecovery(t, stopped);
+    await t.execution.recoveryStopped({ row: replacement.row });
+    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
+    await expect(t.send({ ...body, identity: await t.identity() })).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+    });
+    await expect(t.send(await t.request('execute'))).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_BUSY',
+    });
+    expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it.each(['token', 'requestId', 'version', 'producerSha256', 'cancel'])(
+    'fences a saved result when %s changes between its recovery read and commit',
+    async (field) => {
+      const t = await setup();
+      const body = await t.request('execute');
+      interruptFinish(t, body);
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+      t.f.hooks.before = async (command) => {
+        if (journalWrite(command, body) !== 'completed') return;
+        t.f.hooks.before = null;
+        if (field === 'cancel') return t.execution.cancel(t.f.bindingIdentity);
+        const head = [...t.f.rows.values()].find((item) => item.sk.endsWith('#HEAD'));
+        if (field === 'token' || field === 'requestId') head.pending[field] = randomUUID();
+        else head[field] = field === 'version' ? 3 : engineDigest('another producer');
+      };
+      await expect(t.send(body)).rejects.toMatchObject({
+        code: field === 'cancel' ? 'NATIVE_ENGINE_WRITER_CHANGED' : 'NATIVE_ENGINE_HEAD_CHANGED',
+      });
+      const operation = [...t.f.rows.values()].find((item) => item.sk.endsWith(body.requestId));
+      expect(operation.status).toBe('running');
+      expect(t.calls).toHaveLength(1);
+    },
+  );
+});
 describe('protected workflow engine service', () => {
   it('resumes the open stage only for the confirmed writer and turn, without replaying its lost approval', async () => {
     const t = await setup();

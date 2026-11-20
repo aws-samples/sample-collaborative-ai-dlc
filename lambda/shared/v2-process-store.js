@@ -1,4 +1,8 @@
 import { inventoryReferenceWrites, scopeActivityWrites } from './agent-auth-inventory.js';
+import {
+  isTransactionConflict,
+  retryTransactionConflicts,
+} from './dynamodb-transaction-conflicts.js';
 // V2 process store — the thin DynamoDB I/O shell over the pure key scheme +
 // record builders in v2-process-keys.js. The AgentCore container uses this to
 // write execution/stage/event/human/metric state; a future trigger/resume
@@ -106,32 +110,6 @@ const metaConditionFailure = (error, message) =>
         cause: error,
       })
     : error;
-
-// Worker writes fence ownership in transactions that include META, which
-// appendOutput, the orchestrator and sibling lanes write constantly. DynamoDB
-// rejects (never applies) a write that collides with an in-flight transaction
-// on the same item, and the SDK does not retry that rejection.
-const TRANSACTION_CONFLICT_ATTEMPTS = 5;
-const isTransactionConflict = (error) =>
-  error?.name === 'TransactionConflictException' ||
-  (error?.name === 'TransactionCanceledException' &&
-    Boolean(error.CancellationReasons?.some((reason) => reason?.Code === 'TransactionConflict')) &&
-    error.CancellationReasons.every((reason) =>
-      ['None', 'TransactionConflict'].includes(reason?.Code ?? 'None'),
-    ));
-const conflictBackoffMs = (attempt) => 10 * 2 ** (attempt - 1) * (1 + Math.random());
-const retryTransactionConflicts = (client) => ({
-  send: async (command, ...rest) => {
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        return await client.send(command, ...rest);
-      } catch (error) {
-        if (!isTransactionConflict(error) || attempt >= TRANSACTION_CONFLICT_ATTEMPTS) throw error;
-        await new Promise((resolve) => setTimeout(resolve, conflictBackoffMs(attempt)));
-      }
-    }
-  },
-});
 
 const snapshotCondition = (row, fields) => {
   if (!row) return { ConditionExpression: 'attribute_not_exists(pk)' };

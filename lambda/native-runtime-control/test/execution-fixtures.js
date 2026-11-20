@@ -176,10 +176,13 @@ export const executionFixture = ({
       const operations = command.input.TransactItems.map(
         (v) => v.Put ?? v.ConditionCheck ?? v.Update,
       );
-      if (!operations.every(condition))
+      const reasons = operations.map((operation) => ({
+        Code: condition(operation) ? 'None' : 'ConditionalCheckFailed',
+      }));
+      if (reasons.some((reason) => reason.Code !== 'None'))
         throw Object.assign(new Error('conditional conflict'), {
           name: 'TransactionCanceledException',
-          CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+          CancellationReasons: reasons,
         });
       for (const action of command.input.TransactItems) {
         if (action.Put) rows.set(key(action.Put.Item), clone(action.Put.Item));

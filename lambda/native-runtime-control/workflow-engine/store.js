@@ -11,6 +11,7 @@ import {
 } from '../execution-store.js';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 import { engineDigest, engineFailure } from '../../shared/native-workflow-protocol.js';
+import { retryTransactionConflicts } from '../../shared/dynamodb-transaction-conflicts.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -108,8 +109,27 @@ const writerCondition = (tableName, identity, row) => ({
     },
   },
 });
-const conditional = (error) =>
-  ['TransactionCanceledException', 'ConditionalCheckFailedException'].includes(error?.name);
+const transactionFailure = (error) => {
+  const reasons = error?.name === 'TransactionCanceledException' ? error.CancellationReasons : [];
+  if (reasons?.[0]?.Code === 'ConditionalCheckFailed')
+    return engineFailure('NATIVE_ENGINE_WRITER_CHANGED');
+  if (
+    error?.name === 'ConditionalCheckFailedException' ||
+    reasons?.some((reason) => reason?.Code === 'ConditionalCheckFailed')
+  )
+    return engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
+  return engineFailure('NATIVE_ENGINE_UNAVAILABLE');
+};
+const pendingHead = (head, operation) => {
+  const pending = { requestId: operation.requestId, token: operation.token };
+  if (
+    !same(head?.pending, pending) ||
+    head.version !== operation.expectedVersion ||
+    head.producerSha256 !== operation.producerSha256
+  )
+    throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
+  return head;
+};
 const receipt = (value) => {
   if (
     !value ||
@@ -128,7 +148,13 @@ const receipt = (value) => {
   return structuredClone(value);
 };
 
-export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = Date.now }) => {
+export const createNativeEngineStore = ({
+  ddb: client,
+  tableName,
+  readExecution,
+  now = Date.now,
+}) => {
+  const ddb = retryTransactionConflicts(client);
   const read = async (key) =>
     (await ddb.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))).Item;
   const authorize = async (identity) => {
@@ -148,6 +174,10 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
   const committed = (operation, input) => {
     if (
       !operation ||
+      operation.schemaVersion !== 1 ||
+      !valid(operation.token, UUID) ||
+      !['running', 'completed', 'failed'].includes(operation.status) ||
+      operation.requestId !== input.requestId ||
       !same(operation.identity, input.identity) ||
       operation.requestSha256 !== input.requestSha256 ||
       operation.producerSha256 !== input.producerSha256 ||
@@ -194,9 +224,30 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
         throw engineFailure();
       const row = await authorize(identity);
       const keys = nativeEngineKeys(identity, input.requestId);
-      const previous = await read(keys.operation);
-      if (previous) return { replay: true, operation: committed(previous, input) };
+      // An invocation may dispatch only under the token it minted during
+      // this begin. A different invocation can only reconcile saved output.
+      const opened = async (observed, ownedToken = null) => {
+        committed(observed, input);
+        if (observed.status !== 'running') return { replay: true, operation: observed };
+        await authorize(identity);
+        const head = validateHead(await read(keys.head), identity);
+        // A competing finisher can have cleared the pending head since the
+        // operation read. Its immutable terminal record wins in that case.
+        if (head?.pending?.token !== observed.token) {
+          const latest = committed(await read(keys.operation), input);
+          if (latest.token === observed.token && latest.status !== 'running')
+            return { replay: true, operation: latest };
+        }
+        const pending = pendingHead(head, observed);
+        return {
+          replay: observed.token !== ownedToken,
+          operation: observed,
+          snapshot: pending.snapshot ?? null,
+        };
+      };
       const head = validateHead(await read(keys.head), identity);
+      const previous = await read(keys.operation);
+      if (previous) return opened(previous);
       if (
         (head?.version ?? 0) !== input.expectedVersion ||
         (head && head.producerSha256 !== input.producerSha256)
@@ -268,9 +319,8 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
       } catch (error) {
         // A lost transaction response is resolved by its immutable request ID.
         const observed = await read(keys.operation);
-        if (observed) return { replay: true, operation: committed(observed, input) };
-        if (conditional(error)) throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
-        throw engineFailure('NATIVE_ENGINE_UNAVAILABLE');
+        if (observed) return opened(observed, operation.token);
+        throw transactionFailure(error);
       }
       return { replay: false, operation, snapshot: head?.snapshot ?? null };
     },
@@ -322,14 +372,10 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
       const snapshot = proposed === null && status === 'failed' ? null : receipt(proposed);
       const result = receipt(proposedResult);
       const keys = nativeEngineKeys(identity, operation.requestId);
-      const existing = await read(keys.operation);
-      if (
-        !existing ||
-        existing.token !== operation.token ||
-        existing.requestSha256 !== operation.requestSha256 ||
-        !same(existing.identity, identity)
-      )
-        throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
+      const row = await authorize(identity);
+      const head = validateHead(await read(keys.head), identity);
+      const existing = committed(await read(keys.operation), operation);
+      if (existing.token !== operation.token) throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
       if (existing.status !== 'running') {
         if (
           !same(existing.snapshot, snapshot) ||
@@ -339,10 +385,7 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
           throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
         return existing;
       }
-      const row = await authorize(identity);
-      const head = validateHead(await read(keys.head), identity);
-      if (head?.pending?.token !== operation.token)
-        throw engineFailure('NATIVE_ENGINE_HEAD_CHANGED');
+      pendingHead(head, operation);
       const nextHead = { ...head, snapshot, version: operation.expectedVersion + 1 };
       delete nextHead.pending;
       const finished = {
@@ -405,11 +448,13 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
                 Put: {
                   TableName: tableName,
                   Item: nextHead,
-                  ConditionExpression: 'pending.#token = :token AND #version = :version',
-                  ExpressionAttributeNames: { '#token': 'token', '#version': 'version' },
+                  ConditionExpression:
+                    'pending = :pending AND #version = :version AND producerSha256 = :producer',
+                  ExpressionAttributeNames: { '#version': 'version' },
                   ExpressionAttributeValues: {
-                    ':token': operation.token,
+                    ':pending': head.pending,
                     ':version': operation.expectedVersion,
+                    ':producer': operation.producerSha256,
                   },
                 },
               },
@@ -424,9 +469,8 @@ export const createNativeEngineStore = ({ ddb, tableName, readExecution, now = D
           same(observed.snapshot, snapshot) &&
           same(observed.result, result)
         )
-          return observed;
-        if (conditional(error)) throw engineFailure('NATIVE_ENGINE_WRITER_CHANGED');
-        throw engineFailure('NATIVE_ENGINE_UNAVAILABLE');
+          return committed(observed, operation);
+        throw transactionFailure(error);
       }
       return finished;
     },

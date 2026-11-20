@@ -252,6 +252,22 @@ class NativeExecutionWiring(unittest.TestCase):
             self.assertFalse(has_control_mutation(block(WORKFLOW, f'resource "aws_iam_role_policy" "{name}"')))
         self.assertFalse(has_control_mutation(block(WORKFLOW, 'resource "aws_iam_policy" "workflow_review_boundary"')))
 
+    def test_engine_discovers_only_the_saved_operation_result_and_snapshot_versions(self):
+        engine = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_engine"')
+        lookup = engine.split('Sid      = "FindSavedOperationVersions"', 1)[1].split("\n      },", 1)[0]
+        self.assertEqual(actions(lookup), {"s3:ListBucketVersions"})
+        self.assertRegex(lookup, r"Resource\s*=\s*aws_s3_bucket\.publications\.arn")
+        prefix = re.search(r'StringLike\s*=\s*\{\s*"s3:prefix"\s*=\s*\[([^\]]+)\]', lookup)
+        self.assertEqual(set(re.findall(r'"([^"]+)"', prefix.group(1))), {
+            "native-workflow-state/v1/*/snapshot.json.gz",
+            "native-workflow-output/v1/*/result.json.gz",
+        })
+        self.assertEqual(engine.count('"s3:ListBucketVersions"'), 1)
+        for purpose, name in [("state", "snapshot"), ("output", "result")]:
+            key = f"native-workflow-{purpose}/v1/scope/request/{name}.json.gz"
+            self.assertTrue(permits_s3(engine, "s3:GetObjectVersion", key))
+            self.assertFalse(permits_s3(engine, "s3:GetObject", key))
+
     def test_engine_can_pass_only_job_roles_and_create_only_bounded_reviewers(self):
         engine = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_engine"')
         passed = engine.split('Sid       = "PassOnlyWorkflowJobRoles"', 1)[1].split("},", 1)[0]

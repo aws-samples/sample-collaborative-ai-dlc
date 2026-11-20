@@ -5,6 +5,7 @@ import {
   nativeEngineFiles,
   nativeEngineFileDigest,
   nativeEngineAuthoredPath,
+  nativeEngineObjectPrefix,
   engineFailure,
   encodeNativeEngineFiles,
 } from '../../shared/native-workflow-protocol.js';
@@ -200,6 +201,82 @@ const failureCode = (error) =>
     ? error.code
     : 'NATIVE_ENGINE_UNAVAILABLE';
 
+const operationResponse = (operation) => ({
+  ok: true,
+  status: operation.status,
+  version: operation.version,
+  result: operation.result,
+});
+
+const replayOperation = async ({
+  operation,
+  snapshot: baseSnapshot,
+  request,
+  objects,
+  journal,
+  authorize,
+}) => {
+  if (operation.status !== 'running') return operationResponse(operation);
+  const { identity, requestId, producerSha256 } = operation;
+  // Result is written last, after the workspace snapshot and any publication
+  // evidence. Only the engine can write these per-request object versions.
+  const saved = await objects.observeOperationObject(identity, requestId, 'result');
+  if (!saved) return { ok: true, status: 'pending', requestId };
+  const result = saved.value;
+  if (
+    result?.schemaVersion !== 1 ||
+    result.requestId !== requestId ||
+    !same(result.identity, identity) ||
+    !Number.isInteger(result.exitCode) ||
+    typeof result.stdout !== 'string' ||
+    typeof result.stderr !== 'string' ||
+    !Array.isArray(result.patches) ||
+    (Object.hasOwn(result, 'failure') &&
+      (typeof result.failure !== 'string' ||
+        !result.failure.startsWith('NATIVE_') ||
+        result.exitCode !== 1))
+  )
+    throw engineFailure('NATIVE_ENGINE_RESULT_INVALID');
+  const snapshot = await objects.observeOperationObject(identity, requestId, 'snapshot');
+  if (
+    snapshot &&
+    (snapshot.value?.schemaVersion !== 1 || snapshot.value.state?.schemaVersion !== 1)
+  )
+    throw engineFailure('NATIVE_ENGINE_STATE_INVALID');
+  if (!snapshot && !result.failure) throw engineFailure('NATIVE_ENGINE_STATE_UNAVAILABLE');
+
+  let publication = null;
+  if (request.action === 'finalize' && !result.failure) {
+    const evidence = result.evidence;
+    if (
+      evidence?.key !==
+      `${nativeEngineObjectPrefix(identity, 'output')}${requestId}/evidence.json.gz`
+    )
+      throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
+    const value = await objects.read(identity, evidence, 'output');
+    if (
+      value?.schemaVersion !== 1 ||
+      !same(value.identity, identity) ||
+      value.publicationId !== request.publication?.id ||
+      value.publicationManifestSha256 !== request.publication.manifest?.sha256 ||
+      value.producer?.imageSha256 !== producerSha256
+    )
+      throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
+    publication = { identity, producerSha256, publicationId: value.publicationId, evidence };
+  }
+  await authorize();
+  return operationResponse(
+    await journal.finish({
+      operation,
+      // Failure before opening the workspace preserves the previous head.
+      snapshot: snapshot?.receipt ?? baseSnapshot,
+      result: saved.receipt,
+      status: result.failure ? 'failed' : 'completed',
+      publication,
+    }),
+  );
+};
+
 export const createNativeWorkflowEngine =
   ({
     executionStore,
@@ -254,13 +331,14 @@ export const createNativeWorkflowEngine =
       return current;
     };
     await authorize();
-    const head = await journal.get(identity);
-    if (request.action === 'status')
+    if (request.action === 'status') {
+      const head = await journal.get(identity);
       return {
         ok: true,
         version: head?.version ?? 0,
         pending: head?.pending?.requestId ?? null,
       };
+    }
     const opened = await journal.begin({
       identity,
       requestId: request.requestId,
@@ -268,17 +346,8 @@ export const createNativeWorkflowEngine =
       requestSha256: nativeEngineRequestSha256(request),
       producerSha256: pin.producerSha256,
     });
-    if (opened.replay) {
-      return opened.operation.status === 'running'
-        ? { ok: true, status: 'pending', requestId: request.requestId }
-        : {
-            ok: true,
-            status: opened.operation.status,
-            version: opened.operation.version,
-            result: opened.operation.result,
-          };
-    }
     const operation = opened.operation;
+    if (opened.replay) return replayOperation({ ...opened, request, objects, journal, authorize });
     const signal = operationSignal(context);
     let workspace;
     let result;
@@ -368,12 +437,7 @@ export const createNativeWorkflowEngine =
         status: failure ? 'failed' : 'completed',
         publication: proof,
       });
-      return {
-        ok: true,
-        status: finished.status,
-        version: finished.version,
-        result: finished.result,
-      };
+      return operationResponse(finished);
     } finally {
       await workspace?.close();
     }

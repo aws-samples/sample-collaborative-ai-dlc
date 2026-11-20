@@ -164,6 +164,20 @@ resource "aws_iam_role_policy" "workflow_engine" {
         ]
       },
       {
+        Sid      = "FindSavedOperationVersions"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = aws_s3_bucket.publications.arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [
+              "native-workflow-state/v1/*/snapshot.json.gz",
+              "native-workflow-output/v1/*/result.json.gz",
+            ]
+          }
+        }
+      },
+      {
         Sid      = "CaptureFinishedJobVersion"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
