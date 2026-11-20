@@ -946,6 +946,45 @@ describe('GET/PUT /projects/:id/environment', () => {
     });
   });
 
+  it('keeps the assignment readable after its environment is retired and allows recovery', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    installPublishedEnvironment();
+    await withRegistryTable(async () => {
+      const assigned = await handler(event('PUT', id, ownerSub, { environmentId: 'polyglot' }));
+      expect(assigned.statusCode).toBe(200);
+
+      environmentRegistryItems.set('ENV#polyglot|META', {
+        ...environmentRegistryItems.get('ENV#polyglot|META'),
+        status: 'RETIRED',
+      });
+
+      // The read reports the broken assignment instead of failing, so the
+      // settings page can offer a replacement.
+      const fetched = await handler(event('GET', id, ownerSub));
+      expect(fetched.statusCode).toBe(200);
+      expect(JSON.parse(fetched.body)).toEqual({
+        environmentId: 'polyglot',
+        environment: null,
+        revision: null,
+        unavailable: {
+          code: 'ENVIRONMENT_NOT_PUBLISHED',
+          message: 'Assigned environment is not published',
+        },
+      });
+
+      // Assigning the retired environment again stays refused.
+      const reassigned = await handler(event('PUT', id, ownerSub, { environmentId: 'polyglot' }));
+      expect(reassigned.statusCode).toBe(409);
+
+      // The space recovers by assigning a published environment.
+      installPublishedEnvironment('fresh');
+      const recovered = await handler(event('PUT', id, ownerSub, { environmentId: 'fresh' }));
+      expect(recovered.statusCode).toBe(200);
+      expect(JSON.parse(recovered.body)).toMatchObject({ environmentId: 'fresh' });
+    });
+  });
+
   it('lets an owner assign a published environment and read it back', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);

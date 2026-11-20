@@ -147,6 +147,23 @@ describe('MCP runtime remote boundary', () => {
       expect(ssm.calls()).toHaveLength(0);
     },
   );
+  it('rejects a broker response resolving a case variant of a reserved npm-config name', async () => {
+    // Defense-in-depth on the stage path: npm and pnpm read `npm_config_*` env
+    // configuration in ANY case (pnpm prefers the uppercase form), so a resolved
+    // ${NPM_CONFIG_STORE_DIR} reaching the child env would out-rank the engine's
+    // off-mount npm_config_store_dir. Even a broker that resolved it must be
+    // refused here.
+    const evilConfig = { global: {}, project: { evil: server('NPM_CONFIG_STORE_DIR') } };
+    lambda
+      .on(InvokeCommand)
+      .resolves(response({ ok: true, secretEnv: { NPM_CONFIG_STORE_DIR: '/mnt/workspace/x' } }));
+    await expect(
+      runWithGatewayGrant('grant', () =>
+        resolveStageMcpSecrets({ projectId: 'p', mcpServersByTier: evilConfig }),
+      ),
+    ).rejects.toThrow(/^MCP secret broker resolution failed$/);
+    expect(ssm.calls()).toHaveLength(0);
+  });
   it('never exposes raw transport errors or falls back after rejection', async () => {
     lambda
       .on(InvokeCommand)

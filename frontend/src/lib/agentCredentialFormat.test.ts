@@ -31,6 +31,22 @@ describe('agentCredentialFormatWarning', () => {
     );
   });
 
+  it('names the gateway key and its field on a deployment with a Bedrock gateway', () => {
+    expect(agentCredentialFormatWarning('kiroApiKey', 'gateway-test-key', true)).toMatch(
+      /A Bedrock gateway key goes in Bedrock Gateway Key\.$/,
+    );
+    expect(agentCredentialFormatWarning('bedrockBearerToken', 'ksk_example', true)).toMatch(
+      /this field takes a Bedrock gateway key\.$/,
+    );
+    // Without a gateway the wording is the Amazon Bedrock one.
+    expect(agentCredentialFormatWarning('kiroApiKey', 'bedrock-api-key-example')).toMatch(
+      /An Amazon Bedrock API key goes in Bedrock Bearer Token\.$/,
+    );
+    expect(agentCredentialFormatWarning('bedrockBearerToken', 'ksk_example')).toMatch(
+      /this field takes an Amazon Bedrock API key\.$/,
+    );
+  });
+
   it('does not judge other values in the Bedrock field', () => {
     expect(
       agentCredentialFormatWarning('bedrockBearerToken', 'bedrock-api-key-example'),

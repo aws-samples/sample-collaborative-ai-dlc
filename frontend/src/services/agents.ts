@@ -69,6 +69,9 @@ export interface RuntimeCliStatus {
   /** False when a platform admin disabled this CLI (then `available` is false
    *  too). Absent from older backends, which means enabled. */
   enabled?: boolean;
+  /** Set when the CLI is installed and authenticated but still not `available`:
+   *  its key belongs to a Bedrock gateway this CLI cannot reach. */
+  unavailableReason?: 'bedrock-gateway';
   credentialSource?: AgentCredentialSource | null;
 }
 
@@ -168,6 +171,9 @@ export interface AgentCredentialUpdate {
 
 export interface AgentCredentialStatus {
   authentication?: AgentAuthenticationView;
+  /** The Bedrock gateway that Bedrock keys are sent to. Absent when inference
+   *  goes to Amazon Bedrock, and from older backends. */
+  bedrockGatewayUrl?: string;
   bedrockBearerTokenSet: boolean;
   kiroApiKeySet: boolean;
 }
@@ -207,6 +213,9 @@ export interface AgentCapabilities {
 export interface AgentSettings {
   /** Effective inference region. Absent from older backends. */
   bedrockRegion?: string;
+  /** The Bedrock gateway that Bedrock keys are sent to. Absent when inference
+   *  goes to Amazon Bedrock, and from older backends. */
+  bedrockGatewayUrl?: string;
   /** Platform admins only. Draft and applied SRT settings are independent. */
   sandbox?: SandboxSettings;
   authentication?: AgentAuthenticationView;

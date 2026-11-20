@@ -101,6 +101,39 @@ variable "bedrock_region" {
   }
 }
 
+variable "bedrock_gateway_url" {
+  description = "HTTPS URL of a Bedrock gateway: a gateway that accepts Bedrock InvokeModel requests and authenticates them with a Bearer key in place of AWS credentials. Empty sends inference to Amazon Bedrock. When set, every Bedrock key saved in Keys mode (platform, space or personal) is a gateway key: Claude Code sends inference to this URL with the key as Authorization: Bearer, and OpenCode and Codex are unavailable with a key because they can only call AWS endpoints. bedrock_region, bedrock_model and model selections must name what the gateway serves. IAM mode is not affected."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.bedrock_gateway_url == "" || can(regex("^https://[^\\s/?#@:]+(:[0-9]{1,5})?(/[^\\s?#]*)?$", var.bedrock_gateway_url))
+    error_message = "bedrock_gateway_url must be empty or an HTTPS URL with a host name, an optional numeric port and an optional path, without credentials, query or fragment."
+  }
+}
+
+variable "bedrock_gateway_disable_content_type_guard" {
+  description = "Set true only when the Bedrock gateway changes the Content-Type of streamed responses. Claude Code then skips its check that a stream is application/vnd.amazon.eventstream (CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD). Prefer a gateway that forwards the header unchanged. Ignored without bedrock_gateway_url."
+  type        = bool
+  default     = false
+}
+
+variable "bedrock_model_aliases" {
+  description = "Bedrock model IDs for the aliases opus, sonnet and haiku, for example { haiku = \"eu.anthropic.claude-haiku-5-5\" }. Overrides the built-in targets that workflow blocks naming an alias resolve to, and pins the same aliases in Claude Code for its subagents and background calls. Set every alias your account or gateway does not serve with its default target. An ID that starts with anthropic. gets the geo prefix of the inference region; any other ID, such as one with a global. prefix, is used as written."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for alias in keys(var.bedrock_model_aliases) : contains(["opus", "sonnet", "haiku"], alias)])
+    error_message = "bedrock_model_aliases keys must be opus, sonnet or haiku."
+  }
+
+  validation {
+    condition     = alltrue([for model in values(var.bedrock_model_aliases) : can(regex("^[^\\s]+$", model))])
+    error_message = "bedrock_model_aliases values must be non-empty model IDs without whitespace."
+  }
+}
+
 variable "codex_model" {
   description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = no pinned default). This only pins a model; it does not enable or select the Codex CLI — use disabled_clis or Admin → Agents to control which CLIs are selectable."
   type        = string

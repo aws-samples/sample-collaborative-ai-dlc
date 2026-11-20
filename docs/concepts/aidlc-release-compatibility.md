@@ -21,8 +21,8 @@ or changes an existing intent.
 ## Profile identity and trust
 
 The built-in profiles are pinned to exact upstream commit SHAs. The allowlist
-includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0, and
-2.11.0 and 2.11.1 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
+includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0,
+2.11.0, 2.11.1, 2.11.3 and 2.11.4 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
 allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
 identity; an unknown tag or branch is not treated as an official release.
 
@@ -392,6 +392,28 @@ run; a real ESLint or tsc subprocess in the container image; per-Unit checkpoint
 and reopen with finished work retained; and production-equivalent dependency
 packaging.
 
+### AI-DLC 2.11.4
+
+2.11.4 imports from the `v2.11.4` tag commit
+`61fdb122428d86b56b7e8d598787095f2c97d3e1`. Most of the release changes the CLI
+harnesses, the installer and plugins, which this runtime does not use. Its
+authored methodology keeps 2.11.3's frontmatter dialect, engine command families
+and sensor declarations, so the 2.11.3 dispositions above still apply and the
+compatibility check reports nothing newly unhonoured. Its Requirements Analysis
+`outputs` description keeps the unquoted colon and is quoted the same way.
+
+The `infra` scope now runs Code Generation and Build and Test for the
+infrastructure code, with no Units, so its Build and Test gate can recommend
+going back to Code Generation, as in the other linear scopes.
+
+The compatibility check reads frontmatter and engine commands, not every
+instruction. Two 2.11.4 changes need their own handling:
+
+| 2.11.4 behaviour                                                                                                     | Disposition    | What the platform does                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Before asking questions, a stage checks the team's catalogued documents and presents the answers they already give   | adapted        | The source is the project's team knowledge in the knowledge graph, not a document reading list. A stage checks its questions against it and does not ask the ones it answers: it lists them for confirmation at the start of its first remaining question, or, when no question remains, names them in its output. This applies to every version, not only 2.11.4. |
+| Functional Design lets a UI Unit trace to `functional-spec.md` or `frontend-components.md` instead of business rules | not reproduced | The traceability sensor reads the upstream stage graph, which is not published with the release, so it still expects business-rule ids for every Unit, as in 2.11.3.                                                                                                                                                                                               |
+
 ## Registry, promotion, and channels
 
 Registration creates an invisible, structurally-valid record. It does not make
@@ -487,8 +509,8 @@ closure and plan checks still run, and no runtime execution check is bypassed.
 
 ### Enable pinning and promote a release
 
-The standard installer and deployment scripts publish and register all eight
-supported official versions, including 2.11.3. Preparation is idempotent, runs
+The standard installer and deployment scripts publish and register all nine
+supported official versions, including 2.11.4. Preparation is idempotent, runs
 after the baseline reseed (or after it is skipped with `--skip-seed`), and fails
 deployment if a catalog cannot be prepared; the error names the command to retry
 it. It preserves existing approvals, visibility, notes and channel choices, and

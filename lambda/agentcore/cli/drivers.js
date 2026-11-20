@@ -22,8 +22,13 @@
 export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['agent.max-turns@v1']);
 
 // The MCP server name we register under in mcp-config (see stage-materializer).
-import { BEDROCK_BACKEND } from './backend-adapters.js';
+import {
+  BEDROCK_BACKEND,
+  BEDROCK_GATEWAY_TOKEN_ENV,
+  invocationBedrockGateway,
+} from './backend-adapters.js';
 import { gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
+import { configuredModelAliases } from '../model-resolver.js';
 
 export const MCP_SERVER_NAME = 'aidlc';
 // The runtime-owned entry relaying the customer MCP targets behind the Gateway.
@@ -33,7 +38,9 @@ export const GATEWAY_TOOLS_SERVER_NAME = 'aidlc-gateway-tools';
 // `claude -p --mcp-config <file> --permission-mode bypassPermissions
 //  --model <id> --output-format stream-json --verbose` — prompt piped on STDIN.
 // Bedrock auth via env (CLAUDE_CODE_USE_BEDROCK + AWS_BEARER_TOKEN_BEDROCK),
-// mirroring the v1 claude driver.
+// mirroring the v1 claude driver. Through a Bedrock gateway (backend-adapters.js)
+// Claude Code keeps the Bedrock request format but sends it to the gateway URL,
+// skips AWS authentication and presents the key as `Authorization: Bearer`.
 //
 // Prompt on STDIN, not argv: a large materialized prompt (graph context pack)
 // overflows the OS ARG_MAX and makes spawn() throw `E2BIG` (the 2026-07 frontend
@@ -55,6 +62,21 @@ const cliPersistenceEnvironment = (cli, env) => {
   if (cli === 'opencode')
     return { XDG_DATA_HOME: env.OPENCODE_XDG_DATA_HOME || '/home/node/.opencode-data' };
   return {};
+};
+
+// Claude Code resolves `opus`, `sonnet` and `haiku` itself for its subagents and
+// background calls, to models a deployment may not have access to (a region, or a
+// gateway's model list). Aliases the deployment configured are pinned for those
+// too, so they agree with the ids the model resolver hands to `--model`.
+const CLAUDE_MODEL_ALIASES = ['opus', 'sonnet', 'haiku'];
+const claudeModelPins = (env) => {
+  const aliases = configuredModelAliases({ env });
+  return Object.fromEntries(
+    CLAUDE_MODEL_ALIASES.filter((alias) => aliases[alias]).map((alias) => [
+      `ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`,
+      aliases[alias],
+    ]),
+  );
 };
 
 const claudeDriver = {
@@ -113,8 +135,21 @@ const claudeDriver = {
       AWS_REGION: region,
       IS_SANDBOX: '1',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      ...claudeModelPins(env),
     };
-    if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
+    const gateway = invocationBedrockGateway(env);
+    if (gateway) {
+      // Never together with AWS_BEARER_TOKEN_BEDROCK: Claude Code would prefer the AWS name.
+      out.ANTHROPIC_BEDROCK_BASE_URL = gateway;
+      out.CLAUDE_CODE_SKIP_BEDROCK_AUTH = '1';
+      out.ANTHROPIC_AUTH_TOKEN = env[BEDROCK_GATEWAY_TOKEN_ENV];
+      // For a gateway that rewrites the stream's Content-Type (Terraform
+      // bedrock_gateway_disable_content_type_guard).
+      if (env.BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD === 'true')
+        out.CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD = '1';
+    } else if (env.AWS_BEARER_TOKEN_BEDROCK) {
+      out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
+    }
     return out;
   },
 };

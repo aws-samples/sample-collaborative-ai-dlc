@@ -5,6 +5,7 @@ import {
   checkActiveExecutions,
   deactivatedFlags,
   existingExecutionsTable,
+  reroutedFlags,
 } from '../check-active-executions.mjs';
 
 const TABLE_ARN = 'arn:aws:dynamodb:eu-west-1:000000000000:table/test-v2-executions';
@@ -241,6 +242,82 @@ test('refuses turning engine-data off while executions are running, parked or qu
   assert.equal(drained.ok, true);
   const overridden = await checkActiveExecutions({
     plan: disabling(),
+    listActiveExecutions: async () => rows,
+    env: { AIDLC_ALLOW_ACTIVE_EXECUTIONS: '1' },
+  });
+  assert.equal(overridden.ok, true);
+  assert.equal(overridden.overridden, true);
+});
+
+const routed = (url) => ({ ...BASE_ENV, BEDROCK_GATEWAY_URL: url });
+const ROUTED = routed('https://gateway.example.com');
+
+test('setting, changing or removing the Bedrock gateway reroutes saved keys', () => {
+  const rerouting = [
+    runtime({ after: ROUTED }),
+    runtime({ before: ROUTED, after: BASE_ENV }),
+    runtime({ before: ROUTED, after: routed('https://other.example.com') }),
+  ];
+  for (const change of rerouting) {
+    assert.deepEqual(reroutedFlags(plan(table(), change)), ['bedrock_gateway_url']);
+    assert.deepEqual(activatedFlags(plan(table(), change)), []);
+    assert.deepEqual(deactivatedFlags(plan(table(), change)), []);
+  }
+  assert.deepEqual(reroutedFlags(plan(table(), runtime({ before: ROUTED }))), []);
+  assert.deepEqual(reroutedFlags(plan(table(), runtime())), []);
+  assert.deepEqual(reroutedFlags(plan(table())), []);
+  // A runtime that is created or destroyed has no session on the other side.
+  assert.deepEqual(
+    reroutedFlags(
+      plan(table(['create']), runtime({ before: null, after: ROUTED, actions: ['create'] })),
+    ),
+    [],
+  );
+  const destroyed = runtime({ before: ROUTED, actions: ['delete'] });
+  destroyed.change.after = null;
+  assert.deepEqual(reroutedFlags(plan(table(), destroyed)), []);
+  // The other inference settings do not decide where a key is sent.
+  assert.deepEqual(
+    reroutedFlags(
+      plan(
+        table(),
+        runtime({
+          before: ROUTED,
+          after: {
+            ...ROUTED,
+            BEDROCK_GATEWAY_DISABLE_CONTENT_TYPE_GUARD: 'true',
+            AIDLC_MODEL_ALIASES: '{"haiku":"example-model"}',
+          },
+        }),
+      ),
+    ),
+    [],
+  );
+});
+
+test('refuses a Bedrock gateway change while executions are running, parked or queued', async () => {
+  const rerouting = () => plan(table(), runtime({ after: ROUTED }));
+  const result = await checkActiveExecutions({
+    plan: rerouting(),
+    listActiveExecutions: async () => rows,
+    env: {},
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.flags, []);
+  assert.deepEqual(result.deactivated, []);
+  assert.deepEqual(result.rerouted, ['bedrock_gateway_url']);
+  assert.deepEqual(
+    result.active.map((row) => row.executionId),
+    ['e-run', 'e-park', 'e-queued'],
+  );
+  const drained = await checkActiveExecutions({
+    plan: rerouting(),
+    listActiveExecutions: async () => rows.filter((row) => row.status === 'DRAFT'),
+    env: {},
+  });
+  assert.equal(drained.ok, true);
+  const overridden = await checkActiveExecutions({
+    plan: rerouting(),
     listActiveExecutions: async () => rows,
     env: { AIDLC_ALLOW_ACTIVE_EXECUTIONS: '1' },
   });

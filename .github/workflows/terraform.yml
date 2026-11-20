@@ -94,6 +94,9 @@ jobs:
       - name: AgentCore runtime version after an in-place update (mock providers)
         run: terraform test -filter=tests/agentcore-runtime-version.tftest.hcl
 
+      - name: AgentCore Bedrock gateway and model alias environment (mock providers)
+        run: terraform test -filter=tests/agentcore-inference-routing.tftest.hcl
+
       - name: Managed environments IAM and configuration tests (mock providers)
         run: terraform test -filter=tests/managed-environments.tftest.hcl
 

@@ -40,6 +40,7 @@ import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA, modelListSources } from '@/lib/agentCli';
+import { BEDROCK_GATEWAY_UNAVAILABLE } from '@/lib/bedrockGateway';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
@@ -199,6 +200,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     if (rt.available) return null;
     if (!rt.installed) return 'not installed';
     if (!rt.authed) return 'no credentials';
+    if (rt.unavailableReason === 'bedrock-gateway') return BEDROCK_GATEWAY_UNAVAILABLE;
     return 'not available';
   };
   // The model that will actually run for the SELECTED CLI: the project override,

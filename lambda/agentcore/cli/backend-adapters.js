@@ -1,4 +1,31 @@
-import { normalizeEndpoint } from '../../shared/agent-auth-contracts.js';
+import { credentialProviderForCli, normalizeEndpoint } from '../../shared/agent-auth-contracts.js';
+import { bedrockGatewayUrl } from '../../shared/agent-credential-lease.js';
+
+// ── Bedrock gateway ──
+// A gateway that accepts Bedrock InvokeModel requests and authenticates them with a Bearer key
+// in place of AWS credentials. Its URL is a deployment setting (BEDROCK_GATEWAY_URL, Terraform
+// bedrock_gateway_url), like the inference region. While it is set, every Bedrock API key is a
+// gateway key: the broker leases it as gateway-key material (agent-credential-lease.js), and
+// Keys deliver that under BEDROCK_GATEWAY_TOKEN_ENV and never under the AWS name.
+// Only a driver that can be pointed at the gateway reads that name, so a CLI that always
+// calls AWS endpoints cannot send the key there.
+// Its own name, apart from the token of the gateway backend below, so that one never reads as
+// the other. Keys declare it a controlled env name, which keeps it out of ambient env, custom
+// MCP servers and MCP secret references.
+export const BEDROCK_GATEWAY_TOKEN_ENV = 'AIDLC_BEDROCK_GATEWAY_TOKEN';
+// OpenCode and Codex have no setting that replaces the AWS endpoint and its authentication.
+const BEDROCK_GATEWAY_CLIS = Object.freeze(['claude']);
+
+// The gateway this invocation's Bedrock key belongs to. Null when it calls AWS directly: no
+// gateway is configured, or it authenticates without an API key.
+export const invocationBedrockGateway = (env = {}) =>
+  env[BEDROCK_GATEWAY_TOKEN_ENV] ? bedrockGatewayUrl(env) : null;
+
+// True for a Bedrock CLI that this invocation's gateway key cannot serve.
+export const blockedByBedrockGateway = (cli, env = {}) =>
+  credentialProviderForCli(cli) === 'bedrock' &&
+  !BEDROCK_GATEWAY_CLIS.includes(cli) &&
+  Boolean(invocationBedrockGateway(env));
 
 export const BEDROCK_BACKEND = Object.freeze({
   id: 'bedrock',

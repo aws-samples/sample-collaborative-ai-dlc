@@ -112,6 +112,34 @@ describe('claude driver', () => {
     ).toBeUndefined();
   });
 
+  it('pins Claude Code to the aliases the deployment configured', () => {
+    const env = claudeDriver.envForAuth({
+      BEDROCK_REGION: 'eu-central-1',
+      AIDLC_MODEL_ALIASES: JSON.stringify({
+        opus: 'eu.anthropic.claude-opus-5-5',
+        haiku: 'anthropic.claude-haiku-5-5',
+        fast: 'anthropic.claude-haiku-5-5',
+      }),
+    });
+
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('eu.anthropic.claude-opus-5-5');
+    // The same geo-prefixed id the resolver hands to --model for this alias.
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('eu.anthropic.claude-haiku-5-5');
+    // Not configured: Claude Code keeps its own target instead of the built-in table's.
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(Object.keys(env).filter((name) => name.startsWith('ANTHROPIC_DEFAULT_'))).toEqual([
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    ]);
+  });
+
+  it('sets no model pin without configured aliases', () => {
+    for (const AIDLC_MODEL_ALIASES of [undefined, '', 'not json', '["opus"]', '{"opus":""}'])
+      expect(
+        Object.keys(claudeDriver.envForAuth({ AWS_REGION: 'us-east-1', AIDLC_MODEL_ALIASES })),
+      ).not.toContain('ANTHROPIC_DEFAULT_OPUS_MODEL');
+  });
+
   it('forces the session id up front when supplied (new-session-only)', () => {
     const inv = claudeDriver.buildInvocation({
       prompt: 'do it',

@@ -425,6 +425,22 @@ describe('network access help', () => {
     },
   );
 
+  it('adds the Bedrock gateway host as its own example when the deployment uses one', async () => {
+    getSettings.mockResolvedValueOnce({
+      sandbox: structuredClone(saved),
+      bedrockRegion: 'eu-central-1',
+      bedrockGatewayUrl: 'https://gateway.example.com/bedrock',
+    });
+    await show();
+    await openHelp();
+    await click('button', 'Copy Claude Code with a gateway key allowedDomains');
+    expect(writeText).toHaveBeenCalledWith('"allowedDomains": [\n  "gateway.example.com"\n]');
+    // IAM mode still calls Amazon Bedrock, so its example stays.
+    await click('button', 'Copy Claude Code allowedDomains');
+    expect(writeText.mock.lastCall![0]).toContain('bedrock-runtime.eu-central-1.amazonaws.com');
+    expect(screen.getAllByRole('button', { name: /^Copy / })).toHaveLength(5);
+  });
+
   it('keeps a region placeholder with an older backend instead of guessing a region', async () => {
     getSettings.mockResolvedValueOnce({ sandbox: structuredClone(saved) });
     await show();

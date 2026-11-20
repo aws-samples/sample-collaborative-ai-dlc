@@ -1,4 +1,8 @@
-import { apiKeyLease, normalizeCredentialLease } from './agent-credential-lease.js';
+import {
+  apiKeyLease,
+  bedrockGatewayKeyLease,
+  normalizeCredentialLease,
+} from './agent-credential-lease.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { authError, bindingIdentity, isConfiguredCredentialValue } from './agent-auth-contracts.js';
 import { readCredentialBindingValue } from './agent-key-repository.js';
@@ -20,6 +24,15 @@ export const KEY_REDEMPTION_ADAPTERS = Object.freeze({
   'bedrock:api-key': keyAdapter,
   'kiro:api-key': keyAdapter,
 });
+// With a Bedrock gateway every Bedrock API key is a gateway key. It leaves the broker as
+// gateway-key material and without the v1 `value` field. A runtime that predates the gateway
+// refuses material it does not know; an API key it would export under the AWS name and send
+// to Amazon Bedrock.
+const isGatewayKey = (binding, lease, bedrockGatewayUrl) =>
+  Boolean(bedrockGatewayUrl) &&
+  binding.provider === 'bedrock' &&
+  lease.material?.type === 'api-key';
+
 export const redeemAgentBinding = async ({
   binding,
   projectId,
@@ -27,10 +40,15 @@ export const redeemAgentBinding = async ({
   ssm,
   base,
   adapters = KEY_REDEMPTION_ADAPTERS,
+  // The deployment's Bedrock gateway (bedrockGatewayUrl(env)), null without one.
+  bedrockGatewayUrl = null,
 }) => {
   if (binding.version !== 2) {
     const value = (await readCredentialBindingValue(ssm, { base, binding, projectId })) || null;
-    return { binding, value, lease: apiKeyLease(value) };
+    const lease = apiKeyLease(value);
+    if (isGatewayKey(binding, lease, bedrockGatewayUrl))
+      return { binding, lease: bedrockGatewayKeyLease(lease, bedrockGatewayUrl) };
+    return { binding, value, lease };
   }
   const connection = await repository.getConnection(
     binding.connectionId,
@@ -60,6 +78,8 @@ export const redeemAgentBinding = async ({
   // Retired definitions remain redeemable by pinned work.
   const result = await adapter({ ssm, connection, binding });
   const lease = normalizeCredentialLease(result.lease ?? apiKeyLease(result.value));
+  if (isGatewayKey(binding, lease, bedrockGatewayUrl))
+    return { binding, lease: bedrockGatewayKeyLease(lease, bedrockGatewayUrl) };
   // Keep the v1 value field for already-published key-only runtime sessions.
   return {
     ...result,

@@ -35,6 +35,17 @@ bedrock_model = "us.anthropic.claude-sonnet-4-6"
 # use that region's geo prefix (or global.) in bedrock_model.
 # bedrock_region = "us-east-1"
 
+# Optional Bedrock gateway: a gateway that accepts Bedrock InvokeModel requests
+# with a Bearer key. Bedrock keys saved in the app are then gateway keys and
+# Claude Code is the only Bedrock agent CLI. See docs/using-the-platform/bedrock-gateway.md.
+# bedrock_gateway_url = "https://gateway.example.com"
+# bedrock_gateway_disable_content_type_guard = true
+# bedrock_model_aliases = {
+#   opus   = "eu.anthropic.claude-opus-5-5"
+#   sonnet = "eu.anthropic.claude-sonnet-5-5"
+#   haiku  = "eu.anthropic.claude-haiku-5-5"
+# }
+
 # ---------------------------------------------------------------------------
 # Custom domain (optional)
 #

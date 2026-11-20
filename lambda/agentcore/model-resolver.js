@@ -37,18 +37,26 @@ const regionPrefix = (region = '') => {
   return 'us';
 };
 
-const loadAliases = (env) => {
-  if (!env.AIDLC_MODEL_ALIASES) return DEFAULT_ALIASES;
+// The deployment's alias overrides (Terraform bedrock_model_aliases), or {} when unset or
+// unparseable. A target that is not a model id is dropped, so its alias keeps the built-in.
+const configuredAliases = (env) => {
+  if (!env.AIDLC_MODEL_ALIASES) return {};
   try {
-    return { ...DEFAULT_ALIASES, ...JSON.parse(env.AIDLC_MODEL_ALIASES) };
+    const parsed = JSON.parse(env.AIDLC_MODEL_ALIASES);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, target]) => typeof target === 'string' && target),
+    );
   } catch {
-    return DEFAULT_ALIASES;
+    return {};
   }
 };
 
+const loadAliases = (env) => ({ ...DEFAULT_ALIASES, ...configuredAliases(env) });
+
 // Resolve a raw model value (may be an alias or a full id) to a concrete id.
-// Aliases get the region prefix; full ids and already-prefixed alias targets pass
-// through. Returns undefined for an empty input.
+// Aliases get the region prefix; full ids and alias targets that already name where
+// they run pass through. Returns undefined for an empty input.
 export const resolveModelId = (raw, { env = process.env } = {}) => {
   if (!raw) return undefined;
   const value = String(raw).trim();
@@ -57,11 +65,19 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
   const aliases = loadAliases(env);
   const target = aliases[value.toLowerCase()];
   if (!target) return value; // unknown bare token — pass through, let the CLI decide
-  // Prefix the alias target with the geo unless it already carries one.
-  return isFullId(target) && /^(us|eu|apac)\./.test(target)
-    ? target
-    : `${regionPrefix(env.BEDROCK_REGION || env.AWS_REGION)}.${target}`;
+  // A bare Anthropic id gets the geo of the inference region. Any other target already
+  // names where it runs (eu., global., jp., an inference profile ARN) and is used as written.
+  return target.startsWith('anthropic.')
+    ? `${regionPrefix(env.BEDROCK_REGION || env.AWS_REGION)}.${target}`
+    : target;
 };
+
+// The aliases this deployment configured, resolved to full ids. The built-in table is left
+// out on purpose: Claude Code is pinned (drivers.js) only to what an operator chose.
+export const configuredModelAliases = ({ env = process.env } = {}) =>
+  Object.fromEntries(
+    Object.keys(configuredAliases(env)).map((alias) => [alias, resolveModelId(alias, { env })]),
+  );
 
 // CLIs whose `--model` value is a Bedrock id (inference profile / provider-
 // prefixed). For these the alias table, region geo-prefixing, and the

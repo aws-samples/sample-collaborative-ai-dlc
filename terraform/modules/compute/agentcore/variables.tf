@@ -117,6 +117,24 @@ variable "bedrock_region" {
   type        = string
 }
 
+variable "bedrock_gateway_url" {
+  description = "Bedrock gateway the agent CLIs send API-key inference to (BEDROCK_GATEWAY_URL). Empty sends it to Amazon Bedrock"
+  type        = string
+  default     = ""
+}
+
+variable "bedrock_gateway_disable_content_type_guard" {
+  description = "Skip Claude Code's Content-Type check on streams from the Bedrock gateway"
+  type        = bool
+  default     = false
+}
+
+variable "bedrock_model_aliases" {
+  description = "Bedrock model ids for the opus, sonnet and haiku aliases (AIDLC_MODEL_ALIASES). Empty keeps the runtime's built-in targets"
+  type        = map(string)
+  default     = {}
+}
+
 variable "kiro_model" {
   description = "Default Kiro-native model id seeded into the cli-models SSM parameter (empty = none)"
   type        = string

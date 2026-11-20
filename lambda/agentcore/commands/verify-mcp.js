@@ -24,7 +24,7 @@ import mcpValidatorPkg from '../../shared/mcp-validator.js';
 import {
   computeSurvivors,
   resolveMcpSecrets as defaultResolveMcpSecrets,
-  RESERVED_MCP_ENV_KEYS,
+  isReservedMcpEnvKey,
 } from '../mcp-secret-resolver.js';
 import { mcpSecretPaths } from '../mcp-secret-paths.js';
 import { fileURLToPath } from 'node:url';
@@ -292,7 +292,7 @@ export const verifyMcp = async (payload, deps = {}) => {
       // Reserved-name guard (same hard boundary the resolver enforces): a ref may
       // not shadow a runtime env key (auth / AWS creds / cache). Report it as a
       // distinct, actionable per-server error rather than a generic "not set".
-      const reservedRef = refs.find((v) => RESERVED_MCP_ENV_KEYS.has(v));
+      const reservedRef = refs.find((v) => isReservedMcpEnvKey(v));
       if (reservedRef) {
         return [
           name,
