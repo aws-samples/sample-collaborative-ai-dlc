@@ -158,9 +158,27 @@ export const STORE_OPS = Object.freeze({
         metrics: z.record(z.string(), z.unknown()).nullable().optional(),
         resolvedModel: text,
         creditRate: z.number().nullable().optional(),
+        measured: z.boolean().optional(),
+        incomplete: z.boolean().optional(),
       }),
     ],
     executionId: inputExecution,
+  }),
+  // A Claude session's usage totals so far, kept on its stage row so a resume
+  // records only its own spend (agentcore/cli/claude-usage.js).
+  setStageUsageTotals: op({
+    args: [
+      z.object({
+        executionId: id,
+        stageInstanceId: id,
+        cliUsageTotals: z.object({
+          sessionId: id,
+          totals: z.record(z.string(), z.record(z.string(), z.number().nonnegative())),
+        }),
+      }),
+    ],
+    executionId: inputExecution,
+    stageIds: (args) => [args[0].stageInstanceId],
   }),
   recordSensorRun: op({
     args: [

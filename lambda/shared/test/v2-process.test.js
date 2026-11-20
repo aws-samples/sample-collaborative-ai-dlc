@@ -979,6 +979,19 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':wait']).toBe(12_000);
   });
 
+  it('setStageUsageTotals keeps a Claude session’s totals on its existing stage row', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    const cliUsageTotals = { sessionId: 'sess-1', totals: { m: { tokensCacheRead: 10 } } };
+    await store.setStageUsageTotals({ executionId: 'e1', stageInstanceId: 'si-1', cliUsageTotals });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'STAGE#si-1' },
+      UpdateExpression: 'SET cliUsageTotals = :t',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':t': cliUsageTotals },
+    });
+  });
+
   it('resetStageRow clears the wait accounting for the next attempt', async () => {
     ddb.on(GetCommand).resolves({ Item: { attempt: 0, waitMs: 9000, parkedAt: 'T' } });
     ddb.on(UpdateCommand).resolves({ Attributes: {} });
@@ -2632,6 +2645,10 @@ describe('unit dimension on row builders', () => {
     expect(buildHumanTaskRow({ ...base, humanTaskId: 'h1', kind: 'question' }).unitSlug).toBeNull();
     expect(buildOutputRow({ ...base, seq: 1, content: 'x' }).unitSlug).toBeNull();
     expect(buildMetricRow({ ...base, metricId: 'm1', metrics: {} }).unitSlug).toBeNull();
+    expect(buildMetricRow({ ...base, metricId: 'm1', metrics: {} })).not.toHaveProperty('measured');
+    expect(
+      buildMetricRow({ ...base, metricId: 'm1', metrics: {}, measured: true, incomplete: true }),
+    ).toMatchObject({ measured: true, incomplete: true });
     expect(
       buildSensorRow({
         ...base,

@@ -2335,6 +2335,21 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
   };
 
+  // A Claude session's usage totals so far (`{ sessionId, totals }`, per model),
+  // so a resumed run records only its own spend (cli/claude-usage.js). Kept on
+  // the stage row beside its session id; never creates a row.
+  const setStageUsageTotals = async ({ executionId, stageInstanceId, cliUsageTotals }) => {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression: 'SET cliUsageTotals = :t',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':t': cliUsageTotals },
+      }),
+    );
+  };
+
   const recordMetric = async ({
     executionId,
     stageInstanceId,
@@ -2343,6 +2358,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     metrics,
     resolvedModel = null,
     creditRate = null,
+    measured = false,
+    incomplete = false,
   }) => {
     const item = buildMetricRow({
       executionId,
@@ -2353,6 +2370,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       metrics,
       resolvedModel,
       creditRate,
+      measured,
+      incomplete,
       now: now(),
     });
     await ddb.send(new PutCommand({ TableName: table(), Item: item }));
@@ -4008,6 +4027,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     setLoopBackRecommendation,
     setCommitDescription,
     recordCommitDescriptionUse,
+    setStageUsageTotals,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

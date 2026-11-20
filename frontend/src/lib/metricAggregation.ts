@@ -124,6 +124,8 @@ export function formatMillis(ms: number): string {
 export interface CostSample {
   stageInstanceId: string | null;
   metrics: Record<string, number>;
+  // A lower bound: the CLI ended without its usage report.
+  incomplete?: boolean;
   cost?: {
     totalCost: number;
     currency: string;
@@ -145,7 +147,8 @@ export interface CostSummary {
 //   - `priced` requires every spending sample to be priced, EXCEPT an unpriced
 //     Kiro token sample whose stage also has a credit-priced sample — the
 //     credits ARE that stage's spend, the token counts are usage detail;
-//   - `estimated` is true when Kiro credit-estimated dollars are in the total.
+//   - `estimated` is true when Kiro credit-estimated dollars, or an incomplete
+//     sample's lower bound, are in the total.
 // Returns null when no sample carries a cost (nothing to summarize).
 export function summarizeCost(samples: CostSample[]): CostSummary | null {
   const withCost = samples.filter((m) => m.cost);
@@ -165,7 +168,7 @@ export function summarizeCost(samples: CostSample[]): CostSummary | null {
     priced:
       costed.length > 0 &&
       costed.every((m) => m.cost?.priced || creditPricedStages.has(m.stageInstanceId)),
-    estimated: costed.some((m) => m.cost?.estimated),
+    estimated: costed.some((m) => m.cost?.estimated || m.incomplete),
   };
 }
 
