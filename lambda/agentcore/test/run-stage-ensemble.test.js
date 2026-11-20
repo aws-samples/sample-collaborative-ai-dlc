@@ -517,10 +517,7 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
       supportRefs: ['aidlc-design-agent', 'aidlc-quality-agent'],
       ...withGraph(),
     });
-    const pnpmEnv = {
-      npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store',
-      npm_config_virtual_store_dir: '/tmp/aidlc-node-modules/root/.pnpm',
-    };
+    const pnpmEnv = { npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store' };
     const envs = [];
     deps.spawnFn = (_command, _args, options) => {
       envs.push(options.env);

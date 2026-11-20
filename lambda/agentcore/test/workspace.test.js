@@ -375,7 +375,10 @@ describe('redirectHeavyDirs', () => {
 });
 
 // pnpm refuses a symlinked node_modules, so a pnpm install root keeps a real
-// directory and the redirect moves pnpm's stores off the mount instead.
+// directory and the engine owns node_modules/.pnpm — the virtual store — as a
+// link to the off-mount directory instead. The virtual store stays at pnpm's
+// default location (per install root by construction), so `pnpm dlx` temp
+// projects never share it and any number of pnpm roots works.
 describe('redirectHeavyDirs — pnpm install roots', () => {
   const store = () => path.join(root, 'cache', 'pnpm-store');
   const redirect = () =>
@@ -385,6 +388,20 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
       () => false,
       () => true,
     );
+  // What pnpm writes after an install; storeDir gets a layout-version suffix.
+  const modulesYaml = (dir, { storeDir, virtualStoreDir = '.pnpm' } = {}) =>
+    writeFile(
+      path.join(dir, 'node_modules', '.modules.yaml'),
+      `{\n  "storeDir": "${storeDir ?? path.join(store(), 'v10')}",\n` +
+        `  "virtualStoreDir": "${virtualStoreDir}",\n  "virtualStoreDirMaxLength": 120\n}\n`,
+    );
+  const expectEnginePnpmLayout = async (dir, key) => {
+    expect((await lstat(path.join(dir, 'node_modules'))).isDirectory()).toBe(true);
+    expect(await readlink(path.join(dir, 'node_modules', '.pnpm'))).toBe(
+      path.join(off, key, '.pnpm'),
+    );
+    expect((await stat(path.join(off, key, '.pnpm'))).isDirectory()).toBe(true);
+  };
 
   const markers = {
     'pnpm-lock.yaml': (dir) =>
@@ -396,19 +413,18 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
   };
 
   it.each(Object.keys(markers))(
-    'creates no link for a root marked by %s and points both pnpm stores off the mount',
+    'gives a root marked by %s a real node_modules with an off-mount .pnpm link',
     async (marker) => {
       await pkg(ws);
       await markers[marker](ws);
 
       const res = await redirect();
 
-      expect(res.links).toEqual([{ dir: ws, action: 'skipped' }]);
-      expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
-      expect(res.env).toEqual({
-        npm_config_store_dir: store(),
-        npm_config_virtual_store_dir: path.join(off, 'root', '.pnpm'),
-      });
+      expect(res.links).toEqual([
+        { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'linked' },
+      ]);
+      await expectEnginePnpmLayout(ws, 'root');
+      expect(res.env).toEqual({ npm_config_store_dir: store() });
     },
   );
 
@@ -427,7 +443,7 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
     expect(res.env).toEqual({});
   });
 
-  it('removes the link an earlier run created, so pnpm can create a real directory', async () => {
+  it('replaces the whole-directory link an earlier run created with the real layout', async () => {
     await pkg(ws);
     // The broken state: the engine linked the root before it knew about pnpm,
     // and an install wrote through the link.
@@ -437,36 +453,128 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
 
     const res = await redirect();
 
-    expect(res.links).toEqual([{ dir: ws, action: 'unlinked' }]);
-    expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'linked' },
+    ]);
+    await expectEnginePnpmLayout(ws, 'root');
     // Only the link went; what it pointed at is untouched.
     expect((await stat(path.join(off, 'root', 'node_modules', 'left-pad'))).isDirectory()).toBe(
       true,
     );
-    // The next run finds nothing to heal.
-    expect((await redirect()).links).toEqual([{ dir: ws, action: 'skipped' }]);
+    // The next run keeps the prepared directory as it is.
+    expect((await redirect()).links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'kept' },
+    ]);
   });
 
-  it('removes a dangling engine link after a container swap', async () => {
+  it('heals the layout after a container swap emptied the off-mount side', async () => {
     await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
     await redirect();
     await rm(off, { recursive: true, force: true });
-    await markers['pnpm-lock.yaml'](ws);
-
-    expect((await redirect()).links).toEqual([{ dir: ws, action: 'unlinked' }]);
-    expect(await absent(path.join(ws, 'node_modules'))).toBe(true);
-  });
-
-  it('keeps a real node_modules directory of a pnpm root', async () => {
-    await pkg(ws);
-    await markers['pnpm-lock.yaml'](ws);
-    await mkdir(path.join(ws, 'node_modules', '.bin'), { recursive: true });
 
     const res = await redirect();
 
-    expect(res.links).toEqual([{ dir: ws, action: 'skipped' }]);
-    expect((await lstat(path.join(ws, 'node_modules'))).isDirectory()).toBe(true);
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'kept' },
+    ]);
+    await expectEnginePnpmLayout(ws, 'root');
+  });
+
+  it('keeps an installation whose recorded configuration matches the engine', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await redirect();
+    await mkdir(path.join(ws, 'node_modules', '.bin'), { recursive: true });
+    await modulesYaml(ws);
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'kept' },
+    ]);
+    await expectEnginePnpmLayout(ws, 'root');
     expect((await stat(path.join(ws, 'node_modules', '.bin'))).isDirectory()).toBe(true);
+  });
+
+  it.each([
+    ['another content store', { storeDir: '/somewhere/else/v10' }],
+    ['a non-default virtual store', { virtualStoreDir: '/tmp/old-env-design/.pnpm' }],
+    ['no recorded store', { storeDir: '' }],
+  ])(
+    'purges an installation recorded against %s, so the next install needs no prompt',
+    async (_label, fields) => {
+      await pkg(ws);
+      await markers['pnpm-lock.yaml'](ws);
+      await mkdir(path.join(ws, 'node_modules', 'left-pad'), { recursive: true });
+      await modulesYaml(ws, fields);
+
+      const res = await redirect();
+
+      expect(res.links).toEqual([
+        { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'purged' },
+      ]);
+      await expectEnginePnpmLayout(ws, 'root');
+      expect(await absent(path.join(ws, 'node_modules', 'left-pad'))).toBe(true);
+      expect(await absent(path.join(ws, 'node_modules', '.modules.yaml'))).toBe(true);
+    },
+  );
+
+  it('accepts the plain-YAML .modules.yaml form of older pnpm versions', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(ws, 'node_modules'), { recursive: true });
+    await writeFile(
+      path.join(ws, 'node_modules', '.modules.yaml'),
+      `storeDir: ${path.join(store(), 'v10')}\nvirtualStoreDir: .pnpm\n`,
+    );
+
+    const res = await redirect();
+
+    expect(res.links[0].action).toBe('kept');
+  });
+
+  it('purges a directory another tool populated (no .modules.yaml)', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(ws, 'node_modules', 'left-pad'), { recursive: true });
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'purged' },
+    ]);
+    await expectEnginePnpmLayout(ws, 'root');
+    expect(await absent(path.join(ws, 'node_modules', 'left-pad'))).toBe(true);
+  });
+
+  it('replaces a real on-mount .pnpm directory from an install made before the redirect', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(ws, 'node_modules', '.pnpm', 'is-number@7.0.0'), { recursive: true });
+    await modulesYaml(ws);
+
+    const res = await redirect();
+
+    // The installation metadata matches, so the directory is kept — but the
+    // heavy .pnpm payload moves off the mount; pnpm reinstalls it silently.
+    expect(res.links).toEqual([
+      { dir: ws, target: path.join(off, 'root', '.pnpm'), action: 'kept' },
+    ]);
+    await expectEnginePnpmLayout(ws, 'root');
+  });
+
+  it('re-points a .pnpm link whose off-mount key changed', async () => {
+    await pkg(ws);
+    await markers['pnpm-lock.yaml'](ws);
+    await mkdir(path.join(ws, 'node_modules'), { recursive: true });
+    await mkdir(path.join(off, 'stale'), { recursive: true });
+    await createSymlink(path.join(off, 'stale'), path.join(ws, 'node_modules', '.pnpm'), 'dir');
+
+    const res = await redirect();
+
+    expect(res.links[0].action).toBe('kept');
+    await expectEnginePnpmLayout(ws, 'root');
   });
 
   it.each([
@@ -484,7 +592,7 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
     expect(await readlink(path.join(ws, 'node_modules'))).toBe(to());
   });
 
-  it('keys the virtual store by the directory of a nested pnpm root and leaves npm neighbours linked', async () => {
+  it('keys the .pnpm target by the directory of a nested pnpm root and leaves npm neighbours linked', async () => {
     await pkg(ws);
     const app = path.join(ws, 'apps', 'web');
     await pkg(app);
@@ -494,13 +602,10 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
 
     expect(res.links).toEqual([
       { dir: ws, target: path.join(off, 'root', 'node_modules'), action: 'created' },
-      { dir: app, action: 'skipped' },
+      { dir: app, target: path.join(off, 'apps__web', '.pnpm'), action: 'linked' },
     ]);
-    expect(await absent(path.join(app, 'node_modules'))).toBe(true);
-    expect(res.env).toEqual({
-      npm_config_store_dir: store(),
-      npm_config_virtual_store_dir: path.join(off, 'apps__web', '.pnpm'),
-    });
+    await expectEnginePnpmLayout(app, 'apps__web');
+    expect(res.env).toEqual({ npm_config_store_dir: store() });
   });
 
   it('keeps the link of a workspace member that has no pnpm marker of its own', async () => {
@@ -511,12 +616,12 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
 
     const res = await redirect();
 
-    expect(res.links.map((l) => l.action)).toEqual(['skipped', 'created']);
+    expect(res.links.map((l) => l.action)).toEqual(['linked', 'created']);
     expect((await lstat(path.join(member, 'node_modules'))).isSymbolicLink()).toBe(true);
-    expect(res.env.npm_config_virtual_store_dir).toBe(path.join(off, 'root', '.pnpm'));
+    await expectEnginePnpmLayout(ws, 'root');
   });
 
-  it('shares the store but sets no virtual store when the workspace has two pnpm roots', async () => {
+  it('gives each of two pnpm roots its own off-mount .pnpm and shares the store', async () => {
     const first = path.join(ws, 'owner', 'first');
     const second = path.join(ws, 'owner', 'second');
     await pkg(first);
@@ -526,11 +631,38 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
 
     const res = await redirect();
 
-    expect(res.links.map((l) => l.action)).toEqual(['skipped', 'skipped']);
+    expect(res.links).toEqual([
+      { dir: first, target: path.join(off, 'owner__first', '.pnpm'), action: 'linked' },
+      { dir: second, target: path.join(off, 'owner__second', '.pnpm'), action: 'linked' },
+    ]);
+    await expectEnginePnpmLayout(first, 'owner__first');
+    await expectEnginePnpmLayout(second, 'owner__second');
     expect(res.env).toEqual({ npm_config_store_dir: store() });
   });
 
-  it('reports a link it cannot remove as a failure and still sets the environment', async () => {
+  it('keeps the first root installed when a workspace gains a second pnpm root', async () => {
+    const first = path.join(ws, 'owner', 'first');
+    const second = path.join(ws, 'owner', 'second');
+    await pkg(first);
+    await markers['pnpm-lock.yaml'](first);
+    await redirect();
+    // An install happened in the first root…
+    await mkdir(path.join(first, 'node_modules', '.bin'), { recursive: true });
+    await modulesYaml(first);
+    // …then the workspace gains a second pnpm root between stages.
+    await pkg(second);
+    await markers['a pnpm packageManager field'](second);
+
+    const res = await redirect();
+
+    expect(res.links).toEqual([
+      { dir: first, target: path.join(off, 'owner__first', '.pnpm'), action: 'kept' },
+      { dir: second, target: path.join(off, 'owner__second', '.pnpm'), action: 'linked' },
+    ]);
+    expect((await stat(path.join(first, 'node_modules', '.bin'))).isDirectory()).toBe(true);
+  });
+
+  it('reports a root it cannot prepare as a failure and still sets the environment', async () => {
     await pkg(ws);
     await redirect();
     await markers['pnpm-lock.yaml'](ws);
@@ -548,9 +680,6 @@ describe('redirectHeavyDirs — pnpm install roots', () => {
     });
 
     expect(res.links).toEqual([{ dir: ws, action: 'failed', detail: 'EACCES boom' }]);
-    expect(res.env).toEqual({
-      npm_config_store_dir: store(),
-      npm_config_virtual_store_dir: path.join(off, 'root', '.pnpm'),
-    });
+    expect(res.env).toEqual({ npm_config_store_dir: store() });
   });
 });

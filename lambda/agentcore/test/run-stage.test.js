@@ -5823,11 +5823,10 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
   });
 
   // A pnpm install root keeps a real node_modules; the redirect then reports
-  // where pnpm's stores go, and every CLI the stage spawns has to carry it.
-  const PNPM_ENV = {
-    npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store',
-    npm_config_virtual_store_dir: '/tmp/aidlc-node-modules/root/.pnpm',
-  };
+  // where pnpm's content store goes, and every CLI the stage spawns has to
+  // carry it. (The virtual store is engine-owned as a node_modules/.pnpm link,
+  // never environment.)
+  const PNPM_ENV = { npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store' };
   const reviewedStage = () => {
     const lib = library();
     lib.stagesById['requirements-analysis'].reviewer = 'aidlc-reviewer-agent';

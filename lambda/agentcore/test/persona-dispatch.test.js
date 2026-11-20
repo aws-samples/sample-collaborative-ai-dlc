@@ -359,11 +359,8 @@ describe('dispatchPersona — redirect environment', () => {
     return seen[0];
   };
 
-  it('adds the pnpm store locations to the off-mount cache environment', async () => {
-    const redirectEnv = {
-      npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store',
-      npm_config_virtual_store_dir: '/tmp/aidlc-node-modules/root/.pnpm',
-    };
+  it('adds the pnpm store location to the off-mount cache environment', async () => {
+    const redirectEnv = { npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store' };
     expect(await envOf({ redirectEnv })).toMatchObject({
       npm_config_cache: '/tmp/aidlc-cache/npm',
       ...redirectEnv,
