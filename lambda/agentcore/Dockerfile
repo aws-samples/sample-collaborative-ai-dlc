@@ -94,9 +94,9 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x64 sha="$BUN_SHA256_AMD64"; else 
 # `uvx mcp-server-fetch`). Custom MCP servers configured per-project/globally
 # may reference it, and the mcp-validator allows `uv`/`uvx` as bare commands, so
 # the binaries must be on PATH.
-ARG UV_VERSION=0.12.6
-ARG UV_SHA256_ARM64=d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
-ARG UV_SHA256_AMD64=8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+ARG UV_VERSION=0.13.9
+ARG UV_SHA256_ARM64=0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d
+ARG UV_SHA256_AMD64=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
 RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$UV_SHA256_AMD64"; else arch=aarch64 sha="$UV_SHA256_ARM64"; fi \
     && mkdir -p /opt/uv/bin \
     && curl -fsSLo /tmp/uv.tar.gz \
