@@ -7,7 +7,7 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
-FROM public.ecr.aws/docker/library/node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+FROM public.ecr.aws/docker/library/node:24.22.3-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
 
 # Security updates first: the pinned base can lag Debian's security fixes.
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
@@ -113,9 +113,11 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$UV_SHA256_AMD64"; els
 # MarkItDown — agents can extract PDF, DOCX, and XLSX content on demand with
 # one CLI. Keep its format dependencies isolated from system Python and omit
 # the optional cloud, audio, and other document converters.
+# soupsieve (via beautifulsoup4) needs >= 4.0 for its security fixes; it
+# requires Python >= 3.11.5, which Debian 13's python3 provides.
 ARG MARKITDOWN_VERSION=0.1.8
 RUN uv venv --python /usr/bin/python3 /opt/markitdown \
-    && uv pip install --python /opt/markitdown/bin/python --no-cache "markitdown[pdf,docx,xlsx]==${MARKITDOWN_VERSION}" \
+    && uv pip install --python /opt/markitdown/bin/python --no-cache "markitdown[pdf,docx,xlsx]==${MARKITDOWN_VERSION}" "soupsieve>=4.0" \
     && ln -s /opt/markitdown/bin/markitdown /usr/local/bin/markitdown
 
 # Pre-create the application directories before COPY --chmod writes into them.
