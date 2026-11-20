@@ -84,8 +84,8 @@ describe('fixed-tool environment recipes', () => {
   it('seeds only the protected Standard environment', () => {
     expect(SYSTEM_ENVIRONMENT_TEMPLATES.map((item) => item.id)).toEqual(['standard']);
     expect(SYSTEM_ENVIRONMENT_TEMPLATES[0].recipe.tools).toEqual({
-      node: { version: '24.15.0', source: 'base' },
-      python: { version: '3.11', source: 'base' },
+      node: { version: '24.22.3', source: 'base' },
+      python: { version: '3.13', source: 'base' },
     });
   });
 
@@ -215,7 +215,9 @@ describe('fixed-tool environment recipes', () => {
   it('stages the Rust installer outside its final prefix', () => {
     const dockerfile = generateDockerfile(recipe({ tools: { rust: RUST } }));
 
-    expect(dockerfile).toContain('apt-get install -y --no-install-recommends build-essential=12.9');
+    expect(dockerfile).toContain(
+      'apt-get install -y --no-install-recommends build-essential=12.12',
+    );
     expect(dockerfile).toContain(
       "'/tmp/managed-rust-1.89.0/install.sh' --prefix='/opt/managed/tools/rust/1.89.0'",
     );
