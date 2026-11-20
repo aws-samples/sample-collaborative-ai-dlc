@@ -14,7 +14,7 @@ import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
-import { executionMetaKey } from '../shared/v2-process-keys.js';
+import { executionMetaKey, humanTaskKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
   getBinding,
@@ -49,6 +49,26 @@ const AUTHORITY_ERROR_CODES = new Set([
   'GATEWAY_GRANT_RETIRED',
   'GATEWAY_GRANT_RETIREMENT_UNAVAILABLE',
 ]);
+
+// The engine commits and pushes at EVERY stage exit, including park: a gate on
+// a non-lane stage flips META to WAITING before the CLI exits, so the park-exit
+// push (and its committer-identity resolve) arrives while the execution is
+// already parked. Serve exactly that window: a verified, unretired stage grant
+// whose attempt owns the very gate the execution is parked on. Anything else —
+// no grant (legacy runtimes), another attempt's grant, an engine gate, a
+// cleared pointer, or any non-WAITING status — keeps the strict rule.
+const parkedStageWindowAllows = async ({ grant, execution, executionId, ddbClient, env }) => {
+  if (grant?.mode !== 'stage' || !grant.stageCallbackId) return false;
+  if (execution.status !== 'WAITING' || !execution.pendingHumanTaskId) return false;
+  const { Item: gate } = await ddbClient.send(
+    new GetCommand({
+      TableName: env.V2_PROCESS_TABLE,
+      Key: humanTaskKey(executionId, execution.pendingHumanTaskId),
+      ConsistentRead: true,
+    }),
+  );
+  return Boolean(gate) && gate.stageCallbackId === grant.stageCallbackId;
+};
 
 const authorizeCredentialRequest = async (
   request,
@@ -102,7 +122,10 @@ const authorizeCredentialRequest = async (
       code: 'EXECUTION_NOT_FOUND',
     });
   }
-  if (!CREDENTIAL_ACTIVE_EXECUTION_STATUSES.has(execution.status)) {
+  if (
+    !CREDENTIAL_ACTIVE_EXECUTION_STATUSES.has(execution.status) &&
+    !(await parkedStageWindowAllows({ grant, execution, executionId, ddbClient, env }))
+  ) {
     throw Object.assign(new Error('Execution is not active'), {
       code: 'EXECUTION_NOT_ACTIVE',
     });

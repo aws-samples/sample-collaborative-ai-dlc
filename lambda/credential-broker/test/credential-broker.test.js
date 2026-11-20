@@ -59,7 +59,9 @@ describe('credential broker authorization', () => {
     }
   });
 
-  it.each(['DRAFT', 'FAILED', 'CANCELLED', 'SUCCEEDED'])(
+  // WAITING included: without a verified stage grant for the parked attempt
+  // (the legacy request shape carries none) there is no park-exit push window.
+  it.each(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED'])(
     'denies credential resolution for terminal/inactive status %s',
     async (status) => {
       ddbMock.on(GetCommand, { TableName: 'process' }).resolves({
