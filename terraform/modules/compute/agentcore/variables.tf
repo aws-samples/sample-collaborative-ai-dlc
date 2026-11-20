@@ -107,6 +107,12 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "review_cross_unit_findings" {
+  description = "How a unit lane's reviewer treats other units' findings: \"blocking\" or \"advisory\""
+  type        = string
+  default     = "blocking"
+}
+
 variable "bedrock_model" {
   description = "Default Bedrock inference profile id for stage agents"
   type        = string

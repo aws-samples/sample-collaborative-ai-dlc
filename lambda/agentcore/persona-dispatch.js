@@ -186,6 +186,7 @@ export const dispatchPersona = async ({
     policy = null,
     checkpointOwner: ownerRequested = true,
     canAsk: askRequested = true,
+    crossUnitFindings = false,
   } = personaScope ?? {};
   // Capped by what this MCP role really registers, so the prompt built below and
   // the trusted scope the MCP session reads cannot disagree.
@@ -214,6 +215,8 @@ export const dispatchPersona = async ({
       // hallucinated or omitted name can no longer detach the verdict from
       // the round that ran.
       ...(mcpRole === 'reviewer' ? { reviewerAgent: agentRef } : {}),
+      // A unit-lane reviewer that may record other units' findings separately.
+      ...(mcpRole === 'reviewer' && crossUnitFindings === true ? { crossUnitFindings: true } : {}),
       // The author-side twin of `reviewerAgent`: the trusted identity of the
       // persona whose session this is. graph-writer pins a `contribution`'s
       // collaborator to it, so one support can no longer write another's

@@ -99,6 +99,14 @@ describe('gateway context codec', () => {
     expect(decode(contextFor().headers).scope.describeChanges).toBe(false);
   });
 
+  it('carries the lane reviewer crossUnitFindings flag through the context', () => {
+    const reviewer = { ...session, role: 'reviewer', reviewerAgent: 'reviewer-1' };
+    const { headers } = contextFor(grantFor(), { ...reviewer, crossUnitFindings: true });
+    expect(rawPayload(headers).asserted.crossUnitFindings).toBe(true);
+    expect(decode(headers).scope.crossUnitFindings).toBe(true);
+    expect(decode(contextFor(grantFor(), reviewer).headers).scope.crossUnitFindings).toBe(false);
+  });
+
   it('round-trips an intent-level discussion reader without a policy', () => {
     const grant = grantFor({
       mode: 'discussion',

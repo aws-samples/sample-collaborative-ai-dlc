@@ -104,7 +104,10 @@ export const createToolGateway = ({
     if (!toolAllowedForContext(context, AIDLC_TARGET, tool)) {
       throw new ToolAccessDenied('tool_not_allowed_for_role', auditScope);
     }
-    const parsed = z.object(toolSchemas(z, scope.policy)[tool].shape).safeParse(args);
+    const schemas = toolSchemas(z, scope.policy, {
+      crossUnitFindings: role === 'reviewer' && scope.crossUnitFindings === true,
+    });
+    const parsed = z.object(schemas[tool].shape).safeParse(args);
     if (!parsed.success) throw new ToolAccessDenied('invalid_arguments', auditScope);
     if (scope.unitSlug && parsed.data.unitSlug && parsed.data.unitSlug !== scope.unitSlug) {
       throw new ToolAccessDenied('lane_outside_grant', auditScope);
