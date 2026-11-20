@@ -65,6 +65,9 @@ export function StageEditModal({
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<StagePermissions | null>(null);
+  // The block as loaded: saving it creates a new version shared by every
+  // workflow, so it is only saved when one of its own fields changed.
+  const [loadedBlock, setLoadedBlock] = useState<{ name: string; form: StageForm } | null>(null);
 
   useEffect(() => {
     if (!stageId) return;
@@ -93,6 +96,7 @@ export function StageEditModal({
           ...rest
         } = block;
         setForm(rest as StageForm);
+        setLoadedBlock({ name: block.name, form: rest as StageForm });
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load stage'))
       .finally(() => setLoading(false));
@@ -131,10 +135,16 @@ export function StageEditModal({
         responsibilities &&
         !responsibilities.readOnly &&
         permissions !== responsibilities.permissions;
-      await blocksService.update('stage', stageId, {
-        name: stageName,
-        ...form,
-      });
+      const blockChanged =
+        !loadedBlock ||
+        stageName !== loadedBlock.name ||
+        JSON.stringify(form) !== JSON.stringify(loadedBlock.form);
+      if (blockChanged) {
+        await blocksService.update('stage', stageId, {
+          name: stageName,
+          ...form,
+        });
+      }
       if (responsibilitiesChanged) await responsibilities.onSave(permissions);
       onSaved();
       onClose();

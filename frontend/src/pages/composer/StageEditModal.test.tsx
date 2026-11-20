@@ -89,7 +89,7 @@ beforeEach(() => {
 });
 
 describe('StageEditModal stage provenance', () => {
-  it('edits and saves responsibilities when the underlying custom block is editable', async () => {
+  it('saves only the placement when its responsibilities are the only change', async () => {
     const blockPermissions = { decisionMakerRoles: ['developer'], contributorRoles: [] };
     get.mockResolvedValue(stageBlock({ permissions: blockPermissions }));
     update.mockResolvedValue({});
@@ -112,12 +112,42 @@ describe('StageEditModal stage provenance', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['architect'] };
+    // A new block version would be shared by every workflow and could replace
+    // another author's edit, so an unchanged block is not saved.
+    expect(update).not.toHaveBeenCalled();
+    expect(saveResponsibilities).toHaveBeenCalledWith(permissions);
+  });
+
+  it('saves the block and the placement when both change', async () => {
+    get.mockResolvedValue(stageBlock({ phase: 'mine' }));
+    update.mockResolvedValue({});
+    const saveResponsibilities = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const { onSaved } = renderModal({
+      responsibilities: {
+        permissions: null,
+        roles: [{ id: 'architect', name: 'Architect' }],
+        readOnly: false,
+        onSave: saveResponsibilities,
+      },
+    });
+    const phase = await screen.findByPlaceholderText('ideation');
+    await waitFor(() => expect(phase).toBeEnabled());
+    await user.clear(phase);
+    await user.type(phase, 'construction');
+    await user.click(screen.getByRole('tab', { name: 'Responsibilities' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(update).toHaveBeenCalledWith(
       'stage',
       'requirements',
-      expect.objectContaining({ permissions: blockPermissions }),
+      expect.objectContaining({ phase: 'construction' }),
     );
-    expect(saveResponsibilities).toHaveBeenCalledWith(permissions);
+    expect(saveResponsibilities).toHaveBeenCalledWith({
+      decisionMakerRoles: ['architect'],
+      contributorRoles: [],
+    });
   });
 
   it('keeps placement responsibilities locked in a read-only workflow while saving other block fields', async () => {
@@ -205,12 +235,14 @@ describe('StageEditModal stage provenance', () => {
     expect(phase).toHaveValue('mine');
     expect(releaseBlock).not.toHaveBeenCalled();
     await waitFor(() => expect(phase).toBeEnabled());
+    await user.clear(phase);
+    await user.type(phase, 'mine too');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(update).toHaveBeenCalledWith(
       'stage',
       'requirements',
-      expect.objectContaining({ phase: 'mine' }),
+      expect.objectContaining({ phase: 'mine too' }),
     );
   });
 });
