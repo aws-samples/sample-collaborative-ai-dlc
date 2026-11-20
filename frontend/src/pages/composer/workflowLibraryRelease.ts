@@ -10,6 +10,7 @@ export interface WorkflowLibraryRelease {
   explicit: boolean;
   scopes: ReleaseBlock[];
   stages: ReleaseBlock[];
+  rules: ReleaseBlock[];
 }
 
 export async function loadWorkflowLibraryRelease(
@@ -19,8 +20,8 @@ export async function loadWorkflowLibraryRelease(
   if (workflowReadOnly) return null;
 
   const catalog = requestedRelease
-    ? await aidlcReleasesService.catalog(requestedRelease, ['scope', 'stage'])
-    : await aidlcReleasesService.stableCatalog(['scope', 'stage']);
+    ? await aidlcReleasesService.catalog(requestedRelease, ['scope', 'stage', 'rule'])
+    : await aidlcReleasesService.stableCatalog(['scope', 'stage', 'rule']);
   if (!catalog) return null;
 
   return {
@@ -29,5 +30,6 @@ export async function loadWorkflowLibraryRelease(
     explicit: Boolean(requestedRelease),
     scopes: (catalog.contents.blocks.scope ?? []) as ReleaseBlock[],
     stages: (catalog.contents.blocks.stage ?? []) as ReleaseBlock[],
+    rules: (catalog.contents.blocks.rule ?? []) as ReleaseBlock[],
   };
 }
