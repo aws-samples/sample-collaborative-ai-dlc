@@ -95,7 +95,7 @@ describe('system templates', () => {
         value: 'f2dc5418092c43003db8f9005c4a286e1c0104fea96ccdd49e8ebd037cac9219',
       },
     });
-    expect(x86('go').source.url).toBe('https://go.dev/dl/go1.24.6.linux-amd64.tar.gz');
+    expect(x86('go').source.url).toBe('https://go.dev/dl/go1.27.4.linux-amd64.tar.gz');
     expect(x86('rust').source.url).toContain('x86_64-unknown-linux-gnu');
     expect(x86('rust').installer.script).toContain('rust-std-x86_64-unknown-linux-gnu');
     expect(x86('rust').installer.script).not.toContain('aarch64');
