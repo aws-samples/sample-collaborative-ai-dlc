@@ -198,6 +198,44 @@ describe('resolveMcpSecrets — reserved-name guard (fail closed)', () => {
     }
   });
 
+  it('rejects every case variant of the npm env-config family', async () => {
+    // npm and pnpm read `npm_config_*` configuration from the environment in ANY
+    // case, and pnpm prefers the uppercase form — `${NPM_CONFIG_STORE_DIR}` would
+    // out-rank the engine's npm_config_store_dir (the node_modules redirect) in
+    // the flat child env and silently move pnpm's stores back onto the mount.
+    for (const name of [
+      'NPM_CONFIG_CACHE',
+      'NPM_CONFIG_STORE_DIR',
+      'NPM_CONFIG_VIRTUAL_STORE_DIR',
+      'Npm_Config_Store_Dir',
+      'npm_config_virtual_store_dir',
+    ]) {
+      await expect(
+        resolveMcpSecrets({
+          survivingGlobal: {},
+          survivingProject: { p: { command: 'npx', env: { X: `\${${name}}` } } },
+          globalPath,
+          projectPath,
+          getParam: getter({}),
+        }),
+      ).rejects.toThrow(/reserved/);
+    }
+  });
+
+  it('keeps uppercase-stored reservations exact-match: a lowercase variant resolves', async () => {
+    // pnpm reads PNPM_HOME (exact case) only — `pnpm_home` is an ordinary,
+    // harmless variable, so only the lowercase-stored npm-config family gets the
+    // case-insensitive treatment.
+    const { secretEnv } = await resolveMcpSecrets({
+      survivingGlobal: {},
+      survivingProject: { p: { command: 'npx', env: { K: '${pnpm_home}' } } },
+      globalPath,
+      projectPath,
+      getParam: getter({ '/p/env/projects/proj1/mcp-secrets/pnpm_home': 'ok' }),
+    });
+    expect(secretEnv).toEqual({ pnpm_home: 'ok' });
+  });
+
   it('honors an extra reservedEnvKeys extension supplied by the caller', async () => {
     await expect(
       resolveMcpSecrets({

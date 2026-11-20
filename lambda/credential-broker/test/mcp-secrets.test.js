@@ -267,6 +267,9 @@ describe('MCP broker stage security matrix', () => {
   });
   it.each([
     [{ global: {}, project: { p: server('AWS_SECRET_ACCESS_KEY') } }, 'MCP_SECRET_RESERVED'],
+    // Case variant of a reserved npm-config name — npm/pnpm read these env keys
+    // case-insensitively (pnpm prefers uppercase), so it is equally reserved.
+    [{ global: {}, project: { p: server('NPM_CONFIG_VIRTUAL_STORE_DIR') } }, 'MCP_SECRET_RESERVED'],
     [{ global: { g: server('SHARED') }, project: { p: server('SHARED') } }, 'MCP_SECRET_COLLISION'],
   ])('rejects policy failures before any secret read', async (mcpServersByTier, code) => {
     const deps = harness({ meta: { mcpServersByTier } });

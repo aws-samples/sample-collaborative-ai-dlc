@@ -510,6 +510,29 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     // itself retried once because it rewrote no stage output.
     expect(spawns.mock.calls.length).toBe(7);
   });
+
+  it('gives every persona session the pnpm store locations the redirect reports', async () => {
+    const { deps } = harness({
+      mode: 'mob',
+      supportRefs: ['aidlc-design-agent', 'aidlc-quality-agent'],
+      ...withGraph(),
+    });
+    const pnpmEnv = { npm_config_store_dir: '/tmp/aidlc-cache/pnpm-store' };
+    const envs = [];
+    deps.spawnFn = (_command, _args, options) => {
+      envs.push(options.env);
+      return okSpawn();
+    };
+    deps.ensureWorkspaceSource = async () => ({ restored: false, repos: [], failed: [] });
+    deps.redirectHeavyDirs = async () => ({ links: [], env: pnpmEnv });
+    await runStage(
+      { ...baseArgs, methodologyRelease: RELEASE_PIN, repos: ['owner/repo'], branch: 'aidlc/i1' },
+      deps,
+    );
+    // The lead and each persona session after it.
+    expect(envs.length).toBeGreaterThan(1);
+    for (const env of envs) expect(env).toMatchObject(pnpmEnv);
+  });
   // No support, and no integrator without a judgment call to raise, can ask the
   // human: nothing threads an answer back into those sessions, so a park there
   // would orphan a gate and re-ask on every resume.
