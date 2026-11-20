@@ -19,6 +19,24 @@ if (mode && !deletionProtectionOnly) {
   process.exit(2);
 }
 
+// An old absolute Yjs context is a bridge for a no-op on persisted state.
+// A real build must read this checkout, including when applying a saved plan.
+const legacyYjsContext = plan.variables?.yjs_legacy_build_context?.value;
+if (
+  legacyYjsContext &&
+  plan.resource_changes?.some(
+    (change) =>
+      change.address === 'module.yjs_server.module.yjs_docker_build.docker_image.this' &&
+      change.change.actions.includes('create') &&
+      change.change.after?.build?.some((build) => build.context === legacyYjsContext),
+  )
+) {
+  console.error(
+    'A Yjs build is required. Remove yjs_legacy_build_context and plan from the current checkout.',
+  );
+  process.exit(1);
+}
+
 const protectedTypes = new Set([
   'aws_cognito_user_pool',
   'aws_neptune_cluster',

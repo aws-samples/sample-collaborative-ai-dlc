@@ -83,6 +83,9 @@ jobs:
       - name: Native owner policies and admission drain (mock providers)
         run: terraform test -filter=tests/native-architecture.tftest.hcl -filter=tests/native-package-repair.tftest.hcl
 
+      - name: AgentCore ARM64 image publication tests (mock provider)
+        run: terraform test -filter=tests/qualified-arm64-image.tftest.hcl
+
       - name: Yjs configuration tests (mock providers)
         run: terraform test -filter=tests/yjs.tftest.hcl
 

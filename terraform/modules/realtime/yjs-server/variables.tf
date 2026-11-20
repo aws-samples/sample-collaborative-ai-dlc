@@ -110,6 +110,16 @@ variable "aws_region" {
   type        = string
 }
 
+variable "yjs_legacy_build_context" {
+  description = "Previously persisted absolute Yjs source directory. Reuse it only for identical inputs while that legacy image is held. New builds use checkout-relative paths."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.yjs_legacy_build_context == null ? true : startswith(var.yjs_legacy_build_context, "/")
+    error_message = "The legacy Yjs context must be the absolute path held by the existing Docker build."
+  }
+}
+
 variable "docker_build_args" {
   description = "Optional arguments passed to the Yjs server Docker build"
   type        = map(string)

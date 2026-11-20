@@ -51,7 +51,7 @@ provider "docker" {
 
 # Calculate hash of all source files for change detection
 locals {
-  yjs_source_path = abspath("${path.module}/../../../../lambda/yjs-server")
+  yjs_source_path = "${path.module}/../../../../lambda/yjs-server"
 
   path_include = ["**"]
   path_exclude = ["**/node_modules/**", "**/.git/**"]
@@ -60,7 +60,25 @@ locals {
   yjs_files_exclude = setunion([for f in local.path_exclude : fileset(local.yjs_source_path, f)]...)
   yjs_files         = sort(setsubtract(local.yjs_files_include, local.yjs_files_exclude))
   yjs_files_sha     = sha1(join("", [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")]))
-  yjs_image_tag     = substr(local.yjs_files_sha, 0, 16)
+
+  # Older states hold an absolute context and Dockerfile. A matching legacy
+  # tree keeps those provider fields stable until a genuine build is needed.
+  legacy_path = var.yjs_legacy_build_context
+  legacy_files = local.legacy_path == null ? [] : sort(setsubtract(
+    fileset(local.legacy_path, "**"),
+    setunion([for f in local.path_exclude : fileset(local.legacy_path, f)]...)
+  ))
+  legacy_matches = local.legacy_files == local.yjs_files && local.legacy_path != null ? alltrue([
+    for f in local.yjs_files : filesha256("${local.legacy_path}/${f}") == filesha256("${local.yjs_source_path}/${f}")
+  ]) : false
+  yjs_build_path = local.legacy_matches ? local.legacy_path : local.yjs_source_path
+  # Preserve the installed tag for default arguments and for legacy no-ops.
+  # When building with overrides, the ECS image reference must change with them.
+  yjs_build_sha = (
+    local.legacy_matches || nonsensitive(length(var.docker_build_args)) == 0 ? local.yjs_files_sha :
+    nonsensitive(sha1("${local.yjs_files_sha}:${sha256(jsonencode(var.docker_build_args))}"))
+  )
+  yjs_image_tag = substr(local.yjs_build_sha, 0, 16)
 }
 
 # ECR Repository
@@ -110,8 +128,8 @@ module "yjs_docker_build" {
   # never run concurrently (parallel kreuzwerker provider builds deadlock).
   # It can never change the tag or trigger a rebuild.
   image_tag        = "${local.yjs_image_tag}${substr(var.build_after, 0, 0)}"
-  source_path      = local.yjs_source_path
-  docker_file_path = "${local.yjs_source_path}/Dockerfile"
+  source_path      = local.yjs_build_path
+  docker_file_path = "${local.yjs_build_path}/Dockerfile"
   platform         = "linux/amd64"
   # BuildKit session path instead of the provider's legacy tar.gz streaming —
   # see the agents module for rationale.

@@ -236,27 +236,38 @@ removed {
   }
 }
 
-module "agentcore_image_build" {
-  source     = "terraform-aws-modules/lambda/aws//modules/docker-build"
-  version    = "~> 8.0"
-  depends_on = [terraform_data.native_probe_configuration]
-
-  create_ecr_repo = false
-  ecr_repo        = aws_ecr_repository.agentcore.name
-  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
-
-  use_image_tag    = true
-  keep_remotely    = true
-  image_tag        = local.agentcore_image_tag
-  source_path      = local.agentcore_source_path
-  docker_file_path = "${local.agentcore_source_path}/agentcore/Dockerfile"
-  # AgentCore Runtime runs arm64 only.
-  platform = "linux/arm64"
-  builder  = "default"
-  build_args = merge(var.docker_build_args, {
+locals {
+  agentcore_build_args = merge(var.docker_build_args, {
     ENABLE_NATIVE_INTERACTION_PROBE = tostring(var.enable_native_interaction_probe)
   })
+}
 
+data "external" "qualified_arm64" {
+  count   = var.native_image_qualification == null ? 0 : 1
+  program = ["node", "${local.agentcore_source_path}/../scripts/qualified-arm64-image.mjs"]
+  query = {
+    receipt     = var.native_image_qualification.path
+    sha256      = var.native_image_qualification.sha256
+    source_path = local.agentcore_source_path
+    source_sha  = local.agentcore_files_sha
+    source_tag  = local.agentcore_image_tag
+  }
+  lifecycle {
+    precondition {
+      condition     = tomap(jsondecode(file(var.native_image_qualification.path)).build.args) == tomap(local.agentcore_build_args)
+      error_message = "Effective Docker build arguments differ from the qualified ARM64 build."
+    }
+  }
+}
+
+module "agentcore_image_build" {
+  source     = "./image-build"
+  depends_on = [terraform_data.native_probe_configuration]
+
+  name        = "${aws_ecr_repository.agentcore.repository_url}:${local.agentcore_image_tag}"
+  source_path = local.agentcore_source_path
+  build_args  = local.agentcore_build_args
+  qualified   = one(data.external.qualified_arm64[*].result)
   triggers = {
     dir_sha                  = local.agentcore_files_sha
     native_interaction_probe = tostring(var.enable_native_interaction_probe)
@@ -268,6 +279,12 @@ data "aws_ecr_image" "agentcore" {
   image_tag       = local.agentcore_image_tag
 
   depends_on = [module.agentcore_image_build]
+  lifecycle {
+    postcondition {
+      condition     = var.native_image_qualification == null ? true : self.image_digest == data.external.qualified_arm64[0].result.index
+      error_message = "The AgentCore source tag in ECR does not resolve to the qualified index."
+    }
+  }
 }
 
 # Lambda requires one platform manifest, while the runtime's published pin is
@@ -289,6 +306,12 @@ data "docker_registry_image_manifests" "native_engine" {
         contains(["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"], manifest.media_type)
       ]) == 1
       error_message = "The qualified runtime image must contain exactly one Linux ARM64 platform manifest."
+    }
+    postcondition {
+      condition = var.native_image_qualification == null ? true : contains([
+        for manifest in self.manifests : manifest.sha256_digest if manifest.os == "linux" && manifest.architecture == "arm64"
+      ], data.external.qualified_arm64[0].result.arm64)
+      error_message = "The Linux ARM64 manifest resolved from the published index differs from the qualification."
     }
   }
 }

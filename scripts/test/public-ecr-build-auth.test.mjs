@@ -237,7 +237,14 @@ test('active Terraform builders share config auth while refreshing private ECR p
       ([, builder]) =>
         /source\s+= "terraform-aws-modules\/lambda\/aws\/\/modules\/docker-build"/.test(builder),
     );
-    assert.equal(builders.length, file === 'compute/agentcore' ? 2 : 1);
+    assert.equal(builders.length, 1);
+    if (file === 'compute/agentcore') {
+      assert.match(source, /module "agentcore_image_build" \{\s+source\s+= "\.\/image-build"/);
+      assert.match(
+        readFileSync(join(root, 'terraform/modules', file, 'image-build/main.tf'), 'utf8'),
+        /builder\s+= "default"/,
+      );
+    }
     for (const [, builder] of builders) assert.match(builder, /builder\s+= "default"/);
   }
 });

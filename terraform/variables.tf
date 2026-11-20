@@ -134,6 +134,22 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "native_image_qualification" {
+  description = "Reviewed installed ARM64 qualification.json path and SHA-256. Keep this binding in the environment tfvars for repeat plans of this image. Null builds from source."
+  type        = object({ path = string, sha256 = string })
+  default     = null
+}
+
+variable "yjs_legacy_build_context" {
+  description = "Previously persisted absolute Yjs source directory. Reuse it only for identical inputs while that legacy image is held. New builds use checkout-relative paths."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.yjs_legacy_build_context == null ? true : startswith(var.yjs_legacy_build_context, "/")
+    error_message = "The legacy Yjs context must be the absolute path held by the existing Docker build."
+  }
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

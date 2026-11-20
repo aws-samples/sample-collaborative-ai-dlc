@@ -40,6 +40,12 @@ variable "aws_region" {
   type        = string
 }
 
+variable "native_image_qualification" {
+  description = "Reviewed installed ARM64 qualification.json path and SHA-256. Keep this binding in the environment tfvars for repeat plans of this image. Null builds from source."
+  type        = object({ path = string, sha256 = string })
+  default     = null
+}
+
 variable "docker_build_args" {
   description = "Optional arguments passed to the AgentCore Docker build"
   type        = map(string)

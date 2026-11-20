@@ -753,6 +753,7 @@ module "yjs_server" {
   powertools_service_name       = local.powertools_service_name
   powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
+  yjs_legacy_build_context      = var.yjs_legacy_build_context
   docker_build_args             = var.docker_build_args
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.private_subnet_ids
@@ -784,6 +785,7 @@ module "agentcore" {
   powertools_service_name         = local.powertools_service_name
   powertools_log_level            = var.powertools_log_level
   aws_region                      = var.aws_region
+  native_image_qualification      = var.native_image_qualification
   docker_build_args               = var.docker_build_args
   build_amd64_image               = var.enable_instances_compute
   enable_native_interaction_probe = var.enable_native_interaction_probe

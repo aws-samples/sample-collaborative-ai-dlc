@@ -48,6 +48,10 @@ variables {
 run "standalone_defaults" {
   command = plan
   assert {
+    condition     = !startswith(local.yjs_build_path, "/") && fileexists("${local.yjs_build_path}/Dockerfile")
+    error_message = "New Yjs builds must resolve this checkout's Dockerfile using a portable path."
+  }
+  assert {
     condition = contains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].environment, {
       name  = "AWS_SDK_UA_APP_ID"
       value = var.aws_sdk_ua_app_id
@@ -253,4 +257,32 @@ run "reject_automatic_mode_transition" {
   }
   variables { scaling = { cluster_enabled = true, mode_transition = true, autoscaling = { min_capacity = 2, max_capacity = 4 } } }
   expect_failures = [var.scaling]
+}
+
+run "matching_persisted_build_context" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  variables { yjs_legacy_build_context = abspath("../lambda/yjs-server") }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  assert {
+    condition     = local.yjs_build_path == var.yjs_legacy_build_context && local.yjs_image_tag == substr(local.yjs_files_sha, 0, 16)
+    error_message = "An unchanged legacy Yjs image must retain its persisted build path and source tag."
+  }
+}
+
+run "different_build_context" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  variables { yjs_legacy_build_context = abspath("tests/fixtures/lambda-packaging/src/lookup") }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  assert {
+    condition     = local.yjs_build_path == local.yjs_source_path && !startswith(local.yjs_build_path, "/")
+    error_message = "Different legacy inputs must select the current checkout."
+  }
 }
