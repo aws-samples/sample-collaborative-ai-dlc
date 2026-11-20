@@ -1,4 +1,6 @@
 import { api } from './api';
+import type { BusinessRole } from './projects';
+import type { StagePermissions } from './workflows';
 
 // The reusable building-blocks library. The backend key calls the owner a
 // tenant, but the product model is simpler: SYSTEM is the read-only imported
@@ -48,6 +50,7 @@ export interface Block {
   tenantId: string;
   name: string;
   description?: string;
+  permissions?: StagePermissions | null;
   version: number;
   readOnly: boolean;
   hasBody: boolean;
@@ -67,6 +70,7 @@ export interface BlockInput {
   id?: string;
   name: string;
   description?: string;
+  permissions?: StagePermissions | null;
   body?: string;
   // Optional executable script (SENSOR check). Stored in S3, separate from body.
   script?: string;
@@ -74,7 +78,8 @@ export interface BlockInput {
 }
 
 export const blocksService = {
-  list: (type: BlockType) => api.get<{ blocks: Block[] }>(`/blocks/${type}`),
+  list: (type: BlockType) =>
+    api.get<{ blocks: Block[]; businessRoles?: BusinessRole[] }>(`/blocks/${type}`),
   get: (type: BlockType, id: string) => api.get<Block>(`/blocks/${type}/${id}`),
   getBody: (type: BlockType, id: string) => api.get<{ body: string }>(`/blocks/${type}/${id}/body`),
   getScript: (type: BlockType, id: string) =>

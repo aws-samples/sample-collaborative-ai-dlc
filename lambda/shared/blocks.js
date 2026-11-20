@@ -10,6 +10,7 @@
 // bucket under blocks/bodies/sha256/<hash>, referenced by a `bodyRef` pointer.
 
 import { createHash } from 'node:crypto';
+import { normalizeStagePermissions } from './business-roles.js';
 
 // The block types that form the reusable library, named to match the AI-DLC
 // V2 source (awslabs/aidlc-workflows): a STAGE is the atomic unit of work, a
@@ -192,6 +193,13 @@ const USER_STAGE_MODES = STAGE_MODES.filter((mode) => mode !== 'pipeline' && mod
 const validateTypeFields = (type, input) => {
   const errors = [];
   if (type === 'STAGE') {
+    if (input.permissions != null) {
+      try {
+        normalizeStagePermissions(input.permissions);
+      } catch (error) {
+        errors.push(error.message);
+      }
+    }
     // mode is optional on input (the editor may omit it), but if present it
     // must be one of V2's known values — guards the reserved `agent-team`.
     if (input.mode != null && !STAGE_MODES.includes(input.mode)) {

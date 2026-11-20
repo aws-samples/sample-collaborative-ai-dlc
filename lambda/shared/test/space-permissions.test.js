@@ -1,9 +1,77 @@
 import { readFileSync } from 'node:fs';
 import { validate } from '@cedar-policy/cedar-wasm/nodejs';
+import * as cedar from '@cedar-policy/cedar-wasm/nodejs';
 import { describe, expect, it, vi } from 'vitest';
-import { SPACE_POLICY_URL, spacePermissions, fetchSpacePermissions } from '../space-permissions.js';
+import {
+  SPACE_POLICY_URL,
+  spacePermissions,
+  fetchSpacePermissions,
+  createCedarPolicyEvaluator,
+} from '../space-permissions.js';
 import { membershipStore } from '../space-membership.js';
 import { realtimePermissions } from '../realtime-permissions.js';
+
+vi.mock('@cedar-policy/cedar-wasm/nodejs', async (original) => {
+  const actual = await original();
+  return { ...actual, preparsePolicySet: vi.fn(actual.preparsePolicySet) };
+});
+
+describe('prepared Cedar evaluation', () => {
+  const request = (userId) => ({
+    principal: { type: 'User', id: userId },
+    action: { type: 'Action', id: 'decide' },
+    resource: { type: 'Stage', id: 'requirements-analysis' },
+    context: {},
+    entities: [],
+  });
+
+  it('parses a policy once for many members and still evaluates each identity', () => {
+    const parse = vi.spyOn(cedar, 'preparsePolicySet');
+    const policies = 'permit(principal == User::"cache-test-one", action, resource);';
+    try {
+      const evaluate = createCedarPolicyEvaluator(policies);
+      for (let i = 0; i < 100; i++) expect(evaluate(request(`other-${i}`))).toBe(false);
+      expect(evaluate(request('cache-test-one'))).toBe(true);
+      expect(createCedarPolicyEvaluator(policies)(request('other'))).toBe(false);
+      expect(parse).toHaveBeenCalledTimes(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('reuses one bounded slot across workflow changes without using another policy or stale allows', () => {
+    const parse = vi.spyOn(cedar, 'preparsePolicySet');
+    try {
+      const first = createCedarPolicyEvaluator(
+        'permit(principal == User::"first", action, resource);',
+      );
+      const second = createCedarPolicyEvaluator(
+        'permit(principal == User::"second", action, resource);',
+      );
+      expect(first(request('first'))).toBe(true);
+      expect(first(request('second'))).toBe(false);
+      expect(second(request('first'))).toBe(false);
+      expect(second(request('second'))).toBe(true);
+      expect(() => createCedarPolicyEvaluator('broken Cedar')).toThrow(
+        'Cedar policy parsing failed',
+      );
+      expect(() => createCedarPolicyEvaluator(undefined)).toThrow('Cedar policy parsing failed');
+      expect(() => createCedarPolicyEvaluator('')).toThrow('Cedar policy parsing failed');
+      expect(first(request('first'))).toBe(true);
+      expect(first(request('second'))).toBe(false);
+      expect(new Set(parse.mock.calls.map(([id]) => id)).size).toBe(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('propagates authorization diagnostics instead of returning eligible people', () => {
+    const evaluate = createCedarPolicyEvaluator(
+      'permit(principal, action, resource) when { principal.missing };',
+    );
+    expect(() => evaluate(request('member'))).toThrow('Cedar permission evaluation failed');
+  });
+});
 
 describe('Cedar space permissions', () => {
   it('validates the shipped policy against its schema', () => {

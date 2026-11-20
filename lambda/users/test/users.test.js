@@ -84,6 +84,23 @@ const request = (method, { actor = 'owner', userId, data, query, route = 'member
   });
 
 describe('space member API', () => {
+  it('allows current Viewers to read responsibilities and denies outsiders before loading them', async () => {
+    const previewModule = await import('../stage-responsibilities.js');
+    const preview = vi
+      .spyOn(previewModule, 'getStageResponsibilities')
+      .mockResolvedValue({ previewOnly: true, stages: [] });
+    await seedMembership(projectId, 'viewer', 'viewer');
+    const response = await request('GET', { actor: 'viewer', route: 'stage-responsibilities' });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).previewOnly).toBe(true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(
+      (await request('GET', { actor: 'outsider', route: 'stage-responsibilities' })).statusCode,
+    ).toBe(403);
+    expect((await request('POST', { route: 'stage-responsibilities' })).statusCode).toBe(405);
+    expect(preview).toHaveBeenCalledTimes(1);
+  });
+
   it('lists the shared catalog and assignments for Members but only allows Owners to change them', async () => {
     await seedMembership(projectId, 'member', 'member');
     const route = 'members/member/business-roles';

@@ -34,7 +34,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Building2, Pencil, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
+import {
+  Building2,
+  Pencil,
+  Plus,
+  Trash2,
+  UserKey,
+  UserRound,
+  Users,
+  X,
+  XCircle,
+} from 'lucide-react';
 import {
   projectsService,
   type AssignableUser,
@@ -44,6 +54,7 @@ import {
 } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { businessRoleIcon } from './businessRoleIcons';
+import { StageResponsibilitiesTable } from '@/components/stage-responsibilities/StageResponsibilitiesTable';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -102,6 +113,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
   const [draftExcluded, setDraftExcluded] = useState<string[]>([]);
   const [savingRoles, setSavingRoles] = useState(false);
   const [rolesError, setRolesError] = useState<string | null>(null);
+  const [responsibilitiesVersion, setResponsibilitiesVersion] = useState(0);
 
   // Add member dialog
   const [showAddMember, setShowAddMember] = useState(false);
@@ -185,11 +197,13 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     setAddingMember(true);
     try {
-      await projectsService.addMember(projectId, {
+      const added = await projectsService.addMember(projectId, {
         userId: selectedUser.userId,
         email: selectedUser.email,
         role: newMemberRole,
       });
+      setMembers((current) => [...current, added]);
+      setResponsibilitiesVersion((version) => version + 1);
       setShowAddMember(false);
       setSelectedUser(null);
       setUserSearch('');
@@ -206,6 +220,10 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     try {
       await projectsService.updateMemberRole(projectId, userId, newRole);
+      setMembers((current) =>
+        current.map((member) => (member.userId === userId ? { ...member, role: newRole } : member)),
+      );
+      setResponsibilitiesVersion((version) => version + 1);
       setConfirmRoleChange(null);
       await load();
     } catch (err) {
@@ -217,6 +235,8 @@ function MembersTabContent({ projectId, userRole }: Props) {
     setError(null);
     try {
       await projectsService.removeMember(projectId, userId);
+      setMembers((current) => current.filter((member) => member.userId !== userId));
+      setResponsibilitiesVersion((version) => version + 1);
       setConfirmRemove(null);
       await load();
     } catch (err) {
@@ -235,6 +255,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
     if (!editingMember || !canManageMembers || savingRoles) return;
     setSavingRoles(true);
     setRolesError(null);
+    let memberChanged = false;
     // Local additions and SSO exclusions are separate contracts with separate
     // audit entries, so the save issues one request per changed list.
     try {
@@ -246,6 +267,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
             draftRoles,
           ),
         );
+        memberChanged = true;
       }
       if (!sameRoles(draftExcluded, editingMember.excludedRoles || [])) {
         applyUpdatedMember(
@@ -255,31 +277,60 @@ function MembersTabContent({ projectId, userRole }: Props) {
             draftExcluded,
           ),
         );
+        memberChanged = true;
       }
       setEditingMember(null);
     } catch (err) {
       setRolesError(err instanceof Error ? err.message : 'Failed to save business roles');
       await load();
     } finally {
+      if (memberChanged) setResponsibilitiesVersion((version) => version + 1);
       setSavingRoles(false);
     }
   };
 
   const roleName = (id: string) => businessRoles.find((role) => role.id === id)?.name || id;
-  const roleChips = (roles: string[]) =>
+  // Becoming a Viewer keeps business roles but stops them from applying, so
+  // the confirmation says so explicitly.
+  const viewerDemotionMessage = ({ userId, newRole }: { userId: string; newRole: ProjectRole }) => {
+    const member = members.find((candidate) => candidate.userId === userId);
+    if (newRole !== 'viewer' || !member || member.role === 'viewer') return null;
+    const roles = member.effectiveRoles ?? member.localRoles ?? [];
+    return `Viewers can read space content, questions, discussions, and history, but cannot decide or contribute to any stage.${
+      roles.length
+        ? ` Their business roles (${roles.map(roleName).join(', ')}) stay assigned and apply again if they become a Member or Owner.`
+        : ''
+    }`;
+  };
+  // A Viewer keeps their business roles, but they do not apply while the
+  // member is a Viewer: show them as inactive rather than hiding them.
+  const roleChips = (roles: string[], inactive = false) =>
     roles.length ? (
-      roles.map((id) => (
-        <Badge key={id} variant="outline" className="gap-1 bg-background text-xs font-normal">
-          <BusinessRoleIcon id={id} />
-          {roleName(id)}
-        </Badge>
-      ))
+      <>
+        {roles.map((id) => (
+          <Badge
+            key={id}
+            variant="outline"
+            className={
+              inactive
+                ? 'gap-1 border-dashed bg-background text-xs font-normal text-muted-foreground opacity-70'
+                : 'gap-1 bg-background text-xs font-normal'
+            }
+          >
+            <BusinessRoleIcon id={id} />
+            {roleName(id)}
+          </Badge>
+        ))}
+        {inactive && (
+          <span className="self-center text-xs text-muted-foreground">Inactive while Viewer</span>
+        )}
+      </>
     ) : (
       <span className="text-xs text-muted-foreground">No business roles</span>
     );
 
   return (
-    <>
+    <div className="space-y-6">
       <SettingsCard
         icon={<Users />}
         title="Members"
@@ -359,13 +410,19 @@ function MembersTabContent({ projectId, userRole }: Props) {
                             }}
                           >
                             <span className="flex flex-1 flex-wrap gap-1">
-                              {roleChips(member.effectiveRoles ?? member.localRoles ?? [])}
+                              {roleChips(
+                                member.effectiveRoles ?? member.localRoles ?? [],
+                                member.role === 'viewer',
+                              )}
                             </span>
                             <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
                           </button>
                         ) : (
                           <div className="flex flex-wrap gap-1 rounded-md bg-muted/50 p-2">
-                            {roleChips(member.effectiveRoles ?? member.localRoles ?? [])}
+                            {roleChips(
+                              member.effectiveRoles ?? member.localRoles ?? [],
+                              member.role === 'viewer',
+                            )}
                           </div>
                         )}
                       </td>
@@ -448,6 +505,18 @@ function MembersTabContent({ projectId, userRole }: Props) {
             ))}
           </div>
         </div>
+      </SettingsCard>
+
+      <SettingsCard
+        icon={<UserKey />}
+        title="Stage responsibilities"
+        description="Decision Makers and Contributors for this space's workflow."
+      >
+        <StageResponsibilitiesTable
+          projectId={projectId}
+          refreshVersion={responsibilitiesVersion}
+          members={loading ? undefined : members}
+        />
       </SettingsCard>
 
       <Dialog
@@ -755,7 +824,9 @@ function MembersTabContent({ projectId, userRole }: Props) {
                   <span className="font-semibold text-foreground">
                     {ROLE_LABELS[confirmRoleChange.newRole]}
                   </span>
-                  ? {ROLE_DESCRIPTIONS[confirmRoleChange.newRole]}
+                  ?{' '}
+                  {viewerDemotionMessage(confirmRoleChange) ??
+                    ROLE_DESCRIPTIONS[confirmRoleChange.newRole]}
                 </>
               )}
             </AlertDialogDescription>
@@ -795,6 +866,6 @@ function MembersTabContent({ projectId, userRole }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }

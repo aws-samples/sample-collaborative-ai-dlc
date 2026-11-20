@@ -28,6 +28,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
+import { BUSINESS_ROLES } from '../shared/business-roles.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   LATEST,
@@ -139,7 +140,10 @@ const listBlocks = async (event, res, tenant, type) => {
     ),
   );
   const items = results.flatMap((r) => r.Items || []).map(toApi);
-  return res(200, { blocks: items });
+  return res(200, {
+    blocks: items,
+    ...(type === 'STAGE' ? { businessRoles: BUSINESS_ROLES } : {}),
+  });
 };
 
 const getBlock = async (event, res, tenant, type, id) => {

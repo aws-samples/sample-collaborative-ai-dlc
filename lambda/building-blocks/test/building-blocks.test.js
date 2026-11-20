@@ -118,6 +118,75 @@ beforeEach(() => {
 const parse = (res) => ({ status: res.statusCode, body: res.body ? JSON.parse(res.body) : null });
 
 describe('building-blocks handler', () => {
+  it('persists stage responsibility defaults in immutable block versions and returns the role catalog', async () => {
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] };
+    const created = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
+          body: { id: 'custom-stage', name: 'Custom stage', permissions },
+        }),
+      ),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.permissions).toEqual(permissions);
+    const catalog = parse(await handler(event({ method: 'GET', type: 'stage' })));
+    expect(catalog.body.businessRoles).toContainEqual({ id: 'architect', name: 'Architect' });
+    const updated = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          type: 'stage',
+          id: 'custom-stage',
+          body: { name: 'Custom stage', permissions: null },
+        }),
+      ),
+    );
+    expect(updated.status).toBe(200);
+    expect(updated.body.version).toBe(2);
+    expect(updated.body.permissions).toBeNull();
+    expect(tableStore.get('BLOCK#default#STAGE#custom-stage|V#1').permissions).toEqual(permissions);
+    const loaded = parse(
+      await handler(event({ method: 'GET', type: 'stage', id: 'custom-stage' })),
+    );
+    expect(loaded.body.permissions).toBeNull();
+  });
+
+  it.each([
+    { decisionMakerRoles: ['unknown-role'], contributorRoles: [] },
+    { decisionMakerRoles: 'architect', contributorRoles: [] },
+    { decisionMakerRoles: [], contributorRoles: [], automatic: 'yes' },
+    [],
+  ])(
+    'rejects invalid responsibility defaults on stage create and update: %j',
+    async (permissions) => {
+      const body = { id: 'custom-stage', name: 'Custom stage', permissions };
+      expect(parse(await handler(event({ method: 'POST', type: 'stage', body }))).status).toBe(400);
+      expect(tableStore.size).toBe(0);
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
+          body: { id: 'custom-stage', name: 'Custom stage' },
+        }),
+      );
+      expect(
+        parse(
+          await handler(
+            event({
+              method: 'PUT',
+              type: 'stage',
+              id: 'custom-stage',
+              body: { name: 'Custom stage', permissions },
+            }),
+          ),
+        ).status,
+      ).toBe(400);
+      expect(tableStore.get('BLOCK#default#STAGE#custom-stage|V#latest').version).toBe(1);
+    },
+  );
+
   it('returns 200 with empty body on OPTIONS', async () => {
     const res = await handler({ httpMethod: 'OPTIONS', headers: {} });
     expect(res.statusCode).toBe(200);

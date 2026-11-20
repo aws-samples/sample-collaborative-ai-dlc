@@ -21,7 +21,13 @@ import {
 import { sha256 } from '../blocks.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
-import { countAuthored, legacyReleaseBundle } from './fixtures/legacy-release.js';
+import { validateStagePolicies } from '../stage-responsibilities.js';
+import { DEFAULT_STAGE_PERMISSIONS } from '../stage-responsibility-defaults.js';
+import {
+  countAuthored,
+  legacyReleaseBundle,
+  withoutStageResponsibilities,
+} from './fixtures/legacy-release.js';
 
 const PROFILES = Object.freeze([
   'current-stable',
@@ -86,7 +92,30 @@ const CATALOG_GOLDENS = Object.freeze({
     'v2.11.3': '811faa9795d2b2cd760380bb1d51f0cad7cfcf39a72951922ad1cdb24bb1e5fb',
     'v2.11.4': '5e7f13060ccaedb2c20ca7a204f0191abfed174bdf0f2b3db2e793e9ab040085',
   }),
+  // Revision 6 adds the platform default stage responsibilities. Every digest
+  // changes; with the responsibilities removed, each catalog is still exactly
+  // its revision 5 catalog (asserted below).
+  6: Object.freeze({
+    'current-stable': '4a2ea2adce2dd16865c45c9e7cf8f13281914fd15411aae42e9f291ca34a4603',
+    'v2.6.18': '3af38b3baa77ab7c28a0e1b95df470f1b007943ca68158a2edb00796dcebac0d',
+    'v2.7.0': '44d63015a237381d9044dc8219231a6e76614d6c92404683792fd1198ff5a71d',
+    'v2.8.2': '2a191ae3f53684de66cdbe7e9e062cf8e4d28027fd5d212d5775c7357142713b',
+    'v2.9.0': '4666ba6747cc621e68ea897d9a0749269f6e06ecb84ca2cc2489052cd9af0a43',
+    'v2.11.0': '0ca8d3c0391bc05cb0b090de5d2c1e5a386e5165a25a4aff87460229e1d19b03',
+    'v2.11.1': 'a151a4bfa8a28d79ce8a27aa92ff8a19ef2241d35a6c3ef519874e37b222cd06',
+    'v2.11.3': '4e17edcc24c2f0f85e704126925bd479bcf1e97f9f730c128e8b3b1e00262787',
+    'v2.11.4': 'fa62937807897349f8837573391ddeb54bdb7b237c58daed3505163ffdf0b9f6',
+  }),
 });
+
+// The first revision whose catalogs carry stage responsibilities.
+const FIRST_RESPONSIBILITIES_REVISION = 6;
+const catalogDigestFor = (revision, catalog) =>
+  sha256(
+    canonicalJson(
+      revision < FIRST_RESPONSIBILITIES_REVISION ? withoutStageResponsibilities(catalog) : catalog,
+    ),
+  );
 
 const filesFor = (profileId) =>
   filesFromCompatibilityFixture({
@@ -114,8 +143,8 @@ const rebuilt = (manifest, patch) => {
 };
 
 describe('importer revision and mapper fingerprint', () => {
-  it('is on importer revision 5', () => {
-    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(5);
+  it('is on importer revision 6', () => {
+    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(6);
     expect(FIRST_FINGERPRINTED_IMPORTER_REVISION).toBe(2);
   });
 
@@ -166,7 +195,8 @@ describe('importer revision and mapper fingerprint', () => {
   });
 
   // A mapper that learned the 2.11 scope settings must not reinterpret a
-  // closure that authors none of them. Mapping happens at import
+  // closure that authors none of them. Revision 5 only adds responsibilities,
+  // so earlier revisions compare against the catalog without them. Mapping happens at import
   // and an existing pin keeps its own revision's bytes — but if the new mappers
   // produced a DIFFERENT catalog for the same source, a re-import under the new
   // revision would hand an unchanged release different semantics.
@@ -175,10 +205,34 @@ describe('importer revision and mapper fingerprint', () => {
     expect(revisions.at(-1)).toBe(AIDLC_RELEASE_IMPORTER_REVISION);
     for (const revision of revisions) {
       for (const [profileId, digest] of Object.entries(CATALOG_GOLDENS[revision])) {
-        expect({ revision, profileId, sha256: bundles[profileId].manifest.catalog.sha256 }).toEqual(
-          { revision, profileId, sha256: digest },
-        );
+        expect({
+          revision,
+          profileId,
+          sha256: catalogDigestFor(revision, bundles[profileId].catalog),
+        }).toEqual({ revision, profileId, sha256: digest });
       }
+    }
+  });
+
+  it('carries the default stage responsibilities and valid policies into every catalog', () => {
+    for (const profileId of PROFILES) {
+      const { workflow, blocks } = bundles[profileId].catalog;
+      for (const placement of workflow.placements) {
+        expect({
+          profileId,
+          stageId: placement.stageId,
+          permissions: placement.permissions,
+        }).toEqual({
+          profileId,
+          stageId: placement.stageId,
+          permissions: DEFAULT_STAGE_PERMISSIONS[placement.stageId] ?? null,
+        });
+      }
+      for (const stage of blocks.STAGE) {
+        expect(stage.permissions).toEqual(DEFAULT_STAGE_PERMISSIONS[stage.blockId] ?? null);
+      }
+      expect(() => validateStagePolicies(workflow.cedarPolicies)).not.toThrow();
+      expect(workflow.cedarPolicies).toContain('resource == Stage::"requirements-analysis"');
     }
   });
 
@@ -206,7 +260,7 @@ describe('importer revision and mapper fingerprint', () => {
   });
 
   it('refuses to build any revision other than its own', () => {
-    for (const importerRevision of [1, 2, 3, 4]) {
+    for (const importerRevision of [1, 2, 3, 4, 5]) {
       expect(() =>
         buildReleaseBundle({
           profileId: 'v2.9.0',
@@ -222,9 +276,10 @@ describe('2.3.3 stays byte-identical across the importer bump', () => {
   it('maps the platform baseline to the exact catalog revision 1 produced', () => {
     const { catalog } = bundles['current-stable'];
     // Stripping every field a later mapper added is a no-op for 2.3.3: it
-    // authors none of them, so its i2 catalog is its i1 catalog, byte for byte.
+    // authors none of them, so apart from the revision 6 responsibilities its
+    // current catalog is its i1 catalog, byte for byte.
     expect(canonicalJson(legacyReleaseBundle(bundles['current-stable']).catalog)).toBe(
-      canonicalJson(catalog),
+      canonicalJson(withoutStageResponsibilities(catalog)),
     );
   });
 });
@@ -260,7 +315,7 @@ describe('manifest fingerprint validation', () => {
 
   it('accepts a revision newer than this code on shape alone, so a rollback cannot strand it', () => {
     const { manifest } = bundles['v2.9.0'];
-    const future = rebuilt(manifest, { importerRevision: 6, mapperFingerprint: 'e'.repeat(64) });
+    const future = rebuilt(manifest, { importerRevision: 7, mapperFingerprint: 'e'.repeat(64) });
     expect(validateReleaseManifest(future)).toBe(future);
   });
 });

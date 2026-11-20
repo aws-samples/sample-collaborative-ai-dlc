@@ -26,6 +26,7 @@ import {
 } from '../release-resolver.js';
 import { loadExecutionPlan, loadWorkflowScopes } from '../v2-workflow-plan.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
+import { generateStagePolicies } from '../stage-responsibilities.js';
 
 const BUCKET = 'artifacts-test';
 const TABLE = 'blocks-test';
@@ -1064,6 +1065,28 @@ describe('loadUserForkWorkflow is tenant-parameterized', () => {
       .commandCalls(QueryCommand)
       .map((call) => String(call.args[0].input.ExpressionAttributeValues?.[':pk'] ?? ''))
       .filter((pk) => pk.startsWith('WF#'));
+
+  it('carries saved role mappings and policy text through the verified release fork loader', async () => {
+    const rows = forkRows('WF#default#aidlc-v2');
+    rows[1].permissions = {
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['architect'],
+    };
+    rows[0].cedarPolicies = generateStagePolicies([rows[1]]);
+    userWorkflowRows.push(...rows);
+    const closure = await loadReleaseClosure({ ...releaseArgs(pinA), cache: new Map() });
+    const original = canonicalJson(closure.catalog.workflow);
+    const resolved = await resolveMethodologyLibrary({
+      closure,
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 2,
+    });
+    expect(resolved.workflow.cedarPolicies).toBe(rows[0].cedarPolicies);
+    expect(resolved.workflow.placements[0].permissions).toEqual(rows[1].permissions);
+    expect(canonicalJson(closure.catalog.workflow)).toBe(original);
+  });
 
   it('defaults to the `default` tenant so existing callers are unchanged', async () => {
     userWorkflowRows.push(...forkRows('WF#default#aidlc-v2'));

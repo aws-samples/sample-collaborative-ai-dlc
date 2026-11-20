@@ -44,6 +44,7 @@
 import { buildFromFiles } from './block-mappers.js';
 import { sha256 } from './blocks.js';
 import { buildMethodologyCatalog } from './methodology-catalog.js';
+import { withStageResponsibilities } from './stage-responsibility-defaults.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 
 // Bump whenever importer/adapter semantics change, so a re-import of the same
@@ -59,7 +60,10 @@ import { canonicalJson } from './workflow-checkpoint.js';
 //    requirements-analysis outputs scalar before parsing its frontmatter.
 // 5: the dependency closure resolves TypeScript-style `./lib.js` imports to a
 //    published `lib.ts`, so 2.11.3's recorded compatibility evidence changes.
-const AIDLC_RELEASE_IMPORTER_REVISION = 5;
+// 6: the catalog carries the platform default stage responsibilities: role
+//    lists on STAGE blocks and workflow placements, and the workflow's
+//    generated Cedar policy text. Mapped methodology fields are unchanged.
+const AIDLC_RELEASE_IMPORTER_REVISION = 6;
 
 // The first revision whose manifests MUST record a mapper fingerprint. Revision
 // 1 manifests predate the field and MUST NOT carry one — their closure digests
@@ -72,6 +76,7 @@ const AIDLC_RELEASE_MAPPER_FINGERPRINTS = Object.freeze({
   3: '542f0c80fd45edb73ebb3084f075890394b0581fbf4ae2008192a6f74cceb8ea',
   4: '542f0c80fd45edb73ebb3084f075890394b0581fbf4ae2008192a6f74cceb8ea',
   5: '542f0c80fd45edb73ebb3084f075890394b0581fbf4ae2008192a6f74cceb8ea',
+  6: '18d428195d5b010f89657b37e4942877c696d03c9e3c9d8406bc3778759d86ac',
 });
 
 // Fixed and never a real upstream commit: the probe catalog's `ref`.
@@ -228,12 +233,20 @@ const MAPPER_PROBE_FILES = Object.freeze([
 ]);
 
 /**
+ * The catalog a release closure stores: the mapped methodology plus the
+ * platform default stage responsibilities. Kept separate from
+ * buildMethodologyCatalog, whose SYSTEM aidlc-catalogs/ objects are immutable
+ * per commit and must keep their existing bytes.
+ */
+const buildReleaseCatalog = (input) => withStageResponsibilities(buildMethodologyCatalog(input));
+
+/**
  * The catalog the RUNNING mappers produce for the probe corpus. Deterministic:
  * no timestamps, no environment, fixed input order.
  */
 const buildMapperProbeCatalog = () => {
   const { blocks, workflow, sensorScripts } = buildFromFiles(new Map(MAPPER_PROBE_FILES));
-  return buildMethodologyCatalog({ ref: MAPPER_PROBE_REF, blocks, workflow, sensorScripts });
+  return buildReleaseCatalog({ ref: MAPPER_PROBE_REF, blocks, workflow, sensorScripts });
 };
 
 const computeMapperFingerprint = () => sha256(canonicalJson(buildMapperProbeCatalog()));
@@ -255,6 +268,7 @@ export {
   MAPPER_PROBE_FILES,
   MAPPER_PROBE_REF,
   buildMapperProbeCatalog,
+  buildReleaseCatalog,
   computeMapperFingerprint,
   currentMapperFingerprint,
   pinnedMapperFingerprint,
@@ -267,6 +281,7 @@ export default {
   MAPPER_PROBE_FILES,
   MAPPER_PROBE_REF,
   buildMapperProbeCatalog,
+  buildReleaseCatalog,
   computeMapperFingerprint,
   currentMapperFingerprint,
   pinnedMapperFingerprint,
