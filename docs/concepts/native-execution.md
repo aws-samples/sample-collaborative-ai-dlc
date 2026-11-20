@@ -5851,15 +5851,26 @@ saw **Workflow completion: not verified**. The read-only collector confirmed
 `CANCELLED` at 10:10:38 UTC and reproduced that verdict for both publications.
 The cancellation criterion failed on one condition, an unfinished engine
 operation. J4 never reached the free-text reply or fresh-session resume.
-J1 has not started on engine v3.
 
-The pending operation wrote its snapshot and an output with exit code 0.
+The pending J4 operation wrote its snapshot and an output with exit code 0.
 The engine journal kept the request as `running` at head version 5.
 At 10:07 UTC the engine logged `NATIVE_ENGINE_HEAD_CHANGED` and
 `NATIVE_ENGINE_WRITER_CHANGED`. DynamoDB counted two transaction conflicts
 on the native runs table in that minute. The metric has no request IDs.
 Injecting transaction conflicts into the deployed journal code locally
 reproduced both errors and the pending operation with a constant writer.
+
+J1 accepted two structured selections from the member. The first plan picker
+used the engine's option labels but changed the question text. The engine
+could not match the selection to its recorded question. At revision 2 the
+member saw the notice that the reply had selected nothing. Turn 3 wrote a
+successful command result and snapshot. Its journal entry stayed `running`
+at head version 7, and the next command returned `NATIVE_ENGINE_PENDING`.
+The member saw **Workflow completion: not verified** at revision 3.
+A consistent read confirmed `CANCELLED` on that publication at 12:50:06 UTC.
+The final read-only collector reported `FAIL`. Across the two runs, all five
+publications had a `not_verified` verdict. No check build or independent
+review ran. Both browser headings recorded for J1 matched the collector.
 
 The member record, collector verdict, object metadata and local reproduction
 are in `.native-evidence/ne11-2026-11-16-live-acceptance/run/engine-v3/`.
@@ -6114,8 +6125,10 @@ the current contract for newly created executions.
       on 2026-11-19 to 2026-11-20. Fresh-session recovery stopped J1 and J4
       before any check build, isolated review or verified completion. The
       resume correction was deployed and independently verified on 2026-11-20
-      as engine version 3. On v3, J4 stopped at revision 2 with an unfinished
-      journal operation. The member cancelled and saw `not verified`. J1 is pending.
+      as engine version 3. On v3, both the express and poc runs saved a command
+      result but left its journal entry unfinished. The poc run also displayed
+      a plan question whose text differed from the one the engine issued.
+      Both runs were cancelled and the member saw `not verified` on each.
       **Known limit:** the
       engine's first start of a new image version can exceed the 10 second init
       limit and answer after about 11 seconds.
