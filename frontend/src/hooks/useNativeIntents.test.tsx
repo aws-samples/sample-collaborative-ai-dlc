@@ -106,7 +106,7 @@ describe('shared native discovery cache', () => {
     });
     expect(sessionStorage.length).toBe(0);
   });
-  it('promotes only confirmed recovery and preserves same-revision image revocation during a list refresh', async () => {
+  it('preserves same-revision image revocation accepted from detail during a protected page refresh', async () => {
     const recovery: NativeIntent = {
       ...item('lost'),
       prompt: '',
@@ -123,23 +123,39 @@ describe('shared native discovery cache', () => {
         imageStatus: 'retained',
       },
     };
-    list.mockResolvedValue(page('lost'));
-    get.mockResolvedValue(recovery);
+    const result = {
+      items: [
+        {
+          ...item('lost'),
+          execution: {
+            status: 'RECOVERY_REQUIRED',
+            revision: 6,
+            updatedAt: recovery.execution!.updatedAt,
+          },
+          freshSessionRecovery: true,
+        },
+      ],
+      nextCursor: null,
+    };
+    list.mockResolvedValue(result);
     const row = () => getNativeListing('p1').items[0];
     await refreshNativeIntents('p1');
     expect(nativeWaitingStatus(row())).toBe('RECOVERY_REQUIRED');
     expect(row().execution).not.toHaveProperty('recovery');
-    const pending = deferred<NativeIntent>();
-    get.mockReturnValueOnce(pending.promise);
-    const refresh = refreshNativeIntents('p1', 'refresh', true);
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
-    updateNativeIntentSummary({
-      ...recovery,
-      execution: { ...recovery.execution!, imageStatus: 'revoked' },
-    });
-    pending.resolve(recovery);
-    await refresh;
-    expect(nativeWaitingStatus(row())).toBeNull();
+    // The first detail changes the cue. The second confirms it while another page is pending.
+    for (const request of [2, 3]) {
+      const pending = deferred<typeof result>();
+      list.mockReturnValueOnce(pending.promise);
+      const refresh = refreshNativeIntents('p1', 'refresh', true);
+      await waitFor(() => expect(list).toHaveBeenCalledTimes(request));
+      updateNativeIntentSummary({
+        ...recovery,
+        execution: { ...recovery.execution!, imageStatus: 'revoked' },
+      });
+      pending.resolve(result);
+      await refresh;
+      expect(nativeWaitingStatus(row())).toBeNull();
+    }
     expect(nativeIntentStatusLabel(row())).toBe('Session recovery required');
     await refreshNativeIntents('p1', 'refresh', true);
     expect(nativeIntentStatusLabel(row())).toBe('Awaiting fresh-session recovery');
@@ -150,6 +166,42 @@ describe('shared native discovery cache', () => {
     list.mockRejectedValueOnce(new ApiError(403, 'Access revoked'));
     await refreshNativeIntents('p1', 'refresh', true);
     expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+    expect(get).not.toHaveBeenCalled();
+  });
+  it('keeps a newer selected detail when a populated collection refresh settles and falls back only for a legacy READY row', async () => {
+    const status = { status: 'RUNNING', revision: 2, updatedAt: item('a').updatedAt };
+    const result = {
+      items: [
+        { ...item('selected'), execution: status },
+        { ...item('empty'), execution: null },
+        { ...item('unknown'), executionStatusUnavailable: true },
+        { ...item('draft'), status: 'DRAFT' },
+      ],
+      nextCursor: 'next',
+    };
+    list.mockResolvedValueOnce(result);
+    await refreshNativeIntents('p1');
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    const pending = deferred<typeof result>();
+    list.mockReturnValueOnce(pending.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    updateNativeIntentSummary({
+      ...item('selected'),
+      prompt: '',
+      execution: execution('AWAITING_USER', 3),
+    });
+    pending.resolve(result);
+    await refresh;
+    expect(nativeWaitingStatus(getNativeListing('p1').items[0])).toBe('AWAITING_USER');
+    expect(get).not.toHaveBeenCalled();
+    list.mockResolvedValueOnce({
+      items: [item('legacy'), { ...item('also-empty'), execution: null }],
+      nextCursor: null,
+    });
+    await refreshNativeIntents('p1', 'more');
+    expect(get).toHaveBeenCalledExactlyOnceWith('p1', 'legacy');
+    expect(nativeWaitingStatus(getNativeListing('p1').items[0])).toBe('AWAITING_USER');
   });
   it('bounds detail reads to four concurrent requests and stops new reads after revocation', async () => {
     list.mockResolvedValueOnce({

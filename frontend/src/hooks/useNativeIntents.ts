@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { ApiError } from '@/services/api';
-import {
-  nativeIntentsService,
-  type NativeIntent,
-  type NativeIntentSummary,
-} from '@/services/nativeIntents';
+import { nativeIntentsService, type NativeIntent } from '@/services/nativeIntents';
 import {
   currentSessionEpoch,
   isSessionActive,
@@ -195,8 +191,18 @@ export function updateNativeIntentSummary(intent: NativeIntent): void {
   const index = entry.state.items.findIndex((item) => item.id === intent.id);
   if (index < 0) return;
   const previous = entry.state.items[index];
-  const next = latestSummary(previous, discoverySummary(intent));
-  if (next === previous) return;
+  let next = latestSummary(previous, discoverySummary(intent));
+  if (next === previous) {
+    if (
+      !entry.request ||
+      intent.execution?.revision === undefined ||
+      intent.execution.revision !== previous.execution?.revision
+    )
+      return;
+    // Mark a same-revision confirmation for the in-flight page merge even
+    // when the selected detail confirms exactly the previously displayed cue.
+    next = { ...previous };
+  }
   const items = entry.state.items.map((item, itemIndex) => (itemIndex === index ? next : item));
   entry.state = {
     ...entry.state,
@@ -210,21 +216,25 @@ export function updateNativeIntentSummary(intent: NativeIntent): void {
   notify();
 }
 
-async function hydrateExecution(
+async function hydrateLegacyExecution(
   projectId: string,
-  summaries: NativeIntentSummary[],
+  summaries: NativeDiscoveredIntent[],
   active: () => boolean,
 ): Promise<NativeDiscoveredIntent[]> {
-  const items: NativeDiscoveredIntent[] = [...summaries];
+  const legacy = summaries.flatMap((item, index) =>
+    item.status === 'READY' && item.execution === undefined && !item.executionStatusUnavailable
+      ? [index]
+      : [],
+  );
+  if (!legacy.length) return summaries;
+  const items = [...summaries];
   let nextIndex = 0;
   let denied = false;
-  // The collection intentionally carries preparation metadata only. Reuse the
-  // protected detail endpoint for READY rows, with at most four reads at once.
+  // Older controllers omit executionSummary; only those READY rows need detail.
   const results = await Promise.allSettled(
-    Array.from({ length: Math.min(4, items.length) }, async () => {
-      while (!denied && active() && nextIndex < items.length) {
-        const index = nextIndex++;
-        if (items[index].status !== 'READY') continue;
+    Array.from({ length: Math.min(4, legacy.length) }, async () => {
+      while (!denied && active() && nextIndex < legacy.length) {
+        const index = legacy[nextIndex++];
         try {
           const detail = await nativeIntentsService.get(projectId, items[index].id);
           if (active()) items[index] = discoverySummary(detail);
@@ -294,7 +304,7 @@ export async function refreshNativeIntents(
         const result = await nativeIntentsService.list(projectId, cursor);
         if (!active()) return;
         if (result.items.length) owner.state = { ...owner.state, hasKnownNativeIntents: true };
-        const hydrated = await hydrateExecution(projectId, result.items, active);
+        const hydrated = await hydrateLegacyExecution(projectId, result.items, active);
         if (!active()) return;
         for (const item of hydrated) {
           if (ids.has(item.id))

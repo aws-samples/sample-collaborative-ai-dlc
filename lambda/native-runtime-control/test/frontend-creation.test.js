@@ -5,11 +5,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vite
 import { createNativeRuntimeApi } from '../api.js';
 import { createNativeAuthority } from '../authority.js';
 import { handler as publicHandler } from '../index.js';
-import { createNativeExecutionApi } from '../execution-api.js';
+import { createNativeExecutionApi, nativeExecutionSummaries } from '../execution-api.js';
 import { createNativeExecutionStore } from '../execution-store.js';
 import { createNativeExecutionConfiguration } from '../execution-config.js';
 import { executionRuntimeConfiguration } from '../execution-runtime.js';
 import { createNativeIntentListing } from '../listing.js';
+import { createNativeRuntimeImagePolicy, nativeRuntimeImageKey } from '../runtime-images.js';
+import { serialFixture } from './execution-serial-fixtures.js';
+import { nativeWaitingStatus } from '../../../frontend/src/lib/intentDiscovery.ts';
 import { prepareBinding } from '../../shared/source-control-bindings.js';
 import {
   ACTOR,
@@ -229,9 +232,18 @@ function fixture({ sourceProvider = 'gitlab', trackerProvider = 'gitlab-issues' 
     now: () => 1000,
   });
   const enqueue = vi.fn();
+  const executionReads = {
+    store: executionStore,
+    images: createNativeRuntimeImagePolicy({
+      ddb: f.ddb,
+      tableName: TABLE,
+      env: { AWS_REGION: 'us-east-1', NATIVE_RUNTIME_ACCOUNT_ID: '123456789012' },
+    }),
+    deployment: () => ({ image: IMAGE }),
+  };
   const execution = createNativeExecutionApi({
     enabled: true,
-    store: executionStore,
+    ...executionReads,
     configure,
     enqueue,
     authorizeSource: (draft, actorId) =>
@@ -241,7 +253,10 @@ function fixture({ sourceProvider = 'gitlab', trackerProvider = 'gitlab-issues' 
   const router = createNativeRuntimeApi({
     enabled: true,
     store: f.store,
-    execution,
+    execution: {
+      ...execution,
+      summaries: (drafts) => nativeExecutionSummaries(drafts, executionReads),
+    },
     inputs: createNativeInputApi({
       store: f.store,
       executionStore,
@@ -730,6 +745,137 @@ it('lists, creates, corrects, prepares and explicitly starts existing and newly 
   expect(new Set(drafts.map((row) => row.bindingId)).size).toBe(3);
   expect(new Set(drafts.map((row) => row.rootDirectory)).size).toBe(3);
   expect(new Set(drafts.map((row) => row.executionRoleArn)).size).toBe(3);
+});
+
+it('discovers a mixed protected page in one browser request and withholds the page on mid-read revocation', async () => {
+  const { refreshNativeIntents, getNativeListing } =
+    await import('../../../frontend/src/hooks/useNativeIntents.ts');
+  const f = fixture();
+  const titles = [
+    'eligible',
+    'also eligible',
+    'unfenced',
+    'historical',
+    'reply',
+    'continuing',
+    'running',
+    'terminal',
+    'corrupt',
+    'unstarted',
+    'draft',
+  ];
+  let digest;
+  for (const title of titles) {
+    const draft = await client.create(
+      PROJECT,
+      draftRequest({ intentId: randomUUID(), title, prompt: 'Private task' }),
+    );
+    if (title === 'draft') continue;
+    await f.ready(PROJECT, draft.id);
+    if (title === 'unstarted') continue;
+    const run = serialFixture({
+      preparedDraft: f.read({ projectId: PROJECT, executionId: draft.id }),
+    });
+    await run.ready();
+    digest = run.configuration.image.digest;
+    if (['eligible', 'also eligible', 'unfenced', 'historical'].includes(title)) {
+      const { row } = await run.store.claim(run.bindingIdentity);
+      await run.store.recoveryRequired({
+        row,
+        reason: 'SESSION_LOST',
+        workflowResumeState: 'created',
+        ...(title !== 'unfenced' ? { stoppedSessionId: row.runtimeSessionId } : {}),
+      });
+    } else if (title === 'reply' || title === 'continuing') {
+      await run.publish({ project: false });
+      if (title === 'continuing') await run.respond();
+    } else if (title === 'terminal') {
+      const { row } = await run.store.claim(run.bindingIdentity);
+      const { receipt: publication } = await run.turn();
+      await run.store.publish({ row, publication });
+    }
+    const row = run.row();
+    if (title === 'corrupt') row.configurationSha256 = '0'.repeat(64);
+    if (title === 'historical') {
+      delete row.stopConfirmation;
+      delete row.recovery.workflowResumeState;
+      row.recovery.canRecover = false;
+    }
+    f.write(row);
+  }
+  f.transport.mockClear();
+  f.membership.mockClear();
+  f.ddb.send.mockClear();
+  let pending = 0,
+    peak = 0;
+  f.hooks.before = async (cmd) => {
+    if (cmd.input.Key?.sk !== 'EXECUTION') return;
+    peak = Math.max(peak, ++pending);
+    await new Promise((resolve) => setImmediate(resolve));
+    pending--;
+  };
+  await refreshNativeIntents(PROJECT);
+  const rows = () =>
+    Object.fromEntries(getNativeListing(PROJECT).items.map((item) => [item.title, item]));
+  expect(Object.keys(rows())).toEqual(titles);
+  expect(f.transport.mock.calls.map(([url]) => new URL(url).search)).toEqual([
+    '?view=list&limit=25',
+  ]);
+  expect(f.membership).toHaveBeenCalledTimes(2);
+  expect(peak).toBe(4);
+  const keys = f.ddb.send.mock.calls.map(([cmd]) => cmd.input.Key?.sk ?? cmd.input.IndexName);
+  expect(keys.toSorted()).toEqual(
+    [
+      'NativeByProjectCreatedAt',
+      ...titles.map(() => 'RUNTIME'),
+      ...titles.slice(1).map(() => 'EXECUTION'),
+      'REVOCATION',
+    ].toSorted(),
+  );
+  expect(Object.values(rows()).map(nativeWaitingStatus)).toEqual([
+    'RECOVERY_REQUIRED',
+    'RECOVERY_REQUIRED',
+    null,
+    null,
+    'AWAITING_USER',
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  ]);
+  expect(rows().continuing.execution).toMatchObject({
+    status: 'DISPATCHING',
+    turnSequence: 2,
+    responsePending: true,
+  });
+  expect(rows().running.execution.status).toBe('RUNNING');
+  expect(rows().terminal.execution.status).toBe('STOPPED');
+  expect(rows().corrupt.executionStatusUnavailable).toBe(true);
+  expect(rows().unstarted.execution).toBeNull();
+  expect(rows().draft.execution).toBeUndefined();
+  expect(JSON.stringify(rows())).not.toMatch(
+    /Private task|Keep the original task|attemptId|actorId|recoveryId|imageDigest|credential|projectionStatus|publicationId/,
+  );
+
+  f.hooks.before = (cmd) => {
+    if (cmd.input.Key?.sk === 'REVOCATION') throw new Error('Policy unavailable');
+  };
+  await refreshNativeIntents(PROJECT, 'refresh', true);
+  expect(nativeWaitingStatus(rows().eligible)).toBeNull();
+  expect(rows().eligible.execution.status).toBe('RECOVERY_REQUIRED');
+  f.hooks.before = undefined;
+  f.write(nativeRuntimeImageKey(digest)); // Even a malformed revocation fences this pin.
+  await refreshNativeIntents(PROJECT, 'refresh', true);
+  expect(nativeWaitingStatus(rows().eligible)).toBeNull();
+  expect(rows().eligible.execution.status).toBe('RECOVERY_REQUIRED');
+  f.hooks.after = (cmd) => {
+    if (cmd.input.Key?.sk === 'EXECUTION') f.projects.delete(PROJECT);
+  };
+  await refreshNativeIntents(PROJECT, 'refresh', true);
+  expect(getNativeListing(PROJECT)).toMatchObject({ denied: true, items: [] });
+  expect(f.transport).toHaveBeenCalledTimes(4);
 });
 
 it.each(['list', 'create', 'correct', 'prepare', 'start'])(

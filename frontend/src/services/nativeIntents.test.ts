@@ -403,6 +403,54 @@ describe('protected native discovery list', () => {
     expect(result.items[0]).not.toHaveProperty('prompt');
     expect(result.items[0]).not.toHaveProperty('workflowId');
   });
+  const observed = {
+    status: 'RECOVERY_REQUIRED',
+    revision: 7,
+    updatedAt: '2026-10-04T09:00:00Z',
+    turnSequence: 2,
+    responsePending: false,
+  };
+  it('decodes only the protected display fields, including explicit unstarted and unavailable statuses', async () => {
+    const ready = { ...item, status: 'READY' };
+    get.mockResolvedValue({
+      items: [
+        {
+          ...ready,
+          executionSummary: { ...observed, freshSessionRecovery: true, recoveryId: 'private' },
+        },
+        { ...ready, id: 'empty', executionSummary: null },
+        { ...ready, id: 'unknown', executionSummary: { unavailable: true } },
+        { ...ready, id: 'old', freshSessionRecovery: true },
+      ],
+      nextCursor: null,
+    });
+    expect((await nativeIntentsService.list('project-1')).items).toEqual([
+      { ...ready, updatedAt: observed.updatedAt, execution: observed, freshSessionRecovery: true },
+      { ...ready, id: 'empty', execution: null },
+      { ...ready, id: 'unknown', executionStatusUnavailable: true },
+      { ...ready, id: 'old' },
+    ]);
+  });
+  it.each([
+    { revision: 0 },
+    { updatedAt: 'bad' },
+    { turnSequence: 0 },
+    { status: 'unknown' },
+    { status: 'AWAITING_USER', responsePending: true },
+    { status: 'STOPPED', freshSessionRecovery: true },
+    { freshSessionRecovery: 'true' },
+    { unavailable: true, freshSessionRecovery: true },
+  ])('keeps navigation without a cue for an unverifiable execution summary %j', async (patch) => {
+    const ready = { ...item, status: 'READY' };
+    get.mockResolvedValue({
+      items: [{ ...ready, executionSummary: { ...observed, ...patch } }],
+      nextCursor: 'next',
+    });
+    expect(await nativeIntentsService.list('project-1')).toEqual({
+      items: [{ ...ready, executionStatusUnavailable: true }],
+      nextCursor: 'next',
+    });
+  });
   it.each([
     {},
     { items: [], nextCursor: undefined },

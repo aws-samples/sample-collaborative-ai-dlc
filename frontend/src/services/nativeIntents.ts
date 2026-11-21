@@ -4,6 +4,7 @@ import {
   type NativePendingInput,
 } from '@/lib/nativePendingInput';
 import type { StructuredAnswer } from './questions';
+import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 import { api, ApiError } from './api';
 import type { WorkflowPackageHarness } from './workflowSources';
 import type {
@@ -468,7 +469,7 @@ export type NativeIntentSummary = Omit<
   | 'execution'
 >;
 export interface NativeIntentPage {
-  items: NativeIntentSummary[];
+  items: NativeDiscoveredIntent[];
   nextCursor: string | null;
 }
 export const NATIVE_INTENT_PAGE_SIZE = 25;
@@ -591,6 +592,46 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
 
 const timestamp = (value: unknown): value is string =>
   typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+function listItem(
+  value: Record<string, unknown>,
+  projectId: string,
+  id: string,
+): NativeDiscoveredIntent {
+  const item = summary(value, projectId, id);
+  if (item.status !== 'READY' || !Object.hasOwn(value, 'executionSummary')) return item;
+  const status = value.executionSummary;
+  if (status === null) return { ...item, execution: null };
+  if (
+    !record(status) ||
+    Object.hasOwn(status, 'unavailable') ||
+    !executionStatuses.includes(status.status as NativeExecution['status']) ||
+    !Number.isSafeInteger(status.revision) ||
+    Number(status.revision) < 1 ||
+    !timestamp(status.updatedAt) ||
+    !Number.isSafeInteger(status.turnSequence) ||
+    Number(status.turnSequence) < 1 ||
+    typeof status.responsePending !== 'boolean' ||
+    (status.responsePending &&
+      !['DISPATCHING', 'RECOVERING', 'RECOVERY_REQUIRED'].includes(String(status.status))) ||
+    (status.freshSessionRecovery !== undefined &&
+      (status.freshSessionRecovery !== true || status.status !== 'RECOVERY_REQUIRED'))
+  )
+    return { ...item, executionStatusUnavailable: true };
+  return {
+    ...item,
+    updatedAt:
+      Date.parse(status.updatedAt) > Date.parse(item.updatedAt) ? status.updatedAt : item.updatedAt,
+    execution: {
+      status: status.status as NativeExecution['status'],
+      revision: Number(status.revision),
+      updatedAt: status.updatedAt,
+      turnSequence: Number(status.turnSequence),
+      responsePending: status.responsePending,
+    },
+    ...(status.freshSessionRecovery === true ? { freshSessionRecovery: true } : {}),
+  };
+}
 const nullableString = (value: unknown): value is string | null =>
   value === null || typeof value === 'string';
 const digest = (value: unknown): value is string =>
@@ -1188,7 +1229,7 @@ export const nativeIntentsService = {
         throw new Error('The native intent list contains an invalid or duplicate identity.');
       }
       ids.add(item.id);
-      return summary(item, projectId, item.id);
+      return listItem(item, projectId, item.id);
     });
     return { items, nextCursor: value.nextCursor as string | null };
   },
