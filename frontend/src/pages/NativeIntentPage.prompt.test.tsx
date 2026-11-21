@@ -179,10 +179,15 @@ it('rejects stale save and fetch responses without replacing newer saved content
   await click('Refresh status');
   await edit('My save');
   await click('Save prompt');
-  service.get.mockResolvedValue({ ...initial, prompt: 'Newer saved prompt', promptRevision: 2 });
   await click('Refresh status');
+  expect(service.get).toHaveBeenCalledTimes(2);
+  await act(async () =>
+    pendingRead.resolve({ ...initial, prompt: 'Newer saved prompt', promptRevision: 2 }),
+  );
+  expect(screen.getByRole('textbox')).toHaveValue('My save');
   await act(async () => pendingSave.resolve({ ...initial, prompt: 'My save', promptRevision: 1 }));
-  await act(async () => pendingRead.resolve(initial));
+  service.get.mockResolvedValueOnce(initial);
+  await click('Refresh status');
   expect(screen.getByText('Newer saved prompt')).toBeInTheDocument();
   expect(screen.queryByText('My save')).not.toBeInTheDocument();
 });

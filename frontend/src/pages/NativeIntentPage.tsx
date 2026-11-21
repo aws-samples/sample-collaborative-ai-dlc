@@ -1,5 +1,5 @@
 import { canRecover, imageBlocked } from '@/lib/executionCapabilities';
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { MoreHorizontal, Settings2 } from 'lucide-react';
 import { IntentWorkspaceHeader } from '@/components/intent/IntentWorkspaceHeader';
@@ -75,8 +75,17 @@ export function NativeWorkspaceView({
     prepare,
     execute,
     refresh,
+    refreshAfterChange,
     publicationFailure,
   } = adapter;
+  const eventRevision = activity?.events.at(-1)?.revision;
+  const observeEvent = useEffectEvent((revision: number) => {
+    const confirmed = intent?.execution?.revision;
+    if (confirmed !== undefined && revision > confirmed) void refreshAfterChange(revision);
+  });
+  useEffect(() => {
+    if (eventRevision !== undefined) observeEvent(eventRevision);
+  }, [eventRevision]);
   useEffect(() => {
     setInputsBusy(false);
   }, [intent?.id]);
@@ -238,13 +247,13 @@ export function NativeWorkspaceView({
             intent={intent}
             disabled={acting !== null || inputsBusy}
             onBusyChange={setInputsBusy}
-            onRefresh={refresh}
+            onRefresh={refreshAfterChange}
             onAccessFailure={publicationFailure}
           />
           <NativeIntentContent
             intent={intent}
             onAccessFailure={publicationFailure}
-            onRefresh={refresh}
+            onRefresh={refreshAfterChange}
             onAccepted={adapter.acceptExecution}
             activity={activity}
             onViewActivity={onViewActivity}
