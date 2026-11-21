@@ -36,8 +36,9 @@ export const executionFixture = ({
   model = 'openai.example',
   recoveryMode = 'efs-workspace-v1',
   packageVersion = '2.9.0',
+  preparedDraft,
 } = {}) => {
-  const prepared = {
+  const prepared = preparedDraft ?? {
     ...nativeRuntimeBindingKey(IDENTITY),
     ...IDENTITY,
     projectIdentity: MEMBERSHIP.projectIdentity,
@@ -53,8 +54,9 @@ export const executionFixture = ({
     imageDigest: IMAGE.digest,
     ...resources({ ...IDENTITY, bindingId: OTHER }),
   };
+  const identity = { projectId: prepared.projectId, executionId: prepared.executionId };
   const configuration = {
-    harness,
+    harness: prepared.request.harness,
     model,
     inputs: nativeInputSnapshot(prepared, 'native-inputs'),
     ...(recoveryMode ? { recoveryMode } : {}),
@@ -204,7 +206,7 @@ export const executionFixture = ({
   });
   const start = () =>
     store.start({
-      ...IDENTITY,
+      ...identity,
       actorId: ACTOR,
       requestId: 'first-request',
       inputRevision: configuration.inputs.revision,
@@ -232,12 +234,12 @@ export const executionFixture = ({
     start,
     target,
     hooks,
-    identity: IDENTITY,
-    bindingIdentity: { ...IDENTITY, bindingId: prepared.bindingId },
+    identity,
+    bindingIdentity: { ...identity, bindingId: prepared.bindingId },
     tick: (ms = 121000) => {
       time += ms;
     },
     now: () => time,
-    row: () => read(nativeExecutionKey(IDENTITY)),
+    row: () => read(nativeExecutionKey(identity)),
   };
 };

@@ -117,12 +117,12 @@ export const createNativeRuntimeImagePolicy = ({ ddb, tableName, env = process.e
     if (value) cache.set(digest, value);
     return value;
   };
-  const decide = async ({ image, row, deployment }) => {
+  const decide = async ({ image, row, deployment }, lookup = revocation) => {
     const accountId = env.NATIVE_RUNTIME_ACCOUNT_ID;
     const region = env.AWS_REGION;
     if (!imageValid(image, accountId, region) || !imageValid(deployment?.image, accountId, region))
       return { status: 'unapproved' };
-    const revoked = await revocation(image.digest);
+    const revoked = await lookup(image.digest);
     if (revoked) return { status: 'revoked', revocation: revoked };
     if (image.uri === deployment.image.uri && image.digest === deployment.image.digest)
       return { status: 'current' };
@@ -141,7 +141,17 @@ export const createNativeRuntimeImagePolicy = ({ ddb, tableName, env = process.e
   };
   return Object.freeze({
     revocation,
-    decide,
+    decide: (input) => decide(input),
+    // A single discovery page shares revocation reads by digest. Approval still
+    // depends on each execution's own pin and target; actions read policy anew.
+    discoveryDecision() {
+      const reads = new Map();
+      const lookup = (digest) => {
+        if (!reads.has(digest)) reads.set(digest, revocation(digest));
+        return reads.get(digest);
+      };
+      return (input) => decide(input, lookup);
+    },
     async authorize(input) {
       const decision = await decide(input);
       if (decision.status === 'revoked') deny('NATIVE_EXECUTION_IMAGE_REVOKED');

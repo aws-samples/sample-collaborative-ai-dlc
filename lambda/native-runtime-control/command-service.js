@@ -18,7 +18,7 @@ import { createNativeRuntimeStore, fail } from './store.js';
 import { createNativeIntentListing } from './listing.js';
 import { createNativeExecutionStore } from './execution-store.js';
 import { createNativeExecutionConfiguration } from './execution-config.js';
-import { createNativeExecutionApi } from './execution-api.js';
+import { createNativeExecutionApi, nativeExecutionSummaries } from './execution-api.js';
 import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeInteractions } from '../shared/native-interaction.js';
 import { createNativeArtifactRevisions } from '../shared/native-artifact-revision.js';
@@ -99,13 +99,21 @@ export const createNativeRuntimeLambda =
     const invokeInputOwner = (functionName, payload) =>
       invokeNativeInputOwner(lambda, functionName, payload);
     const invokeTracker = (payload) => invokeInputOwner(env.TRACKERS_FUNCTION, payload);
-    const executions = () => {
-      if (executionApi) return executionApi;
-      const executionStore = createNativeExecutionStore({
+    const executionReadPorts = () => ({
+      store: createNativeExecutionStore({
         ddb,
         tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
         preparationStore: store(),
-      });
+      }),
+      images: createNativeRuntimeImagePolicy({
+        ddb,
+        tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+        env,
+      }),
+      deployment: () => nativeExecutionDeployment(env),
+    });
+    const executions = () => {
+      if (executionApi) return executionApi;
       const publications = createNativePublications({
         s3,
         bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
@@ -117,7 +125,7 @@ export const createNativeRuntimeLambda =
         settingsPrefix: env.AGENT_SETTINGS_SSM_PREFIX,
         admissionEnabled:
           (env.NATIVE_EXECUTION_ADMISSION_ENABLED ?? env.NATIVE_EXECUTION_ENABLED) === 'true',
-        store: executionStore,
+        ...executionReadPorts(),
         projectionStatus: (row) =>
           nativeProjectionStatus(ddb, env.NATIVE_RUNTIME_BINDINGS_TABLE, row),
         configure: createNativeExecutionConfiguration({
@@ -198,12 +206,6 @@ export const createNativeRuntimeLambda =
           accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
         }),
         activity: createNativeActivityStore({ ddb, tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE }),
-        images: createNativeRuntimeImagePolicy({
-          ddb,
-          tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
-          env,
-        }),
-        deployment: () => nativeExecutionDeployment(env),
         authorizeSource: (draft, actorId) =>
           sources().getAuthorizedBinding({
             projectId: draft.projectId,
@@ -228,6 +230,7 @@ export const createNativeRuntimeLambda =
           enabled:
             (env.NATIVE_EXECUTION_ADMISSION_ENABLED ?? env.NATIVE_EXECUTION_ENABLED) === 'true',
           outputs: (...args) => executions().outputs(...args),
+          summaries: (drafts) => nativeExecutionSummaries(drafts, executionReadPorts()),
           status: (...args) => executions().status(...args),
           start: (...args) => executions().start(...args),
           cancel: (...args) => executions().cancel(...args),

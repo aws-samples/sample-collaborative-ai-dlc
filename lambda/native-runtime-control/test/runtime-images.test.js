@@ -53,6 +53,26 @@ const revocation = (digest, extra = {}) => ({
 });
 
 describe('native runtime image policy', () => {
+  it('shares only the revocation lookup for a discovery page and rereads it for the next action', async () => {
+    const revocations = {};
+    const { images, ddb } = policy(revocations);
+    const decide = images.discoveryDecision();
+    const input = { image: OLD, row: row('RECOVERY_REQUIRED'), deployment };
+    const wrongTarget = {
+      ...input,
+      row: row('RECOVERY_REQUIRED', { target: { imageDigest: CURRENT.digest } }),
+    };
+    expect(await Promise.all([decide(input), decide(wrongTarget)])).toEqual([
+      { status: 'retained' },
+      { status: 'unapproved' },
+    ]);
+    expect(ddb.send).toHaveBeenCalledTimes(1);
+    revocations[nativeRuntimeImageKey(OLD.digest).pk] = revocation(OLD.digest);
+    await expect(images.authorize(input)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_IMAGE_REVOKED',
+    });
+    expect(ddb.send).toHaveBeenCalledTimes(2);
+  });
   it('always authorizes the current deployment image for a new or finished run', async () => {
     const { images } = policy();
     for (const status of ['REQUESTED', 'FAILED', 'STOPPED']) {

@@ -1,4 +1,5 @@
 import { nativePublicationView } from '../shared/native-publication.js';
+import { mapWithConcurrency } from '../shared/concurrency.js';
 import { readNativePublicationTrace } from './publication-trace.js';
 import {
   nativePublicationGraph,
@@ -52,15 +53,23 @@ const stopStatus = (row) => {
   };
 };
 
+const executionSummary = (row) => ({
+  status: row.status,
+  revision: row.version,
+  updatedAt: new Date(row.updatedAt).toISOString(),
+  turnSequence: nativeTurnSequence(row),
+  responsePending:
+    ['DISPATCHING', 'RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status) &&
+    row.response?.deliveryStatus === 'pending',
+});
+
 export const nativeExecutionView = (row) =>
   row
     ? {
-        status: row.status,
-        revision: row.version,
+        ...executionSummary(row),
         attemptId: row.attemptId,
         epoch: row.epoch,
         startedAt: new Date(row.startedAt).toISOString(),
-        updatedAt: new Date(row.updatedAt).toISOString(),
         model: row.configuration.model,
         credentialSource: row.configuration.credentialBinding.source,
         imageDigest: row.configuration.image.digest,
@@ -74,14 +83,10 @@ export const nativeExecutionView = (row) =>
         ...(row.failureCode ? { failureCode: row.failureCode } : {}),
         publicationId: row.publication?.id ?? null,
         projectionStatus: row.projectionStatus ?? null,
-        turnSequence: nativeTurnSequence(row),
         interactionId: row.interaction?.id ?? null,
         // Publication sequence is independent of a pending command's sequence.
         publicationSequence: row.publication?.sequence ?? null,
         stopStatus: stopStatus(row),
-        responsePending:
-          ['DISPATCHING', 'RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status) &&
-          row.response?.deliveryStatus === 'pending',
         recovery: row.recovery
           ? {
               id: row.recovery.id,
@@ -94,6 +99,48 @@ export const nativeExecutionView = (row) =>
           : null,
       }
     : null;
+
+const boundExecution = async (store, draft) => {
+  const row = await store.get(identity(draft));
+  if (row && row.bindingId !== draft.bindingId)
+    fail('NATIVE_EXECUTION_CONFLICT', 'Native execution binding changed');
+  return row;
+};
+
+export const nativeExecutionSummaries = async (drafts, { store, images, deployment }) => {
+  const decide = images?.discoveryDecision();
+  return mapWithConcurrency(drafts, 4, async (draft) => {
+    if (draft.status !== 'READY') return undefined;
+    let row;
+    try {
+      row = await boundExecution(store, draft);
+    } catch {
+      // The consistent preparation binding still authorizes navigation.
+      return { unavailable: true };
+    }
+    if (!row) return null;
+    const summary = executionSummary(row);
+    if (
+      row.status === 'RECOVERY_REQUIRED' &&
+      nativeRecoveryAvailable(row) &&
+      stopStatus(row).state === 'confirmed' &&
+      decide &&
+      deployment
+    ) {
+      try {
+        const decision = await decide({
+          image: row.configuration.image,
+          row,
+          deployment: deployment(),
+        });
+        if (['current', 'retained'].includes(decision.status)) summary.freshSessionRecovery = true;
+      } catch {
+        // An unreadable image policy withholds the cue; the execution status is known.
+      }
+    }
+    return summary;
+  });
+};
 
 const TERMINAL = new Set(['STOPPED', 'FAILED', 'CANCELLED', 'WAITING_FOR_INPUT']);
 
@@ -161,9 +208,7 @@ export const createNativeExecutionApi = ({
       fail('NATIVE_EXECUTION_IMAGE_UNAPPROVED', 'The runtime image is no longer approved');
   };
   const read = async (draft, recheck, includeProjection = true) => {
-    const row = await store.get(identity(draft));
-    if (row && row.bindingId !== draft.bindingId)
-      fail('NATIVE_EXECUTION_CONFLICT', 'Native execution binding changed');
+    const row = await boundExecution(store, draft);
     await recheck(draft);
     return row && projectionStatus && includeProjection
       ? { ...row, projectionStatus: await projectionStatus(row) }

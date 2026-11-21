@@ -1,10 +1,20 @@
-import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { randomUUID } from 'node:crypto';
+import { CreateTableCommand, DeleteTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi, nativeIntentView } from '../api.js';
 import { createNativeIntentListing, NATIVE_DISCOVERY_INDEX } from '../listing.js';
+import { createNativeRuntimeLambda } from '../command-service.js';
+import { executionFixture } from './execution-fixtures.js';
 import { nativeRuntimeBindingKey } from '../../shared/native-runtime-binding.js';
 import {
   IDENTITY,
+  DEPLOYMENT,
   IMAGE,
   MEMBERSHIP,
   OTHER,
@@ -12,7 +22,9 @@ import {
   TABLE,
   createInput,
   event,
+  owner,
   request,
+  resources,
   setup,
 } from './fixtures.js';
 
@@ -243,6 +255,97 @@ describe('protected native discovery and public summaries', () => {
     expect(f.query).toHaveBeenCalledTimes(1);
   });
 });
+
+it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
+  'reads the indexed binding and exact execution through the production command Lambda on local DynamoDB',
+  async () => {
+    const endpoint = new URL(process.env.DYNAMODB_LOCAL_ENDPOINT);
+    expect(['127.0.0.1', 'localhost', '[::1]']).toContain(endpoint.hostname);
+    const tableName = `native-discovery-${randomUUID()}`;
+    const raw = new DynamoDBClient({
+      endpoint: endpoint.href,
+      region: DEPLOYMENT.region,
+      credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
+    });
+    const ddb = DynamoDBDocumentClient.from(raw);
+    await raw.send(
+      new CreateTableCommand({
+        TableName: tableName,
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [
+          { AttributeName: 'pk', KeyType: 'HASH' },
+          { AttributeName: 'sk', KeyType: 'RANGE' },
+        ],
+        AttributeDefinitions: ['pk', 'sk', 'projectId', 'createdAt'].map((name) => ({
+          AttributeName: name,
+          AttributeType: name === 'createdAt' ? 'N' : 'S',
+        })),
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: NATIVE_DISCOVERY_INDEX,
+            KeySchema: [
+              { AttributeName: 'projectId', KeyType: 'HASH' },
+              { AttributeName: 'createdAt', KeyType: 'RANGE' },
+            ],
+            Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['executionId'] },
+          },
+        ],
+      }),
+    );
+    try {
+      const handler = createNativeRuntimeLambda({
+        ddb,
+        env: {
+          NATIVE_PREPARATION_ENABLED: 'true',
+          NATIVE_RUNTIME_BINDINGS_TABLE: tableName,
+          NATIVE_RUNTIME_ACCOUNT_ID: DEPLOYMENT.accountId,
+          NATIVE_RUNTIME_FILE_SYSTEM_ID: DEPLOYMENT.fileSystemId,
+          AWS_REGION: DEPLOYMENT.region,
+          NATIVE_EXECUTION_PUBLICATION_BUCKET: 'native-publications',
+          NATIVE_PACKAGES_BUCKET: 'native-packages',
+          NATIVE_EXECUTION_IMAGE_DIGEST: IMAGE.digest,
+          NATIVE_EXECUTION_IMAGE_URI: IMAGE.uri,
+        },
+        openConnection: async () => ({ close: async () => {} }),
+        membershipSnapshot: async () => MEMBERSHIP,
+      });
+      const put = (Item) => ddb.send(new PutCommand({ TableName: tableName, Item }));
+      const ready = async () => {
+        const f = setup();
+        const claimed = await f.claimed();
+        return f.store.ready({ ...owner(claimed), resources: resources(claimed) });
+      };
+      const prepared = await ready();
+      await put(prepared);
+      const list = async () => {
+        const response = await handler(listEvent());
+        expect(response.statusCode).toBe(200);
+        return json(response).items;
+      };
+      await vi.waitFor(async () =>
+        expect(await list()).toMatchObject([{ executionSummary: null }]),
+      );
+      const run = executionFixture({ preparedDraft: prepared });
+      await run.start();
+      await put(run.row());
+      expect((await list())[0].executionSummary).toEqual({
+        status: 'REQUESTED',
+        revision: 1,
+        updatedAt: new Date(run.row().updatedAt).toISOString(),
+        turnSequence: 1,
+        responsePending: false,
+      });
+      // Same logical key, newly created binding. The prior execution cannot enrich it.
+      const replacement = await ready();
+      expect(replacement.bindingId).not.toBe(prepared.bindingId);
+      await put(replacement);
+      expect((await list())[0].executionSummary).toEqual({ unavailable: true });
+    } finally {
+      await raw.send(new DeleteTableCommand({ TableName: tableName }));
+      raw.destroy();
+    }
+  },
+);
 
 describe('native discovery HTTP query and cursor boundary', () => {
   it.each([

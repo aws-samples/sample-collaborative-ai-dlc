@@ -161,15 +161,12 @@ export const nativePreparationInternalError = (event) =>
     'Native preparation request failed',
   );
 
-export const nativeIntentView = (row) => ({
+export const nativeIntentSummary = (row) => ({
   id: row.executionId,
   projectId: row.projectId,
   executionBackend: 'native',
   title: row.request.title,
-  prompt: nativeDraftPrompt(row).text,
-  promptRevision: nativeDraftPrompt(row).revision,
   harness: row.harness,
-  ...nativeInputView(row),
   status: row.status,
   package: {
     version: row.candidate.packagePin.version,
@@ -184,15 +181,12 @@ export const nativeIntentView = (row) => ({
   updatedAt: new Date(row.updatedAt).toISOString(),
 });
 
-export const nativeIntentSummary = (row) => {
-  const summary = nativeIntentView(row);
-  delete summary.prompt;
-  delete summary.promptRevision;
-  delete summary.applicationSource;
-  delete summary.inputs;
-  delete summary.inputRevision;
-  return summary;
-};
+export const nativeIntentView = (row) => ({
+  ...nativeIntentSummary(row),
+  prompt: nativeDraftPrompt(row).text,
+  promptRevision: nativeDraftPrompt(row).revision,
+  ...nativeInputView(row),
+});
 
 const validMembership = (value) =>
   record(value) &&
@@ -372,9 +366,13 @@ export const createNativeRuntimeApi = ({
       });
       if (page.rows.some((row) => row.projectIdentity !== before.projectIdentity))
         fail('FORBIDDEN');
+      const statuses = await execution?.summaries?.(page.rows);
       await recheck();
       return response(200, {
-        items: page.rows.map(nativeIntentSummary),
+        items: page.rows.map((row, i) => ({
+          ...nativeIntentSummary(row),
+          ...(statuses?.[i] !== undefined ? { executionSummary: statuses[i] } : {}),
+        })),
         nextCursor: page.nextCursor,
       });
     }
