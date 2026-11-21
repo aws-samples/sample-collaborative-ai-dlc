@@ -909,6 +909,54 @@ it('keeps a newer cancellation authoritative when a reply acknowledgement arrive
   expect(transport.post).toHaveBeenCalledTimes(1);
 });
 
+it.each(['accepted', 'uncertain'] as const)(
+  'refreshes after an %s reply even with an older detail GET in flight',
+  async (outcome) => {
+    intent.execution = { ...intent.execution!, revision: 10, imageStatus: 'retained' };
+    renderPage();
+    await typeReply('Keep these exact bytes');
+    const path = '/projects/project-1/native-intents/run-1';
+    const detailCalls = () => transport.get.mock.calls.filter(([url]) => url === path).length;
+    const stale = structuredClone(intent);
+    const before = deferred<NativeIntent>();
+    const after = deferred<NativeIntent>();
+    const original = transport.get.getMockImplementation()!;
+    const reads = vi.fn().mockReturnValueOnce(before.promise).mockReturnValueOnce(after.promise);
+    transport.get.mockImplementation((url: string) => (url === path ? reads() : original(url)));
+    await click('Refresh status');
+    if (outcome === 'uncertain')
+      transport.post.mockRejectedValueOnce(new Error('lost acknowledgement'));
+    else
+      transport.post.mockImplementationOnce(async (_url, request) => {
+        const result = accept(request);
+        intent.execution = { ...intent.execution!, revision: 11 };
+        return { ...result, execution: intent.execution };
+      });
+    await click('Send reply');
+    await click('Refresh status');
+    expect(detailCalls()).toBe(2);
+    expect(transport.post).toHaveBeenCalledTimes(1);
+    await act(async () => before.resolve(stale));
+    expect(detailCalls()).toBe(3);
+    if (outcome === 'accepted') {
+      expect(screen.getByRole('region', { name: 'Reply progress' })).toHaveTextContent(
+        'Reply accepted. Delivery pending.',
+      );
+      expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+    } else {
+      expect(screen.getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
+        'Keep these exact bytes',
+      );
+    }
+    await act(async () =>
+      after.resolve({ ...intent, execution: { ...intent.execution!, imageStatus: 'revoked' } }),
+    );
+    expect(screen.getByText(/Execution is unavailable for this runtime image/)).toBeVisible();
+    expect(transport.post).toHaveBeenCalledTimes(1);
+    expect(detailCalls()).toBe(3);
+  },
+);
+
 it('retains a blocked image observation when the reply acknowledgement omits policy metadata', async () => {
   const post = deferred<unknown>();
   intent.execution = { ...intent.execution!, revision: 10, imageStatus: 'retained' };
@@ -1410,6 +1458,43 @@ function recovering(revision = 11): NativeIntent {
     },
   };
 }
+
+it('checks a changed recovery episode after the pending read and discards work queued for a replaced member', async () => {
+  requireRecovery();
+  renderPage();
+  await loaded();
+  const path = '/projects/project-1/native-intents/run-1';
+  const old = deferred<NativeIntent>();
+  const check = deferred<NativeIntent>();
+  const reads = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(check.promise);
+  const original = transport.get.getMockImplementation()!;
+  transport.get.mockImplementation((url: string) => (url === path ? reads() : original(url)));
+  await click('Refresh status');
+  transport.post.mockRejectedValueOnce(
+    new ApiError(409, 'stale episode', { code: 'NATIVE_EXECUTION_CONFLICT' }),
+  );
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
+  await click('Refresh status');
+  expect(reads).toHaveBeenCalledTimes(1);
+  await act(async () => old.resolve(intent));
+  expect(reads).toHaveBeenCalledTimes(2);
+  // The new member opens the same route before the recovery check returns.
+  reads.mockResolvedValueOnce({
+    ...initial,
+    title: 'New member detail',
+    prompt: 'New member prompt',
+    execution: null,
+  });
+  await act(async () => resetSessionExpiry());
+  expect(screen.getByText('New member prompt')).toBeVisible();
+  expect(reads).toHaveBeenCalledTimes(3);
+  await act(async () => check.reject(new ApiError(403, 'Old member denied')));
+  expect(screen.getByText('New member prompt')).toBeVisible();
+  expect(screen.queryByText(initial.prompt)).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(transport.post).toHaveBeenCalledTimes(1);
+});
 
 it('requires confirmation for fresh-session resume and sends no earlier answer', async () => {
   requireRecovery({

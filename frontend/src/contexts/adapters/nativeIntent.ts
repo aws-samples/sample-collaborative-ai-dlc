@@ -16,11 +16,7 @@ import {
   getNativeListing,
   useNativeListingVersion,
 } from '@/hooks/useNativeIntents';
-import {
-  currentSessionEpoch,
-  isSessionExpiryNotified,
-  onSessionExpired,
-} from '@/services/sessionExpiry';
+import { currentSessionEpoch, isSessionActive, onSessionExpired } from '@/services/sessionExpiry';
 
 export {
   nativePreparationLabels as labels,
@@ -163,6 +159,20 @@ function nativeActionError(error: unknown, fallback: string): string {
 const nativeAccessRevision = (projectId: string) => getNativeListing(projectId).accessRevision ?? 0;
 const detailTime = (value: NativeIntent) =>
   Math.max(Date.parse(value.updatedAt), Date.parse(value.execution?.updatedAt ?? value.updatedAt));
+type ReadReason = 'mount' | 'refresh' | 'poll';
+type DetailRead = {
+  isCurrent: () => boolean;
+  eventRevision: number;
+  reason: ReadReason;
+  promise: Promise<void>;
+};
+const readErrors: Record<ReadReason, string> = {
+  mount: 'This native intent could not be verified or loaded.',
+  refresh: 'Status could not be refreshed. The last confirmed status is shown.',
+  poll: 'Status could not be refreshed. The last confirmed status is shown; work may still be continuing.',
+};
+const accessUnavailable =
+  'Native intent access is no longer available. Refresh status to check access.';
 type LoadedIntent = { value: NativeIntent; accessRevision: number };
 function acceptDetail(
   previous: LoadedIntent | null,
@@ -198,10 +208,15 @@ function acceptDetail(
 export function useNativeIntentAdapter(projectId: string, intentId: string) {
   useNativeListingVersion();
   const [loaded, setLoaded] = useState<LoadedIntent | null>(null);
+  const epoch = useRef(currentSessionEpoch());
   const accessRevision = nativeAccessRevision(projectId);
   // Hide revoked detail during render, before effects or any late promise run.
   const intent =
-    loaded?.accessRevision === accessRevision && !isSessionExpiryNotified() ? loaded.value : null;
+    loaded?.accessRevision === accessRevision &&
+    epoch.current === currentSessionEpoch() &&
+    isSessionActive()
+      ? loaded.value
+      : null;
   useEffect(() => {
     if (intent) updateNativeIntentSummary(intent);
   }, [intent]);
@@ -226,152 +241,154 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
   const promptInFlight = useRef(false);
   const recoveryRequest = useRef<NativeRecoveryRequest | null>(null);
   const generation = useRef(0);
-  const epoch = useRef(currentSessionEpoch());
+  const mounted = useRef(false);
+  const detailRead = useRef<DetailRead | null>(null);
+  const detailVersion = useRef(0);
   const current = useCallback(
     (requestGeneration: number, requestAccessRevision: number) =>
+      mounted.current &&
       requestGeneration === generation.current &&
       epoch.current === currentSessionEpoch() &&
-      !isSessionExpiryNotified() &&
+      isSessionActive() &&
       requestAccessRevision === nativeAccessRevision(projectId),
     [projectId],
   );
-  useEffect(
-    () =>
-      onSessionExpired(() => {
-        generation.current += 1;
-        setLoaded(null);
-        setPreparing(false);
-        setActing(null);
-        actionInFlight.current = null;
-        setPromptDraft(null);
-        promptRequest.current = null;
-        setPromptUncertain(false);
-        setSavingPrompt(false);
-        promptInFlight.current = false;
-        setError('Your session expired. Sign in again to read this native intent.');
-      }),
-    [],
-  );
-  useEffect(() => {
-    // Disabled project listings retain their presentation, but their 403 also
-    // advances the access revision and must discard loaded detail and requests.
-    if (!getNativeListing(projectId).denied && accessRevision === 0) return;
+  const clearProtectedState = useCallback((message: string) => {
     generation.current += 1;
+    detailRead.current = null;
     setLoaded(null);
     setPreparing(false);
     setActing(null);
     actionInFlight.current = null;
+    startRequest.current = null;
+    setStartPending(false);
+    setStartConflict(false);
+    recoveryRequest.current = null;
     setPromptDraft(null);
     promptRequest.current = null;
     setPromptUncertain(false);
     setSavingPrompt(false);
     promptInFlight.current = false;
-    setError('Native intent access is no longer available. Refresh status to check access.');
-  }, [projectId, accessRevision]);
+    setError(message);
+  }, []);
+  useEffect(
+    () =>
+      onSessionExpired(() =>
+        clearProtectedState('Your session expired. Sign in again to read this native intent.'),
+      ),
+    [clearProtectedState],
+  );
+  useEffect(() => {
+    // Disabled project listings also advance the access revision on denial.
+    if (getNativeListing(projectId).denied || accessRevision !== 0)
+      clearProtectedState(accessUnavailable);
+  }, [projectId, accessRevision, clearProtectedState]);
   const handleFailure = useCallback(
     (err: unknown, fallback: string, requestGeneration: number, requestAccessRevision: number) => {
       if (!current(requestGeneration, requestAccessRevision)) return;
       if (accessFailure(err)) {
-        // Also invalidate requests already in flight: their late success must
-        // not restore details after an authoritative denial.
-        generation.current += 1;
+        clearProtectedState(accessUnavailable);
         clearNativeIntents(projectId, true);
-        setLoaded(null);
-        setPreparing(false);
-        setActing(null);
-        actionInFlight.current = null;
-        setPromptDraft(null);
-        promptRequest.current = null;
-        setPromptUncertain(false);
-        setSavingPrompt(false);
-        promptInFlight.current = false;
-        setError('Native intent access is no longer available. Refresh status to check access.');
       } else {
         setError(fallback);
       }
     },
-    [projectId, current],
+    [projectId, current, clearProtectedState],
   );
-  const refresh = useCallback(async () => {
-    const requestGeneration = generation.current;
-    const requestAccessRevision = nativeAccessRevision(projectId);
-    try {
-      const next = await nativeIntentsService.get(projectId, intentId);
-      if (!current(requestGeneration, requestAccessRevision)) return;
-      setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
-      setError(null);
-      setStartConflict(false);
-    } catch (err) {
-      handleFailure(
-        err,
-        nativeActionError(
-          err,
-          'Status could not be refreshed. The last confirmed status is shown.',
-        ),
-        requestGeneration,
-        requestAccessRevision,
-      );
-    }
-  }, [projectId, intentId, handleFailure, current]);
+  const readDetail = useCallback(
+    (reason: ReadReason, eventRevision = -1): Promise<void> => {
+      const requestGeneration = generation.current;
+      const requestAccessRevision = nativeAccessRevision(projectId);
+      const isCurrent = () => current(requestGeneration, requestAccessRevision);
+      if (!isCurrent()) return Promise.resolve();
+      const pending = detailRead.current;
+      if (pending?.isCurrent()) {
+        pending.eventRevision = Math.max(pending.eventRevision, eventRevision);
+        if (reason === 'refresh') pending.reason = reason;
+        return pending.promise;
+      }
+
+      const request: DetailRead = {
+        isCurrent,
+        eventRevision,
+        reason,
+        // Start after this turn's mount/cleanup and synchronous invalidations.
+        promise: Promise.resolve().then(async () => {
+          try {
+            while (isCurrent()) {
+              const startedVersion = detailVersion.current;
+              const eventAtStart = request.eventRevision;
+              const needsNewerRead = (revision = -1) =>
+                startedVersion !== detailVersion.current ||
+                (request.eventRevision > eventAtStart && request.eventRevision > revision);
+              try {
+                const next = await nativeIntentsService.get(projectId, intentId);
+                if (!isCurrent()) return;
+                if (needsNewerRead(next.execution?.revision)) continue;
+                setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
+                setError(null);
+                if (request.reason === 'refresh') setStartConflict(false);
+              } catch (err) {
+                // Membership denial still applies when an action superseded the read.
+                if (!accessFailure(err) && needsNewerRead()) continue;
+                handleFailure(
+                  err,
+                  nativeActionError(err, readErrors[request.reason]),
+                  requestGeneration,
+                  requestAccessRevision,
+                );
+              }
+              return;
+            }
+          } finally {
+            if (detailRead.current === request) detailRead.current = null;
+          }
+        }),
+      };
+      detailRead.current = request;
+      return request.promise;
+    },
+    [projectId, intentId, current, handleFailure],
+  );
+  const refresh = useCallback(() => readDetail('refresh'), [readDetail]);
+  const refreshAfterChange = useCallback(
+    (eventRevision?: number) => {
+      if (!current(generation.current, accessRevision)) return Promise.resolve();
+      // A protected event identifies the revision a pending GET must cover.
+      // Input and reply callbacks need an observation made after their POST.
+      if (eventRevision === undefined) detailVersion.current += 1;
+      return readDetail('refresh', eventRevision);
+    },
+    [accessRevision, current, readDetail],
+  );
 
   useEffect(() => {
-    let active = true;
-    const requestGeneration = generation.current;
-    const requestAccessRevision = nativeAccessRevision(projectId);
-    nativeIntentsService
-      .get(projectId, intentId)
-      .then((next) => {
-        if (!active || !current(requestGeneration, requestAccessRevision)) return;
-        setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
-        setError(null);
-      })
-      .catch((err) => {
-        if (active)
-          handleFailure(
-            err,
-            nativeActionError(err, 'This native intent could not be verified or loaded.'),
-            requestGeneration,
-            requestAccessRevision,
-          );
-      });
+    mounted.current = true;
+    void readDetail('mount');
     return () => {
-      active = false;
+      mounted.current = false;
       generation.current += 1;
+      detailRead.current = null;
     };
-  }, [projectId, intentId, handleFailure, current]);
+  }, [readDetail]);
 
   useEffect(() => {
     if (!polling) return;
     let active = true;
-    let timer: ReturnType<typeof setTimeout>;
+    const requestGeneration = generation.current;
+    const requestAccessRevision = nativeAccessRevision(projectId);
+    const isCurrent = () => active && current(requestGeneration, requestAccessRevision);
     const poll = async () => {
-      const requestGeneration = generation.current;
-      const requestAccessRevision = nativeAccessRevision(projectId);
-      try {
-        const next = await nativeIntentsService.get(projectId, intentId);
-        if (!active || !current(requestGeneration, requestAccessRevision)) return;
-        setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
-        setError(null);
-        // The effect stops on an accepted terminal state. A stale response
-        // rejected by acceptDetail must not stop polling the newer execution.
-      } catch (err) {
-        if (!active || !current(requestGeneration, requestAccessRevision)) return;
-        handleFailure(
-          err,
-          'Status could not be refreshed. The last confirmed status is shown; work may still be continuing.',
-          requestGeneration,
-          requestAccessRevision,
-        );
-        if (accessFailure(err)) return;
-      }
-      if (active) timer = setTimeout(() => void poll(), 3000);
+      if (!isCurrent()) return;
+      await readDetail('poll');
+      if (isCurrent()) timer = setTimeout(poll, 3000);
     };
-    timer = setTimeout(() => void poll(), 3000);
+    let timer = setTimeout(poll, 3000);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [polling, projectId, intentId, handleFailure, current]);
+  }, [polling, readDetail, projectId, current]);
 
   const prepare = async () => {
     if (preparing) return;
@@ -391,7 +408,10 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         requestAccessRevision,
       );
     } finally {
-      if (current(requestGeneration, requestAccessRevision)) setPreparing(false);
+      if (current(requestGeneration, requestAccessRevision)) {
+        detailVersion.current += 1;
+        setPreparing(false);
+      }
     }
   };
 
@@ -450,11 +470,13 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         next = await nativeIntentsService.cancel(projectId, intentId);
       }
       if (!current(requestGeneration, requestAccessRevision)) return;
+      detailVersion.current += 1;
       setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
     } catch (err) {
+      if (!current(requestGeneration, requestAccessRevision)) return;
+      detailVersion.current += 1;
       if (
         action === 'start' &&
-        current(requestGeneration, requestAccessRevision) &&
         err instanceof ApiError &&
         err.status === 409 &&
         ['NATIVE_PROMPT_CONFLICT', 'NATIVE_INPUT_CONFLICT', 'NATIVE_EXECUTION_CONFLICT'].includes(
@@ -558,6 +580,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
       );
     } finally {
       if (current(requestGeneration, requestAccessRevision)) {
+        detailVersion.current += 1;
         promptInFlight.current = false;
         setSavingPrompt(false);
       }
@@ -609,6 +632,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     prepare,
     execute,
     refresh,
+    refreshAfterChange,
     publicationFailure,
     acceptExecution,
     promptDraft,

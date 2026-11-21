@@ -460,6 +460,25 @@ it('does not let a GET begun before Start erase its accepted execution', async (
   expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
 });
 
+it('finishes a pending refresh with protected execution status after a lost Start acknowledgement', async () => {
+  const earlier = deferred<NativeIntent>();
+  api.get
+    .mockResolvedValueOnce(ready)
+    .mockReturnValueOnce(earlier.promise)
+    .mockResolvedValueOnce(waiting);
+  api.start.mockRejectedValueOnce(new Error('acknowledgement lost'));
+  renderPage();
+  await screen.findByText(ready.prompt);
+  await click('Refresh status');
+  await click('Start agent');
+  expect(api.get).toHaveBeenCalledTimes(2);
+  await act(async () => earlier.resolve(ready));
+  expect(api.get).toHaveBeenCalledTimes(3);
+  expect(executionStatus()).toHaveTextContent('Waiting for input');
+  expect(screen.getByText('Which pipe style?')).toBeVisible();
+  expect(api.start).toHaveBeenCalledTimes(1);
+});
+
 it('does not regress a newer execution when the Start acknowledgement arrives late', async () => {
   const pending = deferred<NativeIntent>();
   api.start.mockReturnValueOnce(pending.promise);
@@ -830,7 +849,7 @@ it('observes another member cancelling a legacy wait after graph projection catc
 });
 
 it.each(['legacy timestamps', 'server revision', 'missing revision'] as const)(
-  'ignores an older refresh after polling confirms cancellation using %s',
+  'rejects an older detail read after a shared refresh and poll confirm cancellation using %s',
   async (ordering) => {
     vi.useFakeTimers();
     const revision = ordering === 'legacy timestamps' ? undefined : 8;
@@ -848,18 +867,22 @@ it.each(['legacy timestamps', 'server revision', 'missing revision'] as const)(
     const oldRefresh = deferred<NativeIntent>();
     api.get.mockReturnValueOnce(oldRefresh.promise);
     await click('Refresh status');
-    api.get.mockResolvedValueOnce({
-      ...waiting,
-      execution: {
-        ...execution,
-        revision,
-        status: 'CANCEL_REQUESTED',
-        updatedAt: '2026-09-29T09:05:00Z',
-      },
-    });
     await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(api.get).toHaveBeenCalledTimes(2);
+    await act(async () =>
+      oldRefresh.resolve({
+        ...waiting,
+        execution: {
+          ...execution,
+          revision,
+          status: 'CANCEL_REQUESTED',
+          updatedAt: '2026-09-29T09:05:00Z',
+        },
+      }),
+    );
     expect(executionStatus()).toHaveTextContent('Cancellation requested');
-    await act(async () => oldRefresh.resolve(stale));
+    api.get.mockResolvedValueOnce(stale);
+    await click('Refresh status');
     expect(executionStatus()).toHaveTextContent('Cancellation requested');
     expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
     api.get.mockResolvedValueOnce({

@@ -36,6 +36,7 @@ const service = vi.hoisted(() => ({
   recover: vi.fn(),
   create: vi.fn(),
   prepare: vi.fn(),
+  inputs: vi.fn(),
   capabilities: vi.fn(),
   projectList: vi.fn(),
   platformGet: vi.fn(),
@@ -166,7 +167,7 @@ function emit(name: string, value: unknown) {
 }
 const hint = (id = 'one') =>
   emit('agent.output', { executionBackend: 'native', projectId: 'project', intentId: id });
-function workspace(search = '') {
+function workspace(search = '', reactStrictMode = false) {
   return render(
     <ThemeProvider>
       <AuthProvider>
@@ -181,6 +182,7 @@ function workspace(search = '') {
         </MemoryRouter>
       </AuthProvider>
     </ThemeProvider>,
+    { reactStrictMode },
   );
 }
 beforeEach(() => {
@@ -626,6 +628,161 @@ it.each([
     expect(screen.getByText('Task one')).toBeVisible();
   },
 );
+
+it('shares the mount, manual refreshes and pending polls and retries a transient detail error', async () => {
+  vi.useFakeTimers();
+  const mount = deferred<NativeIntent>();
+  service.get.mockReturnValueOnce(mount.promise);
+  await act(async () => workspace('', true));
+  const refresh = () => fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+  await act(async () => {
+    refresh();
+    refresh();
+  });
+  expect(service.get).toHaveBeenCalledExactlyOnceWith('project', 'one');
+  await act(async () => mount.resolve(detail()));
+  const pending = deferred<NativeIntent>();
+  service.get.mockReturnValueOnce(pending.promise);
+  await act(async () => refresh());
+  await act(async () => vi.advanceTimersByTimeAsync(9000));
+  await act(async () => refresh());
+  expect(service.get).toHaveBeenCalledTimes(2);
+  await act(async () => pending.reject(new ApiError(503, 'temporary')));
+  expect(screen.getByText('Agent running')).toBeVisible();
+  expect(screen.getByRole('alert')).toHaveTextContent('The last confirmed status is shown');
+  service.get.mockResolvedValueOnce({
+    ...detail(),
+    execution: { ...detail().execution!, status: 'STOPPED', revision: 8 },
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(service.get).toHaveBeenCalledTimes(3);
+  expect(
+    screen.getByText(
+      /The agent turn stopped. This does not establish that the workflow is complete/,
+    ),
+  ).toBeVisible();
+  expect(screen.queryByRole('alert')).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(9000));
+  expect(service.get).toHaveBeenCalledTimes(3);
+});
+
+it.each(['changed', 'covered', 'denied', 'switch'] as const)(
+  'reconciles overlapping protected lifecycle revisions once on %s',
+  async (outcome) => {
+    workspace();
+    await screen.findByText('Agent running');
+    const old = deferred<NativeIntent>();
+    service.get.mockReturnValueOnce(old.promise);
+    const refresh = () => fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await act(async () => refresh());
+    await act(async () => hint());
+    expect(service.get).toHaveBeenCalledTimes(2);
+    for (const revision of [8, 9]) {
+      service.outputs.mockResolvedValueOnce({
+        ...page(),
+        nextEventAfter: null,
+        events: [
+          {
+            eventId: `native-${revision}`,
+            revision,
+            type: revision === 8 ? 'native.cancel_requested' : 'native.cancelled',
+            summary:
+              revision === 8
+                ? 'Cancellation accepted; stop pending'
+                : 'Cancellation handling finished',
+            timestamp: time,
+          },
+        ],
+      });
+      await act(async () => hint());
+    }
+    await act(async () => refresh());
+    expect(service.get).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Agent running')).toBeVisible();
+    if (outcome === 'covered') {
+      await act(async () =>
+        old.resolve({
+          ...detail(),
+          execution: { ...detail().execution!, revision: 9, status: 'CANCELLED' },
+        }),
+      );
+      expect(screen.getByText('Execution cancelled')).toBeVisible();
+      expect(service.get).toHaveBeenCalledTimes(2);
+      return;
+    }
+    if (outcome === 'denied') {
+      await act(async () => old.reject(new ApiError(403, 'membership revoked')));
+      expect(screen.getByRole('alert')).toHaveTextContent('access is no longer available');
+      expect(screen.queryByText('Task one')).toBeNull();
+      expect(service.get).toHaveBeenCalledTimes(2);
+      return;
+    }
+    if (outcome === 'switch') {
+      await act(async () => fireEvent.click(screen.getByRole('link', { name: 'Switch run' })));
+      await act(async () => old.reject(new ApiError(403, 'old membership')));
+      expect(screen.getByText('Task two')).toBeVisible();
+      expect(service.get).toHaveBeenCalledTimes(3);
+      expect(service.get).toHaveBeenLastCalledWith('project', 'two');
+      return;
+    }
+    const fresh = deferred<NativeIntent>();
+    service.get.mockReturnValueOnce(fresh.promise);
+    await act(async () => old.resolve({ ...detail(), prompt: 'Superseded read' }));
+    expect(screen.queryByText('Superseded read')).toBeNull();
+    await act(async () => refresh());
+    expect(service.get).toHaveBeenCalledTimes(3);
+    await act(async () =>
+      fresh.resolve({
+        ...detail(),
+        execution: { ...detail().execution!, revision: 9, status: 'CANCELLED' },
+      }),
+    );
+    expect(screen.getByText('Execution cancelled')).toBeVisible();
+    expect(service.get).toHaveBeenCalledTimes(3);
+  },
+);
+
+it('waits for the post-input detail read before releasing the Start control', async () => {
+  const file = {
+    attachmentId: 'input-one',
+    filename: 'draft.txt',
+    mimeType: 'text/plain',
+    size: 4,
+  };
+  const draft = {
+    ...detail(),
+    execution: null,
+    inputRevision: 1,
+    inputs: { attachments: [file], imports: [], pendingUploads: [], source: null },
+  };
+  const changed = { ...draft, inputRevision: 2, inputs: { ...draft.inputs, attachments: [] } };
+  const before = deferred<NativeIntent>();
+  const after = deferred<NativeIntent>();
+  service.get
+    .mockResolvedValueOnce(draft)
+    .mockReturnValueOnce(before.promise)
+    .mockReturnValueOnce(after.promise);
+  service.inputs.mockResolvedValue({ intent: changed });
+  workspace();
+  await screen.findByRole('button', { name: 'Remove draft.txt' });
+  const click = (name: string) =>
+    act(async () => fireEvent.click(screen.getByRole('button', { name })));
+  await click('Refresh status');
+  await click('Remove draft.txt');
+  await click('Refresh status');
+  expect(service.inputs).toHaveBeenCalledExactlyOnceWith('project', 'one', 1, {
+    operation: 'remove',
+    attachmentId: file.attachmentId,
+  });
+  expect(service.get).toHaveBeenCalledTimes(2);
+  await act(async () => before.resolve(draft));
+  expect(service.get).toHaveBeenCalledTimes(3);
+  expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+  await act(async () => after.resolve(changed));
+  expect(screen.queryByText(file.filename)).toBeNull();
+  expect(screen.getByRole('button', { name: 'Start agent' })).toBeEnabled();
+  expect(service.get).toHaveBeenCalledTimes(3);
+});
 
 it.each(['WAITING_FOR_INPUT', 'AWAITING_USER', 'RECOVERY_REQUIRED'] as const)(
   'refreshes a projected %s wait in the shared workspace without an activity notification',
