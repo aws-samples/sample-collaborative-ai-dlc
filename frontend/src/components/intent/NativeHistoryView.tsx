@@ -36,7 +36,7 @@ export function NativeHistoryView({
   selection: NativeHistoryLocation;
   onAccessFailure: (error: unknown) => void;
 }) {
-  const { search } = useLocation();
+  const { search, hash } = useLocation();
   const [pages, setPages] = useState<NativePublicationPage[]>([]);
   const [revision, setRevision] = useState<NativeRevision | null>(null);
   const [comparison, setComparison] = useState<NativeRevision | null>(null);
@@ -66,7 +66,11 @@ export function NativeHistoryView({
   );
   const failed = useCallback(
     (err: unknown, request: number) => {
-      if (!current(request)) return;
+      const denied =
+        nativeAccessDenied(err) &&
+        !(err.status === 404 && err.body?.code === 'NATIVE_ARTIFACT_REVISION_INVALID');
+      // A concurrent membership denial still applies after a missing receipt clears History.
+      if (!current(denied ? generation.current : request)) return;
       generation.current += 1;
       setPages([]);
       setRevision(null);
@@ -81,7 +85,7 @@ export function NativeHistoryView({
       setError(
         'This revision or its history is unavailable or could not be verified. The link has not been redirected to newer content.',
       );
-      if (nativeAccessDenied(err)) onAccessFailure(err);
+      if (denied) onAccessFailure(err);
     },
     [current, closeDiscussion, onAccessFailure],
   );
@@ -430,6 +434,7 @@ export function NativeHistoryView({
                       descriptor={descriptor}
                       createdAt={revision.createdAt}
                       publicationSequence={revision.sequence}
+                      lineAnchor={hash}
                       resultScope={{
                         projectId: intent.projectId,
                         executionId: intent.id,

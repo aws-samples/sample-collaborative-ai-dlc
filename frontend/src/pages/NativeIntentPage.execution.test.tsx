@@ -68,6 +68,8 @@ const ready: NativeIntent = {
   executionAvailable: true,
   execution: null,
 };
+const publicationId = '1'.repeat(64);
+const codeId = `nf-${'2'.repeat(64)}`;
 const execution: NativeExecution = {
   recoveryMode: 'efs-workspace-v1',
   status: 'WAITING_FOR_INPUT',
@@ -82,7 +84,7 @@ const execution: NativeExecution = {
     branch: 'main',
     commit: 'abc123',
   },
-  publicationId: 'pub-1',
+  publicationId: publicationId,
   projectionStatus: 'complete',
 };
 function executionStatus() {
@@ -92,7 +94,7 @@ function executionStatus() {
 }
 const waiting: NativeIntent = { ...ready, execution };
 const publication: NativePublication = {
-  id: 'pub-1',
+  id: publicationId,
   sequence: 1,
   createdAt: '2026-09-29T09:04:00Z',
   files: [
@@ -105,7 +107,7 @@ const publication: NativePublication = {
       mediaType: 'text/markdown',
     },
     {
-      id: 'code-1',
+      id: codeId,
       path: 'src/pipe.ts',
       bytes: 22,
       sha256: 'b'.repeat(64),
@@ -129,26 +131,26 @@ const contents: Record<string, NativeFileContent> = {
     ...publication.files[0],
     encoding: 'utf8',
     content: '# Which pipe style?\n\nChoose one.',
-    publicationId: 'pub-1',
+    publicationId: publicationId,
   },
-  'code-1': {
+  [codeId]: {
     ...publication.files[1],
     encoding: 'utf8',
     content: 'export const pipe = 1;',
-    publicationId: 'pub-1',
+    publicationId: publicationId,
   },
   'binary-1': {
     ...publication.files[2],
     encoding: 'base64',
     content: 'AAEC',
-    publicationId: 'pub-1',
+    publicationId: publicationId,
   },
 };
 const graph: NativeGraph = {
-  publicationId: 'pub-1',
+  publicationId: publicationId,
   nodes: [
     { id: 'native-intent-1', type: 'Intent', label: 'Pipe request' },
-    { id: 'artifact-code-1', type: 'Artifact', label: 'Pipe source', artifactId: 'code-1' },
+    { id: 'artifact-code-1', type: 'Artifact', label: 'Pipe source', artifactId: codeId },
   ],
   edges: [{ source: 'native-intent-1', target: 'artifact-code-1', label: 'CONTAINS' }],
 };
@@ -180,7 +182,7 @@ function cleared() {
   expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
   expect(screen.queryByText('export const pipe = 1;')).not.toBeInTheDocument();
   expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /Open file for/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /Open file for/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
 }
 beforeEach(() => {
@@ -500,7 +502,7 @@ it.each(['start', 'cancel'] as const)(
   },
 );
 
-it('reloads committed files and graph and navigates from the graph into the native file view', async () => {
+it('reloads committed files and links a retained manifest graph to the named file', async () => {
   api.get.mockResolvedValue(waiting);
   const user = userEvent.setup();
   const first = renderPage();
@@ -515,11 +517,12 @@ it('reloads committed files and graph and navigates from the graph into the nati
   await screen.findByText('Which pipe style?');
   expect(api.publication).toHaveBeenCalledTimes(2);
   await user.click(screen.getByRole('tab', { name: 'Graph' }));
-  await user.click(await screen.findByRole('button', { name: 'Open file for Pipe source' }));
-  expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'active');
-  expect(await screen.findByText('export const pipe = 1;')).toBeInTheDocument();
+  expect(await screen.findByRole('link', { name: 'Open file for Pipe source' })).toHaveAttribute(
+    'href',
+    `/space/project-1/native-intent/run-1?nativeRevision=1.${publicationId}&nativeFile=${codeId}%3A${publication.files[1].sha256}`,
+  );
   expect(api.graph).toHaveBeenCalledWith('project-1', 'run-1');
-  expect(api.file).toHaveBeenLastCalledWith('project-1', 'run-1', 'code-1');
+  expect(api.file).not.toHaveBeenCalledWith('project-1', 'run-1', codeId);
   expect(api.start).not.toHaveBeenCalled();
 });
 
@@ -632,7 +635,9 @@ it('clears already-loaded files and graph on a later file denial', async () => {
   renderPage();
   await screen.findByText('Which pipe style?');
   await user.click(screen.getByRole('tab', { name: 'Graph' }));
-  await user.click(await screen.findByRole('button', { name: 'Open file for Pipe source' }));
+  await screen.findByRole('link', { name: 'Open file for Pipe source' });
+  await user.click(screen.getByRole('tab', { name: 'Files' }));
+  await user.click(screen.getByRole('button', { name: /src\/pipe.ts/ }));
   await screen.findByText('export const pipe = 1;');
   api.file.mockRejectedValueOnce(new ApiError(404, 'File is no longer available'));
   await user.click(screen.getByRole('button', { name: /assets\/pipe.png/ }));
@@ -681,7 +686,7 @@ it('honors a late file denial after an isolated graph transport error', async ()
   cleared();
 });
 
-it('opens a source file from a verified derived node and preserves it after a graph outage', async () => {
+it('links a verified section to its source lines and preserves file access after a graph outage', async () => {
   api.get.mockResolvedValue(waiting);
   const file = publication.files[1];
   api.graph.mockResolvedValueOnce({
@@ -718,8 +723,11 @@ it('opens a source file from a verified derived node and preserves it after a gr
   renderPage();
   await screen.findByText('Which pipe style?');
   await user.click(screen.getByRole('tab', { name: 'Graph' }));
-  await user.click(await screen.findByRole('button', { name: 'Open file for Source section' }));
-  expect(api.file).toHaveBeenLastCalledWith('project-1', 'run-1', file.id);
+  expect(await screen.findByRole('link', { name: 'Open file for Source section' })).toHaveAttribute(
+    'href',
+    `/space/project-1/native-intent/run-1?nativeRevision=1.${publicationId}&nativeFile=${file.id}%3A${file.sha256}#L1-L1`,
+  );
+  await user.click(screen.getByRole('tab', { name: 'Files' }));
   api.graph.mockRejectedValueOnce(new Error('Graph unavailable'));
   await user.click(screen.getByRole('tab', { name: 'Graph' }));
   await screen.findByRole('alert');
@@ -764,7 +772,7 @@ it.each(['publication', 'file', 'graph'] as const)(
     await screen.findByRole('alert');
     expect(screen.getByText(ready.title)).toBeInTheDocument();
     expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Open file for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Open file for/ })).not.toBeInTheDocument();
     if (operation === 'graph') {
       await user.click(screen.getByRole('tab', { name: 'Overview' }));
       expect(await screen.findByText('Which pipe style?')).toBeInTheDocument();

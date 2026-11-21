@@ -1,5 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useNavigate } from 'react-router';
 import { NativeIntentContent } from './NativeIntentContent';
 import { NativeFileComparison, compareInventory } from './NativeHistoryView';
@@ -157,6 +158,38 @@ it('keeps large current files obtainable without attempting the inline transport
   expect(screen.getByRole('button', { name: 'Prepare file download' })).toBeInTheDocument();
   expect(mocks.file).not.toHaveBeenCalled();
 });
+
+it('removes graph links while a refreshed manifest awaits matching provenance', async () => {
+  const original = { ...revision(2), projectionStatus: 'complete' };
+  mocks.publication.mockResolvedValue(original);
+  mocks.graph.mockResolvedValue({
+    publicationId: original.id,
+    edges: [],
+    nodes: [{ id: fileId, type: 'Artifact', label: 'Source', artifactId: fileId, sha256: hash }],
+  });
+  const view = (onAccessFailure: (err: unknown) => void) => (
+    <MemoryRouter>
+      <NativeIntentContent
+        intent={intent}
+        onAccessFailure={onAccessFailure}
+        onRefresh={async () => {}}
+      />
+    </MemoryRouter>
+  );
+  const rendered = render(view(mocks.denied));
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0 });
+  await screen.findByRole('link', { name: 'Open file for Source' });
+  mocks.publication.mockResolvedValue({
+    ...original,
+    files: [{ ...original.files[0], sha256: 'f'.repeat(64) }],
+  });
+  mocks.graph.mockReturnValue(new Promise(() => {}));
+  rendered.rerender(view(vi.fn()));
+  await waitFor(() =>
+    expect(screen.queryByRole('link', { name: 'Open file for Source' })).not.toBeInTheDocument(),
+  );
+  expect(mocks.file).not.toHaveBeenCalled();
+});
 beforeEach(() => {
   vi.clearAllMocks();
   resetSessionExpiry();
@@ -226,7 +259,7 @@ const uncertainIntent = (): NativeIntent => ({
 it('compares the selected historical publication with its pinned source while a later head exists', async () => {
   mocks.source.mockResolvedValueOnce(null);
   mount(nativeHistorySearch('', { revision: selected }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Compare with pinned source' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Compare with pinned source' }));
   await screen.findByText(/No authoritative source baseline/);
   expect(mocks.source).toHaveBeenCalledWith(intent.projectId, intent.id, revision(1));
   expect(mocks.publication).not.toHaveBeenCalled();
@@ -503,6 +536,25 @@ it('discards late file callbacks after navigation and session expiry', async () 
   act(() => notifySessionExpired());
   await act(async () => resolve(file('expired private bytes')));
   expect(screen.queryByText('expired private bytes')).not.toBeInTheDocument();
+});
+
+it('clears a missing revision locally and still propagates a concurrent membership denial', async () => {
+  let rejectList!: (error: Error) => void;
+  mocks.list.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectList = reject;
+    }),
+  );
+  mocks.revision.mockRejectedValue(
+    new ApiError(404, 'Unavailable', { code: 'NATIVE_ARTIFACT_REVISION_INVALID' }),
+  );
+  mount();
+  await screen.findByRole('alert');
+  expect(mocks.denied).not.toHaveBeenCalled();
+  const denial = new ApiError(403, 'Membership revoked');
+  await act(async () => rejectList(denial));
+  expect(mocks.denied).toHaveBeenCalledWith(denial);
+  expect(mocks.file).not.toHaveBeenCalled();
 });
 
 it('paginates earlier admitted rows and describes explicit gaps', async () => {

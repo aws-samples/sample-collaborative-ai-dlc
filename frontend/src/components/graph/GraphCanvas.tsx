@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
+import { Link, useNavigate } from 'react-router';
 import { type GraphNode, type GraphEdge } from '@/services/sprintGraph';
 import { cn } from '@/lib/utils';
 import { Network, Loader2, Sparkles } from 'lucide-react';
@@ -30,6 +31,40 @@ import { GraphKeyboardHelp } from './GraphKeyboardHelp';
 // Re-export for consumers that imported NODE_TYPES from GraphCanvas
 export { NODE_TYPES };
 
+function GraphSourceLink({
+  to,
+  label,
+  children,
+}: {
+  to: string;
+  label: string;
+  children: ReactNode;
+}) {
+  const navigate = useNavigate();
+  return (
+    <Link
+      to={to}
+      aria-label={label}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (
+          (event.key === 'Enter' || event.key === ' ') &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          navigate(to);
+        }
+      }}
+    >
+      {children}
+    </Link>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -43,7 +78,7 @@ export interface GraphCanvasProps {
   emptyState?: ReactNode;
   headerLeading?: ReactNode;
   /** Optional navigation for a graph backed by published files. No API or cache ownership. */
-  onOpenArtifact?: (artifactId: string) => void;
+  sourceLinks?: ReadonlyMap<string, string>;
   /** Optional navigation to a published assistant turn, independent of files. */
   onOpenInteraction?: (interactionId: string) => void;
 }
@@ -60,7 +95,7 @@ export function GraphCanvas({
   error,
   emptyState,
   headerLeading,
-  onOpenArtifact,
+  sourceLinks,
   onOpenInteraction,
 }: GraphCanvasProps) {
   // Internal layout state
@@ -1077,6 +1112,7 @@ export function GraphCanvas({
                     const isConnected = connectedNodeIds.has(node.id);
                     const dimmed = highlightNodeId && !isConnected;
                     const IconComp = cfg.icon;
+                    const sourceLink = sourceLinks?.get(node.id);
                     const navigation =
                       onOpenInteraction &&
                       typeof node.interactionId === 'string' &&
@@ -1085,14 +1121,9 @@ export function GraphCanvas({
                             label: `Open response for ${node.label}`,
                             open: () => onOpenInteraction(node.interactionId as string),
                           }
-                        : onOpenArtifact && typeof node.artifactId === 'string' && node.artifactId
-                          ? {
-                              label: `Open file for ${node.label}`,
-                              open: () => onOpenArtifact(node.artifactId as string),
-                            }
-                          : null;
+                        : null;
 
-                    return (
+                    const glyph = (
                       <g
                         key={node.id}
                         transform={`translate(${node.x}, ${node.y})`}
@@ -1114,7 +1145,8 @@ export function GraphCanvas({
                         }}
                         onClick={() => {
                           if (navigation) navigation.open();
-                          else setSelectedNode((prev) => (prev === node.id ? null : node.id));
+                          else if (!sourceLink)
+                            setSelectedNode((prev) => (prev === node.id ? null : node.id));
                         }}
                         className="cursor-pointer"
                         opacity={dimmed ? 0.15 : 1}
@@ -1251,6 +1283,17 @@ export function GraphCanvas({
                         })()}
                       </g>
                     );
+                    return sourceLink ? (
+                      <GraphSourceLink
+                        key={node.id}
+                        to={sourceLink}
+                        label={`Open file for ${node.label}`}
+                      >
+                        {glyph}
+                      </GraphSourceLink>
+                    ) : (
+                      glyph
+                    );
                   })}
               </svg>
 
@@ -1305,6 +1348,7 @@ export function GraphCanvas({
             nodeMap={nodeMap}
             selectedNode={selectedNode!}
             onSelectNode={setSelectedNode}
+            sourceLink={sourceLinks?.get(selectedNode!)}
           />
         )}
       </div>

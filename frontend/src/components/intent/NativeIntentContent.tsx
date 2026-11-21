@@ -13,7 +13,7 @@ import { NativeExecutionProgress } from './NativeExecutionProgress';
 import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import { useOptionalAuth } from '@/contexts/AuthContext';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
-import { nativeGraphMatchesPublication } from '@/lib/nativeTraceability';
+import { nativeGraphMatchesPublication, nativeGraphSourceLinks } from '@/lib/nativeTraceability';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -150,7 +150,16 @@ function NativePublicationContent({
   const [publication, setPublication] = useState<NativePublication | null>(null);
   const [files, setFiles] = useState<Record<string, NativeFileContent | NativeRevisionFile>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [graph, setGraph] = useState<NativeGraph | null>(null);
+  const [acceptedGraph, setGraph] = useState<{
+    graph: NativeGraph;
+    publication: NativePublication;
+  } | null>(null);
+  const graph = acceptedGraph?.publication === publication ? acceptedGraph.graph : null;
+  const { search } = useLocation();
+  const sourceLinks = useMemo(
+    () => (graph && publication ? nativeGraphSourceLinks(graph, publication, search) : undefined),
+    [graph, publication, search],
+  );
   const [graphError, setGraphError] = useState<string | null>(null);
   const [loadedInteraction, setInteraction] = useState<NativeInteractionView | null>(null);
   const interaction =
@@ -362,7 +371,7 @@ function NativePublicationContent({
           throw new Error('The graph does not match the committed revision. Refresh status.');
         }
         setGraphError(null);
-        setGraph(value);
+        setGraph({ graph: value, publication });
       })
       .catch((err) => {
         if (nativeAccessDenied(err)) failed(err, requestGeneration);
@@ -604,7 +613,7 @@ function NativePublicationContent({
                     title="Native intent graph"
                     loading={!graph}
                     emptyState={<p>No graph nodes are included in this revision.</p>}
-                    onOpenArtifact={openFile}
+                    sourceLinks={sourceLinks}
                     onOpenInteraction={(id) => {
                       if (interactionId === id) setTab('overview');
                     }}

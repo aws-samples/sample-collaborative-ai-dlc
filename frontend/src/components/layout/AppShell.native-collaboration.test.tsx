@@ -7,6 +7,7 @@ import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { clearNativeIntents } from '@/hooks/useNativeIntents';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { resetSessionExpiry } from '@/services/sessionExpiry';
+import { ApiError } from '@/services/api';
 import type {
   NativeIntent,
   NativeInteractionView,
@@ -166,7 +167,7 @@ const receipt = (text: string): NativeUserReply => ({
   deliveryStatus: 'pending',
 });
 
-function member(name: string) {
+function member(name: string, entry = '/space/project/native-intent/one') {
   who.current = {
     userId: name.toLowerCase(),
     username: name.toLowerCase(),
@@ -176,7 +177,7 @@ function member(name: string) {
   return render(
     <ThemeProvider>
       <AuthProvider>
-        <MemoryRouter initialEntries={['/space/project/native-intent/one']}>
+        <MemoryRouter initialEntries={[entry]}>
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
@@ -531,6 +532,250 @@ describe('shared native reply drafts', () => {
     view = member('Ada');
     expect(await replyBox(view)).toHaveValue('');
   });
+});
+
+describe('native graph source links in the shared Intent shell', () => {
+  const route = '/space/project/native-intent/one';
+  const base = '/projects/project/native-intents/one';
+  const text = '\uFEFF# Plan\r\n## Scope\r\nRetain the original 🐦.\r\n## Next\r\n';
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const path = 'aidlc/spaces/default/intents/261013-request/inception/application-design/plan.md';
+  const file = {
+    ...FILE,
+    path,
+    id: `nf-${digest(JSON.stringify({ executionId: 'one', path, projectId: 'project' }))}`,
+    bytes: Buffer.byteLength(text),
+    sha256: digest(text),
+  };
+  const context = {
+    projectId: 'project',
+    executionId: 'one',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    epoch: 1,
+    packageId: `sha256:${'e'.repeat(64)}`,
+  };
+  const revision = {
+    id: 'a'.repeat(64),
+    sequence: 1,
+    files: [file],
+    question: null,
+    createdAt: time,
+    context,
+    outcome: 'STOPPED',
+    interactionId: null,
+  };
+  const query = `publicationId=${revision.id}&publicationSequence=1`;
+  const fileRead = `${base}/files/${file.id}?${query}&sha256=${file.sha256}`;
+  const href = `${route}?nativeRevision=1.${revision.id}&nativeFile=${file.id}%3A${file.sha256}`;
+  const provenance = {
+    contract: 'native-trace-v1',
+    method: 'deterministic',
+    projectId: context.projectId,
+    executionId: context.executionId,
+    packageId: context.packageId,
+    publicationId: revision.id,
+    publicationSequence: 1,
+    fileId: file.id,
+    sha256: file.sha256,
+    path,
+    revisionId: `${file.id}:${file.sha256}`,
+  };
+  const artifact = {
+    id: file.id,
+    type: 'Artifact',
+    label: path,
+    artifactId: file.id,
+    path,
+    sha256: file.sha256,
+    publicationId: revision.id,
+  };
+  const section = {
+    ...artifact,
+    id: 'section',
+    type: 'Section',
+    label: 'Scope',
+    provenance: { ...provenance, sourceKind: 'markdown-section', startLine: 2, endLine: 3 },
+  };
+  const graph = {
+    publicationId: revision.id,
+    nodes: [
+      {
+        id: 'intent',
+        type: 'Intent',
+        label: 'Moving pipes',
+        executionBackend: 'native',
+        intentId: 'one',
+      },
+      artifact,
+      section,
+      {
+        ...artifact,
+        id: 'stage',
+        type: 'NativeStage',
+        label: 'application-design',
+        provenance: {
+          ...provenance,
+          sourceKind: 'record-path',
+          locationContract: 'native-record-layout-v1',
+        },
+      },
+    ],
+    edges: [
+      { source: 'intent', target: file.id, label: 'CONTAINS' },
+      { source: 'intent', target: section.id, label: 'CONTAINS' },
+      { source: 'intent', target: 'stage', label: 'CONTAINS' },
+      { source: file.id, target: section.id, label: 'HAS_SECTION' },
+    ],
+  };
+  const rawFile = {
+    fileId: file.id,
+    path,
+    bytes: file.bytes,
+    mediaType: file.mediaType,
+    sha256: file.sha256,
+    publicationId: revision.id,
+    publicationSequence: 1,
+    encoding: 'utf8',
+    content: text,
+    truncated: false,
+  };
+
+  async function fixture() {
+    const { nativeIntentsService } = await vi.importActual<
+      typeof import('@/services/nativeIntents')
+    >('@/services/nativeIntents');
+    service.publication.mockImplementation(nativeIntentsService.publication);
+    service.graph.mockImplementation(nativeIntentsService.graph);
+    const current = {
+      id: revision.id,
+      sequence: 1,
+      createdAt: time,
+      files: [file],
+      question: null,
+      projectionStatus: 'complete',
+    };
+    service.get.mockImplementation(async () =>
+      waiting({
+        status: 'STOPPED',
+        attemptId: context.attemptId,
+        interactionId: null,
+        publicationId: current.id,
+        publicationSequence: current.sequence,
+      }),
+    );
+    const read = vi.fn(async (request: string): Promise<unknown> => {
+      if (request === `${base}/publication`) return current;
+      if (request === `${base}/graph`) return graph;
+      if (request === `${base}/publication?history=1`)
+        return {
+          items: [current, ...(current.sequence > 1 ? [revision] : [])].map(({ id, sequence }) => ({
+            id,
+            sequence,
+            outcome: 'STOPPED',
+            filesCount: 1,
+            epoch: 1,
+            admittedAt: Date.parse(time),
+            interactionId: null,
+          })),
+          nextBefore: null,
+          gaps: [],
+        };
+      if (request === `${base}/publication?${query}`) return revision;
+      if (request === `${base}/interaction?${query}`) return { interaction: null, answer: null };
+      if (request === fileRead) return rawFile;
+      if (request.endsWith('/discussions')) return [];
+      throw new Error('Unavailable in fixture');
+    });
+    transport.get.mockImplementation(read);
+    return { current, read };
+  }
+
+  it('follows a section and reopens its copied file link as a second member after the same path changes', async () => {
+    const { current, read } = await fixture();
+    const first = member('Member A');
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Graph' }), { button: 0 });
+    const source = await screen.findByRole('link', { name: 'Open file for Scope' });
+    const copied = source.getAttribute('href')!;
+    expect(copied).toBe(`${href}#L2-L3`);
+    expect(screen.getByRole('link', { name: 'Open file for application-design' })).toHaveAttribute(
+      'href',
+      href,
+    );
+    expect(screen.getByRole('link', { name: `Open file for ${path}` })).toHaveAttribute(
+      'href',
+      href,
+    );
+    fireEvent.click(within(source).getByText('Scope'));
+    expect(await screen.findByRole('region', { name: 'Lines 2–3' })).toHaveTextContent(
+      'Retain the original 🐦.',
+    );
+    expect(screen.getByRole('link', { name: 'Link to file revision' })).toHaveAttribute(
+      'href',
+      copied,
+    );
+    expect(read).toHaveBeenCalledWith(fileRead);
+    first.unmount();
+    resetSessionExpiry();
+    current.id = 'b'.repeat(64);
+    current.sequence = 2;
+    current.files = [{ ...file, sha256: digest('Replacement'), bytes: 11 }];
+    read.mockClear();
+    member('Member B', copied);
+    await screen.findByRole('link', { name: 'Open publication 2' });
+    const reopened = await screen.findByRole('region', { name: 'Lines 2–3' });
+    expect(reopened.querySelector('code')?.textContent).toBe('## Scope\nRetain the original 🐦.');
+    expect(screen.getByRole('heading', { name: 'Publication 1 · historical view' })).toBeVisible();
+    expect(read).toHaveBeenCalledWith(fileRead);
+    expect(read).not.toHaveBeenCalledWith(`${base}/publication`);
+    expect(read).not.toHaveBeenCalledWith(`${base}/graph`);
+    expect(service.file).not.toHaveBeenCalled();
+    expect(transport.post).not.toHaveBeenCalled();
+  });
+
+  it('offers the same source when a member inspects a section through a graph relationship', async () => {
+    await fixture();
+    member('Member A');
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Graph' }), { button: 0 });
+    const canvas = within(screen.getByRole('tabpanel', { name: 'Graph' }));
+    fireEvent.click(await canvas.findByText('Moving pipes'));
+    fireEvent.click(canvas.getByRole('button', { name: /Scope.*Section/i }));
+    expect(canvas.getByText('Lines 2–3 (markdown-section)')).toBeVisible();
+    expect(canvas.getByRole('link', { name: 'Open published source' })).toHaveAttribute(
+      'href',
+      `${href}#L2-L3`,
+    );
+  });
+
+  it.each(['foreign revision', 'changed digest', 'revoked access', 'missing receipt'])(
+    'withholds source bytes for %s when reopening a graph link',
+    async (failure) => {
+      const { read } = await fixture();
+      transport.get.mockImplementation(async (request: string) => {
+        if (request === `${base}/publication?${query}` && failure === 'foreign revision')
+          return { ...revision, context: { ...context, projectId: 'other' } };
+        if (request === `${base}/publication?${query}` && failure === 'missing receipt')
+          throw new ApiError(404, 'Revision unavailable', {
+            code: 'NATIVE_ARTIFACT_REVISION_INVALID',
+          });
+        if (request === fileRead && failure === 'changed digest')
+          return { ...rawFile, content: text.replace('original', 'modified') };
+        if (request === fileRead && failure === 'revoked access')
+          throw new ApiError(403, 'Access revoked');
+        return read(request);
+      });
+      member('Member B', href);
+      await screen.findByText(
+        failure === 'revoked access'
+          ? /Native intent access is no longer available/
+          : /revision or its history is unavailable/,
+      );
+      expect(screen.queryByRole('region', { name: `File ${path}` })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Retain the modified/)).not.toBeInTheDocument();
+      if (failure === 'foreign revision' || failure === 'missing receipt')
+        expect(transport.get).not.toHaveBeenCalledWith(fileRead);
+      expect(service.file).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('native artifact discussion and Quorum', () => {

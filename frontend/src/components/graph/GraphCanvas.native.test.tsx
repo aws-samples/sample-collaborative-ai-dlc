@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes } from 'react-router';
+import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { GraphCanvas } from './GraphCanvas';
 import { getNodeCfg, TYPE_HIERARCHY } from './graphTypes';
@@ -8,17 +10,33 @@ afterEach(cleanup);
 const nodes = [
   { id: 'artifact-node', type: 'Artifact', label: 'Pipe source', artifactId: 'code-file' },
 ];
-it('opens the published file by keyboard using artifactId rather than the graph node identity', async () => {
-  const open = vi.fn();
+it('exposes the source destination as a keyboard-accessible link', async () => {
+  const user = userEvent.setup();
   render(
-    <TooltipProvider>
-      <GraphCanvas nodes={nodes} edges={[]} onOpenArtifact={open} />
-    </TooltipProvider>,
+    <MemoryRouter>
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <TooltipProvider>
+              <GraphCanvas
+                nodes={nodes}
+                edges={[]}
+                sourceLinks={new Map([['artifact-node', '/source']])}
+              />
+            </TooltipProvider>
+          }
+        />
+        <Route path="/source" element={<p>Named file</p>} />
+      </Routes>
+    </MemoryRouter>,
   );
-  const file = await screen.findByRole('button', { name: 'Open file for Pipe source' });
-  expect(file).toHaveAttribute('tabindex', '0');
-  fireEvent.keyDown(file, { key: 'Enter' });
-  expect(open).toHaveBeenCalledWith('code-file');
+  const file = await screen.findByRole('link', { name: 'Open file for Pipe source' });
+  expect(file).toHaveAttribute('href', '/source');
+  file.focus();
+  expect(file).toHaveFocus();
+  await user.keyboard('{Enter}');
+  expect(await screen.findByText('Named file')).toBeVisible();
 });
 it('keeps ordinary graph selection when no navigation prop is supplied', async () => {
   render(
@@ -26,13 +44,12 @@ it('keeps ordinary graph selection when no navigation prop is supplied', async (
       <GraphCanvas nodes={nodes} edges={[]} />
     </TooltipProvider>,
   );
-  expect(screen.queryByRole('button', { name: /Open file for/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /Open file for/ })).not.toBeInTheDocument();
   fireEvent.click(await screen.findByText('Pipe source'));
   expect(screen.getByRole('heading', { name: 'Pipe source' })).toBeInTheDocument();
 });
 it('opens an assistant response by click and keyboard using interactionId', async () => {
   const open = vi.fn();
-  const file = vi.fn();
   render(
     <TooltipProvider>
       <GraphCanvas
@@ -46,7 +63,6 @@ it('opens an assistant response by click and keyboard using interactionId', asyn
         ]}
         edges={[]}
         onOpenInteraction={open}
-        onOpenArtifact={file}
       />
     </TooltipProvider>,
   );
@@ -61,5 +77,4 @@ it('opens an assistant response by click and keyboard using interactionId', asyn
   fireEvent.click(node);
   fireEvent.keyDown(node, { key: ' ' });
   expect(open.mock.calls).toEqual([['interaction-1'], ['interaction-1']]);
-  expect(file).not.toHaveBeenCalled();
 });

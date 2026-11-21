@@ -18,6 +18,9 @@ const keys = [
 ];
 const encode = (value: NativeRevisionTarget) =>
   `${value.publicationSequence}.${value.publicationId}`;
+type FileTarget = Pick<NativePublishedFile, 'id' | 'sha256'>;
+const encodeFile = (file: FileTarget) => `${file.id}:${file.sha256}`;
+const fileRevision = /^(nf-[a-f0-9]{64}):([a-f0-9]{64})$/;
 const revision = (value: string): NativeRevisionTarget | null => {
   const match = /^([1-9][0-9]{0,15})\.([a-f0-9]{64})$/.exec(value);
   return match && Number.isSafeInteger(Number(match[1]))
@@ -36,9 +39,7 @@ export const parseNativeHistoryLocation = (search: string): NativeHistoryLocatio
   const comparison = params.has('nativeCompare')
     ? revision(params.get('nativeCompare')!)
     : undefined;
-  const file = params.has('nativeFile')
-    ? /^(nf-[a-f0-9]{64}):([a-f0-9]{64})$/.exec(params.get('nativeFile')!)
-    : undefined;
+  const file = params.has('nativeFile') ? fileRevision.exec(params.get('nativeFile')!) : undefined;
   if (
     !target ||
     params.has('nativeHistory') ||
@@ -64,7 +65,7 @@ export const nativeHistorySearch = (
     inspection?: boolean;
     revision?: NativeRevisionTarget;
     compare?: NativeRevisionTarget;
-    file?: Pick<NativePublishedFile, 'id' | 'sha256'>;
+    file?: FileTarget;
     discussion?: boolean;
   } = {},
 ): string => {
@@ -75,7 +76,17 @@ export const nativeHistorySearch = (
   if (target.inspection) params.set('nativeInspect', '1');
   if (target.revision) params.set('nativeRevision', encode(target.revision));
   if (target.compare) params.set('nativeCompare', encode(target.compare));
-  if (target.file) params.set('nativeFile', `${target.file.id}:${target.file.sha256}`);
+  if (target.file) params.set('nativeFile', encodeFile(target.file));
   if (target.discussion) params.set('nativeDiscussion', '1');
   return params.size ? `?${params}` : '';
 };
+
+export function nativeFileRevisionSearch(
+  search: string,
+  target: NativeRevisionTarget,
+  file: FileTarget,
+) {
+  return revision(encode(target)) && fileRevision.test(encodeFile(file))
+    ? nativeHistorySearch(search, { revision: target, file })
+    : null;
+}

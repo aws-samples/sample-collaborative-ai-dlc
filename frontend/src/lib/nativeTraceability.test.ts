@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nativeGraphMatchesPublication } from './nativeTraceability';
+import { nativeGraphMatchesPublication, nativeGraphSourceLinks } from './nativeTraceability';
 import type { NativeGraph, NativePublication } from '@/services/nativeIntents';
 
 const file = {
@@ -51,12 +51,67 @@ const fixture = (): NativeGraph => ({
 const valid = (graph: NativeGraph) =>
   nativeGraphMatchesPublication(graph, publication, 'p', 'e', null);
 describe('native graph revision validation', () => {
+  it('omits unaddressable file links for retained manifests', () => {
+    expect(nativeGraphSourceLinks(fixture(), publication, '').size).toBe(0);
+  });
+  it('uses the verified YAML block range and leaves record-path sources at the file', () => {
+    const fileId = `nf-${'b'.repeat(64)}`;
+    const manifest = { ...publication, id: 'c'.repeat(64), files: [{ ...file, id: fileId }] };
+    const base: NativeGraph['nodes'][number] = {
+      ...fixture().nodes[0],
+      artifactId: fileId,
+      publicationId: manifest.id,
+    };
+    const p = {
+      ...(base.provenance as Record<string, unknown>),
+      publicationId: manifest.id,
+      fileId,
+      revisionId: `${fileId}:${file.sha256}`,
+    };
+    const graph = {
+      publicationId: manifest.id,
+      edges: [],
+      nodes: [
+        {
+          ...base,
+          id: 'requirement',
+          type: 'Requirement',
+          provenance: { ...p, sourceKind: 'yaml-block' },
+        },
+        {
+          ...base,
+          id: 'stage',
+          type: 'NativeStage',
+          provenance: {
+            ...p,
+            sourceKind: 'record-path',
+            locationContract: 'native-record-layout-v1',
+          },
+        },
+        { id: 'intent', type: 'Intent', label: file.path },
+      ],
+    };
+    expect(nativeGraphMatchesPublication(graph, manifest, 'p', 'e', null)).toBe(true);
+    const links = nativeGraphSourceLinks(graph, manifest, '?view=member');
+    const href = `?view=member&nativeRevision=1.${manifest.id}&nativeFile=${fileId}%3A${file.sha256}`;
+    expect(links.get('requirement')).toBe(`${href}#L1-L4`);
+    expect(links.get('stage')).toBe(href);
+    expect(links.has('intent')).toBe(false);
+  });
   it('accepts exact derived provenance and legacy manifest-only graphs', () => {
     expect(valid(fixture())).toBe(true);
     expect(
       valid({
         publicationId: 'pub',
-        nodes: [{ id: file.id, type: 'Artifact', label: file.path, artifactId: file.id }],
+        nodes: [
+          {
+            id: file.id,
+            type: 'Artifact',
+            label: file.path,
+            artifactId: file.id,
+            provenance: null,
+          },
+        ],
         edges: [],
       }),
     ).toBe(true);

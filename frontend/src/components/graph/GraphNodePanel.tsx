@@ -1,4 +1,5 @@
 import { type GraphNode, type GraphEdge } from '@/services/sprintGraph';
+import { Link } from 'react-router';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,7 @@ export interface GraphNodePanelProps {
   nodeMap: Map<string, LayoutNode>;
   selectedNode: string;
   onSelectNode: (id: string | null) => void;
+  sourceLink?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ export function GraphNodePanel({
   nodeMap,
   selectedNode,
   onSelectNode,
+  sourceLink,
 }: GraphNodePanelProps) {
   const cfg = getNodeCfg(selectedNodeData.type);
   const nodeEdges = edges.filter((e) => e.source === selectedNode || e.target === selectedNode);
@@ -87,6 +90,11 @@ export function GraphNodePanel({
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-5">
           <NodeDetailContent node={selectedNodeData} />
+          {sourceLink && (
+            <Link className="text-xs underline" to={sourceLink}>
+              Open published source
+            </Link>
+          )}
 
           {nodeEdges.length > 0 && (
             <div>
@@ -257,7 +265,7 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
       <div className="space-y-3">
         <DetailField label="Published source">
           <p className="text-xs break-all">{String(p.path ?? '')}</p>
-          {p.startLine !== undefined && (
+          {p.sourceKind !== 'record-path' && p.startLine !== undefined && (
             <p className="text-xs">
               Lines {String(p.startLine)}–{String(p.endLine)} ({String(p.sourceKind)})
             </p>
