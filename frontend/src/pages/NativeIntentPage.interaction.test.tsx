@@ -745,7 +745,7 @@ it('renders actual ordered text and composer tables without a fake artifact or v
   expect(screen.queryByRole('region', { name: 'Published question' })).not.toBeInTheDocument();
   expect(readFile).not.toHaveBeenCalled();
   expect(textbox).not.toHaveAttribute('readonly');
-  expect(screen.getByText('AI-DLC is waiting for your reply.')).toBeInTheDocument();
+  expect(screen.getByText('Review the published response in Current.')).toBeInTheDocument();
   expect(screen.getByText(/one member sends it to continue this session/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
   for (const name of ['Edit artifacts', 'Create unit PR', 'Delete intent']) {
@@ -819,7 +819,7 @@ it('shows sending and accepted feedback before a slow status refresh, with one P
     'Reply accepted. Delivery pending.',
   );
   expect(screen.getByText('Continuing agent')).toBeInTheDocument();
-  expect(screen.queryByText('AI-DLC is waiting for your reply.')).not.toBeInTheDocument();
+  expect(screen.queryByText('Review the published response in Current.')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
   expect(Date.now() - submittedAt).toBe(0);
   expect(transport.post).toHaveBeenCalledTimes(1);
@@ -1524,10 +1524,10 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     interaction.harness = harness;
     renderPage();
     await loaded();
-    expect(screen.getByText('Session recovery required')).toBeInTheDocument();
+    expect(screen.getByText('Awaiting fresh-session recovery')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+        'The accepted reply remains in history. Fresh-session recovery will not send it again.',
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText('Continuing agent')).not.toBeInTheDocument();
@@ -1575,7 +1575,7 @@ it('keeps committed files, graph and the same saved reply through recovery and t
   expect(await loaded()).toHaveValue('poc');
   expect(
     screen.getByText(
-      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      'The accepted reply remains in history. Fresh-session recovery will not send it again.',
     ),
   ).toBeInTheDocument();
   expect(interaction.response).toEqual(savedReply);
@@ -1667,7 +1667,7 @@ it('retains an uncertain reply across recovery without claiming it was saved or 
   expect(screen.getByRole('button', { name: 'Retry same reply' })).toBeDisabled();
   expect(
     screen.queryByText(
-      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      'The accepted reply remains in history. Fresh-session recovery will not send it again.',
     ),
   ).not.toBeInTheDocument();
   transport.post.mockImplementationOnce(async () => (intent = recovering()));
@@ -1705,7 +1705,7 @@ it.each([
     expect(screen.getByText('Session recovery required')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+        'The accepted reply remains in history. Fresh-session recovery will not send it again.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -1746,7 +1746,7 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     await act(async () => renderPage());
     expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
     await verifiedText(
-      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      'The accepted reply remains in history. Fresh-session recovery will not send it again.',
     );
     expect(screen.queryByText('Continuing agent')).not.toBeInTheDocument();
     expect(
@@ -1798,7 +1798,7 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
       },
     };
     await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByText('Awaiting your reply')).toBeInTheDocument();
+    expect(screen.getByText('Awaiting member reply')).toBeInTheDocument();
     await verifiedText(messages[0].text);
     expect(screen.getByRole('textbox')).toHaveValue('');
     expect(screen.getByRole('textbox')).not.toHaveAttribute('readonly');
@@ -1829,8 +1829,8 @@ it.each([
     expect(screen.getByText(explanation, { exact: false })).toBeInTheDocument();
     await verifiedText(
       reason === 'DELIVERY_UNCERTAIN'
-        ? 'Your reply is saved.'
-        : 'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+        ? 'The reply is saved.'
+        : 'The accepted reply remains in history. Fresh-session recovery will not send it again.',
     );
     await act(async () => vi.advanceTimersByTimeAsync(18000));
     expect(
@@ -1875,9 +1875,9 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
     },
   };
   await act(async () => vi.advanceTimersByTimeAsync(9000));
-  expect(screen.getByText('Session recovery required')).toBeInTheDocument();
+  expect(screen.getByText('Awaiting fresh-session recovery')).toBeInTheDocument();
   await verifiedText(
-    'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    'The accepted reply remains in history. Fresh-session recovery will not send it again.',
   );
   expect(screen.getByRole('button', { name: 'Resume in fresh session' })).toBeEnabled();
   expect(transport.post).not.toHaveBeenCalled();
@@ -1897,7 +1897,7 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
   expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
   expect(
     screen.getByText(
-      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      'The accepted reply remains in history. Fresh-session recovery will not send it again.',
     ),
   ).toBeInTheDocument();
   expect(screen.getByRole('textbox')).toHaveValue('poc');
@@ -2012,7 +2012,7 @@ it.each(['access-revision', 'session-expiry', 'file-denial'] as const)(
     cleared();
     expect(
       screen.queryByText(
-        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+        'The accepted reply remains in history. Fresh-session recovery will not send it again.',
       ),
     ).not.toBeInTheDocument();
     expect(transport.post).toHaveBeenCalledTimes(1);
@@ -2031,7 +2031,7 @@ it.each([401, 403, 404])(
     cleared();
     expect(
       screen.queryByText(
-        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+        'The accepted reply remains in history. Fresh-session recovery will not send it again.',
       ),
     ).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('private denial');

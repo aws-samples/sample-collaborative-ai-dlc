@@ -405,7 +405,7 @@ describe('shared native reply drafts', () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
     await vi.waitFor(() => {
-      expect(progress()).toHaveTextContent('Your reply is needed.');
+      expect(progress()).toHaveTextContent('A member reply is needed.');
       expect(within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
         '',
       );
@@ -424,6 +424,14 @@ describe('shared native reply drafts', () => {
     const grace = member('Grace');
     const graceBox = await replyBox(grace);
 
+    for (const view of [ada, grace]) {
+      expect(
+        within(view.container).getByRole('region', { name: 'Native execution status' }),
+      ).toHaveTextContent('Awaiting member reply');
+      expect(
+        within(view.container).getByRole('region', { name: 'Reply progress' }),
+      ).toHaveTextContent('A member reply is needed.');
+    }
     // Exactly this interaction/turn's document, with its revision-specific token target.
     expect(new Set(openedDocuments.map((d) => d.documentId))).toEqual(new Set([REPLY_DOC]));
     for (const opened of openedDocuments) {
@@ -471,6 +479,10 @@ describe('shared native reply drafts', () => {
     await within(grace.container).findByText('Reply accepted. Delivery pending.');
     await within(ada.container).findByText('Reply accepted. Delivery pending.');
     for (const view of [ada, grace]) {
+      expect(
+        within(view.container).getByRole('region', { name: 'Native execution status' }),
+      ).toHaveTextContent('Continuing agent');
+      expect(within(view.container).queryByText('Awaiting member reply')).toBeNull();
       expect(within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
         accepted.text,
       );

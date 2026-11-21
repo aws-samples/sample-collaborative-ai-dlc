@@ -208,7 +208,7 @@ describe('Space native discovery', () => {
     ['DISPATCHING', 'Continuing agent'],
     ['RUNNING', 'Agent running'],
     ['WAITING_FOR_INPUT', 'Waiting for input'],
-    ['AWAITING_USER', 'Awaiting your reply'],
+    ['AWAITING_USER', 'Awaiting member reply'],
     ['RECOVERY_REQUIRED', 'Session recovery required'],
     ['RECOVERING', 'Resuming in a fresh session'],
     ['STOPPED', 'Agent stopped'],
@@ -265,6 +265,55 @@ describe('Space native discovery', () => {
     expect(screen.queryByText('Platform detail route')).not.toBeInTheDocument();
     expect(within(row).queryByText('Native')).not.toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Delete intent' })).toBeDisabled();
+  });
+  it('reveals an older member wait on a loaded page without changing the selected list order', async () => {
+    mocks.list.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => ({
+        ...platform,
+        id: `new-${i}`,
+        title: `New ${i}`,
+        updatedAt: '2026-10-01T00:00:00Z',
+      })),
+    );
+    mocks.nativeList
+      .mockResolvedValueOnce({ items: [], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: [summary('question')], nextCursor: null });
+    mocks.nativeGet.mockResolvedValue({
+      ...summary('question'),
+      prompt: 'Shared question',
+      executionAvailable: true,
+      execution: {
+        status: 'AWAITING_USER',
+        recoveryMode: 'efs-workspace-v1',
+        attemptId: 'attempt',
+        epoch: 1,
+        startedAt: '2026-09-29T07:00:00Z',
+        updatedAt: '2026-09-29T08:00:00Z',
+        revision: 2,
+        model: null,
+        repository: { provider: 'github', repository: 'owner/repo', branch: 'main', commit: null },
+        publicationId: 'a'.repeat(64),
+        publicationSequence: 1,
+        projectionStatus: 'complete',
+        interactionId: 'b'.repeat(64),
+        turnSequence: 1,
+        responsePending: false,
+      },
+    });
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Load more native intents' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Show recent 10' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Show all loaded (11) · 1 more waiting' }),
+    );
+    const row = screen.getByRole('button', {
+      name: /Native question Native Awaiting member reply/,
+    });
+    expect(
+      screen.getByRole('button', { name: /New 0/ }).compareDocumentPosition(row) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(mocks.nativeGet).toHaveBeenCalledExactlyOnceWith('p1', 'question');
   });
   it('offers explicit native pagination and keeps earlier pages visible', async () => {
     mocks.nativeList

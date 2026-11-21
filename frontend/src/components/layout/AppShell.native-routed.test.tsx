@@ -647,6 +647,116 @@ it.each(['WAITING_FOR_INPUT', 'AWAITING_USER', 'RECOVERY_REQUIRED'] as const)(
   },
 );
 
+it('opens older shared waits from the selected sidebar and removes them when another member continues the runs', async () => {
+  const latest = { ...detail(), updatedAt: '2026-10-02T00:00:00Z' };
+  const ask = { ...waitingDetail('AWAITING_USER'), id: 'ask', title: 'Question' };
+  const recovery = { ...ask, id: 'recover', title: 'Run recover' };
+  recovery.execution = {
+    ...ask.execution!,
+    publicationSequence: 1,
+    turnSequence: 2,
+    status: 'RECOVERY_REQUIRED',
+    responsePending: true,
+    recovery: {
+      id: 'a1227042-0661-4843-8138-9d08fdd0a891',
+      reason: 'SESSION_LOST',
+      canRecover: true,
+      workflowResumeState: 'created',
+    },
+    stopStatus: { state: 'confirmed', confirmedAt: time },
+  };
+  const legacy = { ...waitingDetail('WAITING_FOR_INPUT'), id: 'legacy', title: 'Legacy input' };
+  const runs = new Map([latest, ask, recovery, legacy].map((run) => [run.id, run]));
+  service.get.mockImplementation(async (_project, id) => runs.get(id));
+  service.list.mockResolvedValue({
+    items: [...runs.values()].map(
+      ({ prompt: _prompt, execution: _execution, executionAvailable: _available, ...summary }) =>
+        summary,
+    ),
+    nextCursor: 'more',
+  });
+  service.projectList.mockResolvedValue([
+    { id: 'project', name: 'Member space', kind: 'v2', userRole: 'member', createdAt: time },
+  ]);
+  await invalidateProjects();
+  workspace();
+  const sidebarRow = (label: string) =>
+    screen.getByRole('button', { name: `Native ${label} (Member space)` });
+  const latestRow = () => sidebarRow('Run one: Agent running');
+  const recoveryRow = () => sidebarRow('Run recover: Awaiting fresh-session recovery');
+  await waitFor(() => expect(latestRow()).toHaveAttribute('aria-current', 'page'));
+  expect(recoveryRow()).toBeVisible();
+  await userEvent.click(sidebarRow('Question: Awaiting member reply'));
+  await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
+  expect(sidebarRow('Question: Awaiting member reply')).toHaveAttribute('aria-current', 'page');
+  expect(latestRow()).not.toHaveAttribute('aria-current');
+  expect(screen.getByRole('link', { name: 'History' })).toHaveAttribute(
+    'href',
+    expect.stringContaining('/native-intent/ask?'),
+  );
+  runs.set(ask.id, {
+    ...ask,
+    execution: {
+      ...ask.execution!,
+      revision: 8,
+      status: 'DISPATCHING',
+      responsePending: true,
+      turnSequence: 2,
+    },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+  await waitFor(() =>
+    expect(sidebarRow('Question: Continuing agent')).toHaveAttribute('aria-current', 'page'),
+  );
+  await userEvent.click(recoveryRow());
+  expect(await screen.findByRole('button', { name: 'Resume in fresh session' })).toBeEnabled();
+  expect(recoveryRow()).toHaveAttribute('aria-current', 'page');
+  expect(screen.queryByRole('button', { name: /Native Question/ })).toBeNull();
+  runs.set(recovery.id, {
+    ...recovery,
+    execution: {
+      ...recovery.execution!,
+      revision: 8,
+      status: 'RECOVERING',
+      stopStatus: { state: 'unconfirmed', confirmedAt: null },
+      recovery: { ...recovery.execution!.recovery!, canRecover: false },
+    },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+  await waitFor(() =>
+    expect(sidebarRow('Run recover: Resuming in a fresh session')).toHaveAttribute(
+      'aria-current',
+      'page',
+    ),
+  );
+  await userEvent.click(latestRow());
+  expect(screen.queryByRole('button', { name: /Native Run recover/ })).toBeNull();
+  await userEvent.click(sidebarRow('Legacy input: Waiting for input'));
+  expect(screen.queryByRole('button', { name: 'Send reply' })).toBeNull();
+  runs.set(legacy.id, {
+    ...legacy,
+    execution: {
+      ...legacy.execution!,
+      status: 'CANCELLED',
+      revision: 8,
+      stopStatus: { state: 'confirmed', confirmedAt: time },
+    },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+  await waitFor(() =>
+    expect(sidebarRow('Legacy input: Execution cancelled')).toHaveAttribute('aria-current', 'page'),
+  );
+  expect(screen.getByRole('link', { name: 'History' })).toHaveAttribute(
+    'href',
+    expect.stringContaining('/native-intent/legacy?'),
+  );
+  await userEvent.click(latestRow());
+  expect(screen.queryByRole('button', { name: /Native Legacy input/ })).toBeNull();
+  expect(service.list).toHaveBeenCalledExactlyOnceWith('project', null);
+  expect(service.recover).not.toHaveBeenCalled();
+  expect(service.platformGet).not.toHaveBeenCalled();
+});
+
 it('updates cached navigation status from the routed workspace after another member cancels', async () => {
   const waiting = waitingDetail('WAITING_FOR_INPUT');
   const {

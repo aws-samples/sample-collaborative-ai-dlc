@@ -12,6 +12,7 @@ import {
   onSessionReset,
 } from '@/services/sessionExpiry';
 import { onCacheCleared } from '@/lib/persistentCache';
+import { canRecover } from '@/lib/executionCapabilities';
 import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 
 const TTL = 30_000;
@@ -125,6 +126,7 @@ function discoverySummary(intent: NativeIntent): NativeDiscoveredIntent {
     package: intent.package,
     ...(intent.failureCode !== undefined ? { failureCode: intent.failureCode } : {}),
     createdAt: intent.createdAt,
+    ...(canRecover(intent) ? { freshSessionRecovery: true } : {}),
     updatedAt:
       intent.execution && Date.parse(intent.execution.updatedAt) > Date.parse(intent.updatedAt)
         ? intent.execution.updatedAt
@@ -168,12 +170,18 @@ function latestSummary(
   // A successful read at the same revision confirms the retained execution.
   // Older reads still cannot clear uncertainty or replace newer accepted state.
   if (
-    latest.executionStatusUnavailable &&
+    (latest.executionStatusUnavailable ||
+      latest.freshSessionRecovery !== next.freshSessionRecovery) &&
     next.execution?.revision !== undefined &&
     next.execution.revision === latest.execution?.revision
   ) {
-    const { executionStatusUnavailable: _unavailable, ...confirmed } = latest;
-    return confirmed;
+    const {
+      executionStatusUnavailable: _unavailable,
+      freshSessionRecovery: _recovery,
+      ...confirmed
+    } = latest;
+    // Image policy can change without advancing the execution revision.
+    return next.freshSessionRecovery ? { ...confirmed, freshSessionRecovery: true } : confirmed;
   }
   return latest;
 }
@@ -269,6 +277,7 @@ export async function refreshNativeIntents(
   if (mode === 'refresh' && !force && Date.now() - entry.fetchedAt < TTL) return;
   const owner = entry;
   const previous = owner.state;
+  const atStart = new Map(previous.items.map((item) => [item.id, item]));
   const active = () => entries.get(projectId) === owner && owner.epoch === currentSessionEpoch();
   owner.state = { ...previous, loading: true };
   notify();
@@ -303,12 +312,21 @@ export async function refreshNativeIntents(
       if (!active()) return;
       owner.cursors = cursors;
       owner.fetchedAt = Date.now();
-      const merged = items.map((item) =>
-        latestSummary(
-          owner.state.items.find((current) => current.id === item.id),
-          item,
-        ),
-      );
+      const current = new Map(owner.state.items.map((item) => [item.id, item]));
+      const merged = items.map((item) => {
+        const accepted = current.get(item.id);
+        // Keep detail accepted during this read, including same-revision image
+        // policy changes. Appending a page does not reconfirm earlier pages.
+        if (
+          accepted &&
+          (item === atStart.get(item.id) ||
+            (accepted !== atStart.get(item.id) &&
+              accepted.execution?.revision !== undefined &&
+              accepted.execution.revision === item.execution?.revision))
+        )
+          return accepted;
+        return latestSummary(accepted, item);
+      });
       owner.state = {
         items: merged,
         nextCursor: cursor,
@@ -339,6 +357,14 @@ export async function refreshNativeIntents(
       } else {
         owner.state = {
           ...owner.state,
+          items:
+            mode === 'refresh'
+              ? owner.state.items.map((item) =>
+                  item.status === 'READY' && atStart.get(item.id) === item
+                    ? { ...item, executionStatusUnavailable: true }
+                    : item,
+                )
+              : owner.state.items,
           loading: false,
           error:
             'Native intents could not be refreshed. Previously loaded entries may be outdated.',

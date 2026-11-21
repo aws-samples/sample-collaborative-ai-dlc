@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { MemoryRouter, Route, Routes, useParams } from 'react-router';
 import type { NativeListing } from '@/hooks/useNativeIntents';
 import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 const state = vi.hoisted(() => ({
@@ -71,16 +71,17 @@ const project = (listing: NativeListing = native) => ({
   activity: { inProgress: 0, attention: 0 },
   nativeIntents: listing,
 });
+function NativeRoute() {
+  const { intentId } = useParams();
+  return <p data-intent={intentId}>Native status route</p>;
+}
 const renderPage = () =>
   render(
     <MemoryRouter>
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/space/:projectId" element={<p>Space route</p>} />
-        <Route
-          path="/space/:projectId/native-intent/:intentId"
-          element={<p>Native status route</p>}
-        />
+        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeRoute />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -109,11 +110,62 @@ it.each(['Grid view', 'List view'])(
     expect(screen.queryByText('Space route')).not.toBeInTheDocument();
   },
 );
+it.each(['Grid view', 'List view'])(
+  'opens older waiting intents alongside the latest in %s',
+  async (view) => {
+    const waiting = (
+      id: string,
+      status: NonNullable<NativeDiscoveredIntent['execution']>['status'],
+    ): NativeDiscoveredIntent => ({
+      ...native.items[0],
+      id,
+      title: id,
+      updatedAt: '2026-09-28T00:00:00Z',
+      execution: { status, revision: 3, updatedAt: '2026-09-28T00:00:00Z', responsePending: false },
+    });
+    state.projects = [
+      project({
+        ...native,
+        nextCursor: 'another-page',
+        items: [
+          native.items[0],
+          waiting('Question', 'AWAITING_USER'),
+          waiting('Other question', 'AWAITING_USER'),
+          { ...waiting('Lost session', 'RECOVERY_REQUIRED'), freshSessionRecovery: true },
+          waiting('Old input file', 'WAITING_FOR_INPUT'),
+          waiting('Unconfirmed recovery', 'RECOVERY_REQUIRED'),
+          { ...waiting('Outdated wait', 'AWAITING_USER'), executionStatusUnavailable: true },
+        ],
+      }),
+    ];
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: view }));
+    for (const label of [
+      'Native workspace: Workspace ready',
+      'Question: Awaiting member reply',
+      'Lost session: Awaiting fresh-session recovery',
+      'Old input file: Waiting for input',
+    ]) {
+      expect(screen.getByRole('button', { name: `Native ${label}` })).toBeVisible();
+    }
+    expect(screen.queryByRole('button', { name: /Outdated wait|Unconfirmed recovery/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'View native intents in space' })).toBeVisible();
+    await userEvent.click(screen.getByText('1 more waiting'));
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Native Other question: Awaiting member reply' }),
+    );
+    expect(screen.getByText('Native status route')).toHaveAttribute(
+      'data-intent',
+      'Other question',
+    );
+    expect(state.refreshNative).not.toHaveBeenCalled();
+  },
+);
 it.each([
   ['DISPATCHING', 'Continuing agent'],
   ['RUNNING', 'Agent running'],
   ['WAITING_FOR_INPUT', 'Waiting for input'],
-  ['AWAITING_USER', 'Awaiting your reply'],
+  ['AWAITING_USER', 'Awaiting member reply'],
   ['RECOVERY_REQUIRED', 'Session recovery required'],
   ['RECOVERING', 'Resuming in a fresh session'],
   ['STOPPED', 'Agent stopped'],

@@ -111,7 +111,7 @@ describe('AppSidebar native discovery routing', () => {
       const row = screen.getByRole('button', { name: /Native same/ });
       expect(
         within(row).getByText(
-          previous ? 'Awaiting your reply (status outdated)' : 'Execution status unavailable',
+          previous ? 'Awaiting member reply (status outdated)' : 'Execution status unavailable',
         ),
       ).toBeInTheDocument();
       expect(within(row).queryByText('Workspace ready')).not.toBeInTheDocument();
@@ -126,7 +126,7 @@ describe('AppSidebar native discovery routing', () => {
     ['DISPATCHING', 'Continuing agent'],
     ['RUNNING', 'Agent running'],
     ['WAITING_FOR_INPUT', 'Waiting for input'],
-    ['AWAITING_USER', 'Awaiting your reply'],
+    ['AWAITING_USER', 'Awaiting member reply'],
     ['RECOVERY_REQUIRED', 'Session recovery required'],
     ['RECOVERING', 'Resuming in a fresh session'],
     ['STOPPED', 'Agent stopped'],

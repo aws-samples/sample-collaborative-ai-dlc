@@ -53,16 +53,9 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu';
-import {
-  discoveryKey,
-  discoveryPath,
-  isNativeIntentRoute,
-  isPlatformIntent,
-  nativeIntentStatusLabel,
-  nativeIntentTitle,
-} from '@/lib/intentDiscovery';
+import { isNativeIntentRoute, isPlatformIntent } from '@/lib/intentDiscovery';
 import { refreshNativeIntents } from '@/hooks/useNativeIntents';
-import { Badge } from '@/components/ui/badge';
+import { NativeIntentPreview } from '@/components/intent/NativeIntentPreview';
 
 type IterationFilter = 'attention' | 'active' | 'in-progress';
 
@@ -535,40 +528,14 @@ export function AppSidebar() {
             <p className="px-3 py-1.5 text-[13px] font-medium">Native workspaces</p>
             {sortedProjects.map(({ project, nativeIntents: native }) => {
               if (!native) return null;
-              const selected =
-                isNativeRoute && projectId === project.id
-                  ? native.items.find((item) => item.id === intentId)
-                  : undefined;
-              const item =
-                selected ??
-                native.items.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
               return (
-                <div key={project.id} className="px-3 py-1">
-                  {item && (
-                    <button
-                      key={discoveryKey(project.id, { backend: 'native', intent: item })}
-                      aria-current={
-                        isNativeRoute && projectId === project.id && intentId === item.id
-                          ? 'page'
-                          : undefined
-                      }
-                      onClick={() =>
-                        navigate(discoveryPath(project.id, { backend: 'native', intent: item }))
-                      }
-                      className="w-full rounded-md py-1 text-left text-[11px] hover:bg-sidebar-accent/50"
-                    >
-                      <span className="flex items-center gap-1">
-                        <span className="truncate">{nativeIntentTitle(item)}</span>
-                        <Badge variant="outline" className="text-[9px]">
-                          Native
-                        </Badge>
-                      </span>
-                      <span className="block text-muted-foreground">
-                        {nativeIntentStatusLabel(item)}
-                      </span>
-                      <span className="block text-muted-foreground">{project.name}</span>
-                    </button>
-                  )}
+                <div key={project.id} className="px-3 py-1 text-[11px]">
+                  <NativeIntentPreview
+                    projectId={project.id}
+                    projectName={project.name}
+                    items={native.items}
+                    selectedId={isNativeRoute && projectId === project.id ? intentId : undefined}
+                  />
                   {(native.items.length > 1 || native.nextCursor) && (
                     <button
                       className="text-[10px] underline"

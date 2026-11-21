@@ -55,7 +55,7 @@ import {
   refreshNativeIntents,
   type NativeListing,
 } from '@/hooks/useNativeIntents';
-import { discoveryPath, nativeIntentTitle, nativeIntentStatusLabel } from '@/lib/intentDiscovery';
+import { NativeIntentPreview } from '@/components/intent/NativeIntentPreview';
 
 function formatRelativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '—';
@@ -92,24 +92,9 @@ function ProjectSignals({ activity }: { activity: { inProgress: number; attentio
 function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: NativeListing }) {
   const navigate = useNavigate();
   if (!listing) return null;
-  const latest = listing.items.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   return (
     <div className="my-2 text-xs" onClick={(event) => event.stopPropagation()}>
-      {latest && (
-        <button
-          className="text-left"
-          aria-label={`Native ${nativeIntentTitle(latest)}: ${nativeIntentStatusLabel(latest)}`}
-          onClick={() => navigate(discoveryPath(projectId, { backend: 'native', intent: latest }))}
-        >
-          <span className="flex items-center gap-1.5">
-            <Badge variant="outline" className="text-[9px]">
-              Native
-            </Badge>
-            {nativeIntentTitle(latest)}
-          </span>
-          <span className="block text-muted-foreground">{nativeIntentStatusLabel(latest)}</span>
-        </button>
-      )}
+      <NativeIntentPreview projectId={projectId} items={listing.items} />
       {(listing.items.length > 1 || listing.nextCursor) && (
         <button
           className="block text-muted-foreground underline"

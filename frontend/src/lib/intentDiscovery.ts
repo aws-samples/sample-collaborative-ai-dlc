@@ -1,10 +1,12 @@
+import { canRecover } from './executionCapabilities';
 import type { Intent } from '@/services/intents';
-import type { NativeExecution, NativeIntentSummary } from '@/services/nativeIntents';
+import type { NativeExecution, NativeIntent, NativeIntentSummary } from '@/services/nativeIntents';
 
 // Protected detail reads enrich the in-memory discovery cache, without retaining
 // prompts, repository configuration, or reply/recovery authority.
 export type NativeDiscoveredIntent = NativeIntentSummary & {
   executionStatusUnavailable?: boolean;
+  freshSessionRecovery?: true;
   execution?: Pick<
     NativeExecution,
     'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence'
@@ -31,7 +33,7 @@ export const nativeExecutionLabels: Record<NativeExecution['status'], string> = 
   RECOVERY_REQUIRED: 'Session recovery required',
   RECOVERING: 'Resuming in a fresh session',
   WAITING_FOR_INPUT: 'Waiting for input',
-  AWAITING_USER: 'Awaiting your reply',
+  AWAITING_USER: 'Awaiting member reply',
   STOPPED: 'Agent stopped',
   FAILED: 'Execution failed',
   CANCEL_REQUESTED: 'Cancellation requested',
@@ -39,18 +41,46 @@ export const nativeExecutionLabels: Record<NativeExecution['status'], string> = 
 };
 
 export function nativeIntentStatusLabel(
-  intent: Pick<NativeDiscoveredIntent, 'status' | 'execution' | 'executionStatusUnavailable'>,
+  intent: Pick<
+    NativeDiscoveredIntent,
+    'status' | 'execution' | 'executionStatusUnavailable' | 'freshSessionRecovery'
+  >,
 ): string {
   if (intent.executionStatusUnavailable && !intent.execution) return 'Execution status unavailable';
   let label = intent.execution
     ? nativeExecutionLabels[intent.execution.status]
     : nativePreparationLabels[intent.status];
+  if (intent.execution?.status === 'RECOVERY_REQUIRED' && intent.freshSessionRecovery)
+    label = 'Awaiting fresh-session recovery';
   if (
     intent.execution?.status === 'DISPATCHING' &&
     (intent.execution.responsePending === true || (intent.execution.turnSequence ?? 0) > 1)
   )
     label = 'Continuing agent';
   return intent.executionStatusUnavailable ? `${label} (status outdated)` : label;
+}
+
+export function nativeDetailStatusLabel(intent: NativeIntent): string {
+  return nativeIntentStatusLabel({
+    ...intent,
+    freshSessionRecovery: canRecover(intent) || undefined,
+  });
+}
+
+// A navigation cue from the loaded, protected summary. WAITING_FOR_INPUT is a
+// legacy read-only question. Reply and recovery requests belong to the detail.
+export function nativeWaitingStatus(intent: NativeDiscoveredIntent) {
+  if (intent.executionStatusUnavailable) return null;
+  switch (intent.execution?.status) {
+    case 'AWAITING_USER':
+      return intent.execution.responsePending ? null : 'AWAITING_USER';
+    case 'WAITING_FOR_INPUT':
+      return 'WAITING_FOR_INPUT';
+    case 'RECOVERY_REQUIRED':
+      return intent.freshSessionRecovery ? 'RECOVERY_REQUIRED' : null;
+    default:
+      return null;
+  }
 }
 
 export function isPlatformIntent(intent: Intent): boolean {

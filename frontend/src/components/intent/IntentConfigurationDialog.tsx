@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { NativeIntent } from '@/services/nativeIntents';
 import { harnesses } from '@/contexts/adapters/nativeIntent';
-import { nativeIntentStatusLabel } from '@/lib/intentDiscovery';
+import { nativeDetailStatusLabel } from '@/lib/intentDiscovery';
 import {
   Boxes,
   Check,
@@ -315,7 +315,7 @@ export function NativeIntentConfigurationDialog({
           <h3 className="text-sm font-semibold">Execution</h3>
           <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
             <Definition label="Backend" value="Native" />
-            <Definition label="Status" value={nativeIntentStatusLabel(intent)} />
+            <Definition label="Status" value={nativeDetailStatusLabel(intent)} />
             <Definition label="Agent" value={harnesses[intent.harness]} />
             {execution && (
               <Definition

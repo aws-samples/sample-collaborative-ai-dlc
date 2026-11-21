@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/services/api';
 import { clearPersistedCache } from '@/lib/persistentCache';
-import { nativeIntentStatusLabel } from '@/lib/intentDiscovery';
+import { nativeIntentStatusLabel, nativeWaitingStatus } from '@/lib/intentDiscovery';
 import { resetSessionExpiry } from '@/services/sessionExpiry';
 import type { NativeExecution, NativeIntent, NativeIntentSummary } from '@/services/nativeIntents';
 const { list, get } = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn() }));
@@ -105,6 +105,51 @@ describe('shared native discovery cache', () => {
       execution: { status: 'RUNNING', revision: 1, updatedAt: detail.execution.updatedAt },
     });
     expect(sessionStorage.length).toBe(0);
+  });
+  it('promotes only confirmed recovery and preserves same-revision image revocation during a list refresh', async () => {
+    const recovery: NativeIntent = {
+      ...item('lost'),
+      prompt: '',
+      executionAvailable: true,
+      execution: {
+        ...execution('RECOVERY_REQUIRED', 6),
+        stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T08:01:00Z' },
+        recovery: {
+          id: 'a1227042-0661-4843-8138-9d08fdd0a891',
+          reason: 'SESSION_LOST',
+          canRecover: true,
+          workflowResumeState: 'created',
+        },
+        imageStatus: 'retained',
+      },
+    };
+    list.mockResolvedValue(page('lost'));
+    get.mockResolvedValue(recovery);
+    const row = () => getNativeListing('p1').items[0];
+    await refreshNativeIntents('p1');
+    expect(nativeWaitingStatus(row())).toBe('RECOVERY_REQUIRED');
+    expect(row().execution).not.toHaveProperty('recovery');
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValueOnce(pending.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    updateNativeIntentSummary({
+      ...recovery,
+      execution: { ...recovery.execution!, imageStatus: 'revoked' },
+    });
+    pending.resolve(recovery);
+    await refresh;
+    expect(nativeWaitingStatus(row())).toBeNull();
+    expect(nativeIntentStatusLabel(row())).toBe('Session recovery required');
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(nativeIntentStatusLabel(row())).toBe('Awaiting fresh-session recovery');
+    list.mockRejectedValueOnce(new ApiError(503, 'Unavailable'));
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(nativeWaitingStatus(row())).toBeNull();
+    expect(nativeIntentStatusLabel(row())).toMatch(/status outdated/);
+    list.mockRejectedValueOnce(new ApiError(403, 'Access revoked'));
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
   });
   it('bounds detail reads to four concurrent requests and stops new reads after revocation', async () => {
     list.mockResolvedValueOnce({
@@ -331,12 +376,12 @@ describe('shared native discovery cache', () => {
     await refresh;
     expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
       'Agent running (status outdated)',
-      'Awaiting your reply',
+      'Awaiting member reply',
     ]);
     updateNativeIntentSummary({ ...item('a'), prompt: '', execution: execution('RUNNING', 1) });
     expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
       'Agent running',
-      'Awaiting your reply',
+      'Awaiting member reply',
     ]);
     expect(getNativeListing('p1').error).toBeNull();
   });

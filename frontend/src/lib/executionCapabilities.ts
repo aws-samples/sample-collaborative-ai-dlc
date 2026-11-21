@@ -1,7 +1,8 @@
+import type { NativeIntent } from '@/services/nativeIntents';
 import type { ExecutionCapability, Intent, IntentGate } from '@/services/intents';
 
-// Native responses stay closed independently of the existing API capability
-// fields until protected native response delivery is available.
+// Platform gate controls stay closed on native routes. Native member replies
+// and recovery use the protected native detail and their own request contracts.
 export type UiExecutionCapability = ExecutionCapability | 'questionAnswer' | 'gateApproval';
 type Execution = Pick<Intent, 'executionBackend'> & {
   executionCapabilities?: Partial<Record<UiExecutionCapability, boolean>>;
@@ -34,3 +35,18 @@ export function executionGateResponseReason(
     gate.kind === 'question' ? 'questionAnswer' : 'gateApproval',
   );
 }
+
+export const imageBlocked = (intent: NativeIntent) =>
+  ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
+export const canRecover = (intent: NativeIntent) =>
+  !imageBlocked(intent) &&
+  intent.executionAvailable === true &&
+  intent.execution?.status === 'RECOVERY_REQUIRED' &&
+  intent.execution.revision !== undefined &&
+  intent.execution.recovery?.canRecover === true &&
+  intent.execution.recoveryMode === 'efs-workspace-v1' &&
+  intent.execution.stopStatus?.state === 'confirmed' &&
+  intent.execution.recovery.workflowResumeState === 'created' &&
+  !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
+    intent.execution.recovery.reason,
+  );

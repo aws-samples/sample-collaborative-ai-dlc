@@ -57,6 +57,7 @@ import {
   isPlatformIntent,
   nativeIntentStatusLabel,
   nativeIntentTitle,
+  nativeWaitingStatus,
   type DiscoveredIntent,
 } from '@/lib/intentDiscovery';
 
@@ -447,6 +448,9 @@ function IntentsView({
   const INITIAL_INTENT_CAP = 10;
   const visibleIntents = showAll ? sortedIntents : sortedIntents.slice(0, INITIAL_INTENT_CAP);
   const hasMore = sortedIntents.length > INITIAL_INTENT_CAP;
+  const hiddenWaits = sortedIntents
+    .slice(visibleIntents.length)
+    .filter((item) => item.backend === 'native' && nativeWaitingStatus(item.intent)).length;
 
   const refresh = useCallback(() => {
     intentsService
@@ -760,6 +764,7 @@ function IntentsView({
                   {showAll
                     ? `Show recent ${INITIAL_INTENT_CAP}`
                     : `Show all loaded (${sortedIntents.length})`}
+                  {hiddenWaits > 0 && ` · ${hiddenWaits} more waiting`}
                 </button>
               )}
               {intents.length >= API_INTENT_CAP && (

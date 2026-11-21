@@ -15,7 +15,7 @@ function replyStatus(execution: NativeExecution, reply: Reply): string {
     return 'Delivery is uncertain. The command may have executed. Inspect work before taking further action.';
   if (['RECOVERY_REQUIRED', 'RECOVERING'].includes(execution.status))
     return reply.receipt
-      ? 'Your earlier reply remains in history. Fresh-session recovery will not send it again.'
+      ? 'The accepted reply remains in history. Fresh-session recovery will not send it again.'
       : 'Replying is paused while this session needs recovery.';
   if (['CANCELLED', 'STOPPED', 'FAILED'].includes(execution.status))
     return reply.receipt
@@ -37,7 +37,7 @@ function replyStatus(execution: NativeExecution, reply: Reply): string {
   if (reply.state === 'uncertain') return 'Reply acceptance could not be confirmed.';
   if (reply.state === 'conflict')
     return 'This interaction changed. Refresh status to see the current reply.';
-  if (reply.awaitingReply) return 'Your reply is needed.';
+  if (reply.awaitingReply) return 'A member reply is needed.';
   if (execution.status === 'AWAITING_USER')
     return reply.interactionReady
       ? 'Replying is unavailable for this turn.'
@@ -107,7 +107,7 @@ export function NativeExecutionProgress({
         {replyStatus(execution, reply)}
       </p>
       {execution.recovery?.reason === 'DELIVERY_UNCERTAIN' && reply.receipt && (
-        <p className="text-sm">Your reply is saved.</p>
+        <p className="text-sm">The reply is saved.</p>
       )}
       {waiting && (
         <p className="text-sm text-muted-foreground">

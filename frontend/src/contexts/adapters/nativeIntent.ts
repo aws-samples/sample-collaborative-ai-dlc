@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { canRecover } from '@/lib/executionCapabilities';
 import { ApiError } from '@/services/api';
 import {
   nativeIntentsService,
@@ -54,7 +55,7 @@ const accessFailure = (error: unknown): error is ApiError =>
   error.body?.code !== 'NATIVE_INPUT_ACCESS';
 export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
   SESSION_LOST:
-    'The AI-DLC session was lost. Confirm a fresh session on the surviving workspace to continue.',
+    'The AI-DLC session was lost. Refresh status to check whether a fresh session is available.',
   RESTORE_FAILED: 'The workspace could not resume. Your committed content remains available below.',
   DELIVERY_UNCERTAIN:
     'The last command may have executed. Inspect work and export its exact results; this command cannot be replayed through recovery.',
@@ -65,20 +66,6 @@ export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
   WORKFLOW_STATE_UNAVAILABLE:
     'Recovery is unavailable because an existing workflow could not be verified. Published work and accepted answers remain available.',
 };
-export const imageBlocked = (intent: NativeIntent) =>
-  ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
-export const canRecover = (intent: NativeIntent) =>
-  !imageBlocked(intent) &&
-  intent.executionAvailable === true &&
-  intent.execution?.status === 'RECOVERY_REQUIRED' &&
-  intent.execution.revision !== undefined &&
-  intent.execution.recovery?.canRecover === true &&
-  intent.execution.recoveryMode === 'efs-workspace-v1' &&
-  intent.execution.stopStatus?.state === 'confirmed' &&
-  intent.execution.recovery.workflowResumeState === 'created' &&
-  !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
-    intent.execution.recovery.reason,
-  );
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {

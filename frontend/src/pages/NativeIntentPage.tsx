@@ -1,3 +1,4 @@
+import { canRecover, imageBlocked } from '@/lib/executionCapabilities';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { MoreHorizontal, Settings2 } from 'lucide-react';
@@ -9,7 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { nativeIntentStatusLabel, nativeIntentTitle } from '@/lib/intentDiscovery';
+import { nativeDetailStatusLabel, nativeIntentTitle } from '@/lib/intentDiscovery';
 import { nativeExecutionFailureMessage } from '@/lib/nativeExecutionFailure';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,8 +36,6 @@ import {
   type NativeIntentAdapter,
   activeExecution,
   recoveryMessages,
-  canRecover,
-  imageBlocked,
 } from '@/contexts/adapters/nativeIntent';
 
 export default function NativeIntentPage() {
@@ -126,7 +125,7 @@ export function NativeWorkspaceView({
         <>
           <section aria-label="Native execution status" className="space-y-3 rounded-md border p-4">
             <p role="status" className="font-medium">
-              {nativeIntentStatusLabel(intent)}
+              {nativeDetailStatusLabel(intent)}
             </p>
             <p className="text-sm">
               {intent.execution
@@ -141,7 +140,7 @@ export function NativeWorkspaceView({
                     : intent.execution.status === 'WAITING_FOR_INPUT'
                       ? 'The workflow is waiting. Published files and its question appear below once available.'
                       : intent.execution.status === 'AWAITING_USER'
-                        ? 'AI-DLC is waiting for your reply.'
+                        ? 'Review the published response in Current.'
                         : intent.execution.status === 'STOPPED'
                           ? 'The agent turn stopped. This does not establish that the workflow is complete.'
                           : intent.execution.status === 'CANCELLED'
