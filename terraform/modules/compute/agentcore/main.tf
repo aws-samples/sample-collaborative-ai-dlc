@@ -59,34 +59,6 @@ locals {
   partition            = data.aws_partition.current.partition
   dns_suffix           = data.aws_partition.current.dns_suffix
 
-  # Build context is the repo `lambda/` dir so the image can COPY both the
-  # agentcore package and the shared/ helpers it imports via ../shared.
-  agentcore_source_path = abspath("${path.module}/../../../../lambda")
-
-  # Include the protected native engine and its isolated Lambda interface as
-  # production image inputs. Keep every include/exclude rooted at its package.
-  # Rooting the excludes keeps `fileset` from walking sibling lambda packages
-  # (e.g. agents/node_modules), whose .bin/* symlinks trigger fileset's
-  # "inconsistent result" bug when a `**` glob traverses a symlink. The include
-  # set is already scoped to these two roots, so the resulting file set (and thus
-  # the image hash) is unchanged.
-  path_include = ["agentcore/**", "shared/**", "native-runtime-control/**"]
-  path_exclude = flatten([
-    for root in ["agentcore", "shared", "native-runtime-control"] : [
-      "${root}/**/node_modules/**",
-      "${root}/**/.git/**",
-      "${root}/**/test/**",
-      "${root}/**/.build/**",
-    ]
-  ])
-
-  agentcore_files_include = setunion([for f in local.path_include : fileset(local.agentcore_source_path, f)]...)
-  agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
-  agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
-  agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
-  # The optional fixture changes image bytes independently of application code.
-  agentcore_image_tag = substr(sha1("${local.agentcore_files_sha}:${var.enable_native_interaction_probe}"), 0, 16)
-
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
 
@@ -233,30 +205,6 @@ removed {
 
   lifecycle {
     destroy = false
-  }
-}
-
-locals {
-  agentcore_build_args = merge(var.docker_build_args, {
-    ENABLE_NATIVE_INTERACTION_PROBE = tostring(var.enable_native_interaction_probe)
-  })
-}
-
-data "external" "qualified_arm64" {
-  count   = var.native_image_qualification == null ? 0 : 1
-  program = ["node", "${local.agentcore_source_path}/../scripts/qualified-arm64-image.mjs"]
-  query = {
-    receipt     = var.native_image_qualification.path
-    sha256      = var.native_image_qualification.sha256
-    source_path = local.agentcore_source_path
-    source_sha  = local.agentcore_files_sha
-    source_tag  = local.agentcore_image_tag
-  }
-  lifecycle {
-    precondition {
-      condition     = tomap(jsondecode(file(var.native_image_qualification.path)).build.args) == tomap(local.agentcore_build_args)
-      error_message = "Effective Docker build arguments differ from the qualified ARM64 build."
-    }
   }
 }
 

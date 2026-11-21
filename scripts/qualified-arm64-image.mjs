@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { harnessFiles, runtimeSourceInventory } from './agentcore-source-inventory.mjs';
 
 const hash = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest('hex');
 function requireMatch(matches, description) {
@@ -50,34 +51,25 @@ function qualifiedImage({ receipt, sha256, source_path, source_sha, source_tag }
     'checkout, source tag or installed source manifest',
   );
   const root = dirname(source_path);
-  const fileHashes = manifest.runtimeFiles.map(({ path, bytes, mode, sha256: fileHash }) => {
+  const current = runtimeSourceInventory(source_path);
+  requireMatch(current.files.length === manifest.runtimeFiles.length, 'runtime file set');
+  for (const [i, file] of current.files.entries()) {
+    const expected = manifest.runtimeFiles[i];
     requireMatch(
-      /^lambda\/(?:agentcore|shared|native-runtime-control)\//.test(path) &&
-        !path.split('/').includes('..'),
-      'runtime file path',
+      file.path === expected.path &&
+        file.bytes === expected.bytes &&
+        file.mode === expected.mode &&
+        file.sha256 === expected.sha256,
+      file.path,
     );
-    const file = join(root, path);
-    const stat = lstatSync(file);
-    requireMatch(stat.isFile(), path);
-    const content = readFileSync(file);
-    requireMatch(
-      content.length === bytes && hash(content) === fileHash && (stat.mode & 0o777) === mode,
-      path,
-    );
-    return hash(content, 'sha1');
-  });
-  requireMatch(hash(fileHashes.join(''), 'sha1') === source_sha, 'runtime files');
+  }
+  requireMatch(current.source_sha1 === source_sha, 'runtime files');
   // The context ignore file and its three included harness files sit outside
   // the historical Terraform source-tag set. The image copies these too.
   requireMatch(
     hash(readFileSync(join(source_path, '.dockerignore'))) === build.inputs['lambda/.dockerignore'],
     'Docker context exclusions',
   );
-  const harnessFiles = [
-    'lambda/agentcore/test/local-e2e-config.js',
-    'lambda/agentcore/test/local-e2e-harness.mjs',
-    'lambda/agentcore/test/helpers/v2-table.js',
-  ];
   const entries = execFileSync(
     'git',
     [
@@ -85,7 +77,7 @@ function qualifiedImage({ receipt, sha256, source_path, source_sha, source_tag }
       '--full-tree',
       q.sourceCommit,
       '--',
-      ...harnessFiles.map((file) => `:(top)${file}`),
+      ...harnessFiles.map((file) => `:(top)lambda/${file}`),
     ],
     { cwd: root, encoding: 'utf8' },
   )

@@ -6,10 +6,16 @@ on:
       - main
     paths:
       - 'terraform/**'
+      - 'scripts/agentcore-source-inventory.mjs'
+      - 'scripts/qualified-arm64-image.mjs'
+      - 'scripts/test/qualified-arm64-image.test.mjs'
       - '.github/workflows/terraform.yml'
   pull_request:
     paths:
       - 'terraform/**'
+      - 'scripts/agentcore-source-inventory.mjs'
+      - 'scripts/qualified-arm64-image.mjs'
+      - 'scripts/test/qualified-arm64-image.test.mjs'
       - '.github/workflows/terraform.yml'
   workflow_dispatch:
 
@@ -32,6 +38,7 @@ jobs:
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: '1.15.0'
+          terraform_wrapper: false
 
       # Formatting is fast and credential-free. The override file below is never
       # present in the repo, so it can't affect this check.
@@ -82,6 +89,9 @@ jobs:
 
       - name: Native owner policies and admission drain (mock providers)
         run: terraform test -filter=tests/native-architecture.tftest.hcl -filter=tests/native-package-repair.tftest.hcl
+
+      - name: Verify AgentCore saved plans across ZIP packaging
+        run: node --test ../scripts/test/qualified-arm64-image.test.mjs
 
       - name: AgentCore ARM64 image publication tests (mock provider)
         run: terraform test -filter=tests/qualified-arm64-image.tftest.hcl
