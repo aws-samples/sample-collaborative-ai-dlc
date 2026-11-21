@@ -6169,6 +6169,7 @@ the current contract for newly created executions.
       can supply the same state. **Done when:** navigation, refresh and polling
       avoid duplicate requests while preserving shared drafts, uncertain submissions,
       current status and isolation across account/project/intent changes.
+      **Local integration, 2026-11-21.** An 11-intent page used one collection GET and zero detail GETs. Opening an intent, refreshing and polling shared one in-flight detail GET. An accepted or uncertain reply triggered one fresh read. Installed, deployed and signed-in checks remain open.
 - [ ] **NE-15 — Reduce activity notification work and complete observability.** Send
       one high-watermark invalidation per committed output batch, retaining durable
       cursor replay and polling. Show acceptance, dispatch, useful output, waiting,

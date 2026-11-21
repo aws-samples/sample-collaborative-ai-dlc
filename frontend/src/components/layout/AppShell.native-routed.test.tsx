@@ -827,8 +827,17 @@ it('opens older shared waits from the selected sidebar and removes them when ano
   service.get.mockImplementation(async (_project, id) => runs.get(id));
   service.list.mockResolvedValue({
     items: [...runs.values()].map(
-      ({ prompt: _prompt, execution: _execution, executionAvailable: _available, ...summary }) =>
-        summary,
+      ({ prompt: _prompt, execution, executionAvailable: _available, ...summary }) => ({
+        ...summary,
+        execution: {
+          status: execution!.status,
+          updatedAt: execution!.updatedAt,
+          revision: execution!.revision,
+          turnSequence: execution!.turnSequence ?? 1,
+          responsePending: execution!.responsePending ?? false,
+        },
+        ...(summary.id === recovery.id ? { freshSessionRecovery: true } : {}),
+      }),
     ),
     nextCursor: 'more',
   });
@@ -843,8 +852,14 @@ it('opens older shared waits from the selected sidebar and removes them when ano
   const recoveryRow = () => sidebarRow('Run recover: Awaiting fresh-session recovery');
   await waitFor(() => expect(latestRow()).toHaveAttribute('aria-current', 'page'));
   expect(recoveryRow()).toBeVisible();
+  expect(service.list).toHaveBeenCalledExactlyOnceWith('project', null);
+  expect(service.get).toHaveBeenCalledExactlyOnceWith('project', latest.id);
   await userEvent.click(sidebarRow('Question: Awaiting member reply'));
   await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
+  expect(service.get.mock.calls).toEqual([
+    ['project', latest.id],
+    ['project', ask.id],
+  ]);
   expect(sidebarRow('Question: Awaiting member reply')).toHaveAttribute('aria-current', 'page');
   expect(latestRow()).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('link', { name: 'History' })).toHaveAttribute(
