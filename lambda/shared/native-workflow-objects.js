@@ -83,9 +83,17 @@ export const createNativeEngineObjects = ({ s3, bucket, accountId }) => {
         }),
         { abortSignal: AbortSignal.timeout(120_000) },
       );
-      const latest = found.Versions?.[0];
-      if (!latest && found.IsTruncated === false && !found.DeleteMarkers?.length) return null;
-      if (latest?.Key !== key || latest.IsLatest !== true || found.DeleteMarkers?.length)
+      const versions = found.Versions ?? [];
+      if (
+        !Array.isArray(versions) ||
+        versions.length > 1 ||
+        found.DeleteMarkers?.length ||
+        found.CommonPrefixes?.length
+      )
+        throw engineFailure('NATIVE_ENGINE_OBJECT_INVALID');
+      if (versions.length === 0 && found.IsTruncated === false) return null;
+      const latest = versions[0];
+      if (latest?.Key !== key || latest.IsLatest !== true)
         throw engineFailure('NATIVE_ENGINE_OBJECT_INVALID');
       return readVersion({ key, versionId: latest.VersionId, bytes: latest.Size });
     },

@@ -114,6 +114,34 @@ const writerCondition = (tableName, identity, row) => ({
     },
   },
 });
+// recover() binds the member's confirmation to the stopped generation.
+// recovered() retains that episode, including on subsequent admitted turns.
+const abandonmentWriterCondition = (tableName, identity, row, owner) => {
+  const condition = writerCondition(tableName, identity, row);
+  if (owner.writerGeneration === identity.writerGeneration) return condition;
+  const resume = row.workspaceResume;
+  if (
+    !resume ||
+    resume.writerGeneration !== identity.writerGeneration ||
+    owner.sequence > resume.sequence ||
+    row.stopConfirmation?.writerGeneration !== identity.writerGeneration - 1 ||
+    row.stopConfirmation.runtimeSessionId !== row.runtimeSessionId
+  )
+    throw engineFailure('NATIVE_ENGINE_WRITER_CHANGED');
+  if (nativeConfirmedWorkspaceResume(row)) return condition;
+  if (row.status !== 'RUNNING' || row.lastRecoveryId !== resume.id)
+    throw engineFailure('NATIVE_ENGINE_WRITER_CHANGED');
+  const check = condition.ConditionCheck;
+  check.ConditionExpression +=
+    ' AND #status = :admitted AND lastRecoveryId = :episode AND workspaceResume = :resume AND stopConfirmation = :stop';
+  Object.assign(check.ExpressionAttributeValues, {
+    ':admitted': row.status,
+    ':episode': resume.id,
+    ':resume': resume,
+    ':stop': row.stopConfirmation,
+  });
+  return condition;
+};
 const transactionFailure = (error) => {
   const reasons = error?.name === 'TransactionCanceledException' ? error.CancellationReasons : [];
   if (reasons?.[0]?.Code === 'ConditionalCheckFailed')
@@ -250,13 +278,15 @@ export const createNativeEngineStore = ({
       operation.schemaVersion !== 1 ||
       operation.requestId !== requestId ||
       operation.producerSha256 !== producerSha256 ||
+      (operation.action !== undefined &&
+        !['execute', 'mirror', 'finalize'].includes(operation.action)) ||
+      (operation.publicationId !== undefined && !valid(operation.publicationId, SHA)) ||
       !valid(operation.token, UUID) ||
       !valid(operation.requestSha256, SHA) ||
       !Number.isSafeInteger(operation.expectedVersion) ||
       operation.expectedVersion < 0 ||
       owner.writerGeneration > identity.writerGeneration ||
-      (owner.writerGeneration === identity.writerGeneration &&
-        owner.sequence > identity.sequence) ||
+      owner.sequence > identity.sequence ||
       !same(
         { ...owner, writerGeneration: identity.writerGeneration, sequence: identity.sequence },
         identity,
@@ -319,8 +349,10 @@ export const createNativeEngineStore = ({
       if (duplicate(operation)) return abandonmentReceipt(operation);
       if (operation.status !== 'running') throw engineFailure('NATIVE_ENGINE_OPERATION_FINISHED');
       const nextHead = completeHead(tableName, head, operation);
-      await beforeAbandon(operation);
+      const discarded = await beforeAbandon(operation);
       const row = await authorize(identity);
+      const writer = abandonmentWriterCondition(tableName, identity, row, operation.identity);
+      const publicationId = operation.publicationId ?? discarded?.publicationId;
       const acknowledgement = abandonmentReceipt({
         requestId: operation.requestId,
         status: 'abandoned',
@@ -331,14 +363,15 @@ export const createNativeEngineStore = ({
         await ddb.send(
           new TransactWriteCommand({
             TransactItems: [
-              writerCondition(tableName, identity, row),
+              writer,
               {
                 Update: {
                   TableName: tableName,
                   Key: keys.operation,
                   // Keep every recorded job, including one updated after our read.
                   UpdateExpression:
-                    'SET #status = :abandoned, abandonedBy = :writer, abandonedAt = :at, #version = :next',
+                    'SET #status = :abandoned, abandonedBy = :writer, abandonedAt = :at, #version = :next' +
+                    (discarded ? ', #discarded = :discarded' : ''),
                   ConditionExpression:
                     '#status = :running AND #token = :token AND expectedVersion = :version AND #identity = :owner',
                   ExpressionAttributeNames: {
@@ -346,6 +379,7 @@ export const createNativeEngineStore = ({
                     '#token': 'token',
                     '#version': 'version',
                     '#identity': 'identity',
+                    ...(discarded ? { '#discarded': 'discarded' } : {}),
                   },
                   ExpressionAttributeValues: {
                     ':abandoned': 'abandoned',
@@ -356,16 +390,17 @@ export const createNativeEngineStore = ({
                     ':token': target.token,
                     ':version': target.expectedVersion,
                     ':owner': operation.identity,
+                    ...(discarded ? { ':discarded': discarded } : {}),
                   },
                 },
               },
-              ...(operation.publicationId
+              ...(publicationId
                 ? [
                     {
                       Put: {
                         TableName: tableName,
                         Item: {
-                          ...abandonedPublicationKey(operation.identity, operation.publicationId),
+                          ...abandonedPublicationKey(operation.identity, publicationId),
                           requestId: operation.requestId,
                         },
                         ConditionExpression: 'attribute_not_exists(pk)',

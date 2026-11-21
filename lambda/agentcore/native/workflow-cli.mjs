@@ -23,7 +23,11 @@ try {
   process.stderr.write(`${code}\n`);
   if (code === 'NATIVE_ENGINE_RESULT_SAVED')
     process.stderr.write(
-      'The originating writer can recover the saved result by replaying its retained request.\n',
+      'Replay the retained request from its original writer and turn to recover the saved result. After confirmed workspace recovery, the replacement writer can inspect and explicitly abandon that operation.\n',
+    );
+  if (code === 'NATIVE_ENGINE_ORIGINAL_REQUEST_REQUIRED')
+    process.stderr.write(
+      "This historical operation needs its original request to identify any publication. Run aidlc engine operation abandon '<exact pending JSON>' '<retained original request JSON>'.\n",
     );
   if (
     [

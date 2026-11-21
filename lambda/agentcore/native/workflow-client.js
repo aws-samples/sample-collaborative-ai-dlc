@@ -227,20 +227,46 @@ export const createNativeEngineClient = ({
     }
   };
   const recoverOperation = async (args) => {
-    const [verb, serialized] = args;
+    const [verb, serialized, original] = args;
     const envelope = { schemaVersion: 1, identity };
     let response;
     if (verb === 'pending' && args.length === 1) {
       response = (await invoke({ ...envelope, action: 'pending' })).operation;
     } else {
-      if (verb !== 'abandon' || args.length !== 2) throw engineFailure();
+      if (verb !== 'abandon' || ![2, 3].includes(args.length)) throw engineFailure();
       let operation;
+      let originalRequest;
       try {
         operation = JSON.parse(serialized);
+        if (original !== undefined) originalRequest = JSON.parse(original);
       } catch {
         throw engineFailure();
       }
-      response = await invoke({ ...envelope, action: 'abandon', operation });
+      const request = { ...envelope, action: 'abandon', operation };
+      try {
+        response = await invoke(originalRequest ? { ...request, originalRequest } : request);
+      } catch (error) {
+        if (error.code !== 'NATIVE_ENGINE_ORIGINAL_REQUEST_REQUIRED' || original !== undefined)
+          throw error;
+        // Only a legacy operation without identifying output needs its accepted
+        // envelope. The service verifies the digest and never invokes it.
+        if (![operation?.sequence, operation?.writerGeneration].every(Number.isSafeInteger))
+          throw error;
+        const ownerDirectory = resolve(
+          directory,
+          '../..',
+          `writer-${operation.writerGeneration}`,
+          `turn-${operation.sequence}`,
+        );
+        try {
+          await safeDirectory(ownerDirectory);
+          originalRequest = await json(join(ownerDirectory, 'pending.json'));
+        } catch (readError) {
+          if (readError.code === 'ENOENT') throw error;
+          throw readError;
+        }
+        response = await invoke({ ...request, originalRequest });
+      }
       if (
         response.status !== 'abandoned' ||
         response.requestId !== operation?.requestId ||

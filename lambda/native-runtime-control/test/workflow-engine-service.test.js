@@ -405,91 +405,128 @@ describe('explicit abandonment of a protected engine operation', () => {
     expect((await t.send(body)).response.status).toBe('completed');
     expect(t.calls).toHaveLength(1);
   });
-  it('admits the replacement CLI only after member confirmation and stop fencing, then resumes the open gate', async () => {
-    const t = await setup();
-    const prior = await toGate(t);
-    await approve(t, prior);
-    const history = await t.proof(prior);
-    const body = await t.request('execute', { args: ['next'] });
-    t.hooks.tool = () => {
-      throw timeout();
-    };
-    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_TIMEOUT' });
-    t.hooks.tool = null;
-    const original = await pendingOperation(t);
-    const stopped = await stopForWorkspaceRecovery(t);
-    const request = {
-      requestId: randomUUID(),
-      recoveryId: stopped.recovery.id,
-      confirmWorkspaceResume: true,
-    };
-    t.f.authorization.member = false;
-    await expect(t.f.api.recover(t.f.prepared, request, t.f.recheck)).rejects.toMatchObject({
-      code: 'NATIVE_PREPARATION_FORBIDDEN',
-    });
-    t.f.authorization.member = true;
-    await t.f.api.recover(t.f.prepared, request, t.f.recheck);
-    await expect(abandon(t, original)).rejects.toMatchObject({
-      code: 'NATIVE_ENGINE_WRITER_CHANGED',
-    });
-    const replacement = await t.execution.claim(t.f.bindingIdentity);
-    const restoring = await t.execution.recoveryStopped({ row: replacement.row });
-    await expect(abandon(t, original, body.identity)).rejects.toMatchObject({
-      code: 'NATIVE_ENGINE_FORBIDDEN',
-    });
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'native-abandon-')));
-    try {
-      const project = join(root, 'project');
-      await mkdir(project, { mode: 0o700 });
-      const { client } = await prepareNativeEngineClient({
-        project,
-        control: join(root, 'control'),
-        s3: t.s3,
-        forbiddenBytes: [],
-        payload: {
-          ...(await t.identity()),
-          command: 'native-resume',
-          configuration: { workflowEngine: t.pin },
-        },
-        env: {
-          NATIVE_RUNTIME_ACCOUNT_ID: t.f.configuration.accountId,
-          NATIVE_PUBLICATION_BUCKET: t.f.configuration.publicationBucket,
-        },
-        lambda: {
-          send: async ({ input }) => {
-            const reply = await t.handler(
-              JSON.parse(input.Payload),
-              await t.context({ invokedFunctionArn: input.FunctionName }),
-            );
-            return { Payload: Buffer.from(JSON.stringify(reply)) };
+  it.each(['interrupted', 'saved'])(
+    'admits the replacement CLI after confirmation to discard an %s command and resume the open gate',
+    async (fault) => {
+      const t = await setup();
+      const prior = await toGate(t);
+      await approve(t, prior);
+      const history = await t.proof(prior);
+      const body = await t.request('execute', { args: ['next'] });
+      const committed = (await t.journal.get(nativeEngineIdentity(await t.row()))).snapshot;
+      if (fault === 'saved') {
+        interruptFinish(t, body);
+        await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+        t.f.hooks.before = null;
+        await expect(abandon(t, await pendingOperation(t))).rejects.toMatchObject({
+          code: 'NATIVE_ENGINE_RESULT_SAVED',
+        });
+      } else {
+        t.hooks.tool = () => {
+          throw timeout();
+        };
+        await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_TIMEOUT' });
+        t.hooks.tool = null;
+      }
+      const original = await pendingOperation(t);
+      const stopped = await stopForWorkspaceRecovery(t);
+      const request = {
+        requestId: randomUUID(),
+        recoveryId: stopped.recovery.id,
+        confirmWorkspaceResume: true,
+      };
+      t.f.authorization.member = false;
+      await expect(t.f.api.recover(t.f.prepared, request, t.f.recheck)).rejects.toMatchObject({
+        code: 'NATIVE_PREPARATION_FORBIDDEN',
+      });
+      t.f.authorization.member = true;
+      await t.f.api.recover(t.f.prepared, request, t.f.recheck);
+      await expect(abandon(t, original)).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_WRITER_CHANGED',
+      });
+      const replacement = await t.execution.claim(t.f.bindingIdentity);
+      const restoring = await t.execution.recoveryStopped({ row: replacement.row });
+      await expect(abandon(t, original, body.identity)).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_FORBIDDEN',
+      });
+      await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
+      await expect(t.send({ ...body, identity: await t.identity() })).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+      });
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'native-abandon-')));
+      try {
+        const project = join(root, 'project');
+        await mkdir(project, { mode: 0o700 });
+        let loseReply = true;
+        const { client } = await prepareNativeEngineClient({
+          project,
+          control: join(root, 'control'),
+          s3: t.s3,
+          forbiddenBytes: [],
+          payload: {
+            ...(await t.identity()),
+            command: 'native-resume',
+            configuration: { workflowEngine: t.pin },
           },
-        },
+          env: {
+            NATIVE_RUNTIME_ACCOUNT_ID: t.f.configuration.accountId,
+            NATIVE_PUBLICATION_BUCKET: t.f.configuration.publicationBucket,
+          },
+          lambda: {
+            send: async ({ input }) => {
+              const request = JSON.parse(input.Payload);
+              const reply = await t.handler(
+                request,
+                await t.context({ invokedFunctionArn: input.FunctionName }),
+              );
+              if (request.action === 'abandon' && loseReply) {
+                loseReply = false;
+                throw timeout();
+              }
+              return { Payload: Buffer.from(JSON.stringify(reply)) };
+            },
+          },
+        });
+        const { stdout } = await client.command(['engine', 'operation', 'pending']);
+        expect(JSON.parse(stdout)).toEqual(original);
+        const cmd = ['engine', 'operation', 'abandon', stdout];
+        await expect(client.command(cmd)).rejects.toThrow('Lost acknowledgement');
+        const abandoned = await client.command(cmd);
+        expect(JSON.parse(abandoned.stdout)).toMatchObject({
+          status: 'abandoned',
+          requestId: body.requestId,
+        });
+        expect(await client.command(cmd)).toEqual(abandoned);
+        const operation = operationRow(t, body.requestId);
+        if (fault === 'saved') {
+          for (const name of ['snapshot', 'result']) {
+            const observed = await t.objects.observeOperationObject(
+              operation.identity,
+              body.requestId,
+              name,
+            );
+            expect(operation.discarded[name]).toEqual(observed.receipt);
+          }
+        }
+        expect(operation).not.toHaveProperty('result');
+        expect((await t.journal.get(nativeEngineIdentity(restoring))).snapshot).toEqual(committed);
+        expect(operation.abandonedBy).toEqual(nativeEngineIdentity(restoring));
+        expect(JSON.parse((await client.command(['next', '--resume'])).stdout)).toMatchObject({
+          stage: 'build',
+          gate: true,
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+      await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
+      expect(await t.proof(prior)).toEqual(history);
+      expect(await t.proof(await t.publish(gate()))).toMatchObject({
+        humanApproval: 'incomplete',
+        workflowCompletion: 'not_verified',
+        engineApplication: [],
       });
-      const { stdout } = await client.command(['engine', 'operation', 'pending']);
-      expect(JSON.parse(stdout)).toEqual(original);
-      const cmd = ['engine', 'operation', 'abandon', stdout];
-      const abandoned = await client.command(cmd);
-      expect(JSON.parse(abandoned.stdout)).toMatchObject({
-        status: 'abandoned',
-        requestId: body.requestId,
-      });
-      expect(await client.command(cmd)).toEqual(abandoned);
-      expect(operationRow(t, body.requestId).abandonedBy).toEqual(nativeEngineIdentity(restoring));
-      expect(JSON.parse((await client.command(['next', '--resume'])).stdout)).toMatchObject({
-        stage: 'build',
-        gate: true,
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-    await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
-    expect(await t.proof(prior)).toEqual(history);
-    expect(await t.proof(await t.publish(gate()))).toMatchObject({
-      humanApproval: 'incomplete',
-      workflowCompletion: 'not_verified',
-      engineApplication: [],
-    });
-  });
+    },
+  );
   it('cannot abandon or resume a terminally cancelled execution', async () => {
     const t = await setup();
     const body = await t.request('execute');
@@ -708,6 +745,8 @@ describe('protected workflow engine journal recovery', () => {
   it.each([
     ['missing snapshot', 'NATIVE_ENGINE_STATE_UNAVAILABLE'],
     ['invalid checksum', 'NATIVE_ENGINE_OBJECT_INVALID'],
+    ['delete marker', 'NATIVE_ENGINE_OBJECT_INVALID'],
+    ['ambiguous listing', 'NATIVE_ENGINE_OBJECT_INVALID'],
     ['foreign result', 'NATIVE_ENGINE_RESULT_INVALID'],
   ])('holds the pending head with %s', async (fault, code) => {
     const t = await setup();
@@ -736,33 +775,141 @@ describe('protected workflow engine journal recovery', () => {
       t.hooks.beforeObject = ({ input }) => {
         if (input.Prefix?.endsWith('/snapshot.json.gz')) return { IsTruncated: false };
       };
+    } else if (fault === 'delete marker' || fault === 'ambiguous listing') {
+      t.hooks.beforeObject = ({ input }) => {
+        if (input.Prefix?.endsWith('/result.json.gz'))
+          return fault === 'delete marker'
+            ? { IsTruncated: false, DeleteMarkers: [{ Key: input.Prefix, IsLatest: true }] }
+            : { IsTruncated: false, Versions: [null] };
+      };
     } else t.hooks.checksum = () => '';
     await expect(t.send(body)).rejects.toMatchObject({ code });
+    const stopped = await stopForWorkspaceRecovery(t);
+    const replacement = await confirmWorkspaceRecovery(t, stopped);
+    await t.execution.recoveryStopped({ row: replacement.row });
+    await expect(abandon(t, await pendingOperation(t))).rejects.toMatchObject({ code });
     expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
     expect(t.calls).toHaveLength(1);
   });
 
-  it('does not let a confirmed replacement writer finish the previous writer’s saved output', async () => {
+  it.each(['current', 'historical', 'historical evidence only'])(
+    'discards a predecessor finalize (%s), retaining the previous publication and refusing backfill',
+    async (shape) => {
+      const t = await setup();
+      const prior = await toGate(t);
+      await approve(t, prior);
+      const history = await t.proof(prior);
+      const publication = await t.f.turn(2);
+      const body = await t.request('finalize', {
+        publication: publication.receipt,
+        interaction: publication.interactionReceipt,
+      });
+      if (shape === 'historical evidence only') {
+        t.hooks.afterPut = ({ Key }) => {
+          if (Key.endsWith('/evidence.json.gz')) throw timeout();
+        };
+        await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_TIMEOUT' });
+        t.hooks.afterPut = null;
+      } else {
+        interruptFinish(t, body);
+        await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
+        t.f.hooks.before = null;
+      }
+      if (shape !== 'current') {
+        delete operationRow(t, body.requestId).action;
+        delete operationRow(t, body.requestId).publicationId;
+      }
+      const target = await pendingOperation(t);
+      const stopped = await stopForWorkspaceRecovery(t);
+      const claim = await confirmWorkspaceRecovery(t, stopped);
+      const restoring = await t.execution.recoveryStopped({ row: claim.row });
+      await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
+      await expect(abandon(t, { ...target, token: randomUUID() })).rejects.toMatchObject({
+        code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+      });
+      t.access.allowed = false;
+      await expect(abandon(t, target)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
+      t.access.allowed = true;
+      let receipt;
+      if (shape === 'historical evidence only') {
+        const original = async (originalRequest) =>
+          t.handler(
+            {
+              schemaVersion: 1,
+              identity: await t.identity(),
+              action: 'abandon',
+              operation: target,
+              originalRequest,
+            },
+            await t.context(),
+          );
+        await expect(abandon(t, target)).rejects.toMatchObject({
+          code: 'NATIVE_ENGINE_ORIGINAL_REQUEST_REQUIRED',
+        });
+        await expect(original({ ...body, publication: prior.receipt })).rejects.toMatchObject({
+          code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
+        });
+        receipt = await original(body);
+      } else receipt = await abandon(t, target);
+      const discarded = operationRow(t, body.requestId).discarded;
+      expect(discarded.publicationId).toBe(publication.receipt.id);
+      if (shape === 'historical evidence only') expect(discarded).not.toHaveProperty('evidence');
+      else
+        expect(await t.objects.read(body.identity, discarded.evidence, 'output')).toMatchObject({
+          publicationId: publication.receipt.id,
+          identity: { writerGeneration: 1 },
+        });
+      await expect(
+        t.send({
+          ...body,
+          identity: await t.identity(),
+          requestId: randomUUID(),
+          expectedVersion: receipt.version,
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_ENGINE_PUBLICATION_ABANDONED' });
+      expect((await t.command(['next', '--resume'])).result.exitCode).toBe(0);
+      expect(await abandon(t, target)).toEqual(receipt);
+      expect(await t.proof(publication)).toBeNull();
+      expect(await t.proof(prior)).toEqual(history);
+    },
+  );
+
+  it('requires the stopped episode at commit and rejects a predecessor operation from a future turn', async () => {
     const t = await setup();
     const body = await t.request('execute');
     interruptFinish(t, body);
     await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_UNAVAILABLE' });
     t.f.hooks.before = null;
     const stopped = await stopForWorkspaceRecovery(t);
-    const replacement = await confirmWorkspaceRecovery(t, stopped);
-    await t.execution.recoveryStopped({ row: replacement.row });
-    await expect(t.send(body)).rejects.toMatchObject({ code: 'NATIVE_ENGINE_FORBIDDEN' });
-    await expect(t.send({ ...body, identity: await t.identity() })).rejects.toMatchObject({
+    const claim = await confirmWorkspaceRecovery(t, stopped);
+    const restoring = await t.execution.recoveryStopped({ row: claim.row });
+    await t.execution.release({ row: await t.execution.recovered({ row: restoring }) });
+    const target = await pendingOperation(t);
+    const operation = operationRow(t, target.requestId);
+    operation.identity.sequence++;
+    await expect(pendingOperation(t)).rejects.toMatchObject({
       code: 'NATIVE_ENGINE_REQUEST_CONFLICT',
     });
-    await expect(abandon(t, await pendingOperation(t))).rejects.toMatchObject({
-      code: 'NATIVE_ENGINE_RESULT_SAVED',
+    operation.identity.sequence--;
+    t.f.hooks.before = (command) => {
+      if (
+        command.input.TransactItems?.some(
+          (item) => item.Update?.ExpressionAttributeValues?.[':abandoned'],
+        )
+      ) {
+        const row = [...t.f.rows.values()].find(
+          (item) => item.lastRecoveryId === stopped.recovery.id,
+        );
+        delete row.stopConfirmation;
+      }
+    };
+    await expect(abandon(t, target)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
     });
-    await expect(t.send(await t.request('execute'))).rejects.toMatchObject({
-      code: 'NATIVE_ENGINE_BUSY',
+    expect(await pendingOperation(t)).toEqual(target);
+    await expect(abandon(t, target)).rejects.toMatchObject({
+      code: 'NATIVE_ENGINE_WRITER_CHANGED',
     });
-    expect(await journalStatus(t)).toMatchObject({ version: 0, pending: body.requestId });
-    expect(t.calls).toHaveLength(1);
   });
 
   it.each(['token', 'requestId', 'version', 'producerSha256', 'cancel'])(

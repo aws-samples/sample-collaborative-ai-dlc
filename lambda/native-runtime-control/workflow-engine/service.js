@@ -34,7 +34,7 @@ const requestValue = (request) => {
   const base = ['schemaVersion', 'identity', 'action'];
   const allowed =
     request?.action === 'abandon'
-      ? [...base, 'operation']
+      ? [...base, 'operation', 'originalRequest']
       : request?.action === 'pending'
         ? base
         : [
@@ -257,20 +257,26 @@ const operationResponse = (operation) => ({
   result: operation.result,
 });
 
-const replayOperation = async ({
-  operation,
-  snapshot: baseSnapshot,
-  request,
-  objects,
-  journal,
-  authorize,
-}) => {
-  if (operation.status !== 'running') return operationResponse(operation);
+const publicationFromEvidence = (operation, value, evidence) => {
   const { identity, requestId, producerSha256 } = operation;
-  // Result is written last, after the workspace snapshot and any publication
-  // evidence. Only the engine can write these per-request object versions.
-  const saved = await objects.observeOperationObject(identity, requestId, 'result');
-  if (!saved) return { ok: true, status: 'pending', requestId };
+  if (
+    evidence.key !==
+      `${nativeEngineObjectPrefix(identity, 'output')}${requestId}/evidence.json.gz` ||
+    value?.schemaVersion !== 1 ||
+    !same(value.identity, identity) ||
+    value.publicationSequence !== identity.sequence ||
+    value.configurationSha256 !== identity.configurationSha256 ||
+    !/^[a-f0-9]{64}$/.test(value.publicationId ?? '') ||
+    value.publicationManifestSha256 !== value.publicationId ||
+    (operation.publicationId && operation.publicationId !== value.publicationId) ||
+    value.producer?.imageSha256 !== producerSha256
+  )
+    throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
+  return { identity, producerSha256, publicationId: value.publicationId, evidence };
+};
+
+const savedOperation = async (operation, objects, saved, action) => {
+  const { identity, requestId } = operation;
   const result = saved.value;
   if (
     result?.schemaVersion !== 1 ||
@@ -295,35 +301,124 @@ const replayOperation = async ({
   if (!snapshot && !result.failure) throw engineFailure('NATIVE_ENGINE_STATE_UNAVAILABLE');
 
   let publication = null;
-  if (request.action === 'finalize' && !result.failure) {
+  // V4/V5 rows can lack both action and publicationId. A finalize result
+  // carries its original private evidence receipt, even without a presentation.
+  if (
+    result.evidence ||
+    (!result.failure && (action === 'finalize' || 'presentedInteractionId' in result))
+  ) {
     const evidence = result.evidence;
     if (
+      result.failure ||
+      (action && action !== 'finalize') ||
       evidence?.key !==
-      `${nativeEngineObjectPrefix(identity, 'output')}${requestId}/evidence.json.gz`
+        `${nativeEngineObjectPrefix(identity, 'output')}${requestId}/evidence.json.gz`
     )
       throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
-    const value = await objects.read(identity, evidence, 'output');
-    if (
-      value?.schemaVersion !== 1 ||
-      !same(value.identity, identity) ||
-      value.publicationId !== request.publication?.id ||
-      value.publicationManifestSha256 !== request.publication.manifest?.sha256 ||
-      value.producer?.imageSha256 !== producerSha256
-    )
-      throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
-    publication = { identity, producerSha256, publicationId: value.publicationId, evidence };
+    publication = publicationFromEvidence(
+      operation,
+      await objects.read(identity, evidence, 'output'),
+      evidence,
+    );
+  } else if (
+    !action &&
+    !result.failure &&
+    (![result.inputSha256, result.filesSha256].every((digest) =>
+      /^[a-f0-9]{64}$/.test(digest ?? ''),
+    ) ||
+      operation.publicationId)
+  ) {
+    // A historical successful command has file digests or finalize evidence.
+    throw engineFailure('NATIVE_ENGINE_RESULT_INVALID');
   }
+  return {
+    snapshot: snapshot?.receipt,
+    publication,
+    status: result.failure ? 'failed' : 'completed',
+  };
+};
+
+const replayOperation = async ({
+  operation,
+  snapshot: baseSnapshot,
+  request,
+  objects,
+  journal,
+  authorize,
+}) => {
+  if (operation.status !== 'running') return operationResponse(operation);
+  const saved = await objects.observeOperationObject(
+    operation.identity,
+    operation.requestId,
+    'result',
+  );
+  if (!saved) return { ok: true, status: 'pending', requestId: operation.requestId };
+  const { snapshot, publication, status } = await savedOperation(
+    operation,
+    objects,
+    saved,
+    request.action,
+  );
+  if (
+    publication &&
+    (publication.publicationId !== request.publication?.id ||
+      publication.publicationId !== request.publication.manifest?.sha256)
+  )
+    throw engineFailure('NATIVE_ENGINE_PUBLICATION_INVALID');
   await authorize();
   return operationResponse(
     await journal.finish({
       operation,
       // Failure before opening the workspace preserves the previous head.
-      snapshot: snapshot?.receipt ?? baseSnapshot,
+      snapshot: snapshot ?? baseSnapshot,
       result: saved.receipt,
-      status: result.failure ? 'failed' : 'completed',
+      status,
       publication,
     }),
   );
+};
+
+const observeDiscard = async (operation, writer, objects, originalRequest) => {
+  const { identity, requestId } = operation;
+  const saved = await objects.observeOperationObject(identity, requestId, 'result');
+  if (saved && identity.writerGeneration === writer.writerGeneration)
+    throw engineFailure('NATIVE_ENGINE_RESULT_SAVED');
+  const discarded = {};
+  if (saved) {
+    const { snapshot, publication } = await savedOperation(
+      operation,
+      objects,
+      saved,
+      operation.action,
+    );
+    discarded.result = saved.receipt;
+    if (snapshot) discarded.snapshot = snapshot;
+    if (publication) {
+      discarded.evidence = publication.evidence;
+      discarded.publicationId = publication.publicationId;
+    }
+  }
+  // Older rows may have neither action nor publicationId. A saved successful
+  // result identifies its kind. Otherwise identify the command from the
+  // original request's journal digest, without executing it or listing evidence.
+  if (
+    (!saved || saved.value.failure) &&
+    !operation.publicationId &&
+    (!operation.action || operation.action === 'finalize')
+  ) {
+    if (!originalRequest) throw engineFailure('NATIVE_ENGINE_ORIGINAL_REQUEST_REQUIRED');
+    if (nativeEngineRequestSha256(originalRequest) !== operation.requestSha256)
+      throw engineFailure('NATIVE_ENGINE_REQUEST_CONFLICT');
+    const publication = originalRequest.publication;
+    if (
+      originalRequest.action === 'finalize' &&
+      publication?.sequence === identity.sequence &&
+      /^[a-f0-9]{64}$/.test(publication.id ?? '') &&
+      publication.id === publication.manifest?.sha256
+    )
+      discarded.publicationId = publication.id;
+  }
+  return Object.keys(discarded).length ? discarded : null;
 };
 
 export const createNativeWorkflowEngine =
@@ -389,11 +484,14 @@ export const createNativeWorkflowEngine =
         target: request.operation,
         producerSha256: pin.producerSha256,
         beforeAbandon: async (original) => {
-          // A missing snapshot alone is inconclusive. The per-request result
-          // is written last. A failed lookup must never imply absence.
-          if (await objects.observeOperationObject(original.identity, original.requestId, 'result'))
-            throw engineFailure('NATIVE_ENGINE_RESULT_SAVED');
+          const discarded = await observeDiscard(
+            original,
+            identity,
+            objects,
+            request.originalRequest,
+          );
           await authorize();
+          return discarded;
         },
       });
       return { ok: true, ...receipt };

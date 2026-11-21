@@ -517,6 +517,9 @@ describe('native workflow engine client pending operations', () => {
       if (request.action !== 'abandon') return reply(await handle(request));
       if (request.operation.token !== operation.token)
         return reply({ ok: false, code: 'NATIVE_ENGINE_REQUEST_CONFLICT' });
+      if (!request.originalRequest)
+        return reply({ ok: false, code: 'NATIVE_ENGINE_ORIGINAL_REQUEST_REQUIRED' });
+      expect(request.originalRequest).toEqual(retained);
       backend.version = 1;
       if (++attempts === 1) throw new Error('Lost abandonment reply');
       return reply({ ok: true, status: 'abandoned', requestId: operation.requestId, version: 1 });
