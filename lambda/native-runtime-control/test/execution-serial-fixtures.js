@@ -7,6 +7,7 @@ import { createNativeArtifactRevisions } from '../../shared/native-artifact-revi
 import { TABLE } from './fixtures.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionApi } from '../execution-api.js';
+import { createNativeActivityStore } from '../activity-store.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { nativeTurnSequence } from '../execution-store.js';
 import { createNativeProjectionStore, nativeProjectionStatus } from '../projection-store.js';
@@ -71,10 +72,18 @@ export const serialFixture = ({ source = SERIAL_SOURCE, ...fixtureOptions } = {}
   });
   const enqueue = vi.fn(async () => {});
   const configure = vi.fn(async () => f.configuration);
+  const broadcastActivity = vi.fn();
+  const activity = createNativeActivityStore({
+    ddb: f.ddb,
+    tableName: TABLE,
+    now: f.now,
+    broadcast: broadcastActivity,
+  });
   const makeApi = (enabled = true, completionProof) =>
     createNativeExecutionApi({
       enabled,
       store: f.store,
+      activity,
       projectionStatus: (row) => nativeProjectionStatus(f.ddb, TABLE, row),
       publications,
       revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
@@ -162,6 +171,8 @@ export const serialFixture = ({ source = SERIAL_SOURCE, ...fixtureOptions } = {}
     f.store.respond({ ...f.bindingIdentity, actorId, request });
   return {
     ...f,
+    activity,
+    broadcastActivity,
     publications,
     projection,
     interactions,

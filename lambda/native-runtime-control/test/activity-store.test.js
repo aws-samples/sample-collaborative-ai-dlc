@@ -124,6 +124,7 @@ describe('trusted native OUTPUT ingestion', () => {
       }
       expect(await f.store.ingest(f.row, offered)).toBe(after + 64);
     }
+    expect(f.broadcast.mock.calls.map(([, hint]) => hint.seq)).toEqual([64, 192]);
     for (let revision = 1; revision <= 139; revision++)
       f.put({
         ...nativeExecutionKey(scope),
@@ -167,12 +168,16 @@ describe('trusted native OUTPUT ingestion', () => {
 
   it('persists ordering and cursor atomically before broadcasting/acknowledging', async () => {
     const f = fixture();
-    expect(await f.store.ingest(f.row, batch([event(1), event(2)]))).toBe(2);
+    const committed = Promise.withResolvers();
+    const slowSocket = Promise.withResolvers();
+    f.broadcast.mockImplementation(async () => {
+      committed.resolve();
+      await slowSocket.promise;
+    });
+    const offered = batch([event(1), event(2)]);
+    const ingest = f.store.ingest(f.row, offered);
+    await committed.promise;
     expect(await f.store.cursor(f.row)).toBe(2);
-    expect(f.broadcast).toHaveBeenCalledTimes(2);
-    expect(f.broadcast.mock.calls[0][0]).toEqual(scope);
-    expect(JSON.stringify(f.broadcast.mock.calls)).not.toContain('Message');
-    expect(f.broadcast.mock.calls[0][1]).not.toHaveProperty('content');
     const output = await f.store.history(scope);
     expect(output.outputs.map((r) => r.seq)).toEqual([1, 2]);
     expect(output.outputs[0]).toMatchObject({
@@ -181,6 +186,23 @@ describe('trusted native OUTPUT ingestion', () => {
       display: { type: 'message' },
       timestamp: '1970-01-01T00:00:01.000Z',
     });
+    slowSocket.resolve();
+    expect(await ingest).toBe(2);
+    expect(await f.store.ingest(f.row, offered)).toBe(2);
+    expect(await f.store.ingest(f.row, batch([], 2))).toBe(2);
+    expect(f.broadcast.mock.calls).toEqual([
+      [
+        scope,
+        {
+          action: 'agent.output',
+          executionBackend: 'native',
+          projectId: scope.projectId,
+          intentId: scope.executionId,
+          executionId: scope.executionId,
+          seq: 2,
+        },
+      ],
+    ]);
   });
   it('retries an identical batch after a lost transaction response without duplicating output', async () => {
     const f = fixture();
@@ -189,16 +211,19 @@ describe('trusted native OUTPUT ingestion', () => {
     await expect(f.store.ingest(f.row, b)).rejects.toThrow('response lost');
     expect(f.broadcast).not.toHaveBeenCalled();
     expect(await f.store.ingest(f.row, b)).toBe(2);
-    expect((await f.store.history(scope)).outputs).toHaveLength(2);
     await expect(
-      f.store.ingest(f.row, batch([event(1, { content: 'changed' })])),
+      f.store.ingest(f.row, batch([event(2, { content: 'changed' }), event(3)], 1)),
     ).rejects.toMatchObject({ code: 'NATIVE_ACTIVITY_CONFLICT' });
+    expect(f.broadcast).not.toHaveBeenCalled();
+    expect(await f.store.cursor(f.row)).toBe(2);
+    expect((await f.store.history(scope)).outputs.map((r) => r.seq)).toEqual([1, 2]);
   });
   it('does not advance the cursor on a failed persistence attempt', async () => {
     const f = fixture();
     f.state.failWrite = true;
     await expect(f.store.ingest(f.row, batch([event(1)]))).rejects.toThrow();
     expect(await f.store.cursor(f.row)).toBe(0);
+    expect((await f.store.history(scope)).outputs).toEqual([]);
     expect(f.broadcast).not.toHaveBeenCalled();
   });
   it('acknowledges committed output even if the optional broadcaster throws synchronously', async () => {
@@ -256,15 +281,17 @@ describe('trusted native OUTPUT ingestion', () => {
     f.row.turnSequence = 2;
     f.row.version++;
     f.put({ ...nativeExecutionKey(scope), ...f.row });
-    await f.store.ingest(
-      f.row,
-      batch([event(1, { writerGeneration: 2, sequence: 2 })], 0, { writerGeneration: 2 }),
-    );
+    const recovered = (index) => event(index, { writerGeneration: 2, sequence: 2 });
+    await f.store.ingest(f.row, batch([recovered(1)], 0, { writerGeneration: 2 }));
+    const overlap = batch([recovered(1), recovered(2), recovered(3)], 0, { writerGeneration: 2 });
+    expect(await f.store.ingest(f.row, overlap)).toBe(3);
+    expect(await f.store.ingest(f.row, overlap)).toBe(3);
+    expect(f.broadcast.mock.calls.map(([, hint]) => hint.seq)).toEqual([64, 65, 67]);
     const first = await f.store.history(scope);
     expect(first.outputs).toHaveLength(64);
     expect(first.nextAfter).toBe(64);
     const second = await f.store.history(scope, first.nextAfter);
-    expect(second.outputs.map((r) => r.seq)).toEqual([65]);
+    expect(second.outputs.map((r) => r.seq)).toEqual([65, 66, 67]);
     expect(second.nextAfter).toBe(null);
   });
   it('checks the protected owner on duplicate acknowledgment as well as new writes', async () => {

@@ -199,20 +199,18 @@ export const createNativeActivityStore = ({
     );
     // Native sockets receive content-free invalidations only. Token expiry is
     // not current membership; the authorized REST read supplies public fields.
-    for (const output of rows) {
-      try {
-        await broadcast(row.scope, {
-          action: 'agent.output',
-          executionBackend: 'native',
-          projectId: row.scope.projectId,
-          intentId: row.scope.executionId,
-          executionId: row.scope.executionId,
-          seq: output.seq,
-        });
-      } catch {
-        // Persistence is the acknowledgement boundary, including synchronous
-        // broadcaster failures. Polling/reconnect reads repair lost hints.
-      }
+    try {
+      await broadcast(row.scope, {
+        action: 'agent.output',
+        executionBackend: 'native',
+        projectId: row.scope.projectId,
+        intentId: row.scope.executionId,
+        executionId: row.scope.executionId,
+        seq: next.seq,
+      });
+    } catch {
+      // Persistence is the acknowledgement boundary, including synchronous
+      // broadcaster failures. Polling/reconnect reads repair lost hints.
     }
     return next.index;
   };

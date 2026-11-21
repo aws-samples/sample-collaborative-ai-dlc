@@ -7,7 +7,7 @@ import {
   TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { CreateTableCommand, DeleteTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { executionIdentity } from '../execution-runtime.js';
 import { createNativeExecutionStore } from '../execution-store.js';
 import { createNativeExecutionApi } from '../execution-api.js';
@@ -487,7 +487,8 @@ describe('task-3 structured answers', () => {
         expect(event.summary).toContain('delivery pending');
         // The same table and real transaction conditions fence multi-batch
         // output, duplicate ACK recovery, and a cancellation racing an old writer.
-        const activity = createNativeActivityStore({ ddb, tableName, now: f.now });
+        const broadcast = vi.fn();
+        const activity = createNativeActivityStore({ ddb, tableName, now: f.now, broadcast });
         const owner = (await store.claim(f.bindingIdentity)).row;
         for (let after = 0; after < 192; after += 64) {
           const batch = {
@@ -536,6 +537,8 @@ describe('task-3 structured answers', () => {
             ],
           }),
         ).rejects.toThrow();
+        expect(broadcast).toHaveBeenCalledTimes(3);
+        expect(broadcast.mock.calls.map(([, hint]) => hint.seq)).toEqual([64, 128, 192]);
         expect(await activity.cursor(owner)).toBe(192);
         expect((await activity.events(f.identity)).events.map((entry) => entry.type)).toEqual([
           'native.answer.accepted',

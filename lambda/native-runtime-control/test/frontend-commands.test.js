@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
 import { createNativeAuthority } from '../authority.js';
+import { executionIdentity } from '../execution-runtime.js';
+import { createNativeActivityLog } from '../../agentcore/native/activity.js';
 import { handler as publicHandler } from '../index.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
 import { serialFixture, SERIAL_SOURCE } from './execution-serial-fixtures.js';
@@ -85,14 +87,14 @@ const fixture = async ({ state = 'recovery', workflowResumeState = 'created' } =
     const target = new URL(url);
     expect(target.origin).toBe(ORIGIN);
     const route =
-      /^\/api\/projects\/([^/]+)\/native-intents\/([^/]+)(?:\/(start|response|cancel|recover|interaction))?$/.exec(
+      /^\/api\/projects\/([^/]+)\/native-intents\/([^/]+)(?:\/(start|response|cancel|recover|interaction|outputs))?$/.exec(
         target.pathname,
       );
     expect(route).not.toBeNull();
     const suffix = route[3] ? `/${route[3]}` : '';
     const headers = Object.fromEntries(new Headers(options.headers));
     const result = await publicHandler({
-      httpMethod: options.method,
+      httpMethod: options.method ?? 'GET',
       resource: `/api/projects/{projectId}/native-intents/{intentId}${suffix}`,
       path: target.pathname,
       pathParameters: { projectId: route[1], intentId: route[2] },
@@ -209,6 +211,54 @@ const scenarios = [
 ];
 const writes = (f) =>
   f.authority.mock.calls.filter(([command]) => command instanceof TransactWriteCommand);
+
+it('replays runtime batches through the protected outputs route and rechecks access after reading', async () => {
+  const f = await fixture({ state: 'draft' });
+  await f.start();
+  const { row } = await f.store.claim(f.bindingIdentity);
+  const log = createNativeActivityLog({ writerGeneration: row.writerGeneration, now: f.now });
+  const turn = log.turn({ sequence: row.turnSequence, harness: row.configuration.harness });
+  for (let index = 1; index <= 70; index++) {
+    const message = { content: [{ type: 'text', text: `Output ${index}` }] };
+    turn.write(Buffer.from(`${JSON.stringify({ type: 'assistant', message })}\n`));
+  }
+  turn.close();
+  let after = 0;
+  for (const end of [64, 70]) {
+    const batch = { ...executionIdentity(row), ...log.pull(after) };
+    after = await f.activity.ingest(row, batch);
+    expect(after).toBe(end);
+    expect(await f.activity.ingest(row, batch)).toBe(end);
+  }
+  expect(f.broadcastActivity.mock.calls.map(([, hint]) => hint.seq)).toEqual([64, 70]);
+  const read = (afterSeq, afterEvent) =>
+    nativeIntentsService.outputs(
+      f.identity.projectId,
+      f.identity.executionId,
+      afterSeq,
+      afterEvent,
+    );
+  const first = await read(0, 0);
+  expect(first.nextAfter).toBe(64);
+  expect(first.events.map((e) => e.type)).toEqual(['native.accepted']);
+  const second = await read(first.nextAfter, first.events.at(-1).revision);
+  expect(second).toMatchObject({ nextAfter: null, events: [], nextEventAfter: null });
+  expect([...first.outputs, ...second.outputs].map((r) => [r.seq, r.content])).toEqual(
+    Array.from({ length: 70 }, (_, i) => [i + 1, `Output ${i + 1}`]),
+  );
+  // A membership change during the lifecycle query must withhold both histories.
+  f.hooks.before = (command) => {
+    if (
+      command instanceof QueryCommand &&
+      command.input.ExpressionAttributeValues[':end'] === 'EVENT$'
+    )
+      f.membership.mockResolvedValue(null);
+  };
+  await expect(read(0, 0)).rejects.toMatchObject({
+    status: 403,
+    body: { code: 'NATIVE_PREPARATION_FORBIDDEN' },
+  });
+});
 
 it.each(scenarios)(
   'accepts frontend %s once after a lost HTTP response, without automatic retry or a new identity',

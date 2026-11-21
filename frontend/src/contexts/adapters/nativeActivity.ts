@@ -47,49 +47,52 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
     try {
       do {
         dirty.current = false;
-        let after = cursor.current;
-        do {
-          const page = await nativeIntentsService.outputs(
-            projectId,
-            intentId,
-            after,
-            eventCursor.current,
-          );
+        try {
+          let after = cursor.current;
+          do {
+            const page = await nativeIntentsService.outputs(
+              projectId,
+              intentId,
+              after,
+              eventCursor.current,
+            );
+            if (!current()) return;
+            // The service verifies strict ordering after each independent cursor.
+            // One reader owns them, including retries. Empty polls keep the same
+            // arrays; there is no full-history merge/sort on every two-second tick.
+            if (page.outputs.length)
+              setRows((previous) => (current() ? [...previous, ...page.outputs] : previous));
+            if (page.events?.length)
+              setEvents((previous) => (current() ? [...previous, ...page.events!] : previous));
+            cursor.current = page.outputs.at(-1)?.seq ?? after;
+            const previousEvent = eventCursor.current;
+            eventCursor.current = page.events?.at(-1)?.revision ?? previousEvent;
+            setError(null);
+            if (page.nextAfter === null && page.nextEventAfter == null) break;
+            if (
+              (page.nextAfter !== null && page.nextAfter <= after) ||
+              (page.nextEventAfter != null && page.nextEventAfter <= previousEvent)
+            )
+              throw new Error('Invalid output cursor');
+            after = cursor.current;
+          } while (current());
+          if (!dirty.current && current()) setObservedAt(Date.now());
+        } catch (failure) {
           if (!current()) return;
-          // The service verifies strict ordering after each independent cursor.
-          // One reader owns them, including retries. Empty polls keep the same
-          // arrays; there is no full-history merge/sort on every two-second tick.
-          if (page.outputs.length)
-            setRows((previous) => (current() ? [...previous, ...page.outputs] : previous));
-          if (page.events?.length)
-            setEvents((previous) => (current() ? [...previous, ...page.events!] : previous));
-          cursor.current = page.outputs.at(-1)?.seq ?? after;
-          const previousEvent = eventCursor.current;
-          eventCursor.current = page.events?.at(-1)?.revision ?? previousEvent;
-          setError(null);
-          if (page.nextAfter === null && page.nextEventAfter == null) break;
-          if (
-            (page.nextAfter !== null && page.nextAfter <= after) ||
-            (page.nextEventAfter != null && page.nextEventAfter <= previousEvent)
-          )
-            throw new Error('Invalid output cursor');
-          after = cursor.current;
-        } while (current());
-      } while (dirty.current && current());
-      if (current()) setObservedAt(Date.now());
-    } catch (failure) {
-      if (current()) {
-        // A resource/action denial is not proof of lost project membership.
-        // Clear this scoped history; only the detail/list owner evicts access.
-        if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) {
-          setRows([]);
-          setEvents([]);
-          cursor.current = 0;
-          eventCursor.current = 0;
-          setObservedAt(null);
+          // Only the detail/list owner evicts project access. Drop this history
+          // and any queued wake-up when the protected read itself is denied.
+          if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) {
+            dirty.current = false;
+            setRows([]);
+            setEvents([]);
+            cursor.current = 0;
+            eventCursor.current = 0;
+            setObservedAt(null);
+          }
+          setError('Activity could not be refreshed. History may be incomplete; retry refresh.');
         }
-        setError('Activity could not be refreshed. History may be incomplete; retry refresh.');
-      }
+        // A wake-up during a failed page retries from the last accepted cursors.
+      } while (dirty.current && current());
     } finally {
       if (request === generation.current) {
         busy.current = false;

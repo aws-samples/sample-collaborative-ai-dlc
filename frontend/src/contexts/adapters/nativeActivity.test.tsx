@@ -43,7 +43,7 @@ beforeEach(() => {
   resetSessionExpiry();
   vi.clearAllMocks();
   state.handlers.clear();
-  state.outputs.mockResolvedValue({ outputs: [], nextAfter: null });
+  state.outputs.mockReset().mockResolvedValue({ outputs: [], nextAfter: null });
 });
 describe('native durable transcript adapter', () => {
   it('retains history references on empty polls and ages a stalled read without another request', async () => {
@@ -100,8 +100,72 @@ describe('native durable transcript adapter', () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(66));
     expect(state.outputs).toHaveBeenLastCalledWith('p1', 'i1', 65, 0);
   });
+  it.each(['succeeds', 'fails'])(
+    'follows one batch hint from the accepted cursors when an in-flight page %s',
+    async (outcome) => {
+      vi.useFakeTimers();
+      try {
+        const rows = Array.from({ length: 112 }, (_, i) => row(i + 1));
+        const events = [3, 7, 15].map((revision) => ({ revision, eventId: `native-${revision}` }));
+        let finish!: () => void;
+        state.outputs
+          .mockResolvedValueOnce({
+            outputs: rows.slice(0, 64),
+            nextAfter: 64,
+            events: events.slice(0, 1),
+            nextEventAfter: null,
+          })
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve, reject) => {
+                finish = () =>
+                  outcome === 'fails'
+                    ? reject(new Error('Page unavailable'))
+                    : resolve({ outputs: [], nextAfter: null, events: [], nextEventAfter: null });
+              }),
+          )
+          .mockResolvedValueOnce({
+            outputs: rows.slice(64),
+            nextAfter: null,
+            events: events.slice(1),
+            nextEventAfter: null,
+          });
+        const { result } = renderHook(() => useNativeActivity(adapter()));
+        await act(async () => {});
+        expect(result.current.rows).toEqual(rows.slice(0, 64));
+        act(() =>
+          state.handlers.get('agent.output')?.({
+            action: 'agent.output',
+            executionBackend: 'native',
+            projectId: 'p1',
+            intentId: 'i1',
+            executionId: 'i1',
+            seq: 112,
+          }),
+        );
+        expect(state.outputs).toHaveBeenCalledTimes(2);
+        await act(async () => finish());
+        // No timer tick or second notification. The hint never sets either cursor.
+        expect(state.outputs.mock.calls.map((call) => call.slice(2))).toEqual([
+          [0, 0],
+          [64, 3],
+          [64, 3],
+        ]);
+        expect(result.current.rows).toEqual(rows);
+        expect(result.current.events).toEqual(events);
+        expect(result.current.error).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it('does not render a new event after revocation on an already-connected socket', async () => {
-    state.outputs.mockResolvedValueOnce({ outputs: [row(1)], nextAfter: null });
+    state.outputs.mockResolvedValueOnce({
+      outputs: [row(1)],
+      nextAfter: null,
+      events: [{ revision: 3, eventId: 'native-3' }],
+      nextEventAfter: null,
+    });
     const current = adapter();
     const { result, rerender } = renderHook(({ value }) => useNativeActivity(value), {
       initialProps: { value: current },
@@ -109,19 +173,30 @@ describe('native durable transcript adapter', () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
     expect(state.connect).toHaveBeenCalled();
     const denial = new ApiError(403, 'Forbidden', { error: 'Forbidden' });
-    state.outputs.mockRejectedValueOnce(denial);
-    act(() =>
-      state.handlers.get('agent.output')?.({
+    let deny!: () => void;
+    state.outputs.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          deny = () => reject(denial);
+        }),
+    );
+    act(() => {
+      const hint = {
         executionBackend: 'native',
         projectId: 'p1',
         intentId: 'i1',
         seq: 2,
         content: 'Must never render socket content',
-      }),
-    );
+      };
+      state.handlers.get('agent.output')?.(hint);
+      state.handlers.get('agent.output')?.(hint);
+    });
+    await act(async () => deny());
     await waitFor(() => expect(result.current.error).toContain('Activity could not be refreshed'));
+    expect(state.outputs).toHaveBeenCalledTimes(2);
     expect(current.publicationFailure).not.toHaveBeenCalled();
     expect(result.current.rows).toEqual([]);
+    expect(result.current.events).toEqual([]);
     rerender({ value: { ...current, intent: null } });
     expect(result.current.rows).toEqual([]);
     expect(state.disconnect).toHaveBeenCalledWith('native-intent:p1:i1');
@@ -181,23 +256,25 @@ describe('native durable transcript adapter', () => {
     await act(async () => {
       await result.current.replay();
     });
-    expect(result.current.rows.map((r) => r.seq)).toEqual(outputs.map((r) => r.seq));
-    expect(result.current.events.map((e) => e.revision)).toEqual(events.map((e) => e.revision));
+    expect(result.current.rows).toEqual(outputs);
+    expect(result.current.events).toEqual(events);
     expect(result.current.error).toBe(null);
-    // No notification: the periodic reader still discovers the next durable row.
-    vi.useFakeTimers();
-    try {
-      outputs.push(row(148));
+    // A reconnect repairs the missed hint. Older socket shapes and reordered
+    // hints still read from the accepted cursors.
+    outputs.push(row(148));
+    await act(async () => state.handlers.get('status')?.('connected'));
+    for (const hint of [{ seq: 64 }, {}]) {
       await act(async () => {
-        state.handlers.get('status')?.('connected');
+        state.handlers.get('agent.output')?.({
+          executionBackend: 'native',
+          projectId: 'p1',
+          intentId: 'i1',
+          ...hint,
+        });
       });
-      expect(result.current.rows).toHaveLength(148);
-      await act(async () => {
-        state.handlers.get('status')?.('connected');
-      });
-      expect(result.current.rows).toHaveLength(148);
-    } finally {
-      vi.useRealTimers();
+      expect(state.outputs).toHaveBeenLastCalledWith('p1', 'i1', 148, 270);
+      expect(result.current.rows).toEqual(outputs);
+      expect(result.current.events).toEqual(events);
     }
   });
 
@@ -251,11 +328,18 @@ describe('native durable transcript adapter', () => {
       void result.current.replay();
     });
     act(() => notifySessionExpired());
-    await act(async () => {
-      finish({ outputs: [row(2)], nextAfter: null });
-    });
     rerender({ value: { ...adapter(), projectId: 'p2', intent: null } });
     expect(result.current.rows).toEqual([]);
     expect(state.disconnect).toHaveBeenCalledWith('native-intent:p2:i1');
+    act(() => resetSessionExpiry());
+    const replacement = { ...row(1), content: 'Replacement session output' };
+    state.outputs.mockResolvedValueOnce({ outputs: [replacement], nextAfter: null });
+    rerender({ value: { ...adapter(), projectId: 'p2' } });
+    await waitFor(() => expect(result.current.rows).toEqual([replacement]));
+    await act(async () => {
+      finish({ outputs: [row(2)], nextAfter: null });
+    });
+    expect(result.current.rows).toEqual([replacement]);
+    expect(state.outputs).toHaveBeenLastCalledWith('p2', 'i1', 0, 0);
   });
 });
