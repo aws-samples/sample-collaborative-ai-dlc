@@ -6160,6 +6160,8 @@ the current contract for newly created executions.
       to platform actions. **Done when:** two members can reopen the same revision,
       inspect its decisions and files, navigate from graph items to exact sources,
       and see consistent status without mistaking a stopped turn for completion.
+      **Dev milestone, 2026-11-21.** Graph source links open the exact published file and its recorded lines in History (`af429ab3`).
+      Two-member reopening passed locally. Signed-in acceptance and shared question and recovery status remain open.
 - [ ] **NE-14 — Simplify frontend reads and state acceptance.** Coalesce overlapping
       detail loads and reuse revision/access/session checks. Remove per-item
       discovery detail reads where a protected execution summary or shared request
