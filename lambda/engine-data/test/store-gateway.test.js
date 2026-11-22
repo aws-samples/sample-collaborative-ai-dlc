@@ -294,6 +294,8 @@ describe('engine-data authorization', () => {
 
   it.each([
     'listActiveExecutions',
+    'getMaintenanceCursor',
+    'moveMaintenanceCursor',
     'listProjectExecutions',
     'deleteExecution',
     'answerHumanTask',
