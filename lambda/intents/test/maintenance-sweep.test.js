@@ -4,7 +4,12 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { GetDurableExecutionCommand, InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitKey, unitPrKey } from '../../shared/v2-process-keys.js';
 import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/helpers/v2-table.js';
@@ -284,6 +289,26 @@ describe('durable watchdog sweep', () => {
     expect(durableCalls).toEqual([idOf(1)]);
   });
 
+  it('caps an operator page size override', async () => {
+    vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '100000');
+    const send = vi.spyOn(DynamoDBDocumentClient.prototype, 'send');
+    try {
+      await tick();
+      const limits = send.mock.calls
+        .map(([command]) => command)
+        .filter(
+          (command) =>
+            command instanceof QueryCommand &&
+            command.input.ExpressionAttributeValues?.[':pk'] === 'ACTIVE_EXECUTIONS',
+        )
+        .map((command) => command.input.Limit);
+      expect(limits.length).toBeGreaterThan(0);
+      expect(limits.every((limit) => limit === 500)).toBe(true);
+    } finally {
+      send.mockRestore();
+    }
+  });
+
   it('reports a completed lap when the intents fill the last page exactly', async () => {
     vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
     await seedRunning(4);
@@ -333,11 +358,47 @@ describe('durable watchdog sweep', () => {
     expect(await tick()).toMatchObject({ checked: 3 });
   });
 
+  it('restarts the lap clock when the stored lap start is not a date', async () => {
+    vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
+    await seedRunning(4);
+    const [first] = await store.listActiveExecutions({ limit: 1 });
+    await db.doc.send(
+      new PutCommand({
+        TableName: process.env.V2_PROCESS_TABLE,
+        Item: {
+          pk: 'MAINTENANCE#durable-watchdog',
+          sk: 'CURSOR',
+          version: 3,
+          after: first.GSI3SK,
+          lapStartedAt: 'not-a-date',
+        },
+      }),
+    );
+    const info = vi.spyOn(Logger.prototype, 'info');
+    try {
+      expect(await tick()).toMatchObject({ checked: 2, errors: [] });
+      const [line] = info.mock.calls
+        .filter(
+          ([message, extra]) =>
+            message === 'Scheduled maintenance sweep' && extra?.sweep === 'durable-watchdog',
+        )
+        .map(([, extra]) => extra);
+      expect(line.lapAgeMs).toBe(0);
+      expect((await store.getMaintenanceCursor('durable-watchdog')).lapStartedAt).not.toBe(
+        'not-a-date',
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('tells a manual repair how far the shared cursor got', async () => {
     vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
     await seedRunning(3);
     const info = vi.spyOn(Logger.prototype, 'info');
-    const repair = () => handler({ action: 'repair-durable-executions' }, lambdaContext());
+    // A payload cannot pass itself off as the schedule.
+    const repair = () =>
+      handler({ action: 'repair-durable-executions', trigger: 'schedule' }, lambdaContext());
     try {
       expect(await repair()).toMatchObject({
         checked: 2,
@@ -425,6 +486,25 @@ describe('PR-wait reconciler sweep', () => {
       vi.stubEnv('SOURCE_CONTROL_FUNCTION', '');
     }
   });
+
+  it('keeps the reconciler under the schedule interval however much time is left', async () => {
+    vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control');
+    await seedRunning(8);
+    await inBatches(8, (i) => seedOpenPrWait(idOf(i)));
+    // Each PR status takes 5 s of wall clock; the reconciler may use 30 s.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    lambda.on(InvokeCommand).callsFake(async () => {
+      vi.setSystemTime(Date.now() + 5_000);
+      return unmovedPrStatus();
+    });
+    try {
+      const out = await scheduledTick(120_000);
+      expect(out.prWaits.checked).toBe(6);
+    } finally {
+      vi.useRealTimers();
+      vi.stubEnv('SOURCE_CONTROL_FUNCTION', '');
+    }
+  });
 });
 
 describe('scheduled maintenance tick', () => {
@@ -465,12 +545,18 @@ describe('scheduled maintenance tick', () => {
     await seedRunning(1);
     await seedWait(idOf(0), { runId: 'run-earlier' });
     const failing = failCursorReadOf('durable-watchdog');
+    const error = vi.spyOn(Logger.prototype, 'error');
     try {
       const out = await scheduledTick();
       expect(out.durableExecutions).toMatchObject({ failed: true });
       expect(out.prWaits).toMatchObject({ checked: 1, stale: 1, errors: [] });
+      expect(error).toHaveBeenCalledWith(
+        'Scheduled maintenance sweep failed',
+        expect.objectContaining({ sweep: 'durable-watchdog' }),
+      );
     } finally {
       failing.mockRestore();
+      error.mockRestore();
     }
   });
 
