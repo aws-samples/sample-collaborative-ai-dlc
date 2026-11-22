@@ -184,7 +184,7 @@ const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
 // to still exist, so a sweep resumes past a row that has since left the index.
 // A sweep cursor relies on each GSI3SK being unique within its partition.
 // DynamoDB caps a sort key at 1024 bytes; a longer stored cursor is invalid.
-const MAX_CURSOR_KEY_LENGTH = 1024;
+const MAX_CURSOR_KEY_BYTES = 1024;
 const maintenanceIndexQuery = (partition, after) =>
   after
     ? {
@@ -2836,7 +2836,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     const valid =
       Number.isInteger(Item.version) &&
       Item.version > 0 &&
-      (after === null || (typeof after === 'string' && after.length <= MAX_CURSOR_KEY_LENGTH));
+      (after === null ||
+        (typeof after === 'string' && Buffer.byteLength(after) <= MAX_CURSOR_KEY_BYTES));
     if (!valid) return { after: null, version: 0, lapStartedAt: null, invalid: true };
     return {
       after,

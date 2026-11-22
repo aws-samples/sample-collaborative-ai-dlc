@@ -315,6 +315,7 @@ describe('durable watchdog sweep', () => {
     ['a version that is not an integer', { version: '3', after: null }],
     ['an after that is not a string', { version: 4, after: 42 }],
     ['an after longer than a sort key', { version: 4, after: `EXEC#${'x'.repeat(2_000)}` }],
+    ['an after over 1024 bytes in fewer characters', { version: 4, after: 'é'.repeat(600) }],
   ])('replaces a stored cursor with %s and sweeps from the start', async (_, stored) => {
     await seedRunning(3);
     await db.doc.send(
