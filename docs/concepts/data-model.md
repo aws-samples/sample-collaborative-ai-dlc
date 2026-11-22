@@ -360,6 +360,8 @@ The table has three global secondary indexes:
 | `PR_WAITS`          | Unit pull requests parked while waiting for an external condition. |
 | `TRACKER_SYNCS`     | Tracker synchronizations ordered by their next scheduled check.    |
 
+The scheduled sweeps over `ACTIVE_EXECUTIONS` and `PR_WAITS` keep their position in one unindexed item each (`MAINTENANCE#<sweep>` / `CURSOR`); see [Scheduled maintenance sweeps](../development/recovery-ownership.md#scheduled-maintenance-sweeps).
+
 ### Relationship to the graph
 
 The execution and graph models are joined by stable application identifiers,
