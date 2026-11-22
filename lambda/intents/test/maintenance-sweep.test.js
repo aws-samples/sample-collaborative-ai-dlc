@@ -263,9 +263,10 @@ describe('durable watchdog sweep', () => {
     await seedRunning(3);
     durableHang.add(idOf(1));
 
+    // 40% of 3 s: a margin for DynamoDB Local before the first row.
     const startedMs = Date.now();
-    const first = await tick(1_500);
-    expect(Date.now() - startedMs).toBeLessThan(1_500);
+    const first = await tick(3_000);
+    expect(Date.now() - startedMs).toBeLessThan(3_000);
     expect(first).toMatchObject({ checked: 1, deferred: 2, errors: [] });
 
     durableHang.clear();
@@ -277,15 +278,23 @@ describe('durable watchdog sweep', () => {
   it('moves past an intent whose status lookup never answers', async () => {
     await seedRunning(2);
     durableHang.add(idOf(0));
-
-    const first = await tick(1_500);
-    expect(first).toMatchObject({ checked: 1, deferred: 1 });
-    expect(first.errors).toEqual([
-      { executionId: idOf(0), error: 'Sweep time budget ran out during a provider call' },
-    ]);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    try {
+      const first = await tick(3_000);
+      expect(first).toMatchObject({ checked: 1, deferred: 1 });
+      expect(first.errors).toEqual([
+        { executionId: idOf(0), error: 'Sweep time budget ran out during a provider call' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        'Sweep moved past a row whose provider call outlasted the budget',
+        { sweep: 'durable-watchdog', executionId: idOf(0) },
+      );
+    } finally {
+      warn.mockRestore();
+    }
 
     durableCalls = [];
-    expect(await tick(1_500)).toMatchObject({ checked: 1, errors: [] });
+    expect(await tick(3_000)).toMatchObject({ checked: 1, errors: [] });
     expect(durableCalls).toEqual([idOf(1)]);
   });
 
@@ -476,12 +485,40 @@ describe('PR-wait reconciler sweep', () => {
       return hanging && calls === 2 ? new Promise(() => {}) : unmovedPrStatus();
     });
     try {
-      const first = (await scheduledTick(1_500)).prWaits;
+      // 60% of 3 s: a margin for DynamoDB Local before the first row.
+      const first = (await scheduledTick(3_000)).prWaits;
       expect(first).toMatchObject({ checked: 1, unchanged: 1, deferred: 2, errors: [] });
 
       hanging = false;
       const second = (await scheduledTick()).prWaits;
       expect(second).toMatchObject({ checked: 2, unchanged: 2, errors: [] });
+    } finally {
+      vi.stubEnv('SOURCE_CONTROL_FUNCTION', '');
+    }
+  });
+
+  it('moves past a PR wait whose PR status never answers', async () => {
+    vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control');
+    await seedRunning(2);
+    await inBatches(2, (i) => seedOpenPrWait(idOf(i)));
+    // The first wait's PR status never answers.
+    let calls = 0;
+    lambda.on(InvokeCommand).callsFake(async () => {
+      calls += 1;
+      return calls === 1 ? new Promise(() => {}) : unmovedPrStatus();
+    });
+    try {
+      const first = (await scheduledTick(3_000)).prWaits;
+      expect(first).toMatchObject({ checked: 1, deferred: 1 });
+      expect(first.errors).toEqual([
+        {
+          executionId: idOf(0),
+          unitSlug: 'views',
+          error: 'Sweep time budget ran out during a provider call',
+        },
+      ]);
+      const second = (await scheduledTick(3_000)).prWaits;
+      expect(second).toMatchObject({ checked: 1, unchanged: 1, errors: [] });
     } finally {
       vi.stubEnv('SOURCE_CONTROL_FUNCTION', '');
     }
