@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { GetDurableExecutionCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { PutCommand } from '@aws-sdk/lib-dynamodb';
@@ -182,6 +183,33 @@ describe('durable watchdog sweep', () => {
     expect([...checkedFirst, ...durableCalls]).toEqual(
       Array.from({ length: 8 }, (_, i) => idOf(i)),
     );
+  });
+
+  it('reports a completed lap when the intents fill the last page exactly', async () => {
+    vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
+    await seedRunning(4);
+    const info = vi.spyOn(Logger.prototype, 'info');
+    const watchdogLines = () =>
+      info.mock.calls
+        .filter(
+          ([message, extra]) =>
+            message === 'Scheduled maintenance sweep' && extra?.sweep === 'durable-watchdog',
+        )
+        .map(([, extra]) => extra);
+    try {
+      await tick();
+      await tick();
+      expect(watchdogLines().some((line) => line.lapCompleted)).toBe(false);
+
+      durableCalls = [];
+      expect(await tick()).toMatchObject({ checked: 2 });
+      expect(durableCalls).toEqual([idOf(0), idOf(1)]);
+      const [, , wrapped] = watchdogLines();
+      expect(wrapped).toMatchObject({ lapCompleted: true, checked: 2, contended: false });
+      expect(wrapped.lapMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('keeps the cursor when another sweep moved it first', async () => {

@@ -182,6 +182,7 @@ const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
 // Key condition for one sparse GSI3 maintenance partition, optionally starting
 // strictly after a GSI3SK. The range condition does not need the row at `after`
 // to still exist, so a sweep resumes past a row that has since left the index.
+// A sweep cursor relies on each GSI3SK being unique within its partition.
 const maintenanceIndexQuery = (partition, after) =>
   after
     ? {
