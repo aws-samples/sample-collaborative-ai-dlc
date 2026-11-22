@@ -37,8 +37,17 @@ const SEED_TIMEOUT_MS = 30_000;
 const idOf = (i) => `exec-${String(i).padStart(3, '0')}`;
 const arnOf = (id) => `arn:aws:lambda:us-east-1:111122223333:function:orchestrator:durable:${id}`;
 
-const seedRunning = async (count) => {
-  for (let i = 0; i < count; i += 1) {
+// Seeds in parallel batches so 150 rows stay well inside the test timeout.
+const inBatches = async (count, seedOne, size = 25) => {
+  for (let start = 0; start < count; start += size) {
+    await Promise.all(
+      Array.from({ length: Math.min(size, count - start) }, (_, i) => seedOne(start + i)),
+    );
+  }
+};
+
+const seedRunning = (count) =>
+  inBatches(count, async (i) => {
     const executionId = idOf(i);
     await store.createExecution({
       executionId,
@@ -59,8 +68,7 @@ const seedRunning = async (count) => {
       durableExecutionArn: arnOf(executionId),
       orchestratorExpiresAt: '2099-01-01T00:00:00.000Z',
     });
-  }
-};
+  });
 
 // A unit lane parked on its PR, bound to the index by the real bind path.
 // A wait bound by an earlier run is stale and must be cleared.
@@ -308,14 +316,14 @@ describe('PR-wait reconciler sweep', () => {
     async () => {
       await seedRunning(150);
       const stale = idOf(140);
-      for (let i = 0; i < 150; i += 1) {
+      await inBatches(150, async (i) => {
         const executionId = idOf(i);
         expect(
           await seedWait(executionId, {
             runId: executionId === stale ? 'run-earlier' : `run-${executionId}`,
           }),
         ).toBeTruthy();
-      }
+      });
 
       const first = (await scheduledTick()).prWaits;
       expect(first).toMatchObject({ checked: 100, stale: 0, unchanged: 100, errors: [] });
