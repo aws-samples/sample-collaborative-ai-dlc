@@ -19,6 +19,7 @@ import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { AidlcSettingsPanel } from '@/components/AidlcSettingsPanel';
+import { ConversationLanguageField } from '@/components/ConversationLanguageField';
 import {
   aidlcSettingsFromComposeProposal,
   AIDLC_SETTING_LABELS,
@@ -1103,6 +1104,11 @@ function IntentComposePageContent() {
             chosen={draft.aidlcSettings}
             disabled={starting || !draftReady}
             onChange={draft.setAidlcSetting}
+          />
+          <ConversationLanguageField
+            value={draft.conversationLanguage}
+            disabled={starting || !draftReady}
+            onChange={draft.setConversationLanguage}
           />
           {withdrawnSettings.length > 0 && (
             <p className="text-xs text-amber-600" data-testid="aidlc-settings-dropped">

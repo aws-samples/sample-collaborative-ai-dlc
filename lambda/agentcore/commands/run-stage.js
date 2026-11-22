@@ -626,6 +626,9 @@ const runReviewer = async ({
   // The reviewer agent's AGENT.maxTurns, or null. Passed only for a release
   // catalog, where upstream sets it (on the two reviewer agents).
   maxTurns = null,
+  // Conversation language from the intent META (#784); review findings follow
+  // it like every other persona's prose.
+  conversationLanguage = null,
 }) => {
   const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
   await store
@@ -652,6 +655,7 @@ const runReviewer = async ({
     persona: reviewerPersona,
     knowledge,
     brief,
+    conversationLanguage,
     cli,
     cliModels,
     tierModels,
@@ -3487,6 +3491,22 @@ const runStageAttempt = async (
 
   let invocation;
   let prompt = null;
+  // The intent's originating request and conversation language (#784) live on
+  // the META row, snapshotted at intent create. Read once per attempt: a fresh
+  // prompt injects the intent block, and every persona dispatch (reviewer,
+  // ensemble) states the conversation language — resume legs included.
+  const intentMeta = await store.getExecution(executionId).catch((error) => {
+    // Degraded, not fatal: the prompt loses the intent block and the language
+    // statement for this attempt. Logged so a run that flips to English
+    // mid-intent has a diagnosable cause.
+    logger.error('intent META read failed; prompt omits intent and language', {
+      executionId,
+      stageInstanceId,
+      error: error?.message ?? String(error),
+    });
+    return null;
+  });
+  const conversationLanguage = intentMeta?.conversationLanguage ?? null;
   if (!freshRun) {
     const mcpKwargs = await materializeCliMcp();
     // The resume message = the human's answer, plus any pending steering (a
@@ -3563,11 +3583,6 @@ const runStageAttempt = async (
       }),
     );
     const rulesDoc = renderRulesDoc(stage, Object.fromEntries(ruleBodyEntries));
-
-    // The intent's originating request lives on the META row, snapshotted at
-    // intent create. Read it here and inject it into every fresh stage prompt
-    // so agents do not have to ask the human what the run is about.
-    const intentMeta = await store.getExecution(executionId).catch(() => null);
     let compiledContext = '';
     if (openEngineGraph) {
       let contextGraph;
@@ -3613,6 +3628,9 @@ const runStageAttempt = async (
       intent: intentMeta
         ? { title: intentMeta.title, prompt: intentMeta.prompt, scope }
         : { scope },
+      // Conversation language (#784): read off the same META row, stated in
+      // every fresh stage prompt. null (or no META) renders nothing.
+      conversationLanguage: intentMeta?.conversationLanguage ?? null,
       stageBody,
       agentPersona,
       knowledge,
@@ -4232,6 +4250,7 @@ const runStageAttempt = async (
         cli,
         cliModels,
         tierModels,
+        conversationLanguage,
         env,
         redirectEnv,
         workspaceDir,
@@ -5040,6 +5059,7 @@ const runStageAttempt = async (
         reviewerPersona,
         knowledge: reviewerMethodology,
         round,
+        conversationLanguage,
         cli,
         cliModels,
         tierModels,

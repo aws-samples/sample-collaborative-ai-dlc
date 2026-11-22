@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Bot, CheckCircle2, ChevronRight, Cpu, ExternalLink, Plug } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronRight, Cpu, ExternalLink, Languages, Plug } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import {
@@ -40,6 +40,7 @@ import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA, modelListSources } from '@/lib/agentCli';
+import { conversationLanguageLabel, resolveConversationLanguage } from '@/lib/conversationLanguage';
 import { BEDROCK_GATEWAY_UNAVAILABLE } from '@/lib/bedrockGateway';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
@@ -95,6 +96,21 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [savingModels, setSavingModels] = useState(false);
   const [modelsResult, setModelsResult] = useState<SaveResult>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+
+  // Output language for agent prose (#784). Edited as a raw BCP 47 tag with a
+  // live display-name preview; the backend re-resolves and stores the names.
+  const [editLanguageTag, setEditLanguageTag] = useState(project.conversationLanguage?.tag ?? '');
+  const [savingLanguage, setSavingLanguage] = useState(false);
+  const [languageResult, setLanguageResult] = useState<SaveResult>(null);
+  const [languageError, setLanguageError] = useState<string | null>(null);
+  // Resync when the component survives a project switch — the only state here
+  // snapshotted from the project prop rather than read in render.
+  useEffect(() => {
+    setEditLanguageTag(project.conversationLanguage?.tag ?? '');
+    setLanguageResult(null);
+    setLanguageError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   // Custom MCP servers (raw JSON string) + custom agent rules (uploaded .md).
   const [customMcpServers, setCustomMcpServers] = useState('{}');
@@ -255,6 +271,32 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     } finally {
       setSavingModels(false);
       setTimeout(() => setModelsResult((prev) => (prev === 'saved' ? null : prev)), 4000);
+    }
+  };
+
+  const saveLanguage = async () => {
+    const resolved = resolveConversationLanguage(editLanguageTag);
+    if ('error' in resolved) {
+      setLanguageError(resolved.error);
+      setLanguageResult('error');
+      return;
+    }
+    setSavingLanguage(true);
+    setLanguageResult(null);
+    try {
+      const saved = await projectsService.update(project.id, {
+        conversationLanguage: resolved.value?.tag ?? null,
+      });
+      const next = saved.conversationLanguage ?? resolved.value ?? null;
+      onProjectUpdated({ conversationLanguage: next });
+      setEditLanguageTag(next?.tag ?? '');
+      setLanguageResult('saved');
+    } catch (err) {
+      setLanguageError(err instanceof Error ? err.message : 'Failed to update output language');
+      setLanguageResult('error');
+    } finally {
+      setSavingLanguage(false);
+      setTimeout(() => setLanguageResult((prev) => (prev === 'saved' ? null : prev)), 4000);
     }
   };
 
@@ -530,6 +572,59 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             />
           )}
         </div>
+      </SettingsCard>
+
+      <SettingsCard
+        icon={<Languages />}
+        title="Output Language"
+        description="The language agents use for artifacts, questions, summaries and review findings. Code, identifiers and commit messages stay in English. Leave empty for the default (English)."
+      >
+        {canEdit ? (
+          <div className="space-y-2">
+            <div className="flex items-end gap-3">
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="conversation-language" className="text-xs">
+                  BCP 47 language tag
+                </Label>
+                <Input
+                  id="conversation-language"
+                  placeholder='e.g. "ko", "ja", "pt-BR" — empty for unset'
+                  value={editLanguageTag}
+                  onChange={(e) => {
+                    setEditLanguageTag(e.target.value);
+                    setLanguageResult(null);
+                    setLanguageError(null);
+                  }}
+                />
+              </div>
+              <SaveStatusButton
+                onClick={saveLanguage}
+                saving={savingLanguage}
+                label="Save Language"
+                result={languageResult}
+                errorMessage={languageError}
+              />
+            </div>
+            {(() => {
+              const resolved = resolveConversationLanguage(editLanguageTag);
+              if ('error' in resolved) {
+                return <p className="text-xs text-destructive">{resolved.error}</p>;
+              }
+              const label = conversationLanguageLabel(resolved.value);
+              return (
+                <p className="text-xs text-muted-foreground">
+                  {label
+                    ? `Agents will write prose in ${label}. Applies to intents created after saving.`
+                    : 'Not set — agents keep the current behaviour.'}
+                </p>
+              );
+            })()}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {conversationLanguageLabel(project.conversationLanguage) ?? 'Not set'}
+          </p>
+        )}
       </SettingsCard>
 
       {/* Custom MCP servers — owner get the full editor; members get a

@@ -42,6 +42,10 @@ export interface IntentDraftState {
   // `scope` — not a server answer republished into the document, so there is
   // nothing here to order against a response in flight.
   aidlcSettings: Record<string, AidlcSettingValue> | null;
+  // Conversation language tag for agent prose (#784). LWW in `config` like
+  // `scope`. '' in the document means explicitly cleared (the save sends null);
+  // an ABSENT key means the draft never had one and the save omits the field.
+  conversationLanguage: string | null;
 }
 
 const AIDLC_SETTINGS_MAP = 'aidlcSettings';
@@ -67,11 +71,16 @@ const readConfig = (
 ): Omit<IntentDraftState, 'title' | 'prompt' | 'aidlcSettings'> => {
   const scope = config.get('scope');
   const policyScope = config.get('policyScope');
+  const conversationLanguage = config.get('conversationLanguage');
   return {
     scope: typeof scope === 'string' && scope ? scope : null,
     composedGrid: parseJson<Record<string, 'EXECUTE' | 'SKIP'>>(config.get('composedGrid')),
     policyScope: typeof policyScope === 'string' && policyScope ? policyScope : null,
     skipStageIds: parseJson<string[]>(config.get('skipStageIds')),
+    conversationLanguage:
+      typeof conversationLanguage === 'string' && conversationLanguage
+        ? conversationLanguage
+        : null,
   };
 };
 
@@ -103,6 +112,7 @@ export function useCollaborativeIntentDraft(
     policyScope: null,
     skipStageIds: null,
     aidlcSettings: null,
+    conversationLanguage: null,
   });
   const seededRef = useRef(false);
   // Sticky, PER DOCUMENT: has this draft ever had a per-intent setting? A
@@ -167,6 +177,11 @@ export function useCollaborativeIntentDraft(
         }
         if (intent.skipStageIds?.length) {
           config.set('skipStageIds', JSON.stringify(intent.skipStageIds));
+        }
+        // Seeded like `scope`: the tag the intent snapshotted. Absent when the
+        // intent has none, so the save keeps omitting the field.
+        if (intent.conversationLanguage?.tag) {
+          config.set('conversationLanguage', intent.conversationLanguage.tag);
         }
         // Seeded INSIDE the empty-document seed, exactly like `scope`. Hydrating
         // out of band would make a mount a local edit: the observer would bump
@@ -364,6 +379,23 @@ export function useCollaborativeIntentDraft(
     [doc],
   );
 
+  // Choose the output language for this intent (#784), or clear it with null.
+  // Callers only write a VALIDATED tag (or null): a half-typed tag in the
+  // shared document would make every member's autosave 400 until it is fixed.
+  // '' marks an explicit clear so the save sends `conversationLanguage: null`
+  // instead of omitting the field.
+  const setConversationLanguage = useCallback(
+    (tag: string | null) => {
+      if (!doc) return;
+      const config = doc.getMap('config');
+      const next = tag ?? '';
+      if (config.get('conversationLanguage') === next) return;
+      if (!tag && !config.has('conversationLanguage')) return;
+      config.set('conversationLanguage', next);
+    },
+    [doc],
+  );
+
   const setSkipStageIds = useCallback(
     (ids: string[] | null) => {
       if (!doc) return;
@@ -398,6 +430,11 @@ export function useCollaborativeIntentDraft(
       // setting, so an unpinned, 2.3.3, 2.8.2 or 2.9.0 draft keeps sending
       // exactly the body it sent before these settings existed.
       ...(hadSettingsRef.current.get(doc) ? { aidlcSettings: readAidlcSettings(doc) } : {}),
+      // OMITTED while the key has never existed, so older drafts keep sending
+      // the body they always sent; '' (explicit clear) is sent as null.
+      ...(config.has('conversationLanguage')
+        ? { conversationLanguage: cfg.conversationLanguage }
+        : {}),
     };
   }, [doc, synced, intentId]);
 
@@ -442,6 +479,7 @@ export function useCollaborativeIntentDraft(
     setScope,
     setComposedGrid,
     setSkipStageIds,
+    setConversationLanguage,
     setAidlcSetting,
     setAidlcSettings,
     pruneAidlcSettings,

@@ -645,6 +645,59 @@ describe('PUT /projects/:id', () => {
     }
   });
 
+  it('stores, returns and clears the conversation language (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Lang' });
+    const put = (conversationLanguage) =>
+      handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ conversationLanguage }),
+        ...claims(sub),
+      });
+    const get = async () =>
+      JSON.parse(
+        (await handler({ httpMethod: 'GET', pathParameters: { projectId: id }, ...claims(sub) }))
+          .body,
+      );
+
+    // Unset by default: the field is OMITTED so existing DTOs stay identical.
+    expect(await get()).not.toHaveProperty('conversationLanguage');
+
+    // Stored resolved (canonical tag + display names) from a raw tag.
+    const set = await put('ko');
+    expect(set.statusCode).toBe(200);
+    expect(JSON.parse(set.body).conversationLanguage).toEqual({
+      tag: 'ko',
+      englishName: 'Korean',
+      nativeName: '한국어',
+    });
+    expect((await get()).conversationLanguage).toEqual({
+      tag: 'ko',
+      englishName: 'Korean',
+      nativeName: '한국어',
+    });
+
+    // null clears back to unset.
+    expect((await put(null)).statusCode).toBe(200);
+    expect(await get()).not.toHaveProperty('conversationLanguage');
+  });
+
+  it('rejects an invalid conversation language with its code (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Lang' });
+    for (const conversationLanguage of ['xx', 'not a tag!', 42]) {
+      const res = await handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ conversationLanguage }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe('conversation_language_invalid');
+    }
+  });
+
   it('returns 400 for an invalid agentCli', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);

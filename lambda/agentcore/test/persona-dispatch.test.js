@@ -461,6 +461,31 @@ describe('dispatchPersona — the trusted scope of a dispatched persona', () => 
 // loadMethodologyKnowledge). The promotion guard may only call an engine command
 // answered if EVERY prompt rendering that body carries the answer, so this tail
 // is the secondary-session half of that claim.
+describe('composePersonaPrompt — conversation language (#784)', () => {
+  it('states the language between the brief and the role section when set', () => {
+    const prompt = composePersonaPrompt({
+      brief: 'the brief',
+      persona: 'p',
+      knowledge: 'k',
+      role: 'reviewer',
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    expect(prompt).toContain('Conversation language: Korean (한국어)');
+    expect(prompt.indexOf('## Conversation language')).toBeGreaterThan(prompt.indexOf('the brief'));
+    expect(prompt.indexOf('## Conversation language')).toBeLessThan(
+      prompt.indexOf('## Reviewer role'),
+    );
+  });
+
+  it('keeps the prompt byte-identical when unset', () => {
+    const shared = { brief: 'b', persona: 'p', knowledge: 'k', role: 'support' };
+    expect(composePersonaPrompt({ ...shared, conversationLanguage: null })).toBe(
+      composePersonaPrompt(shared),
+    );
+    expect(composePersonaPrompt(shared)).not.toContain('Conversation language');
+  });
+});
+
 describe('composePersonaPrompt — the dialect annex in a secondary session', () => {
   const INSTRUCTING = 'Obtain the branch with `{{INVOKE}} engine worktree info --slug current`.';
 

@@ -87,10 +87,21 @@ export interface Project {
   // Admin setting; enabled/disabled override it for this project's intents.
   stageSkipping?: StageSkippingOverride;
   environmentId?: string;
+  // Conversation language for agent prose (#784). Omitted when unset (agents
+  // keep the default behaviour: no language instruction).
+  conversationLanguage?: ConversationLanguage | null;
 }
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
 export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
+
+// The resolved conversation language the backend stores: a canonical BCP 47
+// tag plus its display names, resolved at write time.
+export interface ConversationLanguage {
+  tag: string;
+  englishName: string;
+  nativeName: string;
+}
 
 export interface TrackerMigrationResult {
   dryRun: boolean;
@@ -138,6 +149,9 @@ export interface UpdateProjectInput {
   maxParallelUnits?: number;
   prStrategy?: PrStrategy;
   stageSkipping?: StageSkippingOverride;
+  // A raw BCP 47 tag ('ko'); the backend resolves and stores the display
+  // names. null clears the setting.
+  conversationLanguage?: string | null;
 }
 
 export interface AddRepoInput {

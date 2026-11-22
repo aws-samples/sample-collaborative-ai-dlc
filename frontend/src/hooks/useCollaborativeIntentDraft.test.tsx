@@ -255,6 +255,65 @@ describe('useCollaborativeIntentDraft — persisting the AI-DLC settings', () =>
   });
 });
 
+describe('useCollaborativeIntentDraft — conversation language (#784)', () => {
+  it('omits the field for a draft that never had one', async () => {
+    const { a } = bothSeeded();
+    act(() => {
+      a.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls[0][2]).not.toHaveProperty('conversationLanguage');
+  });
+
+  it('seeds the snapshotted tag and both members see a change', async () => {
+    const { a, b } = bothSeeded({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    expect(a.result.current.conversationLanguage).toBe('ko');
+    expect(b.result.current.conversationLanguage).toBe('ko');
+
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+      sync(a.doc, b.doc);
+    });
+    expect(b.result.current.conversationLanguage).toBe('ja');
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('ja');
+  });
+
+  it('sends null once the language is cleared, and keeps sending it', async () => {
+    const { a } = bothSeeded({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    act(() => {
+      a.result.current.setConversationLanguage(null);
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBeNull();
+    expect(a.result.current.conversationLanguage).toBeNull();
+  });
+
+  it('clearing a draft that never had one writes nothing', async () => {
+    const a = member('Alice');
+    act(() => {
+      a.result.current.initFromIntent(intent());
+    });
+    act(() => {
+      a.result.current.setConversationLanguage(null);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(api.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('useCollaborativeIntentDraft — pruning the settings a selection drops', () => {
   it('withdraws an unauthored setting in one transaction and names it', () => {
     const { a, b } = bothSeeded({ scope: 'bugfix', aidlcSettings: { existingCode: false } });

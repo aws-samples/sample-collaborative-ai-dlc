@@ -29,6 +29,10 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Logger } from '@aws-lambda-powertools/logger';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import {
+  normalizeConversationLanguage,
+  parseStoredConversationLanguage,
+} from '../shared/conversation-language.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import {
   isEnvironmentResolutionError,
@@ -227,6 +231,7 @@ const readV2Settings = (v) => {
   const kind = getVal(v, 'kind') || 'v1';
   if (kind !== 'v2') return { kind };
   const rawVersion = getVal(v, 'workflow_version');
+  const conversationLanguage = parseStoredConversationLanguage(getVal(v, 'conversation_language'));
   return {
     kind,
     workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
@@ -245,6 +250,10 @@ const readV2Settings = (v) => {
       DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
     environmentId: getVal(v, 'environment_id') || 'standard',
+    // Conversation language for agent prose (#784). OMITTED, not nulled, when
+    // unset (agents keep today's behaviour), so existing DTOs stay
+    // byte-identical for deployed clients.
+    ...(conversationLanguage ? { conversationLanguage } : {}),
   };
 };
 
@@ -1922,6 +1931,30 @@ export const handler = async (event, context) => {
             .property(cardinality.single, 'pr_strategy', normalizedPrStrategy)
             .next();
         }
+        // Conversation language for agent-authored prose (#784). Stored as the
+        // resolved { tag, englishName, nativeName } JSON; '' clears it.
+        let normalizedConversationLanguage;
+        let conversationLanguageSet = false;
+        if (data.conversationLanguage !== undefined) {
+          const languageValidation = normalizeConversationLanguage(data.conversationLanguage);
+          if (languageValidation.error) {
+            return response(400, {
+              error: languageValidation.error.message,
+              code: languageValidation.error.code,
+            });
+          }
+          normalizedConversationLanguage = languageValidation.value;
+          conversationLanguageSet = true;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'conversation_language',
+              normalizedConversationLanguage ? JSON.stringify(normalizedConversationLanguage) : '',
+            )
+            .next();
+        }
         // Per-project stage-skipping override (shared/stage-skip.js).
         let normalizedStageSkipping;
         if (data.stageSkipping !== undefined) {
@@ -1975,6 +2008,9 @@ export const handler = async (event, context) => {
           ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
           ...(normalizedStageSkipping !== undefined
             ? { stageSkipping: normalizedStageSkipping }
+            : {}),
+          ...(conversationLanguageSet
+            ? { conversationLanguage: normalizedConversationLanguage }
             : {}),
         });
       }

@@ -1,6 +1,6 @@
 import type { AidlcSettingValue } from '../lib/aidlcSettings';
 import { api } from './api';
-import type { AgentCli } from './projects';
+import type { AgentCli, ConversationLanguage } from './projects';
 import type { AgentCredentialSource } from './agents';
 
 // AI-DLC v2 intents — the v2 unit of work (the v1 sprint analog). An intent
@@ -159,6 +159,9 @@ export interface Intent {
   // The settings the saved selection does not author, named by the save that
   // dropped them so the page can say which choice a scope change withdrew.
   aidlcSettingsDropped?: string[];
+  // Conversation language for agent prose (#784), snapshotted from the space
+  // at create and editable while DRAFT. Absent for an intent that has none.
+  conversationLanguage?: ConversationLanguage | null;
   source: IntentSource | null;
   // Non-fatal plan warnings snapshotted at create: the selected scope resolves
   // to a runnable but DEGRADED plan (required inputs whose producer stage is
@@ -1286,6 +1289,9 @@ export const intentsService = {
       // body as the selection they belong to (400
       // `selection_required_with_settings` otherwise). `null` clears them.
       aidlcSettings?: Record<string, AidlcSettingValue> | null;
+      // A raw BCP 47 tag; the server re-resolves the display names. `null`
+      // clears the intent's language (no instruction), DRAFT only.
+      conversationLanguage?: string | null;
     },
   ) => api.patch<Intent>(`/projects/${projectId}/intents/${intentId}`, patch),
   // ── Composer (Adaptive Workflows) ──
