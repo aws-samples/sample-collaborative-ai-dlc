@@ -7216,7 +7216,10 @@ export const handler = async (event, context) => {
     return { ok: true };
   }
   if (event?.action === 'repair-durable-executions') {
-    return runDurableExecutionWatchdog({ ...event, budgetMs: sweepBudgetMs(context, 0.8) });
+    return runDurableExecutionWatchdog({
+      ...event,
+      budgetMs: sweepBudgetMs(context, 0.8, MANUAL_REPAIR_BUDGET_CAP_MS),
+    });
   }
   if (
     event?.action === 'reconcile-provider-state' ||
@@ -7736,16 +7739,22 @@ const repairExpiredDurableExecution = async ({
   return updated;
 };
 
+const WATCHDOG_BUDGET_CAP_MS = 20_000;
+const PR_WAIT_RECONCILER_BUDGET_CAP_MS = 30_000;
+const MANUAL_REPAIR_BUDGET_CAP_MS = 50_000;
+
 const pageSizeFromEnv = (value) => {
   const size = Number(value);
   return Number.isInteger(size) && size > 0 ? size : 100;
 };
 
-// Time a scheduled sweep may spend on its rows: `share` of what is left of the
-// invocation, so the cursor write and the next sweep still fit before timeout.
-const sweepBudgetMs = (context, share) => {
+// Time a sweep may spend on its rows: `share` of what is left of the
+// invocation, and never more than `capMs`. The caps keep every sweep inside the
+// one-minute schedule interval, so the next tick does not claim the next page
+// while this one is still working through its own.
+const sweepBudgetMs = (context, share, capMs) => {
   const remaining = context?.getRemainingTimeInMillis?.();
-  return Math.floor((Number.isFinite(remaining) ? remaining : 60_000) * share);
+  return Math.min(capMs, Math.floor((Number.isFinite(remaining) ? remaining : 60_000) * share));
 };
 
 // A scheduled sweep checks the next page of its sparse GSI3 partition, not the
@@ -8026,14 +8035,36 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null, budgetMs = 40_
   return out;
 };
 
-// Both sweeps share one invocation: the reconciler may use 40% of it and the
-// watchdog 60% of what is left, which keeps a margin before the timeout.
+// Runs one sweep; a failure is logged and reported in the result, so the other
+// sweep still runs in this tick.
+const settleSweep = async (sweep, run) => {
+  try {
+    return await run();
+  } catch (error) {
+    logger.error('Scheduled maintenance sweep failed', { sweep, error });
+    return { failed: true, error: error?.message ?? String(error) };
+  }
+};
+
+// The watchdog runs first: one status lookup per intent keeps it bounded, and it
+// is the safety net for live grants, so a slow Git provider in the reconciler
+// cannot keep it from running. Together the two caps stay under the one-minute
+// schedule interval. The invocation succeeds even when a sweep failed: the
+// next tick is the retry, and an asynchronous retry would run both sweeps again
+// and end in the function's on-failure destination.
 const runScheduledMaintenance = async (event = {}, context = null) => {
-  const prWaits = await runPrWaitReconciler({ ...event, budgetMs: sweepBudgetMs(context, 0.4) });
-  const durableExecutions = await runDurableExecutionWatchdog({
-    ...event,
-    budgetMs: sweepBudgetMs(context, 0.6),
-  });
+  const durableExecutions = await settleSweep('durable-watchdog', () =>
+    runDurableExecutionWatchdog({
+      ...event,
+      budgetMs: sweepBudgetMs(context, 0.4, WATCHDOG_BUDGET_CAP_MS),
+    }),
+  );
+  const prWaits = await settleSweep('pr-wait-reconciler', () =>
+    runPrWaitReconciler({
+      ...event,
+      budgetMs: sweepBudgetMs(context, 0.6, PR_WAIT_RECONCILER_BUDGET_CAP_MS),
+    }),
+  );
   return { prWaits, durableExecutions };
 };
 
