@@ -179,6 +179,11 @@ variable "iam_permissions_boundary_arn" {
   default     = ""
 }
 
+variable "stage_permissions_function_arn" {
+  description = "Intents Lambda ARN for stage-scoped collaborative document permissions."
+  type        = string
+}
+
 variable "space_permissions_function_arn" {
   description = "Projects Lambda ARN used to resolve resource scope and permissions at connection time."
   type        = string

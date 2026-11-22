@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { docNameFromPath } from '../doc-name.js';
-import { requiredScopeForYjsDoc } from '../realtime-token.js';
+import { requiredScopeForYjsDoc } from '../../shared/realtime-token.js';
 
 const SPRINT = 'b6326738-6b97-4819-829a-565ee8903e38';
 const PROJECT = 'de310884-13d5-42c1-ac60-8ba696980c7a';

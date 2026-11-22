@@ -22,18 +22,16 @@ space. The token is bound to your signed-in identity, covers exactly the
 intent/space you requested, and expires after ten minutes — connections are
 transparently refreshed while you remain a member.
 
-| Space role | Can connect & edit | Can post in discussions | Can redact discussion messages |
-| ---------- | ------------------ | ----------------------- | ------------------------------ |
-| Owner      | Yes                | Yes                     | Yes                            |
-| Admin      | Yes                | Yes                     | Yes                            |
-| Member     | Yes                | Yes                     | No                             |
-| Non-member | No (403)           | No                      | No                             |
+| Space role | Can read | Can post in discussions | Can redact discussion messages |
+| ---------- | -------- | ----------------------- | ------------------------------ |
+| Owner      | Yes      | Yes                     | Yes                            |
+| Member     | Yes      | Yes                     | No                             |
+| Viewer     | Yes      | No                      | No                             |
+| Non-member | No       | No                      | No                             |
 
-Two things to be aware of:
-
-- There is **no role-level read-only mode** on the Yjs sync protocol — every
-  space member can edit collaborative documents. Durable writes are
-  independently authorized in the REST layer.
-- **Active-session window**: when a member is removed from a space, their
-  already-open connections remain authorized for at most the remaining token
-  lifetime (≤ 10 minutes) before the server closes them.
+The server checks your stage permissions when you open or reconnect to a shared
+answer, review, or stage document. An open editor reuses that decision for up to
+30 seconds, then checks again on the next sync or save request. Offline edits
+sync on reconnect only if you still have permission. Submitting an answer,
+approving a review, or saving a document through the API checks your current
+permissions on each request. See [Stage responsibilities](projects.md#stage-responsibilities).

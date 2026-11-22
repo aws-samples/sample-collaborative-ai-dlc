@@ -1,3 +1,5 @@
+import { generateStagePolicies } from '../../shared/stage-responsibilities.js';
+import { membershipStore } from '../../shared/space-membership.js';
 import { seedMembership } from '../../../test/seed-membership.js';
 import { loadMetaBeforeDelivery } from '../../v2-orchestrator/test/fixtures/load-meta-before-delivery.js';
 import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
@@ -509,11 +511,61 @@ const installDdbFakes = () => {
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
 // the intents lambda only reads/answers them).
+const seedLegacyWorkflowSnapshot = () => {
+  const key = keyOf('WF#default#aidlc-v2', 'V#4#META');
+  if (!procStore.has(key))
+    procStore.set(key, { pk: 'WF#default#aidlc-v2', sk: 'V#4#META', version: 4 });
+};
+
+const seedStagePolicies = (stages) => {
+  const pk = 'WF#default#aidlc-v2';
+  for (const item of [
+    { sk: 'V#4#META', cedarPolicies: generateStagePolicies(stages) },
+    ...stages.map((stage) => ({ sk: `V#4#PLACEMENT#${stage.stageId}`, ...stage })),
+  ]) {
+    const key = keyOf(pk, item.sk);
+    procStore.set(key, { ...procStore.get(key), pk, ...item });
+  }
+};
+
+// Both roles are filled so the Contributor can edit drafts but cannot decide.
+const seedStageContributor = async (projectId, owner, stageId) => {
+  const contributor = randomUUID();
+  await seedMembership(projectId, contributor, 'member');
+  for (const [userId, role] of [
+    [owner, 'product-owner'],
+    [contributor, 'business-analyst'],
+  ]) {
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId,
+      actorId: owner,
+      localRoles: [role],
+    });
+  }
+  seedStagePolicies([
+    {
+      stageId,
+      permissions: {
+        decisionMakerRoles: ['product-owner'],
+        contributorRoles: ['business-analyst'],
+      },
+    },
+  ]);
+  return contributor;
+};
+
+const expectStageDenied = (result) => {
+  expect(result.statusCode).toBe(403);
+  expect(JSON.parse(result.body).code).toBe('STAGE_PERMISSION_DENIED');
+};
+
 const seedGate = (
   intentId,
   humanTaskId,
   { status = 'pending', callbackId = null, stageInstanceId = 'si-req' } = {},
 ) => {
+  seedLegacyWorkflowSnapshot();
   procStore.set(keyOf(`EXEC#${intentId}`, `HUMAN#${humanTaskId}`), {
     pk: `EXEC#${intentId}`,
     sk: `HUMAN#${humanTaskId}`,
@@ -2358,6 +2410,161 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
   });
 });
 
+describe('stage decisions and collaborative drafts', () => {
+  it('uses the space override or the platform default for a pending gate and its collaborative draft', async () => {
+    const owner = randomUUID();
+    const member = randomUUID();
+    const viewer = randomUUID();
+    const projectId = await seedV2Project(owner);
+    const intent = JSON.parse((await createIntent(owner, projectId)).body);
+    await seedMembership(projectId, member, 'member');
+    await seedMembership(projectId, viewer, 'viewer');
+    seedGate(intent.id, 'requirements');
+    await seedStageContributor(projectId, owner, 'requirements');
+    const pk = `EXEC#${intent.id}`;
+    procStore.set(keyOf(pk, 'STAGE#si-req'), { stageId: 'requirements' });
+    const room = {
+      action: 'realtime-permissions',
+      scope: `intent:${intent.id}`,
+      docName: `intent-sq-${intent.id}-requirements`,
+    };
+    const setEnforcement = (enabled) =>
+      procStore.set(keyOf('SETTINGS#STAGE_ROLES', 'CURRENT'), { enabled });
+    const spaceSetting = keyOf(`SPACE#${projectId}`, 'SETTINGS#STAGE_ROLES');
+
+    setEnforcement(false);
+    expect(await handler({ ...room, sub: member })).toMatchObject({ read: true, write: true });
+    expect(await handler({ ...room, sub: viewer })).toMatchObject({ read: true, write: false });
+    expect(await handler({ ...room, sub: randomUUID() })).toMatchObject({
+      read: false,
+      write: false,
+    });
+    expect((await answerGate(viewer, projectId, intent.id, 'requirements')).statusCode).toBe(403);
+    seedGate(intent.id, 'section', { stageInstanceId: null });
+    Object.assign(procStore.get(keyOf(pk, 'HUMAN#section')), {
+      kind: 'approval',
+      sectionIndex: 1,
+      options: ['autonomous', 'gated'],
+    });
+    expectStageDenied(
+      await answerGate(member, projectId, intent.id, 'section', {
+        answer: { mode: 'autonomous' },
+      }),
+    );
+
+    procStore.set(spaceSetting, { enabled: true });
+    expect(await handler({ ...room, sub: member })).toMatchObject({ read: true, write: false });
+    expectStageDenied(await answerGate(member, projectId, intent.id, 'requirements'));
+    setEnforcement(true);
+    procStore.delete(spaceSetting);
+    procStore.set(keyOf('SPACE#other', 'SETTINGS#STAGE_ROLES'), { enabled: false });
+    expectStageDenied(await answerGate(member, projectId, intent.id, 'requirements'));
+    procStore.set(spaceSetting, { enabled: false });
+    expect(await handler({ ...room, sub: member })).toMatchObject({ write: true });
+    expect(await handler({ ...room, sub: viewer })).toMatchObject({ write: false });
+    expect((await answerGate(member, projectId, intent.id, 'requirements')).statusCode).toBe(200);
+    expect(procStore.get(keyOf(pk, 'HUMAN#requirements')).answeredBy).toBe(member);
+    expect(await handler({ ...room, sub: member })).toMatchObject({ read: true, write: false });
+  });
+
+  it('requires an Owner or decision rights on every affected stage for a section decision', async () => {
+    const owner = randomUUID();
+    const member = randomUUID();
+    const projectId = await seedV2Project(owner);
+    await seedMembership(projectId, member, 'member');
+    const intent = JSON.parse((await createIntent(owner, projectId)).body);
+    seedGate(intent.id, 'section', { stageInstanceId: null });
+    const gate = procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#section'));
+    Object.assign(gate, { kind: 'approval', sectionIndex: 1, options: ['autonomous', 'gated'] });
+    const stages = ['product-owner', 'business-analyst'].map((role) => ({
+      stageId: role,
+      parallelSection: 1,
+      permissions: { decisionMakerRoles: [role], contributorRoles: [] },
+    }));
+    planSpy.loadExecutionPlan.mockResolvedValue({ valid: true, plan: { stages } });
+    seedStagePolicies(stages);
+    const roles = (localRoles) =>
+      membershipStore.changeLocalRoles({
+        spaceId: projectId,
+        userId: member,
+        actorId: owner,
+        localRoles,
+      });
+    await roles(['product-owner']);
+    const room = {
+      action: 'realtime-permissions',
+      scope: `intent:${intent.id}`,
+      docName: `intent-review-${intent.id}-section`,
+    };
+    expect(await handler({ ...room, sub: owner })).toMatchObject({ write: true });
+    expect(await handler({ ...room, sub: member })).toMatchObject({ write: false });
+    expect((await answerGate(member, projectId, intent.id, 'section')).statusCode).toBe(403);
+    await roles(['product-owner', 'business-analyst']);
+    expect(
+      (
+        await answerGate(member, projectId, intent.id, 'section', {
+          answer: { mode: 'autonomous' },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await answerGate(member, projectId, intent.id, 'section', { answer: { mode: 'gated' } }))
+        .statusCode,
+    ).toBe(200);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#section')).answeredBy).toBe(member);
+  });
+  it('enforces the pinned roles for a gate and applies contributor fallback after reassignment', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    const intent = JSON.parse((await createIntent(owner, projectId)).body);
+    const analyst = await seedStageContributor(projectId, owner, 'requirements');
+    seedGate(intent.id, 'requirements');
+    const instance = { pk: `EXEC#${intent.id}`, sk: 'STAGE#si-req', stageId: 'requirements' };
+    procStore.set(keyOf(instance.pk, instance.sk), instance);
+    const room = {
+      action: 'realtime-permissions',
+      scope: `intent:${intent.id}`,
+      docName: `intent-sq-${intent.id}-requirements`,
+    };
+    expect(await handler({ ...room, sub: analyst })).toMatchObject({ write: true });
+    expect((await answerGate(analyst, projectId, intent.id, 'requirements')).statusCode).toBe(403);
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId: owner,
+      actorId: owner,
+      localRoles: [],
+    });
+    expect(await handler({ ...room, sub: owner })).toMatchObject({ read: true, write: false });
+    expect((await answerGate(analyst, projectId, intent.id, 'requirements')).statusCode).toBe(200);
+    expect(procStore.get(keyOf(instance.pk, 'HUMAN#requirements'))).toMatchObject({
+      answeredBy: analyst,
+    });
+    expect(await handler({ ...room, sub: analyst })).toMatchObject({ write: false });
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId: owner,
+      actorId: owner,
+      localRoles: ['product-owner'],
+    });
+    setStatus(intent.id, { status: 'RUNNING' });
+    const revise = (sub) =>
+      handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/gates/requirements/revise`,
+        pathParameters: { projectId, intentId: intent.id, humanTaskId: 'requirements' },
+        body: JSON.stringify({ message: 'A correction' }),
+        ...claims(sub),
+      });
+    expect((await revise(analyst)).statusCode).toBe(403);
+    const revised = await revise(owner);
+    expect(revised.statusCode).toBe(201);
+    expect(JSON.parse(revised.body)).toMatchObject({ createdBy: owner });
+    expect(procStore.get(keyOf(instance.pk, 'HUMAN#requirements'))).toMatchObject({
+      answeredBy: analyst,
+    });
+  });
+});
+
 describe('unit PR review feedback', () => {
   const seedActiveReview = async (sub) => {
     const projectId = await seedV2Project(sub);
@@ -2393,6 +2600,16 @@ describe('unit PR review feedback', () => {
       sourceBranch: 'unit',
       targetBranch: 'intent',
     });
+    seedLegacyWorkflowSnapshot();
+    planSpy.loadExecutionPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'code', parallelSection: 1 }] },
+    });
+    const id = planStageInstanceId('aidlc-v2@4', 'code', 'auth', 1);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${id}`), {
+      stageId: 'code',
+      state: 'SUCCEEDED',
+    });
     return { projectId, intent };
   };
 
@@ -2421,6 +2638,27 @@ describe('unit PR review feedback', () => {
       .commandCalls(InvokeCommand)
       .filter((call) => call.args[0].input.FunctionName === 'source-control-test');
     expect(sourceControlCalls).toHaveLength(0);
+  });
+
+  it('denies a stage contributor before fetching comments or queuing unit feedback', async () => {
+    const owner = randomUUID();
+    const { projectId, intent } = await seedActiveReview(owner);
+    const contributor = await seedStageContributor(projectId, owner, 'code');
+    sourceControlReviewComments = [{ id: 101, body: 'Handle the empty state', version: 'v1' }];
+    lambdaMock.resetHistory();
+    const result = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`,
+      pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+      body: JSON.stringify({ comments: [{ repository: 'owner/repo', commentId: '101' }] }),
+      ...claims(contributor),
+    });
+    expectStageDenied(result);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect([...procStore.values()].some((row) => row.sk?.startsWith('FEEDBACK#'))).toBe(false);
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#auth#owner%2Frepo')),
+    ).not.toHaveProperty('commentCount');
   });
 
   it('refetches selectable comments and queues an idempotent versioned batch', async () => {
@@ -3609,6 +3847,26 @@ describe('POST /recompose — in-flight reshape', () => {
       body: JSON.stringify(body),
       ...claims(sub),
     });
+
+  it('denies a contributor on the first unfinished stage before replacing the grid', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    seedRecomposeFixtures();
+    const intent = await seedRun(owner, projectId, {
+      rows: [{ stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' }],
+    });
+    const contributor = await seedStageContributor(projectId, owner, 'optional');
+    const key = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = structuredClone(procStore.get(key));
+    expectStageDenied(
+      await recomposeReq(contributor, projectId, intent.id, {
+        composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+        scope: 'feature-lean',
+      }),
+    );
+    expect(procStore.get(key)).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
 
   it('replaces the projection, relaunches at the first not-yet-done stage, pins the grid', async () => {
     const sub = `u-${randomUUID()}`;
@@ -5716,6 +5974,7 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
     seedGate(intent.id, humanTaskId);
 
+    procStore.get(humanKey).options = ['override-and-approve', 'request-changes'];
     for (const answer of [
       { decision: 'override-and-approve' },
       { decision: 'override-and-approve', reason: ' \t ' },
@@ -6745,6 +7004,27 @@ describe('POST /cancel', () => {
     });
   });
 
+  it('denies a contributor on an active stage and leaves its question pending', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    const { id } = JSON.parse((await createIntent(owner, projectId)).body);
+    const contributor = await seedStageContributor(projectId, owner, 'requirements');
+    setStatus(id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+    seedGate(id, 'h1', { callbackId: 'cb-h1' });
+    const pk = `EXEC#${id}`;
+    procStore.set(keyOf(pk, 'STAGE#si-req'), {
+      pk,
+      sk: 'STAGE#si-req',
+      stageId: 'requirements',
+      stageInstanceId: 'si-req',
+      state: 'WAITING_FOR_HUMAN',
+    });
+    expectStageDenied(await cancel(contributor, projectId, id));
+    expect(procStore.get(keyOf(pk, 'META')).status).toBe('WAITING');
+    expect(procStore.get(keyOf(pk, 'HUMAN#h1')).status).toBe('pending');
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+  });
+
   it('still cancels when the watchdog fails the woken run before the CANCELLED write', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -7302,6 +7582,24 @@ describe('POST /rewind', () => {
       body: JSON.stringify(body),
       ...claims(sub),
     });
+
+  it('denies a contributor on the rewind target before resetting or relaunching it', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    seedPlan();
+    const { id } = JSON.parse((await createIntent(owner, projectId)).body);
+    const contributor = await seedStageContributor(projectId, owner, 'implement');
+    setStatus(id, { status: 'WAITING' });
+    seedStageRow(id, 'design');
+    seedStageRow(id, 'implement', 'WAITING_FOR_HUMAN');
+    expectStageDenied(await rewind(contributor, projectId, id, { fromStageId: 'implement' }));
+    expect(procStore.get(keyOf(`EXEC#${id}`, `STAGE#${siOf('implement')}`))).toMatchObject({
+      state: 'WAITING_FOR_HUMAN',
+      attempt: 0,
+    });
+    expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
 
   it('rejects HTTP before stopping a parked runtime or resetting work, then accepts corrected settings', async () => {
     const sub = `u-${randomUUID()}`;
@@ -10010,6 +10308,7 @@ const linkArtifacts = (intentId, fromId, toId, edge) =>
 const seedEditFixture = async (sub) => {
   const projectId = await seedV2Project(sub);
   const intent = JSON.parse((await createIntent(sub, projectId)).body);
+  seedLegacyWorkflowSnapshot();
   await seedIntentAnchor(intent.id);
   await seedArtifact(intent.id, 'mr', { type: 'market-research', title: 'Market research' });
   await seedArtifact(intent.id, 'trends', { type: 'market-trends', title: 'Trends' });
@@ -10251,6 +10550,48 @@ const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =
   });
 
 describe('PUT /artifacts/{id}/content (simple edit)', () => {
+  it('enforces the producing stage decision on both the content API and the current Yjs room', async () => {
+    const owner = randomUUID();
+    const { projectId, intent } = await seedEditFixture(owner);
+    const contributor = await seedStageContributor(projectId, owner, 'research');
+    const pk = `EXEC#${intent.id}`;
+    procStore.set(keyOf(pk, 'STAGE#si-research'), {
+      pk,
+      sk: 'STAGE#si-research',
+      stageInstanceId: 'si-research',
+      stageId: 'research',
+    });
+    const artifact = () => g.V().has('Artifact', 'id', 'mr').has('intent_id', intent.id);
+    const epoch = randomUUID();
+    await artifact()
+      .property('created_by_stage_instance_id', 'si-research')
+      .property('collaboration_epoch', epoch)
+      .next();
+    const roomAccess = (sub, roomEpoch) =>
+      handler({
+        action: 'realtime-permissions',
+        sub,
+        scope: `intent:${intent.id}`,
+        docName: `intent-artifact-${intent.id}-mr-epoch-${roomEpoch}`,
+      });
+    expect(await roomAccess(contributor, epoch)).toMatchObject({ read: true, write: false });
+    expect(await roomAccess(owner, epoch)).toMatchObject({ read: true, write: true });
+    expect(await roomAccess(owner, randomUUID())).toMatchObject({ read: false, write: false });
+    expectStageDenied(
+      await putContent(contributor, projectId, intent.id, 'mr', 'Updated', {
+        collaborationEpoch: epoch,
+      }),
+    );
+    expect(await artifact().values('content').toList()).toEqual(['# x']);
+    expect(
+      (
+        await putContent(owner, projectId, intent.id, 'mr', 'Updated', {
+          collaborationEpoch: epoch,
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+
   it('rejects a delayed older projection and accepts a retry with the current revision', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);
@@ -10595,6 +10936,64 @@ describe('POST /quorum-edits/{editId}/decision', () => {
       ...claims(sub),
     });
 
+  it('checks the source and every selected downstream document before applying a Quorum decision', async () => {
+    const owner = randomUUID();
+    const member = randomUUID();
+    const { projectId, intent } = await seedEditFixture(owner);
+    await seedMembership(projectId, member, 'member');
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId: member,
+      actorId: owner,
+      localRoles: ['business-analyst'],
+    });
+    const stages = [
+      {
+        stageId: 'research',
+        permissions: { decisionMakerRoles: ['business-analyst'], contributorRoles: [] },
+      },
+      {
+        stageId: 'design',
+        permissions: { decisionMakerRoles: ['product-owner'], contributorRoles: [] },
+      },
+    ];
+    const pk = 'WF#default#aidlc-v2';
+    for (const item of [
+      { sk: 'V#4#META', cedarPolicies: generateStagePolicies(stages) },
+      ...stages.map((stage) => ({ sk: `V#4#PLACEMENT#${stage.stageId}`, ...stage })),
+    ])
+      procStore.set(keyOf(pk, item.sk), { pk, ...item });
+    for (const [doc, stage] of [
+      ['mr', 'research'],
+      ['trends', 'design'],
+    ]) {
+      await g
+        .V()
+        .has('Artifact', 'id', doc)
+        .has('intent_id', intent.id)
+        .property('created_by_stage_instance_id', `si-${stage}`)
+        .next();
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-${stage}`), { stageId: stage });
+    }
+    seedAwaiting(intent.id, 'protected');
+    expect(
+      (
+        await decide(member, projectId, intent.id, 'protected', {
+          decision: 'approve',
+          approvedArtifactIds: ['trends'],
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await decide(owner, projectId, intent.id, 'protected', { decision: 'reject' })).statusCode,
+    ).toBe(403);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'QEDIT#protected')).state).toBe(
+      'AWAITING_APPROVAL',
+    );
+    expect(
+      (await decide(member, projectId, intent.id, 'protected', { decision: 'reject' })).statusCode,
+    ).toBe(200);
+  });
   it('approve narrows to PLAN artifacts, CASes to APPLYING and resumes the callback', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);
@@ -10857,6 +11256,34 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
       body: JSON.stringify(bodyObj),
       ...claims(sub),
     });
+
+  it('lets a space member with no business roles start a draft with a mapped first stage', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    seedSkippablePlan();
+    const { id } = JSON.parse((await createIntent(owner, projectId)).body);
+    await seedStageContributor(projectId, owner, 'optional');
+    const member = randomUUID();
+    await seedMembership(projectId, member, 'member');
+    expect((await startIntent(member, projectId, id, { agentCli: 'kiro' })).statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${id}`, 'META'))).toMatchObject({
+      status: 'CREATED',
+      startedBy: member,
+    });
+    expect(orchestratorInvokes()).toHaveLength(1);
+  });
+
+  it('requires decision rights to restart a run that failed on a stage', async () => {
+    const owner = randomUUID();
+    const projectId = await seedV2Project(owner);
+    seedSkippablePlan();
+    const { id } = JSON.parse((await createIntent(owner, projectId)).body);
+    const contributor = await seedStageContributor(projectId, owner, 'main');
+    setStatus(id, { status: 'FAILED', currentStage: 'main' });
+    expectStageDenied(await startIntent(contributor, projectId, id, {}));
+    expect(procStore.get(keyOf(`EXEC#${id}`, 'META')).status).toBe('FAILED');
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
 
   it('a DRAFT start may replace the skip overlay (validated + persisted on META)', async () => {
     const sub = `u-${randomUUID()}`;
@@ -12856,6 +13283,53 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
     return { intent, metaKey };
   };
+
+  it('denies resume with no decision rights and retries only the authorized stage after a role grant', async () => {
+    const owner = randomUUID();
+    const member = randomUUID();
+    const projectId = await seedV2Project(owner);
+    await seedMembership(projectId, member, 'member');
+    const { id } = JSON.parse((await createIntent(owner, projectId)).body);
+    const pk = `EXEC#${id}`;
+    const stages = [
+      {
+        stageId: 'design',
+        permissions: { decisionMakerRoles: ['product-owner'], contributorRoles: [] },
+      },
+      { stageId: 'code', permissions: { decisionMakerRoles: ['developer'], contributorRoles: [] } },
+    ];
+    seedStagePolicies(stages);
+    const marker = { humanTaskId: 'design', callbackId: 'cb-design' };
+    setStatus(id, { status: 'RUNNING', resumeRequired: marker });
+    for (const { stageId } of stages) {
+      const stageInstanceId = `si-${stageId}`;
+      seedGate(id, stageId, { status: 'answered', callbackId: `cb-${stageId}`, stageInstanceId });
+      procStore.set(keyOf(pk, `STAGE#${stageInstanceId}`), {
+        pk,
+        sk: `STAGE#${stageInstanceId}`,
+        stageInstanceId,
+        stageId,
+        state: 'WAITING_FOR_HUMAN',
+        pendingHumanTaskId: stageId,
+      });
+    }
+    expectStageDenied(await resume(member, projectId, id));
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+    await membershipStore.changeLocalRoles({
+      spaceId: projectId,
+      userId: member,
+      actorId: owner,
+      localRoles: ['developer'],
+    });
+    const result = await resume(member, projectId, id);
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body).resumed).toBe(true);
+    const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
+    expect(sent.map((call) => call.args[0].input.CallbackId)).toEqual(['cb-code']);
+    expect(procStore.get(keyOf(pk, 'HUMAN#code')).callbackConsumedAt).toBeTruthy();
+    expect(procStore.get(keyOf(pk, 'HUMAN#design')).callbackConsumedAt).toBeUndefined();
+    expect(procStore.get(keyOf(pk, 'META')).resumeRequired).toEqual(marker);
+  });
 
   it('records resumeRequired on a non-timeout resume failure and recovers on resume', async () => {
     const sub = `u-${randomUUID()}`;

@@ -791,6 +791,7 @@ module "realtime" {
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
 
+  stage_permissions_function_arn = module.lambda.intents_lambda_arn
   space_permissions_function_arn = module.lambda.projects_lambda_arn
   access_table_name              = module.dynamodb.access_table_name
   access_table_arn               = module.dynamodb.access_table_arn

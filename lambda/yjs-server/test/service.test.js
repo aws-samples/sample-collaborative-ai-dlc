@@ -11,7 +11,7 @@ import { createMembershipLookup } from '../permissions.js';
 import { createMembershipStore, membershipStore } from '../../shared/space-membership.js';
 import { realtimePermissions } from '../../shared/realtime-permissions.js';
 import { runLoad, verifyLoadDocument } from '../load.js';
-import { signRealtimeToken, requiredScopeForYjsDoc } from '../realtime-token.js';
+import { signRealtimeToken, requiredScopeForYjsDoc } from '../../shared/realtime-token.js';
 
 const servers = [];
 const clients = [];
@@ -654,6 +654,66 @@ describe('capacity-aware ownership', () => {
     expect(server.cluster.claimsInFlight).toBe(0);
     expect(server.cluster.leases.size).toBe(1);
   });
+});
+
+it('reuses a stage edit grant for 30 seconds per connection and checks chat independently', async () => {
+  const gate = DOCUMENT.replace('intent-draft', 'intent-sq') + '-requirements';
+  const chat = DOCUMENT.replace('intent-draft', 'intent-discussion') + '-requirements';
+  let canEdit = true;
+  const authorize = vi.fn(async ({ docName }) => ({
+    read: true,
+    write: docName === chat || canEdit,
+  }));
+  const opened = Date.now();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(opened);
+  try {
+    const server = await start({ authorize });
+    const editor = await join(server, gate);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    const discussion = await join(server, chat);
+    const answer = editor.doc.getText('answer');
+    const text = server.rooms.rooms.get(gate).doc.getText('answer');
+    authorize.mockClear();
+    canEdit = false;
+    clock.mockReturnValue(opened + 29_999);
+    for (const letter of 'draft') answer.insert(answer.length, letter);
+    await vi.waitFor(() => expect(text.toString()).toBe('draft'));
+    expect(authorize).not.toHaveBeenCalledWith(expect.objectContaining({ docName: gate }));
+
+    // The same user reconnecting with an offline edit gets a fresh decision.
+    const offline = new Y.Doc();
+    offline.getText('answer').insert(0, 'offline');
+    await join(server, gate, { doc: offline });
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ docName: gate }));
+    authorize.mockClear();
+    clock.mockReturnValue(opened + 30_000);
+    answer.insert(0, 'stale');
+    discussion.doc.getText('message').insert(0, 'comment');
+    await vi.waitFor(() => {
+      expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ docName: gate }));
+      expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ docName: chat }));
+      expect(server.rooms.rooms.get(chat).doc.getText('message').toString()).toBe('comment');
+    });
+    expect(text.toString()).toBe('draft');
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it('rejects the first stage edit after expiry when permissions cannot be refreshed', async () => {
+  const authorize = vi.fn().mockResolvedValue({ read: true, write: true });
+  const server = await start({ authorize });
+  const gate = DOCUMENT.replace('intent-draft', 'intent-review') + '-review';
+  const editor = await join(server, gate);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_000);
+  try {
+    authorize.mockRejectedValue(new Error('Unavailable'));
+    editor.doc.getText('feedback').insert(0, 'stale');
+    await vi.waitFor(() => expect(editor.ws.readyState).toBe(3));
+    expect(server.rooms.rooms.get(gate).doc.getText('feedback').toString()).toBe('');
+  } finally {
+    clock.mockRestore();
+  }
 });
 
 describe('current Viewer permissions', () => {

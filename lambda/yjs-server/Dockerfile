@@ -12,7 +12,7 @@ COPY --chown=node:node --chmod=0644 yjs-server/package.json yjs-server/package-l
 RUN npm ci --omit=dev \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
-COPY --chown=node:node --chmod=0644 shared/space-permissions.js shared/space-membership.js shared/business-roles.js shared/business-role-catalog.json ./shared/
+COPY --chown=node:node --chmod=0644 shared/space-permissions.js shared/space-membership.js shared/business-roles.js shared/business-role-catalog.json shared/realtime-token.js ./shared/
 COPY --chown=node:node --chmod=0644 shared/policies/space.cedar ./shared/policies/
 COPY --chown=node:node --chmod=0644 yjs-server/*.js ./yjs-server/
 

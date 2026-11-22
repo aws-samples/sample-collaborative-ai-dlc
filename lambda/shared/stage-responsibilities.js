@@ -1,3 +1,4 @@
+import { unitStageSkipReason } from './unit-kind-pruning.js';
 import { BUSINESS_ROLES, normalizeStagePermissions } from './business-roles.js';
 import { validateCedarPolicies, createCedarPolicyEvaluator } from './space-permissions.js';
 import { buildStagePolicies } from './stage-responsibility-defaults.js';
@@ -28,7 +29,7 @@ export const assertWorkflowItemSize = (item) => {
     });
 };
 
-const people = (selected) =>
+export const responsiblePeople = (selected) =>
   selected.map(({ userId, name, email, effectiveRoles }) => ({
     userId,
     name,
@@ -40,10 +41,13 @@ export const resolveStageResponsibilities = ({
   workflow,
   members,
   stages = workflow.placements,
+  allowLegacy = false,
 }) => {
   // A missing mapping is visible, but absent/invalid stored policy is an error.
-  validateStagePolicies(workflow.cedarPolicies);
-  const evaluatePolicy = createCedarPolicyEvaluator(workflow.cedarPolicies);
+  // Older versions may have neither a policy nor any configured stage roles.
+  const hasPolicy = !allowLegacy || !predatesStagePermissions(workflow);
+  if (hasPolicy) validateStagePolicies(workflow.cedarPolicies);
+  const evaluatePolicy = hasPolicy ? createCedarPolicyEvaluator(workflow.cedarPolicies) : null;
   const evaluate = (member, stageId, action, fallback = '') =>
     evaluatePolicy({
       principal: { type: 'User', id: member.userId },
@@ -113,8 +117,10 @@ export const resolveStageResponsibilities = ({
         reason,
         missingDecisionMakerRoles: missing(permissions.decisionMakerRoles),
         missingContributorRoles: missing(permissions.contributorRoles),
-        decisionMakers: people(members.filter((m) => evaluate(m, stage.stageId, 'decide', reason))),
-        contributors: people(contributors),
+        decisionMakers: responsiblePeople(
+          members.filter((m) => evaluate(m, stage.stageId, 'decide', reason)),
+        ),
+        contributors: responsiblePeople(contributors),
       };
     }),
   };
@@ -125,3 +131,41 @@ export const previewStageResponsibilities = (options) => ({
   roles: BUSINESS_ROLES,
   ...resolveStageResponsibilities(options),
 });
+
+export const predatesStagePermissions = (workflow) =>
+  workflow.cedarPolicies == null && workflow.placements.every((p) => p.permissions == null);
+
+export const actorStageAccess = (stage, userId, membershipRole) => {
+  const writable = membershipRole === 'owner' || membershipRole === 'member';
+  const decide =
+    writable &&
+    (stage.reason === 'unmapped' || stage.decisionMakers.some((p) => p.userId === userId));
+  return {
+    decide,
+    edit: decide || (writable && stage.contributors.some((p) => p.userId === userId)),
+  };
+};
+
+export const isSectionGate = (gate) => !gate.stageInstanceId && Number.isInteger(gate.sectionIndex);
+
+// Members need access on every affected stage. Space role alone settles the other cases.
+export const sectionGateRoleAccess = (membershipRole) => {
+  if (membershipRole === 'member') return undefined;
+  return membershipRole === 'owner';
+};
+
+export const permitsEveryStage = (stages, userId, membershipRole, action) =>
+  stages.length > 0 &&
+  stages.every((stage) => stage && actorStageAccess(stage, userId, membershipRole)[action]);
+
+export const sectionGateStageIds = (gate, stages, unitPlan) => {
+  const units = unitPlan?.units?.filter((unit) => !gate.unitSlug || unit.slug === gate.unitSlug);
+  return stages
+    .filter(
+      (stage) =>
+        stage.parallelSection === gate.sectionIndex &&
+        !stage.permissions?.automatic &&
+        (!units || units.some((unit) => !unitStageSkipReason(stage, unit, unitPlan.skipMatrix))),
+    )
+    .map((stage) => stage.stageId);
+};

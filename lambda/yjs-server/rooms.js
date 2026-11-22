@@ -20,9 +20,8 @@ import {
 } from './protocol.js';
 
 export class RoomManager {
-  constructor({ config, cluster = null, logger = console, authorize = null }) {
+  constructor({ config, cluster = null, logger = console }) {
     this.config = config;
-    this.authorize = authorize;
     this.cluster = cluster;
     this.logger = logger;
     this.rooms = new Map();
@@ -171,7 +170,7 @@ export class RoomManager {
     }
   }
 
-  attach(room, conn, tokenExp, permissionTarget = null, permissions = { read: true, write: true }) {
+  attach(room, conn, tokenExp, permissions, checkPermissions) {
     if (room.closing || (this.cluster && !this.cluster.owns(room.lease))) {
       closeConnection(conn, 1012, 'document moving; reconnect');
       return;
@@ -218,10 +217,10 @@ export class RoomManager {
           const type = decoding.readVarUint(decoder);
           // Awareness is ephemeral presence; sync step 1 only requests server state.
           // Both step 2 and update contain client writes, including offline edits.
-          if (this.authorize && (type === SYNC || type === PERSISTENCE)) {
+          if (checkPermissions && (type === SYNC || type === PERSISTENCE)) {
             let current;
             try {
-              current = await this.authorize(permissionTarget);
+              current = await checkPermissions();
             } catch (error) {
               this.logger.warn('Yjs membership lookup unavailable:', error.name);
               closeConnection(conn, 1013, 'permissions unavailable; reconnect');

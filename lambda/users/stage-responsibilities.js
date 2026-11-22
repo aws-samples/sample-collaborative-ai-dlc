@@ -1,3 +1,6 @@
+import { readSpaceStageRoleEnforcement } from '../shared/stage-role-enforcement.js';
+import { BUSINESS_ROLES } from '../shared/business-roles.js';
+import { spacePermissions } from '../shared/space-permissions.js';
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import { getVal } from '../shared/trackers.js';
@@ -12,7 +15,16 @@ import {
 import { executionMetaKey, executionPk, unitPlanKey } from '../shared/v2-process-keys.js';
 import { stageInstanceId } from '../shared/v2-execution-plan.js';
 import { unitStageSkipReason } from '../shared/unit-kind-pruning.js';
-import { previewStageResponsibilities } from '../shared/stage-responsibilities.js';
+import {
+  responsiblePeople,
+  actorStageAccess,
+  isSectionGate,
+  sectionGateStageIds,
+  sectionGateRoleAccess,
+  permitsEveryStage,
+  predatesStagePermissions,
+  previewStageResponsibilities,
+} from '../shared/stage-responsibilities.js';
 
 const s3 = new S3Client({});
 const invalid = (message) => Object.assign(new Error(message), { statusCode: 400 });
@@ -38,9 +50,7 @@ const queryExecutionRows = async (ddb, executionId, prefix) => {
   return rows;
 };
 
-export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRoles }) => {
-  const { projectId } = event.pathParameters;
-  const params = event.queryStringParameters || {};
+const loadResponsibilityMeta = async ({ projectId, params, g, ddb }) => {
   let meta;
   if (params.intentId) {
     const result = await ddb.send(
@@ -81,6 +91,10 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
       throw invalid('A saved workflow version is required');
     meta = { workflowId, workflowVersion: Number(workflowVersion) };
   }
+  return meta;
+};
+
+const loadResponsibilityContext = async ({ meta, ddb, params }) => {
   const options = {
     ddb,
     tableName: process.env.BLOCKS_TABLE,
@@ -92,6 +106,91 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
     }),
   };
   const workflow = await loadWorkflowComposition(options);
+  return { meta, workflow, ddb, params };
+};
+
+const scopedPlacements = (workflow, scope) => {
+  // `order` is a placement's position within its phase, as in the composer.
+  const stages = workflow.placements.toSorted(
+    (a, b) => (a.phasePath ?? '').localeCompare(b.phasePath ?? '') || a.order - b.order,
+  );
+  if (!scope) return stages;
+  if (!stages.some((stage) => Object.hasOwn(stage.scopeMembership, scope)))
+    throw invalid('Unknown workflow scope');
+  return stages.filter((stage) => stage.scopeMembership[scope] === 'EXECUTE');
+};
+
+const withGateIds = (stage, gates) => ({
+  ...stage,
+  gateIds: gates
+    .filter((gate) => gate.stageInstanceId === stage.stageInstanceId)
+    .map((gate) => gate.humanTaskId),
+});
+
+const loadExecutionStages = async ({ ddb, meta, params: { intentId } }) => {
+  const loader = createIntentMethodologyLoader({
+    ddb,
+    tableName: process.env.BLOCKS_TABLE,
+    s3,
+    bucket: process.env.ARTIFACTS_BUCKET,
+  });
+  const plan = await loader.loadPlan(meta);
+  if (!plan.valid) throw new Error('Pinned intent plan could not be loaded');
+  const [instances, gates, unitPlan] = await Promise.all([
+    queryExecutionRows(ddb, intentId, 'STAGE#'),
+    queryExecutionRows(ddb, intentId, 'HUMAN#'),
+    ddb.send(
+      new GetCommand({
+        TableName: process.env.V2_EXECUTIONS_TABLE,
+        Key: unitPlanKey(intentId),
+        ConsistentRead: true,
+      }),
+    ),
+  ]);
+  const namespace = plan.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+  const stages = plan.plan.stages.flatMap((stage) => {
+    // UNITPLAN contains selected lanes, including ones that have not started.
+    // Stage rows describe execution progress; they are not the selected plan.
+    if (stage.parallelSection != null && unitPlan.Item) {
+      return (
+        (unitPlan.Item.units ?? [])
+          // Same rule the orchestrator uses to record SKIPPED instances.
+          .filter((unit) => !unitStageSkipReason(stage, unit, unitPlan.Item.skipMatrix))
+          .map((unit) => {
+            const plannedId = stageInstanceId(
+              namespace,
+              stage.stageId,
+              unit.slug,
+              stage.parallelSection,
+            );
+            const instance =
+              instances.find((row) => row.sk === `STAGE#${plannedId}`) ??
+              instances.find(
+                (row) =>
+                  row.stageId === stage.stageId &&
+                  row.unitSlug === unit.slug &&
+                  row.sectionIndex == null,
+              );
+            return {
+              ...stage,
+              stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? plannedId,
+            };
+          })
+      );
+    }
+    const instance = instances.find((row) => row.stageId === stage.stageId && !row.unitSlug);
+    return [
+      {
+        ...stage,
+        stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? stage.stageInstanceId,
+      },
+    ];
+  });
+  return { stages, instances, gates, planStages: plan.plan.stages, unitPlan: unitPlan.Item };
+};
+
+const loadPreviewStages = async (context) => {
+  const { params, meta, workflow } = context;
   // Closures imported before importer revision 5 carry no responsibilities and
   // stay immutable; publishing a workflow version cannot change this intent.
   if (meta.methodologyRelease && !workflow.cedarPolicies)
@@ -101,84 +200,43 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
       ),
       { statusCode: 422 },
     );
-  // `order` is a placement's position within its phase, as in the composer.
-  let stages = workflow.placements.toSorted(
-    (a, b) => (a.phasePath ?? '').localeCompare(b.phasePath ?? '') || a.order - b.order,
-  );
-  if (params.intentId) {
-    const loader = createIntentMethodologyLoader({
-      ddb,
-      tableName: process.env.BLOCKS_TABLE,
-      s3,
-      bucket: process.env.ARTIFACTS_BUCKET,
-    });
-    const plan = await loader.loadPlan(meta);
-    if (!plan.valid) throw new Error('Pinned intent plan could not be loaded');
-    const [instances, gates, unitPlan] = await Promise.all([
-      queryExecutionRows(ddb, params.intentId, 'STAGE#'),
-      queryExecutionRows(ddb, params.intentId, 'HUMAN#'),
-      ddb.send(
-        new GetCommand({
-          TableName: process.env.V2_EXECUTIONS_TABLE,
-          Key: unitPlanKey(params.intentId),
-          ConsistentRead: true,
-        }),
-      ),
-    ]);
-    const namespace = plan.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
-    stages = plan.plan.stages.flatMap((stage) => {
-      // UNITPLAN contains selected lanes, including ones that have not started.
-      // Stage rows describe execution progress; they are not the selected plan.
-      if (stage.parallelSection != null && unitPlan.Item) {
-        return (
-          (unitPlan.Item.units ?? [])
-            // Same rule the orchestrator uses to record SKIPPED instances.
-            .filter((unit) => !unitStageSkipReason(stage, unit, unitPlan.Item.skipMatrix))
-            .map((unit) => {
-              const plannedId = stageInstanceId(
-                namespace,
-                stage.stageId,
-                unit.slug,
-                stage.parallelSection,
-              );
-              const instance =
-                instances.find((row) => row.sk === `STAGE#${plannedId}`) ??
-                instances.find(
-                  (row) =>
-                    row.stageId === stage.stageId &&
-                    row.unitSlug === unit.slug &&
-                    row.sectionIndex == null,
-                );
-              return {
-                ...stage,
-                stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? plannedId,
-              };
-            })
-        );
-      }
-      const instance = instances.find((row) => row.stageId === stage.stageId && !row.unitSlug);
-      return [
-        {
-          ...stage,
-          stageInstanceId: instance?.sk.slice('STAGE#'.length) ?? stage.stageInstanceId,
-        },
-      ];
-    });
-    stages = stages.map((stage) => ({
-      ...stage,
-      gateIds: gates
-        .filter((gate) => gate.stageInstanceId === stage.stageInstanceId)
-        .map((gate) => gate.humanTaskId),
+  if (!params.intentId) return scopedPlacements(workflow, params.scope);
+  const { stages, gates } = await loadExecutionStages(context);
+  return stages.map((stage) => withGateIds(stage, gates));
+};
+
+const loadActorStages = async (context) => {
+  const { params, meta, workflow } = context;
+  let stages;
+  let sectionGates = [];
+  if (params.intentId && meta.status !== 'DRAFT') {
+    const execution = await loadExecutionStages(context);
+    const { instances, gates, planStages, unitPlan } = execution;
+    stages = execution.stages;
+    // Answer history still refers to its original instance after a reshape.
+    const selected = new Set(stages.map((stage) => stage.stageInstanceId));
+    for (const row of instances) {
+      const id = row.sk.slice('STAGE#'.length);
+      if (selected.has(id)) continue;
+      const placement = workflow.placements.find((p) => p.stageId === row.stageId);
+      if (placement) stages.push({ ...placement, stageInstanceId: id });
+    }
+    stages = stages.map((stage) => withGateIds(stage, gates));
+    sectionGates = gates.filter(isSectionGate).map((gate) => ({
+      gate,
+      stageIds: sectionGateStageIds(gate, planStages, unitPlan),
     }));
-  } else if (params.scope) {
-    if (!stages.some((stage) => Object.hasOwn(stage.scopeMembership, params.scope)))
-      throw invalid('Unknown workflow scope');
-    stages = stages.filter((stage) => stage.scopeMembership[params.scope] === 'EXECUTE');
+  } else {
+    stages = scopedPlacements(workflow, params.scope);
   }
-  if (params.stageInstanceId) {
-    stages = stages.filter((stage) => stage.stageInstanceId === params.stageInstanceId);
-    if (!stages.length) throw invalid('Stage instance is not selected by this intent');
-  }
+  // A reshape may select a previously skipped stage. Keep its pinned permissions
+  // available to execution controls even before it has an instance.
+  const selected = new Set(stages.map((stage) => stage.stageId));
+  stages.push(...workflow.placements.filter((stage) => !selected.has(stage.stageId)));
+  return { stages, sectionGates };
+};
+
+const loadMembers = async ({ projectId, store, resolveRoles, g }) => {
   const resolvedMembers = await resolveSpaceMemberRoles({
     spaceId: projectId,
     store,
@@ -203,5 +261,93 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
       )),
     );
   }
-  return previewStageResponsibilities({ workflow, members, stages });
+  return members;
+};
+
+const withActorAccess = ({ result, workflow, members, userId, sectionGates }) => {
+  const actor = members.find((member) => member.userId === userId);
+  const legacy = predatesStagePermissions(workflow);
+  if (legacy)
+    result.unattributedAccess = actorStageAccess(
+      { reason: 'unmapped', decisionMakers: [], contributors: [] },
+      userId,
+      actor?.membershipRole,
+    );
+  for (const stage of result.stages)
+    stage.access = actorStageAccess(stage, userId, actor?.membershipRole);
+  result.sectionGates = Object.fromEntries(
+    sectionGates.map(({ gate, stageIds }) => {
+      const affected = stageIds.map((id) => result.stages.find((stage) => stage.stageId === id));
+      const permitted = (member, action) => {
+        const roleAccess = sectionGateRoleAccess(member?.membershipRole);
+        if (roleAccess !== undefined) return roleAccess;
+        if (!affected.length) return legacy;
+        return permitsEveryStage(affected, member.userId, member.membershipRole, action);
+      };
+      return [
+        gate.humanTaskId,
+        {
+          reason: 'section',
+          decisionMakers: responsiblePeople(members.filter((m) => permitted(m, 'decide'))),
+          contributors: responsiblePeople(
+            members.filter((m) => permitted(m, 'edit') && !permitted(m, 'decide')),
+          ),
+          access: { edit: permitted(actor, 'edit'), decide: permitted(actor, 'decide') },
+        },
+      ];
+    }),
+  );
+  return result;
+};
+
+export const getStageResponsibilities = async ({
+  event,
+  g,
+  ddb,
+  store,
+  resolveRoles,
+  actorRole,
+}) => {
+  const { projectId } = event.pathParameters;
+  const params = event.queryStringParameters || {};
+  const actorAccess = params.actorAccess === 'true';
+  const meta = await loadResponsibilityMeta({ projectId, params, g, ddb });
+  const { enforceStageRoles } = await readSpaceStageRoleEnforcement(ddb, projectId);
+  if (actorAccess && !enforceStageRoles) {
+    const { write } = spacePermissions(actorRole);
+    return {
+      workflowId: meta.workflowId,
+      workflowVersion: meta.workflowVersion,
+      previewOnly: true,
+      enforceStageRoles,
+      roles: BUSINESS_ROLES,
+      stages: [],
+      unattributedAccess: { edit: write, decide: write },
+    };
+  }
+  const context = await loadResponsibilityContext({ meta, ddb, params });
+  const { workflow } = context;
+  let { stages, sectionGates } = actorAccess
+    ? await loadActorStages(context)
+    : { stages: await loadPreviewStages(context) };
+  if (params.stageInstanceId) {
+    stages = stages.filter((stage) => stage.stageInstanceId === params.stageInstanceId);
+    if (!stages.length) throw invalid('Stage instance is not selected by this intent');
+  }
+  const members = await loadMembers({ projectId, store, resolveRoles, g });
+  const result = previewStageResponsibilities({
+    workflow,
+    members,
+    stages,
+    allowLegacy: actorAccess,
+  });
+  result.enforceStageRoles = enforceStageRoles;
+  if (!actorAccess) return result;
+  return withActorAccess({
+    result,
+    workflow,
+    members,
+    userId: event.requestContext.authorizer.claims.sub,
+    sectionGates,
+  });
 };

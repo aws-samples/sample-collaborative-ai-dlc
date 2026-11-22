@@ -3423,6 +3423,7 @@ module "intents_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    SSO_ROLE_CONFIG             = var.sso_role_config
     ACCESS_TABLE                = var.access_table_name
     AUDIT_TABLE                 = var.audit_table_name
     NEPTUNE_ENDPOINT            = var.neptune_endpoint

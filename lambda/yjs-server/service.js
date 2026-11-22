@@ -3,10 +3,11 @@ import { isIP } from 'node:net';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
 import { docNameFromPath } from './doc-name.js';
-import { requiredScopeForYjsDoc, verifyRealtimeAccess } from './realtime-token.js';
+import { requiredScopeForYjsDoc, verifyRealtimeAccess } from '../shared/realtime-token.js';
 import { routeHeader, verifyRoute } from './cluster.js';
 import { RoomManager } from './rooms.js';
 import { closeConnection, send } from './protocol.js';
+import { createConnectionPermissionCheck } from './permissions.js';
 
 const reject = (socket, code) => {
   if (!socket.destroyed) {
@@ -50,7 +51,7 @@ export const createCollaborationServer = ({
 }) => {
   if (enforceScope && !secret) throw new Error('REALTIME_DOC_SECRET is required');
   if (config.clusterEnabled && !cluster) throw new Error('Cluster storage is required');
-  const rooms = new RoomManager({ config, cluster, logger, authorize: authorizeMessage });
+  const rooms = new RoomManager({ config, cluster, logger });
   const upgrades = new Set();
   const peers = new Map();
   let draining = false;
@@ -191,9 +192,11 @@ export const createCollaborationServer = ({
       });
       if (!access.ok && enforceScope) return reject(socket, 403);
       const permissionTarget = {
+        docName,
         sub: identity.sub,
         scope: requiredScopeForYjsDoc(docName),
       };
+      const checkedAt = Date.now();
       const permissions = authorize
         ? await authorize(permissionTarget)
         : { read: true, write: true };
@@ -215,13 +218,15 @@ export const createCollaborationServer = ({
       if (socket.destroyed || draining) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (conn) => {
         track(conn);
-        rooms.attach(
-          room,
-          conn,
-          access.payload?.exp,
-          { ...permissionTarget, spaceId: permissions.spaceId },
-          permissions,
-        );
+        const checkPermissions =
+          authorizeMessage &&
+          createConnectionPermissionCheck(
+            authorizeMessage,
+            { ...permissionTarget, spaceId: permissions.spaceId },
+            authorize ? permissions : null,
+            checkedAt,
+          );
+        rooms.attach(room, conn, access.payload?.exp, permissions, checkPermissions);
       });
     } catch (error) {
       rejectedConnections++;
