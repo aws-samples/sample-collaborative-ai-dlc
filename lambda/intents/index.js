@@ -7673,7 +7673,7 @@ const repairExpiredDurableExecution = async ({
   // The durable run is already gone. Retire its grants first, conditional on
   // that run still owning the execution (a relaunch's grants are never
   // retired); a failed write throws before the status changes, so the intent
-  // stays active and the next watchdog tick tries again.
+  // stays active and the watchdog tries again on its next lap.
   await retireExecutionGrants(executionId, failureReason, {
     ifOrchestratorRunId: meta?.orchestratorRunId ?? null,
   });
@@ -7718,11 +7718,16 @@ const sweepBudgetMs = (context, share) => {
 // many there are. The page is claimed (the cursor moved past it, conditional
 // on the version just read) before any row is touched, so an overlapping tick
 // takes the next page or nothing. Null when another tick claimed first.
+// A claimed page is checked at most once per lap: if the invocation dies after
+// the claim, its rows wait for the next lap.
 const claimSweepPage = async ({ sweep, list, limit, nowIso }) => {
   const cursor = await store.getMaintenanceCursor(sweep);
   let after = cursor.after;
   let rows = await list({ limit, after });
+  // An empty page after a full last page: the previous lap ended there.
+  let previousLapStartedAt = null;
   if (rows.length === 0 && after) {
+    previousLapStartedAt = cursor.lapStartedAt;
     after = null;
     rows = await list({ limit, after });
   }
@@ -7735,7 +7740,14 @@ const claimSweepPage = async ({ sweep, list, limit, nowIso }) => {
     lapStartedAt,
   });
   if (!claimed) return null;
-  return { rows, after, lapStartedAt, lapCompleted: next === null, version: cursor.version + 1 };
+  return {
+    rows,
+    after,
+    lapStartedAt,
+    lapCompleted: next === null,
+    previousLapStartedAt,
+    version: cursor.version + 1,
+  };
 };
 
 // Rows of a claimed page left unchecked when the budget ran out go back to the
@@ -7751,7 +7763,15 @@ const releaseSweepRemainder = async ({ sweep, claim, lastChecked }) =>
     })
     .catch((error) => logger.error(`Maintenance cursor release failed (${sweep})`, error));
 
+// The lap that ended in this tick: this page reached the end of the partition,
+// or the tick wrapped after a full last page.
+const endedLapStartedAt = (claim, deferred) => {
+  if (claim?.lapCompleted && !deferred) return claim.lapStartedAt;
+  return claim?.previousLapStartedAt ?? null;
+};
+
 const logSweep = ({ sweep, out, claim, deferred, startedMs, nowIso }) => {
+  const lapStartedAt = endedLapStartedAt(claim, deferred);
   logger.info('Scheduled maintenance sweep', {
     sweep,
     ...out,
@@ -7759,8 +7779,8 @@ const logSweep = ({ sweep, out, claim, deferred, startedMs, nowIso }) => {
     deferred,
     contended: claim === null,
     elapsedMs: Date.now() - startedMs,
-    ...(claim?.lapCompleted && !deferred
-      ? { lapCompleted: true, lapMs: Date.parse(nowIso) - Date.parse(claim.lapStartedAt) }
+    ...(lapStartedAt
+      ? { lapCompleted: true, lapMs: Date.parse(nowIso) - Date.parse(lapStartedAt) }
       : {}),
   });
 };
