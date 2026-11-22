@@ -259,6 +259,30 @@ describe('durable watchdog sweep', () => {
     expect(await tick()).toMatchObject({ checked: 3 });
   });
 
+  it('tells a manual repair how far the shared cursor got', async () => {
+    vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
+    await seedRunning(3);
+    const info = vi.spyOn(Logger.prototype, 'info');
+    const repair = () => handler({ action: 'repair-durable-executions' }, lambdaContext());
+    try {
+      expect(await repair()).toMatchObject({
+        checked: 2,
+        deferred: 0,
+        contended: false,
+        lapCompleted: false,
+      });
+      expect(await repair()).toMatchObject({ checked: 1, lapCompleted: true });
+      const lines = info.mock.calls
+        .filter(([message]) => message === 'Scheduled maintenance sweep')
+        .map(([, extra]) => extra);
+      expect(lines).toHaveLength(2);
+      expect(lines.every((line) => line.trigger === 'manual')).toBe(true);
+      expect(lines[1].lapAgeMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('keeps the cursor when another sweep moved it first', async () => {
     expect(await store.getMaintenanceCursor('test-sweep')).toEqual({
       after: null,
