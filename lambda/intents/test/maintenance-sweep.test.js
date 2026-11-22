@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { Logger } from '@aws-lambda-powertools/logger';
-import { GetDurableExecutionCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { GetDurableExecutionCommand, InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
-import { unitKey } from '../../shared/v2-process-keys.js';
+import { unitKey, unitPrKey } from '../../shared/v2-process-keys.js';
 import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/helpers/v2-table.js';
 
 // The scheduled sweeps against DynamoDB Local: each reads its sparse index one
@@ -16,7 +16,7 @@ import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/help
 const lambda = mockClient(LambdaClient);
 const ssm = mockClient(SSMClient);
 const tables = [];
-let db, handler, store, durableStatus, durableDelayMs, durableCalls;
+let db, handler, store, durableStatus, durableDelayMs, durableCalls, durableHang;
 
 const lambdaContext = (remainingMs = 120_000) => ({
   functionName: 'intents',
@@ -72,7 +72,7 @@ const seedRunning = (count) =>
 
 // A unit lane parked on its PR, bound to the index by the real bind path.
 // A wait bound by an earlier run is stale and must be cleared.
-const seedWait = async (executionId, { runId }) => {
+const seedWait = async (executionId, { runId, snapshot = [] }) => {
   await db.doc.send(
     new PutCommand({
       TableName: process.env.V2_PROCESS_TABLE,
@@ -92,9 +92,41 @@ const seedWait = async (executionId, { runId }) => {
     slug: 'views',
     callbackId: `callback-${executionId}`,
     runId,
-    snapshot: [],
+    snapshot,
   });
 };
+
+// A wait on an open PR, so the reconciler asks the provider for its status.
+const seedOpenPrWait = async (executionId) => {
+  await db.doc.send(
+    new PutCommand({
+      TableName: process.env.V2_PROCESS_TABLE,
+      Item: {
+        ...unitPrKey(executionId, 1, 'views', 'owner/repo'),
+        type: 'UnitPr',
+        executionId,
+        sectionIndex: 1,
+        unitSlug: 'views',
+        repository: 'owner/repo',
+        number: 7,
+        state: 'OPEN',
+      },
+    }),
+  );
+  return seedWait(executionId, {
+    runId: `run-${executionId}`,
+    snapshot: [
+      { repository: 'owner/repo', number: 7, state: 'open', headSha: 'h', targetSha: 't' },
+    ],
+  });
+};
+
+// The source-control service's answer for a PR that has not moved.
+const unmovedPrStatus = () => ({
+  Payload: Buffer.from(
+    JSON.stringify({ ok: true, result: { state: 'open', headSha: 'h', targetSha: 't' } }),
+  ),
+});
 
 beforeAll(async () => {
   vi.stubEnv('AWS_PROFILE', undefined);
@@ -122,12 +154,14 @@ beforeEach(async () => {
   durableStatus = () => 'RUNNING';
   durableDelayMs = 0;
   durableCalls = [];
+  durableHang = new Set();
   lambda.reset();
   ssm.reset();
   ssm.on(GetParameterCommand).rejects(new Error('no fixture'));
   lambda.on(GetDurableExecutionCommand).callsFake(async (input) => {
     const id = input.DurableExecutionArn.split(':').at(-1);
     durableCalls.push(id);
+    if (durableHang.has(id)) return new Promise(() => {});
     if (durableDelayMs) await new Promise((resolve) => setTimeout(resolve, durableDelayMs));
     return { Status: durableStatus(id) };
   });
@@ -204,7 +238,7 @@ describe('durable watchdog sweep', () => {
     await seedRunning(8);
     durableDelayMs = 200;
 
-    // 60% of 1.5 s: the sweep stops well before checking all eight.
+    // 40% of 1.5 s: the sweep stops well before checking all eight.
     const first = await tick(1_500);
     expect(first.checked).toBeGreaterThan(0);
     expect(first.checked).toBeLessThan(8);
@@ -214,9 +248,40 @@ describe('durable watchdog sweep', () => {
     durableCalls = [];
     const second = await tick();
     expect(second.checked).toBe(8 - first.checked);
-    expect([...checkedFirst, ...durableCalls]).toEqual(
+    // A lookup cut off at the deadline is asked again in the next tick.
+    expect([...new Set([...checkedFirst, ...durableCalls])]).toEqual(
       Array.from({ length: 8 }, (_, i) => idOf(i)),
     );
+  });
+
+  it('stops waiting on a status lookup at the deadline and retries it next tick', async () => {
+    await seedRunning(3);
+    durableHang.add(idOf(1));
+
+    const startedMs = Date.now();
+    const first = await tick(1_500);
+    expect(Date.now() - startedMs).toBeLessThan(1_500);
+    expect(first).toMatchObject({ checked: 1, deferred: 2, errors: [] });
+
+    durableHang.clear();
+    durableCalls = [];
+    expect(await tick()).toMatchObject({ checked: 2, errors: [] });
+    expect(durableCalls).toEqual([idOf(1), idOf(2)]);
+  });
+
+  it('moves past an intent whose status lookup never answers', async () => {
+    await seedRunning(2);
+    durableHang.add(idOf(0));
+
+    const first = await tick(1_500);
+    expect(first).toMatchObject({ checked: 1, deferred: 1 });
+    expect(first.errors).toEqual([
+      { executionId: idOf(0), error: 'Sweep time budget ran out during a provider call' },
+    ]);
+
+    durableCalls = [];
+    expect(await tick(1_500)).toMatchObject({ checked: 1, errors: [] });
+    expect(durableCalls).toEqual([idOf(1)]);
   });
 
   it('reports a completed lap when the intents fill the last page exactly', async () => {
@@ -336,6 +401,29 @@ describe('PR-wait reconciler sweep', () => {
     },
     SEED_TIMEOUT_MS,
   );
+
+  it('stops waiting on a PR status at the deadline and retries it next tick', async () => {
+    vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control');
+    await seedRunning(3);
+    await inBatches(3, (i) => seedOpenPrWait(idOf(i)));
+    // The second PR status of the first tick never answers.
+    let calls = 0;
+    let hanging = true;
+    lambda.on(InvokeCommand).callsFake(async () => {
+      calls += 1;
+      return hanging && calls === 2 ? new Promise(() => {}) : unmovedPrStatus();
+    });
+    try {
+      const first = (await scheduledTick(1_500)).prWaits;
+      expect(first).toMatchObject({ checked: 1, unchanged: 1, deferred: 2, errors: [] });
+
+      hanging = false;
+      const second = (await scheduledTick()).prWaits;
+      expect(second).toMatchObject({ checked: 2, unchanged: 2, errors: [] });
+    } finally {
+      vi.stubEnv('SOURCE_CONTROL_FUNCTION', '');
+    }
+  });
 });
 
 describe('scheduled maintenance tick', () => {

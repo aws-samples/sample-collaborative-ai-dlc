@@ -7762,6 +7762,35 @@ const sweepBudgetMs = (context, share, capMs) => {
   return Math.min(capMs, Math.floor((Number.isFinite(remaining) ? remaining : 60_000) * share));
 };
 
+const SWEEP_BUDGET_EXHAUSTED = 'SWEEP_BUDGET_EXHAUSTED';
+
+// A sweep's remote read, bounded by the sweep deadline, so one slow provider
+// call cannot hold the tick past its budget. The call is left to settle on its
+// own; its late result is ignored.
+const beforeDeadline = (promise, deadline) => {
+  let timer;
+  const exhausted = new Promise((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          Object.assign(new Error('Sweep time budget ran out during a provider call'), {
+            code: SWEEP_BUDGET_EXHAUSTED,
+          }),
+        ),
+      Math.max(0, deadline - Date.now()),
+    );
+  });
+  promise.catch(() => {});
+  return Promise.race([promise, exhausted]).finally(() => clearTimeout(timer));
+};
+
+// A row whose provider call ran past the deadline goes back to the next tick
+// with the rest of the page, unless it was the first row of this tick: a call
+// that never answers would then hold the lap on that row forever, so it is
+// reported as an error and the lap moves past it.
+const deferRowAtDeadline = (error, previous) =>
+  error?.code === SWEEP_BUDGET_EXHAUSTED && previous !== null;
+
 // A scheduled sweep checks the next page of its sparse GSI3 partition, not the
 // first page every time: the durable cursor survives between ticks and wraps
 // at the end, so every row is reached within ceil(rows / page) ticks however
@@ -7870,9 +7899,13 @@ const runDurableExecutionWatchdog = async ({
   for (const meta of candidates) {
     if (Date.now() >= deadline) break;
     out.checked += 1;
+    const previous = lastChecked;
     lastChecked = meta;
     try {
-      const durableStatus = await lookupDurableExecutionStatus(meta).catch((err) => {
+      const durableStatus = await beforeDeadline(
+        lookupDurableExecutionStatus(meta),
+        deadline,
+      ).catch((err) => {
         if (err?.name === 'ResourceNotFoundException') return 'NOT_FOUND';
         throw err;
       });
@@ -7913,7 +7946,13 @@ const runDurableExecutionWatchdog = async ({
         out.skipped += 1;
         continue;
       }
+      if (deferRowAtDeadline(err, previous)) {
+        out.checked -= 1;
+        lastChecked = previous;
+        break;
+      }
       out.errors.push({ executionId: meta.executionId, error: err?.message ?? String(err) });
+      if (err?.code === SWEEP_BUDGET_EXHAUSTED) break;
     }
   }
   const deferred = candidates.length - out.checked;
@@ -7975,6 +8014,7 @@ const runPrWaitReconciler = async ({
   for (const wait of waits) {
     if (Date.now() >= deadline) break;
     out.checked += 1;
+    const previous = lastChecked;
     lastChecked = wait;
     try {
       const meta = await store.getExecution(wait.executionId);
@@ -8022,13 +8062,16 @@ const runPrWaitReconciler = async ({
         for (const pr of prs) {
           const provider =
             pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
-          const status = await sourceControlOperation({
-            projectId: meta.projectId,
-            provider,
-            repo: pr.repository,
-            operation: 'pr-status',
-            args: { number: pr.number },
-          });
+          const status = await beforeDeadline(
+            sourceControlOperation({
+              projectId: meta.projectId,
+              provider,
+              repo: pr.repository,
+              operation: 'pr-status',
+              args: { number: pr.number },
+            }),
+            deadline,
+          );
           if (!status?.state) {
             throw new Error(`PR status unavailable for ${pr.repository}#${pr.number}`);
           }
@@ -8047,11 +8090,17 @@ const runPrWaitReconciler = async ({
       if (wake.woken) out.woken += 1;
       else if (wake.duplicate) out.duplicates += 1;
     } catch (error) {
+      if (deferRowAtDeadline(error, previous)) {
+        out.checked -= 1;
+        lastChecked = previous;
+        break;
+      }
       out.errors.push({
         executionId: wait.executionId,
         unitSlug: wait.slug,
         error: error?.message ?? String(error),
       });
+      if (error?.code === SWEEP_BUDGET_EXHAUSTED) break;
     }
   }
   const deferred = waits.length - out.checked;
