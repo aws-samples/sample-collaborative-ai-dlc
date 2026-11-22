@@ -176,6 +176,8 @@ const pendingGrantIdSet = (grantIds) => {
   return unique.length ? new Set(unique) : null;
 };
 
+const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
+
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const ddb = retryTransactionConflicts(client);
@@ -2948,7 +2950,6 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       return i < 0 ? 0 : i;
     };
     const existing = await listUnits(executionId);
-    const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
     const byLane = new Map(existing.map((r) => [laneIdOf(r), r]));
     const created = [];
     const updated = [];
