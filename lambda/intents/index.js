@@ -7219,6 +7219,7 @@ export const handler = async (event, context) => {
     return runDurableExecutionWatchdog({
       ...event,
       budgetMs: sweepBudgetMs(context, 0.8, MANUAL_REPAIR_BUDGET_CAP_MS),
+      trigger: 'manual',
     });
   }
   if (
@@ -7823,24 +7824,33 @@ const endedLapStartedAt = (claim, deferred) => {
   return claim?.previousLapStartedAt ?? null;
 };
 
-const logSweep = ({ sweep, out, claim, deferred, startedMs, nowIso }) => {
-  const lapStartedAt = endedLapStartedAt(claim, deferred);
-  logger.info('Scheduled maintenance sweep', {
-    sweep,
-    ...out,
-    errors: out.errors.length,
+// Logs one line per sweep and returns the progress fields the caller adds to
+// its result. `lapAgeMs` grows every tick of an unfinished lap, so a stuck lap
+// shows up before it ends; `trigger` tells a manual repair from the schedule.
+const reportSweep = ({ sweep, trigger, out, claim, deferred, startedMs, nowIso }) => {
+  const endedLap = endedLapStartedAt(claim, deferred);
+  const progress = {
     deferred,
     contended: claim === null,
+    lapCompleted: Boolean(endedLap),
+  };
+  logger.info('Scheduled maintenance sweep', {
+    sweep,
+    trigger,
+    ...out,
+    errors: out.errors.length,
+    ...progress,
     elapsedMs: Date.now() - startedMs,
-    ...(lapStartedAt
-      ? { lapCompleted: true, lapMs: Date.parse(nowIso) - Date.parse(lapStartedAt) }
-      : {}),
+    ...(claim ? { lapAgeMs: Date.parse(nowIso) - Date.parse(claim.lapStartedAt) } : {}),
+    ...(endedLap ? { lapMs: Date.parse(nowIso) - Date.parse(endedLap) } : {}),
   });
+  return progress;
 };
 
 const runDurableExecutionWatchdog = async ({
   candidates: injectedCandidates = null,
   budgetMs = 60_000,
+  trigger = 'manual',
 } = {}) => {
   const startedMs = Date.now();
   const deadline = startedMs + budgetMs;
@@ -7908,8 +7918,11 @@ const runDurableExecutionWatchdog = async ({
   }
   const deferred = candidates.length - out.checked;
   if (claim && deferred > 0) await releaseSweepRemainder({ sweep, claim, lastChecked });
-  if (!injectedCandidates) logSweep({ sweep, out, claim, deferred, startedMs, nowIso });
-  return out;
+  if (injectedCandidates) return out;
+  return {
+    ...out,
+    ...reportSweep({ sweep, trigger, out, claim, deferred, startedMs, nowIso }),
+  };
 };
 
 const normalizePrSnapshot = (pr, status) => ({
@@ -7932,7 +7945,11 @@ const providerTransitionFor = (before, after) => {
   return null;
 };
 
-const runPrWaitReconciler = async ({ waits: injectedWaits = null, budgetMs = 40_000 } = {}) => {
+const runPrWaitReconciler = async ({
+  waits: injectedWaits = null,
+  budgetMs = 40_000,
+  trigger = 'manual',
+} = {}) => {
   const startedMs = Date.now();
   const deadline = startedMs + budgetMs;
   const nowIso = new Date(startedMs).toISOString();
@@ -8039,8 +8056,11 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null, budgetMs = 40_
   }
   const deferred = waits.length - out.checked;
   if (claim && deferred > 0) await releaseSweepRemainder({ sweep, claim, lastChecked });
-  if (!injectedWaits) logSweep({ sweep, out, claim, deferred, startedMs, nowIso });
-  return out;
+  if (injectedWaits) return out;
+  return {
+    ...out,
+    ...reportSweep({ sweep, trigger, out, claim, deferred, startedMs, nowIso }),
+  };
 };
 
 // Runs one sweep; a failure is logged and reported in the result, so the other
@@ -8065,12 +8085,14 @@ const runScheduledMaintenance = async (event = {}, context = null) => {
     runDurableExecutionWatchdog({
       ...event,
       budgetMs: sweepBudgetMs(context, 0.4, WATCHDOG_BUDGET_CAP_MS),
+      trigger: 'schedule',
     }),
   );
   const prWaits = await settleSweep('pr-wait-reconciler', () =>
     runPrWaitReconciler({
       ...event,
       budgetMs: sweepBudgetMs(context, 0.6, PR_WAIT_RECONCILER_BUDGET_CAP_MS),
+      trigger: 'schedule',
     }),
   );
   return { prWaits, durableExecutions };
