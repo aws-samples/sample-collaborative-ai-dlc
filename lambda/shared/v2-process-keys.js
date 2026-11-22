@@ -36,6 +36,8 @@
 //   GSI3PK = PR_WAITS            GSI3SK = EXEC#<executionId>#UNIT#<unitLaneId>
 //   GSI3PK = TRACKER_SYNCS       GSI3SK = CHECK#<timestamp>#EXEC#<executionId>
 //     (sparse maintenance index for live execution and integration work)
+//   PK = MAINTENANCE#<sweep>  SK = CURSOR
+//     (where a scheduled sweep over one GSI3 partition resumes; not indexed)
 
 const META = 'META';
 const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
@@ -1579,4 +1581,11 @@ export default {
 export const deliveryKey = (executionId, runId) => ({
   pk: executionPk(executionId),
   sk: `DELIVERY#${runId}`,
+});
+
+// The resume position of a scheduled maintenance sweep (durable watchdog,
+// PR-wait reconciler). Carries no GSI attributes, so no index lists it.
+export const maintenanceCursorKey = (sweep) => ({
+  pk: `MAINTENANCE#${sweep}`,
+  sk: 'CURSOR',
 });

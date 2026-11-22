@@ -7190,13 +7190,13 @@ export const handler = async (event, context) => {
     return { ok: true };
   }
   if (event?.action === 'repair-durable-executions') {
-    return runDurableExecutionWatchdog(event);
+    return runDurableExecutionWatchdog({ ...event, budgetMs: sweepBudgetMs(context, 0.8) });
   }
   if (
     event?.action === 'reconcile-provider-state' ||
     (event?.source === 'aws.events' && event?.['detail-type'] === 'Scheduled Event')
   ) {
-    return runScheduledMaintenance(event);
+    return runScheduledMaintenance(event, context);
   }
   if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -7700,15 +7700,94 @@ const repairExpiredDurableExecution = async ({
   return updated;
 };
 
-const runDurableExecutionWatchdog = async ({ candidates: injectedCandidates = null } = {}) => {
-  const nowIso = new Date().toISOString();
-  const candidates =
-    injectedCandidates ??
-    (await store.listActiveExecutions({
-      limit: Number(process.env.DURABLE_WATCHDOG_LIMIT || 100),
-    }));
-  const out = { checked: candidates.length, repaired: 0, skipped: 0, errors: [] };
+const pageSizeFromEnv = (value) => {
+  const size = Number(value);
+  return Number.isInteger(size) && size > 0 ? size : 100;
+};
+
+// Time a scheduled sweep may spend on its rows: `share` of what is left of the
+// invocation, so the cursor write and the next sweep still fit before timeout.
+const sweepBudgetMs = (context, share) => {
+  const remaining = context?.getRemainingTimeInMillis?.();
+  return Math.floor((Number.isFinite(remaining) ? remaining : 60_000) * share);
+};
+
+// A scheduled sweep checks the next page of its sparse GSI3 partition, not the
+// first page every time: the durable cursor survives between ticks and wraps
+// at the end, so every row is reached within ceil(rows / page) ticks however
+// many there are. The page is claimed (the cursor moved past it, conditional
+// on the version just read) before any row is touched, so an overlapping tick
+// takes the next page or nothing. Null when another tick claimed first.
+const claimSweepPage = async ({ sweep, list, limit, nowIso }) => {
+  const cursor = await store.getMaintenanceCursor(sweep);
+  let after = cursor.after;
+  let rows = await list({ limit, after });
+  if (rows.length === 0 && after) {
+    after = null;
+    rows = await list({ limit, after });
+  }
+  const lapStartedAt = after ? (cursor.lapStartedAt ?? nowIso) : nowIso;
+  const next = rows.length < limit ? null : (rows.at(-1)?.GSI3SK ?? null);
+  const claimed = await store.moveMaintenanceCursor({
+    sweep,
+    after: next,
+    version: cursor.version,
+    lapStartedAt,
+  });
+  if (!claimed) return null;
+  return { rows, after, lapStartedAt, lapCompleted: next === null, version: cursor.version + 1 };
+};
+
+// Rows of a claimed page left unchecked when the budget ran out go back to the
+// next tick: the cursor returns to the last checked row, unless another tick
+// already moved it (then they wait for the next lap).
+const releaseSweepRemainder = async ({ sweep, claim, lastChecked }) =>
+  store
+    .moveMaintenanceCursor({
+      sweep,
+      after: lastChecked?.GSI3SK ?? claim.after,
+      version: claim.version,
+      lapStartedAt: claim.lapStartedAt,
+    })
+    .catch((error) => logger.error(`Maintenance cursor release failed (${sweep})`, error));
+
+const logSweep = ({ sweep, out, claim, deferred, startedMs, nowIso }) => {
+  logger.info('Scheduled maintenance sweep', {
+    sweep,
+    ...out,
+    errors: out.errors.length,
+    deferred,
+    contended: claim === null,
+    elapsedMs: Date.now() - startedMs,
+    ...(claim?.lapCompleted && !deferred
+      ? { lapCompleted: true, lapMs: Date.parse(nowIso) - Date.parse(claim.lapStartedAt) }
+      : {}),
+  });
+};
+
+const runDurableExecutionWatchdog = async ({
+  candidates: injectedCandidates = null,
+  budgetMs = 60_000,
+} = {}) => {
+  const startedMs = Date.now();
+  const deadline = startedMs + budgetMs;
+  const nowIso = new Date(startedMs).toISOString();
+  const sweep = 'durable-watchdog';
+  const claim = injectedCandidates
+    ? null
+    : await claimSweepPage({
+        sweep,
+        list: store.listActiveExecutions,
+        limit: pageSizeFromEnv(process.env.DURABLE_WATCHDOG_LIMIT),
+        nowIso,
+      });
+  const candidates = injectedCandidates ?? claim?.rows ?? [];
+  const out = { checked: 0, repaired: 0, skipped: 0, errors: [] };
+  let lastChecked = null;
   for (const meta of candidates) {
+    if (Date.now() >= deadline) break;
+    out.checked += 1;
+    lastChecked = meta;
     try {
       const durableStatus = await lookupDurableExecutionStatus(meta).catch((err) => {
         if (err?.name === 'ResourceNotFoundException') return 'NOT_FOUND';
@@ -7754,6 +7833,9 @@ const runDurableExecutionWatchdog = async ({ candidates: injectedCandidates = nu
       out.errors.push({ executionId: meta.executionId, error: err?.message ?? String(err) });
     }
   }
+  const deferred = candidates.length - out.checked;
+  if (claim && deferred > 0) await releaseSweepRemainder({ sweep, claim, lastChecked });
+  if (!injectedCandidates) logSweep({ sweep, out, claim, deferred, startedMs, nowIso });
   return out;
 };
 
@@ -7873,9 +7955,12 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
   return out;
 };
 
-const runScheduledMaintenance = async (event = {}) => {
+const runScheduledMaintenance = async (event = {}, context = null) => {
   const prWaits = await runPrWaitReconciler(event);
-  const durableExecutions = await runDurableExecutionWatchdog(event);
+  const durableExecutions = await runDurableExecutionWatchdog({
+    ...event,
+    budgetMs: sweepBudgetMs(context, 0.6),
+  });
   return { prWaits, durableExecutions };
 };
 

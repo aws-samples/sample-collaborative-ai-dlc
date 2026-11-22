@@ -23,6 +23,7 @@ import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
   deliveryKey,
+  maintenanceCursorKey,
   executionMetaKey,
   outputKey,
   workflowCheckpointKey,
@@ -177,6 +178,20 @@ const pendingGrantIdSet = (grantIds) => {
 };
 
 const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
+
+// Key condition for one sparse GSI3 maintenance partition, optionally starting
+// strictly after a GSI3SK. The range condition does not need the row at `after`
+// to still exist, so a sweep resumes past a row that has since left the index.
+const maintenanceIndexQuery = (partition, after) =>
+  after
+    ? {
+        KeyConditionExpression: 'GSI3PK = :pk AND GSI3SK > :after',
+        ExpressionAttributeValues: { ':pk': partition, ':after': after },
+      }
+    : {
+        KeyConditionExpression: 'GSI3PK = :pk',
+        ExpressionAttributeValues: { ':pk': partition },
+      };
 
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
@@ -2780,7 +2795,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return records;
   };
 
-  const listActiveExecutions = async ({ limit = Infinity } = {}) => {
+  const listActiveExecutions = async ({ limit = Infinity, after = null } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -2788,8 +2803,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         new QueryCommand({
           TableName: table(),
           IndexName: 'GSI3',
-          KeyConditionExpression: 'GSI3PK = :pk',
-          ExpressionAttributeValues: { ':pk': ACTIVE_EXECUTIONS_INDEX_PK },
+          ...maintenanceIndexQuery(ACTIVE_EXECUTIONS_INDEX_PK, after),
           ...(Number.isFinite(limit) ? { Limit: limit - items.length } : {}),
           ExclusiveStartKey,
         }),
@@ -2798,6 +2812,53 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey && items.length < limit);
     return items;
+  };
+
+  // Where a scheduled sweep resumes: the last GSI3SK it claimed (null = start
+  // of the partition), the write version, and when the current lap began.
+  // version 0 means the cursor was never written.
+  const getMaintenanceCursor = async (sweep) => {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: maintenanceCursorKey(sweep),
+        ConsistentRead: true,
+      }),
+    );
+    return {
+      after: Item?.after ?? null,
+      version: Number.isInteger(Item?.version) ? Item.version : 0,
+      lapStartedAt: Item?.lapStartedAt ?? null,
+    };
+  };
+
+  // Moves the cursor only if no other sweep moved it since `version` was read.
+  // Returns false when another sweep won; the caller then leaves the rows alone.
+  const moveMaintenanceCursor = async ({ sweep, after = null, version, lapStartedAt = null }) => {
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: {
+            ...maintenanceCursorKey(sweep),
+            after,
+            version: version + 1,
+            lapStartedAt,
+            updatedAt: now(),
+          },
+          ...(version === 0
+            ? { ConditionExpression: 'attribute_not_exists(pk)' }
+            : {
+                ConditionExpression: 'version = :version',
+                ExpressionAttributeValues: { ':version': version },
+              }),
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
@@ -4001,6 +4062,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getCompletionRecords,
     listCompletionAuditPage,
     listActiveExecutions,
+    getMaintenanceCursor,
+    moveMaintenanceCursor,
     patchExecutionConfig,
     putUnitPlan,
     getUnitPlan,
