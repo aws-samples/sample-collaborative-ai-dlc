@@ -648,35 +648,106 @@ const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
 // tiers (sourced from shared/blocks.js so the enum lives in one place).
 const VALID_RULE_LAYERS = new Set(RULE_LAYERS);
 
-const addRuleRef = async (event, res, tenant, workflowId) => {
-  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
-  if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
-  const input = parseBody(event);
-  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
-  const ruleId = input.ruleId;
-  if (typeof ruleId !== 'string' || !ruleId) return res(400, { error: 'ruleId is required' });
-  const layer = input.layer;
-  if (!VALID_RULE_LAYERS.has(layer)) {
-    return res(400, { error: `layer must be one of ${[...VALID_RULE_LAYERS].join(', ')}` });
+// Shape, layer and tenant checks for POST /rules that need no I/O. Returns a
+// { status, body } failure, or null when the input is valid.
+const ruleRefInputFailure = (input, tenant) => {
+  if (input === undefined) return { status: 400, body: { error: 'Invalid JSON body' } };
+  if (typeof input.ruleId !== 'string' || !input.ruleId) {
+    return { status: 400, body: { error: 'ruleId is required' } };
+  }
+  if (!VALID_RULE_LAYERS.has(input.layer)) {
+    return {
+      status: 400,
+      body: { error: `layer must be one of ${[...VALID_RULE_LAYERS].join(', ')}` },
+    };
   }
   // compileRules applies the universal layers and phase rules only, so a
   // stage-layer ref would be stored and never reach a run.
-  if (layer === 'stage') {
-    return res(400, {
-      error: 'Stage-layer rules are not applied to runs yet; attach the rule at another layer',
-      code: 'rule_layer_unsupported',
-    });
+  if (input.layer === 'stage') {
+    return {
+      status: 400,
+      body: {
+        error: 'Stage-layer rules are not applied to runs yet; attach the rule at another layer',
+        code: 'rule_layer_unsupported',
+      },
+    };
   }
   if (
     input.ruleTenant != null &&
     input.ruleTenant !== SYSTEM_TENANT &&
     input.ruleTenant !== tenant
   ) {
-    return res(400, {
-      error: `ruleTenant must be ${SYSTEM_TENANT} or ${tenant}`,
-      code: 'invalid_rule_tenant',
-    });
+    return {
+      status: 400,
+      body: {
+        error: `ruleTenant must be ${SYSTEM_TENANT} or ${tenant}`,
+        code: 'invalid_rule_tenant',
+      },
+    };
   }
+  return null;
+};
+
+// Resolve the rule the way runs will: over the release library the composer
+// previews (`?libraryRelease=`), else over the user library and SYSTEM.
+// Returns { rule, libraryReleaseId }, or { failure } when the release read fails.
+const resolveRuleForRef = async (event, tenant, ruleId) => {
+  const libraryReleaseId = requestedLibraryRelease(event);
+  if (!libraryReleaseId) return { rule: await resolveRuleBlock(ruleId), libraryReleaseId };
+  try {
+    const library = await libraryReleaseLibrary({
+      releaseId: libraryReleaseId,
+      isAdmin: isPlatformAdmin(event),
+      tenant,
+      placements: [],
+    });
+    return { rule: library.rulesById?.[ruleId] ?? null, libraryReleaseId };
+  } catch (error) {
+    return { failure: releaseReadFailure(error) };
+  }
+};
+
+// The resolved rule must exist and carry the layer the ref names: the compiler
+// applies a rule at its block's own layer, so a ref filed under another layer
+// would show the rule where it does not apply. Returns a failure or null.
+const resolvedRuleFailure = (rule, ruleId, layer, libraryReleaseId) => {
+  if (!rule) {
+    return {
+      status: 400,
+      body: {
+        error: `No rule block '${ruleId}' exists in the rule library${libraryReleaseId ? ' or the release in use' : ''}`,
+        code: 'rule_not_found',
+      },
+    };
+  }
+  if (!rule.layer) {
+    return {
+      status: 400,
+      body: {
+        error: `Rule '${ruleId}' has no layer; set the rule block's layer before attaching it`,
+        code: 'rule_layer_unset',
+      },
+    };
+  }
+  if (rule.layer !== layer) {
+    return {
+      status: 400,
+      body: {
+        error: `Rule '${ruleId}' is a ${rule.layer}-layer rule; attach it at layer '${rule.layer}'`,
+        code: 'rule_layer_mismatch',
+      },
+    };
+  }
+  return null;
+};
+
+const addRuleRef = async (event, res, tenant, workflowId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
+  const input = parseBody(event);
+  const inputFailure = ruleRefInputFailure(input, tenant);
+  if (inputFailure) return res(inputFailure.status, inputFailure.body);
+  const { ruleId, layer } = input;
 
   // Runs apply a rule id once, whichever layer its ref is filed under, so a
   // second ref would inject the same body twice.
@@ -689,45 +760,10 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
     });
   }
 
-  // Resolve the rule the way runs will: over the release library the composer
-  // previews (`?libraryRelease=`), else over the user library and SYSTEM.
-  const libraryReleaseId = requestedLibraryRelease(event);
-  let rule;
-  if (libraryReleaseId) {
-    try {
-      const library = await libraryReleaseLibrary({
-        releaseId: libraryReleaseId,
-        isAdmin: isPlatformAdmin(event),
-        tenant,
-        placements: [],
-      });
-      rule = library.rulesById?.[ruleId] ?? null;
-    } catch (error) {
-      return releaseReadError(res, error);
-    }
-  } else {
-    rule = await resolveRuleBlock(ruleId);
-  }
-  if (!rule) {
-    return res(400, {
-      error: `No rule block '${ruleId}' exists in the rule library${libraryReleaseId ? ' or the release in use' : ''}`,
-      code: 'rule_not_found',
-    });
-  }
-  if (!rule.layer) {
-    return res(400, {
-      error: `Rule '${ruleId}' has no layer; set the rule block's layer before attaching it`,
-      code: 'rule_layer_unset',
-    });
-  }
-  // The compiler applies a rule at its block's own layer, so a ref filed under
-  // another layer would show the rule where it does not apply.
-  if (rule.layer !== layer) {
-    return res(400, {
-      error: `Rule '${ruleId}' is a ${rule.layer}-layer rule; attach it at layer '${rule.layer}'`,
-      code: 'rule_layer_mismatch',
-    });
-  }
+  const { rule, failure, libraryReleaseId } = await resolveRuleForRef(event, tenant, ruleId);
+  if (failure) return res(failure.status, failure.body);
+  const ruleFailure = resolvedRuleFailure(rule, ruleId, layer, libraryReleaseId);
+  if (ruleFailure) return res(ruleFailure.status, ruleFailure.body);
 
   const item = {
     pk: workflowPk(tenant, workflowId),
