@@ -11,6 +11,8 @@ import {
   ScanCommand,
   BatchWriteCommand,
   GetCommand,
+  PutCommand,
+  DeleteCommand,
   TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
@@ -642,6 +644,66 @@ describe('GET /projects', () => {
 });
 
 describe('PUT /projects/:id', () => {
+  it('only lets this space’s Owner override or restore the platform stage-role default', async () => {
+    const owner = randomUUID();
+    const { id } = await createProject(owner);
+    const { id: otherSpace } = await createProject(randomUUID());
+    await addMember(id, 'member', 'member');
+    await addMember(id, 'viewer', 'viewer');
+    const request = (httpMethod, actor, projectId, data) =>
+      handler({
+        httpMethod,
+        pathParameters: { projectId },
+        queryStringParameters: { section: 'stageRoles' },
+        body: JSON.stringify(data),
+        ...claims(actor),
+      });
+    const settingKey = { pk: `SPACE#${id}`, sk: 'SETTINGS#STAGE_ROLES' };
+    let overrideItem;
+    ddbMock.on(GetCommand, { Key: settingKey }).callsFake(() => ({ Item: overrideItem }));
+    ddbMock.on(PutCommand, { Item: settingKey }).callsFake(({ Item }) => {
+      overrideItem = Item;
+      return {};
+    });
+    ddbMock.on(DeleteCommand, { Key: settingKey }).callsFake(() => {
+      overrideItem = undefined;
+      return {};
+    });
+
+    expect(JSON.parse((await request('GET', 'member', id)).body)).toEqual({
+      override: null,
+      platformDefault: true,
+      enforceStageRoles: true,
+    });
+    for (const actor of ['member', 'viewer', 'outsider']) {
+      expect((await request('PUT', actor, id, { override: false })).statusCode).toBe(403);
+    }
+    expect((await request('PUT', owner, otherSpace, { override: false })).statusCode).toBe(403);
+    expect((await request('GET', 'outsider', id)).statusCode).toBe(403);
+    for (const data of [{}, { override: 'false' }]) {
+      expect((await request('PUT', owner, id, data)).statusCode).toBe(400);
+    }
+    expect(overrideItem).toBeUndefined();
+    expect(JSON.parse((await request('PUT', owner, id, { override: false })).body)).toEqual({
+      override: false,
+      platformDefault: true,
+      enforceStageRoles: false,
+    });
+    expect(JSON.parse((await request('GET', 'viewer', id)).body).enforceStageRoles).toBe(false);
+    ddbMock
+      .on(GetCommand, { Key: { pk: 'SETTINGS#STAGE_ROLES', sk: 'CURRENT' } })
+      .resolves({ Item: { enabled: false } });
+    expect(
+      JSON.parse((await request('PUT', owner, id, { override: true })).body).enforceStageRoles,
+    ).toBe(true);
+    expect(JSON.parse((await request('PUT', owner, id, { override: null })).body)).toEqual({
+      override: null,
+      platformDefault: false,
+      enforceStageRoles: false,
+    });
+    expect(overrideItem).toBeUndefined();
+  });
+
   it('updates each property when invoked by the owner', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub, { name: 'Old' });

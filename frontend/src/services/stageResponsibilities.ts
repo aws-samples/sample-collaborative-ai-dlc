@@ -22,6 +22,7 @@ export interface StageResponsibility {
   contributors: ResponsiblePerson[];
 }
 export interface StageResponsibilities {
+  enforceStageRoles?: boolean;
   previewOnly: boolean;
   workflowId: string;
   workflowVersion: number;

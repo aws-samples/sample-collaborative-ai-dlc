@@ -46,6 +46,20 @@ resource "aws_iam_role_policy" "membership_read" {
   })
 }
 
+resource "aws_iam_role_policy" "stage_role_setting" {
+  name = "update-stage-role-enforcement"
+  role = aws_iam_role.agents_orchestrator.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = ["dynamodb:PutItem"]
+      Resource  = var.access_table_arn
+      Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["SETTINGS#STAGE_ROLES"] } }
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "membership_write" {
   for_each = local.membership_writers
   name     = "space-membership-write-and-history"

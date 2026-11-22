@@ -56,3 +56,45 @@ run "durable_membership_and_history" {
     error_message = "Both tables must preserve the platform's durable storage protections."
   }
 }
+
+run "upgrade_preserves_member_access" {
+  command = plan
+  module { source = "./modules/data/dynamodb" }
+  plan_options { target = [aws_dynamodb_table_item.stage_role_enforcement] }
+  override_data {
+    target = data.aws_dynamodb_tables.before_deployment
+    values = { names = ["test-sessions-test"] }
+  }
+  assert {
+    condition     = !jsondecode(aws_dynamodb_table_item.stage_role_enforcement.item).enabled.BOOL
+    error_message = "An existing sessions table must initialize stage roles in advisory mode."
+  }
+}
+
+run "fresh_install_enforces_stage_roles" {
+  command = apply
+  module { source = "./modules/data/dynamodb" }
+  plan_options { target = [aws_dynamodb_table_item.stage_role_enforcement] }
+  override_data {
+    target = data.aws_dynamodb_tables.before_deployment
+    values = { names = ["test-sessions-another-environment"] }
+  }
+  assert {
+    condition     = jsondecode(aws_dynamodb_table_item.stage_role_enforcement.item).enabled.BOOL
+    error_message = "A new environment must initialize stage roles with enforcement on."
+  }
+}
+
+run "redeploy_keeps_existing_setting" {
+  command = plan
+  module { source = "./modules/data/dynamodb" }
+  plan_options { target = [aws_dynamodb_table_item.stage_role_enforcement] }
+  override_data {
+    target = data.aws_dynamodb_tables.before_deployment
+    values = { names = ["test-sessions-test"] }
+  }
+  assert {
+    condition     = jsondecode(aws_dynamodb_table_item.stage_role_enforcement.item).enabled.BOOL
+    error_message = "Subsequent plans must preserve the value stored in the access table."
+  }
+}

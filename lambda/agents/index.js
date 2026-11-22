@@ -1,3 +1,7 @@
+import {
+  readStageRoleEnforcement,
+  writeStageRoleEnforcement,
+} from '../shared/stage-role-enforcement.js';
 import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 // Agents Lambda — v1 agent HISTORY (read-only) + shared admin/model plumbing.
 //
@@ -822,6 +826,11 @@ export const handler = async (event, context) => {
     // GET /agents/settings — read credential set-state through the metadata
     // broker and the remaining non-secret/model settings directly from SSM.
     if (httpMethod === 'GET' && path.endsWith('/settings')) {
+      if (event.queryStringParameters?.section === 'stageRoles') {
+        const denied = requirePlatformAdmin(event);
+        if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+        return response(200, { enforceStageRoles: await readStageRoleEnforcement(ddb) });
+      }
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const cliModelsPath = `${prefix}/cli-models`;
       const tierModelsPath = `${prefix}/tier-models`;
@@ -972,6 +981,13 @@ export const handler = async (event, context) => {
         return response(400, { error: 'Invalid settings request' });
       }
       const errors = [];
+
+      if (Object.hasOwn(input, 'enforceStageRoles')) {
+        if (typeof input.enforceStageRoles !== 'boolean' || Object.keys(input).length !== 1)
+          return response(400, { error: 'Save enforceStageRoles separately as a boolean.' });
+        await writeStageRoleEnforcement(ddb, input.enforceStageRoles);
+        return response(200, { saved: true });
+      }
 
       if (Object.hasOwn(input, 'sandbox')) {
         // A sandbox operation is atomic and must not partially apply unrelated
