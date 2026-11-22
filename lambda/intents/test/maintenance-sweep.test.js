@@ -4,7 +4,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { GetDurableExecutionCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitKey } from '../../shared/v2-process-keys.js';
 import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/helpers/v2-table.js';
@@ -60,6 +60,32 @@ const seedRunning = async (count) => {
       orchestratorExpiresAt: '2099-01-01T00:00:00.000Z',
     });
   }
+};
+
+// A unit lane parked on its PR, bound to the index by the real bind path.
+// A wait bound by an earlier run is stale and must be cleared.
+const seedWait = async (executionId, { runId }) => {
+  await db.doc.send(
+    new PutCommand({
+      TableName: process.env.V2_PROCESS_TABLE,
+      Item: {
+        ...unitKey(executionId, 1, 'views'),
+        type: 'Unit',
+        executionId,
+        sectionIndex: 1,
+        slug: 'views',
+        state: 'PR_READY',
+      },
+    }),
+  );
+  return store.bindUnitPrWait({
+    executionId,
+    sectionIndex: 1,
+    slug: 'views',
+    callbackId: `callback-${executionId}`,
+    runId,
+    snapshot: [],
+  });
 };
 
 beforeAll(async () => {
@@ -232,32 +258,6 @@ describe('durable watchdog sweep', () => {
 });
 
 describe('PR-wait reconciler sweep', () => {
-  // A unit lane parked on its PR, bound to the index by the real bind path.
-  // A wait bound by an earlier run is stale and must be cleared.
-  const seedWait = async (executionId, { runId }) => {
-    await db.doc.send(
-      new PutCommand({
-        TableName: process.env.V2_PROCESS_TABLE,
-        Item: {
-          ...unitKey(executionId, 1, 'views'),
-          type: 'Unit',
-          executionId,
-          sectionIndex: 1,
-          slug: 'views',
-          state: 'PR_READY',
-        },
-      }),
-    );
-    return store.bindUnitPrWait({
-      executionId,
-      sectionIndex: 1,
-      slug: 'views',
-      callbackId: `callback-${executionId}`,
-      runId,
-      snapshot: [],
-    });
-  };
-
   it(
     'clears a stale PR wait that sorts after the first 100 waits',
     async () => {
@@ -283,4 +283,82 @@ describe('PR-wait reconciler sweep', () => {
     },
     SEED_TIMEOUT_MS,
   );
+});
+
+describe('scheduled maintenance tick', () => {
+  const sweepLines = (info) =>
+    info.mock.calls
+      .filter(([message]) => message === 'Scheduled maintenance sweep')
+      .map(([, extra]) => extra.sweep);
+
+  // Fails the cursor read of one sweep the way a DynamoDB outage would.
+  const failCursorReadOf = (sweep) => {
+    const send = DynamoDBDocumentClient.prototype.send;
+    return vi.spyOn(DynamoDBDocumentClient.prototype, 'send').mockImplementation(function (
+      command,
+      ...rest
+    ) {
+      if (command instanceof GetCommand && command.input.Key?.pk === `MAINTENANCE#${sweep}`) {
+        return Promise.reject(
+          Object.assign(new Error('Throughput exceeds the current capacity'), {
+            name: 'ProvisionedThroughputExceededException',
+          }),
+        );
+      }
+      return send.call(this, command, ...rest);
+    });
+  };
+
+  it('runs the watchdog before the reconciler', async () => {
+    const info = vi.spyOn(Logger.prototype, 'info');
+    try {
+      await scheduledTick();
+      expect(sweepLines(info)).toEqual(['durable-watchdog', 'pr-wait-reconciler']);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('still runs the reconciler and succeeds when the watchdog cannot read its cursor', async () => {
+    await seedRunning(1);
+    await seedWait(idOf(0), { runId: 'run-earlier' });
+    const failing = failCursorReadOf('durable-watchdog');
+    try {
+      const out = await scheduledTick();
+      expect(out.durableExecutions).toMatchObject({ failed: true });
+      expect(out.prWaits).toMatchObject({ checked: 1, stale: 1, errors: [] });
+    } finally {
+      failing.mockRestore();
+    }
+  });
+
+  it('still runs the watchdog and succeeds when the reconciler cannot read its cursor', async () => {
+    await seedRunning(1);
+    durableStatus = () => 'FAILED';
+    const failing = failCursorReadOf('pr-wait-reconciler');
+    try {
+      const out = await scheduledTick();
+      expect(out.prWaits).toMatchObject({ failed: true });
+      expect(out.durableExecutions).toMatchObject({ checked: 1, repaired: 1 });
+    } finally {
+      failing.mockRestore();
+    }
+    expect((await store.getExecution(idOf(0))).status).toBe('FAILED');
+  });
+
+  it('keeps the watchdog under the schedule interval however much time is left', async () => {
+    await seedRunning(8);
+    // Each status lookup takes 5 s of wall clock; the watchdog may use 20 s.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    lambda.on(GetDurableExecutionCommand).callsFake(async () => {
+      vi.setSystemTime(Date.now() + 5_000);
+      return { Status: 'RUNNING' };
+    });
+    try {
+      const out = await scheduledTick(120_000);
+      expect(out.durableExecutions.checked).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
