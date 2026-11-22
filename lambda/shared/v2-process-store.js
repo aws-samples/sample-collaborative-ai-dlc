@@ -3283,7 +3283,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
   };
 
-  const listUnitPrWaits = async ({ limit = 100 } = {}) => {
+  const listUnitPrWaits = async ({ limit = 100, after = null } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -3291,8 +3291,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         new QueryCommand({
           TableName: table(),
           IndexName: 'GSI3',
-          KeyConditionExpression: 'GSI3PK = :pk',
-          ExpressionAttributeValues: { ':pk': PR_WAITS_INDEX_PK },
+          ...maintenanceIndexQuery(PR_WAITS_INDEX_PK, after),
           Limit: limit - items.length,
           ExclusiveStartKey,
         }),

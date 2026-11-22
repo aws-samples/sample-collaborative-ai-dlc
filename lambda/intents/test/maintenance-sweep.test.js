@@ -3,12 +3,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { mockClient } from 'aws-sdk-client-mock';
 import { GetDurableExecutionCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createProcessStore } from '../../shared/v2-process-store.js';
+import { unitKey } from '../../shared/v2-process-keys.js';
 import { createV2Table, deleteV2Table, makeDdb } from '../../agentcore/test/helpers/v2-table.js';
 
-// The scheduled watchdog against DynamoDB Local: the sweep reads the active
-// index one page per tick and resumes from a durable cursor, so an intent
-// past the first page is still checked and repaired.
+// The scheduled sweeps against DynamoDB Local: each reads its sparse index one
+// page per tick and resumes from a durable cursor, so an intent or a PR wait
+// past the first page is still checked.
 
 const lambda = mockClient(LambdaClient);
 const ssm = mockClient(SSMClient);
@@ -24,11 +26,12 @@ const lambdaContext = (remainingMs = 120_000) => ({
   getRemainingTimeInMillis: () => remainingMs,
 });
 
-const tick = (remainingMs) =>
-  handler(
-    { source: 'aws.events', 'detail-type': 'Scheduled Event' },
-    lambdaContext(remainingMs),
-  ).then((out) => out.durableExecutions);
+const scheduledTick = (remainingMs) =>
+  handler({ source: 'aws.events', 'detail-type': 'Scheduled Event' }, lambdaContext(remainingMs));
+const tick = (remainingMs) => scheduledTick(remainingMs).then((out) => out.durableExecutions);
+
+// Seeding 150 rows takes seconds on DynamoDB Local under the full suite.
+const SEED_TIMEOUT_MS = 30_000;
 
 const idOf = (i) => `exec-${String(i).padStart(3, '0')}`;
 const arnOf = (id) => `arn:aws:lambda:us-east-1:111122223333:function:orchestrator:durable:${id}`;
@@ -100,28 +103,32 @@ afterEach(() => {
 });
 
 describe('durable watchdog sweep', () => {
-  it('repairs an orphaned intent that sorts after the first 100 active intents', async () => {
-    await seedRunning(150);
-    const orphan = idOf(140);
-    durableStatus = (id) => (id === orphan ? 'FAILED' : 'RUNNING');
+  it(
+    'repairs an orphaned intent that sorts after the first 100 active intents',
+    async () => {
+      await seedRunning(150);
+      const orphan = idOf(140);
+      durableStatus = (id) => (id === orphan ? 'FAILED' : 'RUNNING');
 
-    const first = await tick();
-    expect(first).toMatchObject({ checked: 100, repaired: 0, errors: [] });
-    expect((await store.getExecution(orphan)).status).toBe('RUNNING');
+      const first = await tick();
+      expect(first).toMatchObject({ checked: 100, repaired: 0, errors: [] });
+      expect((await store.getExecution(orphan)).status).toBe('RUNNING');
 
-    const second = await tick();
-    expect(second).toMatchObject({ checked: 50, repaired: 1, errors: [] });
-    expect(await store.getExecution(orphan)).toMatchObject({
-      status: 'FAILED',
-      failureReason: 'durable_execution_failed',
-    });
-    expect(new Set(durableCalls).size).toBe(150);
+      const second = await tick();
+      expect(second).toMatchObject({ checked: 50, repaired: 1, errors: [] });
+      expect(await store.getExecution(orphan)).toMatchObject({
+        status: 'FAILED',
+        failureReason: 'durable_execution_failed',
+      });
+      expect(new Set(durableCalls).size).toBe(150);
 
-    // The lap ended, so the next tick starts over from the first intent.
-    durableCalls = [];
-    expect(await tick()).toMatchObject({ checked: 100, repaired: 0 });
-    expect(durableCalls[0]).toBe(idOf(0));
-  });
+      // The lap ended, so the next tick starts over from the first intent.
+      durableCalls = [];
+      expect(await tick()).toMatchObject({ checked: 100, repaired: 0 });
+      expect(durableCalls[0]).toBe(idOf(0));
+    },
+    SEED_TIMEOUT_MS,
+  );
 
   it('moves past a cursor whose intent has left the active index', async () => {
     vi.stubEnv('DURABLE_WATCHDOG_LIMIT', '2');
@@ -194,4 +201,58 @@ describe('durable watchdog sweep', () => {
       version: 1,
     });
   });
+});
+
+describe('PR-wait reconciler sweep', () => {
+  // A unit lane parked on its PR, bound to the index by the real bind path.
+  // A wait bound by an earlier run is stale and must be cleared.
+  const seedWait = async (executionId, { runId }) => {
+    await db.doc.send(
+      new PutCommand({
+        TableName: process.env.V2_PROCESS_TABLE,
+        Item: {
+          ...unitKey(executionId, 1, 'views'),
+          type: 'Unit',
+          executionId,
+          sectionIndex: 1,
+          slug: 'views',
+          state: 'PR_READY',
+        },
+      }),
+    );
+    return store.bindUnitPrWait({
+      executionId,
+      sectionIndex: 1,
+      slug: 'views',
+      callbackId: `callback-${executionId}`,
+      runId,
+      snapshot: [],
+    });
+  };
+
+  it(
+    'clears a stale PR wait that sorts after the first 100 waits',
+    async () => {
+      await seedRunning(150);
+      const stale = idOf(140);
+      for (let i = 0; i < 150; i += 1) {
+        const executionId = idOf(i);
+        expect(
+          await seedWait(executionId, {
+            runId: executionId === stale ? 'run-earlier' : `run-${executionId}`,
+          }),
+        ).toBeTruthy();
+      }
+
+      const first = (await scheduledTick()).prWaits;
+      expect(first).toMatchObject({ checked: 100, stale: 0, unchanged: 100, errors: [] });
+
+      const second = (await scheduledTick()).prWaits;
+      expect(second).toMatchObject({ checked: 50, stale: 1, unchanged: 49, errors: [] });
+      const cleared = await store.getUnit(stale, 1, 'views');
+      expect(cleared.prWaitCallbackId).toBeUndefined();
+      expect(cleared.GSI3PK).toBeUndefined();
+    },
+    SEED_TIMEOUT_MS,
+  );
 });
