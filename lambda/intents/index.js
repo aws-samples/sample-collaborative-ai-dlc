@@ -7791,6 +7791,14 @@ const beforeDeadline = (promise, deadline) => {
 const deferRowAtDeadline = (error, previous) =>
   error?.code === SWEEP_BUDGET_EXHAUSTED && previous !== null;
 
+// A warning, so a provider that hangs stands apart from a budget too small for
+// one call (which would skip the first row of every tick).
+const warnRowSkippedAtDeadline = (sweep, executionId) =>
+  logger.warn('Sweep moved past a row whose provider call outlasted the budget', {
+    sweep,
+    executionId,
+  });
+
 // A scheduled sweep checks the next page of its sparse GSI3 partition, not the
 // first page every time: the durable cursor survives between ticks and wraps
 // at the end, so every row is reached within ceil(rows / page) ticks however
@@ -7952,7 +7960,10 @@ const runDurableExecutionWatchdog = async ({
         break;
       }
       out.errors.push({ executionId: meta.executionId, error: err?.message ?? String(err) });
-      if (err?.code === SWEEP_BUDGET_EXHAUSTED) break;
+      if (err?.code === SWEEP_BUDGET_EXHAUSTED) {
+        warnRowSkippedAtDeadline(sweep, meta.executionId);
+        break;
+      }
     }
   }
   const deferred = candidates.length - out.checked;
@@ -8100,7 +8111,10 @@ const runPrWaitReconciler = async ({
         unitSlug: wait.slug,
         error: error?.message ?? String(error),
       });
-      if (error?.code === SWEEP_BUDGET_EXHAUSTED) break;
+      if (error?.code === SWEEP_BUDGET_EXHAUSTED) {
+        warnRowSkippedAtDeadline(sweep, wait.executionId);
+        break;
+      }
     }
   }
   const deferred = waits.length - out.checked;
