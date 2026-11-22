@@ -107,7 +107,7 @@ write retried once.
 | A compose dispatch fails or is refused                                                                   | The compose is marked FAILED and its grant retired at once, both best effort (a failed retirement is recorded as for derive; during a store outage the compose can stay PENDING)                                       | 503 (compose dispatch failed)                                                                                                                                   | Start a new compose                                                       |
 | The orchestrator cannot retire a stage or command grant after its durable retries                        | The jti is added to `pendingGrantRetirements`, then the stage or run fails with `gateway_grant_retirement_failed`                                                                                                      | —                                                                                                                                                               | Rewind, recompose, lane repair or `/start` retire it before relaunching   |
 | Same, and recording the jti failed too                                                                   | The run fails with `gateway_grant_retirement_failed` (`recorded: false`)                                                                                                                                               | —                                                                                                                                                               | Same; the grant expires at its TTL                                        |
-| The watchdog cannot retire the grants of an expired durable run                                          | Nothing changed: the intent stays active                                                                                                                                                                               | —                                                                                                                                                               | The next watchdog tick retries                                            |
+| The watchdog cannot retire the grants of an expired durable run                                          | Nothing changed: the intent stays active                                                                                                                                                                               | —                                                                                                                                                               | The watchdog retries it on its next lap                                   |
 | A consumer cannot read the retirement records                                                            | —                                                                                                                                                                                                                      | The call is denied: the verifier raises `GATEWAY_GRANT_RETIREMENT_UNAVAILABLE`, engine-data answers `grant_retirement_unavailable`                              | The caller's own retry                                                    |
 
 Lane repair records its progress on META in `repairRelaunch` before the first
@@ -117,6 +117,59 @@ of re-checking eligibility (which the partial cleanup may have changed). Once
 every cleanup step has landed, the phase becomes `relaunch`; a retry then only
 performs the guarded relaunch. The record is cleared once the orchestrator is
 invoked, so a failed invoke, rolled back to FAILED, can be retried too.
+
+## Scheduled maintenance sweeps
+
+Every minute the intents Lambda runs two sweeps over the sparse GSI3 index: the
+durable watchdog (`ACTIVE_EXECUTIONS`) first, then the unit PR-wait reconciler
+(`PR_WAITS`). Each tick checks one page (`DURABLE_WATCHDOG_LIMIT` and
+`PR_WAIT_RECONCILER_LIMIT`, 100 by default, at most 500), starting after the
+index key recorded in its cursor item (`MAINTENANCE#durable-watchdog` and
+`MAINTENANCE#pr-wait-reconciler`, sort key `CURSOR`, not indexed). The cursor
+wraps to the start after the last page, so a lap of `ceil(rows / page)` ticks
+reaches every active intent and every parked PR wait (with the exceptions
+below).
+
+- **Overlapping ticks.** A tick claims its page by moving the cursor past it,
+  conditional on the version it read, before it touches a row. The tick that
+  loses checks nothing; repairs still carry the `orchestratorRunId` condition.
+- **At most once per lap.** If the invocation dies after the claim (timeout,
+  crash), the claimed rows wait for the next lap. The delay is bounded by one
+  lap; with fewer rows than a page there is none.
+- **Time budget.** The watchdog may use 40% of the remaining invocation time,
+  at most 20 s, and the reconciler 60% of what is left, at most 30 s, so a tick
+  ends inside the one-minute schedule interval. A sweep starts no new row after
+  its budget, and stops waiting on a provider read (the durable status lookup,
+  a PR status) still in progress at the deadline; nothing has been written for
+  that row yet. Rows left unchecked go back to the next tick: the cursor
+  returns to the last checked row. A row cut off while it was the first of its
+  tick is reported as an error instead, with the warning `Sweep moved past a
+  row whose provider call outlasted the budget`, and the lap moves past it, so a
+  provider that never answers cannot hold the lap on one row. Only these reads
+  are bounded: DynamoDB calls, the grant retirement of a repair and the wake of
+  a lane run to completion.
+- **One sweep failing.** A failure in one sweep is logged
+  (`Scheduled maintenance sweep failed`, with the sweep name) and reported as
+  `failed` in the result, and the other sweep still runs. The invocation
+  succeeds: the next tick is the retry, so a failing sweep never reaches the
+  function's asynchronous retries or its on-failure destination.
+- **Manual repair.** `repair-durable-executions` without `candidates` advances
+  the same cursor as the scheduled ticks, checks one page within at most 50 s
+  and returns `contended`, `deferred` and `lapCompleted` with the counts. With
+  the AWS CLI, raise `--cli-read-timeout` above that (for example 90).
+- **Rows that leave the index.** A cursor whose row was completed, cleared or
+  deleted still works, since the next query is a range condition after that
+  key. A missing cursor item starts a new lap; a stored cursor that is not
+  valid is replaced and logged as an error.
+- **Rollback.** Earlier releases ignore the cursor items. Deleting both items
+  after a rollback is safe and avoids an inflated first `lapMs` when upgrading
+  again.
+- **Evidence.** Each tick logs `Scheduled maintenance sweep` with the sweep
+  name, `trigger` (`schedule` or `manual`), the counts, `deferred`,
+  `contended`, `elapsedMs`, `lapAgeMs` (time since the current lap started)
+  and, when a lap ended in that tick, `lapCompleted` and `lapMs`. `manual`
+  means `repair-durable-executions`; invoking `reconcile-provider-state` by
+  hand sends the schedule's payload, so it is logged as `schedule`.
 
 ## Run a bounded read-only completion audit
 
