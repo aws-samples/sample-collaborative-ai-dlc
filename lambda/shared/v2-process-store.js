@@ -2941,29 +2941,6 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return items;
   };
 
-  const listStaleActiveExecutions = async ({
-    statuses = ['WAITING', 'RUNNING'],
-    nowIso,
-    timeoutSeconds,
-    limit = 100,
-  } = {}) => {
-    const nowMs = Date.parse(nowIso ?? now());
-    const timeoutMs = Number(timeoutSeconds) * 1000;
-    const legacyCutoff =
-      Number.isFinite(nowMs) && Number.isFinite(timeoutMs)
-        ? new Date(nowMs - timeoutMs).toISOString()
-        : null;
-    const statusSet = new Set(statuses);
-    const rows = await listActiveExecutions({ limit });
-    return rows
-      .filter((row) => statusSet.has(row.status))
-      .filter((row) => {
-        if (row.orchestratorExpiresAt) return row.orchestratorExpiresAt <= (nowIso ?? now());
-        return legacyCutoff ? (row.orchestratorStartedAt ?? row.startedAt) <= legacyCutoff : false;
-      })
-      .slice(0, limit);
-  };
-
   // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
   // while it is still a DRAFT. Independent of updateExecution (which owns the
   // lifecycle/status + GSI re-stamp). Used by the intents CRUD edit path.
@@ -4168,7 +4145,6 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getCompletionRecords,
     listCompletionAuditPage,
     listActiveExecutions,
-    listStaleActiveExecutions,
     patchExecutionConfig,
     putUnitPlan,
     getUnitPlan,
