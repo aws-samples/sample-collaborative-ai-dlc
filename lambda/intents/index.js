@@ -7707,9 +7707,13 @@ const WATCHDOG_BUDGET_CAP_MS = 20_000;
 const PR_WAIT_RECONCILER_BUDGET_CAP_MS = 30_000;
 const MANUAL_REPAIR_BUDGET_CAP_MS = 50_000;
 
+// A page is read whole into memory (an active-index row carries the full
+// execution header), so an operator override is capped.
+const MAX_SWEEP_PAGE_SIZE = 500;
+
 const pageSizeFromEnv = (value) => {
   const size = Number(value);
-  return Number.isInteger(size) && size > 0 ? size : 100;
+  return Number.isInteger(size) && size > 0 ? Math.min(size, MAX_SWEEP_PAGE_SIZE) : 100;
 };
 
 // Time a sweep may spend on its rows: `share` of what is left of the
@@ -7731,6 +7735,9 @@ const sweepBudgetMs = (context, share, capMs) => {
 // the claim, its rows wait for the next lap.
 const claimSweepPage = async ({ sweep, list, limit, nowIso }) => {
   const cursor = await store.getMaintenanceCursor(sweep);
+  if (cursor.invalid) {
+    logger.error('Maintenance cursor was invalid; starting a new lap', { sweep });
+  }
   let after = cursor.after;
   let rows = await list({ limit, after });
   // An empty page after a full last page: the previous lap ended there.
@@ -7747,6 +7754,7 @@ const claimSweepPage = async ({ sweep, list, limit, nowIso }) => {
     after: next,
     version: cursor.version,
     lapStartedAt,
+    replaceInvalid: cursor.invalid === true,
   });
   if (!claimed) return null;
   return {
