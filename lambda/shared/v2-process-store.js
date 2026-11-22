@@ -183,6 +183,8 @@ const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
 // strictly after a GSI3SK. The range condition does not need the row at `after`
 // to still exist, so a sweep resumes past a row that has since left the index.
 // A sweep cursor relies on each GSI3SK being unique within its partition.
+// DynamoDB caps a sort key at 1024 bytes; a longer stored cursor is invalid.
+const MAX_CURSOR_KEY_LENGTH = 1024;
 const maintenanceIndexQuery = (partition, after) =>
   after
     ? {
@@ -2958,7 +2960,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
 
   // Where a scheduled sweep resumes: the last GSI3SK it claimed (null = start
   // of the partition), the write version, and when the current lap began.
-  // version 0 means the cursor was never written.
+  // version 0 means the cursor was never written. A stored cursor this code
+  // could not have written (a non-integer version, an `after` that is not a
+  // key) comes back as `invalid` from the start of the partition, so the
+  // caller replaces it instead of failing its version check on every tick.
   const getMaintenanceCursor = async (sweep) => {
     const { Item } = await ddb.send(
       new GetCommand({
@@ -2967,16 +2972,40 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         ConsistentRead: true,
       }),
     );
+    if (!Item) return { after: null, version: 0, lapStartedAt: null };
+    const after = Item.after ?? null;
+    const valid =
+      Number.isInteger(Item.version) &&
+      Item.version > 0 &&
+      (after === null || (typeof after === 'string' && after.length <= MAX_CURSOR_KEY_LENGTH));
+    if (!valid) return { after: null, version: 0, lapStartedAt: null, invalid: true };
     return {
-      after: Item?.after ?? null,
-      version: Number.isInteger(Item?.version) ? Item.version : 0,
-      lapStartedAt: Item?.lapStartedAt ?? null,
+      after,
+      version: Item.version,
+      lapStartedAt: Number.isFinite(Date.parse(Item.lapStartedAt)) ? Item.lapStartedAt : null,
     };
   };
 
   // Moves the cursor only if no other sweep moved it since `version` was read.
   // Returns false when another sweep won; the caller then leaves the rows alone.
-  const moveMaintenanceCursor = async ({ sweep, after = null, version, lapStartedAt = null }) => {
+  // `replaceInvalid` overwrites a cursor read as invalid without a condition:
+  // its stored version cannot be matched, and at worst two ticks both start
+  // the lap over.
+  const moveMaintenanceCursor = async ({
+    sweep,
+    after = null,
+    version,
+    lapStartedAt = null,
+    replaceInvalid = false,
+  }) => {
+    const condition = replaceInvalid
+      ? {}
+      : version === 0
+        ? { ConditionExpression: 'attribute_not_exists(pk)' }
+        : {
+            ConditionExpression: 'version = :version',
+            ExpressionAttributeValues: { ':version': version },
+          };
     try {
       await ddb.send(
         new PutCommand({
@@ -2988,12 +3017,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
             lapStartedAt,
             updatedAt: now(),
           },
-          ...(version === 0
-            ? { ConditionExpression: 'attribute_not_exists(pk)' }
-            : {
-                ConditionExpression: 'version = :version',
-                ExpressionAttributeValues: { ':version': version },
-              }),
+          ...condition,
         }),
       );
       return true;

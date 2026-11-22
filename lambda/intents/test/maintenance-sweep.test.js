@@ -238,6 +238,27 @@ describe('durable watchdog sweep', () => {
     }
   });
 
+  it.each([
+    ['a version that is not an integer', { version: '3', after: null }],
+    ['an after that is not a string', { version: 4, after: 42 }],
+    ['an after longer than a sort key', { version: 4, after: `EXEC#${'x'.repeat(2_000)}` }],
+  ])('replaces a stored cursor with %s and sweeps from the start', async (_, stored) => {
+    await seedRunning(3);
+    await db.doc.send(
+      new PutCommand({
+        TableName: process.env.V2_PROCESS_TABLE,
+        Item: { pk: 'MAINTENANCE#durable-watchdog', sk: 'CURSOR', ...stored },
+      }),
+    );
+
+    expect(await tick()).toMatchObject({ checked: 3 });
+    expect(await store.getMaintenanceCursor('durable-watchdog')).toMatchObject({
+      after: null,
+      version: 1,
+    });
+    expect(await tick()).toMatchObject({ checked: 3 });
+  });
+
   it('keeps the cursor when another sweep moved it first', async () => {
     expect(await store.getMaintenanceCursor('test-sweep')).toEqual({
       after: null,
