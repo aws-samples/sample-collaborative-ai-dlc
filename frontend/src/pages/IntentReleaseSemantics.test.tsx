@@ -1,3 +1,6 @@
+vi.mock('@/contexts/SpacePermissionsContext', () => ({
+  useSpacePermissions: () => ({ readOnly: false, role: 'owner' }),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -45,6 +48,17 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'P', userRole: 'owner' } }),
 }));
 
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: {
+    get: async () => ({
+      stages: ['si-a'].map((stageInstanceId) => ({
+        stageInstanceId,
+        reason: 'unmapped',
+        access: { decide: true, edit: true },
+      })),
+    }),
+  },
+}));
 const get = vi.fn();
 const resume = vi.fn();
 const answerGate = vi.fn();

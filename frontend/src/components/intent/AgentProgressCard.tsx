@@ -22,6 +22,7 @@ export function AgentProgressCard() {
     ensureOutputs,
     focusOutput,
     rewindIntent,
+    mayControlStage,
   } = useIntent();
   const intent = detail?.intent;
   const isRunning = intent?.status === 'RUNNING';
@@ -83,6 +84,7 @@ export function AgentProgressCard() {
         gates={gates}
         stageRows={stageRows}
         stageNameOf={stageNameOf}
+        mayControlStage={mayControlStage}
         rewindIntent={rewindIntent}
       />
     );

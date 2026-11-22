@@ -23,7 +23,10 @@ vi.mock('@/contexts/AuthContext', () => ({
 
 const reloadIntent = vi.fn();
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: () => ({ reload: (...a: unknown[]) => reloadIntent(...a) }),
+  useIntent: () => ({
+    mayControlStage: () => false,
+    reload: (...a: unknown[]) => reloadIntent(...a),
+  }),
 }));
 
 const setAssistAgentCli = vi.fn();
@@ -572,7 +575,7 @@ describe('IntentComposePage', () => {
     expect(setSkipStageIds).toHaveBeenCalledWith(null);
   });
 
-  it('Start flushes the shared draft first, then launches and navigates', async () => {
+  it('lets a member without stage decision rights flush the draft and start the intent', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByTestId('agent-cli-kiro'));

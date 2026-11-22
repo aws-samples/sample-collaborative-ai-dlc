@@ -126,6 +126,8 @@ export default function IntentView() {
     resumeIntent,
     focusOutput,
     stageRows,
+    gateAccess,
+    mayControlStage,
     stageNameOf,
   } = useIntent();
   const navigate = useNavigate();
@@ -372,17 +374,27 @@ export default function IntentView() {
   }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
+  const recoveryStageId = isFailed ? (failedStage?.stageId ?? intent.currentStage) : null;
   // The server decides whether a recorded answer still needs its callback
   // re-sent (`resumeAvailable`): the run is live and still parked on that gate,
   // through META for an engine gate or through the asking stage for a question,
   // which covers a unit lane while the intent keeps running.
   const resumeRequired = gates.some((gate) => gate.resumeAvailable === true);
+  const canResume =
+    canDelete || gates.some((gate) => gate.resumeAvailable && gateAccess(gate).access?.decide);
+  const activeStages = detail.stages.filter((r) =>
+    ['RUNNING', 'WAITING_FOR_HUMAN'].includes(r.state),
+  );
+  const canCancel = activeStages.length
+    ? activeStages.every((r) => mayControlStage(r.stageId))
+    : mayControlStage(intent.currentStage ?? stageRows[0]?.stageId);
   const canReshape =
     !readOnly &&
     (intent.status === 'WAITING' || isFailed) &&
     intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
-  const isCancellable = !readOnly && ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
+  const isCancellable =
+    canCancel && !readOnly && ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
   const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
@@ -653,9 +665,10 @@ export default function IntentView() {
                 Parallel execution needs recovery
               </div>
               <p className="mt-1 text-[12px] text-muted-foreground">
-                {recoveryWaits.length} lane{recoveryWaits.length === 1 ? ' is' : 's are'} parked
-                without an answerable question. Merged units are safe; active lanes must be replayed
-                from the section boundary.
+                {recoveryWaits.length} lane
+                {recoveryWaits.length === 1 ? ' is' : 's are'} parked without an answerable
+                question. Merged units are safe; active lanes must be replayed from the section
+                boundary.
                 {lanesResuming &&
                   ' Another lane is resuming after an answer; repair is available once it restarts.'}
               </p>
@@ -701,7 +714,7 @@ export default function IntentView() {
               size="sm"
               variant="outline"
               className="shrink-0 gap-1.5"
-              disabled={readOnly || resuming}
+              disabled={readOnly || !canResume || resuming}
               onClick={handleResume}
             >
               {resuming ? (
@@ -784,7 +797,9 @@ export default function IntentView() {
               )}
               <Button
                 onClick={handleRecovery}
-                disabled={readOnly || starting}
+                disabled={
+                  readOnly || starting || (!!recoveryStageId && !mayControlStage(recoveryStageId))
+                }
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"
@@ -1000,6 +1015,7 @@ export default function IntentView() {
 
       {canReshape && (
         <RecomposePanel
+          mayControlStage={mayControlStage}
           open={reshapeOpen}
           onOpenChange={setReshapeOpen}
           projectId={projectId}

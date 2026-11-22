@@ -237,13 +237,16 @@ function StageRow({
   sensors: IntentSensorRun[];
   hideUnitBadge?: boolean;
 }) {
-  const { detail, rewindIntent } = useIntent();
+  const { detail, rewindIntent, mayControlStage } = useIntent();
   useTick(row.state === 'RUNNING');
   const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
   // One-click retry on a failed stage, right in the list: same reset+relaunch
   // as a guidance-less rewind (this stage and everything after re-run).
   const canRetry =
-    row.planned && row.state === 'FAILED' && RETRYABLE_STATUSES.has(detail?.intent.status ?? '');
+    mayControlStage(row.stageId) &&
+    row.planned &&
+    row.state === 'FAILED' &&
+    RETRYABLE_STATUSES.has(detail?.intent.status ?? '');
   const [retrying, setRetrying] = useState(false);
   const handleRetry = async (e: React.MouseEvent) => {
     e.stopPropagation();

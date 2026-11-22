@@ -62,6 +62,18 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   }),
 }));
 
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: {
+    get: async () => ({
+      unattributedAccess: { decide: true, edit: true },
+      stages: ['si-a'].map((stageInstanceId) => ({
+        stageInstanceId,
+        reason: 'unmapped',
+        access: { decide: true, edit: true },
+      })),
+    }),
+  },
+}));
 const get = vi.fn();
 const start = vi.fn();
 const rewind = vi.fn();

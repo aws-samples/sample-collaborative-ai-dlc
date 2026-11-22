@@ -1,3 +1,6 @@
+vi.mock('@/contexts/SpacePermissionsContext', () => ({
+  useSpacePermissions: () => ({ readOnly: false, role: 'owner' }),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -8,8 +11,13 @@ import type { GateAnswer, IntentDetail, IntentGate, IntentSensorRun } from '@/se
 // The panel pulls the intent context, the graph and a Yjs-backed textarea. None
 // of that is under test here — the learnings ritual is — so each is stubbed to
 // the smallest shape the component reads.
+const access = vi.hoisted(() => ({ edit: true, decide: true }));
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: () => ({ stageNameOf: (id: string) => id, openItemPreview: () => {} }),
+  useIntent: () => ({
+    gateAccess: () => ({ stage: { reason: 'unmapped' }, access }),
+    stageNameOf: (id: string) => id,
+    openItemPreview: () => {},
+  }),
 }));
 vi.mock('@/hooks/useIntentGraph', () => ({
   useIntentGraph: () => ({ itemsByArtifact: new Map(), getNeighbors: () => [] }),
@@ -53,6 +61,7 @@ vi.mock('@/components/CollaborativeTextarea', () => ({
   CollaborativeTextarea: (props: Record<string, unknown>) => (
     <textarea
       id={props.id as string}
+      disabled={props.disabled as boolean}
       value={props.value as string}
       onChange={(e) => (props.onChange as (v: string) => void)(e.target.value)}
     />
@@ -104,6 +113,18 @@ const renderPanel = (g: IntentGate) => {
 beforeEach(() => {
   vi.clearAllMocks();
   sharedDoc = fakeYDoc();
+  Object.assign(access, { edit: true, decide: true });
+});
+
+it('lets a Contributor write shared feedback while reserving submission for a Decision Maker', async () => {
+  access.decide = false;
+  renderPanel(gate());
+  const feedback = screen.getByLabelText('Feedback for the agent');
+  await userEvent.type(feedback, 'Please review this risk');
+  expect(feedback).toHaveValue('Please review this risk');
+  expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /Request changes/i })).toBeDisabled();
+  expect(onAnswer).not.toHaveBeenCalled();
 });
 
 describe('StageReviewPanel — learnings ritual', () => {

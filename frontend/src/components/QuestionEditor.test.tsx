@@ -5,6 +5,8 @@ import QuestionEditor, { type QuestionReferences } from '@/components/QuestionEd
 import type { Question } from '@/services/questions';
 
 const setSelection = vi.fn();
+const initFromDraft = vi.fn();
+const collaboration = { doc: new Y.Doc(), synced: true, documentReadOnly: false };
 const access = vi.hoisted(() => ({ readOnly: false }));
 vi.mock('@/contexts/SpacePermissionsContext', () => ({
   useSpacePermissions: () => access,
@@ -16,12 +18,12 @@ vi.mock('@/hooks/useCollaborativeStructuredAnswer', () => ({
     freeTexts: new Map(),
     setSelection,
     setFreeText: vi.fn(),
-    getFreeText: () => new Y.Doc().getText('t'),
+    getFreeText: () => collaboration.doc.getText('t'),
     addContributor: vi.fn(),
-    synced: true,
+    ...collaboration,
     awareness: {},
     remoteUsers: new Map(),
-    initFromDraft: vi.fn(),
+    initFromDraft,
     toStructuredAnswer: () => ({ answers: [] }),
   }),
 }));
@@ -53,11 +55,42 @@ const items = [
   { id: 'dec-node', slug: 'dec-session-tokens', label: 'Use short-lived session tokens' },
 ];
 
-describe('QuestionEditor references', () => {
+describe('QuestionEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     access.readOnly = false;
+    collaboration.documentReadOnly = false;
+    collaboration.synced = true;
   });
+
+  it.each(['stage', 'document', 'space'] as const)(
+    'restores the saved draft once when %s edit access arrives after sync',
+    (permission) => {
+      const draftAnswer = { answers: [{ selectedOptions: [1] }] };
+      const props = {
+        question: { ...question, draftAnswer },
+        scope: { kind: 'intent' as const, id: 'i', projectId: 'p' },
+        userName: 'u',
+        onAnswer: vi.fn(),
+      };
+      collaboration.synced = false;
+      collaboration.documentReadOnly = permission === 'document';
+      access.readOnly = permission === 'space';
+      const { rerender } = render(<QuestionEditor {...props} canEdit={permission !== 'stage'} />);
+      collaboration.synced = true;
+      rerender(<QuestionEditor {...props} canEdit={permission !== 'stage'} />);
+      expect(initFromDraft).not.toHaveBeenCalled();
+
+      collaboration.documentReadOnly = false;
+      access.readOnly = false;
+      rerender(<QuestionEditor {...props} canEdit />);
+      expect(initFromDraft).toHaveBeenCalledExactlyOnceWith(draftAnswer);
+
+      const updatedDraft = { answers: [{ selectedOptions: [0] }] };
+      rerender(<QuestionEditor {...props} question={{ ...question, draftAnswer: updatedDraft }} />);
+      expect(initFromDraft).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps questions readable while denying selection and submission for a Viewer', () => {
     access.readOnly = true;

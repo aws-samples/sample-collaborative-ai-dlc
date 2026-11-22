@@ -41,7 +41,7 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } f
 // lands on next (IntentComposePage), so teammates can join the draft live.
 export default function NewIntentPage() {
   const navigate = useNavigate();
-  const { readOnly } = useSpacePermissions();
+  const { readOnly, role } = useSpacePermissions();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const requestedReleaseId = searchParams.get('release');
@@ -199,7 +199,8 @@ export default function NewIntentPage() {
   // anywhere else the server would refuse it at submit.
   const releaseOffersAutonomy = (releaseId: string | null) =>
     releases.find((r) => r.releaseId === releaseId)?.constructionAutonomy === true;
-  const showAutonomyOptIn = showReleaseSelector && releaseOffersAutonomy(selectedReleaseId);
+  const showAutonomyOptIn =
+    role === 'owner' && showReleaseSelector && releaseOffersAutonomy(selectedReleaseId);
 
   // Lazily fetch each repo's branch list (+ its actual default branch) the
   // first time the base-branch picker is expanded — most intents never open

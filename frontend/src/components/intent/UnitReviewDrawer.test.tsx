@@ -7,7 +7,21 @@ import { UnitReviewDrawer } from './UnitLaneBoard';
 const unitReviewComments = vi.fn();
 const addressUnitFeedback = vi.fn();
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: () => ({ projectId: 'p1', intentId: 'i1' }),
+  useIntent: () => ({
+    projectId: 'p1',
+    intentId: 'i1',
+    stageRows: [
+      {
+        unitSlug: 'auth',
+        sectionIndex: 1,
+        state: 'SUCCEEDED',
+        stageId: 'code',
+        stageInstanceId: 'si-auth',
+        order: 1,
+      },
+    ],
+    stageAccess: (id: string | null) => ({ decide: id === 'si-auth' }),
+  }),
 }));
 vi.mock('@/services/intents', () => ({
   intentsService: {

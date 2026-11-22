@@ -787,8 +787,20 @@ export function UnitReviewDrawer({
   unit: IntentUnit | null;
   onClose: () => void;
 }) {
-  const { projectId, intentId } = useIntent();
-  const { readOnly } = useSpacePermissions();
+  const { projectId, intentId, stageRows, stageAccess, enforceStageRoles } = useIntent();
+  const { readOnly: spaceReadOnly } = useSpacePermissions();
+  const producer = stageRows
+    .filter(
+      (row) =>
+        unit &&
+        row.unitSlug === unit.slug &&
+        row.sectionIndex === unit.sectionIndex &&
+        row.state === 'SUCCEEDED',
+    )
+    .toSorted((a, b) => b.order - a.order)[0];
+  const readOnly =
+    spaceReadOnly ||
+    (enforceStageRoles !== false && (!producer || !stageAccess(producer.stageInstanceId)?.decide));
   const [comments, setComments] = useState<UnitReviewComment[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);

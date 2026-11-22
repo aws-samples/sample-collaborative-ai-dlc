@@ -23,6 +23,13 @@ import {
   type StageState,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
+import { useProjectCache } from '@/hooks/useProjectsCache';
+import {
+  stageResponsibilitiesService,
+  type GateResponsibility,
+  type StageResponsibility,
+  type StageResponsibilities,
+} from '@/services/stageResponsibilities';
 import { realtimeService } from '@/services/realtime';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
@@ -139,6 +146,13 @@ interface IntentContextValue {
   outputBuffers: Map<string, string>;
   outputRows: Map<string, IntentOutput[]>;
   outputVersion: number;
+  enforceStageRoles: boolean;
+  mayControlStage: (stageId?: string | null) => boolean;
+  stageAccess: (stageInstanceId: string | null) => StageResponsibility['access'];
+  gateAccess: (gate: Pick<IntentGate, 'humanTaskId' | 'stageInstanceId'>) => {
+    stage?: GateResponsibility;
+    access?: GateResponsibility['access'];
+  };
   /** Human name for a buffer key (stageInstanceId → stageId). */
   stageNameOf: (key: string) => string;
   /** Lazily fetch a pane's durable transcript (no-op once seeded/loading). */
@@ -1069,6 +1083,43 @@ export function IntentProvider({
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
 
+  const { project } = useProjectCache(projectId);
+  const [loadedAccess, setLoadedAccess] = useState<{
+    key: string;
+    data: StageResponsibilities;
+  } | null>(null);
+  const accessKey = `${projectId}/${intentId}`;
+  const gateIds = gates
+    .map((gate) => gate.humanTaskId)
+    .toSorted()
+    .join('/');
+  useEffect(() => {
+    if (!projectId || !intentId) return;
+    let generation = 0;
+    const refresh = () => {
+      const request = ++generation;
+      stageResponsibilitiesService
+        .get(projectId, { intentId, actorAccess: true })
+        .then((data) => {
+          if (request === generation) setLoadedAccess({ key: accessKey, data });
+        })
+        .catch(() => {
+          if (request === generation) setLoadedAccess(null);
+        });
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => {
+      generation++;
+      window.removeEventListener('focus', refresh);
+    };
+  }, [projectId, intentId, accessKey, gateIds, detail?.intent.status]);
+  const currentAccess = loadedAccess?.key === accessKey ? loadedAccess.data : undefined;
+  // Planned placements can have no instance. They cannot identify an artifact or gate.
+  const stageForInstance = (id: string | null) =>
+    id ? currentAccess?.stages.find((stage) => stage.stageInstanceId === id) : undefined;
+  const accessFor = (stage?: GateResponsibility) =>
+    stage?.access ?? currentAccess?.unattributedAccess;
   const sensorsByStage = useMemo(() => {
     const map = new Map<string, IntentSensorRun[]>();
     for (const s of detail?.sensorRuns ?? []) {
@@ -1136,6 +1187,17 @@ export function IntentProvider({
         phaseNameOf,
         initializationPhasePaths,
         currentPhasePath,
+        enforceStageRoles: currentAccess?.enforceStageRoles !== false,
+        mayControlStage: (id) =>
+          project?.userRole === 'owner' ||
+          !!accessFor(currentAccess?.stages.find((stage) => stage.stageId === id))?.decide,
+        stageAccess: (id) => accessFor(stageForInstance(id)),
+        gateAccess: (gate) => {
+          const stage =
+            currentAccess?.sectionGates?.[gate.humanTaskId] ??
+            stageForInstance(gate.stageInstanceId);
+          return { stage, access: accessFor(stage) };
+        },
         stageRows,
         stageEdges,
         gates,

@@ -22,43 +22,54 @@ export function ArtifactContentEditor({
   artifact: IntentArtifact;
   onDone: () => void;
 }) {
-  const { projectId, intentId, reload } = useIntent();
-  const { readOnly } = useSpacePermissions();
+  const { projectId, intentId, reload, stageAccess } = useIntent();
+  const { readOnly: spaceReadOnly } = useSpacePermissions();
+  const readOnly = spaceReadOnly || !stageAccess(artifact.createdByStageInstanceId)?.decide;
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [finishing, setFinishing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const { content, contentText, initContent, synced, awareness, remoteUsers, flush } =
-    useCollaborativeArtifactContent({
-      projectId,
-      intentId,
-      artifactId: artifact.id,
-      collaborationEpoch: artifact.collaborationEpoch,
-      userName,
-      userColor: generateColor(userName || artifact.id),
-      enabled: true,
-      readSaveVersion: async () => {
-        const current = await intentsService.artifactEditState(projectId, intentId, artifact.id);
-        if (current.collaborationEpoch !== (artifact.collaborationEpoch ?? null))
-          throw new Error('Artifact was replaced — reload before editing');
-        return current.editRevision;
-      },
-      onSaveError: (error) => {
-        setSaveError(error instanceof Error ? error.message : 'Save failed');
-      },
-      onAutoSave: async (value, version) => {
-        await intentsService.updateArtifactContent(
-          projectId,
-          intentId,
-          artifact.id,
-          value,
-          artifact.collaborationEpoch ?? null,
-          version ?? null,
-        );
-        setSaveError(null);
-      },
-    });
+  const {
+    content,
+    contentText,
+    initContent,
+    synced,
+    awareness,
+    remoteUsers,
+    flush,
+    documentReadOnly,
+  } = useCollaborativeArtifactContent({
+    projectId,
+    intentId,
+    artifactId: artifact.id,
+    collaborationEpoch: artifact.collaborationEpoch,
+    userName,
+    userColor: generateColor(userName || artifact.id),
+    enabled: true,
+    readSaveVersion: async () => {
+      const current = await intentsService.artifactEditState(projectId, intentId, artifact.id);
+      if (current.collaborationEpoch !== (artifact.collaborationEpoch ?? null))
+        throw new Error('Artifact was replaced — reload before editing');
+      return current.editRevision;
+    },
+    onSaveError: (error) => {
+      setSaveError(error instanceof Error ? error.message : 'Save failed');
+    },
+    onAutoSave: readOnly
+      ? undefined
+      : async (value, version) => {
+          await intentsService.updateArtifactContent(
+            projectId,
+            intentId,
+            artifact.id,
+            value,
+            artifact.collaborationEpoch ?? null,
+            version ?? null,
+          );
+          setSaveError(null);
+        },
+  });
 
   // Seed the shared doc with the persisted content once synced and the body
   // has loaded (first editor wins; later joiners see the live state). A body
@@ -71,10 +82,10 @@ export function ArtifactContentEditor({
     seededRef.current = false;
   }, [artifact.id, artifact.collaborationEpoch]);
   useEffect(() => {
-    if (!synced || !contentLoaded || seededRef.current) return;
+    if (documentReadOnly || readOnly || !synced || !contentLoaded || seededRef.current) return;
     seededRef.current = true;
     initContent(artifact.content ?? '');
-  }, [synced, contentLoaded, initContent, artifact.content]);
+  }, [documentReadOnly, readOnly, synced, contentLoaded, initContent, artifact.content]);
 
   const finish = async () => {
     setFinishing(true);
@@ -95,7 +106,7 @@ export function ArtifactContentEditor({
         yText={contentText}
         awareness={awareness}
         value={content}
-        disabled={!synced || !contentLoaded}
+        disabled={documentReadOnly || readOnly || !synced || !contentLoaded}
         placeholder={
           unavailable
             ? 'Editing is unavailable'
@@ -113,7 +124,7 @@ export function ArtifactContentEditor({
           size="sm"
           className="h-7 gap-1.5"
           onClick={finish}
-          disabled={readOnly || finishing || !synced || !contentLoaded}
+          disabled={documentReadOnly || readOnly || finishing || !synced || !contentLoaded}
         >
           {finishing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
           Done

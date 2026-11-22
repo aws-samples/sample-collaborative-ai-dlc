@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import { ArtifactEditControls } from '@/components/intent/ArtifactEditControls';
 
 // Capture the realtime callback so tests can push events into the provider.
 let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
@@ -28,6 +29,10 @@ const compiled = vi.fn();
 const workflowGet = vi.fn();
 const outputs = vi.fn();
 const artifactContents = vi.fn();
+const getResponsibilities = vi.fn();
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: { get: (...args: unknown[]) => getResponsibilities(...args) },
+}));
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -79,17 +84,13 @@ function Probe() {
   );
 }
 
-const renderProvider = () =>
+const renderProvider = (child = <Probe />) =>
   render(
     <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
       <Routes>
         <Route
           path="/space/:projectId/intent/:intentId"
-          element={
-            <IntentProvider>
-              <Probe />
-            </IntentProvider>
-          }
+          element={<IntentProvider>{child}</IntentProvider>}
         />
       </Routes>
     </MemoryRouter>,
@@ -211,9 +212,52 @@ describe('IntentContext', () => {
     answerGate.mockReset();
     outputs.mockReset().mockResolvedValue({ outputs: [] });
     artifactContents.mockReset().mockResolvedValue({ artifacts: [], nextCursor: null });
+    getResponsibilities.mockReset().mockResolvedValue({ stages: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
   });
+
+  it.each([false, true])(
+    'uses only the legacy grant for an unattributed document (legacy=%s)',
+    async (legacy) => {
+      get.mockResolvedValue({
+        ...detail({ status: 'WAITING' }),
+        artifacts: [artifact('unattributed', { createdByStageInstanceId: null, content: 'draft' })],
+      });
+      const granted = { decide: true, edit: true };
+      getResponsibilities.mockResolvedValue({
+        stages: [
+          { stageInstanceId: null, access: granted },
+          { stageInstanceId: 'si-1', access: granted },
+        ],
+        sectionGates: { section: { reason: 'section', access: { edit: false, decide: false } } },
+        ...(legacy && { unattributedAccess: granted }),
+      });
+      function AccessProbe() {
+        const { detail: current, gateAccess } = useIntent();
+        const doc = current?.artifacts[0];
+        const section = gateAccess({ humanTaskId: 'section', stageInstanceId: null });
+        const question = gateAccess({ humanTaskId: 'question', stageInstanceId: 'si-1' });
+        return (
+          <>
+            {doc && <ArtifactEditControls artifact={doc} onStartEdit={() => {}} />}
+            <output>{question.access?.decide && 'Can answer question'}</output>
+            <output>
+              {section.stage?.reason === 'section' &&
+                !section.access?.decide &&
+                'Section read-only'}
+            </output>
+          </>
+        );
+      }
+      renderProvider(<AccessProbe />);
+      await screen.findByText('Can answer question');
+      expect(screen.getByText('Section read-only')).toBeInTheDocument();
+      const edit = await screen.findByRole('button', { name: 'Edit document' });
+      if (legacy) expect(edit).toBeEnabled();
+      else expect(edit).toBeDisabled();
+    },
+  );
 
   it('stageRows: scope-filters the plan and appends live rows outside it', async () => {
     get.mockResolvedValue({

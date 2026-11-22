@@ -1,6 +1,7 @@
+import { useCollaborativeReviewFeedback } from '@/hooks/useCollaborativeReviewFeedback';
+import { StagePermissionNotice } from './StagePermissionNotice';
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
-import { useCallback, useEffect, useState } from 'react';
-import { simpleDiffStringWithCursor } from 'lib0/diff';
+import { useState } from 'react';
 import type {
   GateAnswer,
   IntentDetail,
@@ -10,7 +11,6 @@ import type {
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
-import { useYjsDocument } from '@/hooks/useYjsDocument';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
@@ -36,7 +36,6 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
-import { generateColor } from '@/utils/colors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -157,77 +156,6 @@ function ReviewStat({
   return <div className={className}>{body}</div>;
 }
 
-function useCollaborativeReviewFeedback({
-  projectId,
-  intentId,
-  humanTaskId,
-  userName,
-  enabled,
-}: {
-  projectId: string;
-  intentId: string;
-  humanTaskId: string;
-  userName: string;
-  enabled: boolean;
-}) {
-  const docId = enabled ? `intent-review-${intentId}-${humanTaskId}` : null;
-  const { doc, synced, awareness, remoteUsers } = useYjsDocument(
-    docId,
-    userName,
-    generateColor(userName || humanTaskId),
-    { intentId, projectId },
-  );
-  const [feedback, setFeedbackState] = useState('');
-
-  useEffect(() => {
-    setFeedbackState('');
-  }, [docId]);
-
-  useEffect(() => {
-    if (!doc || !docId) return;
-    const text = doc.getText('feedback');
-    const update = () => setFeedbackState(text.toString());
-    text.observe(update);
-    update();
-    return () => text.unobserve(update);
-  }, [doc, docId]);
-
-  // Native-textarea fallback for isolated tests. The production editor binds
-  // directly to this Y.Text and does not call this whole-value setter.
-  const setFeedback = useCallback(
-    (value: string, cursorPos?: number) => {
-      if (!doc || !docId) {
-        setFeedbackState(value);
-        return;
-      }
-      const text = doc.getText('feedback');
-      const current = text.toString();
-      if (current === value) return;
-      const diff = simpleDiffStringWithCursor(current, value, cursorPos ?? value.length);
-      doc.transact(() => {
-        if (diff.remove > 0) text.delete(diff.index, diff.remove);
-        if (diff.insert) text.insert(diff.index, diff.insert);
-      });
-    },
-    [doc, docId],
-  );
-
-  const getFeedback = useCallback(
-    () => (doc && docId ? doc.getText('feedback').toString() : feedback),
-    [doc, docId, feedback],
-  );
-
-  return {
-    feedback,
-    feedbackText: doc.getText('feedback'),
-    setFeedback,
-    getFeedback,
-    synced,
-    awareness,
-    remoteUsers,
-  };
-}
-
 export interface StageReviewPanelProps {
   gate: IntentGate;
   detail: IntentDetail;
@@ -252,9 +180,12 @@ export function StageReviewPanel({
   onAnswer,
   onBack,
 }: StageReviewPanelProps) {
-  const { readOnly } = useSpacePermissions();
+  const { readOnly: spaceReadOnly, role } = useSpacePermissions();
   const [submitting, setSubmitting] = useState(false);
-  const { stageNameOf, openItemPreview, reload } = useIntent();
+  const { stageNameOf, openItemPreview, reload, gateAccess } = useIntent();
+  const permission = gateAccess(gate);
+  const readOnly = spaceReadOnly || !permission.access?.decide;
+  const cannotEdit = spaceReadOnly || !permission.access?.edit;
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
   // Rides the approve answer as { decision: 'approve', skipTo } and is
@@ -305,14 +236,22 @@ export function StageReviewPanel({
   );
   const pending = gate.status === 'pending';
   const reviewTitle = `Review ${stage?.stageId ?? gate.humanTaskId}`;
-  const { feedback, feedbackText, setFeedback, getFeedback, synced, awareness, remoteUsers } =
-    useCollaborativeReviewFeedback({
-      projectId,
-      intentId,
-      humanTaskId: gate.humanTaskId,
-      userName,
-      enabled: pending,
-    });
+  const {
+    feedback,
+    feedbackText,
+    setFeedback,
+    getFeedback,
+    synced,
+    awareness,
+    remoteUsers,
+    documentReadOnly,
+  } = useCollaborativeReviewFeedback({
+    projectId,
+    intentId,
+    humanTaskId: gate.humanTaskId,
+    userName,
+    enabled: pending,
+  });
   // The gate offers `override-and-approve` only when it carries a blocking
   // finding a human may accept responsibility for, and withholds plain `approve`
   // when a block cannot be overridden at all — so the buttons are driven by the
@@ -320,7 +259,7 @@ export function StageReviewPanel({
   const gateOptions = Array.isArray(gate.options)
     ? gate.options.filter((option): option is string => typeof option === 'string')
     : [];
-  const canOverride = gateOptions.includes('override-and-approve');
+  const canOverride = role === 'owner' && gateOptions.includes('override-and-approve');
   // The build-and-test loop-back: offered only when the engine named the
   // code-generation stage it goes back to. Like request-changes it records as
   // rejected, with the reviewer's feedback, so the re-run is told why.
@@ -341,7 +280,7 @@ export function StageReviewPanel({
   // The autonomy escalation. Offered by the engine only at the one construction
   // gate that always stays human, and only while the intent is still gated — so,
   // like every other button here, it is driven by the option list, never assumed.
-  const canGrantAutonomy = gateOptions.includes('grant-autonomy');
+  const canGrantAutonomy = role === 'owner' && gateOptions.includes('grant-autonomy');
   const confirmGrantAutonomy = () =>
     window.confirm(
       [
@@ -389,6 +328,7 @@ export function StageReviewPanel({
           <CardTitle className="text-base">
             Review: {stageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
           </CardTitle>
+          <StagePermissionNotice {...permission} review />
           <p className="mt-1 text-sm text-muted-foreground">
             Review what the agent produced and approve or send it back with feedback.
           </p>
@@ -659,7 +599,7 @@ export function StageReviewPanel({
                 rows={4}
                 placeholder="What should the agent change before this stage can continue?"
                 className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={readOnly || submitting || !synced}
+                disabled={documentReadOnly || cannotEdit || submitting || !synced}
               />
               {remoteUsers.size > 0 && (
                 <div className="flex items-center gap-1">
@@ -753,7 +693,7 @@ export function StageReviewPanel({
                 rows={2}
                 placeholder="Recorded with your name on the approval, e.g. 'The claim is sourced in the linked ADR.'"
                 className="flex min-h-[44px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={readOnly || submitting}
+                disabled={spaceReadOnly || submitting}
               />
               <p className="text-right text-xs text-muted-foreground" aria-live="polite">
                 {overrideReason.length}/{OVERRIDE_REASON_MAX_LENGTH}
@@ -821,7 +761,7 @@ export function StageReviewPanel({
                 {canGrantAutonomy && (
                   <Button
                     variant="outline"
-                    disabled={readOnly || submitting || !synced}
+                    disabled={spaceReadOnly || submitting || !synced}
                     onClick={() => {
                       if (!confirmGrantAutonomy()) return;
                       void submit('grant-autonomy');
@@ -833,7 +773,7 @@ export function StageReviewPanel({
                 {canOverride && (
                   <Button
                     variant="outline"
-                    disabled={readOnly || submitting || !overrideReason.trim()}
+                    disabled={spaceReadOnly || submitting || !overrideReason.trim()}
                     onClick={() => {
                       // An override records the human's name against the blocking
                       // findings it waives. Naming the count in the confirmation is

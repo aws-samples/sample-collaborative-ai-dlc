@@ -171,7 +171,7 @@ function CompactQuestionRow({
   onToggle: () => void;
   influencedArtifacts: { id: string; title: string }[];
 }) {
-  const { detail, steering, reviseGate } = useIntent();
+  const { detail, steering, reviseGate, gateAccess } = useIntent();
   const questions = parseGateQuestions(gate.questions);
   const answer = formatGateAnswer(gate.answer, questions);
   const superseded = gate.status === 'superseded';
@@ -185,7 +185,10 @@ function CompactQuestionRow({
     ? (steering.find((s) => s.steerId === gate.revisionSteerId) ?? null)
     : null;
   const intentStatus = detail?.intent.status ?? '';
-  const canRevise = answered && !['SUCCEEDED', 'CANCELLED'].includes(intentStatus);
+  const canRevise =
+    gateAccess(gate).access?.decide &&
+    answered &&
+    !['SUCCEEDED', 'CANCELLED'].includes(intentStatus);
 
   const handleRevise = async () => {
     if (!revision.trim()) return;
