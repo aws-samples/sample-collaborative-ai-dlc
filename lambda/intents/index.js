@@ -7895,21 +7895,33 @@ const providerTransitionFor = (before, after) => {
   return null;
 };
 
-const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
-  const waits =
-    injectedWaits ??
-    (await store.listUnitPrWaits({
-      limit: Number(process.env.PR_WAIT_RECONCILER_LIMIT || 100),
-    }));
+const runPrWaitReconciler = async ({ waits: injectedWaits = null, budgetMs = 40_000 } = {}) => {
+  const startedMs = Date.now();
+  const deadline = startedMs + budgetMs;
+  const nowIso = new Date(startedMs).toISOString();
+  const sweep = 'pr-wait-reconciler';
+  const claim = injectedWaits
+    ? null
+    : await claimSweepPage({
+        sweep,
+        list: store.listUnitPrWaits,
+        limit: pageSizeFromEnv(process.env.PR_WAIT_RECONCILER_LIMIT),
+        nowIso,
+      });
+  const waits = injectedWaits ?? claim?.rows ?? [];
   const out = {
-    checked: waits.length,
+    checked: 0,
     woken: 0,
     unchanged: 0,
     stale: 0,
     duplicates: 0,
     errors: [],
   };
+  let lastChecked = null;
   for (const wait of waits) {
+    if (Date.now() >= deadline) break;
+    out.checked += 1;
+    lastChecked = wait;
     try {
       const meta = await store.getExecution(wait.executionId);
       if (
@@ -7988,11 +8000,16 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
       });
     }
   }
+  const deferred = waits.length - out.checked;
+  if (claim && deferred > 0) await releaseSweepRemainder({ sweep, claim, lastChecked });
+  if (!injectedWaits) logSweep({ sweep, out, claim, deferred, startedMs, nowIso });
   return out;
 };
 
+// Both sweeps share one invocation: the reconciler may use 40% of it and the
+// watchdog 60% of what is left, which keeps a margin before the timeout.
 const runScheduledMaintenance = async (event = {}, context = null) => {
-  const prWaits = await runPrWaitReconciler(event);
+  const prWaits = await runPrWaitReconciler({ ...event, budgetMs: sweepBudgetMs(context, 0.4) });
   const durableExecutions = await runDurableExecutionWatchdog({
     ...event,
     budgetMs: sweepBudgetMs(context, 0.6),
