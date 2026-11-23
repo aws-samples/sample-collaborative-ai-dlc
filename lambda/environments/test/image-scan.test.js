@@ -49,6 +49,33 @@ describe('readImageScanFindings', () => {
     });
   });
 
+  it('orders a vulnerability found in several packages the same way on every read', async () => {
+    const affected = (packageName) => ({
+      name: 'CVE-3',
+      severity: 'HIGH',
+      attributes: [
+        { key: 'package_name', value: packageName },
+        { key: 'package_version', value: '3.5.9' },
+      ],
+    });
+    const read = (findings) =>
+      readImageScanFindings({
+        ecrClient: client({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: { findingSeverityCounts: { HIGH: 2 }, findings },
+        }),
+        imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+        imageDigest: digest,
+        now: () => '2026-11-20T00:00:00.000Z',
+      });
+
+    const first = await read([affected('openssl'), affected('libssl3t64')]);
+    const second = await read([affected('libssl3t64'), affected('openssl')]);
+
+    expect(first.findings.map((finding) => finding.packageName)).toEqual(['libssl3t64', 'openssl']);
+    expect(second).toEqual(first);
+  });
+
   it('returns no result while the scan is pending or cannot run', async () => {
     for (const status of ['PENDING', 'IN_PROGRESS', 'FAILED', 'UNSUPPORTED_IMAGE', undefined]) {
       await expect(

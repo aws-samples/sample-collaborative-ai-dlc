@@ -53,6 +53,8 @@ export const summarizeScanFindings = (scan) => {
     ['INFORMATIONAL', 4],
     ['UNDEFINED', 5],
   ]);
+  // One vulnerability often affects several packages (openssl and libssl,
+  // say): the package breaks the tie, so the order never depends on ECR's.
   return (scan.imageScanFindings?.findings ?? [])
     .map((finding) => ({
       id: finding.name ?? 'Unknown finding',
@@ -64,7 +66,9 @@ export const summarizeScanFindings = (scan) => {
     .toSorted(
       (left, right) =>
         (severityOrder.get(left.severity) ?? 99) - (severityOrder.get(right.severity) ?? 99) ||
-        left.id.localeCompare(right.id),
+        left.id.localeCompare(right.id) ||
+        String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
+        String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? '')),
     );
 };
 
