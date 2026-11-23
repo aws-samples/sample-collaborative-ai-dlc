@@ -2,11 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
-import {
-  ECRClient,
-  DescribeImagesCommand,
-  DescribeImageScanFindingsCommand,
-} from '@aws-sdk/client-ecr';
+import { ECRClient, DescribeImagesCommand } from '@aws-sdk/client-ecr';
 import {
   BedrockAgentCoreControlClient,
   CreateAgentRuntimeCommand,
@@ -21,6 +17,7 @@ import {
 import {
   RETRYABLE_ECR_ERRORS,
   createBuildLifecycleHandler,
+  readGateScan,
   streamToString,
   summarizeScanFindings,
 } from './build-lifecycle.js';
@@ -310,16 +307,14 @@ const inspectImage = async ({
         { fromStatus: 'BUILDING' },
       );
     }
-    const scan = await ecrClient.send(
-      new DescribeImageScanFindingsCommand({
-        repositoryName,
-        imageId: { imageDigest: image.imageDigest },
-      }),
-    );
+    const gateScan = await readGateScan({
+      ecrClient,
+      repositoryName,
+      imageDigest: image.imageDigest,
+    });
+    if (gateScan.pending) return { environment, revision: scanning };
+    const { scan } = gateScan;
     const scanStatus = scan.imageScanStatus?.status;
-    if (scanStatus === 'IN_PROGRESS' || scanStatus === 'PENDING') {
-      return { environment, revision: scanning };
-    }
     if (scanStatus !== 'COMPLETE' && scanStatus !== 'ACTIVE') {
       return {
         environment,
@@ -332,16 +327,17 @@ const inspectImage = async ({
         ),
       };
     }
-    const severityCounts = scan.imageScanFindings?.findingSeverityCounts ?? {};
-    const verdict = evaluateScanFindings(
-      severityCounts,
-      Boolean(securityFindingsAcceptedAt(scanning)),
-    );
+    const { severityCounts, findingsTruncated } = gateScan;
+    const findingsAccepted = Boolean(securityFindingsAcceptedAt(scanning));
+    const verdict =
+      gateScan.incomplete && !findingsAccepted
+        ? { allowed: false, status: 'SECURITY_REVIEW' }
+        : evaluateScanFindings(severityCounts, findingsAccepted);
     const scanFindings = {
       status: scanStatus,
       severityCounts,
       findings: summarizeScanFindings(scan),
-      findingsTruncated: Boolean(scan.nextToken),
+      findingsTruncated,
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
