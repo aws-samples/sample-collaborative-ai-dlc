@@ -937,6 +937,37 @@ describe('protected workflow engine journal recovery', () => {
   );
 });
 describe('protected workflow engine service', () => {
+  it('delivers intake only to the scheduler and re-presents its retained request before an intent exists', async () => {
+    const t = await setup();
+    const intake = {
+      kind: 'print',
+      message: 'Run aidlc engine orchestrate next --propose <plan> --request 1234abcd',
+    };
+    t.hooks.orchestrate = (args) =>
+      args[1] === '--' ? intake : { kind: 'error', message: 'No active intent' };
+    for (const args of [
+      ['engine', 'adapter', 'codex', 'session-start'],
+      ['engine', 'adapter', 'codex', 'record-human-turn'],
+      ['next', '--', 'substitute intent'],
+      ['next', '--project-dir', '/another/project'],
+    ])
+      expect((await t.command(args)).result).toMatchObject({
+        failure: 'NATIVE_ENGINE_COMMAND_DENIED',
+        stdout: '',
+      });
+    expect(t.calls).toHaveLength(0);
+    await t.command(['engine', 'state', 'get']);
+    expect(t.calls).toEqual([['aidlc-state.ts', 'get']]);
+    expect(t.memberMessages()).toBe(0);
+    const first = await t.request('execute', { args: ['engine', 'orchestrate', 'next'] });
+    const received = await t.send(first);
+    expect(JSON.parse(received.result.stdout)).toEqual(intake);
+    expect(await t.send(first)).toEqual(received);
+    expect(JSON.parse((await t.command(['next'])).result.stdout)).toEqual(intake);
+    expect(t.calls).toHaveLength(2);
+    expect(t.memberMessages()).toBe(1);
+  });
+
   it('resumes the open stage only for the confirmed writer and turn, without replaying its lost approval', async () => {
     const t = await setup();
     const opened = await toGate(t);
@@ -1733,7 +1764,16 @@ describe('protected workflow engine service', () => {
     await t.admit(shown);
     const selection = { answers: [{ selectedOptions: [0] }] };
     const member = await reply(t, shown, nativeAnswerText(form, selection), selection);
+    const spoken = t.memberMessages();
+    for (const args of [
+      ['engine', 'adapter', 'codex', 'record-human-turn'],
+      ['next', '--scope', 'feature', '--request', 'abcd1234'],
+    ])
+      expect((await t.command(args)).result.failure).toBe('NATIVE_ENGINE_COMMAND_DENIED');
+    await t.command(['engine', 'state', 'get']);
+    expect(t.memberMessages()).toBe(spoken);
     expect((await t.command(['next'])).result.exitCode).toBe(0);
+    expect(t.memberMessages()).toBe(spoken + 1);
     expect((await t.proof(await t.publish())).engineApplication).toMatchObject([
       { commandId: member.commandId, application: 'applied', effect: 'PLAN_PROPOSAL_APPLIED' },
     ]);

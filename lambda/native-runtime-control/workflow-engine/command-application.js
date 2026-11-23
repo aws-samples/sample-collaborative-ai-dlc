@@ -14,6 +14,7 @@ import {
   nativeEngineCommand,
   nativeEngineDirectiveSha,
   nativeEngineSelectedCommand,
+  normalizeNativeEngineCommand,
 } from './commands.js';
 import { assertNativeEnginePresentedQuestion } from './presentation.js';
 import { bindNativeEngineReply, noteNativeEngineOpenGate } from './reply-binding.js';
@@ -59,9 +60,22 @@ const selectCommand = async (context, before) => {
     (row.response === undefined && nativeRunningWorkspaceResume(row));
   if (workspaceResume && (!state.initialMessage || before.status !== 'recorded'))
     throw engineFailure('NATIVE_ENGINE_STATE_UNAVAILABLE');
-  let selected;
-  let member = null;
+  const project = workspace.project;
+  const args = normalizeNativeEngineCommand(request.args ?? [], project);
+  const isNext = same(args, ['engine', 'orchestrate', 'next']);
+  const validate = (effective, member = null) =>
+    nativeEngineCommand({
+      args: effective,
+      state,
+      project,
+      workspaceResume,
+      memberCommand: member?.selectedCommand,
+      member,
+    });
   if (!state.initialMessage) {
+    // Lifecycle hooks and reads may arrive before the conductor. Only its
+    // ordinary scheduling command may deliver the authenticated draft.
+    if (!isNext) return { selected: validate(args), member: null };
     const text = nativeDraftPrompt(draft).text;
     state.initialMessage = decode(
       await runner.member({
@@ -73,57 +87,57 @@ const selectCommand = async (context, before) => {
     );
     // Literal initial intent. Plan selections and policy flags come
     // later from a command attached to the engine's protected proposal.
-    selected = { args: ['engine', 'orchestrate', 'next', '--', text], member: true };
-  } else {
-    // Only the answer to a recorded question reaches the pinned engine as a
-    // person's words. Any other accepted reply leaves this command without a
-    // member: it is applied if it needs none and refused if it needs one.
-    const bound = await bindNativeEngineReply(context);
-    if (bound) {
-      const { response, presented } = bound;
-      assertNativeEnginePresentedQuestion(state, before, presented);
-      const selectedCommand = nativeEngineSelectedCommand(presented, response);
-      const recorded = decode(
-        await runner.member({
-          commandId: response.commandId,
-          actorId: response.actorId,
-          sessionId,
-          text: response.text,
-        }),
-      );
-      member = {
-        ...recorded,
-        ...response,
-        writerGeneration: identity.writerGeneration,
-        presentationSha256: presented.sha256,
-        stage: presented.directive.stage ?? null,
-        unit: presented.directive.unit ?? null,
-        selectedCommand,
-        application: 'pending',
-      };
-      state.decisions.push(member);
-    } else
-      member = state.decisions.findLast(
-        (item) =>
-          item.sequence === identity.sequence &&
-          item.writerGeneration === identity.writerGeneration &&
-          row.response?.commandId === item.commandId &&
-          item.application === 'pending',
-      );
-    const args = request.args ?? [];
-    const isNext =
-      !args.length || same(args, ['next']) || same(args, ['engine', 'orchestrate', 'next']);
-    const effective = member?.selectedCommand && isNext ? member.selectedCommand : args;
-    selected = nativeEngineCommand({
-      args: effective,
-      state,
-      project: workspace.project,
-      workspaceResume,
-      memberCommand: member?.selectedCommand,
-      member,
-    });
+    return { selected: { args: [...args, '--', text], member: true }, member: null };
   }
-  return { selected, member };
+  // Only the answer to a recorded question reaches the pinned engine as a
+  // person's words. Any other accepted reply leaves this command without a
+  // member: it is applied if it needs none and refused if it needs one.
+  const bound = await bindNativeEngineReply(context);
+  if (bound) {
+    const { response, presented } = bound;
+    const selectedCommand = nativeEngineSelectedCommand(presented, response);
+    const exactSelection =
+      selectedCommand && same(args, normalizeNativeEngineCommand(selectedCommand, project));
+    const isAnswer = same(args.slice(0, 3), ['engine', 'log', 'answer']);
+    if (!isNext && !exactSelection && !isAnswer) return { selected: validate(args), member: null };
+    assertNativeEnginePresentedQuestion(state, before, presented);
+    const pending = {
+      ...response,
+      writerGeneration: identity.writerGeneration,
+      presentationSha256: presented.sha256,
+      stage: presented.directive.stage ?? null,
+      unit: presented.directive.unit ?? null,
+      selectedCommand,
+      application: 'pending',
+    };
+    // The member hook itself can consume an open challenge. Validate the
+    // requested operation before recording any words, even on a refused call.
+    const effective = isNext && selectedCommand ? selectedCommand : args;
+    const selected = validate(effective, pending);
+    const recorded = decode(
+      await runner.member({
+        commandId: response.commandId,
+        actorId: response.actorId,
+        sessionId,
+        text: response.text,
+      }),
+    );
+    const member = { ...recorded, ...pending };
+    state.decisions.push(member);
+    // log answer needs the protected hook's newly issued message ID.
+    return { selected: isAnswer ? validate(effective, member) : selected, member };
+  }
+  const member = state.decisions.findLast(
+    (item) =>
+      item.sequence === identity.sequence &&
+      item.writerGeneration === identity.writerGeneration &&
+      row.response?.commandId === item.commandId &&
+      item.application === 'pending',
+  );
+  return {
+    selected: validate(isNext && member?.selectedCommand ? member.selectedCommand : args, member),
+    member,
+  };
 };
 const recordApplication = ({ member, result, directive, added, selected }) => {
   if (member && result.exitCode === 0 && directive?.kind !== 'error') {
@@ -186,10 +200,24 @@ export const applyNativeEngineCommand = async (context) => {
   const before = decode(await runner.observe());
   noteNativeEngineOpenGate(state, before);
   const { selected, member } = await selectCommand(context, before);
-  let result;
-  result = selected.creation
-    ? await runner.tool('aidlc-utility.ts', ['intent-create', ...selected.args.slice(3)])
-    : await runner.tool(`aidlc-${selected.args[1]}.ts`, selected.args.slice(2));
+  // Before intent creation, bare next has no active workflow to schedule.
+  // Re-present the pinned intake already held in the journal, including an
+  // intake previously delivered to a startup hook. Never issue another one.
+  const heldIntake =
+    same(selected.args, ['engine', 'orchestrate', 'next']) &&
+    before.status === 'not_started' &&
+    !state.decisions.length &&
+    state.directive?.kind === 'print' &&
+    /--propose <plan> --request [a-f0-9]{8}\b/.test(state.directive.message);
+  let result = heldIntake
+    ? {
+        exitCode: 0,
+        stdout: Buffer.from(JSON.stringify(state.directive) + '\n'),
+        stderr: Buffer.alloc(0),
+      }
+    : selected.creation
+      ? await runner.tool('aidlc-utility.ts', ['intent-create', ...selected.args.slice(3)])
+      : await runner.tool(`aidlc-${selected.args[1]}.ts`, selected.args.slice(2));
   if (selected.review)
     result = await completeNativeEngineReview({
       requested: result,

@@ -104,7 +104,13 @@ const withoutProject = (args, project) => {
   }
   return result;
 };
-const normalize = (args, project) => {
+export const normalizeNativeEngineCommand = (args, project) => {
+  if (
+    !Array.isArray(args) ||
+    args.length > 128 ||
+    args.some((arg) => typeof arg !== 'string' || arg.length > 65_536 || arg.includes('\0'))
+  )
+    fail();
   const selected = withoutProject(args, project);
   if (!selected.length) return ['engine', 'orchestrate', 'next'];
   return ['next', 'continue', 'report', 'park', 'team-board'].includes(selected[0])
@@ -201,8 +207,9 @@ const validateOrchestration = (args, state, project, workspaceResume) => {
   if (verb === 'continue') {
     if (
       state.directive?.kind !== 'load-steering' ||
-      canonicalJson(normalize(nativeEngineCommandWords(state.directive.next), project)) !==
-        canonicalJson(args)
+      canonicalJson(
+        normalizeNativeEngineCommand(nativeEngineCommandWords(state.directive.next), project),
+      ) !== canonicalJson(args)
     )
       fail();
   }
@@ -264,15 +271,9 @@ export const nativeEngineCommand = ({
   memberCommand = null,
   member = null,
 }) => {
-  if (
-    !Array.isArray(args) ||
-    args.length > 128 ||
-    args.some((arg) => typeof arg !== 'string' || arg.length > 65_536 || arg.includes('\0'))
-  )
-    fail();
-  args = normalize(args, project);
+  args = normalizeNativeEngineCommand(args, project);
   if (memberCommand) {
-    const selected = normalize(memberCommand, project);
+    const selected = normalizeNativeEngineCommand(memberCommand, project);
     if (canonicalJson(args) === canonicalJson(selected)) return { args, member: true };
   }
   scopedArguments(args, project);

@@ -88,6 +88,7 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
       NATIVE_WORKFLOW_ENGINE_ARN: pin.functionArn,
     },
   });
+  let observedFirstNext = false;
   const lambda = {
     async send({ input }) {
       const request = JSON.parse(input.Payload);
@@ -97,7 +98,13 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
       });
       // Observe who received the intake directive. A CLI lifecycle hook can
       // arrive before the conductor. Never feed this private receipt to it.
-      if (request.action === 'execute' && request.expectedVersion === 0 && result.result) {
+      const firstNext = !observedFirstNext && request.args?.join(' ') === 'engine orchestrate next';
+      if (
+        request.action === 'execute' &&
+        (request.expectedVersion === 0 || firstNext) &&
+        result.result
+      ) {
+        observedFirstNext ||= firstNext;
         const saved = await objects.read(request.identity, result.result, 'output');
         const directive = saved.exitCode === 0 ? JSON.parse(saved.stdout) : null;
         console.log(
@@ -112,6 +119,8 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
               .join(' '),
             version: result.version,
             resultSha256: result.result.sha256,
+            exitCode: saved.exitCode,
+            failure: saved.failure,
             directive: directive?.kind,
             issuedProposalRequest: /--request [a-f0-9]{8}\b/.test(directive?.message ?? ''),
           }),
