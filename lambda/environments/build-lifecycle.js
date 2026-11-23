@@ -1,4 +1,4 @@
-import { DescribeImageScanFindingsCommand } from '@aws-sdk/client-ecr';
+import { DescribeImageScanFindingsCommand, ECRClient } from '@aws-sdk/client-ecr';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -75,6 +75,20 @@ const repositoryNameFromImageUri = (imageUri) => {
     .join('/');
   return path.split('@')[0].split(':')[0] || null;
 };
+
+// The client for readImageScanFindings during seeding, which every request of
+// a cold start waits for: an ECR answer that does not start within
+// requestTimeout must fail (twice at most) instead of holding the request
+// until the API times out. The SDK only logs an exceeded requestTimeout
+// unless throwOnRequestTimeout is set. The timer stops once the response
+// starts; the body is one small JSON document. Tests pass a shorter
+// requestTimeout and a local endpoint.
+export const createScanReadClient = ({ requestTimeout = 5000, ...config } = {}) =>
+  new ECRClient({
+    ...config,
+    maxAttempts: 2,
+    requestHandler: { connectionTimeout: 2000, requestTimeout, throwOnRequestTimeout: true },
+  });
 
 // Reads the finished ECR scan of an image in the shape revisions store, or
 // null while the scan is pending or cannot run. The Standard revision reuses
