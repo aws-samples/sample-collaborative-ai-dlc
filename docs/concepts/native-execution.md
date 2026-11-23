@@ -6223,6 +6223,8 @@ the current contract for newly created executions.
       becomes an accepted answer.
       **Installed milestone, 2026-11-23.** Qualification `bb81fa0f` exercised two synthetic members answering the same plan question through Claude on the engine 11 image. The engine applied one choice, retrying it returned the original command, and both readers traced it to the resulting publication. Revocation denied further reads for the winning member. The deployed two-member browser journey remains open.
       **Local milestone, 2026-11-23.** Engine 11 denied the Testing Contract read during code generation in both Codex and Claude. With validator `8b06edb0` loaded from source, Codex applied seven member decisions once, completed Express and returned the same Git bundle to both members. Import verified 58 eligible files and the pinned Start parent. Claude's workspace write hook still required a matching Plan Approval receipt.
+      **Dev milestone, 2026-11-23.** Engine 12 (`b5789633`) passed independent deployment verification and its official ReadOnly preflight returned READY. Installed Claude, Codex and OpenCode each completed Express with two synthetic members. Git import verified the pinned Start parent and the published file bytes, modes and deletions.
+      The staged member collector passed 108 offline cases, including separate downloads prepared by two members on the same revision. Signed-in two-member acceptance and hosted Git delivery remain open.
 - [ ] **NE-20 — Qualify deployed execution and storage boundaries.** Verify effective
       authority/worker permissions, cross-project runtime/EFS isolation, source
       access changes, image revocation, current-writer admission, publication/package
