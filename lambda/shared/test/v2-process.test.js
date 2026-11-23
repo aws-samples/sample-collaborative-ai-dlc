@@ -334,7 +334,7 @@ describe('stage attempt ownership transactions', () => {
     });
     expect(tx.TransactItems[1].Update).toMatchObject({
       ConditionExpression:
-        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
       ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
     });
     expect(
@@ -2139,11 +2139,56 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
     );
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
+  it('claims an ended run for branch cleanup only while that run owns it', async () => {
+    store = createProcessStore({
+      ddb,
+      tableName: 'v2-proc',
+      clock: () => '2026-11-20T09:00:00.000Z',
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: { executionId: 'e1', status: 'FAILED' } });
+    const claimed = await store.claimBranchCleanup({
+      executionId: 'e1',
+      projectId: 'p1',
+      runId: 'run-1',
+      statuses: ['CANCELLED', 'FAILED'],
+      leaseMs: 60_000,
+    });
+    expect(claimed).toMatchObject({
+      status: 'FAILED',
+      branchCleanupLeaseUntil: expect.any(String),
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'orchestratorRunId = :run AND projectId = :project AND #status IN (:s0, :s1) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :now) AND (attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :now)',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':run': 'run-1',
+      ':project': 'p1',
+      ':s0': 'CANCELLED',
+      ':s1': 'FAILED',
+    });
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    expect(
+      await store.claimBranchCleanup({
+        executionId: 'e1',
+        projectId: 'p1',
+        runId: 'run-1',
+        statuses: ['FAILED'],
+        leaseMs: 60_000,
+      }),
+    ).toBeNull();
+    expect(
+      await store.releaseBranchCleanup({ executionId: 'e1', runId: 'run-1', leaseUntil: 'T' }),
+    ).toBe(false);
+  });
   it('unparks only the expected run and pending gate', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     ddb.on(GetCommand).resolves({ Item: { projectId: 'p1' } });
@@ -2157,7 +2202,7 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
     );
     expect(input.ExpressionAttributeValues).toMatchObject({
       ':fromStatus': 'WAITING',

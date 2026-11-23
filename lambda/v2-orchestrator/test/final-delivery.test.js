@@ -963,3 +963,64 @@ describe('final delivery with real DynamoDB ownership', () => {
     },
   );
 });
+
+describe('unused branch cleanup lease (real DynamoDB)', () => {
+  const cleanup = (deleteUnusedBranches) =>
+    __durableHandler(
+      {
+        action: 'cleanup-branches',
+        projectId: 'project',
+        intentId: meta.intentId,
+        executionId: meta.executionId,
+        runId: 'run1',
+      },
+      { step: (_name, fn) => fn() },
+      { store, deleteUnusedBranches, broadcast: vi.fn() },
+    );
+
+  it('refuses a relaunch while the cleanup runs, and frees the run when it ends', async () => {
+    meta = await store.updateExecution({ executionId: meta.executionId, status: 'CANCELLED' });
+    let relaunch;
+    const result = await cleanup(async (claimed, { until }) => {
+      expect(claimed).toMatchObject({ status: 'CANCELLED', orchestratorRunId: 'run1' });
+      expect(until).toBeGreaterThan(Date.now());
+      relaunch = await store
+        .updateExecution({ executionId: meta.executionId, orchestratorRunId: 'run2' })
+        .then(
+          () => 'claimed',
+          (error) => error.name,
+        );
+      return [];
+    });
+    expect(result).toEqual({ ok: true, repositories: 0 });
+    expect(relaunch).toBe('ConditionalCheckFailedException');
+    const after = await store.getExecution(meta.executionId, { consistentRead: true });
+    expect(after.orchestratorRunId).toBe('run1');
+    expect(after.branchCleanupLeaseUntil).toBeUndefined();
+    await store.updateExecution({ executionId: meta.executionId, orchestratorRunId: 'run2' });
+    expect((await store.getExecution(meta.executionId)).orchestratorRunId).toBe('run2');
+  });
+
+  it('releases the lease when the cleanup fails', async () => {
+    meta = await store.updateExecution({ executionId: meta.executionId, status: 'FAILED' });
+    const result = await cleanup(async () => {
+      throw new Error('provider down');
+    });
+    expect(result).toEqual({ ok: true, failed: true });
+    expect(
+      (await store.getExecution(meta.executionId, { consistentRead: true }))
+        .branchCleanupLeaseUntil,
+    ).toBeUndefined();
+  });
+
+  it('cleans nothing up once a relaunch owns the execution', async () => {
+    meta = await store.updateExecution({
+      executionId: meta.executionId,
+      status: 'FAILED',
+      orchestratorRunId: 'run2',
+    });
+    const deleteUnusedBranches = vi.fn(async () => []);
+    expect(await cleanup(deleteUnusedBranches)).toEqual({ ok: true, skipped: true });
+    expect(deleteUnusedBranches).not.toHaveBeenCalled();
+  });
+});

@@ -739,6 +739,39 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
+// Every branch whose name starts with `prefix`, from every page; throws
+// instead of returning a partial list. `^` anchors GitLab's branch search.
+const listBranchesWithPrefix = async (ctx, repoId, prefix) => {
+  const project = encodeProject(repoId);
+  const names = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const res = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/repository/branches?search=${encodeURIComponent(
+        `^${prefix}`,
+      )}&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Branch listing failed');
+    const branches = await res.json();
+    if (!Array.isArray(branches)) throw new ProviderError(502, 'Invalid branch listing response');
+    names.push(...branches.map((b) => b?.name).filter((name) => name?.startsWith(prefix)));
+    if (branches.length < 100) return names;
+  }
+  throw new ProviderError(502, 'Branch listing exceeds the inspection limit');
+};
+
+// Delete a branch. Returns false when it no longer exists.
+const deleteBranch = async (ctx, repoId, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${encodeProject(repoId)}/repository/branches/${encodeURIComponent(branch)}`,
+    { method: 'DELETE' },
+  );
+  if (res.ok) return true;
+  if (res.status === 404) return false;
+  throw new ProviderError(res.status, 'Branch deletion failed');
+};
+
 const findPullRequest = async (
   ctx,
   repoId,
@@ -1157,6 +1190,8 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,
@@ -1199,6 +1234,8 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,

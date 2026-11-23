@@ -716,6 +716,24 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
+// Every branch whose name starts with `prefix`. listBranches follows every
+// page and throws instead of returning a partial list.
+const listBranchesWithPrefix = async (ctx, repoId, prefix) =>
+  (await listBranches(ctx, repoId)).filter((name) => name.startsWith(prefix));
+
+// Delete a branch. Returns false when it no longer exists.
+const deleteBranch = async (ctx, repoId, branch) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches/${encodeURIComponent(branch)}`,
+    { method: 'DELETE' },
+  );
+  if (res.ok) return true;
+  if (res.status === 404) return false;
+  throw new ProviderError(res.status, 'Branch deletion failed');
+};
+
 const findPullRequest = async (
   ctx,
   repoId,
@@ -1108,6 +1126,8 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,
@@ -1144,6 +1164,8 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,
