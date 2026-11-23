@@ -189,6 +189,117 @@ describe('managed environment status handler', () => {
     });
   });
 
+  it('adds up the severity counts of every enhanced scan page', async () => {
+    const store = mutableStore();
+    const page = (severityCounts, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+        ...(severityCounts ? { findingSeverityCounts: severityCounts } : {}),
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        // The first page holds no High or Critical finding; the next one does.
+        .mockResolvedValueOnce(page({ MEDIUM: 100 }, 'page-2'))
+        .mockResolvedValueOnce(page({ CRITICAL: 1, HIGH: 3, MEDIUM: 2 }, 'page-3'))
+        .mockResolvedValueOnce(page(null)),
+    };
+    const controlClient = { send: vi.fn() };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store,
+      ecrClient,
+      controlClient,
+      runtimeClient: { send: vi.fn() },
+    })(buildEvent);
+
+    expect(result.revision).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: {
+        severityCounts: { CRITICAL: 1, HIGH: 3, MEDIUM: 102 },
+        findingsTruncated: false,
+      },
+    });
+    expect(ecrClient.send.mock.calls.slice(1).map(([command]) => command.input.nextToken)).toEqual([
+      undefined,
+      'page-2',
+      'page-3',
+    ]);
+    expect(controlClient.send).not.toHaveBeenCalled();
+  });
+
+  it('sends an enhanced scan cut at the page bound to review', async () => {
+    const store = mutableStore();
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        .mockResolvedValue({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+            findingSeverityCounts: { LOW: 1 },
+          },
+          nextToken: 'more',
+        }),
+    };
+    const controlClient = { send: vi.fn() };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store,
+      ecrClient,
+      controlClient,
+      runtimeClient: { send: vi.fn() },
+    })(buildEvent);
+
+    // One image lookup and 50 scan pages, then the partial result goes to review.
+    expect(ecrClient.send).toHaveBeenCalledTimes(51);
+    expect(result.revision).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true },
+    });
+    expect(controlClient.send).not.toHaveBeenCalled();
+  });
+
+  it('keeps an image SCANNING when a later enhanced scan page is throttled', async () => {
+    const store = mutableStore();
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        .mockResolvedValueOnce({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+            findingSeverityCounts: { MEDIUM: 100 },
+          },
+          nextToken: 'page-2',
+        })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }),
+        ),
+    };
+    const controlClient = { send: vi.fn() };
+
+    await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store,
+      ecrClient,
+      controlClient,
+      runtimeClient: { send: vi.fn() },
+    })(buildEvent);
+
+    expect(store.current.status).toBe('SCANNING');
+    expect(store.current.scanFindings).toBeUndefined();
+    expect(controlClient.send).not.toHaveBeenCalled();
+  });
+
   it('creates a runtime with the protected protocol and a stable token', async () => {
     const store = mutableStore();
     const controlClient = {
