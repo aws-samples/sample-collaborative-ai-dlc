@@ -16,6 +16,9 @@ const installedControl = new Set(
   [
     'index.js',
     'activity-store.js',
+    'result-worker.js',
+    'result-store.js',
+    'result-storage.js',
     'workflow-engine/service.js',
     'workflow-engine/store.js',
     'workflow-engine/proof-reader.js',

@@ -19,6 +19,9 @@ const loadedFrom = {};
 for (const [role, path] of Object.entries({
   executor: 'agentcore/native/executor.js',
   activityHistory: 'native-runtime-control/activity-store.js',
+  resultWorker: 'native-runtime-control/result-worker.js',
+  resultStorage: 'native-runtime-control/result-storage.js',
+  resultStore: 'native-runtime-control/result-store.js',
   publicHandler: 'native-runtime-control/index.js',
   protectedEngine: 'native-runtime-control/workflow-engine/service.js',
   journal: 'native-runtime-control/workflow-engine/store.js',

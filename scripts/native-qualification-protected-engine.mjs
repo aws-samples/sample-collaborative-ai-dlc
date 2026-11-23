@@ -141,7 +141,9 @@ export async function protectedWorkspaceEngine(
       return { Payload: Buffer.from(JSON.stringify(result)) };
     },
   };
+  let startManifest;
   const transport = await engineTransport({
+    sourceManifest: () => startManifest,
     identity: () => nativeEngineIdentity(f.row()),
     pin,
     lambda,
@@ -167,6 +169,9 @@ export async function protectedWorkspaceEngine(
       return decisions[0].selectedCommand;
     },
     completionProof: createNativeEngineProofReader({ ddb: f.ddb, tableName: TABLE, objects }),
-    prepare: (input) => prepareNativeEngineClient({ ...input, s3: storage.s3, lambda }),
+    prepare: (input) => {
+      startManifest = input.sourceBaseline?.receipt?.manifest;
+      return prepareNativeEngineClient({ ...input, s3: storage.s3, lambda });
+    },
   };
 }

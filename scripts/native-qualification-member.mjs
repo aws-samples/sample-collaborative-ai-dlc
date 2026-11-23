@@ -24,10 +24,11 @@ export function qualificationMembership(projectId) {
   };
 }
 
-export function qualificationMember(f, execution, membership) {
+export function qualificationMember(f, execution, membership, jobs) {
   const functionName = `arn:aws:lambda:us-east-1:${f.configuration.accountId}:function:fixture-authority`;
   const authority = createNativeAuthority({
     functionName,
+    stores: { execution: f.store, results: jobs },
     verify: async (token) => {
       const identity = [initiator, respondent].find((account) => account.token === token);
       if (identity) return { sub: identity.actorId };
@@ -48,7 +49,10 @@ export function qualificationMember(f, execution, membership) {
   const entry = realpathSync(new URL('../lambda/native-runtime-control/index.js', import.meta.url));
   const { LambdaClient } = createRequire(entry)('@aws-sdk/client-lambda');
   const port = mock.method(LambdaClient.prototype, 'send', async ({ input }) => {
-    assert.equal(input.FunctionName, `${functionName}:commands`);
+    assert.ok(
+      input.FunctionName === `${functionName}:commands` ||
+        (jobs && input.FunctionName === `${functionName}:results`),
+    );
     const result = await authority(JSON.parse(input.Payload), {
       invokedFunctionArn: input.FunctionName,
     });

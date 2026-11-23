@@ -29,6 +29,7 @@ import { TABLE } from '../lambda/native-runtime-control/test/fixtures.js';
 import { createNativeArtifactRevisions } from '../lambda/shared/native-artifact-revision.js';
 import { createNativeActivityStore } from '../lambda/native-runtime-control/activity-store.js';
 import {
+  initiator,
   qualificationMember,
   qualificationMembership,
   competeForQuestion,
@@ -45,6 +46,7 @@ export async function workspaceQualificationDriver({
   model = 'claude-sonnet-4-6',
   dependencyEnv = {},
   protectedWorkflow = false,
+  terminalResult = false,
 }) {
   const f = executionFixture({
     harness,
@@ -118,6 +120,19 @@ export async function workspaceQualificationDriver({
   f.prepared.inputDraft = { ...nativeDraftInputs(f.prepared), revision: 1, attachments };
   f.prepared.version += 1;
   const publications = createNativePublications(storage);
+  const gitResult = terminalResult
+    ? await (
+        await import('./native-qualification-git-result.mjs')
+      ).qualificationGitResult({
+        root,
+        project,
+        f,
+        storage,
+        memory,
+        publications,
+        tableName: TABLE,
+      })
+    : null;
   const interactions = createNativeInteractions(storage);
   const fence = createNativeExecutionFence(storage);
   const membership = qualificationMembership(f.identity.projectId);
@@ -136,11 +151,12 @@ export async function workspaceQualificationDriver({
     revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
     activity: createNativeActivityStore({ ddb: f.ddb, tableName: TABLE, now: f.now }),
     completionProof: engine?.completionProof,
+    results: gitResult?.results,
     configure: async () => f.configuration,
     enqueue: async () => {},
     authorizeSource: async () => {},
   });
-  const member = qualificationMember(f, api, membership);
+  const member = qualificationMember(f, api, membership, gitResult?.jobs);
   try {
     await assert.rejects(member.request('start', {}, { token: null }), {
       code: 'NATIVE_AUTHORITY_FORBIDDEN',
@@ -158,6 +174,7 @@ export async function workspaceQualificationDriver({
     await member.request('start', start);
   } catch (error) {
     member.close();
+    await gitResult?.close();
     await engine?.close();
     throw error;
   }
@@ -208,11 +225,14 @@ export async function workspaceQualificationDriver({
       ...createNativeExecutionPorts({ env, s3: storage.s3 }),
       ...(engine ? { prepareWorkflowEngine: (input) => engine.prepare({ ...input, env }) } : {}),
       inspectMount: async () => ({}), // Local filesystem, NOT AWS EFS proof.
-      prepare: async () => {
+      prepare: async ({ signal }) => {
+        const sourceBaseline =
+          gitResult && (await gitResult.checkout(executionIdentity(f.row()), signal));
         await fs.mkdir(join(project, '.native-control'), { recursive: true, mode: 0o700 });
         return {
           package: { ...pkg, packageId: f.configuration.packageId },
-          repositoryCommit: 'c'.repeat(40),
+          repositoryCommit: f.configuration.repository.commit,
+          ...(sourceBaseline ? { sourceBaseline } : {}),
           authEnv: { AWS_BEARER_TOKEN_BEDROCK: 'fixture-token' },
         };
       },
@@ -267,7 +287,7 @@ export async function workspaceQualificationDriver({
       ...executionIdentity(row),
       model: { provider: 'bedrock', value: 'fixture-token' },
       git: { username: 'fixture', password: 'fixture-git' },
-      source: { branch: 'main', commit: 'c'.repeat(40) },
+      source: { branch: 'main', commit: f.configuration.repository.commit },
     }),
     invoke: async ({ payload }) => {
       if (payload.command === 'native-resume') resumes.push(payload);
@@ -319,7 +339,7 @@ export async function workspaceQualificationDriver({
     resumePending = true;
   };
   let competition;
-  const begin = async (prompt, selection, compete) => {
+  const begin = async (prompt, selection, compete, token) => {
     if (resumePending) {
       if (f.row().status === 'AWAITING_USER') {
         // A waiting runtime is idle, not polled as a new workflow turn. The
@@ -351,7 +371,7 @@ export async function workspaceQualificationDriver({
       loseAck = true;
       resumePending = false;
     } else if (!first) {
-      const question = await member.request('interaction');
+      const question = await member.request('interaction', undefined, { token });
       const request = {
         requestId: randomUUID(),
         interactionId: question.id,
@@ -377,8 +397,8 @@ export async function workspaceQualificationDriver({
       }
       if (compete) competition = await competeForQuestion(f, member, question, request);
       else {
-        const reply = await member.request('response', request);
-        const duplicate = await member.request('response', request);
+        const reply = await member.request('response', request, { token });
+        const duplicate = await member.request('response', request, { token });
         assert.equal(duplicate.response.id, reply.response.id);
       }
       accepted.push(request);
@@ -389,13 +409,17 @@ export async function workspaceQualificationDriver({
     inputReads,
     get: (route, query, options) => member.request(route, undefined, { query, ...options }),
     competition: () => competition,
+    exportResult: gitResult && ((revision) => gitResult.verify(member, revision)),
     revoke: membership.revoke,
     selectedCommand: engine?.selectedCommand,
     interaction: () => member.request('interaction'),
-    async turn(prompt, { interrupt = false, selection, compete = false } = {}) {
+    async turn(
+      prompt,
+      { interrupt = false, selection, compete = false, token = initiator.token } = {},
+    ) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
-      await begin(prompt, selection, compete);
+      await begin(prompt, selection, compete, token);
       if (interrupt) {
         await supervisor(f.identity);
         const marker = join(project, '.native-control/interrupt-ready');
@@ -473,6 +497,7 @@ export async function workspaceQualificationDriver({
     },
     async close() {
       member.close();
+      await gitResult?.close();
       if (runtime.isBusy())
         await runtime.cancel({
           ...executionIdentity(f.row()),

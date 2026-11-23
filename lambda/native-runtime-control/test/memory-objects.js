@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 
 export function memoryNativeObjects({ bucket, accountId, before = () => {} }) {
   const latest = new Map();
@@ -22,7 +23,11 @@ export function memoryNativeObjects({ bucket, accountId, before = () => {} }) {
             name: 'PreconditionFailed',
             $metadata: { httpStatusCode: 412 },
           });
-        const bytes = Buffer.from(p.Body);
+        const bytes = p.Body instanceof Readable ? await buffer(p.Body) : Buffer.from(p.Body);
+        if (p.ChecksumSHA256) {
+          if (p.ContentLength !== undefined) assert.equal(p.ContentLength, bytes.length);
+          assert.equal(p.ChecksumSHA256, createHash('sha256').update(bytes).digest('base64'));
+        }
         const item = {
           bytes,
           version: `immutable-${++version}`,
@@ -33,9 +38,18 @@ export function memoryNativeObjects({ bucket, accountId, before = () => {} }) {
         writes.push(p.Key);
         return { VersionId: item.version, ETag: item.etag };
       }
-      assert.equal(command.constructor.name, 'GetObjectCommand');
       const item = p.VersionId ? objects.get(`${p.Key}\0${p.VersionId}`) : current;
       if (!item) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+      if (command.constructor.name === 'HeadObjectCommand') {
+        assert.ok(p.VersionId);
+        assert.equal(p.ChecksumMode, 'ENABLED');
+        return {
+          VersionId: item.version,
+          ContentLength: item.bytes.length,
+          ChecksumSHA256: createHash('sha256').update(item.bytes).digest('base64'),
+        };
+      }
+      assert.equal(command.constructor.name, 'GetObjectCommand');
       return {
         VersionId: item.version,
         ETag: item.etag,

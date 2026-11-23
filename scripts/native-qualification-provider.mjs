@@ -190,8 +190,12 @@ function scriptedToolOutput(harness, request, { id, denied }) {
     const result = request.messages
       .at(-1)
       ?.content?.find?.((item) => item.type === 'tool_result' && item.tool_use_id === id);
-    assert.equal(Boolean(result?.is_error), Boolean(denied));
     output = contentText(result?.content);
+    if (Boolean(result?.is_error) !== Boolean(denied)) {
+      const error = new Error('Unexpected installed Claude tool status');
+      error.code = output?.match(/\bNATIVE_ENGINE_[A-Z_]+\b/)?.[0] ?? 'fixture_claude_tool_failed';
+      throw error;
+    }
   }
   assert.equal(typeof output, 'string', 'Installed result for this tool call');
   if (denied) assert.match(output, /\bNATIVE_ENGINE_COMMAND_DENIED\b/);
@@ -230,7 +234,7 @@ function sendScriptedStep(harness, request, res, { value, done }, id) {
 }
 
 export async function qualificationProvider(harness, { claudeReply, requestLimit = 32 } = {}) {
-  assert.ok(Number.isSafeInteger(requestLimit) && requestLimit >= 1 && requestLimit <= 64);
+  assert.ok(Number.isSafeInteger(requestLimit) && requestLimit >= 1 && requestLimit <= 128);
   let turn = 0;
   let started;
   let toolSent = false;

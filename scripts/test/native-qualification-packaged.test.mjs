@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { engineTransport } from '../native-qualification-engine-transport.mjs';
 import { mkdir, mkdtemp, writeFile, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -29,6 +32,49 @@ test('the actual bundled controller adapter retains authoritative Start through 
     );
   } finally {
     await rm(staged.directory, { recursive: true, force: true });
+  }
+});
+
+test('the child reads only the exact retained Start manifest version, and cannot write it', async () => {
+  const identity = {
+    projectId: randomUUID(),
+    executionId: randomUUID(),
+    bindingId: randomUUID(),
+    attemptId: randomUUID(),
+    epoch: 1,
+  };
+  const manifest = { key: 'native-executions/fixture/manifest.json', versionId: 'v1' };
+  const seen = [];
+  const transport = await engineTransport({
+    identity: () => identity,
+    sourceManifest: () => manifest,
+    s3: {
+      send: async (command) => {
+        seen.push(command.input);
+        return { VersionId: 'v1', Body: Readable.from([Buffer.from('pinned')]) };
+      },
+    },
+  });
+  const send = (route, input) =>
+    fetch(`http://127.0.0.1:${transport.env.NATIVE_FIXTURE_PORT}/${route}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  const target = { Key: manifest.key, VersionId: manifest.versionId };
+  try {
+    const exact = await send('get', target);
+    assert.equal(exact.status, 200);
+    assert.equal(Buffer.from((await exact.json()).Body, 'base64').toString(), 'pinned');
+    for (const [route, input] of [
+      ['get', { Key: target.Key }],
+      ['get', { ...target, VersionId: 'v2' }],
+      ['get', { ...target, Key: 'another-manifest' }],
+      ['put', { ...target, Body: 'YQ==' }],
+    ])
+      assert.equal((await send(route, input)).status, 400);
+    assert.deepEqual(seen, [target]);
+  } finally {
+    await transport.close();
   }
 });
 
@@ -291,6 +337,9 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       'authority.js',
       'index.js',
       'activity-store.js',
+      'result-worker.js',
+      'result-store.js',
+      'result-storage.js',
       'workflow-engine/service.js',
       'execution-worker.js',
       'execution-api.js',
@@ -314,7 +363,14 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       "import {createNativeWorkflowEngine} from '../lambda/native-runtime-control/workflow-engine/service.js';",
     );
     staged = await stagePackagedQualification(root);
-    for (const path of ['index.js', 'activity-store.js', 'workflow-engine/service.js'])
+    for (const path of [
+      'index.js',
+      'activity-store.js',
+      'workflow-engine/service.js',
+      'result-worker.js',
+      'result-storage.js',
+      'result-store.js',
+    ])
       assert.equal(
         await readlink(join(staged.directory, 'lambda/native-runtime-control', path)),
         `/opt/native-runtime-control/${path}`,

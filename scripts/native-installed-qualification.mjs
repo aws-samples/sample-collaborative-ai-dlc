@@ -255,31 +255,42 @@ try {
     provider = undefined;
     // Each EFS scenario owns its own attested installation within the bounded tmpfs.
     await fs.rm(base, { recursive: true, force: true });
-    phase = 'protected-member-workspace-resume';
     let protectedFailed = false;
-    if (process.env.NATIVE_QUALIFICATION_PACKAGED === 'true' && pkg.version === '2.11.1') {
+    const cases = ['protected-member-workspace-resume'];
+    if (harness === 'codex') cases.push('protected-member-terminal-git-result');
+    for (const probe of cases) {
+      phase = probe;
+      if (process.env.NATIVE_QUALIFICATION_PACKAGED !== 'true' || pkg.version !== '2.11.1') {
+        protectedBlocked = true;
+        report({
+          probe,
+          status: 'BLOCKED',
+          prerequisite: 'packaged image and attested workflow 2.11.1',
+        });
+        continue;
+      }
       try {
-        await qualifyWorkspaceTransport(harness, { protectedWorkflow: true });
+        await qualifyWorkspaceTransport(harness, {
+          protectedWorkflow: true,
+          terminalResult: probe === 'protected-member-terminal-git-result',
+        });
       } catch (error) {
         protectedFailed = true;
         report({
-          probe: phase,
+          probe,
           status: 'FAIL',
           code: error.code ?? error.name,
           check: error.operator,
+          location: error.stack
+            ?.split('\n')
+            .find((line) => line.includes('/fixture/scripts/'))
+            ?.trim(),
           turn: error.fixtureTurn,
           tool: error.fixtureTool,
           toolExit: error.fixtureExit,
           directive: error.directive,
         });
       }
-    } else {
-      protectedBlocked = true;
-      report({
-        probe: phase,
-        status: 'BLOCKED',
-        prerequisite: 'packaged image and attested workflow 2.11.1',
-      });
     }
     phase = 'upstream-workspace-resume';
     if (harness === 'claude') await qualifyClaudeWorkspaceProtocol({ composed: true });

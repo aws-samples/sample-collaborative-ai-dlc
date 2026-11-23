@@ -71,6 +71,14 @@ function* loadStage(command) {
   assert.match(steering.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
   return yield* runDirective(steering.next);
 }
+async function readBoth(driver, route, parameters) {
+  const [original, reopened] = await Promise.all(
+    [initiator, respondent].map(({ token }) => driver.get(route, parameters, { token })),
+  );
+  assert.deepEqual(reopened, original);
+  return original;
+}
+
 // Follow the two bearer identities across immutable revisions and the public
 // activity feed, including after the respondent loses project membership.
 async function qualifyCompetingHistory({
@@ -92,23 +100,16 @@ async function qualifyCompetingHistory({
   const selectedCommand = await driver.selectedCommand(held.publicationId, race.commandId);
   assert.equal(`aidlc ${selectedCommand.join(' ')}`, offer.choices[0].command);
   const query = publicationQuery(first);
-  const readBoth = async (route, parameters) => {
-    const [original, reopened] = await Promise.all(
-      [initiator, respondent].map(({ token }) => driver.get(route, parameters, { token })),
-    );
-    assert.deepEqual(reopened, original);
-    return original;
-  };
-  const original = await readBoth('publication', query);
+  const original = await readBoth(driver, 'publication', query);
   assert.equal(original.id, first.publicationId);
   assert.equal(original.interactionId, first.id);
   assert.equal(original.sequence, first.sequence);
-  assert.deepEqual(await readBoth('interaction', query), history);
+  assert.deepEqual(await readBoth(driver, 'interaction', query), history);
   assert.deepEqual(
-    await readBoth('publication', { ...publicationQuery(held), evidence: '1' }),
+    await readBoth(driver, 'publication', { ...publicationQuery(held), evidence: '1' }),
     gateEvidence,
   );
-  const { events, nextEventAfter } = await readBoth('outputs', { afterEvent: '0' });
+  const { events, nextEventAfter } = await readBoth(driver, 'outputs', { afterEvent: '0' });
   assert.equal(nextEventAfter, null);
   assert.equal(events.find((event) => event.type === 'native.accepted').actor, initiator.actorId);
   const acceptedTurns = events.filter((event) => event.type === 'native.answer.accepted');
@@ -153,7 +154,7 @@ async function qualifyCompetingHistory({
     revokedReadCode: denied.code,
   };
 }
-async function qualifyProtectedMember({ harness, driver, provider, project }) {
+async function qualifyProtectedMember({ harness, driver, provider, project, terminalResult }) {
   const pendingFile = join(project, '.native-control/pending-question.json');
   const unfinished = {
     filePath: join(project, 'nested/unfinished-review.txt'),
@@ -198,7 +199,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   assert.equal((await driver.get('publication')).id, first.publicationId);
   assert.deepEqual((await proof(first)).engineApplication, []);
   const selection = { answers: [{ selectedOptions: [0] }] };
-  const compete = harness === 'claude';
+  const compete = harness === 'claude' || terminalResult;
   const gateQuestion = 'Review the requirements. How would you like to proceed?';
   const gateSpec = {
     version: 2,
@@ -215,6 +216,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
     };
     yield { command: `${nextCommand} --resume`, denied: true };
     stage = yield* loadStage(nextCommand);
+    if (terminalResult) return yield* presentExpressStage(stage, project, pendingFile);
     assert.equal(stage.stage, 'requirements-analysis');
     assert.equal(stage.gate, true);
     assert.equal(stage.produces.length, 2);
@@ -241,7 +243,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   );
   const held = await driver.interaction();
   assert.equal(held.pendingInput.kind, 'approval');
-  assert.equal(held.pendingInput.stage, 'requirements-analysis');
+  assert.equal(held.pendingInput.stage, stage.stage);
   const history = await driver.get('interaction', publicationQuery(first));
   assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
   assert.equal(history.answer.context.publicationId, first.publicationId);
@@ -260,6 +262,23 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   assert.equal(before.effectivePlan.scope, 'express');
   const gate = before.effectivePlan.stages.find((s) => s.id === held.pendingInput.stage);
   assert.equal(gate.state, 'awaiting-approval');
+
+  if (terminalResult) {
+    await qualifyExpressResult({
+      harness,
+      driver,
+      turn,
+      project,
+      held,
+      pendingFile,
+      before,
+      proof,
+      first,
+      history,
+      offer,
+    });
+    return;
+  }
 
   // Keep the genuine CLI turn open after its unfinished write, before any
   // workflow command can consume the delivered approval.
@@ -353,6 +372,266 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
       workflowCompletion: after.workflowCompletion,
       ...(competition ? { competition } : {}),
       ...native,
+    }),
+  );
+}
+
+function* presentExpressStage(directive, project, pendingFile) {
+  console.log(
+    JSON.stringify({
+      probe: 'protected-express-stage',
+      stage: directive.stage,
+      gateOnly: directive.gate_only ?? false,
+      produces: directive.produces?.length,
+    }),
+  );
+  assert.equal(directive.kind, 'run-stage');
+  assert.equal(directive.gate, true);
+  const paths = directive.produces ?? [];
+  for (const path of paths) {
+    assert.match(path, /^aidlc\/[a-zA-Z0-9_./-]+$/);
+    assert.ok(!path.split('/').includes('..'));
+  }
+  if (directive.stage === 'code-generation') {
+    // The installed coding hook binds source writes to this plan and its
+    // current Testing Contract. Express proceeds without a separate plan vote.
+    const output = yield { command: 'aidlc engine testing-posture render' };
+    const contract = output.match(/^## Testing Contract\s+```json\n[\s\S]*?\n```$/m)?.[0];
+    assert.ok(contract, 'The installed tool rendered a complete Testing Contract');
+    const plan = paths.find((path) => path.endsWith('/code-generation-plan.md'));
+    const instructions = paths.find((path) => path.endsWith('/unit-test-instructions.md'));
+    assert.ok(plan && instructions);
+    yield {
+      filePath: join(project, plan),
+      content: `# Counter plan\n\n## Summary\nCreate a local integer counter and test increment(1).\n\n- [ ] Write the counter regression.\n- [ ] Implement increment and run the test.\n\n${contract}\n`,
+    };
+    yield {
+      filePath: join(project, instructions),
+      content:
+        '# Unit test instructions\n\nRun `node --test counter.test.mjs`. The regression expects increment(1) to equal 2.\n',
+    };
+    let build = yield* runDirective('aidlc engine orchestrate next');
+    if (build.kind === 'load-steering') {
+      assert.match(build.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
+      build = yield* runDirective(build.next);
+    }
+    assert.equal(build.kind, 'run-stage');
+    assert.equal(build.stage, directive.stage);
+    assert.equal(build.plan_approval?.status, 'approved');
+    assert.equal(build.plan_approval.skipped, true);
+    yield {
+      filePath: join(project, 'counter.test.mjs'),
+      content:
+        "import {test} from 'node:test';\nimport assert from 'node:assert/strict';\nimport {increment} from './counter.js';\ntest('increments once', () => assert.equal(increment(1),2));\n",
+    };
+    yield {
+      filePath: join(project, 'counter.js'),
+      content: 'export const increment = value => value + 1;\n',
+    };
+    const result = yield { command: 'chmod +x run && rm obsolete.bin && ./run' };
+    assert.match(result, /pass 1/);
+  }
+  for (const path of paths) {
+    if (
+      directive.stage === 'code-generation' &&
+      /\/(?:code-generation-plan|unit-test-instructions)\.md$/.test(path)
+    )
+      continue;
+    const content = path.endsWith('.json')
+      ? JSON.stringify({
+          requirement: 'increment an integer by one',
+          implementation: 'counter.js',
+          test: 'counter.test.mjs',
+        }) + '\n'
+      : `# ${directive.stage}\n\nThe fixture implements a local integer counter. The Node regression expects increment(1) to equal 2. Run it with ./run.\n`;
+    yield { filePath: join(project, path), content };
+  }
+  const report = yield* runDirective(
+    `aidlc engine orchestrate report --stage ${directive.stage} --result awaiting-approval`,
+  );
+  assert.match(report.message, /Recorded awaiting-approval/);
+  const prompt = `Review ${directive.stage}. How would you like to proceed?`;
+  yield {
+    filePath: pendingFile,
+    content: JSON.stringify({
+      version: 2,
+      questions: [{ prompt, options: [{ label: 'Approve' }, { label: 'Request Changes' }] }],
+    }),
+  };
+  return prompt;
+}
+
+async function qualifyExpressResult({
+  harness,
+  driver,
+  turn,
+  project,
+  held,
+  pendingFile,
+  before,
+  proof,
+  first,
+  history,
+  offer,
+}) {
+  const race = driver.competition();
+  assert.equal(race.commandId, history.answer.id);
+  assert.equal(history.answer.actorId, respondent.actorId);
+  assert.equal(
+    `aidlc ${(await driver.selectedCommand(held.publicationId, race.commandId)).join(' ')}`,
+    offer.choices[0].command,
+  );
+  assert.deepEqual(await readBoth(driver, 'interaction', publicationQuery(first)), history);
+  let waiting = held,
+    terminal = false;
+  const decisions = [
+    {
+      publicationId: first.publicationId,
+      interactionId: first.id,
+      commandId: race.commandId,
+      actorId: race.winner,
+      resultingPublicationId: held.publicationId,
+      contentSha256: first.contentSha256,
+    },
+  ];
+  const next = 'aidlc engine orchestrate next';
+  for (let gate = 0; !terminal && gate < before.effectivePlan.stages.length; gate++) {
+    const current = waiting,
+      query = publicationQuery(current);
+    const opened = await readBoth(driver, 'interaction', query);
+    const { response, ...question } = current;
+    assert.equal(response, null);
+    assert.deepEqual(opened.interaction, question);
+    assert.equal(opened.answer, null);
+    assert.equal(
+      current.pendingInput?.kind,
+      'approval',
+      `Expected a bound stage approval at publication ${current.publicationId}`,
+    );
+    const actor = gate % 2 ? respondent : initiator;
+    console.log(
+      JSON.stringify({
+        probe: 'protected-express-gate',
+        stage: current.pendingInput.stage,
+        publicationId: current.publicationId,
+        sequence: current.sequence,
+        actor: actor.actorId,
+      }),
+    );
+    const options = current.pendingInput.questions[0].options;
+    const index = options.findIndex((option) => option.label === 'Approve');
+    assert.ok(index >= 0);
+    function* advance() {
+      let directive = yield* runDirective(next);
+      // Applying a protected approval returns a report before the next stage.
+      for (let step = 0; step < 5; step++) {
+        if (directive.kind === 'done' && !directive.workflow_continues) {
+          terminal = true;
+          return 'The Express workflow has completed.';
+        }
+        if (directive.kind === 'run-stage') break;
+        if (directive.kind === 'load-steering') {
+          assert.match(directive.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
+          directive = yield* runDirective(directive.next);
+        } else {
+          assert.ok(
+            ['print', 'done'].includes(directive.kind) ||
+              (!directive.kind && Object.hasOwn(directive, 'next_stage')),
+            JSON.stringify(directive),
+          );
+          directive = yield* runDirective(next);
+        }
+      }
+      return yield* presentExpressStage(directive, project, pendingFile);
+    }
+    await turn('Approve', advance(), {
+      token: actor.token,
+      selection: { answers: [{ selectedOptions: [index] }] },
+    });
+    waiting = await driver.interaction();
+    const accepted = await readBoth(driver, 'interaction', query);
+    assert.equal(accepted.answer.actorId, actor.actorId);
+    assert.equal(accepted.answer.text, 'Approve');
+    assert.equal(accepted.answer.context.membershipRecorded, true);
+    assert.equal(accepted.answer.resultingPublication.publicationSequence, waiting.sequence);
+    assert.equal(accepted.answer.context.contentSha256, current.contentSha256);
+    assert.equal(accepted.answer.resultingPublication.publicationId, waiting.publicationId);
+    const decision = (await proof(waiting)).engineApplication.filter(
+      (item) => item.commandId === accepted.answer.id,
+    );
+    assert.equal(decision.length, 1);
+    assert.equal(decision[0].effect, 'GATE_APPROVED');
+    assert.equal(decision[0].application, 'applied');
+    assert.equal(decision[0].actorId, actor.actorId);
+    assert.equal(decision[0].stage, current.pendingInput.stage);
+    assert.equal(decision[0].contentSha256, current.contentSha256);
+    assert.equal(decision[0].interactionId, current.id);
+    decisions.push({
+      publicationId: current.publicationId,
+      interactionId: current.id,
+      commandId: accepted.answer.id,
+      actorId: actor.actorId,
+      stage: decision[0].stage,
+      resultingPublicationId: waiting.publicationId,
+      contentSha256: current.contentSha256,
+    });
+  }
+  assert.ok(terminal);
+  assert.equal(waiting.pendingInput, null);
+  const verified = await readBoth(driver, 'publication', {
+    ...publicationQuery(waiting),
+    evidence: '1',
+  });
+  const revision = await readBoth(driver, 'publication', publicationQuery(waiting));
+  assert.equal(revision.id, verified.publicationId);
+  assert.equal(revision.sequence, verified.publicationSequence);
+  assert.equal(verified.workflowCompletion, 'complete');
+  assert.equal(verified.humanApproval, 'applied');
+  assert.equal(verified.requiredChecks, 'not_required');
+  assert.equal(verified.finalReview, 'not_required');
+  assert.deepEqual(
+    verified.engineApplication.map((d) => d.commandId),
+    decisions.map((d) => d.commandId),
+  );
+  assert.deepEqual(
+    verified.gates.map((g) => g.commandId).toSorted(),
+    decisions
+      .slice(1)
+      .map((d) => d.commandId)
+      .toSorted(),
+  );
+  assert.ok(verified.gates.every((g) => g.status === 'applied'));
+  const historical = await readBoth(driver, 'publication', {
+    ...publicationQuery(held),
+    evidence: '1',
+  });
+  assert.equal(historical.workflowCompletion, 'not_verified');
+  assert.deepEqual(historical.gates, before.gates);
+  assert.deepEqual(historical.engineApplication, before.engineApplication);
+  const exported = await driver.exportResult(revision);
+  console.log(
+    JSON.stringify({
+      probe: 'protected-member-terminal-git-result',
+      harness,
+      status: 'PASS',
+      packageId: verified.context.packageId,
+      attemptId: verified.context.attemptId,
+      configurationSha256: verified.context.configurationSha256,
+      publicationId: verified.publicationId,
+      publicationSequence: verified.publicationSequence,
+      filesSha256: verified.filesSha256,
+      producer: verified.producer,
+      workflowCompletion: verified.workflowCompletion,
+      requiredChecks: verified.requiredChecks,
+      finalReview: verified.finalReview,
+      humanApproval: verified.humanApproval,
+      terminalOutcome: verified.terminalOutcome,
+      appliedGates: verified.gates,
+      priorWaitingPublication: historical.publicationId,
+      priorCompletion: historical.workflowCompletion,
+      competition: race,
+      decisions,
+      exported,
     }),
   );
 }
@@ -742,11 +1021,16 @@ export async function qualifyClaudeWorkspaceProtocol({
 
 // The protected member row is shared. The upstream rows retain their own
 // project-type reconciliation, dependency and file-preservation checks.
-export async function qualifyWorkspaceTransport(harness, { protectedWorkflow = false } = {}) {
+export async function qualifyWorkspaceTransport(
+  harness,
+  { protectedWorkflow = false, terminalResult = false } = {},
+) {
   assert.ok(['codex', 'opencode'].includes(harness) || (protectedWorkflow && harness === 'claude'));
   const root = await fs.mkdtemp('/tmp/native-workspace-transport-');
   const project = join(root, 'project');
-  const provider = await qualificationProvider(harness, { requestLimit: 64 });
+  const provider = await qualificationProvider(harness, {
+    requestLimit: terminalResult ? 128 : 64,
+  });
   let driver;
   try {
     const pkg = await prepareQualificationPackage(root, '/assets');
@@ -765,9 +1049,10 @@ export async function qualifyWorkspaceTransport(harness, { protectedWorkflow = f
         harness
       ],
       protectedWorkflow,
+      terminalResult,
     });
     if (protectedWorkflow) {
-      await qualifyProtectedMember({ harness, driver, provider, project });
+      await qualifyProtectedMember({ harness, driver, provider, project, terminalResult });
       return;
     }
     let turn = 0;

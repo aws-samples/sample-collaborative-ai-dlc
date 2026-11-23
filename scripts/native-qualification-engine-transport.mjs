@@ -12,7 +12,7 @@ import {
   nativeEngineObjectPrefix,
 } from '../lambda/shared/native-workflow-protocol.js';
 
-export async function engineTransport({ identity, pin, lambda, s3 }) {
+export async function engineTransport({ identity, pin, lambda, s3, sourceManifest }) {
   const server = createServer(async (req, res) => {
     try {
       assert.equal(req.method, 'POST');
@@ -28,10 +28,16 @@ export async function engineTransport({ identity, pin, lambda, s3 }) {
         const put = req.url === '/put';
         assert.ok(put || req.url === '/get');
         const allowed = put ? ['input'] : ['input', 'output'];
+        // The production child reads exactly the preparer's Start manifest to
+        // retain Git modes and explicit deletions in every command snapshot.
+        const baseline = sourceManifest?.();
+        const readStart =
+          !put && baseline && input.Key === baseline.key && input.VersionId === baseline.versionId;
         assert.ok(
-          allowed.some((purpose) =>
-            input.Key.startsWith(nativeEngineObjectPrefix(identity(), purpose)),
-          ),
+          readStart ||
+            allowed.some((purpose) =>
+              input.Key.startsWith(nativeEngineObjectPrefix(identity(), purpose)),
+            ),
         );
         if (put) input.Body = Buffer.from(input.Body, 'base64');
         else assert.ok(input.VersionId);
