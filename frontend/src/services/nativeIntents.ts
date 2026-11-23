@@ -5,6 +5,7 @@ import {
 } from '@/lib/nativePendingInput';
 import type { StructuredAnswer } from './questions';
 import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
+import { workspaceRecoveryBlocked } from '@/lib/executionCapabilities';
 import { api, ApiError } from './api';
 import type { WorkflowPackageHarness } from './workflowSources';
 import type {
@@ -775,19 +776,9 @@ function execution(value: unknown): NativeExecution | null {
         : {}),
     };
     if (value.recoveryMode === 'efs-workspace-v1') {
-      if (
-        recovery.workflowResumeState !== 'created' ||
-        ['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
-          recovery.reason,
-        )
-      )
+      if (recovery.workflowResumeState !== 'created' || workspaceRecoveryBlocked(recovery.reason))
         recovery.canRecover = false;
-      if (
-        recovery.workflowResumeState !== 'created' &&
-        !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
-          recovery.reason,
-        )
-      )
+      if (recovery.workflowResumeState !== 'created' && !workspaceRecoveryBlocked(recovery.reason))
         recovery.reason =
           recovery.workflowResumeState === 'not_created'
             ? 'INTAKE_UNAVAILABLE'

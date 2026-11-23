@@ -89,7 +89,7 @@ export function NativeIntentCreation({
   const repos = nativeApplicationRepositories(project.repos);
   const repoKey = nativeRepositoryKey;
   const [selectedRepo, setSelectedRepo] = useState(() =>
-    repos.length === 1 ? repoKey(repos[0]) : '',
+    repos.length === 1 && query.get('chooseRepository') !== '1' ? repoKey(repos[0]) : '',
   );
   const repository = repos.find((repo) => repoKey(repo) === selectedRepo);
 

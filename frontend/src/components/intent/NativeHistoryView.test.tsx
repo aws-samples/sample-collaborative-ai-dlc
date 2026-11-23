@@ -410,6 +410,60 @@ const uncertainIntent = (): NativeIntent => ({
     stopStatus: { state: 'confirmed', confirmedAt: stamp },
   },
 });
+it.each([
+  ['CANCEL_REQUESTED', 'pending', false],
+  ['CANCELLED', 'unconfirmed', false],
+  ['CANCELLED', 'confirmed', true],
+  ['FAILED', 'unconfirmed', false],
+  ['FAILED', 'confirmed', true],
+  ['STOPPED', 'unconfirmed', false],
+  ['RUNNING', 'unconfirmed', false],
+  ['RECOVERING', 'unconfirmed', false],
+] as const)(
+  'fresh creation in inspection for %s with %s stop evidence',
+  async (status, state, eligible) => {
+    mount('?nativeInspect=1', {
+      ...intent,
+      execution: {
+        ...intent.execution!,
+        status,
+        stopStatus: { state, confirmedAt: state === 'confirmed' ? stamp : null },
+      },
+    });
+    await screen.findByRole('link', { name: 'Open publication 1' });
+    expect(Boolean(screen.queryByRole('link', { name: 'Create a fresh native intent' }))).toBe(
+      eligible,
+    );
+  },
+);
+
+it.each([
+  ['SESSION_LOST', 'created', true, 'confirmed', false],
+  ['DELIVERY_UNCERTAIN', 'created', false, 'confirmed', false],
+  ['WORKFLOW_STATE_UNAVAILABLE', undefined, false, 'confirmed', false],
+  ['WORKSPACE_UNAVAILABLE', 'unavailable', false, 'unconfirmed', false],
+  ['WORKSPACE_UNAVAILABLE', 'unavailable', false, 'confirmed', true],
+  ['INTAKE_UNAVAILABLE', 'not_created', false, 'confirmed', true],
+  ['WORKFLOW_STATE_UNAVAILABLE', 'unavailable', false, 'confirmed', true],
+] as const)(
+  'fresh creation for %s (%s, canRecover=%s, stop=%s)',
+  async (reason, workflowResumeState, canRecover, state, eligible) => {
+    mount('?nativeInspect=1', {
+      ...intent,
+      execution: {
+        ...intent.execution!,
+        status: 'RECOVERY_REQUIRED',
+        recovery: { id: 'episode', reason, workflowResumeState, canRecover },
+        stopStatus: { state, confirmedAt: state === 'confirmed' ? stamp : null },
+      },
+    });
+    await screen.findByRole('link', { name: 'Open publication 1' });
+    expect(Boolean(screen.queryByRole('link', { name: 'Create a fresh native intent' }))).toBe(
+      eligible,
+    );
+  },
+);
+
 it('compares the selected historical publication with its pinned source while a later head exists', async () => {
   mocks.source.mockResolvedValueOnce(null);
   mount(nativeHistorySearch('', { revision: selected }));
@@ -450,7 +504,8 @@ it('withholds current result actions when the publication sequence disagrees wit
   expect(screen.queryByRole('button', { name: 'Prepare result archive' })).toBeNull();
   expect(mocks.request).not.toHaveBeenCalled();
 });
-it('inspection uses the admitted publication, original request and immutable answer without dispatching a historical answer', async () => {
+const inspectionStatuses = ['RECOVERY_REQUIRED', 'CANCELLED'] as const;
+it.each(inspectionStatuses)('exports the inspected %s decision without replay', async (status) => {
   mocks.decision.mockResolvedValueOnce({
     interaction: { harness: 'codex', messages: [{ type: 'text', text: 'Uncertain proposal' }] },
     answer: {
@@ -463,7 +518,8 @@ it('inspection uses the admitted publication, original request and immutable ans
       resultingPublication: null,
     },
   });
-  mount('?nativeInspect=1', uncertainIntent());
+  const inspected = uncertainIntent();
+  mount('?nativeInspect=1', { ...inspected, execution: { ...inspected.execution!, status } });
   expect(await screen.findByText('Uncertain proposal')).toBeVisible();
   expect(screen.getByText('Original request')).toBeVisible();
   expect(screen.getByText(/Runtime stop confirmed at/)).toBeVisible();
@@ -476,6 +532,9 @@ it('inspection uses the admitted publication, original request and immutable ans
   });
   expect(screen.getByRole('button', { name: 'Prepare result archive' })).toBeVisible();
   expect(screen.getByRole('button', { name: 'Prepare Git bundle' })).toBeVisible();
+  expect(Boolean(screen.queryByRole('link', { name: 'Create a fresh native intent' }))).toBe(
+    status === 'CANCELLED',
+  );
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   expect(
     screen.queryByRole('button', { name: /Send reply|Start agent|Recover session/ }),
@@ -495,7 +554,7 @@ it('inspection uses the admitted publication, original request and immutable ans
   });
   fireEvent.click(screen.getByRole('button', { name: 'Prepare result archive' }));
   await screen.findByRole('button', { name: 'Download result archive' });
-  expect(mocks.request).toHaveBeenCalledWith(
+  expect(mocks.request).toHaveBeenCalledExactlyOnceWith(
     intent.projectId,
     intent.id,
     expect.objectContaining({ publicationId: newId, publicationSequence: 2 }),
@@ -509,6 +568,7 @@ it('inspection does not infer stop or publication sequence from an old terminal 
     execution: { ...intent.execution!, status: 'CANCELLED' },
   });
   expect(await screen.findByText(/Runtime stop is not established/)).toBeVisible();
+  expect(screen.queryByRole('link', { name: 'Create a fresh native intent' })).toBeNull();
   expect(await screen.findByRole('link', { name: 'Open publication 1' })).toBeVisible();
   expect(mocks.revision).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Prepare result archive' })).not.toBeInTheDocument();

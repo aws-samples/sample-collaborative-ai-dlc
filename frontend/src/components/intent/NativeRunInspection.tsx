@@ -1,6 +1,8 @@
 import type { NativeIntent } from '@/services/nativeIntents';
+import { canCreateFreshNativeIntent } from '@/lib/executionCapabilities';
 import { NativeHistoryView } from './NativeHistoryView';
 import { useMemo } from 'react';
+import { Link } from 'react-router';
 
 export function NativeRunInspection({
   intent,
@@ -67,9 +69,22 @@ export function NativeRunInspection({
         )}
         <p className="text-sm text-muted-foreground">
           Result exports contain published public files, not a complete runnable workspace. Private
-          sessions and unpublished workspace files are not included. Creating a replacement run and
-          archiving work are not available here.
+          sessions and unpublished workspace files are not included. Archiving work is unavailable.
         </p>
+        {canCreateFreshNativeIntent(intent) && (
+          <div className="space-y-1">
+            <Link
+              className="text-sm text-primary underline underline-offset-4"
+              to={`/space/${encodeURIComponent(intent.projectId)}/intent/new?backend=native&chooseRepository=1`}
+            >
+              Create a fresh native intent
+            </Link>
+            <p className="text-xs text-muted-foreground">
+              Choose a connected application repository and write a new request. Earlier answers
+              stay with this intent. You prepare and start the new workspace separately.
+            </p>
+          </div>
+        )}
       </section>
       {execution && (
         <NativeHistoryView

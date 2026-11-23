@@ -146,6 +146,15 @@ it('explains native settings before creating a draft without loading current pri
   expect(create).not.toHaveBeenCalled();
 });
 
+it('withholds fresh creation when the current space capability read denies the inspecting member', async () => {
+  capabilities.mockRejectedValueOnce(new ApiError(403, 'Space access revoked'));
+  renderPage('/space/project-1/intent/new?backend=native&chooseRepository=1');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Space access revoked');
+  expect(capabilities).toHaveBeenCalledExactlyOnceWith('project-1');
+  expect(screen.queryByLabelText('Application repository')).toBeNull();
+  expect(create).not.toHaveBeenCalled();
+});
+
 it.each([false, true])(
   'opens the creation link and submits a draft with the real capability gate and executionEnabled=%s',
   async (executionEnabled) => {
@@ -374,8 +383,12 @@ it('only refreshes the original identity after an uncertain reload and an absent
   create.mockRejectedValueOnce(new Error('Response lost'));
   get.mockRejectedValueOnce(new ApiError(404, 'Not found'));
   const user = userEvent.setup();
-  const page = renderPage();
+  const page = renderPage(`${entry}&chooseRepository=1`);
   await user.type(await screen.findByRole('textbox', { name: 'Title' }), 'Original');
+  await user.selectOptions(
+    screen.getByLabelText('Application repository'),
+    screen.getByRole('option', { name: 'owner/app (github)' }),
+  );
   await user.click(screen.getByRole('button', { name: 'Create native draft' }));
   await screen.findByRole('alert');
   const url = screen.getByTestId('location').textContent!;

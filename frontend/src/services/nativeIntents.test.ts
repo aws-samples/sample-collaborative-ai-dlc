@@ -343,6 +343,7 @@ describe('native intent response boundary', () => {
     { id: 'another-run' },
     { executionBackend: 'platform' },
     { status: 'RUNNING' },
+    { status: 'ARCHIVED' },
     { harness: 'unknown' },
     { createdAt: 'invalid' },
   ])('rejects foreign or unrecognized status: %j', async (patch) => {
@@ -611,6 +612,7 @@ describe('native execution and committed publication boundary', () => {
   });
   it.each([
     { status: 'SUCCEEDED' },
+    { status: 'ARCHIVED' },
     { epoch: -1 },
     { epoch: 0.5 },
     { epoch: '1' },

@@ -1,4 +1,4 @@
-import type { NativeIntent } from '@/services/nativeIntents';
+import type { NativeIntent, NativeRecovery } from '@/services/nativeIntents';
 import type { ExecutionCapability, Intent, IntentGate } from '@/services/intents';
 
 // Platform gate controls stay closed on native routes. Native member replies
@@ -38,6 +38,8 @@ export function executionGateResponseReason(
 
 export const imageBlocked = (intent: NativeIntent) =>
   ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
+export const workspaceRecoveryBlocked = (reason: NativeRecovery['reason']) =>
+  ['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(reason);
 export const canRecover = (intent: NativeIntent) =>
   !imageBlocked(intent) &&
   intent.executionAvailable === true &&
@@ -47,6 +49,17 @@ export const canRecover = (intent: NativeIntent) =>
   intent.execution.recoveryMode === 'efs-workspace-v1' &&
   intent.execution.stopStatus?.state === 'confirmed' &&
   intent.execution.recovery.workflowResumeState === 'created' &&
-  !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
-    intent.execution.recovery.reason,
+  !workspaceRecoveryBlocked(intent.execution.recovery.reason);
+
+export function canCreateFreshNativeIntent({ execution }: NativeIntent): boolean {
+  if (execution?.stopStatus?.state !== 'confirmed') return false;
+  if (execution.status === 'CANCELLED' || execution.status === 'FAILED') return true;
+  const recovery = execution.recovery;
+  return (
+    execution.status === 'RECOVERY_REQUIRED' &&
+    recovery?.canRecover === false &&
+    workspaceRecoveryBlocked(recovery.reason) &&
+    // Older responses also project this reason when the workflow observation is missing.
+    (recovery.reason !== 'WORKFLOW_STATE_UNAVAILABLE' || recovery.workflowResumeState !== undefined)
   );
+}

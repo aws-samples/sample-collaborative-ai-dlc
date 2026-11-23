@@ -747,6 +747,81 @@ it('lists, creates, corrects, prepares and explicitly starts existing and newly 
   expect(new Set(drafts.map((row) => row.executionRoleArn)).size).toBe(3);
 });
 
+it('admits an independent draft under current source access and preserves the cancelled attempt and answer', async () => {
+  const f = fixture();
+  const previousSource = { provider: 'github', repository: 'owner/previous-app' };
+  const old = await client.create(
+    PROJECT,
+    draftRequest({ applicationSource: previousSource, prompt: 'Earlier request' }),
+  );
+  await f.ready(PROJECT, old.id);
+  const predecessor = serialFixture({ preparedDraft: f.read() });
+  Object.assign(predecessor.configuration.repository, previousSource);
+  await predecessor.ready();
+  await predecessor.publish();
+  await predecessor.respond();
+  await predecessor.store.cancel(predecessor.bindingIdentity);
+  const { row } = await predecessor.store.claim(predecessor.bindingIdentity);
+  await predecessor.store.advance({
+    row,
+    patch: { status: 'CANCELLED' },
+    stoppedSessionId: row.runtimeSessionId,
+  });
+  for (const saved of predecessor.rows.values()) f.write(saved);
+  const retained = structuredClone([...f.rows]);
+  const inspected = await client.get(PROJECT, old.id);
+  expect(inspected.execution).toMatchObject({
+    status: 'CANCELLED',
+    stopStatus: { state: 'confirmed' },
+    repository: previousSource,
+    publicationId: predecessor.row().publication.id,
+  });
+
+  f.transport.mockClear();
+  const freshRequest = draftRequest({
+    intentId: '10000000-0000-4000-8000-000000000017',
+    prompt: 'Independent request',
+  });
+  const fresh = await client.create(PROJECT, freshRequest);
+  const identity = { projectId: PROJECT, executionId: fresh.id };
+  await f.ready(PROJECT, fresh.id);
+  const project = f.projects.get(PROJECT);
+  project.codeBinding.status = 'invalid';
+  await expect(client.start(PROJECT, fresh.id, randomUUID(), 0)).rejects.toMatchObject({
+    status: 409,
+    body: { code: 'NATIVE_EXECUTION_CONFIG_SOURCE_CONTROL_REQUIRED' },
+  });
+  expect(await f.executionStore.get(identity)).toBeNull();
+  project.codeBinding = { ...project.codeBinding, status: 'active', revision: randomUUID() };
+  f.inputPorts.state.commit = 'a'.repeat(40);
+  const accepted = await client.start(PROJECT, fresh.id, randomUUID(), 0);
+  expect(accepted.execution).toMatchObject({
+    status: 'REQUESTED',
+    publicationId: null,
+    interactionId: null,
+    credentialSource: 'user',
+    repository: { ...applicationSource, branch: 'main', commit: f.inputPorts.state.commit },
+  });
+  expect(accepted.execution.attemptId).not.toBe(inspected.execution.attemptId);
+  expect(f.read(identity).bindingId).not.toBe(f.read().bindingId);
+  expect(f.read(identity).rootDirectory).not.toBe(f.read().rootDirectory);
+  expect(f.read(identity).request).toEqual(freshRequest);
+  const execution = await f.executionStore.get(identity);
+  expect(execution.configuration.repository.bindingRevision).toBe(project.codeBinding.revision);
+  expect(execution.response).toBeUndefined();
+  expect(
+    f.transport.mock.calls.map(([url, options]) => [options.method, new URL(url).pathname]),
+  ).toEqual([
+    ['POST', `/api/projects/${PROJECT}/native-intents`],
+    ...['prepare', 'start', 'start'].map((action) => [
+      'POST',
+      `/api/projects/${PROJECT}/native-intents/${fresh.id}/${action}`,
+    ]),
+  ]);
+  expect(retained.map(([key]) => [key, f.rows.get(key)])).toEqual(retained);
+  expect(await client.get(PROJECT, old.id)).toEqual(inspected);
+});
+
 it('discovers a mixed protected page in one browser request and withholds the page on mid-read revocation', async () => {
   const { refreshNativeIntents, getNativeListing } =
     await import('../../../frontend/src/hooks/useNativeIntents.ts');

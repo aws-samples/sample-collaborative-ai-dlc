@@ -42,6 +42,7 @@ const service = vi.hoisted(() => ({
   platformGet: vi.fn(),
   workflowList: vi.fn(),
   workflowPackage: vi.fn(),
+  workflowImport: vi.fn(),
   handlers: new Map<string, Set<(value: any) => void>>(),
   connect: vi.fn(async () => {}),
 }));
@@ -69,7 +70,7 @@ vi.mock('@/services/auth', () => ({
     isAuthenticated: async () => true,
     logout: async () => {},
     getCurrentUser: async () => ({
-      id: 'owner',
+      userId: 'owner',
       username: 'owner',
       displayName: 'Owner',
       groups: [],
@@ -87,7 +88,12 @@ vi.mock('@/services/workflowSources', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/workflowSources')>()),
   workflowSourcesService: {
     list: service.workflowList,
+    listWithCapabilities: async (projectId: string) => ({
+      sources: await service.workflowList(projectId),
+      capabilities: { packageImportsEnabled: true },
+    }),
     getPackageImport: service.workflowPackage,
+    createPackageImport: service.workflowImport,
   },
 }));
 vi.mock('@/services/realtime', () => {
@@ -175,7 +181,14 @@ function workspace(search = '', reactStrictMode = false) {
           <Link to="/space/project/native-intent/two">Switch run</Link>
           <Link to="/space/other-project/native-intent/one">Switch project</Link>
           <Routes>
-            <Route element={<AppShell />}>
+            <Route
+              element={
+                <ProtectedRoute>
+                  <AppShell />
+                </ProtectedRoute>
+              }
+            >
+              <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
               <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
             </Route>
           </Routes>
@@ -349,6 +362,152 @@ it.each(['project', '40000000-0000-4000-8000-000000000005'])(
     expect(service.platformGet).not.toHaveBeenCalled();
   },
 );
+
+it('opens a blank native draft from confirmed cancellation and explicitly prepares and starts its chosen source', async () => {
+  const old = detail();
+  old.execution = {
+    ...old.execution!,
+    status: 'CANCELLED',
+    stopStatus: { state: 'confirmed', confirmedAt: time },
+  };
+  const retained = structuredClone(old);
+  const source = { provider: 'gitlab', repository: 'group/new-app' };
+  const workflow = {
+    sourceId: 'a'.repeat(64),
+    revision: '20000000-0000-4000-8000-000000000002',
+    repository: 'awslabs/aidlc-workflows',
+    provider: 'github',
+    authType: 'public',
+    status: 'active',
+  };
+  service.projectList.mockResolvedValue([
+    {
+      id: old.projectId,
+      name: 'Member space',
+      kind: 'v2',
+      userRole: 'member',
+      repos: [
+        { provider: source.provider, url: source.repository },
+        { provider: 'codecommit', url: 'unsupported-app' },
+      ],
+    },
+  ]);
+  await invalidateProjects();
+  service.historyList.mockResolvedValue({ items: [], nextBefore: null, gaps: [] });
+  service.capabilities.mockResolvedValue({
+    preparationEnabled: true,
+    executionEnabled: true,
+    unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+  });
+  service.workflowList.mockResolvedValue([workflow]);
+  service.workflowImport.mockImplementation(async (_project, sourceId, request) => ({
+    ...request,
+    sourceId,
+    state: 'SUCCEEDED',
+    package: {
+      version: '2.11.1',
+      release: 'v2.11.1',
+      commit: 'b'.repeat(40),
+      harnesses: ['claude'],
+    },
+  }));
+  let fresh: NativeIntent;
+  service.create.mockImplementation(async (_project, request) => {
+    fresh = {
+      ...detail(request.intentId),
+      title: request.title,
+      prompt: request.prompt,
+      harness: request.harness,
+      applicationSource: request.applicationSource,
+      package: {
+        version: '2.11.1',
+        source: {
+          provider: workflow.provider,
+          repository: workflow.repository,
+          release: 'v2.11.1',
+        },
+      },
+      status: 'DRAFT',
+      execution: null,
+    };
+    return fresh;
+  });
+  service.get.mockImplementation(async (_project, id) => (id === old.id ? old : fresh));
+  service.prepare.mockImplementation(async () => (fresh = { ...fresh, status: 'READY' }));
+  service.start.mockImplementation(async () => {
+    fresh = {
+      ...fresh,
+      execution: {
+        ...detail().execution!,
+        status: 'REQUESTED',
+        attemptId: 'fresh-attempt',
+        repository: { ...source, branch: 'main', commit: 'c'.repeat(40) },
+      },
+    };
+    return fresh;
+  });
+
+  const user = userEvent.setup();
+  const view = workspace();
+  await user.click(await screen.findByRole('link', { name: 'Inspect work and export' }));
+  const entry = screen.getByRole('link', { name: 'Create a fresh native intent' });
+  expect(entry).toHaveAttribute(
+    'href',
+    '/space/project/intent/new?backend=native&chooseRepository=1',
+  );
+  await user.click(entry);
+  expect(await screen.findByLabelText('Title')).toHaveValue('');
+  expect(screen.getByLabelText('Prompt')).toHaveValue('');
+  expect(screen.getByLabelText('Application repository')).toHaveValue('');
+  expect(screen.queryByRole('option', { name: /unsupported-app|example\/app/ })).toBeNull();
+  expect(service.capabilities).toHaveBeenCalledExactlyOnceWith(old.projectId);
+  expect(service.create).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole('button', { name: 'Import package' }));
+  await user.click(await screen.findByRole('button', { name: 'Use this package' }));
+  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Fresh request' } });
+  await user.selectOptions(screen.getByLabelText('Coding harness'), 'claude');
+  const create = screen.getByRole('button', { name: 'Create native draft' });
+  expect(create).toBeDisabled();
+  await user.selectOptions(
+    screen.getByLabelText('Application repository'),
+    screen.getByRole('option', { name: 'group/new-app (gitlab)' }),
+  );
+  await user.click(create);
+  const prepare = await screen.findByRole('button', { name: 'Prepare workspace' });
+  expect(fresh!.id).not.toBe(old.id);
+  expect(service.create).toHaveBeenCalledExactlyOnceWith(old.projectId, {
+    intentId: fresh!.id,
+    title: '',
+    prompt: 'Fresh request',
+    harness: 'claude',
+    sourceId: workflow.sourceId,
+    bindingRevision: workflow.revision,
+    packageJobId: service.workflowImport.mock.calls[0][2].jobId,
+    applicationSource: source,
+  });
+  expect(service.prepare).not.toHaveBeenCalled();
+  await user.click(prepare);
+  expect(service.prepare).toHaveBeenCalledExactlyOnceWith(old.projectId, fresh!.id);
+  expect(service.start).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole('button', { name: 'Start agent' }));
+  expect(service.start).toHaveBeenCalledExactlyOnceWith(
+    old.projectId,
+    fresh!.id,
+    expect.any(String),
+    0,
+    0,
+  );
+  expect(
+    within(screen.getByRole('region', { name: 'Native execution status' })).getByRole('status'),
+  ).toHaveTextContent('Start requested');
+  expect(service.inputs).not.toHaveBeenCalled();
+  expect(service.savePrompt).not.toHaveBeenCalled();
+  expect(service.recover).not.toHaveBeenCalled();
+  view.unmount();
+  workspace('?nativeInspect=1');
+  expect(await screen.findByText(old.prompt)).toBeVisible();
+  expect(old).toEqual(retained);
+});
 
 it('saves a missing task prompt and starts its saved revision in the shared Intent workspace', async () => {
   const draft = { ...detail(), prompt: '', promptRevision: 0, execution: null };
