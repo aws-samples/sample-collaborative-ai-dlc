@@ -6197,7 +6197,7 @@ the current contract for newly created executions.
       resources and the documented EFS-loss behavior is clear. Abandoning a
       protected engine operation that never finishes is a separate item, NE-23.
       **Dev milestone, 2026-11-23.** The independently verified frontend (`9d4a970f`) offers fresh intent creation from Inspect work and export. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
-      **Dev milestone, 2026-11-23.** Engine 10 (`77768df6`) deployed the owner deletion guard and native draft fence. Inventory covered all 54 existing bindings in two spaces. Operator readback matched all 3,281 protected row projections. Local tests verified that owners can still delete a native-empty space.
+      **Dev milestone, 2026-11-23.** Independent verification of engine 10 (`77768df6`) confirmed the owner deletion guard, native draft fence, all 54 bindings in two spaces and 3,281 protected row projections. The ReadOnly preflight returned READY. Signed-in member acceptance remains open.
       Standard deployments (`3d772155`) now initialize the inventory after apply and reuse matching coverage. Dev's initial receipt predates this automation and requires one recheck on the next standard deployment.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
@@ -6210,6 +6210,7 @@ the current contract for newly created executions.
       evidence; missing prerequisites cannot silently become cloud calls or a
       successful qualification, and scripted output is distinguished from a real
       installed workflow.
+      **Installed milestone, 2026-11-23.** On the v10 image, a synthetic member selected Express through the public handler. After an interruption, confirmed Claude recovery reopened the requirements-analysis gate with one applied decision. Codex and OpenCode passed their workspace recovery tests. Kiro stopped at managed authentication before session creation (`67395107`).
 - [ ] **NE-19 — Qualify the complete two-member journey.** Run create → start → question
       → implementation → required checks/gates → verified completion → downloadable
       result and Git delivery with separate authenticated browser profiles. Include
