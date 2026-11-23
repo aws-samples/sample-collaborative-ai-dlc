@@ -1,5 +1,31 @@
 // Public, content-free facts from committed execution transitions. This is an
 // audit projection written in the SAME transaction, never scheduling authority.
+import { nativeUsageSummary } from '../shared/native-activity.js';
+
+const nonnegative = (value) => Number.isSafeInteger(value) && value >= 0;
+const elapsed = (start, end) =>
+  nonnegative(start) && nonnegative(end) && end >= start ? `${end - start} ms` : 'unavailable';
+
+// Only numeric observations from the identity-checked publication report may
+// cross into member history. Old reports can supply timings without usage.
+export const nativePublicationMeasurements = (report, configuration) => {
+  const { harnessLaunched, firstUsefulOutput, harnessCompleted } = report.timings ?? {};
+  const { lastToolMs, lastApiMs, lastUsage, usageSamples } = report.activityMeasurements ?? {};
+  const label = { claude: 'result', codex: 'thread-counter delta', opencode: 'step' }[
+    configuration.harness
+  ];
+  return [
+    `Harness launch to first useful output: ${elapsed(harnessLaunched, firstUsefulOutput)}`,
+    `Harness wall time including tools: ${elapsed(harnessLaunched, harnessCompleted)}`,
+    ...(configuration.harness === 'claude'
+      ? [`Last result API time: ${nonnegative(lastApiMs) ? `${lastApiMs} ms` : 'unavailable'}`]
+      : []),
+    `Last reported tool duration: ${nonnegative(lastToolMs) ? `${lastToolMs} ms` : 'unavailable'}`,
+    label && nonnegative(usageSamples) && usageSamples > 0
+      ? `Latest ${configuration.harness} ${label} sample ${usageSamples} (${configuration.model ?? 'model unavailable'}): ${nativeUsageSummary(lastUsage, configuration.model)}`
+      : 'Harness usage unavailable',
+  ].join(' · ');
+};
 const labels = {
   REQUESTED: 'Start accepted',
   UPGRADING: 'Preparing pinned execution runtime',
@@ -39,7 +65,7 @@ const transition = (before, row) => {
   return null;
 };
 
-export const nativeExecutionHistory = (before, row) => {
+export const nativeExecutionHistory = (before, row, measurements) => {
   const fact = transition(before, row);
   if (!fact) return null; // Leases, heartbeats and projection bookkeeping are not events.
   const [type, label] = fact;
@@ -58,8 +84,13 @@ export const nativeExecutionHistory = (before, row) => {
     if (acceptedAt !== null)
       timing.push(`Acceptance to dispatch: ${row.dispatch.attemptedAt - acceptedAt} ms`);
   }
-  if (type === 'published' && before?.dispatch)
-    timing.push(`Dispatch to publication: ${row.updatedAt - before.dispatch.attemptedAt} ms`);
+  if (type === 'published') {
+    const dispatch = before?.dispatch;
+    timing.push(
+      `Dispatch to publication: ${elapsed(dispatch?.writerGeneration === generation && dispatch.sequence === sequence ? dispatch.attemptedAt : null, row.updatedAt)}`,
+    );
+    if (measurements) timing.push(measurements);
+  }
   const reason = row.failureCode ?? row.recovery?.reason;
   return {
     pk: row.pk,
@@ -68,6 +99,13 @@ export const nativeExecutionHistory = (before, row) => {
     revision: row.version,
     eventId: `native-${row.version}`,
     type: `native.${type}`,
+    attemptId: row.attemptId,
+    turnSequence: sequence,
+    writerGeneration: generation,
+    ...(type === 'published' ? { publicationId: row.publication.id } : {}),
+    ...(type === 'answer.accepted' && before.publication
+      ? { replyToPublicationId: before.publication.id, acceptedAt: row.response.acceptedAt }
+      : {}),
     stageInstanceId: null,
     actor:
       type === 'accepted'
@@ -92,4 +130,15 @@ export const nativeHistoryView = (row) => ({
   actor: row.actor,
   timestamp: row.timestamp,
   summary: row.summary,
+  ...(row.attemptId && row.turnSequence && row.writerGeneration
+    ? {
+        attemptId: row.attemptId,
+        turnSequence: row.turnSequence,
+        writerGeneration: row.writerGeneration,
+        ...(row.publicationId ? { publicationId: row.publicationId } : {}),
+        ...(row.replyToPublicationId
+          ? { replyToPublicationId: row.replyToPublicationId, acceptedAt: row.acceptedAt }
+          : {}),
+      }
+    : {}),
 });

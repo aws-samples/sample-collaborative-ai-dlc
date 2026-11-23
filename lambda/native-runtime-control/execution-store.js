@@ -934,7 +934,7 @@ export const createNativeExecutionStore = ({
     if (!result || typeof result !== 'object' || Array.isArray(result)) fail('UNAVAILABLE');
     return result.Item === undefined ? null : validate(result.Item, currentScope);
   };
-  const commit = async (before, candidate, leaseMode = 'owned', additions = []) => {
+  const commit = async (before, candidate, leaseMode = 'owned', additions = [], measurements) => {
     const time = clock();
     if (time < before.updatedAt) fail('UNAVAILABLE');
     const next = validate(
@@ -985,7 +985,7 @@ export const createNativeExecutionStore = ({
               },
             },
             ...additions,
-            ...historyWrite(before, next),
+            ...historyWrite(before, next, measurements),
             ...nativeAnswerHistory(before, next).map((Item) => ({
               Put: { TableName: tableName, Item, ConditionExpression: 'attribute_not_exists(pk)' },
             })),
@@ -1003,8 +1003,8 @@ export const createNativeExecutionStore = ({
       fail('UNAVAILABLE');
     }
   };
-  const historyWrite = (before, row) => {
-    const Item = nativeExecutionHistory(before, row);
+  const historyWrite = (before, row, measurements) => {
+    const Item = nativeExecutionHistory(before, row, measurements);
     return Item
       ? [{ Put: { TableName: tableName, Item, ConditionExpression: 'attribute_not_exists(pk)' } }]
       : [];
@@ -1652,7 +1652,11 @@ export const createNativeExecutionStore = ({
       fail('CONFLICT');
     },
     async publish(input) {
-      shape(input, ['row', 'publication'], ['interaction', 'interactionContentSha256']);
+      shape(
+        input,
+        ['row', 'publication'],
+        ['interaction', 'interactionContentSha256', 'measurements'],
+      );
       const publication = publicationValue(input.publication);
       const row = await owned(input.row);
       const interaction = input.interaction ? interactionValue(input.interaction, row) : null;
@@ -1709,15 +1713,21 @@ export const createNativeExecutionStore = ({
       };
       delete Item.projectId;
       delete Item.executionId;
-      return commit(row, next, 'owned', [
-        {
-          Put: {
-            TableName: tableName,
-            Item,
-            ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+      return commit(
+        row,
+        next,
+        'owned',
+        [
+          {
+            Put: {
+              TableName: tableName,
+              Item,
+              ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+            },
           },
-        },
-      ]);
+        ],
+        input.measurements,
+      );
     },
   });
 };

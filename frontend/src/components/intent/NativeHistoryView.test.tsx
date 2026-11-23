@@ -122,6 +122,160 @@ const file = (content = 'old plan', sequence = 1): NativeRevisionFile => ({
   truncated: false,
 });
 const selected = { publicationId: oldId, publicationSequence: 1 };
+it('times the first visible current publication after a pending turn, even when its ledger arrives later', async () => {
+  const execution = { ...intent.execution!, writerGeneration: 2, interactionId: null };
+  const published = { ...execution, publicationSequence: 2 };
+  const event = {
+    eventId: 'native-9',
+    type: 'native.published',
+    revision: 9,
+    turnSequence: 2,
+    writerGeneration: 2,
+    attemptId: execution.attemptId,
+    publicationId: newId,
+    actor: null,
+    stageInstanceId: null,
+    summary: 'Fresh writer publication',
+    timestamp: stamp,
+  };
+  let resolve!: (revision: NativeRevision) => void;
+  mocks.publication
+    .mockReturnValueOnce(
+      new Promise<NativeRevision>((done) => {
+        resolve = done;
+      }),
+    )
+    .mockResolvedValue(revision(2));
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(stamp) + 250);
+  let visible: (intersects: boolean) => void = () => {
+    throw Error('Revision label was not observed');
+  };
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      readonly notify: (entries: unknown[]) => void;
+      constructor(notify: (entries: unknown[]) => void) {
+        this.notify = notify;
+      }
+      observe(label: Element) {
+        visible = (intersects) =>
+          this.notify([
+            { target: label, isIntersecting: intersects, intersectionRatio: intersects ? 1 : 0 },
+          ]);
+      }
+      disconnect() {}
+    },
+  );
+  const view = (value: NonNullable<NativeIntent['execution']>, events: (typeof event)[]) => (
+    <MemoryRouter>
+      <NativeIntentContent
+        intent={{ ...intent, execution: value }}
+        onAccessFailure={mocks.denied}
+        onRefresh={async () => {}}
+        activity={{
+          events,
+          rows: [],
+          observedAt: Date.parse(stamp) + 9000,
+          error: null,
+          loading: false,
+          now: Date.now(),
+          replay: async () => {},
+        }}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const mounted = render(
+      view({ ...execution, status: 'RUNNING', publicationId: null, publicationSequence: null }, []),
+    );
+    mounted.rerender(view(published, []));
+    await act(async () => resolve(revision(2)));
+    act(() => visible(false));
+    expect(screen.getByText(/Publication to first visible display/)).toHaveTextContent(
+      'unavailable',
+    );
+    act(() => visible(true));
+    clock.mockReturnValue(Date.parse(stamp) + 4000);
+    mounted.rerender(view(published, [event]));
+    expect(screen.getByText(/controller commit to browser display/)).toHaveTextContent(
+      'approximately 250 ms',
+    );
+    expect(mocks.publication).toHaveBeenCalledTimes(1);
+    mounted.unmount();
+    render(view(published, [event]));
+    await screen.findByText(/Current committed revision 2/);
+    expect(screen.getByText(/Publication to first visible display/)).toHaveTextContent(
+      'unavailable',
+    );
+    expect(mocks.publication).toHaveBeenCalledTimes(2);
+  } finally {
+    clock.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+it('joins only the inspected publication and its accepted reply in history', async () => {
+  const base = {
+    attemptId: intent.execution!.attemptId,
+    writerGeneration: 1,
+    actor: null,
+    stageInstanceId: null,
+    timestamp: stamp,
+  };
+  const events = [
+    {
+      ...base,
+      eventId: 'native-2',
+      revision: 2,
+      type: 'native.published',
+      publicationId: oldId,
+      turnSequence: 1,
+      summary: 'First publication timing',
+    },
+    {
+      ...base,
+      eventId: 'native-3',
+      revision: 3,
+      type: 'native.answer.accepted',
+      replyToPublicationId: oldId,
+      acceptedAt: Date.parse(stamp) + 90,
+      turnSequence: 2,
+      summary: 'Accepted next turn',
+    },
+    {
+      ...base,
+      eventId: 'native-5',
+      revision: 5,
+      type: 'native.published',
+      publicationId: newId,
+      turnSequence: 2,
+      summary: 'Second publication timing',
+    },
+  ];
+  render(
+    <MemoryRouter initialEntries={[search]}>
+      <TooltipProvider>
+        <NativeIntentContent
+          intent={intent}
+          onAccessFailure={mocks.denied}
+          onRefresh={async () => {}}
+          activity={{
+            events,
+            rows: [],
+            error: null,
+            observedAt: null,
+            now: Date.now(),
+            loading: false,
+            replay: async () => {},
+          }}
+        />
+      </TooltipProvider>
+    </MemoryRouter>,
+  );
+  await screen.findByText(/First publication timing/);
+  expect(screen.queryByText(/Second publication timing/)).toBeNull();
+  expect(screen.getByText(/Member wait from publication/)).toHaveTextContent('90 ms');
+});
 const search = nativeHistorySearch('', { revision: selected, file: revision().files[0] });
 function Navigation() {
   const navigate = useNavigate();

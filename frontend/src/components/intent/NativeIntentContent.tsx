@@ -10,6 +10,7 @@ import { NativeCompletionEvidence } from './NativeCompletionEvidence';
 import { NATIVE_INLINE_BYTES, type NativeRevisionFile } from '@/services/nativeHistory';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
 import { NativeExecutionProgress } from './NativeExecutionProgress';
+import { NativeTurnObservations } from './NativeTurnObservations';
 import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import { useOptionalAuth } from '@/contexts/AuthContext';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
@@ -102,13 +103,8 @@ export function NativeIntentContent({
         </Link>
       </nav>
       {selection.mode === 'current' ? (
-        <NativePublicationContent
-          key={JSON.stringify([
-            ...identity,
-            intent.execution?.publicationId,
-            intent.execution?.publicationSequence,
-            intent.execution?.interactionId,
-          ])}
+        <CurrentTurnContent
+          key={JSON.stringify([...identity, intent.execution?.attemptId])}
           intent={intent}
           onAccessFailure={onAccessFailure}
           onRefresh={onRefresh}
@@ -127,10 +123,45 @@ export function NativeIntentContent({
           key={JSON.stringify([...identity, location.search])}
           intent={intent}
           selection={selection}
+          activity={activity}
           onAccessFailure={onAccessFailure}
         />
       )}
     </div>
+  );
+}
+
+// Retain observations across polls/reloads within this member's open Current
+// view. A late open or a return from History cannot recreate the original display.
+function CurrentTurnContent(props: NativeContentProps) {
+  const execution = props.intent.execution;
+  const pending = useRef<number | null>(null);
+  const [display, setDisplay] = useState<{ id: string; at: number } | null>(null);
+  useEffect(() => {
+    if (
+      execution?.turnSequence &&
+      (execution.publicationId === null ||
+        (execution.publicationSequence != null &&
+          execution.turnSequence > execution.publicationSequence))
+    )
+      pending.current = execution.turnSequence;
+  }, [execution?.turnSequence, execution?.publicationSequence, execution?.publicationId]);
+  const displayed = useCallback((id: string, sequence: number) => {
+    if (pending.current !== sequence) return;
+    pending.current = null;
+    setDisplay({ id, at: Date.now() });
+  }, []);
+  return (
+    <NativePublicationContent
+      key={JSON.stringify([
+        execution?.publicationId,
+        execution?.publicationSequence,
+        execution?.interactionId,
+      ])}
+      {...props}
+      displayed={displayed}
+      displayedAt={display && display.id === execution?.publicationId ? display.at : undefined}
+    />
   );
 }
 
@@ -141,13 +172,19 @@ function NativePublicationContent({
   onAccepted,
   activity,
   onViewActivity,
-}: NativeContentProps) {
+  displayed,
+  displayedAt,
+}: NativeContentProps & {
+  displayed: (id: string, sequence: number) => void;
+  displayedAt?: number;
+}) {
   const { projectId, id: intentId } = intent;
   const publicationId = intent.execution?.publicationId ?? null;
   const publicationSequence = intent.execution?.publicationSequence;
   const interactionId = intent.execution?.interactionId ?? null;
   const [tab, setTab] = useState('overview');
   const [publication, setPublication] = useState<NativePublication | null>(null);
+  const publicationLabel = useRef<HTMLParagraphElement>(null);
   const [files, setFiles] = useState<Record<string, NativeFileContent | NativeRevisionFile>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [acceptedGraph, setGraph] = useState<{
@@ -184,6 +221,38 @@ function NativePublicationContent({
     (requestGeneration: number) => generation.current === requestGeneration && scopeCurrent(),
     [scopeCurrent],
   );
+
+  // Observe the rendered revision label in the viewport of a visible tab.
+  // A background fetch, a collapsed view and history replay aren't displays.
+  useEffect(() => {
+    const label = publicationLabel.current;
+    if (!publication || !label || typeof IntersectionObserver === 'undefined') return;
+    let active = true;
+    const observer = new IntersectionObserver((entries) => {
+      if (
+        active &&
+        document.visibilityState === 'visible' &&
+        scopeCurrent() &&
+        entries.some(
+          (entry) => entry.target === label && entry.isIntersecting && entry.intersectionRatio > 0,
+        )
+      ) {
+        displayed(publication.id, publication.sequence);
+        observer.disconnect();
+      }
+    });
+    const visible = () => {
+      observer.disconnect();
+      if (document.visibilityState === 'visible') observer.observe(label);
+    };
+    visible();
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      active = false;
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [publication, displayed, scopeCurrent]);
 
   useEffect(() => {
     alive.current = true;
@@ -447,13 +516,22 @@ function NativePublicationContent({
         </div>
       )}
       {publication && (
-        <p className="text-xs text-muted-foreground">
+        <p ref={publicationLabel} className="text-xs text-muted-foreground">
           Current committed revision {publication.sequence} ·{' '}
           {new Date(publication.createdAt).toLocaleString()} · {publication.files.length} files
           {!projectionComplete && ' · Graph projection pending'}
         </p>
       )}
       {publication && <NativeFilesystemNotice policy={publication.filesystemPolicy} />}
+      {publication && intent.execution && (
+        <NativeTurnObservations
+          events={activity?.events}
+          attemptId={intent.execution.attemptId}
+          sequence={publication.sequence}
+          publicationId={publication.id}
+          displayedAt={displayedAt}
+        />
+      )}
       <TabsContent value="overview" className="space-y-4">
         {!error && interaction && intent.execution && (
           <NativeInteractionPanel

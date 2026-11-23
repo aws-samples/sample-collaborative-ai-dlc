@@ -370,6 +370,7 @@ const createParsedSink = ({
   emit,
   onSession,
   onUsage,
+  onToolDuration,
   onError,
   retainState,
   maxPendingTools,
@@ -396,6 +397,15 @@ const createParsedSink = ({
       send(content, displayForMessage(content));
     },
     onTool(toolEvent) {
+      const time = toolEvent.event?.part?.state?.time;
+      if (
+        onToolDuration &&
+        Number.isSafeInteger(time?.start) &&
+        time.start >= 0 &&
+        Number.isSafeInteger(time.end) &&
+        time.end >= time.start
+      )
+        onToolDuration(time.end - time.start);
       const name = toolName(toolEvent.name);
       // send_output already persists its canonical output through MCP.
       if (name === 'send_output') return;
@@ -487,6 +497,7 @@ export const createCliOutputSink = ({
   maxPendingTools = Infinity,
   onSession = () => {},
   onUsage = () => {},
+  onToolDuration,
   onError = () => {},
   usageBaseline = {},
 }) => {
@@ -496,6 +507,7 @@ export const createCliOutputSink = ({
       emit,
       onSession,
       onUsage,
+      onToolDuration,
       onError,
       retainState,
       maxPendingTools,

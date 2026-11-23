@@ -1084,6 +1084,7 @@ export const createNativeExecutor = ({
       true,
     );
     timing(turn, 'harnessCompleted');
+    activityTurn.finishOutput();
     const completed = output.finish();
     let mirror;
     if (workflowEngine) {
@@ -1305,6 +1306,7 @@ export const createNativeExecutor = ({
       ),
     };
     await setStatus(turn, 'publication_ready', {
+      activityMeasurements: turn.activity.measurements(),
       outcome: publicationOutcome,
       waitEvidence: outcome.evidence ?? null,
       stopCode: outcome.code,

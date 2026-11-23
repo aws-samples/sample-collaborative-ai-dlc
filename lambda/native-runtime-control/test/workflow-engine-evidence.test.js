@@ -819,6 +819,36 @@ describe('required checks keep their distinct recorded outcomes', () => {
 });
 
 describe('required reviews come from an observed isolated reviewer', () => {
+  it('attributes only the matching current isolated job BUILD phase', () => {
+    const review = (mutate) =>
+      entry(
+        projected((s) => {
+          Object.assign(s.codeGeneration.review.observation, {
+            buildStatus: 'SUCCEEDED',
+            executionMs: 3200,
+          });
+          mutate?.(s.codeGeneration.review);
+        }).reviews,
+        'code-generation',
+        'game',
+      );
+    expect(review()).toMatchObject({ buildPhaseMs: 3200, verdict: 'READY' });
+    for (const change of [
+      (r) => {
+        r.freshness.stale = true;
+      },
+      (r) => {
+        r.observation.unit = 'other';
+      },
+      (r) => {
+        r.observation.executionMs = -1;
+      },
+      (r) => {
+        r.observation.verdict = 'NOT-READY';
+      },
+    ])
+      expect(review(change)).not.toHaveProperty('buildPhaseMs');
+  });
   it.each([
     [
       'not_recorded',

@@ -9,6 +9,8 @@ import { NativeResultDownload } from './NativeResultDownload';
 import { NativeSourceComparison } from './NativeSourceComparison';
 import { NativePresentationNotice } from './NativeInteractionPanel';
 import { NativeCompletionEvidence } from './NativeCompletionEvidence';
+import { NativeTurnObservations } from './NativeTurnObservations';
+import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
 import { nativeHistorySearch, type NativeHistoryLocation } from '@/lib/nativeRevisionLinks';
@@ -30,10 +32,12 @@ const target = (value: { id: string; sequence: number }) => ({
 export function NativeHistoryView({
   intent,
   selection,
+  activity,
   onAccessFailure,
 }: {
   intent: NativeIntent;
   selection: NativeHistoryLocation;
+  activity?: ReturnType<typeof useNativeActivity>;
   onAccessFailure: (error: unknown) => void;
 }) {
   const { search, hash } = useLocation();
@@ -287,6 +291,12 @@ export function NativeHistoryView({
                   attemptId={revision.context.attemptId}
                   target={target(revision)}
                   onAccessFailure={onAccessFailure}
+                />
+                <NativeTurnObservations
+                  events={activity?.events}
+                  attemptId={revision.context.attemptId}
+                  sequence={revision.sequence}
+                  publicationId={revision.id}
                 />
                 <NativeSourceComparison
                   projectId={intent.projectId}

@@ -33,6 +33,7 @@ import {
   NATIVE_ACTIVITY_LIMITS,
   nativePublicActivity,
   nativeUsageSummary,
+  nativeUsageCounters,
   createNativeSecretGuard,
   FIELDS,
   applyMarks,
@@ -315,6 +316,9 @@ export const createNativeActivityLog = ({
     let closed = false;
     const startedAt = now();
     let usageSamples = 0;
+    let lastUsage;
+    let lastToolMs;
+    let lastApiMs;
     const fieldOf = (event, key) => (key === 'content' ? event.content : event.display[key]) ?? '';
     const flush = (forced = false) => {
       clearTimeout(flushTimer);
@@ -424,6 +428,12 @@ export const createNativeActivityLog = ({
         maxPendingTools: 64,
         usageBaseline,
         emit: (value) => emitPublic(value),
+        onToolDuration:
+          harness === 'opencode'
+            ? (ms) => {
+                lastToolMs = ms;
+              }
+            : undefined,
         onUsage: (metrics, event) => {
           if (harness === 'claude') {
             const counts = {};
@@ -440,10 +450,12 @@ export const createNativeActivityLog = ({
               )
                 counts[key] = value;
             }
+            lastApiMs = counts.durationApiMs;
             observe('harnessUsageObserved', counts);
           }
           if (model === undefined) return;
           usageSamples++;
+          lastUsage = nativeUsageCounters(metrics);
           emitPublic(
             {
               content: '',
@@ -488,6 +500,21 @@ export const createNativeActivityLog = ({
       return out;
     };
     const handle = {
+      finishOutput() {
+        try {
+          sink.write(decoder.decode());
+          sink.flush();
+        } catch {
+          omittedDiagnostics++;
+        }
+      },
+      measurements() {
+        return {
+          ...(lastUsage ? { usageSamples, lastUsage } : {}),
+          ...(lastToolMs !== undefined ? { lastToolMs } : {}),
+          ...(lastApiMs !== undefined ? { lastApiMs } : {}),
+        };
+      },
       /** Returns a promise while the harness's stdout must pause. */
       write(chunk) {
         if (closed) return undefined;
@@ -519,12 +546,7 @@ export const createNativeActivityLog = ({
       },
       close({ failed = false } = {}) {
         if (closed) return;
-        try {
-          sink.write(decoder.decode());
-          sink.flush();
-        } catch {
-          omittedDiagnostics++;
-        }
+        handle.finishOutput();
         if (model !== undefined)
           handle.lifecycle({
             title: `Turn ${sequence} · ${harness} · model ${model ?? 'unavailable'} · activity capture ended`,

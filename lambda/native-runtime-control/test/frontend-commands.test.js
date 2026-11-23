@@ -242,6 +242,8 @@ it('replays runtime batches through the protected outputs route and rechecks acc
   expect(first.nextAfter).toBe(64);
   expect(first.events.map((e) => e.type)).toEqual(['native.accepted']);
   const second = await read(first.nextAfter, first.events.at(-1).revision);
+  for (const item of [...first.events, ...first.outputs, ...second.outputs])
+    expect(item).toMatchObject({ attemptId: row.attemptId, turnSequence: 1, writerGeneration: 1 });
   expect(second).toMatchObject({ nextAfter: null, events: [], nextEventAfter: null });
   expect([...first.outputs, ...second.outputs].map((r) => [r.seq, r.content])).toEqual(
     Array.from({ length: 70 }, (_, i) => [i + 1, `Output ${i + 1}`]),

@@ -31,13 +31,15 @@ const USAGE_FIELDS = {
 
 // Report samples, never infer a complete bill from a missing provider signal.
 // Pricing uses the canonical resolver, including its cache categories.
-export const nativeUsageSummary = (metrics, model) => {
-  const observed = Object.fromEntries(
+export const nativeUsageCounters = (metrics) =>
+  Object.fromEntries(
     Object.entries(metrics ?? {}).filter(
       ([key, value]) =>
         Object.hasOwn(USAGE_FIELDS, key) && Number.isSafeInteger(value) && value >= 0,
     ),
   );
+export const nativeUsageSummary = (metrics, model) => {
+  const observed = nativeUsageCounters(metrics);
   const fields = Object.entries(USAGE_FIELDS).map(
     ([key, label]) => `${label}: ${observed[key] ?? 'unavailable'}`,
   );

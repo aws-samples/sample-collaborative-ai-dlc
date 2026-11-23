@@ -59,6 +59,16 @@ const fixture = async () => {
         sequence,
         ...(acceptedRequest ? { requestId: acceptedRequest } : {}),
         status: 'publication_ready',
+        ...(sequence === 1
+          ? {
+              timings: { harnessLaunched: 100, firstUsefulOutput: 125, harnessCompleted: 200 },
+              activityMeasurements: {
+                lastApiMs: 40,
+                usageSamples: 2,
+                lastUsage: { tokensInput: 17, tokensOutput: 4, privatePrompt: 'withheld' },
+              },
+            }
+          : {}),
         nativeSessionId: turn.receipt.nativeSessionId,
         receipt: turn.receipt,
         interaction: turn.interactionReceipt,
@@ -124,6 +134,25 @@ describe('serial controller publication and continuation', () => {
       'Question 2: what should change?',
     );
     expect((await f.api.publication(f.prepared, f.recheck)).sequence).toBe(2);
+    const { events } = await f.api.outputs(f.prepared, 0, f.recheck, 0);
+    const [first, second] = events.filter((event) => event.type === 'native.published');
+    expect(first).toMatchObject({
+      publicationId: original.publication.id,
+      attemptId: original.attemptId,
+      turnSequence: 1,
+      writerGeneration: 1,
+    });
+    expect(first.summary).toContain('Harness launch to first useful output: 25 ms');
+    expect(first.summary).toContain('Harness wall time including tools: 100 ms');
+    expect(first.summary).toContain('input tokens: 17');
+    expect(second).toMatchObject({ publicationId: f.row().publication.id, turnSequence: 2 });
+    expect(second.summary).toContain('Harness usage unavailable');
+    expect(events.find((event) => event.type === 'native.answer.accepted')).toMatchObject({
+      turnSequence: 2,
+      replyToPublicationId: first.publicationId,
+      acceptedAt: Date.parse(accepted.response.acceptedAt),
+    });
+    expect(JSON.stringify(events)).not.toMatch(/withheld|privatePrompt|source-secret/);
     expect(f.acceptedCommands.size).toBe(1);
     expect(JSON.stringify(f.row())).not.toMatch(
       /original-starter-model-secret|source-secret|approved/,

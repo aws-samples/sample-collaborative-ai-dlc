@@ -73,6 +73,8 @@ export interface NativeCompletionEvidence extends NativeRevisionTarget {
     status: string;
     class: string;
     buildId: string | null;
+    verdict?: 'READY' | 'NOT-READY' | null;
+    buildPhaseMs?: number;
   }[];
   gates?: { stage: string; unit: string | null; status: string; commandId: string | null }[];
   /** Accepted replies that named no question the engine recorded. Not decisions. */
@@ -194,7 +196,11 @@ function protectedEvidence(value: Record<string, unknown>): boolean {
           !(statuses as readonly string[]).includes(String(row.status)) ||
           (key === 'checks' && !text(row.sensor)) ||
           (key === 'reviews' &&
-            (!text(row.reviewer) || !['advisory', 'adversarial'].includes(String(row.class)))),
+            (!text(row.reviewer) ||
+              !['advisory', 'adversarial'].includes(String(row.class)) ||
+              (row.verdict != null && !['READY', 'NOT-READY'].includes(String(row.verdict))) ||
+              (row.buildPhaseMs !== undefined &&
+                (!Number.isSafeInteger(row.buildPhaseMs) || Number(row.buildPhaseMs) < 0)))),
       )
     )
       invalid();

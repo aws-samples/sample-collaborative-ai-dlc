@@ -129,6 +129,27 @@ it('retains activity when a timing observer throws', () => {
 });
 
 describe('native activity public boundary', () => {
+  it('keeps the last timed OpenCode tool and step sample independently', () => {
+    const log = createNativeActivityLog({ writerGeneration: 1 });
+    const turn = log.turn({ sequence: 1, harness: 'opencode', model: null });
+    write(
+      turn,
+      codex(
+        {
+          type: 'tool_use',
+          part: { tool: 'read', state: { status: 'completed', time: { start: 10, end: 31 } } },
+        },
+        { type: 'step_finish', part: { tokens: { input: 8, output: 4 } } },
+        { type: 'step_finish', part: { tokens: { input: 10, output: 1 } } },
+      ),
+    );
+    turn.close();
+    expect(turn.measurements()).toMatchObject({
+      usageSamples: 2,
+      lastToolMs: 21,
+      lastUsage: { tokensInput: 10, tokensOutput: 1 },
+    });
+  });
   it('presents both cache TTL categories through the shared Claude decoder and canonical pricing', () => {
     const log = createNativeActivityLog({ writerGeneration: 1 });
     const turn = log.turn({
@@ -171,6 +192,8 @@ describe('native activity public boundary', () => {
         codex(thread, { type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 20 } }),
       );
       turn.close();
+      if (usageBaseline === null) expect(turn.measurements()).not.toHaveProperty('lastUsage');
+      else expect(turn.measurements().lastUsage.tokensInput).toBe(sequence === 1 ? 200 : 1000);
     }
     const events = log.pull(0).events;
     const text = (sequence) =>
@@ -211,6 +234,10 @@ describe('native activity public boundary', () => {
       write(turn, codex(event), [4, 13, 31]);
       time = 1250;
       turn.close();
+      expect(turn.measurements()).toMatchObject({
+        usageSamples: 1,
+        lastUsage: { tokensInput: 20, tokensOutput: 5 },
+      });
       const text = visible(log.pull(0).events).join('\n');
       expect(text).toContain(`Turn 2 · ${harness} · model ${model}`);
       expect(text).toContain('input tokens: 20');

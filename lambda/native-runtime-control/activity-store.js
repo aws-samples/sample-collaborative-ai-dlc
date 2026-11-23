@@ -26,6 +26,13 @@ const view = (row) => ({
   content: row.content,
   display: row.display,
   timestamp: row.timestamp,
+  ...(row.attemptId && row.turnSequence && row.writerGeneration
+    ? {
+        attemptId: row.attemptId,
+        turnSequence: row.turnSequence,
+        writerGeneration: row.writerGeneration,
+      }
+    : {}),
 });
 
 export const createNativeActivityStore = ({

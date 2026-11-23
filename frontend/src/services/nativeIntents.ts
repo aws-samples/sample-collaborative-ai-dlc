@@ -20,17 +20,37 @@ export {
   applicationSource as decodeNativeApplicationSource,
 };
 
-export interface NativeActivityEvent extends IntentActivityEvent {
-  revision: number;
+interface NativeTurnScope {
+  attemptId?: string;
+  turnSequence?: number;
+  writerGeneration?: number;
 }
+export interface NativeActivityEvent extends IntentActivityEvent, NativeTurnScope {
+  revision: number;
+  publicationId?: string;
+  replyToPublicationId?: string;
+  acceptedAt?: number;
+}
+export interface NativeActivityOutput extends IntentOutput, NativeTurnScope {}
 export interface NativeActivityPage {
-  outputs: IntentOutput[];
+  outputs: NativeActivityOutput[];
   nextAfter: number | null;
   // Additive. Older controllers have no lifecycle ledger.
   events?: NativeActivityEvent[];
   nextEventAfter?: number | null;
 }
 
+const positiveInteger = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0;
+function validTurnScope(row: NativeTurnScope): boolean {
+  return (
+    (row.attemptId === undefined &&
+      row.turnSequence === undefined &&
+      row.writerGeneration === undefined) ||
+    (validId(row.attemptId) &&
+      positiveInteger(row.turnSequence) &&
+      positiveInteger(row.writerGeneration))
+  );
+}
 function validHistoryCursor(value: unknown, after: number, last?: number): boolean {
   return value === null || (Number.isSafeInteger(value) && value === last && Number(value) > after);
 }
@@ -43,6 +63,17 @@ function validEvents(value: NativeActivityPage, after: number): boolean {
     value.events.some((event) => {
       if (
         !record(event) ||
+        !validTurnScope(event) ||
+        (event.publicationId !== undefined &&
+          (!validId(event.publicationId) ||
+            event.type !== 'native.published' ||
+            !event.attemptId)) ||
+        (event.replyToPublicationId !== undefined &&
+          (!validId(event.replyToPublicationId) ||
+            event.type !== 'native.answer.accepted' ||
+            !event.attemptId ||
+            !Number.isSafeInteger(event.acceptedAt) ||
+            Number(event.acceptedAt) < 0)) ||
         !Number.isSafeInteger(event.revision) ||
         event.revision <= previous ||
         event.eventId !== `native-${event.revision}` ||
@@ -1196,6 +1227,7 @@ export const nativeIntentsService = {
       value.outputs.some(
         (row) =>
           !record(row) ||
+          !validTurnScope(row) ||
           !Number.isSafeInteger(row.seq) ||
           row.seq <= afterSeq ||
           typeof row.content !== 'string',

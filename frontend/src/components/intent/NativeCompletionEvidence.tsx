@@ -256,7 +256,14 @@ function ProtectedEvidence({ evidence }: { evidence: Evidence }) {
               <li key={`${review.stage}-${index}`}>
                 {review.stage}
                 {review.unit ? ` / ${review.unit}` : ''} · {review.reviewer}:{' '}
-                {review.status.replaceAll('_', ' ')} ({review.class})
+                {review.status.replaceAll('_', ' ')} (
+                {review.class === 'adversarial' ? 'required adversarial' : 'advisory'})
+                {review.verdict && ` · Recorded verdict ${review.verdict}`}
+                {' · Isolated job BUILD phase: '}
+                {['ready', 'concerns'].includes(review.status) && review.buildPhaseMs !== undefined
+                  ? `${review.buildPhaseMs} ms`
+                  : 'unavailable'}
+                {' · Reviewer token usage unavailable'}
               </li>
             ))}
           </ul>

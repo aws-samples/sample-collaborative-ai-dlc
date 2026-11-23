@@ -1024,7 +1024,9 @@ it('does not invent a next assistant response when delivery has completed', asyn
   expect(
     screen.getByText('Reply delivered. Waiting for the next AI-DLC response.'),
   ).toBeInTheDocument();
-  expect(screen.getByText(/Turn 1/)).toBeInTheDocument();
+  expect(
+    within(screen.getByRole('region', { name: 'Published AI-DLC response' })).getByText(/Turn 1/),
+  ).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
 });
 

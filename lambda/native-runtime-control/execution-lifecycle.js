@@ -4,6 +4,7 @@ import { executionIdentity, executionRuntimeConfiguration } from './execution-ru
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
 import { nativeDiagnosticError, nativeDiagnosticPhase } from './execution-diagnostics.js';
 import { nativeRuntimeCommand } from '../shared/native-runtime-command.js';
+import { nativePublicationMeasurements } from './execution-history.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -586,6 +587,7 @@ export const verifyCompletedNativeTurn = async ({
   state.row = await store.publish({
     row: state.row,
     publication: receipt,
+    measurements: nativePublicationMeasurements(report, state.row.configuration),
     ...(interaction ? { interaction, interactionContentSha256 } : {}),
   });
   timing('authorityAdmissionCompleted');

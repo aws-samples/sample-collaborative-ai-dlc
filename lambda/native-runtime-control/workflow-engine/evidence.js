@@ -128,6 +128,13 @@ export const nativeEngineCompletionEvidence = ({
         freshness.pending ||
         freshness.invalid ||
         (requirement.unit && (!unit || unit.stale));
+      const matchedJob =
+        event &&
+        invocation &&
+        event.verdict === invocation.verdict &&
+        event.reviewer === invocation.reviewer &&
+        event.stage === invocation.stage &&
+        sameUnit(event.unit, invocation.unit);
       return {
         stage: requirement.stage,
         unit: requirement.unit,
@@ -142,12 +149,14 @@ export const nativeEngineCompletionEvidence = ({
                 ? 'ready'
                 : 'concerns',
         verdict: event?.verdict ?? null,
-        ...(invocation?.git &&
-        event &&
-        event.verdict === invocation.verdict &&
-        event.reviewer === invocation.reviewer &&
-        event.stage === invocation.stage &&
-        sameUnit(event.unit, invocation.unit)
+        ...(matchedJob &&
+        !stale &&
+        invocation.buildStatus === 'SUCCEEDED' &&
+        Number.isSafeInteger(invocation.executionMs) &&
+        invocation.executionMs >= 0
+          ? { buildPhaseMs: invocation.executionMs }
+          : {}),
+        ...(matchedJob && invocation.git
           ? {
               git: {
                 ...invocation.git,

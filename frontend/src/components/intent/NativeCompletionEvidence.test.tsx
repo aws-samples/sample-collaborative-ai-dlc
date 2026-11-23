@@ -187,6 +187,8 @@ const engine = (patch: Record<string, unknown> = {}) => ({
       reviewer: 'aidlc-product-lead-agent',
       status: 'ready',
       class: 'adversarial',
+      verdict: 'READY',
+      buildPhaseMs: 3200,
       buildId: 'build-3',
     },
   ],
@@ -262,7 +264,9 @@ it('reports complete only from protected engine evidence and lets the member ins
   expect(checks.getByText('code-generation / unit-a · type-check: budget exceeded')).toBeVisible();
   const reviews = within(inside.getByRole('list', { name: 'Independent reviews' }));
   expect(
-    reviews.getByText('requirements-analysis · aidlc-product-lead-agent: ready (adversarial)'),
+    reviews.getByText(
+      /requirements-analysis · aidlc-product-lead-agent: ready \(required adversarial\).*Recorded verdict READY.*BUILD phase: 3200 ms.*Reviewer token usage unavailable/,
+    ),
   ).toBeVisible();
   const decisions = within(inside.getByRole('list', { name: 'Applied member decisions' }));
   expect(decisions.getByText('Plan selection · member-one: applied')).toBeVisible();

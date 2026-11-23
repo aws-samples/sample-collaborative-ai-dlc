@@ -757,10 +757,18 @@ describe('native first-turn executor', () => {
     const { executor, request } = make({ mode: 'usage' });
     await executor.start(request);
     const first = await executor.settle();
+    expect(first.activityMeasurements).toMatchObject({
+      usageSamples: 1,
+      lastUsage: { tokensInput: 1000, tokensOutput: 20 },
+    });
+    expect(first.timings.firstUsefulOutput).toBeGreaterThanOrEqual(first.timings.harnessLaunched);
+    expect(first.timings.harnessCompleted).toBeGreaterThanOrEqual(first.timings.firstUsefulOutput);
     const activity = await executor.activity({ ...request, after: 0 });
     expect(JSON.stringify(activity.events)).toContain('input tokens: 1000');
     await executor.continue(reply(request, first));
-    expect(await executor.settle()).toMatchObject({ status: 'publication_ready', sequence: 2 });
+    const second = await executor.settle();
+    expect(second).toMatchObject({ status: 'publication_ready', sequence: 2 });
+    expect(second.activityMeasurements).not.toHaveProperty('lastUsage');
     const resumed = await executor.activity({ ...request, after: activity.last });
     const text = JSON.stringify(resumed.events);
     expect(text).toContain('Usage and cost unavailable');

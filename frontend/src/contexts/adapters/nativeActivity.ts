@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { nativeIntentsService, type NativeActivityEvent } from '@/services/nativeIntents';
+import {
+  nativeIntentsService,
+  type NativeActivityEvent,
+  type NativeActivityOutput,
+} from '@/services/nativeIntents';
 import { ApiError } from '@/services/api';
 import { realtimeService } from '@/services/realtime';
-import type { IntentOutput } from '@/services/intents';
 import type { NativeIntentAdapter } from './nativeIntent';
 import { getNativeListing } from '@/hooks/useNativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
@@ -13,13 +16,18 @@ import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/session
 export function useNativeActivity(adapter: NativeIntentAdapter) {
   const { projectId, intentId, intent } = adapter;
   const enabled = Boolean(intent);
-  const [rows, setRows] = useState<IntentOutput[]>([]);
+  const [rows, setRows] = useState<NativeActivityOutput[]>([]);
   const [events, setEvents] = useState<NativeActivityEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [observedAt, setObservedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now);
-  const scope = JSON.stringify([projectId, intentId, currentSessionEpoch()]);
+  const scope = JSON.stringify([
+    projectId,
+    intentId,
+    currentSessionEpoch(),
+    getNativeListing(projectId).accessRevision,
+  ]);
   const loadedScope = useRef(scope);
   const generation = useRef(0);
   const cursor = useRef(0);
