@@ -758,6 +758,23 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   })
 }
 
+# The owner checks two inventory keys while fencing Yjs. This role cannot
+# enumerate, read or mutate bindings, executions or publication history.
+resource "aws_iam_role_policy" "projects_native_inventory" {
+  count = var.native_preparation_enabled ? 1 : 0
+  role  = aws_iam_role.neptune_artifacts.id
+  name  = "projects-native-inventory"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = ["dynamodb:ConditionCheckItem"]
+      Resource  = "arn:${local.partition}:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${var.project_name}-native-runs-${var.environment}"
+      Condition = { "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["NATIVE_SPACE#*", "NATIVE_SPACE_INVENTORY"] } }
+    }]
+  })
+}
+
 # Project delete cascades into every child intent, reusing the intents lambda's
 # hardened deletion (shared/intent-deletion.js). That needs, beyond Neptune:
 # drain each EXEC#<id> partition in the v2 process table (incl. METRIC# rows),
@@ -1523,6 +1540,7 @@ module "projects_lambda" {
     # the AgentCore runtime (stop live sessions of deleted intents).
     V2_PROCESS_TABLE              = var.v2_executions_table_name
     YJS_DOCUMENTS_TABLE           = var.yjs_documents_table_name
+    NATIVE_RUNTIME_BINDINGS_TABLE = var.native_preparation_enabled ? "${var.project_name}-native-runs-${var.environment}" : ""
     AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version

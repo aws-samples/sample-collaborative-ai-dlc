@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { localSpaceTables } from './fixtures/local-space-tables.js';
+import { TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { expect, it } from 'vitest';
 import { setup, owner, resources, IDENTITY, ACTOR } from './fixtures.js';
 import { executionFixture } from './execution-fixtures.js';
@@ -11,33 +10,7 @@ import { nativeDraftInputs, nativeInputSnapshot } from '../../shared/native-inpu
 it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
   'atomically fences source edits, accepted Starts and lost acknowledgements in local DynamoDB',
   async () => {
-    const endpoint = new URL(process.env.DYNAMODB_LOCAL_ENDPOINT);
-    expect(endpoint.protocol).toBe('http:');
-    expect(['localhost', '127.0.0.1', '[::1]']).toContain(endpoint.hostname);
-    expect(endpoint.username + endpoint.password + endpoint.search + endpoint.hash).toBe('');
-    const raw = new DynamoDBClient({
-      endpoint: endpoint.href,
-      region: 'us-east-1',
-      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
-    });
-    const ddb = DynamoDBDocumentClient.from(raw, {
-      marshallOptions: { removeUndefinedValues: true },
-    });
-    const tableName = `native-inputs-${randomUUID()}`;
-    await raw.send(
-      new CreateTableCommand({
-        TableName: tableName,
-        BillingMode: 'PAY_PER_REQUEST',
-        KeySchema: [
-          { AttributeName: 'pk', KeyType: 'HASH' },
-          { AttributeName: 'sk', KeyType: 'RANGE' },
-        ],
-        AttributeDefinitions: [
-          { AttributeName: 'pk', AttributeType: 'S' },
-          { AttributeName: 'sk', AttributeType: 'S' },
-        ],
-      }),
-    );
+    const { ddb, tableName, yjsTable, close } = await localSpaceTables();
     try {
       let loseResponse = false;
       let beforeTransaction;
@@ -56,7 +29,7 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
           return result;
         },
       };
-      const f = setup({ ddb: client, tableName });
+      const f = setup({ ddb: client, tableName, yjsTable });
       const claimed = await f.claimed();
       let draft = await f.store.ready({ ...owner(claimed), resources: resources(claimed) });
       const edit = (expectedRevision, repository) =>
@@ -123,8 +96,7 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
         'owner/second',
       );
     } finally {
-      await raw.send(new DeleteTableCommand({ TableName: tableName }));
-      raw.destroy();
+      await close();
     }
   },
 );

@@ -207,11 +207,10 @@ describe('pre-Start saved prompts', () => {
     'rejects invalid prompt without writing',
     async (prompt) => {
       const f = await fixture();
-      const before = f.read();
+      const before = structuredClone([...f.rows]);
       const result = await f.api(route('prompt', promptCommand(prompt)));
       expect(result.statusCode).toBe(400);
-      expect(f.read()).toEqual(before);
-      expect(f.rows.size).toBe(1);
+      expect([...f.rows]).toEqual(before);
     },
   );
 

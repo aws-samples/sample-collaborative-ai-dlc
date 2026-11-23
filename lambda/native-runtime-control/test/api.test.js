@@ -1,4 +1,4 @@
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
 import {
@@ -364,7 +364,7 @@ describe('native draft creation and shared status', () => {
   it('does not mark stored-row validation after a lost write acknowledgement as input rejection', async () => {
     const f = makeApi();
     f.hooks.after = (command) => {
-      if (command instanceof PutCommand) {
+      if (command instanceof TransactWriteCommand) {
         f.write({ ...f.read(), requestFingerprint: 'corrupt' });
         throw new Error('Write acknowledgement lost');
       }
@@ -379,7 +379,7 @@ describe('native draft creation and shared status', () => {
   it('does not mark a post-commit membership rejection as editable input', async () => {
     const f = makeApi();
     f.hooks.after = (command) => {
-      if (command instanceof PutCommand) f.membership.mockResolvedValue(null);
+      if (command instanceof TransactWriteCommand) f.membership.mockResolvedValue(null);
     };
     const response = await f.api(event());
     expect(response.statusCode).toBe(403);
@@ -492,7 +492,7 @@ describe('native draft creation and shared status', () => {
     expect(response.statusCode).toBe(200);
     expect(json(response).status).toBe('DRAFT');
     expect(f.membership).toHaveBeenCalledWith(PROJECT, 'another-member');
-    expect(f.ddb.send.mock.calls.some(([command]) => command instanceof PutCommand)).toBe(false);
+    expect(f.ddb.send.mock.calls.every(([command]) => command instanceof GetCommand)).toBe(true);
     expect(f.read()).toEqual(before);
     expect(f.sources.getAuthorizedBinding).not.toHaveBeenCalled();
     expect(f.jobs.get).not.toHaveBeenCalled();

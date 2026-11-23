@@ -71,6 +71,25 @@ def permits_s3(source, action, key):
 
 
 class NativeExecutionWiring(unittest.TestCase):
+    def test_space_delete_and_draft_check_only_their_owned_scopes(self):
+        platform = (TERRAFORM / "modules/api/lambda/main.tf").read_text()
+        policy = block(platform, 'resource "aws_iam_role_policy" "projects_native_inventory"')
+        self.assertEqual(actions(policy), {"dynamodb:ConditionCheckItem"})
+        self.assertIn('["NATIVE_SPACE#*", "NATIVE_SPACE_INVENTORY"]', policy)
+        self.assertIn('role  = aws_iam_role.neptune_artifacts.id', policy)
+        projects = block(platform, 'module "projects_lambda"')
+        self.assertIn('NATIVE_RUNTIME_BINDINGS_TABLE = var.native_preparation_enabled ?', projects)
+        authority = (MODULE / "authority.tf").read_text()
+        for sid, action, resource, keys in [
+            ("WriteNativeAggregatesAndSpacePresence", "dynamodb:PutItem", "aws_dynamodb_table.bindings.arn", '["NATIVE#*", "NATIVE_SPACE#*"]'),
+            ("CheckProjectTeardown", "dynamodb:ConditionCheckItem", "var.yjs_documents_table_arn", '["scope#project:*"]'),
+        ]:
+            statement = authority.split(f'Sid       = "{sid}"', 1)[1].split("\n    },", 1)[0]
+            self.assertEqual(actions(statement), {action})
+            self.assertIn(f'Resource  = {resource}', statement)
+            self.assertIn(f'"dynamodb:LeadingKeys" = {keys}', statement)
+        self.assertIn("YJS_DOCUMENTS_TABLE                = var.yjs_documents_table_name", authority)
+
     def test_only_native_authority_can_mutate_control_records(self):
         projection = (MODULE / "projection.tf").read_text()
         wakeup = (MODULE / "wakeup.tf").read_text()

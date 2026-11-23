@@ -59,6 +59,8 @@ import {
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
+import { fetchWorkflowSourceMembership } from '../shared/workflow-source-membership.js';
+import { beginNativeSpaceDeletion } from './native-space-deletion.js';
 import {
   PROJECT_PR_STRATEGIES,
   DEFAULT_PR_STRATEGY,
@@ -1920,14 +1922,20 @@ export const handler = async (event, context) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Only owners can delete projects
-        const canDelete = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .outE('HAS_MEMBER')
-          .has('role', 'owner')
-          .inV()
-          .has('User', 'id', userId)
-          .hasNext();
+        const bindingsTable = process.env.NATIVE_RUNTIME_BINDINGS_TABLE;
+        const owner = bindingsTable
+          ? await fetchWorkflowSourceMembership(g, projectId, userId)
+          : null;
+        const canDelete = bindingsTable
+          ? owner?.role === 'owner'
+          : await g
+              .V()
+              .has('Project', 'id', projectId)
+              .outE('HAS_MEMBER')
+              .has('role', 'owner')
+              .inV()
+              .has('User', 'id', userId)
+              .hasNext();
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
 
         // Full cascade. A project owns many intents; each intent owns an entire
@@ -1944,13 +1952,45 @@ export const handler = async (event, context) => {
         // and the delete is simply retryable.
         {
           const actor = userEmail || userId;
-          const legacySprintIds = await g
-            .V()
-            .has('Project', 'id', projectId)
+          const project = () =>
+            (owner ? g.V(owner.projectIdentity) : g.V()).has('Project', 'id', projectId);
+          const legacySprintIds = await project()
             .out('HAS_SPRINT')
             .hasLabel('Sprint')
             .values('id')
             .toList();
+          // Only an explicitly decommissioned/native-free installation omits
+          // this check. Closing new-draft admission keeps retained work readable.
+          if (bindingsTable !== '') {
+            if (owner) {
+              const current = await fetchWorkflowSourceMembership(g, projectId, userId);
+              if (
+                current?.role !== 'owner' ||
+                current.projectIdentity !== owner.projectIdentity ||
+                current.membershipId !== owner.membershipId
+              ) {
+                return response(403, { error: 'Only project owners can delete projects' });
+              }
+            }
+            requireYjsCleanupTime(cleanupDeadline);
+            const result = await beginNativeSpaceDeletion({
+              ddb,
+              tableName: bindingsTable,
+              yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+              projectId,
+              projectIdentity: owner?.projectIdentity,
+            });
+            if (result === 'retained')
+              return response(409, {
+                code: 'space_has_native_intents',
+                error: 'Deleting a space with native intents is not available yet.',
+              });
+            if (result !== 'started')
+              return response(503, {
+                code: 'native_inventory_unavailable',
+                error: 'Native intent inventory could not be confirmed. Retry deletion.',
+              });
+          }
           for (const [type, scopeId] of [
             ['project', projectId],
             ...legacySprintIds.map((sprintId) => ['sprint', sprintId]),
@@ -2022,27 +2062,16 @@ export const handler = async (event, context) => {
           // spares (they are cross-intent by design): the team knowledge corpus
           // and learning-rule guardrails anchored on the Project
           // (graph-writer.js HAS_KNOWLEDGE / HAS_LEARNING).
-          await g
-            .V()
-            .has('Project', 'id', projectId)
-            .out('HAS_KNOWLEDGE', 'HAS_LEARNING')
-            .drop()
-            .next();
+          await project().out('HAS_KNOWLEDGE', 'HAS_LEARNING').drop().next();
 
           // Associated Repository vertices. drop() on an empty traversal is a
           // no-op, so a rejection here is a real error — let it propagate to the
           // handler-level catch instead of being swallowed.
-          await g
-            .V()
-            .has('Project', 'id', projectId)
-            .out('HAS_REPO')
-            .hasLabel('Repository')
-            .drop()
-            .next();
+          await project().out('HAS_REPO').hasLabel('Repository').drop().next();
 
           // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
           // drop with it).
-          await g.V().has('Project', 'id', projectId).drop().next();
+          await project().drop().next();
           logger.info('Project deleted', {
             projectId,
             actor,
@@ -2055,6 +2084,10 @@ export const handler = async (event, context) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
+    if (err?.code === 'WORKFLOW_SOURCE_FORBIDDEN')
+      return response(403, { error: 'Project ownership could not be verified' });
+    if (err?.code === 'WORKFLOW_SOURCE_UNAVAILABLE')
+      return response(503, { error: 'Project ownership lookup is unavailable. Retry deletion.' });
     if (err?.code === 'YJS_CLEANUP_PENDING')
       return response(409, {
         error: 'Collaboration cleanup is in progress. Retry deletion shortly.',

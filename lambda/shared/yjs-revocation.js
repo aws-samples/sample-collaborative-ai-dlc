@@ -8,19 +8,12 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, ListObjectVersionsCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { requiredScopeForYjsDoc } from './realtime-token.js';
+import { validateYjsScope, yjsScopeMarkerKey } from './yjs-scope-key.js';
 
 const s3Client = new S3Client({
   maxAttempts: 3,
   requestHandler: { connectionTimeout: 2000, requestTimeout: 5000 },
 });
-const validateScope = (type, id) => {
-  if (
-    !['intent', 'project', 'sprint'].includes(type) ||
-    !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)
-  )
-    throw new Error('Invalid Yjs scope');
-  return `${type}:${id.toLowerCase()}`;
-};
 
 const cleanupPending = () => {
   const error = new Error('Yjs deletion is in progress; retry the delete');
@@ -41,7 +34,7 @@ export const purgeYjsSnapshots = async ({
   clock = Date.now,
   deadline = clock() + 10_000,
 }) => {
-  validateScope(type, id);
+  validateYjsScope(type, id);
   if (!bucket) return;
   const Prefix = `yjs-documents/${type}/${id.toLowerCase()}/`;
   let KeyMarker, VersionIdMarker;
@@ -85,9 +78,9 @@ export const revokeYjsScope = async ({
   deadline = clock() + scanBudgetMs,
 }) => {
   if (!table || !ddb) return;
-  const scope = validateScope(type, id);
+  const scope = validateYjsScope(type, id);
   const startedAt = clock();
-  const markerKey = { documentId: `scope#${scope}` };
+  const markerKey = yjsScopeMarkerKey(type, id);
   let marker = (
     await ddb.send(new GetCommand({ TableName: table, Key: markerKey, ConsistentRead: true }))
   ).Item;

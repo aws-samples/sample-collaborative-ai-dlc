@@ -1,4 +1,4 @@
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { describe, expect, it } from 'vitest';
 import { resolveNativeRuntimeBinding } from '../../shared/native-runtime-binding.js';
 import { createNativeRuntimeStore, nativeDraftRequest, pinPackageJob } from '../store.js';
@@ -73,7 +73,7 @@ describe('native protected draft pins and idempotency', () => {
   it('recovers a lost create acknowledgement by reading the protected row', async () => {
     const f = setup();
     f.hooks.after = (command) => {
-      if (command instanceof PutCommand) throw awsError('TimeoutError');
+      if (command instanceof TransactWriteCommand) throw awsError('TimeoutError');
     };
     const result = await f.store.create(createInput());
     expect(result.created).toBe(false);
@@ -542,6 +542,7 @@ describe('native preparation CAS and worker fencing', () => {
   it('expires ownership before a new write without a model execution timeout', async () => {
     const f = setup();
     const claimed = await f.claimed();
+    f.ddb.send.mockClear();
     f.setTime(claimed.leaseExpiresAt);
     await expect(f.store.advance({ ...owner(claimed), patch: {} })).rejects.toMatchObject({
       code: 'NATIVE_PREPARATION_LEASE_LOST',

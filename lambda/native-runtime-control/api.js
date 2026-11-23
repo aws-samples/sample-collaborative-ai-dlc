@@ -72,6 +72,7 @@ const ERRORS = {
   NATIVE_PREPARATION_INVALID: [400, 'Invalid native preparation request'],
   NATIVE_PREPARATION_BODY_TOO_LARGE: [413, 'Native draft request is too large'],
   NATIVE_PREPARATION_CONFLICT: [409, 'Native intent changed or its immutable request conflicts'],
+  NATIVE_PREPARATION_SPACE_DELETING: [409, 'Space deletion has started'],
   NATIVE_PREPARATION_NOT_FOUND: [404, 'Native intent not found'],
   NATIVE_PREPARATION_UNAVAILABLE: [503, 'Native preparation is unavailable; retry safely'],
   NATIVE_PREPARATION_PACKAGE_INVALID: [409, 'A matching completed package import is required'],

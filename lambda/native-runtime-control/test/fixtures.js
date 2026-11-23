@@ -18,6 +18,7 @@ export const REVISION = '30000000-0000-4000-8000-000000000001';
 export const OTHER = '40000000-0000-4000-8000-000000000001';
 export const ACTOR = 'member-one';
 export const TABLE = 'native-run-bindings';
+export const YJS_TABLE = 'yjs-fixture';
 export const IDENTITY = { projectId: PROJECT, executionId: INTENT };
 export const SOURCE = workflowSourceIdentity('github', 'awslabs/aidlc-workflows');
 export const MEMBERSHIP = {
@@ -149,15 +150,16 @@ export const awsError = (name = 'ConditionalCheckFailedException') =>
 export const storage = () => {
   const rows = new Map();
   const hooks = {};
-  const key = (row) => JSON.stringify([row.pk, row.sk]);
+  const key = (row) => row.documentId ?? JSON.stringify([row.pk, row.sk]);
   const read = (identity = IDENTITY) =>
     structuredClone(rows.get(key(nativeRuntimeBindingKey(identity))));
   const write = (row) => rows.set(key(row), structuredClone(row));
   const condition = (input) => {
-    expect(input.TableName).toBe(TABLE);
+    expect([TABLE, YJS_TABLE]).toContain(input.TableName);
     const existing = rows.get(key(input.Key ?? input.Item));
+    if (!input.ConditionExpression) return true;
     return input.ConditionExpression.split(' AND ').every((clause) => {
-      const absent = /^attribute_not_exists\((pk|sk)\)$/.exec(clause);
+      const absent = /^attribute_not_exists\((pk|sk|deletedAt)\)$/.exec(clause);
       if (absent) return !existing || !Object.hasOwn(existing, absent[1]);
       const match = /^(#[A-Za-z]+) (=|>|<=) (:[A-Za-z]+)$/.exec(clause);
       if (!match) throw new Error(`Unsupported condition: ${clause}`);
@@ -176,9 +178,12 @@ export const storage = () => {
     let result;
     if (command instanceof TransactWriteCommand) {
       const operations = input.TransactItems.map((item) => item.Put ?? item.ConditionCheck);
-      if (!operations.every(condition))
+      const passed = operations.map(condition);
+      if (!passed.every(Boolean))
         throw Object.assign(awsError('TransactionCanceledException'), {
-          CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+          CancellationReasons: passed.map((ok) => ({
+            Code: ok ? 'None' : 'ConditionalCheckFailed',
+          })),
         });
       for (const item of input.TransactItems) if (item.Put) write(item.Put.Item);
       result = {};
@@ -203,6 +208,7 @@ export const setup = (options = {}) => {
   const store = createNativeRuntimeStore({
     ddb: f.ddb,
     tableName: TABLE,
+    yjsTable: YJS_TABLE,
     deployment: DEPLOYMENT,
     now: () => time,
     leaseMs: 100,

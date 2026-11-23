@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isNativeSpaceInventoryReady } from '../../lambda/shared/native-space-inventory.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ACTIVE = new Set([
@@ -19,7 +20,9 @@ export const nativeDependencyInventory = (records) => {
   const references = [];
   for (const row of records) {
     const id = hash([row.pk, row.sk]);
-    if (row.sk === 'RUNTIME') {
+    if (isNativeSpaceInventoryReady(row)) {
+      references.push({ id, kind: 'space-inventory', executable: false, dependencies: [] });
+    } else if (row.sk === 'RUNTIME') {
       references.push({
         id,
         kind: 'preparation',
@@ -70,7 +73,11 @@ export const nativeDependencyInventory = (records) => {
         /^(PUBLICATION#|RESPONSE#|RESPONSE_REQUEST#|ANSWER#|OUTPUT#|PROMPT#|EVENT#)/.test(
           row.sk ?? '',
         );
-      const control = ['OUTPUT_CURSOR', 'PROJECTION', 'REVOCATION'].includes(row.sk);
+      const control =
+        ['OUTPUT_CURSOR', 'PROJECTION', 'REVOCATION'].includes(row.sk) ||
+        (row.pk?.startsWith('NATIVE_SPACE#') &&
+          row.sk === 'RETAINED' &&
+          Object.keys(row).length === 2);
       references.push({
         id,
         kind: history ? 'history' : control ? 'control' : 'unknown',
@@ -94,7 +101,13 @@ export const assertNativeRemoval = (
 ) => {
   if (!admissionClosed) throw new Error('Close native admission before removal');
   if (inventory.schemaVersion !== 1) throw new Error('Unsupported dependency inventory');
-  if (entireService && inventory.records !== 0)
+  // An empty installation may have its bootstrap receipt. Count every row in
+  // the inventory and keep retention markers and unknown shapes protected.
+  if (
+    entireService &&
+    inventory.records !==
+      inventory.references.filter((ref) => ref.kind === 'space-inventory').length
+  )
     throw new Error('Native services or storage still have protected records or readable history');
   const blocked = inventory.references.filter(
     (ref) =>

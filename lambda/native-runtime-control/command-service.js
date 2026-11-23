@@ -89,6 +89,7 @@ export const createNativeRuntimeLambda =
       (runtimeStore ??= storeFactory({
         ddb,
         tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+        yjsTable: env.YJS_DOCUMENTS_TABLE,
         deployment: {
           accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
           region: env.AWS_REGION,

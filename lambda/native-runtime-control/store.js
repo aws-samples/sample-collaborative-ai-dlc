@@ -8,6 +8,8 @@ import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { describeNativePackagePin } from '../shared/native-package-pin.js';
 import { describeNativePackageArchiveReceipt } from '../shared/native-package-archive.js';
 import { workflowSourceIdentity } from '../shared/workflow-source-bindings.js';
+import { nativeSpaceRetentionKey } from '../shared/native-space-inventory.js';
+import { yjsScopeMarkerKey } from '../shared/yjs-scope-key.js';
 import {
   nativeRuntimeBindingKey,
   nativeRuntimeResourceNames,
@@ -35,6 +37,7 @@ const MESSAGES = {
   NATIVE_PREPARATION_LEASE_LOST: 'Native preparation ownership changed',
   NATIVE_PREPARATION_PACKAGE_INVALID: 'A matching completed package import is required',
   NATIVE_PREPARATION_FORBIDDEN: 'Native intent access denied',
+  NATIVE_PREPARATION_SPACE_DELETING: 'Space deletion has started',
 };
 export class NativePreparationError extends Error {
   constructor(code = 'NATIVE_PREPARATION_INVALID') {
@@ -195,6 +198,7 @@ const FAILURE_CODES = new Set([
 export const createNativeRuntimeStore = ({
   ddb,
   tableName = process.env.NATIVE_RUNTIME_BINDINGS_TABLE,
+  yjsTable = process.env.YJS_DOCUMENTS_TABLE,
   deployment,
   now = Date.now,
   leaseMs = 120000,
@@ -676,17 +680,38 @@ export const createNativeRuntimeStore = ({
       };
       row.requestFingerprint = fingerprint(row);
       await validate(row, identity);
+      if (!yjsTable) fail('UNAVAILABLE');
       try {
         await ddb.send(
-          new PutCommand({
-            TableName: tableName,
-            Item: row,
-            ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                ConditionCheck: {
+                  TableName: yjsTable,
+                  Key: yjsScopeMarkerKey('project', projectId),
+                  ConditionExpression: 'attribute_not_exists(deletedAt)',
+                },
+              },
+              { Put: { TableName: tableName, Item: nativeSpaceRetentionKey(projectId) } },
+              {
+                Put: {
+                  TableName: tableName,
+                  Item: row,
+                  ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+                },
+              },
+            ],
           }),
         );
         return { row, created: true };
-      } catch {
+      } catch (error) {
         const current = await get(identity);
+        if (
+          !current &&
+          error.name === 'TransactionCanceledException' &&
+          error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed'
+        )
+          fail('SPACE_DELETING');
         if (!current) fail('UNAVAILABLE');
         if (
           current.requestFingerprint !== row.requestFingerprint ||

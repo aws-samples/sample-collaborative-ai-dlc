@@ -60,6 +60,9 @@ module "native_runs" {
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
   native_repair_table_name     = module.dynamodb.native_repair_table_name
   native_repair_table_arn      = module.dynamodb.native_repair_table_arn
+  yjs_documents_table_name     = module.dynamodb.yjs_documents_table_name
+  yjs_documents_table_arn      = module.dynamodb.yjs_documents_table_arn
+  kms_key_arn                  = var.kms_key_arn
   native_operations            = var.native_operations
   source                       = "./modules/compute/native-runs"
   count                        = var.native_services_enabled ? 1 : 0

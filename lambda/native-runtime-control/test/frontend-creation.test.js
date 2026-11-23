@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, TransactWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
 import { createNativeAuthority } from '../authority.js';
@@ -1028,14 +1028,16 @@ it.each(['before write', 'after write'])(
       });
     } else {
       f.hooks.after = (command) => {
-        if (command instanceof PutCommand) f.membership.mockResolvedValue(null);
+        if (command instanceof TransactWriteCommand) f.membership.mockResolvedValue(null);
       };
     }
     await expect(client.create(OTHER, draftRequest())).rejects.toMatchObject({
       status: 403,
       body: { code: 'NATIVE_PREPARATION_FORBIDDEN' },
     });
-    expect(f.rows.size).toBe(boundary === 'before write' ? 0 : 1);
+    expect([...f.rows.values()].filter((row) => row.sk === 'RUNTIME')).toHaveLength(
+      boundary === 'before write' ? 0 : 1,
+    );
     expect(f.enqueue).not.toHaveBeenCalled();
     if (boundary === 'after write') {
       const retained = f.read({ ...IDENTITY, projectId: OTHER });
@@ -1067,7 +1069,7 @@ it('keeps one binding for competing identical creates and a lost response, rejec
     }),
   ).rejects.toMatchObject({ status: 409, body: { code: 'NATIVE_PREPARATION_CONFLICT' } });
   expect(f.read()).toEqual(committed);
-  expect(f.rows.size).toBe(1);
+  expect([...f.rows.values()].filter((row) => row.sk === 'RUNTIME')).toHaveLength(1);
   expect(f.enqueue).not.toHaveBeenCalled();
 });
 

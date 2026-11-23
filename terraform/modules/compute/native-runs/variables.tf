@@ -65,6 +65,9 @@ variable "cognito_client_id" { type = string }
 
 variable "native_repair_table_name" { type = string }
 variable "native_repair_table_arn" { type = string }
+variable "yjs_documents_table_name" { type = string }
+variable "yjs_documents_table_arn" { type = string }
+variable "kms_key_arn" { type = string }
 variable "native_operations" {
   type = object({
     alarm_actions           = optional(list(string), [])

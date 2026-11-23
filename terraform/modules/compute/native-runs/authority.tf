@@ -1,11 +1,25 @@
 locals {
   authority_write_statements = [
     {
-      Sid       = "MutateNativeAggregates"
+      Sid       = "CheckNativeAggregates"
       Effect    = "Allow"
-      Action    = ["dynamodb:PutItem", "dynamodb:ConditionCheckItem"]
+      Action    = ["dynamodb:ConditionCheckItem"]
       Resource  = aws_dynamodb_table.bindings.arn
       Condition = { "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["NATIVE#*"] } }
+    },
+    {
+      Sid       = "WriteNativeAggregatesAndSpacePresence"
+      Effect    = "Allow"
+      Action    = ["dynamodb:PutItem"]
+      Resource  = aws_dynamodb_table.bindings.arn
+      Condition = { "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["NATIVE#*", "NATIVE_SPACE#*"] } }
+    },
+    {
+      Sid       = "CheckProjectTeardown"
+      Effect    = "Allow"
+      Action    = ["dynamodb:ConditionCheckItem"]
+      Resource  = var.yjs_documents_table_arn
+      Condition = { "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["scope#project:*"] } }
     },
     {
       Sid      = "ReadOutputSubscribers"
@@ -20,6 +34,13 @@ locals {
       Resource = "${var.websocket_execution_arn}/*"
     },
   ]
+}
+
+module "authority_dynamodb_kms" {
+  source      = "../../security/dynamodb-kms-runtime-access"
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = data.aws_partition.current.dns_suffix
+  role_names  = { authority = aws_iam_role.authority.name }
 }
 
 resource "aws_iam_role" "authority" {
@@ -51,6 +72,7 @@ module "authority" {
   local_existing_package = module.packages["authority"].local_filename
   environment_variables = merge(local.base_environment, local.execution_environment, local.workflow_capture_environment, {
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
+    YJS_DOCUMENTS_TABLE                = var.yjs_documents_table_name
     WORKFLOW_SOURCE_BINDINGS_TABLE     = var.workflow_source_bindings_table_name
     NATIVE_PACKAGE_JOBS_TABLE          = var.package_jobs_table_name
     NATIVE_EXECUTION_QUEUE_URL         = aws_sqs_queue.execution[0].url

@@ -126,6 +126,7 @@ beforeAll(async () => {
   // Project delete cascades into the process table + Yjs docs (both mocked).
   vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
+  vi.stubEnv('NATIVE_RUNTIME_BINDINGS_TABLE', '');
   vi.stubEnv('ARTIFACTS_BUCKET', 'test-artifacts-bucket');
   vi.stubEnv('MCP_SECRETS_SSM_PREFIX', '/collab/dev');
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
