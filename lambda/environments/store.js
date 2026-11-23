@@ -21,6 +21,7 @@ import {
 import { queryAll, scanAll } from './registry.js';
 import { readDefaultEnvironment, writeDefaultEnvironment } from '../shared/environment-default.js';
 import { resolvePublishedEnvironment as resolvePublished } from '../shared/environment-snapshot.js';
+import { canonicalJson } from '../shared/workflow-checkpoint.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -34,16 +35,12 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
 
-// A rescan that only re-evaluates the same result is not rewritten.
-const sortedCounts = (counts = {}) =>
-  Object.fromEntries(
-    Object.entries(counts ?? {}).toSorted(([left], [right]) => left.localeCompare(right)),
-  );
+// A rescan that only re-evaluates the same result is not rewritten. Every
+// stored field but the evaluation time counts: findings can change behind
+// unchanged severity counts.
+const comparableScan = (scan) => canonicalJson({ ...scan, evaluatedAt: null });
 const sameScanResult = (current, next) =>
-  current?.imageDigest === next?.imageDigest &&
-  current?.status === next?.status &&
-  JSON.stringify(sortedCounts(current?.severityCounts)) ===
-    JSON.stringify(sortedCounts(next?.severityCounts));
+  Boolean(current) && comparableScan(current) === comparableScan(next);
 
 const compatibilityVersion = () =>
   process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
