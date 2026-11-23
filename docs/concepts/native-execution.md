@@ -6232,6 +6232,7 @@ the current contract for newly created executions.
       positive controls, cancellation races and missing acknowledgements. **Done
       when:** the actual role and network paths enforce the contract on the release
       candidate, with no private restore permissions or compatibility paths needed.
+      **Dev configuration milestone, 2026-11-23.** All 47 engine 12 package-storage checks passed. ReadOnly metadata confirmed bucket versioning, encryption, ownership, public-access blocks, the conditional publisher grant and the absence of lifecycle expiry or transition rules. Live request enforcement, multipart completion and cross-project workspace isolation remain open.
 - [ ] **NE-21 — Complete operational repair and rollout readiness.** Measure repair
       sweeps and revocation lookup at the intended history size and concurrency;
       exercise expired/lost notifications and queue recovery. Assign incident
