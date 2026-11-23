@@ -2,7 +2,6 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
-import { ECRClient } from '@aws-sdk/client-ecr';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -19,7 +18,11 @@ import {
   rebuildCatalogEnvironmentRecipe,
   resolveCatalogEnvironmentRecipe,
 } from './catalog-recipe.js';
-import { uploadBuildContext, readImageScanFindings } from './build-lifecycle.js';
+import {
+  createScanReadClient,
+  readImageScanFindings,
+  uploadBuildContext,
+} from './build-lifecycle.js';
 import {
   actorFrom,
   createRetryableInitializer,
@@ -45,10 +48,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
 // Only read during seeding: a slow ECR call must not hold up a cold start.
-const ecr = new ECRClient({
-  maxAttempts: 2,
-  requestHandler: { connectionTimeout: 2000, requestTimeout: 5000 },
-});
+const ecr = createScanReadClient();
 const defaultStore = createEnvironmentStore({ ddb });
 const defaultToolStore = createToolStore({ ddb });
 
