@@ -15,6 +15,7 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const installedControl = new Set(
   [
     'index.js',
+    'activity-store.js',
     'workflow-engine/service.js',
     'workflow-engine/store.js',
     'workflow-engine/proof-reader.js',

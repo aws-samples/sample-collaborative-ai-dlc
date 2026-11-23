@@ -27,7 +27,12 @@ import { executionFixture } from '../lambda/native-runtime-control/test/executio
 import { memoryNativeObjects } from '../lambda/native-runtime-control/test/memory-objects.js';
 import { TABLE } from '../lambda/native-runtime-control/test/fixtures.js';
 import { createNativeArtifactRevisions } from '../lambda/shared/native-artifact-revision.js';
-import { qualificationMember } from './native-qualification-member.mjs';
+import { createNativeActivityStore } from '../lambda/native-runtime-control/activity-store.js';
+import {
+  qualificationMember,
+  qualificationMembership,
+  competeForQuestion,
+} from './native-qualification-member.mjs';
 import { protectedWorkspaceEngine } from './native-qualification-protected-engine.mjs';
 import { localProviderInvocation } from './native-qualification-provider.mjs';
 
@@ -115,8 +120,9 @@ export async function workspaceQualificationDriver({
   const publications = createNativePublications(storage);
   const interactions = createNativeInteractions(storage);
   const fence = createNativeExecutionFence(storage);
+  const membership = qualificationMembership(f.identity.projectId);
   const engine = protectedWorkflow
-    ? await protectedWorkspaceEngine(f, pkg, storage, publications, interactions)
+    ? await protectedWorkspaceEngine(f, pkg, storage, publications, interactions, membership)
     : null;
   // Keep the fixture transport's RUNTIME row coherent with its prepared read.
   for (const [key, row] of f.rows)
@@ -128,12 +134,13 @@ export async function workspaceQualificationDriver({
     publications,
     interactions,
     revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
+    activity: createNativeActivityStore({ ddb: f.ddb, tableName: TABLE, now: f.now }),
     completionProof: engine?.completionProof,
     configure: async () => f.configuration,
     enqueue: async () => {},
     authorizeSource: async () => {},
   });
-  const member = qualificationMember(f, api);
+  const member = qualificationMember(f, api, membership);
   try {
     await assert.rejects(member.request('start', {}, { token: null }), {
       code: 'NATIVE_AUTHORITY_FORBIDDEN',
@@ -311,7 +318,8 @@ export async function workspaceQualificationDriver({
     runtime = create();
     resumePending = true;
   };
-  const begin = async (prompt, selection) => {
+  let competition;
+  const begin = async (prompt, selection, compete) => {
     if (resumePending) {
       if (f.row().status === 'AWAITING_USER') {
         // A waiting runtime is idle, not polled as a new workflow turn. The
@@ -367,21 +375,27 @@ export async function workspaceQualificationDriver({
         assert.equal(invalid.code, 'NATIVE_EXECUTION_INVALID');
         assert.deepEqual(f.row(), before);
       }
-      const reply = await member.request('response', request);
-      const duplicate = await member.request('response', request);
-      assert.equal(duplicate.response.id, reply.response.id);
+      if (compete) competition = await competeForQuestion(f, member, question, request);
+      else {
+        const reply = await member.request('response', request);
+        const duplicate = await member.request('response', request);
+        assert.equal(duplicate.response.id, reply.response.id);
+      }
       accepted.push(request);
     }
     first = false;
   };
   return {
     inputReads,
-    get: (route, query) => member.request(route, undefined, { query }),
+    get: (route, query, options) => member.request(route, undefined, { query, ...options }),
+    competition: () => competition,
+    revoke: membership.revoke,
+    selectedCommand: engine?.selectedCommand,
     interaction: () => member.request('interaction'),
-    async turn(prompt, { interrupt = false, selection } = {}) {
+    async turn(prompt, { interrupt = false, selection, compete = false } = {}) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
-      await begin(prompt, selection);
+      await begin(prompt, selection, compete);
       if (interrupt) {
         await supervisor(f.identity);
         const marker = join(project, '.native-control/interrupt-ready');

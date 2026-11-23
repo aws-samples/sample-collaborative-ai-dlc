@@ -20,12 +20,75 @@ import {
   verifyQualificationLinuxBindings,
   frozenOpenCodePackument,
 } from '../native-qualification-package.mjs';
+import { serialFixture } from '../../lambda/native-runtime-control/test/execution-serial-fixtures.js';
+import { buildNativePendingInput } from '../../lambda/shared/native-pending-input.js';
+import {
+  competeForQuestion,
+  initiator,
+  qualificationMember,
+  qualificationMembership,
+  respondent,
+} from '../native-qualification-member.mjs';
 
 const image = `cached/native@sha256:${'a'.repeat(64)}`;
 test('loads the installed EFS qualification and its real dependency closure without starting a CLI', async () => {
   const protocol = await import('../native-workspace-protocol-qualification.mjs');
   assert.equal(typeof protocol.qualifyClaudeWorkspaceProtocol, 'function');
   assert.equal(typeof protocol.qualifyWorkspaceTransport, 'function');
+});
+
+test('a competing member cannot claim the winning request ID on retry', async () => {
+  const f = serialFixture();
+  Object.assign(f.prepared, {
+    harness: f.configuration.harness,
+    createdAt: f.now(),
+    updatedAt: f.now(),
+  });
+  await f.ready();
+  await f.publish({
+    pendingInput: buildNativePendingInput({
+      spec: {
+        version: 2,
+        questions: [
+          { prompt: 'Which change?', options: [{ label: 'Use green' }, { label: 'Use blue' }] },
+        ],
+      },
+    }),
+  });
+  const membership = qualificationMembership(f.identity.projectId);
+  const member = qualificationMember(f, f.api, membership);
+  try {
+    const question = await member.request('interaction');
+    const request = f.replyRequest({
+      text: 'Use green',
+      selection: { answers: [{ selectedOptions: [0] }] },
+    });
+    const accepted = await competeForQuestion(f, member, question, request);
+    assert.equal(
+      (await member.request('response', request, { token: initiator.token, status: 409 })).code,
+      'NATIVE_EXECUTION_CONFLICT',
+    );
+    const read = (token) =>
+      member.request('interaction', undefined, {
+        token,
+        query: {
+          publicationId: question.publicationId,
+          publicationSequence: String(question.sequence),
+        },
+      });
+    const heard = await read(initiator.token);
+    assert.equal(heard.answer.actorId, respondent.actorId);
+    assert.equal(heard.answer.id, accepted.retryCommandId);
+    assert.deepEqual(await read(respondent.token), heard);
+    assert.equal(
+      (await member.request('outputs', undefined, { query: { afterEvent: '0' } })).events.filter(
+        (event) => event.type === 'native.answer.accepted',
+      ).length,
+      1,
+    );
+  } finally {
+    member.close();
+  }
 });
 
 test('offline registry resolution cannot drift beyond the frozen archive closure', () => {

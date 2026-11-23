@@ -18,6 +18,7 @@ import {
   qualificationPlanOfferCommand,
 } from './native-qualification-provider.mjs';
 import { dependencyInstall } from './native-qualification-dependencies.mjs';
+import { initiator, respondent } from './native-qualification-member.mjs';
 import { workspaceQualificationDriver } from './native-workspace-qualification-driver.mjs';
 import { buildNativePendingInput } from '../lambda/shared/native-pending-input.js';
 
@@ -70,6 +71,88 @@ function* loadStage(command) {
   assert.match(steering.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
   return yield* runDirective(steering.next);
 }
+// Follow the two bearer identities across immutable revisions and the public
+// activity feed, including after the respondent loses project membership.
+async function qualifyCompetingHistory({
+  driver,
+  first,
+  held,
+  history,
+  gateEvidence,
+  decision,
+  offer,
+  retained,
+}) {
+  const race = driver.competition();
+  assert.equal(history.answer.id, race.commandId);
+  assert.equal(history.answer.actorId, race.winner);
+  assert.equal(history.answer.context.contentSha256, first.contentSha256);
+  assert.equal(decision.textSha256, race.textSha256);
+  assert.equal(decision.sequence, history.answer.sequence);
+  const selectedCommand = await driver.selectedCommand(held.publicationId, race.commandId);
+  assert.equal(`aidlc ${selectedCommand.join(' ')}`, offer.choices[0].command);
+  const query = publicationQuery(first);
+  const readBoth = async (route, parameters) => {
+    const [original, reopened] = await Promise.all(
+      [initiator, respondent].map(({ token }) => driver.get(route, parameters, { token })),
+    );
+    assert.deepEqual(reopened, original);
+    return original;
+  };
+  const original = await readBoth('publication', query);
+  assert.equal(original.id, first.publicationId);
+  assert.equal(original.interactionId, first.id);
+  assert.equal(original.sequence, first.sequence);
+  assert.deepEqual(await readBoth('interaction', query), history);
+  assert.deepEqual(
+    await readBoth('publication', { ...publicationQuery(held), evidence: '1' }),
+    gateEvidence,
+  );
+  const { events, nextEventAfter } = await readBoth('outputs', { afterEvent: '0' });
+  assert.equal(nextEventAfter, null);
+  assert.equal(events.find((event) => event.type === 'native.accepted').actor, initiator.actorId);
+  const acceptedTurns = events.filter((event) => event.type === 'native.answer.accepted');
+  assert.deepEqual(
+    acceptedTurns.map((event) => [event.replyToPublicationId, event.actor, event.turnSequence]),
+    [
+      [first.publicationId, respondent.actorId, decision.sequence],
+      [held.publicationId, initiator.actorId, retained.answer.sequence],
+    ],
+  );
+  const [accepted] = acceptedTurns;
+  const published = events.find(
+    (event) => event.type === 'native.published' && event.publicationId === held.publicationId,
+  );
+  assert.equal(published.turnSequence, accepted.turnSequence);
+  assert.equal(published.attemptId, accepted.attemptId);
+  assert.equal(accepted.attemptId, gateEvidence.context.attemptId);
+  assert.ok(published.revision > accepted.revision);
+  driver.revoke(respondent.actorId);
+  const denied = await driver.get('interaction', query, { token: respondent.token, status: 403 });
+  assert.equal(denied.code, 'NATIVE_PREPARATION_FORBIDDEN');
+  assert.deepEqual(await driver.get('interaction', query, { token: initiator.token }), history);
+  assert.deepEqual(
+    await driver.get('publication', { ...publicationQuery(held), evidence: '1' }),
+    gateEvidence,
+  );
+  return {
+    initiator: initiator.actorId,
+    ...race,
+    selectedCommand,
+    effect: decision.effect,
+    acceptedRevision: accepted.revision,
+    resultingRevision: published.revision,
+    acceptedSequence: accepted.turnSequence,
+    originalSequence: first.sequence,
+    appliedDecisions: gateEvidence.engineApplication.length,
+    acceptedTurns: acceptedTurns.length,
+    acceptedForQuestion: acceptedTurns.filter(
+      (event) => event.replyToPublicationId === first.publicationId,
+    ).length,
+    revokedReader: respondent.actorId,
+    revokedReadCode: denied.code,
+  };
+}
 async function qualifyProtectedMember({ harness, driver, provider, project }) {
   const pendingFile = join(project, '.native-control/pending-question.json');
   const unfinished = {
@@ -115,6 +198,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   assert.equal((await driver.get('publication')).id, first.publicationId);
   assert.deepEqual((await proof(first)).engineApplication, []);
   const selection = { answers: [{ selectedOptions: [0] }] };
+  const compete = harness === 'claude';
   const gateQuestion = 'Review the requirements. How would you like to proceed?';
   const gateSpec = {
     version: 2,
@@ -151,6 +235,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   assert.equal(
     await turn(first.pendingInput.questions[0].options[0].label, selectAndPresentGate(), {
       selection,
+      compete,
     }),
     firstSession,
   );
@@ -224,6 +309,18 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   assert.equal(gateEvidence.memberDecision.label, 'Approve');
   assert.equal(gateEvidence.memberDecision.membershipRecorded, true);
   assert.equal(retained.answer.resultingPublication, null);
+  const competition = compete
+    ? await qualifyCompetingHistory({
+        driver,
+        first,
+        held,
+        history,
+        gateEvidence,
+        decision,
+        offer,
+        retained,
+      })
+    : null;
   const native = await driver.finish({ expectedSessions: 2 });
   console.log(
     JSON.stringify({
@@ -254,6 +351,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
       gateState: gate.state,
       gateOnly: next.gate_only,
       workflowCompletion: after.workflowCompletion,
+      ...(competition ? { competition } : {}),
       ...native,
     }),
   );

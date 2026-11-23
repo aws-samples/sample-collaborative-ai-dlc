@@ -290,6 +290,7 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       'api.js',
       'authority.js',
       'index.js',
+      'activity-store.js',
       'workflow-engine/service.js',
       'execution-worker.js',
       'execution-api.js',
@@ -313,7 +314,7 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       "import {createNativeWorkflowEngine} from '../lambda/native-runtime-control/workflow-engine/service.js';",
     );
     staged = await stagePackagedQualification(root);
-    for (const path of ['index.js', 'workflow-engine/service.js'])
+    for (const path of ['index.js', 'activity-store.js', 'workflow-engine/service.js'])
       assert.equal(
         await readlink(join(staged.directory, 'lambda/native-runtime-control', path)),
         `/opt/native-runtime-control/${path}`,

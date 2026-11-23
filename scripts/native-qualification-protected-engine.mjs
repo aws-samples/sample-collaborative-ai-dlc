@@ -17,10 +17,17 @@ import {
 import { verifyNativeReleaseDirectory } from '../lambda/shared/native-runtime-package.js';
 import { describeNativePackagePin } from '../lambda/shared/native-package-pin.js';
 import { prepareNativeEngineClient } from '../lambda/agentcore/native/workflow-client.js';
-import { ACTOR, MEMBERSHIP, TABLE } from '../lambda/native-runtime-control/test/fixtures.js';
+import { ACTOR, TABLE } from '../lambda/native-runtime-control/test/fixtures.js';
 import { engineTransport } from './native-qualification-engine-transport.mjs';
 
-export async function protectedWorkspaceEngine(f, pkg, storage, publications, interactions) {
+export async function protectedWorkspaceEngine(
+  f,
+  pkg,
+  storage,
+  publications,
+  interactions,
+  membership,
+) {
   const { packageId, version, sourceCommit } = NATIVE_ENGINE_PROFILE;
   assert.equal(pkg.version, version);
   const packagePin = await verifyNativeReleaseDirectory({
@@ -65,13 +72,18 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
       assert.deepEqual(row.scope, f.identity);
       assert.equal(row.bindingId, draft.bindingId);
       assert.equal(row.startedBy, ACTOR);
-      assert.equal(draft.projectIdentity, MEMBERSHIP.projectIdentity);
+      assert.equal(
+        draft.projectIdentity,
+        membership.lookup(draft.projectId, row.startedBy).projectIdentity,
+      );
       if (row.response) {
         const answer = await f.store.response(row, row.response.interactionId);
-        assert.equal(answer.actorId, ACTOR);
+        assert.equal(answer.actorId, row.response.actorId);
+        const respondent = membership.lookup(draft.projectId, answer.actorId);
+        assert.equal(respondent.projectIdentity, draft.projectIdentity);
         assert.deepEqual(answer.member, {
-          membershipId: MEMBERSHIP.membershipId,
-          projectIdentity: MEMBERSHIP.projectIdentity,
+          membershipId: respondent.membershipId,
+          projectIdentity: draft.projectIdentity,
         });
       }
     },
@@ -137,6 +149,23 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
   });
   return {
     ...transport,
+    // The public proof omits the request-bound CLI command. Inspect only the
+    // saved engine snapshot for this exact finalized revision, after admission.
+    async selectedCommand(publicationId, commandId) {
+      const operations = [...f.rows.values()].filter(
+        (row) =>
+          row.action === 'finalize' &&
+          row.status === 'completed' &&
+          row.publicationId === publicationId,
+      );
+      assert.equal(operations.length, 1);
+      const [operation] = operations;
+      const { state } = await objects.read(operation.identity, operation.snapshot);
+      const decisions = state.decisions.filter((item) => item.commandId === commandId);
+      assert.equal(decisions.length, 1);
+      assert.equal(decisions[0].application, 'applied');
+      return decisions[0].selectedCommand;
+    },
     completionProof: createNativeEngineProofReader({ ddb: f.ddb, tableName: TABLE, objects }),
     prepare: (input) => prepareNativeEngineClient({ ...input, s3: storage.s3, lambda }),
   };
