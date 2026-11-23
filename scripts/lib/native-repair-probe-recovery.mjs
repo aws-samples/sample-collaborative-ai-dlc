@@ -21,6 +21,7 @@ export function seedRecoveryRows(records, mix) {
     ],
     projection: [
       ...executionIds(0, 2 * cohortSize, 2),
+      ...executionIds(2 * cohortSize, 2 * cohortSize),
       ...executionIds(4 * cohortSize, 2 * cohortSize, 2),
     ],
   };
@@ -28,16 +29,22 @@ export function seedRecoveryRows(records, mix) {
   const unaffected = `sha256:${'1'.repeat(64)}`;
   const published = new Set(expected.projection);
   for (const row of records) {
-    if (!published.has(row.scope?.executionId)) continue;
+    if (!published.has(row.scope?.executionId)) {
+      if (row.status === 'STOPPED') row.status = 'FAILED';
+      continue;
+    }
     // Scanner-visible committed publication pointer; no manifest or graph IO.
     const id = row.pk.slice('NATIVE#'.length);
+    const waiting = row.status !== 'STOPPED';
+    row.projectionStatus = 'pending';
+    row.publicationEpoch = 1;
     row.publication = {
       id,
       sequence: 1,
-      outcome: row.status === 'STOPPED' ? 'STOPPED' : 'WAITING_FOR_INPUT',
+      outcome: waiting ? 'WAITING_FOR_INPUT' : 'STOPPED',
       nativeSessionId: 'probe-session',
-      filesCount: 0,
-      question: null,
+      filesCount: waiting ? 1 : 0,
+      question: waiting ? { path: 'question.md', sha256: id } : null,
       manifest: { key: `probe/${id}`, versionId: 'probe-version', sha256: id, bytes: 1 },
     };
   }
@@ -226,6 +233,8 @@ export async function measureRecovery({
     const sum = (name) => units.reduce((total, unit) => total + unit[name], 0);
     assert.equal(sum('sendsAcknowledged') + warnings.length, ports.operations.SendMessageCommand);
     assert.equal(sum('errors'), warnings.length);
+    for (const cost of Object.values(ports.lookups))
+      cost.elapsedMsSum = Math.round(cost.elapsedMsSum);
     const pages = sum('pages');
     assert.deepEqual(
       new Set(Object.keys(ports.lookups)),
@@ -257,8 +266,18 @@ export async function measureRecovery({
     loss.checkpoint && retry && healthyTail,
     'Missing pre-continuation loss, later healthy work or retry',
   );
-  const { revoked, unaffected, publishedHeads } = fixture;
-  return { ...bounds, revoked, unaffected, publishedHeads, loss, retry, healthyTail, sweeps };
+  const { expected, revoked, unaffected, publishedHeads } = fixture;
+  return {
+    ...bounds,
+    expectedExecutionIds: expected,
+    revoked,
+    unaffected,
+    publishedHeads,
+    loss,
+    retry,
+    healthyTail,
+    sweeps,
+  };
 }
 
 export async function verifySourceRows(raw, tableName, records) {
