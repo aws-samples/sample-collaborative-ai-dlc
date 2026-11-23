@@ -515,10 +515,12 @@ acceptance must establish repair delay at the intended scale, usable alerts and
 an incident owner. Normal member actions should be diagnosable through activity,
 status, history and explicit error messages rather than private runtime logs.
 
-Archive, replacement-run and resource-cleanup behavior is not yet defined.
-Stopping a runtime is separate from deleting its workspace or publications, and
-the UI currently prevents deletion of a space containing native intents. These
-lifecycle actions need clear permissions, retention and user-visible outcomes.
+A member can create a fresh native intent after a confirmed stop if the
+execution was cancelled, failed or has a known EFS recovery blocker. The member
+selects the application repository and enters a new request. Members with
+access can still inspect the earlier answers and export retained publications.
+The UI prevents deletion of a space containing native intents. Archive,
+restore and cleanup still need defined permissions and retention.
 
 For shared deployment and validation procedures, see [Setup](../getting-started/setup.md)
 and [Testing](../development/testing.md). The checklist below distinguishes an
@@ -6177,7 +6179,7 @@ the current contract for newly created executions.
       usage/timing attribution. **Done when:** multi-page reconnect, missed hints,
       backpressure and partial reads retain complete accessible history, and normal
       diagnosis does not require private transcripts.
-      **Dev milestone, 2026-11-23.** Engine v8 (`b9e6c568`) deployed with turn timing and scoped reviewer outcomes in Current and History. Three 64-row batches sent three notifications and replayed all 192 outputs in local tests. Installed qualification and deployment readback passed. Independent verification and signed-in replay and display acceptance remain open.
+      **Dev milestone, 2026-11-23.** Engine v8 (`b9e6c568`) passed independent deployment verification and its ReadOnly preflight. Current and History show turn timings and scoped reviewer outcomes. Three 64-row batches sent three notifications and replayed all 192 outputs in local tests. Signed-in replay and display acceptance remain open.
 - [ ] **NE-16 — Measure and reduce startup and post-turn latency.** Measure preparation,
       installation, acceptance-to-dispatch, first useful output, harness/tools time
       and publication-to-display separately. Reuse verified installed assets and
@@ -6185,7 +6187,7 @@ the current contract for newly created executions.
       permits it. **Done when:** repeatable cold/warm measurements for the release
       combinations meet agreed responsiveness targets without skipping workflow
       steps, checks, required questions or publication integrity.
-      **Local measurements, 2026-11-23.** Across 18 paired offline runs, retaining verified harness files (`690c6eee`) reduced median warm finalization from 481 to 221 ms. Cold mirror took 468 ms on both revisions. All 522 authorization checks ran on each revision. Deployed timings, member-observed display and responsiveness targets remain open.
+      **Dev milestone, 2026-11-23.** Engine v9 (`059133df`) deployed with verified harness file reuse. Across 18 paired installed-image runs, median warm finalization fell from 482 to 221 ms. First mirror measured 469 and 473 ms respectively, and each image made 522 authorization checks. Live timing, member-observed display and responsiveness targets remain open.
 - [ ] **NE-17 — Complete cancellation, abandoned work and resource lifecycle.** Define
       archive/restore, replacement intent, space deletion, workspace retention and
       cleanup permissions. A replacement must use an explicit source and fresh
@@ -6194,6 +6196,7 @@ the current contract for newly created executions.
       hiding an item and deleting data are distinct; cleanup releases only eligible
       resources and the documented EFS-loss behavior is clear. Abandoning a
       protected engine operation that never finishes is a separate item, NE-23.
+      **Dev milestone, 2026-11-23.** Inspect work and export opens fresh intent creation on frontend `9d4a970f`. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
