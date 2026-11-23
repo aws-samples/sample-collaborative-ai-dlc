@@ -1,15 +1,12 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import {
-  DescribeImagesCommand,
-  DescribeImageScanFindingsCommand,
-  ECRClient,
-} from '@aws-sdk/client-ecr';
+import { DescribeImagesCommand, ECRClient } from '@aws-sdk/client-ecr';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   RETRYABLE_ECR_ERRORS,
   createBuildLifecycleHandler,
   isUnsupportedScan,
+  readGateScan,
   streamToString,
   summarizeScanFindings,
 } from './build-lifecycle.js';
@@ -105,17 +102,15 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
         { fromStatus: 'BUILDING' },
       );
     }
-    const scan = await ecrClient.send(
-      new DescribeImageScanFindingsCommand({
-        repositoryName: process.env.TOOL_ECR_REPOSITORY_NAME,
-        imageId: { imageDigest: image.imageDigest },
-      }),
-    );
+    const gateScan = await readGateScan({
+      ecrClient,
+      repositoryName: process.env.TOOL_ECR_REPOSITORY_NAME,
+      imageDigest: image.imageDigest,
+    });
+    if (gateScan.pending) return { version: scanning, pending: true };
+    const { scan } = gateScan;
     const scanStatus = scan.imageScanStatus?.status;
     const scanDescription = scan.imageScanStatus?.description ?? null;
-    if (scanStatus === 'IN_PROGRESS' || scanStatus === 'PENDING') {
-      return { version: scanning, pending: true };
-    }
     if (isUnsupportedScan(scanStatus, scanDescription)) {
       const evaluatedAt = new Date().toISOString();
       return {
@@ -153,14 +148,14 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
         ),
       };
     }
-    const severityCounts = scan.imageScanFindings?.findingSeverityCounts ?? {};
+    const { severityCounts, findingsTruncated } = gateScan;
     const critical = Number(severityCounts.CRITICAL ?? 0);
     const high = Number(severityCounts.HIGH ?? 0);
     const scanFindings = {
       status: scanStatus,
       severityCounts,
       findings: summarizeScanFindings(scan),
-      findingsTruncated: Boolean(scan.nextToken),
+      findingsTruncated,
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };

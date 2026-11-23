@@ -105,6 +105,37 @@ export const readImageScanFindings = async ({
 export const isUnsupportedScan = (status, description) =>
   status === 'UNSUPPORTED_IMAGE' || /UnsupportedImageError/i.test(description ?? '');
 
+// Enhanced scanning (Amazon Inspector) reports ACTIVE as soon as an image is
+// under continuous scanning, and the findings of a finished scan reach ECR
+// some time after Inspector completes it: a read in that window returns no
+// findings, or only some. The scan gate judges an enhanced scan only once
+// this long has passed since the scan completed. The delay is not
+// documented; five minutes leaves a wide margin over the seconds observed.
+export const ENHANCED_SCAN_SETTLE_MS = 5 * 60 * 1000;
+
+// Reads an image's scan for the scan gate. `pending` means the result cannot
+// be judged yet and the image stays SCANNING until a later poll.
+export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now = Date.now }) => {
+  const scan = await ecrClient.send(
+    new DescribeImageScanFindingsCommand({ repositoryName, imageId: { imageDigest } }),
+  );
+  const status = scan.imageScanStatus?.status;
+  if (status === 'IN_PROGRESS' || status === 'PENDING') return { scan, pending: true };
+  if (status === 'ACTIVE') {
+    const completedAt = new Date(
+      scan.imageScanFindings?.imageScanCompletedAt ?? Number.NaN,
+    ).getTime();
+    if (Number.isNaN(completedAt) || now() - completedAt < ENHANCED_SCAN_SETTLE_MS) {
+      return { scan, pending: true };
+    }
+  }
+  return {
+    scan,
+    severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
+    findingsTruncated: Boolean(scan.nextToken),
+  };
+};
+
 export const createBuildLifecycleHandler =
   ({ label, poll, handleBuildEvent, handleScanEvent }) =>
   async (event) => {
