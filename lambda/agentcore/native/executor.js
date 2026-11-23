@@ -710,10 +710,7 @@ export const createNativeExecutor = ({
     checkCancelled(turn);
     if (model) timing(turn, 'harnessLaunched');
     const result = await commandRunner(options);
-    if (result.cleanupComplete !== true) {
-      turn.owner.poisoned = true;
-      fail('native_execution_cleanup_incomplete');
-    }
+    if (result.cleanupComplete !== true) fail('native_execution_cleanup_incomplete');
     checkCancelled(turn);
     if (
       result.exitCode !== 0 ||
@@ -1325,12 +1322,16 @@ export const createNativeExecutor = ({
       writerGeneration: owner.writerGeneration,
     });
     try {
+      checkCancelled(turn);
       const prepared = await prepareNativeTurn(turn);
       const result = await runNativeTurn(turn, prepared);
       await publishNativeTurn(turn, prepared, result);
     } catch (error) {
       // Never expose raw port/subprocess errors (which may contain credentials).
       const code = nativeRuntimeFailureCode(error);
+      // Preparation also runs owned Git commands. Missing proof in either
+      // phase takes precedence over a concurrent cancellation.
+      if (code === 'native_execution_cleanup_incomplete') owner.poisoned = true;
       turn.report = {
         ...turn.report,
         status: owner.poisoned

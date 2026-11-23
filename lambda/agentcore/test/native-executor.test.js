@@ -1272,16 +1272,86 @@ describe('native first-turn executor', () => {
     ).toEqual(Buffer.from(nativeFiles[questionPath]));
   });
 
-  it('cancels an unlimited real subprocess and never publishes a partial turn', async () => {
-    const { executor, request, ports } = make({ mode: 'wait' });
-    await executor.start(request);
-    await vi.waitFor(() => expect(ports.commandRunner).toHaveBeenCalledTimes(4));
+  it('cancels immediately after admission before preparation or command launch', async () => {
+    const { executor, request, ports } = make();
+    expect(await executor.start(request)).toMatchObject({ accepted: true, status: 'preparing' });
     expect(await executor.cancel(request)).toMatchObject({ status: 'cancelling' });
-    expect(executor.isBusy()).toBe(true);
-    expect(await executor.settle()).toMatchObject({ status: 'cancelled' });
-    expect(executor.isBusy()).toBe(false);
+    expect(await executor.settle()).toMatchObject({
+      status: 'cancelled',
+      code: 'native_execution_cancelled',
+    });
+    expect(ports.prepare).not.toHaveBeenCalled();
+    expect(ports.commandRunner).not.toHaveBeenCalled();
     expect(ports.publish).not.toHaveBeenCalled();
+    expect(ports.publishInteraction).not.toHaveBeenCalled();
   });
+
+  it.each(['startup', 'first output'])(
+    'cancels an unlimited real subprocess at %s and never publishes a partial turn',
+    async (window) => {
+      const { executor, request, ports } = make({ mode: 'wait' });
+      const entered = Promise.withResolvers();
+      const run = ports.commandRunner.getMockImplementation();
+      ports.commandRunner.mockImplementation((input) => {
+        if (input.timeoutMs !== null) return run(input);
+        const pending = run({
+          ...input,
+          onStdoutChunk: (chunk) => {
+            if (window === 'first output') entered.resolve();
+            return input.onStdoutChunk(chunk);
+          },
+        });
+        if (window === 'startup') entered.resolve();
+        return pending;
+      });
+      await executor.start(request);
+      await entered.promise;
+      expect(await executor.cancel(request)).toMatchObject({ status: 'cancelling' });
+      expect(executor.isBusy()).toBe(true);
+      const terminal = { status: 'cancelled', code: 'native_execution_cancelled' };
+      const report = await executor.settle();
+      expect(report).toMatchObject(terminal);
+      expect(report.timings).not.toHaveProperty('workspaceSnapshotStarted');
+      expect(await executor.cancel(request)).toMatchObject(terminal);
+      expect(executor.isBusy()).toBe(false);
+      expect(ports.commandRunner).toHaveBeenCalledTimes(4);
+      expect(ports.publish).not.toHaveBeenCalled();
+      expect(ports.publishInteraction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'withholds cancelled status and publication when a running command loses its owner',
+    async () => {
+      const { executor, request, ports } = make();
+      const lost = Promise.withResolvers();
+      ports.commandRunner.mockImplementation((input) =>
+        input.timeoutMs !== null
+          ? cleanCommand
+          : runNativeCommand({
+              ...input,
+              command: '/bin/sh',
+              args: ['-c', 'kill -KILL "$PPID" && echo owner-lost'],
+              onStdoutChunk: () => lost.resolve(),
+            }),
+      );
+      await executor.start(request);
+      await lost.promise;
+      expect(await executor.cancel(request)).toMatchObject({ status: 'cancelling' });
+      const terminal = {
+        status: 'stopped_needs_review',
+        code: 'native_execution_cleanup_incomplete',
+      };
+      const report = await executor.settle();
+      expect(report).toMatchObject(terminal);
+      expect(report.timings).not.toHaveProperty('workspaceSnapshotStarted');
+      expect(await executor.cancel(request)).toMatchObject(terminal);
+      expect(executor.isBusy()).toBe(true);
+      expect(ports.commandRunner).toHaveBeenCalledTimes(4);
+      expect(ports.publish).not.toHaveBeenCalled();
+      expect(ports.publishInteraction).not.toHaveBeenCalled();
+    },
+  );
 
   it('never relaunches a durable owner in another executor instance or accepts another attempt', async () => {
     const { executor, request, ports } = make();
@@ -1394,6 +1464,35 @@ describe('native first-turn executor', () => {
     expect(snapshot).not.toHaveBeenCalled();
     expect(ports.publish).not.toHaveBeenCalled();
     expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps missing Git preparation cleanup proof ahead of cancellation', async () => {
+    const entered = Promise.withResolvers();
+    const cleanup = Promise.withResolvers();
+    const { executor, request, ports } = make({
+      ports: {
+        prepare: () => {
+          entered.resolve();
+          return cleanup.promise;
+        },
+      },
+    });
+    await executor.start(request);
+    await entered.promise;
+    expect(await executor.cancel(request)).toMatchObject({ status: 'cancelling' });
+    cleanup.reject(Object.assign(new Error(), { code: 'native_execution_cleanup_incomplete' }));
+    expect(await executor.settle()).toMatchObject({
+      status: 'stopped_needs_review',
+      code: 'native_execution_cleanup_incomplete',
+    });
+    expect(executor.isBusy()).toBe(true);
+    const status = JSON.parse(
+      await fs.readFile(join(root, '.native-control/first-turn/status.json')),
+    );
+    expect(status.status).toBe('preparing');
+    expect(ports.commandRunner).not.toHaveBeenCalled();
+    expect(ports.publish).not.toHaveBeenCalled();
+    expect(ports.publishInteraction).not.toHaveBeenCalled();
   });
 
   it('rejects unverified package version, checkout commit and missing credentials before executing commands', async () => {

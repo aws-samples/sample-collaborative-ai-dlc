@@ -138,8 +138,9 @@ const captureFor = (limit) => {
  * IO_ERROR, SPAWN_FAILED, or an allowlisted OS error code above.
  *
  * A pre-aborted signal prevents spawning and returns exitCode/signal null.
- * On Linux cleanupComplete requires close AND the owner's all-children-reaped
- * receipt. Other POSIX hosts retain group cleanup (not runtime qualification).
+ * After a Linux owner spawns, cleanupComplete requires close and its receipt
+ * confirming either no command launched or all children were reaped.
+ * Other POSIX hosts retain group cleanup (not runtime qualification).
  * If false, the caller must halt all subsequent commands. Even normal command
  * exit triggers cleanup of any remaining ordinary descendants.
  * timeoutMs:null explicitly disables the command deadline. outputLimitAction:
@@ -174,8 +175,20 @@ export const runNativeCommand = async (options) => {
     let pressure = null;
     let drainingPressure = null;
     let ownerStatus = '';
+    let ownerReady = false;
     let ownerReceipt = false;
     const onOwnerStatus = (chunk) => {
+      // The owner waits for our decision before Popen. Until this byte arrives,
+      // SIGTERM could kill Python before its cleanup handler is installed.
+      if (!ownerReady) {
+        if (!chunk.equals(Buffer.from('R'))) {
+          onStreamError();
+          return;
+        }
+        ownerReady = true;
+        child.stdio[3].end(cleaning ? 'C' : 'G');
+        return;
+      }
       if (ownerStatus !== null)
         ownerStatus =
           ownerStatus.length + chunk.length > 256 ? null : ownerStatus + chunk.toString('ascii');
@@ -262,7 +275,7 @@ export const runNativeCommand = async (options) => {
       }, NATIVE_COMMAND_LIMITS.cleanupMs);
       if (linuxOwner && pid !== undefined) {
         // Keep the owner alive to adopt/reap descendants, including setsid tools.
-        if (!exited) child.kill('SIGTERM');
+        if (ownerReady && !exited) child.kill('SIGTERM');
         checkCleanup();
         return;
       }
@@ -351,6 +364,7 @@ export const runNativeCommand = async (options) => {
         try {
           const receipt = JSON.parse(ownerStatus);
           if (
+            !ownerReady ||
             receipt.cleanupComplete !== true ||
             !(
               receipt.exitCode === null ||

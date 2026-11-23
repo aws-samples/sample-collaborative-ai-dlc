@@ -23,6 +23,12 @@ def main():
     status_fd = 3
     os.set_inheritable(status_fd, False)
 
+    def receipt(exit_code=None, signal_name=None, spawn_error=None):
+        os.write(status_fd, json.dumps({
+            "cleanupComplete": True, "exitCode": exit_code,
+            "signal": signal_name, "spawnError": spawn_error,
+        }).encode())
+
     def stop(_signal, _frame):
         nonlocal stopping
         stopping = True
@@ -43,13 +49,19 @@ def main():
             for field in source.read().split(b"\0")
             if field
         )
+    # Node may already be cancelling while Python imports or establishes
+    # ownership. Only release the command after the installed handler is ready.
+    os.write(status_fd, b"R")
+    decision = os.read(status_fd, 1)
+    if decision not in (b"C", b"G"):
+        return  # Lost or invalid launch decision. No command and no receipt.
+    if decision == b"C" or stopping:
+        receipt()
+        return
     try:
         command = subprocess.Popen(sys.argv[1:], env=environment, close_fds=True)
     except OSError as error:
-        os.write(status_fd, json.dumps({
-            "cleanupComplete": True, "exitCode": None, "signal": None,
-            "spawnError": errno.errorcode.get(error.errno, "SPAWN_FAILED"),
-        }).encode())
+        receipt(spawn_error=errno.errorcode.get(error.errno, "SPAWN_FAILED"))
         return
 
     while True:
@@ -71,12 +83,10 @@ def main():
         if no_children:
             if primary_status is None:
                 raise RuntimeError("missing command exit")
-            os.write(status_fd, json.dumps({
-                "cleanupComplete": True,
-                "exitCode": primary_status if primary_status >= 0 else None,
-                "signal": signal.Signals(-primary_status).name if primary_status < 0 else None,
-                "spawnError": None,
-            }).encode())
+            receipt(
+                exit_code=primary_status if primary_status >= 0 else None,
+                signal_name=signal.Signals(-primary_status).name if primary_status < 0 else None,
+            )
             return
         if stopping:
             if cleanup_deadline is None:

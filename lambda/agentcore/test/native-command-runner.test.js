@@ -74,6 +74,7 @@ switch (mode) {
     ], { env: {}, stdio: 'ignore', detached: args[2] === 'detached' });
     writeFileSync(pidFile, String(child.pid));
     child.unref();
+    if (args[1] === 'abort') process.stdout.write('ready');
     if (args[1] !== 'exit') setInterval(() => {}, 1000);
     break;
   }
@@ -373,6 +374,67 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it.skipIf(process.platform !== 'linux').each(['resumed', 'stalled'])(
+    'cancels before launch with a %s Linux owner',
+    async (state) => {
+      const controller = new AbortController();
+      const ready = Promise.withResolvers();
+      const closed = Promise.withResolvers();
+      vi.mocked(spawn).mockImplementationOnce((...args) => {
+        const owner = realSpawn(...args);
+        owner.once('close', closed.resolve);
+        // Hold the real owner at its launch decision before the runner handles
+        // readiness. Only the owner handle is signalled, never a fixture PID.
+        owner.stdio[3].once('data', () => {
+          owner.kill('SIGSTOP');
+          controller.abort();
+          ready.resolve(owner);
+        });
+        return owner;
+      });
+      const marker = join(root, 'launched');
+      const pending = runNativeCommand({
+        command: '/bin/sh',
+        args: ['-c', 'echo launched > "$1"', 'sh', marker],
+        env: {},
+        cwd: root,
+        timeoutMs: null,
+        signal: controller.signal,
+      });
+      const owner = await ready.promise;
+      if (state === 'resumed') owner.kill('SIGCONT');
+      const result = await pending;
+      expect(result).toMatchObject({
+        cleanupComplete: state === 'resumed',
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+      });
+      await closed.promise;
+      await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'honors SIGTERM at the owner launch handoff before creating the command',
+    async () => {
+      const controller = new AbortController();
+      vi.mocked(spawn).mockImplementationOnce((...args) => {
+        const owner = realSpawn(...args);
+        const control = owner.stdio[3];
+        const end = control.end.bind(control);
+        vi.spyOn(control, 'end').mockImplementationOnce((decision) => {
+          // Node has observed readiness and chosen Go. Python is still in read().
+          controller.abort();
+          return end(decision);
+        });
+        return owner;
+      });
+      const result = await run('echo', [], { signal: controller.signal });
+      expect(result).toEqual({ ...success, exitCode: null, stdout: '', stderr: '' });
+    },
+  );
+
   it.each(['timeout', 'exit'])('cleans ordinary descendants after parent %s', async (ending) => {
     const pidFile = join(root, 'owned-descendant.pid');
     // Let the fixture start under full-suite contention before testing cleanup.
@@ -387,7 +449,7 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
     expect(noProcess(descendant)).toBe(true);
   });
 
-  it.skipIf(process.platform !== 'linux').each(['timeout', 'exit'])(
+  it.skipIf(process.platform !== 'linux').each(['timeout', 'exit', 'abort'])(
     'reaps a tool in another session after parent %s without touching an unrelated process',
     async (ending) => {
       const unrelated = realSpawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
@@ -398,9 +460,17 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
       const pidFile = join(root, 'detached-tool.pid');
       let descendant;
       try {
-        const result = await run('descendant', [pidFile, ending, 'detached']);
+        const controller = new AbortController();
+        const result = await run('descendant', [pidFile, ending, 'detached'], {
+          signal: controller.signal,
+          onStdoutChunk: () => controller.abort(),
+        });
         descendant = Number(await fs.readFile(pidFile, 'utf8'));
-        expect(result.cleanupComplete).toBe(true);
+        expect(result).toMatchObject({
+          cleanupComplete: true,
+          timedOut: ending === 'timeout',
+          signal: ending === 'exit' ? null : 'SIGKILL',
+        });
         expect(noProcess(descendant)).toBe(true);
         expect(noProcess(unrelated.pid)).toBe(false);
       } finally {
@@ -418,6 +488,38 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
     async () => {
       const result = await run('kill-owner');
       expect(result).toMatchObject({ cleanupComplete: false, spawnError: 'IO_ERROR' });
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'withholds a real reaping receipt when close is delivered after the deadline',
+    async () => {
+      const controller = new AbortController();
+      const closed = Promise.withResolvers();
+      const status = [];
+      vi.mocked(spawn).mockImplementationOnce((...args) => {
+        const owner = realSpawn(...args);
+        owner.stdio[3].on('data', (chunk) => status.push(chunk));
+        const emit = owner.emit.bind(owner);
+        vi.spyOn(owner, 'emit').mockImplementation((event, ...values) => {
+          if (event !== 'close') return emit(event, ...values);
+          closed.resolve(() => emit(event, ...values));
+          return true;
+        });
+        return owner;
+      });
+      const pending = run('wait', [], {
+        signal: controller.signal,
+        onStdoutChunk: () => controller.abort(),
+      });
+      const deliverClose = await closed.promise;
+      expect(JSON.parse(Buffer.concat(status).subarray(1).toString())).toMatchObject({
+        cleanupComplete: true,
+        signal: 'SIGKILL',
+      });
+      expect(await pending).toMatchObject({ cleanupComplete: false });
+      deliverClose();
+      expect(await pending).toMatchObject({ cleanupComplete: false });
     },
   );
 
