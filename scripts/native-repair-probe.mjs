@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Bounded, disposable DynamoDB Local probe; no AWS/provider/real queue effects.
+// Use --scenario=recovery to check each queue after a lost send acknowledgement.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -9,6 +10,12 @@ import { nativeRuntimeBindingKey } from '../lambda/shared/native-runtime-binding
 import { createNativeWakeupBridge } from '../lambda/native-runtime-control/wakeup.js';
 import { createNativePackageRepair } from '../lambda/native-package-worker/repair.js';
 import { createNativePackageJobs } from '../lambda/shared/native-package-jobs.js';
+import {
+  measureRecovery,
+  queueReceipts,
+  seedRecoveryRows,
+  verifySourceRows,
+} from './lib/native-repair-probe-recovery.mjs';
 
 const arg = (name, fallback) =>
   process.argv
@@ -23,6 +30,11 @@ assert(
     !endpoint.username &&
     !endpoint.password,
   'Loopback DynamoDB Local only',
+);
+const scenario = arg('scenario', 'ordinary');
+assert.ok(
+  ['ordinary', 'recovery'].includes(scenario),
+  'Expected --scenario=ordinary or --scenario=recovery',
 );
 const rows = Number(arg('rows', 12000));
 const concurrency = Number(arg('concurrency', 4));
@@ -68,7 +80,8 @@ const seed = async (tableName, records) => {
     assert.deepEqual(result.UnprocessedItems, {});
   }
 };
-const observe = () => {
+const observe = ({ deliver, onScan, recordLookups } = {}) => {
+  const lookups = {};
   const operations = {};
   const capacity = {};
   const sent = new Set();
@@ -86,28 +99,42 @@ const observe = () => {
   };
   return {
     operations,
+    lookups,
     capacity,
     sent,
     get maxOutstanding() {
       return maxOutstanding;
     },
     ddb: {
-      send: (command, options) =>
-        call(async () => {
+      send: (command, options) => {
+        const started =
+          recordLookups && command.input.Key?.sk === 'REVOCATION' ? performance.now() : null;
+        return call(async () => {
           const name = command.constructor.name;
           operations[name] = (operations[name] ?? 0) + 1;
+          if (name === 'ScanCommand') onScan?.(command.input.ExclusiveStartKey);
           command.input.ReturnConsumedCapacity = 'TOTAL';
           const result = await raw.send(command, options);
           capacity[name] = (capacity[name] ?? 0) + (result.ConsumedCapacity?.CapacityUnits ?? 0);
+          if (started !== null) {
+            const digest = command.input.Key.pk.slice('NATIVE_RUNTIME_IMAGE#'.length);
+            const cost = (lookups[digest] ??= { reads: 0, localCapacityUnits: 0, elapsedMsSum: 0 });
+            cost.reads++;
+            cost.localCapacityUnits += result.ConsumedCapacity.CapacityUnits;
+            cost.elapsedMsSum += Math.round(performance.now() - started);
+          }
           return result;
-        }),
+        });
+      },
     },
     sqs: {
       send: (command) =>
         call(async () => {
           operations.SendMessageCommand = (operations.SendMessageCommand ?? 0) + 1;
           sent.add(`${command.input.QueueUrl}:${command.input.MessageBody}`);
-          return { MessageId: 'local-ack' };
+          return deliver
+            ? deliver(command.input.QueueUrl, command.input.MessageBody)
+            : { MessageId: 'local-ack' };
         }),
     },
   };
@@ -177,25 +204,36 @@ try {
       payload: 'x'.repeat(2048),
     };
   });
+  const recovery = scenario === 'recovery' ? seedRecoveryRows(records, mix) : null;
   await seed(tableName, records);
-  const runtimePorts = observe();
-  const runtime = await measure(
-    (ports) =>
-      createNativeWakeupBridge({
-        ...ports,
+  // No stream or poll event is delivered to this fixture. The schedule must
+  // recover work from the protected rows, including a retained revocation.
+  const bridge = (ports, bounds) =>
+    createNativeWakeupBridge({
+      ...ports,
+      tableName,
+      checkpointTable,
+      queues: {
+        execution: 'execution',
+        preparation: 'preparation',
+        cancellation: 'cancellation',
+        projection: 'projection',
+      },
+      repairOptions: { concurrency, budgetMs, ...bounds },
+    });
+  const runtime = recovery
+    ? await measureRecovery({
+        raw,
         tableName,
         checkpointTable,
-        queues: {
-          execution: 'execution',
-          preparation: 'preparation',
-          cancellation: 'cancellation',
-          projection: 'projection',
-        },
-        repairOptions: { concurrency, budgetMs },
-      }),
-    runtimePorts,
-  );
-  assert.equal(runtime.uniqueHints, mix.active + mix.preparing);
+        rows,
+        fixture: recovery,
+        bridge,
+        observe,
+      })
+    : await measure(bridge, observe());
+  if (recovery) runtime.sourceRowsVerified = await verifySourceRows(raw, tableName, records);
+  else assert.equal(runtime.uniqueHints, mix.active + mix.preparing);
   const packagesTable = await create(['projectId', 'jobId']);
   const jobs = createNativePackageJobs({
     ddb: raw,
@@ -210,9 +248,11 @@ try {
     now: () => 1000,
     leaseMs: 60_000,
   });
+  const expectedJobs = [];
   const packageCount = Math.min(200, count * 2);
   for (let i = 0; i < packageCount; i++) {
     const key = { projectId: 'probe', jobId: randomUUID() };
+    if (recovery && i % 4 < 2) expectedJobs.push(key.jobId);
     await jobs.create({
       ...key,
       sourceId: 'a'.repeat(64),
@@ -231,7 +271,17 @@ try {
       });
     }
   }
-  const packagePorts = observe();
+  const jobReceipts = recovery && queueReceipts({ packages: expectedJobs });
+  const packagePorts = observe(
+    jobReceipts
+      ? {
+          deliver(target, body) {
+            jobReceipts.accept(target, body);
+            return { MessageId: 'local-ack' };
+          },
+        }
+      : undefined,
+  );
   const packageStarted = performance.now();
   const packages = await measure(
     (ports) =>
@@ -252,10 +302,12 @@ try {
     packages.uniqueHints,
     Math.floor(packageCount / 4) * 2 + Math.min(packageCount % 4, 2),
   );
+  if (recovery) packages.targets = jobReceipts.verify();
   console.log(
     JSON.stringify(
       {
         node: process.version,
+        ...(recovery ? { scenario, projectId: 'probe', ordinaryNotification: 'suppressed' } : {}),
         endpoint: endpoint.href,
         rows,
         historyPayloadBytes: 2048,
