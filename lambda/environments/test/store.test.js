@@ -245,6 +245,40 @@ describe('environment registry store', () => {
     // The same result is not rewritten on the staged revision either.
     await stage(newDigest, scan(newDigest, { HIGH: 1 }, '2026-11-20T04:00:00.000Z'));
     expect(updates()).toBe(3);
+
+    // Other findings behind the same counts replace the stored ones, on the
+    // published and on the staged revision.
+    const finding = (id) => ({
+      id,
+      severity: 'HIGH',
+      packageName: 'zlib',
+      packageVersion: '1.0',
+      uri: null,
+    });
+    const withFindings = (base, findings, findingsTruncated = false) => ({
+      ...base,
+      findings,
+      findingsTruncated,
+    });
+    const published = (at) => scan(digest, { CRITICAL: 1, HIGH: 2 }, at);
+    await stage(digest, withFindings(published('2026-11-20T05:00:00.000Z'), [finding('CVE-old')]));
+    await stage(digest, withFindings(published('2026-11-20T06:00:00.000Z'), [finding('CVE-new')]));
+    expect(items.get('ENV#standard|REV#core-1').scanFindings.findings).toEqual([
+      finding('CVE-new'),
+    ]);
+    expect(updates()).toBe(5);
+
+    const pending = (at) => scan(newDigest, { HIGH: 1 }, at);
+    await stage(newDigest, withFindings(pending('2026-11-20T07:00:00.000Z'), [finding('CVE-old')]));
+    await stage(
+      newDigest,
+      withFindings(pending('2026-11-20T08:00:00.000Z'), [finding('CVE-old')], true),
+    );
+    expect(items.get(`ENV#standard|REV#${staged.revisionId}`).scanFindings).toMatchObject({
+      findings: [finding('CVE-old')],
+      findingsTruncated: true,
+    });
+    expect(updates()).toBe(7);
   });
 
   it('marks an unpublished dependent when its current revision uses an older base', async () => {
