@@ -5289,10 +5289,31 @@ describe('runStage — measured token usage', () => {
     tokensCacheRead: 30000,
     tokensCacheWrite: 2000,
   };
+  // Usage rows from either write: one sample at a time, or a stage's samples
+  // with its Claude session totals (recordStageUsage).
   const tokenRows = (deps) =>
-    deps.store.calls.filter(
-      ([name, row]) => name === 'recordMetric' && 'tokensInput' in row.metrics,
-    );
+    deps.store.calls
+      .flatMap(([name, row]) =>
+        name === 'recordStageUsage'
+          ? row.samples.map((sample) => ['recordMetric', { ...row, ...sample }])
+          : [[name, row]],
+      )
+      .filter(([name, row]) => name === 'recordMetric' && 'tokensInput' in row.metrics);
+  const withStageUsage = (deps, { fail = false } = {}) => {
+    deps.store.recordStageUsage = async (args) => {
+      deps.store.calls.push(['recordStageUsage', args]);
+      if (fail) throw new Error('throttled');
+      return args.samples.map((sample, index) => ({
+        metricId: `${args.requestId}-${index}`,
+        ...sample,
+      }));
+    };
+    return deps;
+  };
+  const totalsSaves = (deps) =>
+    deps.store.calls
+      .filter(([name, row]) => name === 'recordStageUsage' && row.cliUsageTotals)
+      .map(([, row]) => row.cliUsageTotals);
 
   it.each([0, 1])(
     'persists and broadcasts terminal usage before returning (exit %s)',
@@ -5382,27 +5403,89 @@ describe('runStage — measured token usage', () => {
         },
       }),
     });
-    deps.store.setStageUsageTotals = async (args) =>
-      deps.store.calls.push(['setStageUsageTotals', args]);
+    withStageUsage(deps);
     await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
     expect(tokenRows(deps).map(([, row]) => [row.resolvedModel, row.metrics])).toEqual([
       [model, { tokensInput: 8, tokensOutput: 1700, tokensCacheRead: 30000 }],
     ]);
-    expect(deps.store.calls).toContainEqual([
-      'setStageUsageTotals',
-      expect.objectContaining({
-        cliUsageTotals: {
-          sessionId: 'sess-7',
-          totals: {
-            [model]: {
-              tokensInput: 18,
-              tokensOutput: 2700,
-              tokensCacheRead: 50000,
-            },
+    // The samples and the totals that account for them are one write.
+    const [[, write]] = deps.store.calls.filter(([name]) => name === 'recordStageUsage');
+    expect(write).toMatchObject({
+      executionId: 'e1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      requestId: expect.any(String),
+      recordedAt: expect.any(String),
+      cliUsageTotals: {
+        sessionId: 'sess-7',
+        totals: {
+          [model]: {
+            tokensInput: 18,
+            tokensOutput: 2700,
+            tokensCacheRead: 50000,
           },
         },
+      },
+    });
+    expect(deps.store.calls.some(([name]) => name === 'recordMetric')).toBe(false);
+  });
+
+  it('records only this call’s usage, as incomplete, for a resumed session with no saved totals', async () => {
+    const model = 'us.anthropic.claude-sonnet-4-6';
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          stdout: JSON.stringify({
+            type: 'result',
+            usage,
+            modelUsage: {
+              [model]: { inputTokens: 18, outputTokens: 2700, cacheReadInputTokens: 50000 },
+            },
+          }),
+        }),
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { perQuestion: [{ text: 'Scope?', answer: 'MVP' }] },
+        },
+        // A stage parked before session totals were kept.
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
       }),
+    });
+    withStageUsage(deps);
+    await runStage({ ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) }, deps);
+    expect(
+      tokenRows(deps).map(([, row]) => [row.resolvedModel, row.metrics, row.incomplete]),
+    ).toEqual([[model, metrics, true]]);
+    expect(totalsSaves(deps)).toEqual([
+      {
+        sessionId: 'sess-7',
+        totals: { [model]: { tokensInput: 18, tokensOutput: 2700, tokensCacheRead: 50000 } },
+      },
     ]);
+  });
+
+  it('keeps a failed usage write from failing the stage, and never records it twice', async () => {
+    const model = 'us.anthropic.claude-sonnet-4-6';
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          stdout: JSON.stringify({
+            type: 'result',
+            usage,
+            modelUsage: { [model]: { inputTokens: 18, outputTokens: 2700 } },
+          }),
+        }),
+    });
+    withStageUsage(deps, { fail: true });
+    expect(await runStage(baseArgs, deps)).toMatchObject({ ok: true });
+    const writes = deps.store.calls.filter(([name]) => name === 'recordStageUsage');
+    expect(writes).toHaveLength(2);
+    expect(writes[1][1]).toEqual(writes[0][1]);
+    const tokenMetrics = deps.store.calls.filter(
+      ([name, row]) => name === 'recordMetric' && 'tokensInput' in row.metrics,
+    );
+    expect(tokenMetrics).toEqual([]);
   });
 
   it('records the top-level steps when the CLI ends without a result', async () => {
@@ -5436,31 +5519,25 @@ describe('runStage — measured token usage', () => {
     async (_label, exitCode, saved) => {
       const step = JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [], usage } });
       const deps = baseDeps({ spawnFn: () => kiroChild({ exitCode, stdout: step }) });
-      deps.store.setStageUsageTotals = async (args) =>
-        deps.store.calls.push(['setStageUsageTotals', args]);
+      withStageUsage(deps);
       await runStage(baseArgs, deps);
-      const saves = deps.store.calls.filter(([name]) => name === 'setStageUsageTotals');
-      expect(saves).toEqual(
+      expect(totalsSaves(deps)).toEqual(
         saved
           ? [
-              [
-                'setStageUsageTotals',
-                expect.objectContaining({
-                  cliUsageTotals: {
-                    sessionId: expect.any(String),
-                    totals: {
-                      'us.anthropic.claude-sonnet-4-6': {
-                        tokensInput: 8,
-                        tokensCacheRead: 30000,
-                        tokensCacheWrite: 2000,
-                      },
-                    },
+              {
+                sessionId: expect.any(String),
+                totals: {
+                  'us.anthropic.claude-sonnet-4-6': {
+                    tokensInput: 8,
+                    tokensCacheRead: 30000,
+                    tokensCacheWrite: 2000,
                   },
-                }),
-              ],
+                },
+              },
             ]
           : [],
       );
+      expect(tokenRows(deps)).toHaveLength(1);
     },
   );
 });

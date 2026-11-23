@@ -2335,19 +2335,82 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
   };
 
-  // A Claude session's usage totals so far (`{ sessionId, totals }`, per model),
-  // so a resumed run records only its own spend (cli/claude-usage.js). Kept on
-  // the stage row beside its session id; never creates a row.
-  const setStageUsageTotals = async ({ executionId, stageInstanceId, cliUsageTotals }) => {
-    await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: stageKey(executionId, stageInstanceId),
-        UpdateExpression: 'SET cliUsageTotals = :t',
-        ConditionExpression: 'attribute_exists(pk)',
-        ExpressionAttributeValues: { ':t': cliUsageTotals },
+  // A stage's usage samples and its Claude session's usage totals so far
+  // (`cliUsageTotals`: `{ sessionId, totals }`, per model, kept on the stage
+  // row), in one transaction: a resumed run subtracts the totals, so they must
+  // be those of the spend recorded (cli/claude-usage.js). With ownership it is
+  // fenced to the stage attempt, as its other writes are. `requestId` and
+  // `recordedAt` name the write: the samples' keys derive from them and each
+  // is written only if absent, so repeating a write that already landed
+  // returns its rows without counting them twice. A fence that refuses it says
+  // which (`code`): `run_fence` when the execution is no longer this run's or
+  // no longer live (cancelled), `stage_fence` when the stage attempt was
+  // replaced. Never creates the stage row.
+  const recordStageUsage = async ({
+    executionId,
+    stageInstanceId,
+    unitSlug = null,
+    sectionIndex = null,
+    samples = [],
+    cliUsageTotals = null,
+    requestId,
+    recordedAt,
+    ownership = null,
+  }) => {
+    if (ownership && ownership.stageInstanceId !== stageInstanceId) {
+      throw new Error('recordStageUsage ownership names another stage');
+    }
+    const rows = samples.map((sample, index) =>
+      buildMetricRow({
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        metricId: `${requestId}-${index}`,
+        metrics: sample.metrics,
+        resolvedModel: sample.resolvedModel ?? null,
+        creditRate: sample.creditRate ?? null,
+        measured: sample.measured === true,
+        incomplete: sample.incomplete === true,
+        now: recordedAt,
       }),
     );
+    const writes = [
+      ...rows.map((Item) => ({
+        Put: { TableName: table(), Item, ConditionExpression: 'attribute_not_exists(pk)' },
+      })),
+      ...(cliUsageTotals
+        ? [
+            {
+              Update: {
+                TableName: table(),
+                Key: stageKey(executionId, stageInstanceId),
+                UpdateExpression: 'SET cliUsageTotals = :t',
+                ConditionExpression: 'attribute_exists(pk)',
+                ExpressionAttributeValues: { ':t': cliUsageTotals },
+              },
+            },
+          ]
+        : []),
+    ];
+    if (!writes.length) return [];
+    // Item positions in the transaction: writeStageAttempt puts its run check
+    // first, then a stage check unless the totals update carries it.
+    const fenced = Boolean(ownership);
+    const firstPut = fenced ? (cliUsageTotals ? 1 : 2) : 0;
+    try {
+      if (fenced) await writeStageAttempt({ executionId, ownership, writes });
+      else await transact(writes);
+    } catch (error) {
+      const reasons = error?.cause?.CancellationReasons;
+      if (error?.name !== 'ConditionalCheckFailedException' || !Array.isArray(reasons)) throw error;
+      const failed = (index) => reasons[index]?.Code === 'ConditionalCheckFailed';
+      if (rows.length && rows.every((_, index) => failed(firstPut + index))) return rows;
+      if (fenced && failed(0)) error.code = 'run_fence';
+      else if (fenced) error.code = 'stage_fence';
+      throw error;
+    }
+    return rows;
   };
 
   const recordMetric = async ({
@@ -4027,7 +4090,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     setLoopBackRecommendation,
     setCommitDescription,
     recordCommitDescriptionUse,
-    setStageUsageTotals,
+    recordStageUsage,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

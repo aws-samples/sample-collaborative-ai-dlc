@@ -338,6 +338,10 @@ graph LR
 | `DELIVERY#<runId>`                   | Final delivery    | Per-repository publication results, captured branch identity, and fenced retry attempt metadata. |
 | `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                   |
 
+A Claude stage's `STAGE#` row also keeps its session's usage totals so far
+(`cliUsageTotals`), written in the same transaction as the stage's usage
+samples, so a resumed session records only its own spend.
+
 `UNITPLAN` and `UNIT#…` rows are the scheduling source of truth. Their
 `UnitOfWork` representation in Neptune is a traceability and UI projection; the
 orchestrator never schedules work from the graph.

@@ -54,14 +54,32 @@ The **Observability** button opens the intent's execution dashboard:
   or before a human pause. Claude Code's whole run is recorded per model,
   subagents included, from its result's `modelUsage`. A resumed Claude session
   reports its earlier spend again, so the runtime keeps the session's totals on
-  the stage row and records only what the resumed run added. If Claude Code ends
-  without a usable report (it crashed, or the runtime stopped it), the runtime
-  records the input and cache tokens of the steps it saw, marked as incomplete:
-  a lower bound, shown as an estimate. Older self-reported samples remain in
-  history; samples measured from a CLI's own report are marked `measured`, so
-  they can be told apart from those. The agent-facing `collect_metric` tool has
-  been removed. Context-window gauges remain visible for historical samples that
-  include them.
+  the stage row and records only what the resumed run added. The totals are
+  saved in the same write as the samples they account for, fenced to the stage
+  attempt, so a resume never subtracts totals whose spend wasn't recorded. A
+  write that fails is tried once more, and then again, unchanged, with the
+  session's next write (a repair turn); a repeat of one that had landed is
+  never counted twice. If none succeeds, the spend is counted only if the
+  session is resumed later, from the totals still saved. When another attempt
+  has taken over the stage and goes on with the same session, the replaced
+  attempt leaves its spend to it; otherwise a refused write records its
+  samples without moving the totals. An attempt whose grant was retired (the
+  execution was cancelled, rewound, recomposed or repaired) can't record its
+  usage, as before. A session resumed after an upgrade, which has no
+  saved totals, records that call's top-level usage, marked as incomplete, and
+  is counted from its totals after that. Claude reports the 1-hour share of
+  cache writes for the main model only, so it is priced on that model. Where it
+  can't be placed (the main model isn't known and more than one model wrote to
+  the cache, or the main model wrote nothing in that call), the writes are
+  priced at the 5-minute rate and marked as incomplete. If Claude
+  Code ends without a usable report (it crashed, or the runtime stopped it), the
+  runtime records the input and cache tokens of the steps it saw, marked as
+  incomplete: a lower bound, shown as an estimate. Older self-reported samples
+  remain in history; samples measured from a CLI's own report, the platform's
+  one-shot calls included, are marked `measured`, so they can be told apart from
+  those. The agent-facing `collect_metric` tool has been removed.
+  Context-window gauges remain visible for historical samples that include
+  them.
 
   How close this is to Bedrock's own counts: on a deployment with model
   invocation logging, an intent of five Claude stages, one of them resumed after

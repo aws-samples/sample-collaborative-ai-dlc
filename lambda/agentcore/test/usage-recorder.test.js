@@ -193,3 +193,211 @@ describe('usage by model', () => {
     ]);
   });
 });
+
+describe('a Claude session’s totals', () => {
+  const OPUS = 'eu.anthropic.claude-opus-5-5';
+  const HAIKU = 'eu.anthropic.claude-haiku-5-5';
+  const setup = ({ fail = 0, sessionId = 'sess-1' } = {}) => {
+    let failures = fail;
+    let requests = 0;
+    const store = {
+      recordMetric: vi.fn(async () => ({ metricId: 'm' })),
+      recordStageUsage: vi.fn(async ({ samples, requestId }) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('throttled');
+        }
+        return samples.map((sample, index) => ({ metricId: `${requestId}-${index}`, ...sample }));
+      }),
+    };
+    const publish = vi.fn();
+    const session = { totals: { [OPUS]: { tokensInput: 100 } }, known: true };
+    const scope = { executionId: 'e', stageInstanceId: 's' };
+    const usage = createUsageRecorder({
+      store,
+      scope,
+      model: OPUS,
+      publish,
+      env: {},
+      claudeSession: session,
+      sessionId: () => sessionId,
+      ids: () => `req-${(requests += 1)}`,
+      now: () => new Date('2026-11-23T12:00:00.000Z'),
+    });
+    // What an output sink does on a result: report the spend, move the totals.
+    const result = (totals, deltas) => {
+      for (const [model, delta] of Object.entries(deltas)) usage.onUsage(delta, {}, { model });
+      session.totals = totals;
+      usage.onSessionTotals();
+    };
+    return { store, publish, session, scope, usage, result };
+  };
+
+  it('saves every model’s sample with the totals they account for, in one write', async () => {
+    const { store, publish, scope, usage, result } = setup();
+    result(
+      { [OPUS]: { tokensInput: 105 }, [HAIKU]: { tokensInput: 2 } },
+      { [OPUS]: { tokensInput: 5 }, [HAIKU]: { tokensInput: 2 } },
+    );
+    await usage.flush();
+    expect(store.recordMetric).not.toHaveBeenCalled();
+    expect(store.recordStageUsage).toHaveBeenCalledExactlyOnceWith({
+      ...scope,
+      samples: [
+        { metrics: { tokensInput: 5 }, resolvedModel: OPUS, measured: true },
+        { metrics: { tokensInput: 2 }, resolvedModel: HAIKU, measured: true },
+      ],
+      cliUsageTotals: {
+        sessionId: 'sess-1',
+        totals: { [OPUS]: { tokensInput: 105 }, [HAIKU]: { tokensInput: 2 } },
+      },
+      requestId: 'req-1',
+      recordedAt: '2026-11-23T12:00:00.000Z',
+    });
+    expect(publish.mock.calls.map(([event]) => event.metricId)).toEqual(['req-1-0', 'req-1-1']);
+  });
+
+  const failure = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
+
+  it('tries a write that failed for a transient reason once more, as it was', async () => {
+    const { store, usage, result } = setup({ fail: 1 });
+    store.getStage = vi.fn(async () => ({ cliUsageTotals: null }));
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    expect(store.recordStageUsage).toHaveBeenCalledTimes(2);
+    const [[first], [second]] = store.recordStageUsage.mock.calls;
+    expect(second).toEqual(first);
+    expect(store.recordMetric).not.toHaveBeenCalled();
+  });
+
+  it('counts a write that landed although it reported an error as saved, never twice', async () => {
+    const { store, publish, usage, result } = setup({ fail: 1 });
+    const sent = { sessionId: 'sess-1', totals: { [OPUS]: { tokensInput: 105 } } };
+    store.getStage = vi.fn(async () => ({ cliUsageTotals: sent }));
+    result(sent.totals, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    expect(store.getStage).toHaveBeenCalledWith('e', 's', { consistentRead: true });
+    expect(store.recordStageUsage).toHaveBeenCalledOnce();
+    expect(store.recordMetric).not.toHaveBeenCalled();
+    expect(publish.mock.calls.map(([event]) => event.metricId)).toEqual(['req-1-0']);
+    await usage.flush();
+    expect(store.recordStageUsage).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      'the execution is no longer live',
+      failure('ConditionalCheckFailedException', { code: 'run_fence' }),
+    ],
+    [
+      'another attempt took over the stage with a fresh session',
+      failure('ConditionalCheckFailedException', { code: 'stage_fence' }),
+    ],
+    ['the stage row is gone', failure('ConditionalCheckFailedException')],
+    [
+      'engine-data saw a different attempt',
+      failure('EngineDataAccessDenied', { code: 'ownership_mismatch' }),
+    ],
+    ['the run was replaced', failure('EngineDataAccessDenied', { code: 'run_retired' })],
+    [
+      'engine-data does not know the op yet',
+      failure('EngineDataAccessDenied', { code: 'op_not_allowed' }),
+    ],
+  ])('records the samples alone, without the totals, when %s', async (_label, error) => {
+    const { store, session, usage, result } = setup();
+    store.recordStageUsage.mockRejectedValue(error);
+    store.getStage = vi.fn(async () => null);
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    expect(store.recordStageUsage).toHaveBeenCalledOnce();
+    expect(store.recordMetric).toHaveBeenCalledExactlyOnceWith({
+      executionId: 'e',
+      stageInstanceId: 's',
+      metrics: { tokensInput: 5 },
+      resolvedModel: OPUS,
+      measured: true,
+    });
+    expect(session.totals).toEqual({ [OPUS]: { tokensInput: 105 } });
+  });
+
+  it('sends a write that keeps failing again as it was, before the next one', async () => {
+    const { store, usage, result } = setup({ fail: 2 });
+    store.getStage = vi.fn(async () => ({ cliUsageTotals: null }));
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    expect(store.recordStageUsage).toHaveBeenCalledTimes(2);
+    expect(store.recordMetric).not.toHaveBeenCalled();
+    // A repair turn of the same session: the kept write goes first, unchanged.
+    result({ [OPUS]: { tokensInput: 108 } }, { [OPUS]: { tokensInput: 3 } });
+    await usage.flush();
+    const [first, , kept, next] = store.recordStageUsage.mock.calls.map(([request]) => request);
+    expect(kept).toEqual(first);
+    expect(next).toMatchObject({
+      requestId: 'req-2',
+      samples: [{ metrics: { tokensInput: 3 }, resolvedModel: OPUS, measured: true }],
+      cliUsageTotals: { sessionId: 'sess-1', totals: { [OPUS]: { tokensInput: 108 } } },
+    });
+  });
+
+  it('keeps a write whose landing it cannot check, so a repeat that finds it isn’t counted', async () => {
+    const { store, usage, result } = setup({ fail: 2 });
+    store.getStage = vi.fn(async () => {
+      throw new Error('read failed');
+    });
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    await usage.flush();
+    expect(
+      new Set(store.recordStageUsage.mock.calls.map(([request]) => request.requestId)),
+    ).toEqual(new Set(['req-1']));
+    expect(store.recordMetric).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when another attempt took over the stage and goes on with the session', async () => {
+    const { store, usage, result } = setup();
+    store.recordStageUsage.mockRejectedValue(
+      failure('ConditionalCheckFailedException', { code: 'stage_fence' }),
+    );
+    store.getStage = vi.fn(async () => ({ cliSessionId: 'sess-1', cliUsageTotals: null }));
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    expect(store.recordStageUsage).toHaveBeenCalledOnce();
+    expect(store.recordMetric).not.toHaveBeenCalled();
+  });
+
+  it('sends a newer write after a refused one', async () => {
+    const { store, usage, result } = setup();
+    store.getStage = vi.fn(async () => null);
+    store.recordStageUsage
+      .mockRejectedValueOnce(failure('Throttled'))
+      .mockRejectedValueOnce(failure('Throttled'))
+      .mockRejectedValueOnce(failure('ConditionalCheckFailedException', { code: 'run_fence' }));
+    result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await usage.flush();
+    result({ [OPUS]: { tokensInput: 108 } }, { [OPUS]: { tokensInput: 3 } });
+    await usage.flush();
+    expect(store.recordMetric).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ metrics: { tokensInput: 5 } }),
+    );
+    expect(store.recordStageUsage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        requestId: 'req-2',
+        samples: [expect.objectContaining({ metrics: { tokensInput: 3 } })],
+      }),
+    );
+  });
+
+  it('records samples one at a time when the totals did not change or the session has no id', async () => {
+    const unchanged = setup();
+    unchanged.usage.onUsage({ tokensInput: 5 }, {}, { model: OPUS });
+    await unchanged.usage.flush();
+    expect(unchanged.store.recordStageUsage).not.toHaveBeenCalled();
+    expect(unchanged.store.recordMetric).toHaveBeenCalledOnce();
+
+    const noSession = setup({ sessionId: null });
+    noSession.result({ [OPUS]: { tokensInput: 105 } }, { [OPUS]: { tokensInput: 5 } });
+    await noSession.usage.flush();
+    expect(noSession.store.recordStageUsage).not.toHaveBeenCalled();
+    expect(noSession.store.recordMetric).toHaveBeenCalledOnce();
+  });
+});

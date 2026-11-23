@@ -51,19 +51,35 @@ export const claudeModelUsageTotals = (event) => {
 };
 
 // The 1-hour share of this call's cache writes. Only the top-level loop's is
-// reported (in the result's `usage`, which covers this call alone), so it is
-// carried on the one model that wrote to the cache, capped at its writes.
-export const withOneHourWrites = (since, event) => {
+// reported (in the result's `usage`, which covers this call alone), and the
+// top-level loop runs on the main model, so it is carried on that model, capped
+// at its writes. When the main model isn't one the result reports (not known,
+// or named by an alias), it is the one model that wrote to the cache, if only
+// one did. Otherwise the share can't be placed, and the models that wrote are
+// returned as `estimated`: their writes are priced at the 5-minute rate, so
+// their cost is a lower bound.
+export const withOneHourWrites = (since, event, mainModel = null) => {
   const oneHour = event?.usage?.cache_creation?.ephemeral_1h_input_tokens;
   const writers = Object.keys(since).filter((model) => since[model].tokensCacheWrite > 0);
-  if (!isCount(oneHour) || oneHour === 0 || writers.length !== 1) return since;
-  const model = writers[0];
+  if (!isCount(oneHour) || oneHour === 0 || !writers.length) return { since, estimated: [] };
+  const reported = Boolean(mainModel) && Object.hasOwn(event?.modelUsage ?? {}, mainModel);
+  const model = reported
+    ? writers.includes(mainModel)
+      ? mainModel
+      : null
+    : writers.length === 1
+      ? writers[0]
+      : null;
+  if (!model) return { since, estimated: writers };
   return {
-    ...since,
-    [model]: {
-      ...since[model],
-      tokensCacheWrite1h: Math.min(oneHour, since[model].tokensCacheWrite),
+    since: {
+      ...since,
+      [model]: {
+        ...since[model],
+        tokensCacheWrite1h: Math.min(oneHour, since[model].tokensCacheWrite),
+      },
     },
+    estimated: [],
   };
 };
 

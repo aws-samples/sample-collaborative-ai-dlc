@@ -3774,6 +3774,16 @@ const runStageAttempt = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  // One Claude session shares its usage totals across this run and its repair
+  // turns, and keeps them on the stage row for a later resume (saved with the
+  // samples by the recorder). A resumed session with no saved totals (one that
+  // started before they were kept) has an unknown baseline: see the Claude
+  // sink.
+  const resumedClaude = cli === 'claude' && !freshRun;
+  const claudeSession = {
+    totals: (resumedClaude ? claudeSessionTotals : null) ?? {},
+    known: !resumedClaude || claudeSessionTotals !== null,
+  };
   const usage = createUsageRecorder({
     store,
     scope: { executionId, stageInstanceId, unitSlug, sectionIndex },
@@ -3782,37 +3792,18 @@ const runStageAttempt = async (
     env,
     workspaceDir,
     spawnFn,
+    ...(cli === 'claude' ? { claudeSession, sessionId: () => cliSessionId } : {}),
   });
   // Error events the JSON-output CLIs report on stdout (never agent text or
   // tool output), kept for failure classification next to the stderr tail.
   const reportedErrors = [];
-  // One Claude session shares its usage totals across this run and its repair
-  // turns, and keeps them on the stage row for a later resume.
-  const claudeSession = {
-    totals: (cli === 'claude' && !freshRun ? claudeSessionTotals : null) ?? {},
-  };
-  const saveClaudeSessionTotals = (totals) => {
-    if (cli !== 'claude' || !cliSessionId || !store.setStageUsageTotals) return;
-    const sessionId = cliSessionId;
-    sessionUpdateQueue = sessionUpdateQueue
-      .then(() =>
-        store.setStageUsageTotals({
-          executionId,
-          stageInstanceId,
-          cliUsageTotals: { sessionId, totals },
-        }),
-      )
-      .catch((error) =>
-        logger.warn('claude usage totals not saved', { stageInstanceId, error: error?.message }),
-      );
-  };
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
     onUsage: usage.onUsage,
     usageBaseline: cli === 'codex' && !freshRun ? codexUsageBaseline : {},
     claudeSession,
-    onSessionTotals: saveClaudeSessionTotals,
+    onSessionTotals: usage.onSessionTotals,
     claudeModel: model,
     onError: (message) => {
       reportedErrors.push(message);
@@ -4854,7 +4845,7 @@ const runStageAttempt = async (
           emit: emitCliOutput,
           onUsage: usage.onUsage,
           claudeSession,
-          onSessionTotals: saveClaudeSessionTotals,
+          onSessionTotals: usage.onSessionTotals,
           claudeModel: model,
         });
         const spawnRepair = () =>

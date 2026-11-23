@@ -205,6 +205,93 @@ describe('Claude whole-tree usage', () => {
     });
   });
 
+  describe('1-hour cache writes when two models wrote to the cache', () => {
+    const twoWriters = result({
+      [MODEL]: { inputTokens: 8, cacheCreationInputTokens: 2400 },
+      [SUBAGENT]: { inputTokens: 4, cacheCreationInputTokens: 900 },
+    });
+    const init = { type: 'system', subtype: 'init', model: MODEL };
+    const byModel = (onUsage) =>
+      Object.fromEntries(
+        onUsage.mock.calls.map(([delta, , options]) => [options.model, [delta, options]]),
+      );
+
+    it('gives them to the main model the stream names, whatever the configured alias', () => {
+      const { onUsage } = run([init, twoWriters], { claudeModel: 'opus' });
+      const calls = byModel(onUsage);
+      expect(calls[MODEL]).toEqual([
+        { tokensInput: 8, tokensCacheWrite: 2400, tokensCacheWrite1h: 500 },
+        { model: MODEL },
+      ]);
+      expect(calls[SUBAGENT]).toEqual([
+        { tokensInput: 4, tokensCacheWrite: 900 },
+        { model: SUBAGENT },
+      ]);
+    });
+
+    it('gives them to the configured main model when the stream does not name one', () => {
+      const { onUsage } = run([twoWriters], { claudeModel: MODEL });
+      expect(byModel(onUsage)[MODEL][0].tokensCacheWrite1h).toBe(500);
+    });
+
+    it('marks the writers incomplete when the main model is not known', () => {
+      const { onUsage } = run([twoWriters]);
+      const calls = byModel(onUsage);
+      expect(calls[MODEL]).toEqual([
+        { tokensInput: 8, tokensCacheWrite: 2400 },
+        { model: MODEL, partial: true },
+      ]);
+      expect(calls[SUBAGENT][1]).toEqual({ model: SUBAGENT, partial: true });
+    });
+  });
+
+  describe('a resumed session with no saved totals', () => {
+    const totals = {
+      [MODEL]: { inputTokens: 500, outputTokens: 9000, cacheReadInputTokens: 80000 },
+    };
+
+    it('records this call’s top-level usage as incomplete, then counts from its totals', () => {
+      const session = { totals: {}, known: false };
+      const { onUsage, onSessionTotals } = run(
+        [
+          result(totals),
+          result({
+            [MODEL]: { inputTokens: 510, outputTokens: 9100, cacheReadInputTokens: 81000 },
+          }),
+        ],
+        { claudeSession: session, claudeModel: MODEL },
+      );
+      expect(onUsage.mock.calls.map(([delta, , options]) => [delta, options])).toEqual([
+        [metrics, { model: MODEL, partial: true }],
+        [{ tokensInput: 10, tokensOutput: 100, tokensCacheRead: 1000 }, { model: MODEL }],
+      ]);
+      expect(session).toEqual({
+        known: true,
+        totals: { [MODEL]: { tokensInput: 510, tokensOutput: 9100, tokensCacheRead: 81000 } },
+      });
+      expect(onSessionTotals).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the baseline unknown when the run ends without a result', () => {
+      const session = { totals: {}, known: false };
+      const step = {
+        type: 'assistant',
+        message: { id: 'msg_1', content: [], usage: { input_tokens: 20 } },
+      };
+      const { onUsage, onSessionTotals } = run(
+        [step],
+        { claudeSession: session, claudeModel: MODEL },
+        { cliExited: true },
+      );
+      expect(onUsage).toHaveBeenCalledExactlyOnceWith({ tokensInput: 20 }, null, {
+        model: MODEL,
+        partial: true,
+      });
+      expect(onSessionTotals).not.toHaveBeenCalled();
+      expect(session).toEqual({ totals: {}, known: false });
+    });
+  });
+
   it('falls back to the top-level steps’ input and cache tokens when a run ends without a usable result', () => {
     const step = (id, extra = {}) => ({
       type: 'assistant',
@@ -314,7 +401,7 @@ describe('Claude whole-tree usage', () => {
       expect(killed.onUsage).toHaveBeenCalledExactlyOnceWith(
         { tokensInput: 20, tokensCacheRead: 4000 },
         null,
-        { partial: true },
+        { model: MODEL, partial: true },
       );
       expect(killed.onSessionTotals).toHaveBeenCalledExactlyOnceWith({
         [MODEL]: { tokensInput: 120, tokensOutput: 50, tokensCacheRead: 14000 },

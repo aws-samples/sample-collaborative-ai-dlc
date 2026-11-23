@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
@@ -185,11 +185,14 @@ const CALLS = {
   recordCommitDescriptionUse: [
     { executionId: 'e-1', stageInstanceId: 'si-1', descriptionId: 'd-1', repos: ['o/r'] },
   ],
-  setStageUsageTotals: [
+  recordStageUsage: [
     {
       executionId: 'e-1',
       stageInstanceId: 'si-1',
+      samples: [{ metrics: { tokensCacheRead: 10 }, resolvedModel: 'm', measured: true }],
       cliUsageTotals: { sessionId: 'sess-1', totals: { m: { tokensCacheRead: 10 } } },
+      requestId: '7b0a3f0e-4f5c-4c49-9b8a-0d6f2c1e9a10',
+      recordedAt: '2026-11-23T12:00:00.000Z',
     },
   ],
 };
@@ -211,7 +214,7 @@ const scopeReads = (method) => {
     setLoopBackRecommendation: 1,
     getReceipt: 1,
     recordCommitDescriptionUse: 1,
-    setStageUsageTotals: 1,
+    recordStageUsage: 1,
   };
   return 1 + (stageArgs[method] ?? 0);
 };
@@ -605,6 +608,14 @@ describe('remote process store shape', () => {
       stageInstanceId: 'si-1',
     });
   });
+
+  it('scopes only the attempt-owned writes a store has', () => {
+    const recordStageUsage = vi.fn();
+    const scoped = scopeStageAttempt({ recordStageUsage }, OWNERSHIP);
+    expect(Object.keys(scoped)).toEqual(['recordStageUsage']);
+    scoped.recordStageUsage({ executionId: 'e-1' });
+    expect(recordStageUsage).toHaveBeenCalledWith({ executionId: 'e-1', ownership: OWNERSHIP });
+  });
 });
 
 describe('a result past the Invoke response limit', () => {
@@ -744,12 +755,16 @@ describe('stage grants act only as their own stage', () => {
         [{ executionId: 'e-1', stageInstanceId: OWN, descriptionId: 'd-1', repos: ['o/r'] }],
       ],
       [
-        'setStageUsageTotals',
+        'recordStageUsage',
         [
           {
             executionId: 'e-1',
             stageInstanceId: OWN,
+            samples: [{ metrics: { tokensInput: 1 }, resolvedModel: 'm', measured: true }],
             cliUsageTotals: { sessionId: 's', totals: { m: { tokensInput: 1 } } },
+            requestId: '7b0a3f0e-4f5c-4c49-9b8a-0d6f2c1e9a10',
+            recordedAt: '2026-11-23T12:00:00.000Z',
+            ownership: leg(OWN),
           },
         ],
       ],
@@ -814,13 +829,18 @@ describe('stage grants act only as their own stage', () => {
       { executionId: 'e-1', stageInstanceId: OTHER, descriptionId: 'd-1', repos: ['o/r'] },
     ],
     [
-      'setStageUsageTotals',
+      'recordStageUsage',
       {
         executionId: 'e-1',
         stageInstanceId: OTHER,
+        samples: [],
         cliUsageTotals: { sessionId: 's', totals: { m: { tokensInput: 1 } } },
+        requestId: '7b0a3f0e-4f5c-4c49-9b8a-0d6f2c1e9a10',
+        recordedAt: '2026-11-23T12:00:00.000Z',
+        ownership: leg(OWN),
       },
     ],
+
     [
       'claimStageAttempt',
       { executionId: 'e-1', ownership: leg(OWN), stageId: 'application-design' },
@@ -835,6 +855,25 @@ describe('stage grants act only as their own stage', () => {
     ],
   ])('denies a stage-A grant %s naming stage B', async (method, input) => {
     const { response } = await call(STAGE_GRANT, method, [input]);
+    expect(response.error).toMatchObject({ name: 'EngineDataAccessDenied' });
+    expect(writes()).toHaveLength(0);
+  });
+
+  it.each([
+    ['without', undefined],
+    ['with a replaced callback’s', 'old-callback'],
+  ])('denies recording stage usage %s attempt ownership', async (_label, callback) => {
+    const { response } = await call(STAGE_GRANT, 'recordStageUsage', [
+      {
+        executionId: 'e-1',
+        stageInstanceId: OWN,
+        samples: [{ metrics: { tokensInput: 1 }, resolvedModel: 'm', measured: true }],
+        cliUsageTotals: { sessionId: 's', totals: { m: { tokensInput: 1 } } },
+        requestId: '7b0a3f0e-4f5c-4c49-9b8a-0d6f2c1e9a10',
+        recordedAt: '2026-11-23T12:00:00.000Z',
+        ...(callback ? { ownership: { ...leg(OWN), stageCallbackId: callback } } : {}),
+      },
+    ]);
     expect(response.error).toMatchObject({ name: 'EngineDataAccessDenied' });
     expect(writes()).toHaveLength(0);
   });
