@@ -52,7 +52,9 @@ const requestValue = (request) => {
     !request ||
     request.schemaVersion !== 1 ||
     Object.keys(request).some((key) => !allowed.includes(key)) ||
-    !['status', 'pending', 'abandon', 'execute', 'mirror', 'finalize'].includes(request.action) ||
+    !['status', 'pending', 'abandon', 'execute', 'mirror', 'finalize', 'guard'].includes(
+      request.action,
+    ) ||
     !request.identity ||
     Object.keys(request.identity).toSorted().join(',') !==
       'attemptId,bindingId,epoch,executionId,projectId,sequence,writerGeneration'
@@ -99,6 +101,20 @@ const withNotice = (stderr, notice) =>
 const runNativeEngineCommand = async (context) => {
   const { request, identity, row, snapshot, workspace, runner, git, objects, sessionId } = context;
   const submitted = await objects.read(identity, request.input, 'input');
+  if (request.action === 'guard') {
+    if (!snapshot || !Array.isArray(request.args) || request.args.length)
+      throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+    await workspace.checkProposedEdit(submitted, runner, sessionId);
+    return {
+      schemaVersion: 1,
+      identity,
+      requestId: request.requestId,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      patches: [],
+    };
+  }
   const files = nativeEngineFiles(submitted.files);
   const gitInput = await openEngineGitInput(context, submitted, files);
   const inputSha256 = await workspace.importAuthored(submitted.files, runner, sessionId);
@@ -523,12 +539,14 @@ export const createNativeWorkflowEngine =
     };
     const signal = operationSignal(context);
     let workspace;
+    let originalSnapshot;
     let result;
     let proof = null;
     let failure = null;
     try {
       const archive = await loadArchive({ row, draft, authorize });
       const snapshot = opened.snapshot ? await objects.read(identity, opened.snapshot) : null;
+      if (request.action === 'guard') originalSnapshot = snapshot;
       workspace = await workspaceFactory({ archive, harness: row.configuration.harness, snapshot });
       if (!workspace.state.sourceSettings) {
         await workspace.initializeSettings(
@@ -608,8 +626,12 @@ export const createNativeWorkflowEngine =
     try {
       if (signal.aborted) throw engineFailure('NATIVE_ENGINE_CANCELLED');
       await authorizeOperation();
-      const snapshot = workspace
-        ? await objects.write(identity, request.requestId, 'snapshot', await workspace.snapshot())
+      // A pre-tool check evaluates a disposable restored workspace. Its local
+      // hook traces and proposed inputs never become authoritative state.
+      const nextSnapshot =
+        request.action === 'guard' ? originalSnapshot : await workspace?.snapshot();
+      const snapshot = nextSnapshot
+        ? await objects.write(identity, request.requestId, 'snapshot', nextSnapshot)
         : (opened.snapshot ?? null);
       if (signal.aborted) throw engineFailure('NATIVE_ENGINE_CANCELLED');
       const output = await objects.write(identity, request.requestId, 'result', result, 'output');

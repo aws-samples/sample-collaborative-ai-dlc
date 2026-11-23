@@ -279,7 +279,7 @@ export const createNativeEngineStore = ({
       operation.requestId !== requestId ||
       operation.producerSha256 !== producerSha256 ||
       (operation.action !== undefined &&
-        !['execute', 'mirror', 'finalize'].includes(operation.action)) ||
+        !['execute', 'mirror', 'finalize', 'guard'].includes(operation.action)) ||
       (operation.publicationId !== undefined && !valid(operation.publicationId, SHA)) ||
       !valid(operation.token, UUID) ||
       !valid(operation.requestSha256, SHA) ||

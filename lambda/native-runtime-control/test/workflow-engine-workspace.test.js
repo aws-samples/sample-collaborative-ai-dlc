@@ -47,3 +47,59 @@ it('records real writes of declared stage documents in the protected workspace',
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('checks the proposed bytes and pinned guards against the approved attempt and visible plan', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-engine-approval-'));
+  prepareNativeEngine.mockImplementation(async ({ directory }) => {
+    const installation = join(directory, '.claude');
+    await mkdir(installation, { recursive: true });
+    return { installation };
+  });
+  const workspace = await openNativeEngineWorkspace({ root });
+  const path =
+    'aidlc/spaces/default/intents/sample/construction/code-generation/code-generation-plan.md';
+  const files = (text) => encodeNativeEngineFiles([{ path, content: Buffer.from(text) }]);
+  const runner = { hook: vi.fn(async () => ({ exitCode: 0 })) };
+  const check = (text) =>
+    workspace.checkProposedEdit(
+      { files: files(text), guard: { tool: 'Write', path: 'src/app', content: 'exact edit' } },
+      runner,
+      'attempt-session',
+    );
+  try {
+    workspace.state.directive = {
+      kind: 'run-stage',
+      stage: 'code-generation',
+      unit: 'A',
+      produces: [path],
+    };
+    await workspace.importAuthored(files('approved plan'), runner, 'attempt-session');
+    await expect(check('approved plan')).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    workspace.state.directive.plan_approval = { status: 'approved' };
+    runner.hook.mockClear();
+    await expect(check('changed plan')).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    expect(runner.hook).not.toHaveBeenCalled();
+    await check('approved plan');
+    const proposed = {
+      hook_event_name: 'PreToolUse',
+      cwd: workspace.project,
+      session_id: 'attempt-session',
+      tool_name: 'Write',
+      tool_input: { file_path: join(workspace.project, 'src/app'), content: 'exact edit' },
+    };
+    expect(runner.hook.mock.calls).toEqual([
+      ['aidlc-plan-approval-guard.ts', proposed],
+      ['aidlc-review-freeze.ts', proposed],
+    ]);
+    runner.hook.mockImplementation(async (name) => ({
+      exitCode: name === 'aidlc-review-freeze.ts' ? 2 : 0,
+    }));
+    await expect(check('approved plan')).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    await expect(readFile(join(workspace.project, 'src/app'))).rejects.toHaveProperty(
+      'code',
+      'ENOENT',
+    );
+  } finally {
+    await workspace.close();
+  }
+});

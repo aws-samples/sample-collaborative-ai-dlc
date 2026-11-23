@@ -1,6 +1,7 @@
 // Deterministic provider wire fixtures, not CLI substitutes. No raw request,
 // prompt, response or tool arguments are retained in reports.
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { dirname } from 'node:path';
@@ -185,7 +186,15 @@ function scriptedToolOutput(harness, request, { id, denied }) {
     const result = request.messages.findLast(
       (item) => item.role === 'tool' && item.tool_call_id === `call_${id}`,
     );
-    output = contentText(result?.content);
+    assert.ok(result, 'Installed OpenCode result for this tool call');
+    output = contentText(result.content);
+    if (
+      !denied &&
+      /(?:no current Plan Approval receipt matches|NATIVE_ENGINE_EDIT_DENIED)/.test(output)
+    )
+      throw Object.assign(new Error('Installed OpenCode refused the tool call'), {
+        code: 'fixture_opencode_tool_refused',
+      });
   } else {
     const result = request.messages
       .at(-1)
@@ -233,7 +242,10 @@ function sendScriptedStep(harness, request, res, { value, done }, id) {
   }
 }
 
-export async function qualificationProvider(harness, { claudeReply, requestLimit = 32 } = {}) {
+export async function qualificationProvider(
+  harness,
+  { claudeReply, requestLimit = 32, verifyWrites = false } = {},
+) {
   assert.ok(Number.isSafeInteger(requestLimit) && requestLimit >= 1 && requestLimit <= 128);
   let turn = 0;
   let started;
@@ -350,6 +362,14 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
       }
       if (primary && script) {
         const output = outstanding && scriptedToolOutput(harness, request, outstanding);
+        if (outstanding?.write) {
+          const { filePath, content } = outstanding.write;
+          assert.deepEqual(
+            await readFile(filePath),
+            Buffer.from(content),
+            'Installed file tool wrote the requested bytes',
+          );
+        }
         const step = script.next(output);
         const id = `fixture${calls}`;
         outstanding = step.done
@@ -357,6 +377,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
           : {
               id,
               denied: step.value.denied,
+              ...(verifyWrites && step.value.filePath ? { write: step.value } : {}),
               tool: step.value.command?.split(' ').slice(1, 4).join(' ') ?? 'write',
             };
         if (step.done && mode === 'interrupt') return;

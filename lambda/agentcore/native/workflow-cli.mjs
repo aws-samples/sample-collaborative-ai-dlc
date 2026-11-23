@@ -1,5 +1,11 @@
 import { createNativeEngineClient, nativeEngineContext } from './workflow-client.js';
 import { relocateNativeEngineArguments } from '../../shared/native-workflow-protocol.js';
+import { nativeWorkflowHook, invokeInstalledGuard } from './workflow-hook.js';
+const argsOnPath = process.argv.slice(2);
+const hook =
+  argsOnPath[0] === 'engine' &&
+  argsOnPath[1] === 'hook' &&
+  ['guard-tool-call', 'plan-approval-guard'].includes(argsOnPath[2]);
 try {
   const context = await nativeEngineContext(process.env.NATIVE_WORKFLOW_CONTEXT);
   const args = relocateNativeEngineArguments(
@@ -7,12 +13,28 @@ try {
     context.project,
     '/tmp/native-workflow-engine/project',
   );
-  const result = await createNativeEngineClient({
+  const client = createNativeEngineClient({
     context,
     forbiddenBytes: [process.env.AWS_BEARER_TOKEN_BEDROCK, process.env.KIRO_API_KEY].filter(
       Boolean,
     ),
-  }).command(args);
+  });
+  let result;
+  if (hook) {
+    const chunks = [];
+    let bytes = 0;
+    for await (const chunk of process.stdin) {
+      if ((bytes += chunk.length) > 8 * 1024 * 1024) throw new Error('Hook input too large');
+      chunks.push(chunk);
+    }
+    result = await nativeWorkflowHook({
+      args: argsOnPath,
+      input: Buffer.concat(chunks),
+      project: context.project,
+      local: (args, input) => invokeInstalledGuard(process.env.NATIVE_AIDLC_HOOK_BIN, args, input),
+      check: (guard) => client.command([], { action: 'guard', guard }),
+    });
+  } else result = await client.command(args);
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
   process.exitCode = result.exitCode;
@@ -41,5 +63,5 @@ try {
     process.stderr.write(
       "Inspect with aidlc engine operation pending. To discard that unfinished operation, run aidlc engine operation abandon '<exact pending JSON>'.\n",
     );
-  process.exitCode = 1;
+  process.exitCode = hook ? 2 : 1;
 }

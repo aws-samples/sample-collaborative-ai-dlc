@@ -1954,3 +1954,31 @@ describe('protected workflow engine service', () => {
     }
   });
 });
+
+it('keeps a proposed tool check under the admitted turn without installing its speculative state', async () => {
+  const t = await setup();
+  await t.command([]);
+  const owner = nativeEngineIdentity(await t.row());
+  const snapshot = async () => t.objects.read(owner, (await t.journal.get(owner)).snapshot);
+  const before = await snapshot();
+  const guard = { tool: 'Write', path: 'src/test.js', content: 'proposed' };
+  t.hooks.guard = vi.fn((state, submitted) => {
+    expect(submitted.guard).toEqual(guard);
+    state.engine.messages++;
+  });
+  const body = await t.request('guard', { guard });
+  await expect(
+    t.send({
+      ...body,
+      identity: { ...body.identity, writerGeneration: body.identity.writerGeneration + 1 },
+    }),
+  ).rejects.toHaveProperty('code', 'NATIVE_ENGINE_FORBIDDEN');
+  t.access.allowed = false;
+  await expect(t.send(body)).rejects.toHaveProperty('code', 'NATIVE_ENGINE_FORBIDDEN');
+  t.access.allowed = true;
+  const checked = await t.send(body);
+  expect(checked.result).toMatchObject({ exitCode: 0, patches: [], stdout: '', stderr: '' });
+  expect(await snapshot()).toEqual(before);
+  expect(await t.send(body)).toEqual(checked);
+  expect(t.hooks.guard).toHaveBeenCalledOnce();
+});

@@ -1,6 +1,7 @@
 import { chmod, mkdir, lstat, readdir, readFile, writeFile, rm, rmdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nativeGuardToolInput } from '../../shared/native-workflow-guard.js';
 import { prepareNativeEngine } from './package.js';
 import {
   engineDigest,
@@ -140,6 +141,26 @@ export const openNativeEngineWorkspace = async ({
     for (const file of protectedFiles) merged.set(file.path, file);
     return nativeEngineFiles(encodeNativeEngineFiles([...merged.values()]));
   };
+  const checkEdit = async (runner, sessionId, tool, input) => {
+    for (const hook of ['aidlc-plan-approval-guard.ts', 'aidlc-review-freeze.ts']) {
+      const result = await runner.hook(hook, {
+        hook_event_name: 'PreToolUse',
+        session_id: sessionId,
+        cwd: project,
+        tool_name: tool,
+        tool_input: input,
+      });
+      if (result.exitCode !== 0) throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+    }
+  };
+  const planFiles = (files) =>
+    files.filter(
+      (file) =>
+        file.path.startsWith('aidlc/spaces/') &&
+        /\/(?:code-generation-plan|unit-test-instructions|code-generation-questions)\.md$/.test(
+          file.path,
+        ),
+    );
   return {
     project,
     home,
@@ -181,20 +202,10 @@ export const openNativeEngineWorkspace = async ({
         )
           continue;
         if (old || state.initialMessage) {
-          const input = {
-            hook_event_name: 'PreToolUse',
-            session_id: sessionId,
-            cwd: project,
-            tool_name: 'Write',
-            tool_input: {
-              file_path: join(project, path),
-              content: next?.content.toString('utf8') ?? '',
-            },
-          };
-          for (const hook of ['aidlc-plan-approval-guard.ts', 'aidlc-review-freeze.ts']) {
-            const checked = await runner.hook(hook, input);
-            if (checked.exitCode !== 0) throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
-          }
+          await checkEdit(runner, sessionId, 'Write', {
+            file_path: join(project, path),
+            content: next?.content.toString('utf8') ?? '',
+          });
         }
         if (!next) {
           await removeAuthored(project, path);
@@ -228,6 +239,24 @@ export const openNativeEngineWorkspace = async ({
         files.filter((file) => !protectedPaths.has(file.path)),
       );
       return nativeEngineFileDigest(files);
+    },
+    async checkProposedEdit(submitted, runner, sessionId) {
+      if (
+        state.directive?.kind !== 'run-stage' ||
+        state.directive.stage !== 'code-generation' ||
+        state.directive.plan_approval?.status !== 'approved'
+      )
+        throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+      const input = nativeGuardToolInput(submitted.guard, project);
+      const authoritative = planFiles(await publicProjection());
+      if (
+        !authoritative.length ||
+        nativeEngineFileDigest(authoritative) !==
+          nativeEngineFileDigest(planFiles(nativeEngineFiles(submitted.files)))
+      )
+        throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+      await this.importAuthored(submitted.files, runner, sessionId);
+      await checkEdit(runner, sessionId, submitted.guard.tool, input);
     },
     publicFiles: publicProjection,
     async inspectCheck({ sensor, outputPath }) {

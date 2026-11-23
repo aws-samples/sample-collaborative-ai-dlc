@@ -21,4 +21,10 @@ if [ ! -f "$target" ] || [ ! -x "$target" ] || [ "$target" -ef "$0" ]; then
   echo "Native AI-DLC executable is unavailable." >&2
   exit 127
 fi
+if [ -n "${NATIVE_WORKFLOW_CONTEXT:-}" ] && [ "$1 $2" = "engine hook" ]; then
+  case "$3" in
+    guard-tool-call|plan-approval-guard)
+      NATIVE_AIDLC_HOOK_BIN="$target" exec /usr/local/bin/node /opt/agentcore/native/workflow-cli.mjs "$@" ;;
+  esac
+fi
 exec "$target" "$@"

@@ -158,6 +158,7 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
         authored = nativeEngineFiles(input);
         return nativeEngineFileDigest(authored);
       },
+      checkProposedEdit: (input) => hooks.guard(state, input),
       publicFiles,
       async inspectCheck({ outputPath }) {
         const files = await publicFiles();
@@ -465,6 +466,7 @@ export const setupNativeWorkflowEngine = async (fixtureOptions) => {
         {
           schemaVersion: 1,
           files: encoded,
+          ...(action === 'guard' ? { guard: extra.guard } : {}),
           filesSha256: nativeEngineFileDigest(encoded),
           ...gitInput(encoded),
         },

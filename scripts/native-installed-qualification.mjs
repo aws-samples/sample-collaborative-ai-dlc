@@ -256,8 +256,7 @@ try {
     // Each EFS scenario owns its own attested installation within the bounded tmpfs.
     await fs.rm(base, { recursive: true, force: true });
     let protectedFailed = false;
-    const cases = ['protected-member-workspace-resume'];
-    if (harness === 'codex') cases.push('protected-member-terminal-git-result');
+    const cases = ['protected-member-workspace-resume', 'protected-member-terminal-git-result'];
     for (const probe of cases) {
       phase = probe;
       if (process.env.NATIVE_QUALIFICATION_PACKAGED !== 'true' || pkg.version !== '2.11.1') {

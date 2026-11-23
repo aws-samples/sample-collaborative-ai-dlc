@@ -298,7 +298,7 @@ export const createNativeEngineClient = ({
   return {
     async command(
       args = [],
-      { action = 'execute', publication, interaction, expectedVersion } = {},
+      { action = 'execute', publication, interaction, expectedVersion, guard } = {},
     ) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await safeDirectory(directory);
@@ -312,6 +312,7 @@ export const createNativeEngineClient = ({
             throw engineFailure('NATIVE_ENGINE_RESULT_INVALID');
           const reconciled = await submit(pending);
           if (
+            action !== 'guard' &&
             pending.action === action &&
             same(pending.args ?? [], args) &&
             (action !== 'finalize' ||
@@ -337,12 +338,22 @@ export const createNativeEngineClient = ({
             signal,
             filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
           });
+          if (
+            guard &&
+            forbiddenBytes.some((secret) =>
+              [guard.content, guard.command, guard.path].some(
+                (value) => typeof value === 'string' && Buffer.from(value).includes(secret),
+              ),
+            )
+          )
+            throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
           input = await objects.write(
             identity,
             requestId,
             'files',
             {
               schemaVersion: 1,
+              ...(action === 'guard' ? { guard } : {}),
               files: encodeNativeEngineFiles(
                 files.git
                   ? files.files

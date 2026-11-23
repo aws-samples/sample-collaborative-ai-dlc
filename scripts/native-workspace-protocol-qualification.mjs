@@ -1030,6 +1030,7 @@ export async function qualifyWorkspaceTransport(
   const project = join(root, 'project');
   const provider = await qualificationProvider(harness, {
     requestLimit: terminalResult ? 128 : 64,
+    verifyWrites: terminalResult,
   });
   let driver;
   try {

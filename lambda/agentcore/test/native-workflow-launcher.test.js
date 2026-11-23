@@ -1,9 +1,11 @@
+import { nativeWorkflowHook } from '../native/workflow-hook.js';
+import { nativeGuardToolInput } from '../../shared/native-workflow-guard.js';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const launcher = fileURLToPath(new URL('../native/aidlc-launcher.sh', import.meta.url));
 
@@ -175,5 +177,84 @@ describe('native aidlc launcher without a workflow context', () => {
     });
     expect(result.status).toBe(127);
     expect(result.stderr).toContain('Native AI-DLC executable is unavailable.');
+  });
+});
+
+describe('receipt-bound PreToolUse', () => {
+  const args = ['engine', 'hook', 'guard-tool-call'];
+  const refused = {
+    exitCode: 2,
+    stdout: '',
+    stderr:
+      'no current Plan Approval receipt matches this question, target, stage attempt, and plan content',
+  };
+  const accepted = { exitCode: 0, stdout: '', stderr: '' };
+  const event = {
+    hook_event_name: 'PreToolUse',
+    cwd: '/coding',
+    tool_name: 'Write',
+    tool_input: { file_path: '/coding/src/test.js', content: 'exact source' },
+  };
+  it('checks the actual proposed Write only after the other installed group members admit it', async () => {
+    const calls = [];
+    const local = (arguments_, input) => {
+      calls.push(arguments_[2]);
+      expect(JSON.parse(input)).toEqual(event);
+      return arguments_[2] === 'guard-tool-call' ? refused : accepted;
+    };
+    const check = vi.fn(async () => accepted);
+    expect(
+      await nativeWorkflowHook({
+        args,
+        input: JSON.stringify(event),
+        project: '/coding',
+        local,
+        check,
+      }),
+    ).toEqual(accepted);
+    expect(check).toHaveBeenCalledWith({
+      tool: 'Write',
+      path: 'src/test.js',
+      content: 'exact source',
+    });
+    expect(calls).toEqual([
+      'guard-tool-call',
+      'state-transition-guard',
+      'reviewer-scope',
+      'review-freeze',
+    ]);
+  });
+  it('retains local review freezes, private or foreign target refusals and a protected denial', async () => {
+    const check = vi.fn(async () => refused);
+    const run = (local, ev = event) =>
+      nativeWorkflowHook({ args, input: JSON.stringify(ev), project: '/coding', local, check });
+    expect(await run(() => refused)).toEqual(refused);
+    expect(await run(() => refused, { ...event, cwd: '/other' })).toEqual(refused);
+    expect(
+      await run(() => refused, { ...event, tool_input: { file_path: '/other/x', content: 'x' } }),
+    ).toEqual(refused);
+    await expect(
+      run(() => refused, {
+        ...event,
+        tool_input: { file_path: '/coding/aidlc/.aidlc-sessions/x', content: 'x' },
+      }),
+    ).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    expect(check).not.toHaveBeenCalled();
+    expect(await run((a) => (a[2] === 'guard-tool-call' ? refused : accepted))).toEqual(refused);
+    expect(check).toHaveBeenCalledOnce();
+  });
+  it('transfers literal project-relative Bash input without executing it on the host', () => {
+    expect(
+      nativeGuardToolInput({ tool: 'Bash', command: 'chmod +x run && ./run' }, '/protected'),
+    ).toEqual({ command: 'chmod +x run && ./run' });
+    for (const command of [
+      'cat /private/file',
+      'cat ../private',
+      'cat "$ROOT/file"',
+      'cd .. && ./run',
+    ])
+      expect(() => nativeGuardToolInput({ tool: 'Bash', command }, '/protected')).toThrow(
+        'NATIVE_ENGINE_EDIT_DENIED',
+      );
   });
 });
