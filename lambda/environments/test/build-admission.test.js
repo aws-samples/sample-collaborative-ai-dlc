@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHandler } from '../index.js';
 
+vi.mock('@aws-sdk/client-ecr', async (importOriginal) => ({
+  ...(await importOriginal()),
+  // Handlers built without an ECR client must not reach AWS from unit tests;
+  // seeding then sees no core image scan.
+  ECRClient: class {
+    send = async () => ({});
+  },
+}));
+
 // Admission of NEW image builds for environments that already exist. The
 // compute was valid at creation; these cases change the deployment underneath
 // (feature disabled, allowlist emptied) and assert that every build entry

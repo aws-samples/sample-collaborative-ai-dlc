@@ -21,6 +21,7 @@ import {
 import { queryAll, scanAll } from './registry.js';
 import { readDefaultEnvironment, writeDefaultEnvironment } from '../shared/environment-default.js';
 import { resolvePublishedEnvironment as resolvePublished } from '../shared/environment-snapshot.js';
+import { canonicalJson } from '../shared/workflow-checkpoint.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -34,17 +35,25 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
 
+// A rescan that only re-evaluates the same result is not rewritten. Every
+// stored field but the evaluation time counts: findings can change behind
+// unchanged severity counts.
+const comparableScan = (scan) => canonicalJson({ ...scan, evaluatedAt: null });
+const sameScanResult = (current, next) =>
+  Boolean(current) && comparableScan(current) === comparableScan(next);
+
+const compatibilityVersion = () =>
+  process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
+const revisionDockerfile = (recipe, flattenedRecipe) =>
+  recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
+    ? generateCatalogEnvironmentDockerfile(recipe)
+    : generateDockerfile(flattenedRecipe);
+
 export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createEnvironmentStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.ENVIRONMENT_REGISTRY_TABLE;
   const now = () => (clock ? clock() : new Date().toISOString());
   const nextId = () => (ids ? ids() : randomUUID());
-  const compatibilityVersion = () =>
-    process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
-  const revisionDockerfile = (recipe, flattenedRecipe) =>
-    recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
-      ? generateCatalogEnvironmentDockerfile(recipe)
-      : generateDockerfile(flattenedRecipe);
 
   const getEnvironment = async (environmentId) => {
     const { Item } = await ddb.send(
@@ -718,6 +727,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
     coreAmd64Image = null,
+    coreScanFindings = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
@@ -732,6 +742,10 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
           ? { imageSizeBytes: coreImageSizeBytes }
           : {}),
         ...(!published.amd64Image && coreAmd64Image ? { amd64Image: coreAmd64Image } : {}),
+        // The core image keeps being rescanned after publication; follow it.
+        ...(coreScanFindings && !sameScanResult(published.scanFindings, coreScanFindings)
+          ? { scanFindings: coreScanFindings }
+          : {}),
       };
       if (Object.keys(backfill).length) {
         await updateRevision('standard', published.revisionId, backfill);
@@ -743,7 +757,14 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       .replace(/^sha256:/, '')
       .slice(0, 12)}`;
     const existing = await getRevision('standard', revisionId);
-    if (existing) return existing;
+    if (existing) {
+      // A staged update can be created before its image scan finishes; the
+      // admin reviewing it should see the scan once it is there.
+      if (coreScanFindings && !sameScanResult(existing.scanFindings, coreScanFindings)) {
+        return updateRevision('standard', revisionId, { scanFindings: coreScanFindings });
+      }
+      return existing;
+    }
 
     const createdAt = now();
     const recipe = {
@@ -783,7 +804,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         source: 'core-runtime',
         completedAt: createdAt,
       },
-      scanFindings: null,
+      scanFindings: coreScanFindings,
     };
     try {
       await ddb.send(
