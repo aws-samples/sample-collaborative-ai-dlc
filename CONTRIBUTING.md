@@ -35,7 +35,7 @@ The `prepare` script wires up the git hook automatically. The hook runs:
 - `terraform fmt -check` and `tflint` if any `.tf` is staged and the binaries are on `PATH`
 - `semgrep` or `opengrep` SAST preview if either binary is on `PATH`
 - `vitest run --changed` for affected unit tests
-- the tests that read Terraform as text when anything under `terraform/` is staged, and `npm run test:release` when anything under `scripts/` is staged (`--changed` only follows imports, so it cannot select them)
+- the tests that read Terraform as text when any `.tf` is staged, and `npm run test:release` when anything under `scripts/` is staged (`--changed` only follows imports, so it cannot select them)
 
 Every optional check (frontend, terraform, SAST) is **silently skipped** when its tool or dependency tree isn't available — the hook never blocks a commit because something isn't installed. CI is the enforcement layer (see [`.github/workflows/`](.github/workflows/)) and includes:
 

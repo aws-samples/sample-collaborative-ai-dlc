@@ -57,6 +57,11 @@ if [ -n "$staged_tf" ]; then
       tflint --chdir=terraform
     fi
   fi
+  # Tests that read Terraform as text import nothing `vitest --changed` can follow.
+  # shellcheck disable=SC2046 # one test path per word
+  npx vitest run --passWithNoTests $(git grep -l 'terraform/' -- 'lambda/*/test/*.test.js')
+  # shellcheck disable=SC2046 # one test path per word
+  node --test $(git grep -l 'terraform/' -- 'scripts/test/*.test.mjs')
 fi
 
 # Optional inner-loop SAST preview. CodeQL in CI is the enforcement layer;
@@ -72,23 +77,8 @@ fi
 
 npx vitest run --changed --passWithNoTests
 
-# Some tests read Terraform or scripts as text instead of importing them, so
-# `--changed` cannot relate them to a staged change: run them when their
-# inputs are staged. Deleted files count, since a test may read them.
-staged_all=$(git diff --cached --name-only)
-if echo "$staged_all" | grep -qE '^terraform/'; then
-  terraform_vitest=$(git grep -l 'terraform/' -- 'lambda/*/test/*.test.js' || true)
-  if [ -n "$terraform_vitest" ]; then
-    # shellcheck disable=SC2086 # one test path per word
-    npx vitest run $terraform_vitest
-  fi
-fi
-if echo "$staged_all" | grep -qE '^scripts/'; then
+# scripts/test reads or runs the scripts it covers; `--changed` does not run it.
+staged_scripts=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^scripts/' || true)
+if [ -n "$staged_scripts" ]; then
   npm run test:release
-elif echo "$staged_all" | grep -qE '^terraform/'; then
-  terraform_node=$(git grep -l 'terraform/' -- 'scripts/test/*.test.mjs' || true)
-  if [ -n "$terraform_node" ]; then
-    # shellcheck disable=SC2086 # one test path per word
-    node --test $terraform_node
-  fi
 fi
