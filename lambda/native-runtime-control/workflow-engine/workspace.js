@@ -1,6 +1,7 @@
 import { chmod, mkdir, lstat, readdir, readFile, writeFile, rm, rmdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NATIVE_PENDING_SPEC_PATH } from '../../shared/native-pending-input.js';
 import { nativeGuardToolInput } from '../../shared/native-workflow-guard.js';
 import { prepareNativeEngine } from './package.js';
 import {
@@ -241,13 +242,25 @@ export const openNativeEngineWorkspace = async ({
       return nativeEngineFileDigest(files);
     },
     async checkProposedEdit(submitted, runner, sessionId) {
-      if (
-        state.directive?.kind !== 'run-stage' ||
-        state.directive.stage !== 'code-generation' ||
-        state.directive.plan_approval?.status !== 'approved'
-      )
+      const directive = state.directive;
+      if (directive?.kind !== 'run-stage' || directive.stage !== 'code-generation')
         throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
-      const input = nativeGuardToolInput(submitted.guard, project);
+      const input = nativeGuardToolInput(submitted.guard, project, harness);
+      // A settled, gate-only directive authorizes checking the display file
+      // for that open gate. It cannot authorize another implementation edit.
+      if (directive.gate_only === true) {
+        if (
+          directive.gate !== true ||
+          state.awaitingApproval !== directive.stage ||
+          submitted.guard.path !== NATIVE_PENDING_SPEC_PATH
+        )
+          throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+      } else if (
+        directive.plan_approval?.status !== 'approved' ||
+        submitted.guard.path === NATIVE_PENDING_SPEC_PATH
+      ) {
+        throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+      }
       const authoritative = planFiles(await publicProjection());
       if (
         !authoritative.length ||

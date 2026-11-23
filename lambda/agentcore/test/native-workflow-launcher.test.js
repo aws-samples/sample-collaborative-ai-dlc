@@ -224,6 +224,25 @@ describe('receipt-bound PreToolUse', () => {
       'review-freeze',
     ]);
   });
+  it('preserves the path-only Write input from the pinned OpenCode plan hook', async () => {
+    const input = JSON.stringify({ ...event, tool_input: { file_path: '/coding/src/test.js' } });
+    const check = vi.fn(async () => accepted);
+    await nativeWorkflowHook({
+      args: ['engine', 'hook', 'plan-approval-guard', '--project-dir', '/coding'],
+      input,
+      project: '/coding',
+      local: () => refused,
+      check,
+    });
+    const guard = { tool: 'Write', path: 'src/test.js' };
+    expect(check).toHaveBeenCalledWith(guard);
+    expect(nativeGuardToolInput(guard, '/protected', 'opencode')).toEqual({
+      file_path: '/protected/src/test.js',
+    });
+    expect(() => nativeGuardToolInput(guard, '/protected', 'claude')).toThrow(
+      'NATIVE_ENGINE_EDIT_DENIED',
+    );
+  });
   it('retains local review freezes, private or foreign target refusals and a protected denial', async () => {
     const check = vi.fn(async () => refused);
     const run = (local, ev = event) =>

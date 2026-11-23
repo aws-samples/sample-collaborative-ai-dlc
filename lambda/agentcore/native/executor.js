@@ -159,6 +159,8 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'For an engine compose-offer or scope-confirm ask, copy its complete JSON unchanged into ' +
   '{"version":3,"ask":<engine ask object>} instead; the native adapter renders its explicit ' +
   'scope_commands and choices. Do not invent a plan list or convert typed choices to prose. ' +
+  'After reporting code-generation awaiting approval, read aidlc engine orchestrate next and ' +
+  'follow its steering continuation. Present the settled stage gate from its gate_only directive. ' +
   'For other questions copy exact workflow wording, labels, descriptions and order. ' +
   'Do not add numbering or remove literal recommendation text from a label. ' +
   'Use options:[] and multiSelect:false for a written answer. Keep normal explanatory prose; ' +

@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { NATIVE_PENDING_SPEC_PATH } from './native-pending-input.js';
 import {
   canonicalNativePath,
   nativeFileExclusion,
@@ -22,17 +23,27 @@ const localShell = (command) =>
         ),
     );
 
-export function nativeGuardToolInput(guard, project) {
-  if (
-    guard?.tool === 'Write' &&
-    Object.keys(guard).length === 3 &&
-    canonicalNativePath(guard.path) &&
-    nativeFileExclusion(guard.path, NATIVE_DEPENDENCY_POLICY) === null &&
-    nativeEngineAuthoredPath(guard.path) &&
-    typeof guard.content === 'string' &&
-    Buffer.byteLength(guard.content) <= 256 * 1024
-  )
-    return { file_path: join(project, guard.path), content: guard.content };
+export function nativeGuardToolInput(guard, project, harness) {
+  if (guard?.tool === 'Write' && canonicalNativePath(guard.path)) {
+    // The single display file is checked as a proposed hook target, never
+    // imported into the protected workspace or treated as a human answer.
+    if (
+      guard.path !== NATIVE_PENDING_SPEC_PATH &&
+      (nativeFileExclusion(guard.path, NATIVE_DEPENDENCY_POLICY) !== null ||
+        !nativeEngineAuthoredPath(guard.path))
+    )
+      throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');
+    const file_path = join(project, guard.path);
+    if (
+      Object.keys(guard).length === 3 &&
+      typeof guard.content === 'string' &&
+      Buffer.byteLength(guard.content) <= 256 * 1024
+    )
+      return { file_path, content: guard.content };
+    // The pinned OpenCode plugin supplies only file_path to its plan guard.
+    // The ordinary promotion checks the subsequently observed file bytes.
+    if (harness === 'opencode' && Object.keys(guard).length === 2) return { file_path };
+  }
   if (guard?.tool === 'Bash' && Object.keys(guard).length === 2 && localShell(guard.command))
     return { command: guard.command };
   throw engineFailure('NATIVE_ENGINE_EDIT_DENIED');

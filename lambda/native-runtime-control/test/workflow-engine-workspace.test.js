@@ -91,6 +91,24 @@ it('checks the proposed bytes and pinned guards against the approved attempt and
       ['aidlc-plan-approval-guard.ts', proposed],
       ['aidlc-review-freeze.ts', proposed],
     ]);
+    const form = { tool: 'Write', path: '.native-control/pending-question.json', content: '{}' };
+    const display = () =>
+      workspace.checkProposedEdit(
+        { files: files('approved plan'), guard: form },
+        runner,
+        'attempt-session',
+      );
+    await expect(display()).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    Object.assign(workspace.state.directive, { gate_only: true, gate: true });
+    await expect(check('approved plan')).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    await expect(display()).rejects.toThrow('NATIVE_ENGINE_EDIT_DENIED');
+    workspace.state.awaitingApproval = 'code-generation';
+    await display();
+    expect(runner.hook).toHaveBeenLastCalledWith('aidlc-review-freeze.ts', {
+      ...proposed,
+      tool_input: { file_path: join(workspace.project, form.path), content: form.content },
+    });
+    delete workspace.state.directive.gate_only;
     runner.hook.mockImplementation(async (name) => ({
       exitCode: name === 'aidlc-review-freeze.ts' ? 2 : 0,
     }));

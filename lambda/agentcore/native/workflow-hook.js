@@ -40,11 +40,11 @@ export async function nativeWorkflowHook({ args, input, project, local, check })
     guard = {
       tool: 'Write',
       path: isAbsolute(tool.file_path) ? tool.file_path.slice(project.length + 1) : tool.file_path,
-      content: tool.content,
+      ...(Object.hasOwn(tool, 'content') ? { content: tool.content } : {}),
     };
   } else if (event.tool_name === 'Bash') guard = { tool: 'Bash', command: tool?.command };
   else return original;
-  nativeGuardToolInput(guard, project);
+  nativeGuardToolInput(guard, project, name === 'plan-approval-guard' ? 'opencode' : 'claude');
   if (name === 'guard-tool-call') {
     // Keep every other member of Claude 2.11.1's registered guard group in
     // the original harness/session scope. A different refusal still blocks.

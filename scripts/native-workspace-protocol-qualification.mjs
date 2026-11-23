@@ -450,6 +450,19 @@ function* presentExpressStage(directive, project, pendingFile) {
     `aidlc engine orchestrate report --stage ${directive.stage} --result awaiting-approval`,
   );
   assert.match(report.message, /Recorded awaiting-approval/);
+  if (directive.stage === 'code-generation') {
+    // Report settles implementation. Read the newly issued open gate before
+    // the real tool presents its form, without re-entering the stage body.
+    let gate = yield* runDirective('aidlc engine orchestrate next');
+    if (gate.kind === 'load-steering') {
+      assert.match(gate.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
+      gate = yield* runDirective(gate.next);
+    }
+    assert.equal(gate.kind, 'run-stage');
+    assert.equal(gate.stage, directive.stage);
+    assert.equal(gate.gate, true);
+    assert.equal(gate.gate_only, true);
+  }
   const prompt = `Review ${directive.stage}. How would you like to proceed?`;
   yield {
     filePath: pendingFile,
