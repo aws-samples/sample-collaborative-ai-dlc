@@ -12,6 +12,7 @@ locals {
     source_control      = aws_iam_role.source_control.id
     intent_pin_lookup   = aws_iam_role.intent_pin_lookup.id
   }
+  sso_claim_readers = ["users"]
   membership_writers = {
     projects = aws_iam_role.neptune_artifacts.id
     users    = aws_iam_role.users.id
@@ -25,33 +26,22 @@ resource "aws_iam_role_policy" "membership_read" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(
-      [
-        {
-          # Memberships and platform SSO mappings only. Raw SSO claims recorded
-          # under USER#<sub> stay readable by their consumers alone.
-          Effect   = "Allow"
-          Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-          Resource = [var.access_table_arn]
-          Condition = {
-            "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["SPACE#*", "PLATFORM"] }
-          }
-        },
-        {
-          # The index holds membership rows only: claim rows carry no userId.
-          Effect   = "Allow"
-          Action   = ["dynamodb:Query"]
-          Resource = ["${var.access_table_arn}/index/by-user"]
-        }
-      ],
-      each.key == "users" ? [{
-        # Business roles are calculated from the recorded SSO claims.
+      [{
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user"]
+      }],
+      # Raw SSO claims recorded under USER#<sub> are read only by the Lambdas that
+      # calculate business roles from them. The by-user index needs no exclusion:
+      # claim rows carry no userId.
+      contains(local.sso_claim_readers, each.key) ? [] : [{
+        Effect   = "Deny"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
         Resource = [var.access_table_arn]
         Condition = {
-          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
         }
-      }] : []
+      }]
     )
   })
 }
@@ -109,7 +99,7 @@ resource "terraform_data" "sso_role_config_size" {
       condition = alltrue([
         for environment in values(local.sso_role_config_environments) : length(jsonencode(environment)) <= 4096
       ])
-      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of: ${join(", ", [for name, environment in local.sso_role_config_environments : name if length(jsonencode(environment)) > 4096])}. Reduce provider mappings."
+      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of the users, cognito-users, or migrate-memberships Lambda. Reduce provider mappings."
     }
   }
 }
