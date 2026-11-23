@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,6 +49,11 @@ const deploymentFixture = (t) => {
   }
   for (const file of [
     'scripts/deploy-terraform.sh',
+    'scripts/initialize-native-space-inventory.mjs',
+    'scripts/lib/native-dependencies.mjs',
+    'scripts/test/helpers/native-space-inventory.mjs',
+    'lambda/shared/native-runtime-binding.js',
+    'lambda/shared/native-space-inventory.js',
     'scripts/deploy-frontend.sh',
     'scripts/generate-env.sh',
     'scripts/inspect-terraform-plan.mjs',
@@ -84,6 +90,9 @@ const deploymentFixture = (t) => {
     EVENTS: join(directory, 'events'),
     PLAN_JSON: join(directory, 'plan.json'),
   };
+  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
+  env.NATIVE_FIXTURE_FILE = join(directory, 'native.json');
+  write(env.NATIVE_FIXTURE_FILE, '{}');
   delete env.TF_RECREATE_MISSING_LAMBDA_PACKAGE;
   delete env.AIDLC_SKIP_NPM_CI;
   delete env.AIDLC_PUBLIC_ECR_AUTH_WRAPPED;
@@ -124,14 +133,25 @@ if (command === 'output') {
     application_url: 'https://test.example.invalid', application_domain: 'test.example.invalid',
     s3_bucket_name: 'test-frontend', cloudfront_distribution_id: 'test-distribution',
     v2_executions_table_name: 'test-inventory', seed_blocks_lambda_name: 'test-seed', sso_providers: '[]' };
-  process.stdout.write(outputs[args.at(-1)] || '');
+  if (args[1] === '-json' && args.length === 2) {
+    const selected = Object.fromEntries(Object.entries(outputs).map(([key, value]) => [key, {value}]));
+    selected.private_output = {sensitive: true, value: 'unrelated-output-canary'};
+    if (process.env.NATIVE_OUTPUT === 'enabled') selected.native_runtime_bindings_table_name = {value: 'test-native-runs-prod'};
+    if (process.env.NATIVE_OUTPUT === 'null') selected.native_runtime_bindings_table_name = {value: null};
+    if (process.env.NATIVE_OUTPUT === 'wrong-environment') selected.environment.value = 'dev';
+    if (process.env.NATIVE_OUTPUT === 'malformed') selected.native_runtime_bindings_table_name = {};
+    process.stdout.write(JSON.stringify(selected));
+    if (process.env.NATIVE_OUTPUT === 'denied') process.exit(42);
+  } else process.stdout.write(outputs[args.at(-1)] || '');
   process.exit(0);
 }
 fs.appendFileSync(process.env.EVENTS, command + '\\n');
 assert.notEqual(process.env.TF_RECREATE_MISSING_LAMBDA_PACKAGE, 'false');
 assert.equal(process.env.TF_INPUT, 'false');
-const config = JSON.parse(fs.readFileSync(process.env.DOCKER_CONFIG + '/config.json'));
-assert.ok(config.auths['public.ecr.aws'].auth);
+if (process.env.PLAN_ONLY_FIXTURE !== '1') {
+  const config = JSON.parse(fs.readFileSync(process.env.DOCKER_CONFIG + '/config.json'));
+  assert.ok(config.auths['public.ecr.aws'].auth);
+}
 if (process.env.FAIL_PHASE === command) process.exit(42);
 if (command === 'init') assert.ok(args.includes('-backend-config=' + process.env.AIDLC_CONFIG_DIR + '/environments/prod.s3.tfbackend'));
 else if (command === 'plan') {
@@ -169,6 +189,9 @@ if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   echo inventory >> "$EVENTS"
   exit 0
 fi
+if [[ "$1" == */initialize-native-space-inventory.mjs ]]; then
+  exec '${process.execPath}' --import '${join(directory, 'scripts/test/helpers/native-space-inventory.mjs')}' "$@"
+fi
 exec '${process.execPath}' "$@"
 `,
   );
@@ -201,9 +224,12 @@ const events = ({ env }) =>
 
 test('MAIN runs one saved plan/apply through the scripts and hands outputs to the frontend', (t) => {
   const fixture = deploymentFixture(t);
-  const result = deploy(fixture);
+  const result = deploy(fixture, { NATIVE_OUTPUT: 'enabled' });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(events(fixture), [
+  const actions = events(fixture).filter(
+    (event) => !/^native (table|alias|owner|get|writer)$/.test(event),
+  );
+  assert.deepEqual(actions, [
     'root-ci',
     'init',
     'plan',
@@ -211,6 +237,9 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
     'apply',
     'inventory',
     'seed',
+    'native drain',
+    'native scan',
+    'native ready',
     'frontend-ci',
     'frontend-build',
     'upload s3://test-frontend/assets/',
@@ -233,7 +262,7 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
 test('plan/apply failures stop the two-command deployment before frontend publication', (t) => {
   for (const phase of ['plan', 'apply']) {
     const fixture = deploymentFixture(t);
-    const result = deploy(fixture, { FAIL_PHASE: phase });
+    const result = deploy(fixture, { FAIL_PHASE: phase, NATIVE_OUTPUT: 'enabled' });
     assert.equal(result.status, 42, result.stderr);
     assert.equal(events(fixture).at(-1), phase);
     assert.equal(existsSync(join(fixture.directory, 'frontend/.env')), false);
@@ -298,6 +327,99 @@ test('separate apply cleans up a deposed native package through the authenticate
   assert.deepEqual(events(fixture), ['show', 'apply', 'inventory']);
   assert.equal(readFileSync(fixture.env.AIDLC_PLAN_FILE, 'utf8'), 'saved plan');
   assert.equal(readFileSync(fixture.env.ECR_TEST_LOG, 'utf8').split('\n')[0], 'login');
+});
+
+const applyArgs =
+  'scripts/deploy-terraform.sh prod --phase apply --skip-seed --plan-file "$AIDLC_PLAN_FILE"';
+const retryArgs = 'node scripts/initialize-native-space-inventory.mjs --applied-environment prod';
+const existingNative = (fixture, state) => {
+  const plan = JSON.parse(readFileSync(fixture.env.PLAN_JSON, 'utf8'));
+  plan.prior_state = {
+    values: {
+      outputs: {
+        environment: { value: 'prod' },
+        aws_region: { value: 'eu-central-1' },
+        native_runtime_bindings_table_name: { value: 'test-native-runs-prod' },
+      },
+    },
+  };
+  write(fixture.env.PLAN_JSON, JSON.stringify(plan));
+  write(fixture.env.NATIVE_FIXTURE_FILE, JSON.stringify(state));
+};
+
+test('existing native installation with skip-seed closes stale legacy readiness before apply and resumes only bootstrap', (t) => {
+  const fixture = deploymentFixture(t);
+  const env = { NATIVE_OUTPUT: 'enabled', AWS_REGION: 'us-west-1' };
+  existingNative(fixture, {
+    historical: true,
+    fault: 'partial',
+    receipt: { pk: 'NATIVE_SPACE_INVENTORY', sk: 'BINDINGS_V1', version: 1 },
+  });
+  const plan = run(
+    fixture,
+    'scripts/deploy-terraform.sh prod --phase plan --plan-file "$AIDLC_PLAN_FILE"',
+    { ...env, PLAN_ONLY_FIXTURE: '1' },
+  );
+  assert.equal(plan.status, 0, plan.stderr);
+  assert.ok(!events(fixture).some((event) => event.startsWith('native ')));
+  const failed = run(fixture, applyArgs, env);
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.match(failed.stderr, /Retry only native inventory[\s\S]*--applied-environment prod/);
+  assert.equal(existsSync(fixture.env.AIDLC_PLAN_FILE), false);
+  const state = JSON.parse(readFileSync(fixture.env.NATIVE_FIXTURE_FILE, 'utf8'));
+  assert.equal(state.receipt.version, 0);
+  assert.ok(events(fixture).indexOf('native pending') < events(fixture).indexOf('apply'));
+  assert.ok(!events(fixture).includes('seed'));
+  delete state.fault;
+  write(fixture.env.NATIVE_FIXTURE_FILE, JSON.stringify(state));
+  const retry = run(fixture, retryArgs, env);
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.match(retry.stdout, /"bindings":1/);
+  assert.equal(events(fixture).filter((event) => event === 'apply').length, 1);
+  assert.ok(!events(fixture).includes('seed'));
+  write(fixture.env.AIDLC_PLAN_FILE, 'saved plan');
+  const start = events(fixture).length;
+  const second = run(fixture, applyArgs, env);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /"alreadyReady":true/);
+  const repeated = events(fixture).slice(start);
+  assert.ok(repeated.includes('apply'));
+  assert.ok(
+    !repeated.some((event) =>
+      ['native pending', 'native drain', 'native scan', 'native ready', 'seed'].includes(event),
+    ),
+  );
+});
+
+test('applied output lookup skips absent and null native services, rejects failures privately and provides a seed-free retry', (t) => {
+  for (const output of ['absent', 'null', 'denied', 'wrong-environment', 'malformed']) {
+    const fixture = deploymentFixture(t);
+    write(fixture.env.AIDLC_PLAN_FILE, 'saved plan');
+    const result = run(fixture, applyArgs, { NATIVE_OUTPUT: output });
+    assert.equal(result.status, ['absent', 'null'].includes(output) ? 0 : 1, result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /unrelated-output-canary/);
+    assert.equal(existsSync(fixture.env.AIDLC_PLAN_FILE), false);
+    assert.ok(!events(fixture).some((event) => event.startsWith('native ') || event === 'seed'));
+  }
+});
+
+test('native table and alias access failures after apply recover without replaying apply or the requested seed', (t) => {
+  for (const fault of ['table', 'alias', 'lost-ack']) {
+    const fixture = deploymentFixture(t);
+    write(fixture.env.NATIVE_FIXTURE_FILE, JSON.stringify({ fault }));
+    const env = { NATIVE_OUTPUT: 'enabled' };
+    const failed = deploy(fixture, env);
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.ok(!events(fixture).includes('frontend-ci'));
+    const state = JSON.parse(readFileSync(fixture.env.NATIVE_FIXTURE_FILE, 'utf8'));
+    delete state.fault;
+    write(fixture.env.NATIVE_FIXTURE_FILE, JSON.stringify(state));
+    const retry = run(fixture, retryArgs, env);
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(events(fixture).filter((event) => event === 'apply').length, 1);
+    assert.equal(events(fixture).filter((event) => event === 'seed').length, 1);
+    assert.equal(events(fixture).filter((event) => event === 'native drain').length, 1);
+  }
 });
 
 const olderRelease = (t) => {

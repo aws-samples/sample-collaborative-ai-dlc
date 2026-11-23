@@ -14,13 +14,28 @@ const ACTIVE = new Set([
   'CANCEL_REQUESTED',
 ]);
 
+// Older deployments wrote the v1 readiness row without a coverage certificate.
+export function isReadySpaceInventoryReceipt(row) {
+  if (!row) return false;
+  const { coverage, ...base } = row;
+  if (!isNativeSpaceInventoryReady(base)) return false;
+  if (coverage === undefined) return true;
+  return (
+    coverage !== null &&
+    Object.keys(coverage).length === 3 &&
+    ['tableId', 'commandsRevision', 'projectsRevision'].every(
+      (key) => typeof coverage[key] === 'string' && coverage[key].length > 0,
+    )
+  );
+}
+
 // Pure, deterministic inventory. Never emit prompts, answer text, credentials
 // or private workspace contents. Unknown records remain protected.
 export const nativeDependencyInventory = (records) => {
   const references = [];
   for (const row of records) {
     const id = hash([row.pk, row.sk]);
-    if (isNativeSpaceInventoryReady(row)) {
+    if (isReadySpaceInventoryReceipt(row)) {
       references.push({ id, kind: 'space-inventory', executable: false, dependencies: [] });
     } else if (row.sk === 'RUNTIME') {
       references.push({

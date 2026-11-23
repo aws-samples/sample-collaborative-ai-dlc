@@ -579,6 +579,7 @@ case "$*" in
     ;;
   *"show -json "*) printf '{"resource_changes":[]}\\n' ;;
   *" output -raw application_url"*) printf 'https://app.example.invalid\\n' ;;
+  "output -json") printf '%s\\n' '{"environment":{"value":"summary"},"aws_region":{"value":"eu-west-1"}}' ;;
   *"output -raw aws_region"*) printf 'eu-west-1\\n' ;;
   *"output -raw v2_executions_table_name"*) printf 'auth-summary\\n' ;;
   *" output -raw environment"*) printf 'summary\\n' ;;
@@ -685,6 +686,7 @@ case "$*" in
   *" output -raw oidc_idp_callback_url"*) printf 'https://broker.example.invalid/oauth2/idpresponse\\n' ;;
   *" output -raw saml_acs_url"*) printf 'https://broker.example.invalid/saml2/idpresponse\\n' ;;
   *" output -raw saml_entity_id"*) printf 'urn:amazon:cognito:sp:eu-west-1_pool\\n' ;;
+  "output -json") printf '%s\\n' '{"environment":{"value":"summary"},"aws_region":{"value":"eu-west-1"}}' ;;
   *"output -raw aws_region"*) printf 'eu-west-1\\n' ;;
   *"output -raw v2_executions_table_name"*) printf 'auth-summary\\n' ;;
   *" output -raw environment"*) printf 'summary\\n' ;;
@@ -853,14 +855,15 @@ test('deployment initializes inventory after apply even when baseline seeding is
   assert.ok(log.indexOf(`apply ${planFile}`) < log.indexOf('initialize-inventory'));
 });
 
-test('deployment fails and retains the plan when inventory initialization fails', () => {
+test('deployment reports an authentication inventory failure after consuming the saved plan', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-inventory-failed-'));
   const { env, awsLog, planFile } = standaloneDeployEnv(dir);
   const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
     env: { ...env, AIDLC_FAKE_INVENTORY_EXIT: '1' },
   });
   assert.equal(result.status, 1);
-  assert.ok(existsSync(planFile));
+  assert.equal(existsSync(planFile), false);
+  assert.match(result.stderr, /Retry scoped agent authentication inventory/);
   assert.doesNotMatch(result.stdout, /Infrastructure deployment complete/);
   assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
 });

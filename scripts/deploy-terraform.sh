@@ -111,9 +111,15 @@ tfvar_string() {
 inspect_plan() {
     local plan_file="$1"
     local plan_json="${plan_file}.json"
-    terraform show -json "$plan_file" > "$plan_json"
+    (umask 077; terraform show -json "$plan_file" > "$plan_json")
     node "$SCRIPT_DIR/inspect-terraform-plan.mjs" "$plan_json"
     node "$SCRIPT_DIR/check-active-executions.mjs" "$plan_json"
+    if [[ "$PHASE" != "plan" ]]; then
+        if ! node "$SCRIPT_DIR/initialize-native-space-inventory.mjs" --before-apply "$ENVIRONMENT" "$plan_json"; then
+            rm -f "$plan_json"
+            return 1
+        fi
+    fi
     rm -f "$plan_json"
 }
 
@@ -341,17 +347,22 @@ stop_retired_agent_tasks "$TFVARS_FILE"
 echo "Applying changes..."
 terraform apply "$PLAN_FILE"
 
+# The saved plan was consumed even if a subsequent initialization fails.
+if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
+    rm -f "$PLAN_FILE"
+fi
+
 # All selection, execution and invocation writers are deployed before this
 # additive backfill. It also writes the readiness marker on fresh installations.
 # Initialization is idempotent and independent of the optional baseline reseed.
 echo "Initializing scoped agent authentication inventory..."
 INVENTORY_REGION="$(terraform output -raw aws_region)"
 INVENTORY_TABLE="$(terraform output -raw v2_executions_table_name)"
-AWS_REGION="$INVENTORY_REGION" V2_PROCESS_TABLE="$INVENTORY_TABLE" \
-    node "$SCRIPT_DIR/initialize-agent-auth-inventory.mjs"
-
-if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
-    rm -f "$PLAN_FILE"
+if ! AWS_REGION="$INVENTORY_REGION" V2_PROCESS_TABLE="$INVENTORY_TABLE" \
+    node "$SCRIPT_DIR/initialize-agent-auth-inventory.mjs"; then
+    echo "Terraform apply succeeded. Retry scoped agent authentication inventory with:" >&2
+    printf '  AWS_REGION=%q V2_PROCESS_TABLE=%q node %q\n' "$INVENTORY_REGION" "$INVENTORY_TABLE" "$SCRIPT_DIR/initialize-agent-auth-inventory.mjs" >&2
+    exit 1
 fi
 
 if [[ "$SKIP_SEED" == "true" ]]; then
@@ -384,6 +395,13 @@ else
     fi
     rm -f "$SEED_RESULT_FILE"
     echo "AI-DLC default workflow and building blocks applied."
+fi
+
+# Run after the requested seed so a retry only has to finish native inventory.
+if ! node "$SCRIPT_DIR/initialize-native-space-inventory.mjs" --applied-environment "$ENVIRONMENT"; then
+    echo "Terraform apply succeeded. Retry only native inventory using this checkout and backend:" >&2
+    printf '  node %q --applied-environment %q\n' "$SCRIPT_DIR/initialize-native-space-inventory.mjs" "$ENVIRONMENT" >&2
+    exit 1
 fi
 
 if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
