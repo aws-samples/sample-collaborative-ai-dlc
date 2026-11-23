@@ -101,7 +101,10 @@ export const getStageResponsibilities = async ({ event, g, ddb, store, resolveRo
       ),
       { statusCode: 422 },
     );
-  let stages = workflow.placements.toSorted((a, b) => a.order - b.order);
+  // `order` is a placement's position within its phase, as in the composer.
+  let stages = workflow.placements.toSorted(
+    (a, b) => (a.phasePath ?? '').localeCompare(b.phasePath ?? '') || a.order - b.order,
+  );
   if (params.intentId) {
     const loader = createIntentMethodologyLoader({
       ddb,

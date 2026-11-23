@@ -476,6 +476,31 @@ describe('responsibilities member reads', () => {
     expect((await load()).stages[0].decisionMakers.map((p) => p.userId)).toEqual(['owner']);
   });
 
+  it('lists stages in composer order: by phase, then by position within the phase', async () => {
+    const at = (stageId, phasePath, order) => ({
+      ...placement,
+      sk: `V#3#PLACEMENT#${stageId}`,
+      stageId,
+      phasePath,
+      order,
+    });
+    const placements = [
+      at('code-generation', '03', 0),
+      at('requirements-analysis', '02', 1),
+      at('build-and-test', '03', 1),
+      at('workspace-detection', '02', 0),
+    ];
+    ddb.send.mockResolvedValue({
+      Items: [{ sk: 'V#3#META', cedarPolicies: generateStagePolicies(placements) }, ...placements],
+    });
+    expect((await load()).stages.map((stage) => stage.stageId)).toEqual([
+      'workspace-detection',
+      'requirements-analysis',
+      'code-generation',
+      'build-and-test',
+    ]);
+  });
+
   it('rejects another space intent, invalid version, unknown scope, and altered stage instance', async () => {
     ddb.send.mockResolvedValueOnce({ Item: { projectId: 'other' } });
     await expect(
