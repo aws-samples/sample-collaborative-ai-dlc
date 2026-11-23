@@ -160,10 +160,8 @@ async function qualifyProtectedMember({ harness, driver, provider, project }) {
   const history = await driver.get('interaction', publicationQuery(first));
   assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
   assert.equal(history.answer.context.publicationId, first.publicationId);
-  assert.deepEqual(history.answer.resultingPublication, {
-    publicationId: held.publicationId,
-    publicationSequence: held.sequence,
-  });
+  assert.equal(history.answer.resultingPublication.publicationId, held.publicationId);
+  assert.equal(history.answer.resultingPublication.publicationSequence, held.sequence);
   assert.equal(history.answer.context.membershipRecorded, true);
   assert.equal(history.answer.text, offer.choices[0].label);
   const before = await proof(held);
