@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
-import { readImageScanFindings } from '../build-lifecycle.js';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import { createScanReadClient, readImageScanFindings } from '../build-lifecycle.js';
+import { createHandler } from '../index.js';
 
 const digest = `sha256:${'c'.repeat(64)}`;
 const client = (response) => ({ send: vi.fn().mockResolvedValue(response) });
@@ -72,5 +74,76 @@ describe('readImageScanFindings', () => {
       }),
     ).resolves.toBeNull();
     expect(ecrClient.send).not.toHaveBeenCalled();
+  });
+});
+
+// The seeding client is exercised for real: an ECRClient with its timeout and
+// retry handling, sending to a local endpoint that answers only after the
+// client's request timeout.
+describe('core image scan read during seeding', () => {
+  const answerAfterMs = 2000;
+  let server;
+  let requests = 0;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      requests += 1;
+      request.resume();
+      const answer = setTimeout(() => {
+        response.writeHead(200, { 'content-type': 'application/x-amz-json-1.1' });
+        response.end(
+          JSON.stringify({
+            imageScanStatus: { status: 'ACTIVE' },
+            imageScanFindings: { findingSeverityCounts: { HIGH: 1 }, findings: [] },
+          }),
+        );
+      }, answerAfterMs);
+      response.on('close', () => clearTimeout(answer));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  });
+
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('stops waiting for a stalled ECR answer and serves the request without a scan', async () => {
+    vi.stubEnv('CORE_IMAGE_URI', '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core');
+    vi.stubEnv('CORE_IMAGE_DIGEST', digest);
+    vi.stubEnv('CORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/core');
+    const store = {
+      seedSystemEnvironments: vi.fn(),
+      stageCoreRevision: vi.fn(),
+      reconcileBaseUpdates: vi.fn(),
+      listEnvironments: vi.fn().mockResolvedValue([]),
+    };
+    const ecrClient = createScanReadClient({
+      requestTimeout: 100,
+      region: 'eu-west-1',
+      endpoint: `http://127.0.0.1:${server.address().port}`,
+      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+    });
+    const handler = createHandler({ store, ecrClient });
+    requests = 0;
+    const started = Date.now();
+
+    const response = await handler({
+      httpMethod: 'GET',
+      path: '/environments',
+      requestContext: {
+        authorizer: { claims: { sub: 'user-1', email: 'user@example.com' } },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(Date.now() - started).toBeLessThan(answerAfterMs);
+    // One retry, then seeding goes on without the scan.
+    expect(requests).toBe(2);
+    expect(store.stageCoreRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ coreScanFindings: null }),
+    );
   });
 });
