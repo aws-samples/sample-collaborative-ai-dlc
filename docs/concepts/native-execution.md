@@ -6198,7 +6198,7 @@ the current contract for newly created executions.
       protected engine operation that never finishes is a separate item, NE-23.
       **Dev milestone, 2026-11-23.** The independently verified frontend (`9d4a970f`) offers fresh intent creation from Inspect work and export. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
       **Dev milestone, 2026-11-23.** Independent verification of engine 10 (`77768df6`) confirmed the owner deletion guard, native draft fence, all 54 bindings in two spaces and 3,281 protected row projections. The ReadOnly preflight returned READY. Signed-in member acceptance remains open.
-      Standard deployments (`3d772155`) now initialize the inventory after apply and reuse matching coverage. Dev's initial receipt predates this automation and requires one recheck on the next standard deployment.
+      Standard deployments (`3d772155`) initialize the inventory after apply and reuse matching coverage. The engine 11 rollout upgraded dev's original receipt and preserved all 54 bindings and 3,281 protected row projections.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
@@ -6211,7 +6211,8 @@ the current contract for newly created executions.
       successful qualification, and scripted output is distinguished from a real
       installed workflow.
       **Installed milestone, 2026-11-23.** Claude and OpenCode applied the synthetic member's Express selection once and reopened the requirements-analysis gate after confirmed recovery. Codex's session-start hook received the proposal request, but the subsequent workflow command found no active intent. Kiro stopped at managed authentication before session creation. The v10 four-harness run (`aed159a0`) returned FAIL.
-      On the cancellation candidate (`39af3627`), the Linux process owner reports whether a command launched before cancellation. All 12 targeted cases passed in 24 consecutive installed runs. Deployment and signed-in acceptance remain open.
+      On the cancellation candidate (`39af3627`), the Linux process owner reports whether a command launched before cancellation. All 12 targeted cases passed in 24 consecutive installed runs.
+      **Dev milestone, 2026-11-23.** Engine 11 (`830b1cf5`) passed 129 independent service checks and its official ReadOnly preflight returned READY. Installed Claude, Codex and OpenCode applied the protected choice once and resumed at the recorded gate. Kiro still requires managed authentication. Signed-in acceptance remains open.
 - [ ] **NE-19 — Qualify the complete two-member journey.** Run create → start → question
       → implementation → required checks/gates → verified completion → downloadable
       result and Git delivery with separate authenticated browser profiles. Include
@@ -6220,6 +6221,7 @@ the current contract for newly created executions.
       **Done when:** the deployed result and accepted decisions refer to the same
       revisions and users, stale callbacks cannot cross scopes, and advice never
       becomes an accepted answer.
+      **Installed milestone, 2026-11-23.** Qualification `bb81fa0f` exercised two synthetic members answering the same plan question through Claude on the engine 11 image. The engine applied one choice, retrying it returned the original command, and both readers traced it to the resulting publication. Revocation denied further reads for the winning member. The deployed two-member browser journey remains open.
 - [ ] **NE-20 — Qualify deployed execution and storage boundaries.** Verify effective
       authority/worker permissions, cross-project runtime/EFS isolation, source
       access changes, image revocation, current-writer admission, publication/package
