@@ -6169,7 +6169,7 @@ the current contract for newly created executions.
       can supply the same state. **Done when:** navigation, refresh and polling
       avoid duplicate requests while preserving shared drafts, uncertain submissions,
       current status and isolation across account/project/intent changes.
-      **Local integration, 2026-11-21.** An 11-intent page used one collection GET and zero detail GETs. Opening an intent, refreshing and polling shared one in-flight detail GET. An accepted or uncertain reply triggered one fresh read. Installed, deployed and signed-in checks remain open.
+      **Dev milestone, 2026-11-23.** Local tests measured one collection GET for 11 intents and one in-flight detail GET across opening, refresh and polling. Engine v7 (`90272117`) passed installed and independent deployment checks. The ReadOnly preflight returned `READY`. Signed-in acceptance remains open.
 - [ ] **NE-15 — Reduce activity notification work and complete observability.** Send
       one high-watermark invalidation per committed output batch, retaining durable
       cursor replay and polling. Show acceptance, dispatch, useful output, waiting,
@@ -6177,6 +6177,7 @@ the current contract for newly created executions.
       usage/timing attribution. **Done when:** multi-page reconnect, missed hints,
       backpressure and partial reads retain complete accessible history, and normal
       diagnosis does not require private transcripts.
+      **Local integration, 2026-11-23.** Three 64-row batches sent three notifications and replayed all 192 outputs in order (`1eaae5c1`). A hint received during a failed page read now resumes from the last accepted cursors. Per-turn timing and usage, installed qualification and live acceptance remain open.
 - [ ] **NE-16 — Measure and reduce startup and post-turn latency.** Measure preparation,
       installation, acceptance-to-dispatch, first useful output, harness/tools time
       and publication-to-display separately. Reuse verified installed assets and
