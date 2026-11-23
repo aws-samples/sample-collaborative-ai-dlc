@@ -6197,7 +6197,8 @@ the current contract for newly created executions.
       resources and the documented EFS-loss behavior is clear. Abandoning a
       protected engine operation that never finishes is a separate item, NE-23.
       **Dev milestone, 2026-11-23.** The independently verified frontend (`9d4a970f`) offers fresh intent creation from Inspect work and export. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
-      **Local milestone, 2026-11-23.** The owner API and native draft writer (`200dc801`) coordinate space deletion. Tests confirmed that retained native work blocks teardown and that a verified native-empty space can still be deleted. Deployment requires an inventory of existing bindings.
+      **Dev milestone, 2026-11-23.** Engine 10 (`77768df6`) deployed the owner deletion guard and native draft fence. Inventory covered all 54 existing bindings in two spaces. Operator readback matched all 3,281 protected row projections. Local tests verified that owners can still delete a native-empty space.
+      Standard deployments (`3d772155`) now initialize the inventory after apply and reuse matching coverage. Dev's initial receipt predates this automation and requires one recheck on the next standard deployment.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
