@@ -159,7 +159,7 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
-    if (critical > 0 || high > 0) {
+    if (critical > 0 || high > 0 || gateScan.incomplete) {
       return {
         version: await store.updateVersion(
           scanning.toolId,

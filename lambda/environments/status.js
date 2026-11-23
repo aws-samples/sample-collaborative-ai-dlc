@@ -328,10 +328,11 @@ const inspectImage = async ({
       };
     }
     const { severityCounts, findingsTruncated } = gateScan;
-    const verdict = evaluateScanFindings(
-      severityCounts,
-      Boolean(securityFindingsAcceptedAt(scanning)),
-    );
+    const findingsAccepted = Boolean(securityFindingsAcceptedAt(scanning));
+    const verdict =
+      gateScan.incomplete && !findingsAccepted
+        ? { allowed: false, status: 'SECURITY_REVIEW' }
+        : evaluateScanFindings(severityCounts, findingsAccepted);
     const scanFindings = {
       status: scanStatus,
       severityCounts,

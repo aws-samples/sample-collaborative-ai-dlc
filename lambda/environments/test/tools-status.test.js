@@ -192,6 +192,34 @@ describe('managed tool build status', () => {
     });
   });
 
+  it('sends an enhanced tool scan cut at the page bound to review', async () => {
+    const store = mutableStore();
+    const client = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValue({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+            findingSeverityCounts: { LOW: 1 },
+          },
+          nextToken: 'more',
+        }),
+    };
+
+    const result = await createToolsStatusHandler({ store, ecrClient: client, s3Client })(
+      buildEvent,
+    );
+
+    expect(result.version).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true },
+    });
+  });
+
   it('routes unsupported artifact scans to explicit administrator review', async () => {
     const store = mutableStore();
     const handler = createToolsStatusHandler({

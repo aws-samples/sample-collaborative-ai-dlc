@@ -112,28 +112,52 @@ export const isUnsupportedScan = (status, description) =>
 // this long has passed since the scan completed. The delay is not
 // documented; five minutes leaves a wide margin over the seconds observed.
 export const ENHANCED_SCAN_SETTLE_MS = 5 * 60 * 1000;
+const MAX_ENHANCED_SCAN_PAGES = 50;
 
 // Reads an image's scan for the scan gate. `pending` means the result cannot
-// be judged yet and the image stays SCANNING until a later poll.
+// be judged yet and the image stays SCANNING until a later poll. `incomplete`
+// means an enhanced result was cut at the page bound and may hide Critical or
+// High findings, so the gate sends it to review.
 export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now = Date.now }) => {
-  const scan = await ecrClient.send(
-    new DescribeImageScanFindingsCommand({ repositoryName, imageId: { imageDigest } }),
-  );
+  const read = (nextToken) =>
+    ecrClient.send(
+      new DescribeImageScanFindingsCommand({
+        repositoryName,
+        imageId: { imageDigest },
+        ...(nextToken ? { nextToken } : {}),
+      }),
+    );
+  const scan = await read();
   const status = scan.imageScanStatus?.status;
   if (status === 'IN_PROGRESS' || status === 'PENDING') return { scan, pending: true };
-  if (status === 'ACTIVE') {
-    const completedAt = new Date(
-      scan.imageScanFindings?.imageScanCompletedAt ?? Number.NaN,
-    ).getTime();
-    if (Number.isNaN(completedAt) || now() - completedAt < ENHANCED_SCAN_SETTLE_MS) {
-      return { scan, pending: true };
-    }
+  if (status !== 'ACTIVE') {
+    return {
+      scan,
+      severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
+      findingsTruncated: Boolean(scan.nextToken),
+    };
   }
-  return {
-    scan,
-    severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
-    findingsTruncated: Boolean(scan.nextToken),
-  };
+  const completedAt = new Date(
+    scan.imageScanFindings?.imageScanCompletedAt ?? Number.NaN,
+  ).getTime();
+  if (Number.isNaN(completedAt) || now() - completedAt < ENHANCED_SCAN_SETTLE_MS) {
+    return { scan, pending: true };
+  }
+  // With enhanced scanning the severity counts cover only the findings of
+  // the returned page, and pages are not ordered by severity: add them up.
+  const severityCounts = {};
+  let page = scan;
+  for (let pages = 1; ; pages += 1) {
+    for (const [severity, count] of Object.entries(
+      page.imageScanFindings?.findingSeverityCounts ?? {},
+    )) {
+      severityCounts[severity] = (severityCounts[severity] ?? 0) + Number(count ?? 0);
+    }
+    if (!page.nextToken || pages >= MAX_ENHANCED_SCAN_PAGES) break;
+    page = await read(page.nextToken);
+  }
+  const findingsTruncated = Boolean(page.nextToken);
+  return { scan, severityCounts, findingsTruncated, incomplete: findingsTruncated };
 };
 
 export const createBuildLifecycleHandler =
