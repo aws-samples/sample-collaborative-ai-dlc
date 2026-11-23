@@ -24,11 +24,35 @@ resource "aws_iam_role_policy" "membership_read" {
   role     = each.value
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-      Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user"]
-    }]
+    Statement = concat(
+      [
+        {
+          # Memberships and platform SSO mappings only. Raw SSO claims recorded
+          # under USER#<sub> stay readable by their consumers alone.
+          Effect   = "Allow"
+          Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+          Resource = [var.access_table_arn]
+          Condition = {
+            "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["SPACE#*", "PLATFORM"] }
+          }
+        },
+        {
+          # The index holds membership rows only: claim rows carry no userId.
+          Effect   = "Allow"
+          Action   = ["dynamodb:Query"]
+          Resource = ["${var.access_table_arn}/index/by-user"]
+        }
+      ],
+      each.key == "users" ? [{
+        # Business roles are calculated from the recorded SSO claims.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [var.access_table_arn]
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
+        }
+      }] : []
+    )
   })
 }
 
