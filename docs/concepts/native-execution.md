@@ -6246,8 +6246,13 @@ the current contract for newly created executions.
       scheduled repair sent 240 execution, 120 preparation, 360 cancellation and
       240 projection pointers to their expected simulated queues. After one lost
       projection acknowledgement, later work progressed from a saved cursor and
-      the next full sweep redelivered the pointer. Live alert delivery and agreed
-      response times remain open.
+      the next full sweep redelivered the pointer.
+      **DEV readiness check, 2026-11-23.** From 12:55 to 13:55 UTC, runtime and
+      package repair each reported 12 completed sweeps and zero row errors. Both
+      five-minute schedules targeted the expected functions. All 20 alarms were
+      `OK` with zero action destinations, and none named an incident owner. Local
+      admission-shutdown tests preserved existing reads, replies and cancellation.
+      Live queue delivery, operator receipt and agreed response times remain open.
 - [ ] **NE-22 — Publish the integrated feature and remove development-only scaffolding.**
       Confirm the preceding release items against the same candidate, remove unused
       native paths and obsolete compatibility/probe assets, and update capability
