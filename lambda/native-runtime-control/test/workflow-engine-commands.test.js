@@ -18,6 +18,19 @@ const state = () => ({
   ],
 });
 describe('protected workflow command capabilities', () => {
+  it('renders the pinned code-generation Testing Contract without a member command', () => {
+    const current = { ...state(), directive: { kind: 'run-stage', stage: 'code-generation' } };
+    const args = ['engine', 'testing-posture', 'render'];
+    expect(command(args, current)).toEqual({ args, member: false });
+    for (const other of [
+      [...args, '--unit', 'another'],
+      [...args, '--project-dir', '/another'],
+      ['engine', 'testing-posture', 'fingerprint'],
+      ['engine', 'testing-posture', 'run'],
+    ])
+      expect(() => command(other, current)).toThrow('NATIVE_ENGINE_COMMAND_DENIED');
+    expect(() => command(args, state())).toThrow('NATIVE_ENGINE_COMMAND_DENIED');
+  });
   it('permits an agent to ask questions and read answers before a member replies', () => {
     const pending = { ...state(), decisions: [] };
     expect(

@@ -294,6 +294,15 @@ export const nativeEngineCommand = ({
     validateCreation(args, state, member);
     return { args, member: false, creation: true };
   }
+  // The pinned code-generation plan embeds the renderer's exact current
+  // contract. Its other subcommands can fingerprint or change plan state.
+  if (
+    route === 'testing-posture' &&
+    verb === 'render' &&
+    args.length === 3 &&
+    state.directive?.stage === 'code-generation'
+  )
+    return { args, member: false };
   if (!ALLOWED[route]?.includes(verb)) fail();
   if (route === 'orchestrate') validateOrchestration(args, state, project, workspaceResume);
   if (route === 'log') validateLog(args, state, member);
