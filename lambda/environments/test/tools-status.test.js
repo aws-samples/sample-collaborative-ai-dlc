@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createToolsStatusHandler } from '../tools-status.js';
+import { ENHANCED_SCAN_SETTLE_MS } from '../build-lifecycle.js';
 
 const initialVersion = {
   toolId: 'dotnet-sdk',
@@ -154,6 +155,40 @@ describe('managed tool build status', () => {
           },
         ],
       },
+    });
+  });
+
+  it('judges an enhanced tool scan only once its findings have had time to reach ECR', async () => {
+    const store = mutableStore();
+    const enhancedClient = (completedAgoMs, severityCounts) => ({
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValueOnce({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - completedAgoMs),
+            findingSeverityCounts: severityCounts,
+          },
+        }),
+    });
+    const inspect = (client) =>
+      createToolsStatusHandler({ store, ecrClient: client, s3Client })(buildEvent);
+
+    // A read seconds after the scan sees none of the findings, or only some.
+    let result = await inspect(enhancedClient(13_000, {}));
+    expect(result).toMatchObject({ pending: true, version: { status: 'SCANNING' } });
+    result = await inspect(enhancedClient(13_000, { HIGH: 5 }));
+    expect(result).toMatchObject({ pending: true, version: { status: 'SCANNING' } });
+
+    result = await inspect(
+      enhancedClient(ENHANCED_SCAN_SETTLE_MS + 1000, { CRITICAL: 1, HIGH: 13 }),
+    );
+    expect(result.version).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { status: 'ACTIVE', severityCounts: { CRITICAL: 1, HIGH: 13 } },
     });
   });
 

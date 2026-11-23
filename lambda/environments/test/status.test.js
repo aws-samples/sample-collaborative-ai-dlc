@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createStatusHandler, runtimeNameFor } from '../status.js';
+import { ENHANCED_SCAN_SETTLE_MS } from '../build-lifecycle.js';
 import { withVerificationLease } from './helpers/verification-lease.js';
 import { DEFAULT_SANDBOX_CONFIG, resolveInvocationSandbox } from '../../shared/sandbox-settings.js';
 
@@ -138,6 +139,54 @@ describe('managed environment status handler', () => {
     const result = await handler(buildEvent);
     expect(result.revision.status).toBe('SECURITY_REVIEW');
     expect(result.revision.scanFindings.severityCounts.HIGH).toBe(2);
+  });
+
+  it('judges an enhanced scan only once its findings have had time to reach ECR', async () => {
+    const store = mutableStore();
+    const enhancedClient = (completedAgoMs, severityCounts) => ({
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        .mockResolvedValueOnce({
+          imageScanStatus: {
+            status: 'ACTIVE',
+            description: 'Continuous scan is selected for image.',
+          },
+          imageScanFindings: {
+            ...(completedAgoMs === null
+              ? {}
+              : { imageScanCompletedAt: new Date(Date.now() - completedAgoMs) }),
+            ...(severityCounts ? { findingSeverityCounts: severityCounts } : {}),
+          },
+        }),
+    });
+    const inspect = (ecrClient, controlClient = { send: vi.fn() }) =>
+      createStatusHandler({
+        cleanupStore: cleanupStoreStub(),
+        store,
+        ecrClient,
+        controlClient,
+        runtimeClient: { send: vi.fn() },
+      })(buildEvent);
+
+    // Inspector finished seconds ago and ECR has no findings yet: not a clean image.
+    const controlClient = { send: vi.fn() };
+    let result = await inspect(enhancedClient(13_000), controlClient);
+    expect(result.revision.status).toBe('SCANNING');
+    expect(result.revision.scanFindings).toBeUndefined();
+    expect(controlClient.send).not.toHaveBeenCalled();
+
+    // Without a completion time the scan is not finished either.
+    result = await inspect(enhancedClient(null));
+    expect(result.revision.status).toBe('SCANNING');
+
+    result = await inspect(
+      enhancedClient(ENHANCED_SCAN_SETTLE_MS + 1000, { CRITICAL: 1, HIGH: 33 }),
+    );
+    expect(result.revision).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { status: 'ACTIVE', severityCounts: { CRITICAL: 1, HIGH: 33 } },
+    });
   });
 
   it('creates a runtime with the protected protocol and a stable token', async () => {
