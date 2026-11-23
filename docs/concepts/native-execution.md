@@ -6187,7 +6187,7 @@ the current contract for newly created executions.
       permits it. **Done when:** repeatable cold/warm measurements for the release
       combinations meet agreed responsiveness targets without skipping workflow
       steps, checks, required questions or publication integrity.
-      **Dev milestone, 2026-11-23.** Engine v9 (`059133df`) deployed with verified harness file reuse. Across 18 paired installed-image runs, median warm finalization fell from 482 to 221 ms. First mirror measured 469 and 473 ms respectively, and each image made 522 authorization checks. Live timing, member-observed display and responsiveness targets remain open.
+      **Dev milestone, 2026-11-23.** Engine v9 (`059133df`) passed independent deployment verification and its ReadOnly preflight. Across 18 paired installed-image runs, reusing verified harness files reduced median warm finalization from 482 to 221 ms. First mirror measured 469 and 473 ms respectively, and each image made 522 authorization checks. Live timing, member-observed display and responsiveness targets remain open.
 - [ ] **NE-17 — Complete cancellation, abandoned work and resource lifecycle.** Define
       archive/restore, replacement intent, space deletion, workspace retention and
       cleanup permissions. A replacement must use an explicit source and fresh
@@ -6196,7 +6196,8 @@ the current contract for newly created executions.
       hiding an item and deleting data are distinct; cleanup releases only eligible
       resources and the documented EFS-loss behavior is clear. Abandoning a
       protected engine operation that never finishes is a separate item, NE-23.
-      **Dev milestone, 2026-11-23.** Inspect work and export opens fresh intent creation on frontend `9d4a970f`. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
+      **Dev milestone, 2026-11-23.** The independently verified frontend (`9d4a970f`) offers fresh intent creation from Inspect work and export. Routed and authority tests preserved the predecessor, its answer and its publication, and required an explicit Start on the newly selected source. Signed-in replacement acceptance remains open.
+      **Local milestone, 2026-11-23.** The owner API and native draft writer (`200dc801`) coordinate space deletion. Tests confirmed that retained native work blocks teardown and that a verified native-empty space can still be deleted. Deployment requires an inventory of existing bindings.
 - [ ] **NE-18 — Make local qualification exercise the supported product boundaries.**
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
