@@ -6177,7 +6177,7 @@ the current contract for newly created executions.
       usage/timing attribution. **Done when:** multi-page reconnect, missed hints,
       backpressure and partial reads retain complete accessible history, and normal
       diagnosis does not require private transcripts.
-      **Local integration, 2026-11-23.** Three 64-row batches sent three notifications and replayed all 192 outputs in order (`1eaae5c1`). A hint received during a failed page read now resumes from the last accepted cursors. Per-turn timing and usage, installed qualification and live acceptance remain open.
+      **Dev milestone, 2026-11-23.** Engine v8 (`b9e6c568`) deployed with turn timing and scoped reviewer outcomes in Current and History. Three 64-row batches sent three notifications and replayed all 192 outputs in local tests. Installed qualification and deployment readback passed. Independent verification and signed-in replay and display acceptance remain open.
 - [ ] **NE-16 — Measure and reduce startup and post-turn latency.** Measure preparation,
       installation, acceptance-to-dispatch, first useful output, harness/tools time
       and publication-to-display separately. Reuse verified installed assets and
@@ -6185,6 +6185,7 @@ the current contract for newly created executions.
       permits it. **Done when:** repeatable cold/warm measurements for the release
       combinations meet agreed responsiveness targets without skipping workflow
       steps, checks, required questions or publication integrity.
+      **Local measurements, 2026-11-23.** Across 18 paired offline runs, retaining verified harness files (`690c6eee`) reduced median warm finalization from 481 to 221 ms. Cold mirror took 468 ms on both revisions. All 522 authorization checks ran on each revision. Deployed timings, member-observed display and responsiveness targets remain open.
 - [ ] **NE-17 — Complete cancellation, abandoned work and resource lifecycle.** Define
       archive/restore, replacement intent, space deletion, workspace retention and
       cleanup permissions. A replacement must use an explicit source and fresh
