@@ -255,24 +255,38 @@ try {
     provider = undefined;
     // Each EFS scenario owns its own attested installation within the bounded tmpfs.
     await fs.rm(base, { recursive: true, force: true });
-    phase = 'upstream-workspace-resume';
-    if (harness === 'claude') {
-      if (process.env.NATIVE_QUALIFICATION_PACKAGED === 'true' && pkg.version === '2.11.1') {
-        phase = 'protected-member-workspace-resume';
-        await qualifyClaudeWorkspaceProtocol({ composed: true, protectedWorkflow: true });
-      } else {
-        protectedBlocked = true;
+    phase = 'protected-member-workspace-resume';
+    let protectedFailed = false;
+    if (process.env.NATIVE_QUALIFICATION_PACKAGED === 'true' && pkg.version === '2.11.1') {
+      try {
+        await qualifyWorkspaceTransport(harness, { protectedWorkflow: true });
+      } catch (error) {
+        protectedFailed = true;
         report({
-          probe: 'protected-member-workspace-resume',
-          status: 'BLOCKED',
-          prerequisite: 'packaged image and attested workflow 2.11.1',
+          probe: phase,
+          status: 'FAIL',
+          code: error.code ?? error.name,
+          check: error.operator,
+          turn: error.fixtureTurn,
+          tool: error.fixtureTool,
+          toolExit: error.fixtureExit,
+          directive: error.directive,
         });
       }
-      phase = 'upstream-workspace-resume';
-      await qualifyClaudeWorkspaceProtocol({ composed: true });
-    } else await qualifyWorkspaceTransport(harness);
-    report({ status: lifecycleFailed ? 'FAIL' : protectedBlocked ? 'BLOCKED' : 'PASS' });
-    if (lifecycleFailed || protectedBlocked) process.exitCode = lifecycleFailed ? 1 : 2;
+    } else {
+      protectedBlocked = true;
+      report({
+        probe: phase,
+        status: 'BLOCKED',
+        prerequisite: 'packaged image and attested workflow 2.11.1',
+      });
+    }
+    phase = 'upstream-workspace-resume';
+    if (harness === 'claude') await qualifyClaudeWorkspaceProtocol({ composed: true });
+    else await qualifyWorkspaceTransport(harness);
+    const failed = lifecycleFailed || protectedFailed;
+    report({ status: failed ? 'FAIL' : protectedBlocked ? 'BLOCKED' : 'PASS' });
+    if (failed || protectedBlocked) process.exitCode = failed ? 1 : 2;
   }
 } catch (error) {
   const blocked = error.code === 'native_qualification_opencode_cache_required';

@@ -90,10 +90,33 @@ export async function protectedWorkspaceEngine(f, pkg, storage, publications, in
   });
   const lambda = {
     async send({ input }) {
-      const result = await engine(JSON.parse(input.Payload), {
+      const request = JSON.parse(input.Payload);
+      const result = await engine(request, {
         invokedFunctionArn: input.FunctionName,
         functionVersion: pin.version,
       });
+      // Observe who received the intake directive. A CLI lifecycle hook can
+      // arrive before the conductor. Never feed this private receipt to it.
+      if (request.action === 'execute' && request.expectedVersion === 0 && result.result) {
+        const saved = await objects.read(request.identity, result.result, 'output');
+        const directive = saved.exitCode === 0 ? JSON.parse(saved.stdout) : null;
+        console.log(
+          JSON.stringify({
+            probe: 'protected-intake-dispatch',
+            harness: f.configuration.harness,
+            attemptId: request.identity.attemptId,
+            requestId: request.requestId,
+            command: request.args
+              .slice(0, 4)
+              .map((word) => (/^[a-z-]{1,32}$/.test(word) ? word : '[argument]'))
+              .join(' '),
+            version: result.version,
+            resultSha256: result.result.sha256,
+            directive: directive?.kind,
+            issuedProposalRequest: /--request [a-f0-9]{8}\b/.test(directive?.message ?? ''),
+          }),
+        );
+      }
       return { Payload: Buffer.from(JSON.stringify(result)) };
     },
   };

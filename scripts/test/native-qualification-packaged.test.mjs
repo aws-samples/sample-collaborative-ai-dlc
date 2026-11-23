@@ -108,6 +108,13 @@ console.log(JSON.stringify(args.includes('--propose')
   }
 });
 
+const codexToolCall = (stream) =>
+  stream
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6)))
+    .find((event) => event.type === 'response.output_item.done').item;
+
 test('scripted Codex cannot turn a failed or still-running tool into a successful question', async () => {
   for (const output of [
     'Process exited with code 0\n',
@@ -121,11 +128,7 @@ test('scripted Codex cannot turn a failed or still-running tool into a successfu
       const send = (body) =>
         fetch(`${provider.url}/v1/responses`, { method: 'POST', body: JSON.stringify(body) });
       const first = await (await send(request)).text();
-      const call = first
-        .split('\n')
-        .filter((line) => line.startsWith('data: '))
-        .map((line) => JSON.parse(line.slice(6)))
-        .find((event) => event.type === 'response.output_item.done').item;
+      const call = codexToolCall(first);
       const second = await send({
         ...request,
         input: [{ type: 'function_call_output', call_id: call.call_id, output }],
@@ -143,6 +146,99 @@ test('scripted Codex cannot turn a failed or still-running tool into a successfu
     }
   }
 });
+
+test('OpenCode copies the result of its exact bash call through its installed write protocol', async () => {
+  for (const stale of [false, true]) {
+    const provider = await qualificationProvider('opencode');
+    const command = 'aidlc engine orchestrate next';
+    const filePath = '/project/.native-control/pending-question.json';
+    const answer = 'Use the "express" plan';
+    function* script() {
+      const ask = JSON.parse(yield { command });
+      yield { filePath, content: JSON.stringify({ version: 3, ask }) };
+      return ask.question;
+    }
+    const tools = ['bash', 'write'].map((name) => ({ function: { name } }));
+    const post = (messages, offeredTools = tools) =>
+      fetch(`${provider.url}/v1/chat/completions`, {
+        method: 'POST',
+        body: JSON.stringify({ tools: offeredTools, messages }),
+      });
+    try {
+      provider.begin({ turn: 1, script: script(), expectedAnswer: answer });
+      const messages = [{ role: 'user', content: answer }];
+      const title = await (await post(messages, [])).json();
+      assert.equal(title.choices[0].message.content, 'Fixture title');
+      const call = (await (await post(messages)).json()).choices[0].message.tool_calls[0];
+      assert.equal(call.function.name, 'bash');
+      assert.equal(JSON.parse(call.function.arguments).command, command);
+      const ask = { kind: 'ask', question: 'Choose a plan?' };
+      const response = await post([
+        ...messages,
+        {
+          role: 'tool',
+          tool_call_id: stale ? 'previous-turn' : call.id,
+          content: JSON.stringify(ask),
+        },
+      ]);
+      if (stale) {
+        assert.equal(response.status, 400);
+        assert.throws(() => provider.result(), /this tool call/);
+      } else {
+        const written = (await response.json()).choices[0].message.tool_calls[0];
+        assert.equal(written.function.name, 'write');
+        assert.deepEqual(JSON.parse(written.function.arguments), {
+          filePath,
+          content: JSON.stringify({ version: 3, ask }),
+        });
+        const done = await post([
+          ...messages,
+          { role: 'tool', tool_call_id: written.id, content: 'Wrote file' },
+        ]);
+        assert.equal((await done.json()).choices[0].message.content, ask.question);
+        provider.result();
+      }
+    } finally {
+      await provider.close();
+    }
+  }
+});
+
+test('protected Codex resume requires the correlated command-denied result', async () => {
+  for (const [output, allowed] of [
+    ['Process exited with code 1\nOutput:\nNATIVE_ENGINE_COMMAND_DENIED', true],
+    ['Process exited with code 1\nOutput:\nNATIVE_ENGINE_UNAVAILABLE', false],
+    ['Process running with session ID 42\nOutput:\nNATIVE_ENGINE_COMMAND_DENIED', false],
+  ]) {
+    const provider = await qualificationProvider('codex');
+    function* script() {
+      yield { command: 'aidlc engine orchestrate next --resume', denied: true };
+      return 'Waiting for confirmation.';
+    }
+    const post = (input) =>
+      fetch(`${provider.url}/v1/responses`, {
+        method: 'POST',
+        body: JSON.stringify({ tools: [{ name: 'exec_command' }], input }),
+      });
+    try {
+      provider.begin({ turn: 1, script: script() });
+      const response = await (await post([])).text();
+      const call = codexToolCall(response);
+      const next = await post([{ type: 'function_call_output', call_id: call.call_id, output }]);
+      if (allowed) {
+        assert.equal(next.status, 200);
+        assert.match(await next.text(), /Waiting for confirmation/);
+        provider.result();
+      } else {
+        assert.equal(next.status, 400);
+        assert.throws(() => provider.result());
+      }
+    } finally {
+      await provider.close();
+    }
+  }
+});
+
 test('packaged mode admits immutable local content IDs and mounts tests without replacing production', async () => {
   const localImage = `sha256:${'b'.repeat(64)}`;
   const options = qualificationOptions([
