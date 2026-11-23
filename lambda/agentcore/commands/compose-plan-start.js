@@ -17,7 +17,7 @@ import { runCredentialJob } from '../credential-session.js';
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir } from 'node:fs/promises';
-import { runOneShotPrompt } from '../cli/one-shot.js';
+import { runOneShotPrompt, oneShotUsage } from '../cli/one-shot.js';
 import {
   loadLibrary,
   loadBlockBody,
@@ -580,9 +580,7 @@ export const createComposePlanStart = ({
             .recordMetric({
               executionId: intentId,
               stageInstanceId: null,
-              metrics: { ...out.metrics, composeCalls: 1 },
-              resolvedModel: out.model ?? null,
-              creditRate: out.creditRate ?? null,
+              ...oneShotUsage(out, 'composeCalls'),
             })
             .catch(() => {});
         }

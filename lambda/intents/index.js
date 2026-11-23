@@ -8051,7 +8051,8 @@ const mapFeedbackBatch = (batch) => ({
 // server-side so intent + project views agree; an unpriced model (newer / Kiro)
 // yields `cost.priced: false` rather than a misleading $0. A Kiro `credits`
 // sample carries its own stamped $/credit rate and prices as an ESTIMATE
-// (`cost.estimated: true`).
+// (`cost.estimated: true`). A sample recorded after the CLI ended without its
+// usage report is a lower bound (`incomplete: true`).
 const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
   const modelByStage = new Map(stages.map((s) => [s.stageInstanceId, s.resolvedModel ?? null]));
   return metrics.map((m) => {
@@ -8069,6 +8070,8 @@ const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
           : (m.metrics ?? {}),
       timestamp: m.timestamp,
       model,
+      ...(m.measured ? { measured: true } : {}),
+      ...(m.incomplete ? { incomplete: true } : {}),
       cost: costForMetrics(m.metrics ?? {}, model, priceFor, m.creditRate ?? null),
     };
   });
@@ -8080,7 +8083,8 @@ const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
 // was priceable — EXCEPT that an unpriced Kiro token sample counts as covered
 // when the same stage also has a credit-priced sample (the credits ARE that
 // stage's spend; its token counts are usage detail). `estimated` marks that
-// credit-priced (Kiro overage-rate) dollars contributed to the total.
+// credit-priced (Kiro overage-rate) dollars, or an incomplete sample's lower
+// bound, contributed to the total.
 const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
   const mapped = mapMetricsWithCost(metrics, stages, priceFor);
   const aggregated = aggregateMetrics(
@@ -8101,7 +8105,7 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
   const priced =
     costed.length > 0 &&
     costed.every((m) => m.cost?.priced || creditPricedStages.has(m.stageInstanceId));
-  const estimated = costed.some((m) => m.cost?.estimated);
+  const estimated = costed.some((m) => m.cost?.estimated || m.incomplete);
   return {
     metrics: aggregated,
     cost: { totalCost, currency: 'USD', priced, estimated, hasCostedSamples: costed.length > 0 },

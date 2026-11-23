@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { resetKiroCreditRateCache } from '../cli/kiro-usage.js';
-import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
+import {
+  runOneShotPrompt,
+  parseClaudeOneShot,
+  extractJsonObject,
+  oneShotUsage,
+} from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -665,5 +670,27 @@ describe('runOneShotPrompt', () => {
       spawnFn,
     });
     expect(out).toMatchObject({ ok: true, text: 'quick' });
+  });
+});
+
+describe('oneShotUsage', () => {
+  it('records a one-shot’s CLI-reported usage as measured, with its call counter', () => {
+    expect(
+      oneShotUsage(
+        { metrics: { tokensInput: 7, tokensOutput: 3 }, model: 'm1', creditRate: 0.04 },
+        'composeCalls',
+      ),
+    ).toEqual({
+      metrics: { tokensInput: 7, tokensOutput: 3, composeCalls: 1 },
+      resolvedModel: 'm1',
+      creditRate: 0.04,
+      measured: true,
+    });
+    expect(oneShotUsage({ metrics: { credits: 0.5 } }, 'discussionAssistCalls')).toEqual({
+      metrics: { credits: 0.5, discussionAssistCalls: 1 },
+      resolvedModel: null,
+      creditRate: null,
+      measured: true,
+    });
   });
 });

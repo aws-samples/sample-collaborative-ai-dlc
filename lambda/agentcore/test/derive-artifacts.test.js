@@ -380,6 +380,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
       expect.objectContaining({
         metrics: { tokensInput: 50, tokensOutput: 10, enrichmentCalls: 1 },
         resolvedModel: 'us.anthropic.claude-haiku-4-5',
+        measured: true,
       }),
     );
   });
