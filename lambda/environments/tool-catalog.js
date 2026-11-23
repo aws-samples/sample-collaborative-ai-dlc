@@ -179,20 +179,22 @@ export const SYSTEM_TOOL_TEMPLATES = [
     category: 'language-sdk',
     publisher: 'The Rust project',
     version: archiveVersion({
-      version: '1.89.0',
+      version: '1.100.0',
       distribution: 'Official Rust',
       publisher: 'The Rust project',
-      url: 'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
-      checksum: '26d6de84ac59da702aa8c2f903e3c344e3259da02e02ce92ad1c735916b29a4a',
+      url: 'https://static.rust-lang.org/dist/rust-1.100.0-aarch64-unknown-linux-gnu.tar.gz',
+      checksum: '95dabd6b3a6c7114646e067a36f512cbbf03eb09bec8b0dbef454aa2c721c364',
       checksumEvidenceUrl:
-        'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz.sha256',
+        'https://static.rust-lang.org/dist/rust-1.100.0-aarch64-unknown-linux-gnu.tar.gz.sha256',
       preset: 'rust',
       executables: [
         { name: 'rustc', path: 'bin/rustc' },
         { name: 'cargo', path: 'bin/cargo' },
         { name: 'rustfmt', path: 'bin/rustfmt' },
       ],
-      aptPackages: [{ name: 'build-essential', version: '12.9' }],
+      // An exact version from the core image's Debian release (13, trixie):
+      // a pin from another release cannot be installed on the core.
+      aptPackages: [{ name: 'build-essential', version: '12.12' }],
       installerScript: rustInstaller('aarch64-unknown-linux-gnu'),
     }),
   },
@@ -255,10 +257,10 @@ const X86_64_TEMPLATE_SOURCES = {
     evidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
   },
   rust: {
-    url: 'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz',
-    checksum: '542f517d0624cbee516627221482b166bf0ffe5fd560ec32beb778c01f5c99b6',
+    url: 'https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.gz',
+    checksum: '5fb0a7fff979867975f375e23687d265254ffc4129325351bb611c209519cd0b',
     evidenceUrl:
-      'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz.sha256',
+      'https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.gz.sha256',
     installerScript: rustInstaller('x86_64-unknown-linux-gnu'),
   },
   maven: {},
