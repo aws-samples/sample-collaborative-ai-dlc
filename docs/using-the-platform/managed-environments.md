@@ -88,7 +88,7 @@ definitions:
 | Tool           | Initial version | Dependency       |
 | -------------- | --------------- | ---------------- |
 | Java JDK       | `21.0.8`        | None             |
-| Go SDK         | `1.24.6`        | None             |
+| Go SDK         | `1.27.4`        | None             |
 | Rust Toolchain | `1.100.0`       | None             |
 | Apache Maven   | `3.9.11`        | Recommended Java |
 | Gradle         | `9.0.0`         | Recommended Java |

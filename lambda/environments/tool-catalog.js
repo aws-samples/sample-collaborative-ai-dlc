@@ -158,11 +158,11 @@ export const SYSTEM_TOOL_TEMPLATES = [
     category: 'language-sdk',
     publisher: 'The Go project',
     version: archiveVersion({
-      version: '1.24.6',
+      version: '1.27.4',
       distribution: 'Official Go',
       publisher: 'The Go project',
-      url: 'https://go.dev/dl/go1.24.6.linux-arm64.tar.gz',
-      checksum: '124ea6033a8bf98aa9fbab53e58d134905262d45a022af3a90b73320f3c3afd5',
+      url: 'https://go.dev/dl/go1.27.4.linux-arm64.tar.gz',
+      checksum: '3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92',
       checksumEvidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
       preset: 'go',
       executables: [
@@ -252,8 +252,8 @@ const X86_64_TEMPLATE_SOURCES = {
       'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz.sha256.txt',
   },
   go: {
-    url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
-    checksum: 'bbca37cc395c974ffa4893ee35819ad23ebb27426df87af92e93a9ec66ef8712',
+    url: 'https://go.dev/dl/go1.27.4.linux-amd64.tar.gz',
+    checksum: '7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840',
     evidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
   },
   rust: {
