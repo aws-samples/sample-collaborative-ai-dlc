@@ -1,0 +1,95 @@
+name: Container Images
+
+# Builds the AgentCore and Yjs images from their Dockerfiles and scans them
+# with Trivy. Both images pin their base by digest, so OS packages only move
+# when someone bumps the pin: the weekly run reports CVEs published since the
+# last change, and pull requests that touch an image fail on fixable HIGH or
+# CRITICAL OS vulnerabilities.
+
+on:
+  pull_request:
+    paths:
+      - 'lambda/agentcore/**'
+      - 'lambda/shared/**'
+      - 'lambda/yjs-server/**'
+      - '.github/workflows/container-images.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'lambda/agentcore/**'
+      - 'lambda/shared/**'
+      - 'lambda/yjs-server/**'
+      - '.github/workflows/container-images.yml'
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same pinning policy as the Dockerfiles: the scanner image is pinned by digest.
+  TRIVY_IMAGE: public.ecr.aws/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  scan:
+    name: scan (${{ matrix.image }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # AgentCore Runtime runs ARM64; the build context is lambda/ (see the Dockerfile).
+          - image: agentcore
+            runner: ubuntu-24.04-arm
+            context: lambda
+            dockerfile: lambda/agentcore/Dockerfile
+          - image: yjs-server
+            runner: ubuntu-24.04
+            context: lambda/yjs-server
+            dockerfile: lambda/yjs-server/Dockerfile
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build image
+        run: docker build --file "${{ matrix.dockerfile }}" --tag "scan/${{ matrix.image }}:${{ github.sha }}" "${{ matrix.context }}"
+
+      - name: Fail on fixable HIGH or CRITICAL OS vulnerabilities
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --scanners vuln --pkg-types os \
+            --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress \
+            "scan/${{ matrix.image }}:${{ github.sha }}"
+
+      # Code scanning keeps every finding (OS and application packages, fixed or
+      # not) on main and on the weekly run; fork pull requests cannot upload.
+      - name: Write SARIF report
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
+            -v "$PWD:/out" \
+            "$TRIVY_IMAGE" image \
+            --scanners vuln --format sarif --output "/out/trivy-${{ matrix.image }}.sarif" \
+            --exit-code 0 --no-progress \
+            "scan/${{ matrix.image }}:${{ github.sha }}"
+
+      - name: Upload SARIF report
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles(format('trivy-{0}.sarif', matrix.image)) != '' }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: container-${{ matrix.image }}
