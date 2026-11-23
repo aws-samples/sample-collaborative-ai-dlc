@@ -36,10 +36,10 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       status: 'RUNNING',
     };
     const second = { ...stale, pk: 'EXEC#second', executionId: 'second' };
-    // Both pages belong to one segment; the other segments are empty.
+    // Both pages belong to the last segment; the others are empty.
     const send = vi.fn(async (command) => {
       if (command instanceof ScanCommand) {
-        if (command.input.Segment !== 3) return { Items: [] };
+        if (command.input.Segment !== INVENTORY_SCAN_SEGMENTS - 1) return { Items: [] };
         return command.input.ExclusiveStartKey
           ? { Items: [second] }
           : { Items: [stale], LastEvaluatedKey: { pk: stale.pk, sk: stale.sk } };
