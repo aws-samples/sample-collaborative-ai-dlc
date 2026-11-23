@@ -38,7 +38,16 @@ const bash = (command) => tool('Bash', { command });
 const write = (path, content) => tool('Write', { file_path: path, content });
 
 const issuedRequestId = (directive) => {
-  assert.equal(directive.kind, 'print');
+  if (directive.kind !== 'print') {
+    const error = new Error('Expected the pinned engine to issue a request');
+    error.code = 'fixture_unexpected_intake';
+    error.directive = {
+      kind: directive.kind,
+      askType: directive.ask_type,
+      noActiveIntent: directive.message?.startsWith('No workflow state found (no active intent)'),
+    };
+    throw error;
+  }
   const id = directive.message.match(/--request ([a-f0-9]{8})\b/)?.[1];
   assert.ok(id, 'The pinned engine issued a request ID');
   return id;
@@ -48,30 +57,54 @@ const publicationQuery = ({ publicationId, sequence }) => ({
   publicationSequence: String(sequence),
 });
 
-// The conductor scripts tool choices. Claude runs the installed dispatcher and
-// authors only the two artifacts named by the pinned stage. The runtime owns
-// mirroring, interaction publication, interruption and fresh-session admission.
-async function qualifyProtectedMember({ driver, turn, read, capture, project }) {
+// Only the installed CLI may run a tool or author a workspace file. Drive the
+// next step from its actual result, including the request ID and steering receipt.
+function* runDirective(command) {
+  const output = yield { command };
+  // Some CLIs frame the engine's JSON with tool timing or bash metadata.
+  return JSON.parse(output.slice(output.indexOf('{'), output.lastIndexOf('}') + 1));
+}
+function* loadStage(command) {
+  const steering = yield* runDirective(command);
+  assert.equal(steering.kind, 'load-steering');
+  assert.match(steering.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
+  return yield* runDirective(steering.next);
+}
+async function qualifyProtectedMember({ harness, driver, provider, project }) {
   const pendingFile = join(project, '.native-control/pending-question.json');
-  const continueDirective = async (name) => {
-    const directive = await read(name);
-    assert.equal(directive.kind, 'load-steering');
-    assert.match(directive.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
-    return capture(`${name}-stage`, directive.next);
+  const unfinished = {
+    filePath: join(project, 'nested/unfinished-review.txt'),
+    content: 'Review in progress.',
   };
   const proof = (question) =>
     driver.get('publication', { ...publicationQuery(question), evidence: '1' });
-  const firstSession = await turn('Start', [
-    capture('initial', 'aidlc next'),
-    async () =>
-      capture(
-        'offer',
-        `aidlc engine orchestrate next --propose express --request ${issuedRequestId(await read('initial'))}`,
-      ),
-    async () => write(pendingFile, JSON.stringify({ version: 3, ask: await read('offer') })),
-    async () => ({ type: 'text', text: (await read('offer')).question }),
-  ]);
-  const offer = await read('offer');
+  let turns = 0;
+  async function turn(prompt, script, options = {}) {
+    provider.begin({
+      turn: ++turns,
+      script,
+      mode: options.interrupt ? 'interrupt' : 'normal',
+      ...(options.selection ? { expectedAnswer: prompt } : {}),
+      ...(turns === 1 ? { inputReads: driver.inputReads } : {}),
+    });
+    try {
+      return await driver.turn(prompt, options);
+    } finally {
+      provider.result();
+    }
+  }
+  const nextCommand = 'aidlc engine orchestrate next';
+  let offer, stage, next;
+  function* presentOffer() {
+    const initial = yield* runDirective(nextCommand);
+    offer = yield* runDirective(
+      `${nextCommand} --propose express --request ${issuedRequestId(initial)}`,
+    );
+    yield { filePath: pendingFile, content: JSON.stringify({ version: 3, ask: offer }) };
+    return offer.question;
+  }
+  const firstSession = await turn('Start', presentOffer());
+  assert.ok(firstSession);
   const first = await driver.interaction();
   assert.equal(offer.ask_type, 'scope-confirm');
   assert.equal(offer.proposed_scope, 'express');
@@ -89,62 +122,46 @@ async function qualifyProtectedMember({ driver, turn, read, capture, project }) 
       { prompt: gateQuestion, options: [{ label: 'Approve' }, { label: 'Request Changes' }] },
     ],
   };
-  await turn(
-    first.pendingInput.questions[0].options[0].label,
-    [
-      capture('selected', 'aidlc next'),
-      async () => {
-        const id = issuedRequestId(await read('selected'));
-        assert.equal(
-          offer.choices[0].command,
-          `aidlc engine orchestrate next --scope express --request ${id}`,
-        );
-        return bash(
-          `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
-        );
-      },
-      // A live predecessor has no confirmed workspace-resume episode.
-      bash(
-        'aidlc next --resume 2> .native-control/denied-resume.txt; echo "$?" > .native-control/denied-resume.exit',
-      ),
-      capture('created', 'aidlc next'),
-      () => continueDirective('created'),
-      async () => {
-        const stage = await read('created-stage');
-        assert.equal(stage.stage, 'requirements-analysis');
-        assert.equal(stage.gate, true);
-        assert.equal(stage.produces.length, 2);
-        for (const path of stage.produces)
-          assert.match(
-            path,
-            /^aidlc\/spaces\/default\/intents\/[a-z0-9-]+\/inception\/requirements-analysis\/[a-z-]+\.md$/,
-          );
-        return write(join(project, stage.produces[0]), requirements);
-      },
-      async () => write(join(project, (await read('created-stage')).produces[1]), questions),
-      capture(
-        'opened',
-        'aidlc engine orchestrate report --stage requirements-analysis --result awaiting-approval',
-      ),
-      write(pendingFile, JSON.stringify(gateSpec)),
-      { type: 'text', text: gateQuestion },
-    ],
-    [],
-    { selection },
-  );
+  const gateFile = { filePath: pendingFile, content: JSON.stringify(gateSpec) };
+  function* selectAndPresentGate() {
+    const id = issuedRequestId(yield* runDirective(nextCommand));
+    assert.equal(offer.choices[0].command, `${nextCommand} --scope express --request ${id}`);
+    yield {
+      command: `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
+    };
+    yield { command: `${nextCommand} --resume`, denied: true };
+    stage = yield* loadStage(nextCommand);
+    assert.equal(stage.stage, 'requirements-analysis');
+    assert.equal(stage.gate, true);
+    assert.equal(stage.produces.length, 2);
+    for (const path of stage.produces)
+      assert.match(
+        path,
+        /^aidlc\/spaces\/default\/intents\/[a-z0-9-]+\/inception\/requirements-analysis\/[a-z-]+\.md$/,
+      );
+    yield { filePath: join(project, stage.produces[0]), content: requirements };
+    yield { filePath: join(project, stage.produces[1]), content: questions };
+    const opened = yield* runDirective(
+      `aidlc engine orchestrate report --stage ${stage.stage} --result awaiting-approval`,
+    );
+    assert.match(opened.message, /Recorded awaiting-approval/);
+    yield gateFile;
+    return gateQuestion;
+  }
   assert.equal(
-    await fs.readFile(join(project, '.native-control/denied-resume.exit'), 'utf8'),
-    '1\n',
-  );
-  assert.match(
-    await fs.readFile(join(project, '.native-control/denied-resume.txt'), 'utf8'),
-    /NATIVE_ENGINE_COMMAND_DENIED/,
+    await turn(first.pendingInput.questions[0].options[0].label, selectAndPresentGate(), {
+      selection,
+    }),
+    firstSession,
   );
   const held = await driver.interaction();
   assert.equal(held.pendingInput.kind, 'approval');
   assert.equal(held.pendingInput.stage, 'requirements-analysis');
   const history = await driver.get('interaction', publicationQuery(first));
   assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
+  assert.equal(history.answer.context.publicationId, first.publicationId);
+  assert.equal(history.answer.resultingPublication.publicationId, held.publicationId);
+  assert.equal(history.answer.resultingPublication.publicationSequence, held.sequence);
   assert.equal(history.answer.context.membershipRecorded, true);
   assert.equal(history.answer.text, offer.choices[0].label);
   const before = await proof(held);
@@ -159,30 +176,33 @@ async function qualifyProtectedMember({ driver, turn, read, capture, project }) 
   const gate = before.effectivePlan.stages.find((s) => s.id === held.pendingInput.stage);
   assert.equal(gate.state, 'awaiting-approval');
 
-  // The accepted gate answer starts a turn. Interrupt its actual CLI tool
-  // before any protected command can consume that answer.
-  await turn(
-    'Approve',
-    [
-      bash(
-        `node -e 'require("fs").writeFileSync(".native-control/interrupt-ready","ready");setInterval(()=>{},1000)'`,
-      ),
-    ],
-    [],
-    { selection, interrupt: true },
-  );
-  const replacement = await turn('/aidlc --resume', [
-    capture('resumed', 'aidlc engine orchestrate next --resume'),
-    () => continueDirective('resumed'),
-    write(pendingFile, JSON.stringify(gateSpec)),
-    { type: 'text', text: gateQuestion },
-  ]);
+  // Keep the genuine CLI turn open after its unfinished write, before any
+  // workflow command can consume the delivered approval.
+  function* interruptedWork() {
+    yield unfinished;
+    if (harness === 'claude')
+      yield {
+        command: `node -e 'require("fs").writeFileSync(".native-control/interrupt-ready","ready");setInterval(()=>{},1000)'`,
+      };
+    else yield { filePath: join(project, '.native-control/interrupt-ready'), content: 'ready' };
+  }
+  await turn('Approve', interruptedWork(), { selection, interrupt: true });
+  function* resumeGate() {
+    next = yield* loadStage(`${nextCommand} --resume`);
+    yield gateFile;
+    return gateQuestion;
+  }
+  const replacement = await turn('/aidlc --resume', resumeGate());
+  assert.ok(replacement);
   assert.notEqual(replacement, firstSession);
-  const next = await read('resumed-stage');
   assert.equal(next.stage, gate.id);
   assert.equal(next.gate_only, true);
   assert.equal(next.gate, true);
-  assert.deepEqual(next.produces, (await read('created-stage')).produces);
+  assert.deepEqual(next.produces, stage.produces);
+  assert.equal(await fs.readFile(join(project, next.produces[0]), 'utf8'), requirements);
+  assert.equal(await fs.readFile(join(project, next.produces[1]), 'utf8'), questions);
+  assert.equal(await fs.readFile(unfinished.filePath, 'utf8'), unfinished.content);
+  assert.equal(provider.result().inputReadWitnesses, driver.inputReads.length);
   const recovered = await driver.interaction();
   assert.deepEqual(recovered.pendingInput, held.pendingInput);
   assert.notEqual(recovered.id, held.id);
@@ -208,10 +228,11 @@ async function qualifyProtectedMember({ driver, turn, read, capture, project }) 
   console.log(
     JSON.stringify({
       probe: 'protected-member-workspace-resume',
-      harness: 'claude',
+      harness,
       status: 'PASS',
       packageId: after.context.packageId,
       attemptId: after.context.attemptId,
+      configurationSha256: after.context.configurationSha256,
       originalPublication: first.publicationId,
       originalInteraction: first.id,
       acceptedOption: decision.commandId,
@@ -224,8 +245,13 @@ async function qualifyProtectedMember({ driver, turn, read, capture, project }) 
       decisions: after.engineApplication.length,
       retainedDelivery: retained.answer.resumeRetention.delivery,
       predecessorResumeDenied: true,
+      predecessorSession: firstSession,
+      replacementSession: replacement,
       freshSession: replacement !== firstSession,
+      unfinishedFile: 'nested/unfinished-review.txt',
+      stageFiles: next.produces,
       gate: gate.id,
+      gateState: gate.state,
       gateOnly: next.gate_only,
       workflowCompletion: after.workflowCompletion,
       ...native,
@@ -237,6 +263,10 @@ export async function qualifyClaudeWorkspaceProtocol({
   composed = false,
   protectedWorkflow = false,
 } = {}) {
+  if (protectedWorkflow) {
+    assert.ok(composed);
+    return qualifyWorkspaceTransport('claude', { protectedWorkflow });
+  }
   const root = await fs.mkdtemp('/tmp/native-workspace-protocol-');
   const project = join(root, 'project');
   let home = join(root, 'home-1');
@@ -330,7 +360,6 @@ export async function qualifyClaudeWorkspaceProtocol({
         project,
         pkg,
         provider,
-        protectedWorkflow,
       });
     else await fs.mkdir(join(project, '.native-control'));
     const read = async (name) =>
@@ -398,11 +427,6 @@ export async function qualifyClaudeWorkspaceProtocol({
       ]);
       return read('stage');
     };
-
-    if (protectedWorkflow) {
-      await qualifyProtectedMember({ driver, turn, read, capture, project });
-      return;
-    }
 
     if (pkg.version === '2.11.1') {
       // Exercise the actual new intake protocol rather than forcing --scope
@@ -618,11 +642,10 @@ export async function qualifyClaudeWorkspaceProtocol({
   }
 }
 
-// The other qualified installed CLIs use the same controller driver, but this
-// smaller matrix proves binding/stage recovery only. Claude above additionally
-// proves real review completion, two losses and the required approval receipt.
-export async function qualifyWorkspaceTransport(harness) {
-  assert.ok(['codex', 'opencode'].includes(harness));
+// The protected member row is shared. The upstream rows retain their own
+// project-type reconciliation, dependency and file-preservation checks.
+export async function qualifyWorkspaceTransport(harness, { protectedWorkflow = false } = {}) {
+  assert.ok(['codex', 'opencode'].includes(harness) || (protectedWorkflow && harness === 'claude'));
   const root = await fs.mkdtemp('/tmp/native-workspace-transport-');
   const project = join(root, 'project');
   const provider = await qualificationProvider(harness, { requestLimit: 64 });
@@ -640,8 +663,15 @@ export async function qualifyWorkspaceTransport(harness) {
       provider,
       harness,
       dependencyEnv,
-      model: harness === 'codex' ? 'fixture-test' : 'fixture/test',
+      model: { claude: 'claude-sonnet-4-6', codex: 'fixture-test', opencode: 'fixture/test' }[
+        harness
+      ],
+      protectedWorkflow,
     });
+    if (protectedWorkflow) {
+      await qualifyProtectedMember({ harness, driver, provider, project });
+      return;
+    }
     let turn = 0;
     const step = async (prompt, command, name, writePath) => {
       provider.begin({

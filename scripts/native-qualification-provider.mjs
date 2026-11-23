@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { performance } from 'node:perf_hooks';
+import { dirname } from 'node:path';
 
 // Scripted conductor step only. 2.11.1 first saves the person's request and
 // asks the agent to propose a plan for that exact request. It is not a human
@@ -75,14 +76,18 @@ export function sendClaudeResponse(res, request, blocks, id) {
   res.end();
 }
 
-function sendCodexResponse(res, text, command, id) {
+function sendCodexResponse(res, text, command, id, maxOutputTokens = 1000) {
   const item = command
     ? {
         id: `fc_${id}`,
         call_id: `call_${id}`,
         type: 'function_call',
         name: 'exec_command',
-        arguments: JSON.stringify({ cmd: command, max_output_tokens: 1000, yield_time_ms: 10_000 }),
+        arguments: JSON.stringify({
+          cmd: command,
+          max_output_tokens: maxOutputTokens,
+          yield_time_ms: 10_000,
+        }),
         status: 'completed',
       }
     : {
@@ -135,7 +140,13 @@ function sendOpenCodeResponse(res, request, text, tool, id) {
       JSON.stringify({
         id,
         object: 'chat.completion',
-        choices: [{ index: 0, message: delta, finish_reason: 'stop' }],
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', ...delta },
+            finish_reason: tool ? 'tool_calls' : 'stop',
+          },
+        ],
         usage,
       }),
     );
@@ -150,6 +161,72 @@ function sendOpenCodeResponse(res, request, text, tool, id) {
       `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', choices: [choice], usage })}\n\n`,
     );
   res.end('data: [DONE]\n\n');
+}
+
+const contentText = (content) =>
+  typeof content === 'string' ? content : content?.map((part) => part.text ?? '').join('');
+
+// Advance the protected journey only on the result of the tool we just sent.
+// A title request, an earlier tool result or an unfinished exec is not a receipt.
+function scriptedToolOutput(harness, request, { id, denied }) {
+  let output;
+  if (harness === 'codex') {
+    output = request.input?.findLast(
+      (item) => item.type === 'function_call_output' && item.call_id === `call_${id}`,
+    )?.output;
+    const exit = output?.match(/^Process exited with code (\d+)$/m)?.[1];
+    if (exit !== (denied ? '1' : '0')) {
+      const error = new Error('Installed exec did not finish with the expected exit code');
+      error.code = output?.match(/\bNATIVE_[A-Z_]+\b/)?.[0] ?? 'fixture_exec_failed';
+      error.fixtureExit = exit ?? 'unfinished-or-missing';
+      throw error;
+    }
+  } else if (harness === 'opencode') {
+    const result = request.messages.findLast(
+      (item) => item.role === 'tool' && item.tool_call_id === `call_${id}`,
+    );
+    output = contentText(result?.content);
+  } else {
+    const result = request.messages
+      .at(-1)
+      ?.content?.find?.((item) => item.type === 'tool_result' && item.tool_use_id === id);
+    assert.equal(Boolean(result?.is_error), Boolean(denied));
+    output = contentText(result?.content);
+  }
+  assert.equal(typeof output, 'string', 'Installed result for this tool call');
+  if (denied) assert.match(output, /\bNATIVE_ENGINE_COMMAND_DENIED\b/);
+  return output;
+}
+
+const shellWord = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+function sendScriptedStep(harness, request, res, { value, done }, id) {
+  const { command, filePath, content } = done ? {} : value;
+  const text = done ? value : '';
+  if (done) assert.equal(typeof text, 'string');
+  else assert.ok(command || (filePath && typeof content === 'string'));
+  if (harness === 'codex') {
+    // exec_command is the same installed tool for commands and workspace writes.
+    const cmd =
+      command ??
+      (filePath &&
+        `mkdir -p ${shellWord(dirname(filePath))} && printf %s ${shellWord(content)} > ${shellWord(filePath)}`);
+    sendCodexResponse(res, text, cmd, id, 8192);
+  } else if (harness === 'opencode') {
+    const tool = done
+      ? null
+      : command
+        ? { name: 'bash', input: { command, description: 'Run the pinned workflow command' } }
+        : { name: 'write', input: { filePath, content } };
+    if (tool) assert.ok(request.tools.some((entry) => entry.function?.name === tool.name));
+    sendOpenCodeResponse(res, request, text, tool, id);
+  } else {
+    const block = done
+      ? { type: 'text', text }
+      : command
+        ? { type: 'tool_use', id, name: 'Bash', input: { command } }
+        : { type: 'tool_use', id, name: 'Write', input: { file_path: filePath, content } };
+    sendClaudeResponse(res, request, [block], id);
+  }
 }
 
 export async function qualificationProvider(harness, { claudeReply, requestLimit = 32 } = {}) {
@@ -169,6 +246,8 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
   let samples = [];
   let calls = 0;
   let commandCallId;
+  let script;
+  let outstanding;
   let inputReads = [];
   let inputReadIndex = 0;
   let confirmedInputReads = 0;
@@ -204,8 +283,13 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
         toolDefinitions: tools.length,
         primary,
       });
-      if (primary && expectedAnswer)
-        assert.ok(raw.includes(expectedAnswer), 'Protected answer delivered');
+      if (primary && expectedAnswer && !outstanding) {
+        const user = (request.messages ?? request.input)?.findLast((item) => item.role === 'user');
+        assert.ok(
+          contentText(user?.content)?.includes(expectedAnswer),
+          'Protected answer delivered',
+        );
+      }
       if (primary)
         for (const text of expectedHistory)
           assert.ok(raw.includes(text), 'Restored history reaches the installed provider request');
@@ -260,6 +344,21 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
           return;
         }
       }
+      if (primary && script) {
+        const output = outstanding && scriptedToolOutput(harness, request, outstanding);
+        const step = script.next(output);
+        const id = `fixture${calls}`;
+        outstanding = step.done
+          ? null
+          : {
+              id,
+              denied: step.value.denied,
+              tool: step.value.command?.split(' ').slice(1, 4).join(' ') ?? 'write',
+            };
+        if (step.done && mode === 'interrupt') return;
+        sendScriptedStep(harness, request, res, step, id);
+        return;
+      }
       if (harness === 'claude' && claudeReply) {
         const blocks = await claudeReply(request);
         assert.ok(Array.isArray(blocks) && blocks.length > 0 && blocks.length <= 4);
@@ -307,10 +406,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
           let content = 'fixture cwd witness';
           if (openCodeWorkflow.questionPath || openCodeWorkflow.directivePath) {
             const result = request.messages.findLast((message) => message.role === 'tool');
-            const output =
-              typeof result?.content === 'string'
-                ? result.content
-                : result?.content?.map((part) => part.text ?? '').join('');
+            const output = contentText(result?.content);
             assert.ok(output, 'Actual engine tool result is required');
             // OpenCode may append bash metadata after the engine JSON.
             engineAsk = JSON.parse(output.slice(output.indexOf('{'), output.lastIndexOf('}') + 1));
@@ -345,6 +441,10 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
         sendOpenCodeResponse(res, request, text, tool, id);
       }
     } catch (error) {
+      if (script) {
+        error.fixtureTurn = turn;
+        error.fixtureTool = outstanding?.tool;
+      }
       failure ??= error;
       res.writeHead(400).end('{}');
     }
@@ -356,6 +456,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
       ({
         turn,
         command,
+        script,
         expectedAnswer,
         expectedHistory = [],
         inputReads = [],
@@ -367,6 +468,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
       incompleteSent = false;
       writeSent = false;
       commandCallId = undefined;
+      outstanding = null;
       inputReadIndex = 0;
       turnConfirmedInputReads = 0;
       samples = [];
