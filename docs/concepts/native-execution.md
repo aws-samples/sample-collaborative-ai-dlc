@@ -6210,7 +6210,8 @@ the current contract for newly created executions.
       evidence; missing prerequisites cannot silently become cloud calls or a
       successful qualification, and scripted output is distinguished from a real
       installed workflow.
-      **Installed milestone, 2026-11-23.** On the v10 image, a synthetic member selected Express through the public handler. After an interruption, confirmed Claude recovery reopened the requirements-analysis gate with one applied decision. Codex and OpenCode passed their workspace recovery tests. Kiro stopped at managed authentication before session creation (`67395107`).
+      **Installed milestone, 2026-11-23.** Claude and OpenCode applied the synthetic member's Express selection once and reopened the requirements-analysis gate after confirmed recovery. Codex's session-start hook received the proposal request, but the subsequent workflow command found no active intent. Kiro stopped at managed authentication before session creation. The v10 four-harness run (`aed159a0`) returned FAIL.
+      On the cancellation candidate (`39af3627`), the Linux process owner reports whether a command launched before cancellation. All 12 targeted cases passed in 24 consecutive installed runs. Deployment and signed-in acceptance remain open.
 - [ ] **NE-19 — Qualify the complete two-member journey.** Run create → start → question
       → implementation → required checks/gates → verified completion → downloadable
       result and Git delivery with separate authenticated browser profiles. Include
