@@ -3389,36 +3389,8 @@ resource "aws_iam_role_policy" "intents" {
   })
 }
 
-module "intents_lambda" {
-  depends_on = [aws_lambda_invocation.membership_copy]
-
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 8.0"
-
-  function_name = "${var.project_name}-intents-${var.environment}"
-  handler       = "index.handler"
-  runtime       = "nodejs24.x"
-  timeout       = 120
-  memory_size   = 512
-
-  source_path = [
-    {
-      path = "${path.module}/../../../../lambda/intents"
-      commands = [
-        "cd ../.. && npm run build -w intents",
-        ":zip lambda/intents/.build",
-      ]
-    }
-  ]
-  hash_extra = local.shared_sources_hash
-
-  create_role = false
-  lambda_role = aws_iam_role.intents.arn
-
-  vpc_subnet_ids         = var.private_subnet_ids
-  vpc_security_group_ids = [aws_security_group.lambda.id]
-
-  environment_variables = merge({
+locals {
+  intents_environment = merge({
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -3468,6 +3440,38 @@ module "intents_lambda" {
   } : {}, local.runtime_mcp_policy_env)
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+}
+
+module "intents_lambda" {
+  depends_on = [aws_lambda_invocation.membership_copy]
+
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-intents-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 120
+  memory_size   = 512
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/intents"
+      commands = [
+        "cd ../.. && npm run build -w intents",
+        ":zip lambda/intents/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.intents.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = local.intents_environment
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
