@@ -20,6 +20,10 @@ export function ConversationLanguageField({ value, disabled, onChange }: Props) 
   const [text, setText] = useState(value ?? '');
   const [error, setError] = useState<string | null>(null);
   const focusedRef = useRef(false);
+  // Whether this member typed since the last commit. A blur without an edit
+  // must not write back the value the field showed when it was focused: a
+  // peer may have changed the shared language meanwhile.
+  const editedRef = useRef(false);
 
   // Follow peer edits while the member is not typing here.
   useEffect(() => {
@@ -36,6 +40,7 @@ export function ConversationLanguageField({ value, disabled, onChange }: Props) 
       return;
     }
     setError(null);
+    editedRef.current = false;
     setText(resolved.value?.tag ?? '');
     onChange(resolved.value?.tag ?? null);
   };
@@ -54,6 +59,7 @@ export function ConversationLanguageField({ value, disabled, onChange }: Props) 
         value={text}
         disabled={disabled}
         onChange={(e) => {
+          editedRef.current = true;
           setText(e.target.value);
           setError(null);
         }}
@@ -62,7 +68,13 @@ export function ConversationLanguageField({ value, disabled, onChange }: Props) 
         }}
         onBlur={() => {
           focusedRef.current = false;
-          commit();
+          if (editedRef.current) {
+            commit();
+            return;
+          }
+          // Untouched: adopt whatever the shared draft holds now.
+          setText(value ?? '');
+          setError(null);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit();

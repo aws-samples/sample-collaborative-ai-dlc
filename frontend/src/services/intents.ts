@@ -159,6 +159,9 @@ export interface Intent {
   // The settings the saved selection does not author, named by the save that
   // dropped them so the page can say which choice a scope change withdrew.
   aidlcSettingsDropped?: string[];
+  // The invalid conversation language a save carried and did not apply (#784),
+  // as the server's reason. The returned `conversationLanguage` is what stays.
+  conversationLanguageDropped?: string;
   // Conversation language for agent prose (#784), snapshotted from the space
   // at create and editable while DRAFT. Absent for an intent that has none.
   conversationLanguage?: ConversationLanguage | null;

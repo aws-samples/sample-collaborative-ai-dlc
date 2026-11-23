@@ -1092,6 +1092,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Tier-model config (merged project-over-global, snapshotted alongside):
     // maps each agent's tier to a model per CLI + the fallback/quorum rows.
     const tierModels = meta.tierModels ?? null;
+    // Conversation language (#784), pinned on META while the intent was a DRAFT.
+    // Forwarded from this consistent read like the model settings, so every
+    // attempt states it, resume legs included, and a failed runtime read can
+    // never silently drop it.
+    const conversationLanguage = meta.conversationLanguage ?? null;
     // The project's explicitly selected agent CLI; forwarded to run-stage as
     // `requestedCli` so the run uses the chosen CLI (selection depends on which
     // CLI is authed). null = let run-stage pick the first installed CLI.
@@ -1193,6 +1198,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         }),
         cliModels,
         tierModels,
+        conversationLanguage,
         requestedCli,
         mcpServersByTier,
         customRules,
@@ -3259,6 +3265,7 @@ const runStage = async (
     policyScope = null,
     cliModels,
     tierModels = null,
+    conversationLanguage = null,
     requestedCli,
     mcpServersByTier,
     customRules,
@@ -3410,6 +3417,7 @@ const runStage = async (
           ...(intentSettings ? { intentSettings } : {}),
           ...(cliModels ? { cliModels } : {}),
           ...(tierModels ? { tierModels } : {}),
+          ...(conversationLanguage ? { conversationLanguage } : {}),
           ...(requestedCli ? { requestedCli } : {}),
           ...(mcpServersByTier ? { mcpServersByTier } : {}),
           ...(customRules ? { customRules } : {}),

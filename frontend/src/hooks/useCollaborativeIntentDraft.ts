@@ -115,6 +115,17 @@ export function useCollaborativeIntentDraft(
     conversationLanguage: null,
   });
   const seededRef = useRef(false);
+  // A conversation language the server refused to store (#784): the API saves
+  // the rest of the draft and names the tag it dropped. Kept until a member
+  // picks the language again, so nobody starts the run on a language the page
+  // no longer shows.
+  const [conversationLanguageRejection, setConversationLanguageRejection] = useState<{
+    tag: string;
+    reason: string;
+  } | null>(null);
+  const languageRejectionRef = useRef<{ tag: string; reason: string } | null>(null);
+  languageRejectionRef.current = conversationLanguageRejection;
+  useEffect(() => setConversationLanguageRejection(null), [doc]);
   // Sticky, PER DOCUMENT: has this draft ever had a per-intent setting? A
   // release that authors none never puts a key in the map, so this stays false
   // and the save body omits `aidlcSettings` entirely — which is the request
@@ -387,6 +398,7 @@ export function useCollaborativeIntentDraft(
   const setConversationLanguage = useCallback(
     (tag: string | null) => {
       if (!doc) return;
+      setConversationLanguageRejection(null);
       const config = doc.getMap('config');
       const next = tag ?? '';
       if (config.get('conversationLanguage') === next) return;
@@ -449,13 +461,26 @@ export function useCollaborativeIntentDraft(
         return data;
       },
       write: async (data, version) => {
-        await intentsService.update(projectId, intentId, {
+        const saved = await intentsService.update(projectId, intentId, {
           ...data,
           ifDraftRevision: version.draftRevision,
         });
+        const rejected = data.conversationLanguage;
+        if (saved?.conversationLanguageDropped && typeof rejected === 'string' && doc) {
+          // Show what the intent will actually run with. Only undo the tag this
+          // save carried: a member may already have picked another one.
+          const config = doc.getMap('config');
+          if (config.get('conversationLanguage') === rejected) {
+            config.set('conversationLanguage', saved.conversationLanguage?.tag ?? '');
+          }
+          setConversationLanguageRejection({
+            tag: rejected,
+            reason: saved.conversationLanguageDropped,
+          });
+        }
       },
     });
-  }, [projectId, intentId, flushDocument, getSaveData]);
+  }, [projectId, intentId, flushDocument, getSaveData, doc]);
 
   const { flushLatest } = useAutoSave(getSaveData, save, [localRevision], {
     enabled: synced && !!intentId,
@@ -487,5 +512,9 @@ export function useCollaborativeIntentDraft(
     // Awaitable flush so Start can guarantee the last edits are persisted
     // before launching (the launch reads the META row, not the Yjs doc).
     flushDraft: flushLatest,
+    conversationLanguageRejection,
+    // Read after `flushDraft` resolves: the save that dropped the language may
+    // have finished inside that flush, after the caller's render.
+    isConversationLanguageRejected: () => languageRejectionRef.current !== null,
   };
 }

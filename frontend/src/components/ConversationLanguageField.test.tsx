@@ -45,4 +45,24 @@ describe('ConversationLanguageField', () => {
     rerender(<ConversationLanguageField value="ja" onChange={vi.fn()} />);
     expect(input().value).toBe('ja');
   });
+
+  it('adopts a peer edit when the member leaves the field untouched', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<ConversationLanguageField value="ko" onChange={onChange} />);
+    fireEvent.focus(input());
+    rerender(<ConversationLanguageField value="ja" onChange={onChange} />);
+    fireEvent.blur(input());
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input().value).toBe('ja');
+  });
+
+  it('still commits what the member typed after a peer edit', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<ConversationLanguageField value="ko" onChange={onChange} />);
+    fireEvent.focus(input());
+    rerender(<ConversationLanguageField value="ja" onChange={onChange} />);
+    fireEvent.change(input(), { target: { value: 'de' } });
+    fireEvent.blur(input());
+    expect(onChange).toHaveBeenCalledWith('de');
+  });
 });

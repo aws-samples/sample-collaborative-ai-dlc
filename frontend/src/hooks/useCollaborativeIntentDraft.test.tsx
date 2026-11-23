@@ -299,6 +299,39 @@ describe('useCollaborativeIntentDraft — conversation language (#784)', () => {
     expect(a.result.current.conversationLanguage).toBeNull();
   });
 
+  it('shows the stored language and holds Start when the server drops the tag', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const { a, b } = bothSeeded({ conversationLanguage: korean });
+    api.update.mockResolvedValueOnce(
+      intent({
+        draftRevision: 8,
+        conversationLanguage: korean,
+        conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+      sync(a.doc, b.doc);
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('tlh');
+    // The draft is back on what the intent will run with, for every member.
+    expect(a.result.current.conversationLanguage).toBe('ko');
+    act(() => sync(a.doc, b.doc));
+    expect(b.result.current.conversationLanguage).toBe('ko');
+    expect(a.result.current.conversationLanguageRejection).toMatchObject({ tag: 'tlh' });
+    expect(a.result.current.isConversationLanguageRejected()).toBe(true);
+
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+    });
+    expect(a.result.current.conversationLanguageRejection).toBeNull();
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+  });
+
   it('clearing a draft that never had one writes nothing', async () => {
     const a = member('Alice');
     act(() => {

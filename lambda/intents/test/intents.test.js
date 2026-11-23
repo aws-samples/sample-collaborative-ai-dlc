@@ -2880,6 +2880,41 @@ describe('composed grids + DRAFT PATCH', () => {
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).conversationLanguage).toEqual(ko);
   });
 
+  // A replica that still shows the tag a save asks for must not decide that the
+  // save changes nothing: the draft revision the CAS checks is read
+  // consistently, so it would not catch the stale language (#784).
+  it('writes a language change that a lagging read already shows (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const ko = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property('conversation_language', JSON.stringify(ko))
+      .next();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const lagging = structuredClone(procStore.get(metaKey));
+    expect(
+      (await patchIntent(sub, projectId, intent.id, { conversationLanguage: 'ja' })).statusCode,
+    ).toBe(200);
+    ddbMock.on(GetCommand, { Key: { pk: `EXEC#${intent.id}`, sk: 'META' } }).callsFake((input) => {
+      const current = procStore.get(metaKey);
+      if (input.ConsistentRead) return { Item: { ...current } };
+      // The replica has not seen the switch to ja: it still shows ko.
+      return { Item: { ...lagging, draftRevision: current.draftRevision } };
+    });
+
+    const res = await patchIntent(sub, projectId, intent.id, {
+      title: 'Back to Korean',
+      conversationLanguage: 'ko',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).conversationLanguage).toEqual(ko);
+    expect(procStore.get(metaKey).conversationLanguage).toEqual(ko);
+  });
+
   it('start accepts a composedGrid override on a DRAFT and pins it', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

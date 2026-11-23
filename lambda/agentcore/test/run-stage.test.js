@@ -3374,6 +3374,35 @@ describe('runStage — resume mode', () => {
     return { spawnFn, get: () => captured };
   };
 
+  // The conversation language (#784) rides the dispatch from the orchestrator's
+  // consistent META read, so an unreadable META here costs the intent block at
+  // most, never the language.
+  it('states the dispatched conversation language even when META cannot be read', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const seen = [];
+    const store = {
+      ...spyStore(),
+      getExecution: async () => {
+        throw new Error('storage down');
+      },
+    };
+    const deps = baseDeps({ store, spawnFn: captureArgv().spawnFn });
+    const materialize = deps.materializeStage;
+    deps.materializeStage = async (args) => {
+      seen.push(args);
+      return materialize(args);
+    };
+
+    const res = await runStage(
+      { ...baseArgs, aidlcRepoRef: 'a'.repeat(40), conversationLanguage: korean },
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].conversationLanguage).toEqual(korean);
+  });
+
   // The gate UI answers a single-choice question with an option index. The
   // resumed agent must read the chosen label (and any note), not raw JSON: the
   // 2.11.3 plan-review fallback asks Approve plan / Request changes this way and

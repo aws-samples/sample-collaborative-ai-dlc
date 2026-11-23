@@ -4185,17 +4185,15 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
   // recorded keeps the single eventually consistent read it has always made,
   // which is the save every unpinned, 2.3.3, 2.8.2 and 2.9.0 draft makes.
   //
-  // The conversation-language diff is taken against this row too, but only an
-  // APPARENT change pays the read: once a draft in a language-set space seeds
-  // the field, every autosave carries it unchanged, and those saves must keep
-  // the single eventually consistent read they always made. An interleaving
-  // the stale row hides is already refused by the draft-revision CAS below.
+  // The conversation-language diff decides whether the save writes the field
+  // at all, so it needs the same exact pre-image whenever the body mentions the
+  // language. A stale row that already shows the requested tag would otherwise
+  // drop a real change: the draft revision is read consistently elsewhere, so
+  // the CAS below does not catch a stale language value.
   if (
     data.aidlcSettings !== undefined ||
     meta.aidlcSettings ||
-    (data.conversationLanguage !== undefined &&
-      (rawConversationLanguage === null || typeof rawConversationLanguage === 'string') &&
-      (rawConversationLanguage || null) !== (meta.conversationLanguage?.tag ?? null))
+    data.conversationLanguage !== undefined
   ) {
     meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
   }
