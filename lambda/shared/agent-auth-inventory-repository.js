@@ -9,6 +9,22 @@ import {
   isMaterialAuthInventoryRow,
 } from './agent-auth-inventory.js';
 
+// Rows a platform review re-reads. The same EXEC# partitions also hold every execution's
+// events and outputs, so the scan filters on the row type as well as the key prefix and
+// returns only keys: otherwise it returns, and holds in memory, nearly the whole table.
+const SCANNED_INVENTORY_TYPES = Object.freeze([
+  'Execution',
+  'AgentConnectionHead',
+  'AgentInvocation',
+  'AgentSelection',
+  'EnvironmentRevision',
+  'Compose',
+  'QuorumEdit',
+]);
+// A filter still reads every item, so the segments run in parallel to keep a platform
+// review inside the API Gateway integration timeout on a large table.
+export const INVENTORY_SCAN_SEGMENTS = 8;
+
 // Scope discovery and backfill share the connection repository's consistent reader.
 export const createAgentAuthInventoryRepository = ({ ddb, tableName, get, requireTable }) => {
   const repository = {
@@ -131,41 +147,49 @@ export const createAgentAuthInventoryRepository = ({ ddb, tableName, get, requir
     },
     async scanInventory() {
       requireTable();
-      const items = [];
-      let ExclusiveStartKey;
-      do {
-        const page = await ddb.send(
-          new ScanCommand({
-            TableName: tableName,
-            ConsistentRead: true,
-            ExclusiveStartKey,
-            FilterExpression:
-              'begins_with(pk, :auth) OR begins_with(pk, :execution) OR begins_with(pk, :environment)',
-            ExpressionAttributeValues: {
-              ':auth': 'AGENTAUTH#',
-              ':execution': 'EXEC#',
-              ':environment': 'ENV#',
-            },
-          }),
-        );
-        const relevant = (page.Items ?? []).filter((row) =>
-          [
-            'Execution',
-            'AgentConnectionHead',
-            'AgentInvocation',
-            'AgentSelection',
-            'EnvironmentRevision',
-            'Compose',
-            'QuorumEdit',
-          ].includes(row.type),
-        );
-        const currentRows = await Promise.all(
-          relevant.map((row) => get({ pk: row.pk, sk: row.sk })),
-        );
-        items.push(...currentRows.filter(Boolean));
-        ExclusiveStartKey = page.LastEvaluatedKey;
-      } while (ExclusiveStartKey);
-      return items;
+      const typeValues = Object.fromEntries(
+        SCANNED_INVENTORY_TYPES.map((type, index) => [`:type${index}`, type]),
+      );
+      const scanSegment = async (Segment) => {
+        const items = [];
+        let ExclusiveStartKey;
+        do {
+          const page = await ddb.send(
+            new ScanCommand({
+              TableName: tableName,
+              ConsistentRead: true,
+              Segment,
+              TotalSegments: INVENTORY_SCAN_SEGMENTS,
+              ExclusiveStartKey,
+              ProjectionExpression: '#pk, #sk, #type',
+              FilterExpression:
+                '(begins_with(#pk, :auth) OR begins_with(#pk, :execution) OR ' +
+                `begins_with(#pk, :environment)) AND #type IN (${Object.keys(typeValues).join(', ')})`,
+              ExpressionAttributeNames: { '#pk': 'pk', '#sk': 'sk', '#type': 'type' },
+              ExpressionAttributeValues: {
+                ':auth': 'AGENTAUTH#',
+                ':execution': 'EXEC#',
+                ':environment': 'ENV#',
+                ...typeValues,
+              },
+            }),
+          );
+          const relevant = (page.Items ?? []).filter((row) =>
+            SCANNED_INVENTORY_TYPES.includes(row.type),
+          );
+          // The scan returns keys only; each row is re-read whole and consistently.
+          const currentRows = await Promise.all(
+            relevant.map((row) => get({ pk: row.pk, sk: row.sk })),
+          );
+          items.push(...currentRows.filter(Boolean));
+          ExclusiveStartKey = page.LastEvaluatedKey;
+        } while (ExclusiveStartKey);
+        return items;
+      };
+      const segments = await Promise.all(
+        Array.from({ length: INVENTORY_SCAN_SEGMENTS }, (_, segment) => scanSegment(segment)),
+      );
+      return segments.flat();
     },
   };
   return repository;

@@ -14,6 +14,7 @@ import { createOAuthStateRepository } from '../agent-oauth-state-repository.js';
 import { createOAuthCredentialCoordinator } from '../agent-oauth-contract.js';
 import { normalizeConnection, connectionAudience } from '../agent-auth-catalog.js';
 import { isMaterialAuthInventoryRow } from '../agent-auth-inventory.js';
+import { INVENTORY_SCAN_SEGMENTS } from '../agent-auth-inventory-repository.js';
 import { INVOCATION_ACCOUNTING_TTL_SECONDS } from '../invocation-accounting-ticket.js';
 import { cleanup, createAuthTable, ddb, requireDynamoDbLocal } from './helpers/auth-table.js';
 
@@ -35,11 +36,14 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       status: 'RUNNING',
     };
     const second = { ...stale, pk: 'EXEC#second', executionId: 'second' };
+    // Both pages belong to one segment; the other segments are empty.
     const send = vi.fn(async (command) => {
-      if (command instanceof ScanCommand)
+      if (command instanceof ScanCommand) {
+        if (command.input.Segment !== 3) return { Items: [] };
         return command.input.ExclusiveStartKey
           ? { Items: [second] }
           : { Items: [stale], LastEvaluatedKey: { pk: stale.pk, sk: stale.sk } };
+      }
       if (command instanceof GetCommand)
         return {
           Item: command.input.Key.pk === stale.pk ? { ...stale, status: 'WAITING' } : second,
@@ -49,8 +53,64 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     const repository = createAgentConnectionRepository({ ddb: { send }, tableName: 'inventory' });
     const inventory = await repository.scanInventory();
     expect(inventory.map((item) => item.status)).toEqual(['WAITING', 'RUNNING']);
-    expect(send.mock.calls.filter(([command]) => command instanceof ScanCommand)).toHaveLength(2);
+    const scans = send.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command instanceof ScanCommand);
+    expect(scans).toHaveLength(INVENTORY_SCAN_SEGMENTS + 1);
+    expect([...new Set(scans.map((command) => command.input.Segment))].toSorted()).toEqual(
+      Array.from({ length: INVENTORY_SCAN_SEGMENTS }, (_, segment) => segment),
+    );
+    expect(
+      scans.every(
+        (command) =>
+          command.input.TotalSegments === INVENTORY_SCAN_SEGMENTS &&
+          command.input.ProjectionExpression === '#pk, #sk, #type',
+      ),
+    ).toBe(true);
     expect(send.mock.calls.every(([command]) => command.input.ConsistentRead === true)).toBe(true);
+  });
+  it('scans only inventory row keys, never the execution events and outputs beside them', async () => {
+    const tableName = await createAuthTable();
+    const executions = Array.from({ length: 40 }, (_, index) => ({
+      pk: `EXEC#bulk${index}`,
+      sk: 'META',
+      type: 'Execution',
+      executionId: `bulk${index}`,
+      projectId: 'p1',
+      status: 'RUNNING',
+    }));
+    const records = executions.flatMap((execution) => [
+      execution,
+      ...Array.from({ length: 5 }, (_, event) => ({
+        pk: execution.pk,
+        sk: `EVENT#${String(event).padStart(4, '0')}`,
+        type: 'ExecutionEvent',
+        payload: 'x'.repeat(2000),
+      })),
+    ]);
+    for (let index = 0; index < records.length; index += 25) {
+      await ddb.send(
+        new BatchWriteCommand({
+          RequestItems: {
+            [tableName]: records.slice(index, index + 25).map((Item) => ({ PutRequest: { Item } })),
+          },
+        }),
+      );
+    }
+    const scanned = [];
+    const send = async (command) => {
+      const result = await ddb.send(command);
+      if (command instanceof ScanCommand) scanned.push(...(result.Items ?? []));
+      return result;
+    };
+    const repository = createAgentConnectionRepository({ ddb: { send }, tableName });
+    const inventory = await repository.scanInventory();
+    expect(inventory.map((row) => row.executionId).toSorted()).toEqual(
+      executions.map((row) => row.executionId).toSorted(),
+    );
+    expect(inventory.every((row) => row.status === 'RUNNING' && row.projectId === 'p1')).toBe(true);
+    expect(scanned).toHaveLength(executions.length);
+    expect(scanned.every((row) => Object.keys(row).toSorted().join() === 'pk,sk,type')).toBe(true);
   });
   it('includes each identity used by model discovery and derives auxiliary scope from its parent', () => {
     const inventory = materialAuthInventory([
