@@ -6242,6 +6242,12 @@ the current contract for newly created executions.
       **Done when:** agreed repair and response bounds are demonstrated, failures
       reach the intended operator, and the release procedure preserves the selected
       EFS recovery model and existing platform functionality.
+      **Local repair milestone, 2026-11-23.** Across 12,000 DynamoDB Local rows,
+      scheduled repair sent 240 execution, 120 preparation, 360 cancellation and
+      240 projection pointers to their expected simulated queues. After one lost
+      projection acknowledgement, later work progressed from a saved cursor and
+      the next full sweep redelivered the pointer. Live alert delivery and agreed
+      response times remain open.
 - [ ] **NE-22 — Publish the integrated feature and remove development-only scaffolding.**
       Confirm the preceding release items against the same candidate, remove unused
       native paths and obsolete compatibility/probe assets, and update capability
