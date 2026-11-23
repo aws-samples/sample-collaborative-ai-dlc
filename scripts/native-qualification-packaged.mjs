@@ -9,7 +9,20 @@ import { build } from 'esbuild';
 
 const excluded = new Set(['node_modules', '.build', 'builds', 'package-lock.json', '.gitignore']);
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// These are directly imported by the member journey. Node resolves their
+// transitive imports and SDKs from the image. Other control-plane tests still
+// use their separately packaged Lambda dependency closure.
+const installedControl = new Set(
+  [
+    'index.js',
+    'workflow-engine/service.js',
+    'workflow-engine/store.js',
+    'workflow-engine/proof-reader.js',
+  ].map((path) => join('lambda/native-runtime-control', path)),
+);
 const controllers = [
+  'api.js',
+  'authority.js',
   'execution-worker.js',
   'execution-api.js',
   'execution-runtime.js',
@@ -40,6 +53,8 @@ async function bundleControllerAdapter(root, directory) {
     logLevel: 'silent',
   });
   for (const name of [
+    'native-qualification-member.mjs',
+    'native-qualification-protected-engine.mjs',
     'native-installed-qualification.mjs',
     'native-workspace-qualification-driver.mjs',
   ]) {
@@ -64,6 +79,7 @@ export async function stagePackagedQualification(root) {
     await fs.cp(join(root, path), join(directory, path), {
       recursive: true,
       filter: (source) =>
+        !installedControl.has(relative(root, source)) &&
         !relative(root, source)
           .split('/')
           .some((part) => excluded.has(part)),
@@ -79,9 +95,12 @@ export async function stagePackagedQualification(root) {
       else {
         if (!entry.isFile()) throw new Error(`Unexpected production source entry: ${item}`);
         const target = `/opt/${workspace}/${item}`;
-        const destination = join(directory, 'lambda', workspace, item);
-        await fs.mkdir(dirname(destination), { recursive: true });
-        await fs.symlink(target, destination);
+        const fixturePath = join('lambda', workspace, item);
+        if (workspace !== 'native-runtime-control' || installedControl.has(fixturePath)) {
+          const destination = join(directory, fixturePath);
+          await fs.mkdir(dirname(destination), { recursive: true });
+          await fs.symlink(target, destination);
+        }
         manifest.push({ path: target, sha256: hash(await fs.readFile(join(source, entry.name))) });
       }
     }
@@ -98,7 +117,8 @@ export async function stagePackagedQualification(root) {
       'lambda/shared/test',
     ])
       await copy(path);
-    for (const workspace of ['agentcore', 'shared']) await linkProduction(workspace);
+    for (const workspace of ['agentcore', 'shared', 'native-runtime-control'])
+      await linkProduction(workspace);
     // Linux tests inspect the root lock to verify the prepared native binding.
     await fs.copyFile(join(root, 'package-lock.json'), join(directory, 'package-lock.json'));
     await fs.writeFile(join(directory, 'packaged-source.json'), JSON.stringify(manifest));

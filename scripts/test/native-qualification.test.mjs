@@ -269,7 +269,10 @@ test('installed Docker execution is immutable, isolated, read-only and credentia
   assert.ok(args.includes('type=bind,src=/tmp/assets,dst=/assets,readonly'));
   assert.deepEqual(
     args.filter((arg, i) => args[i - 1] === '-e'),
-    ['NATIVE_QUALIFICATION_PACKAGE=/assets'],
+    [
+      'NATIVE_QUALIFICATION_PACKAGE=/assets',
+      `NATIVE_QUALIFICATION_IMAGE_DIGEST=${image.split('@')[1]}`,
+    ],
   );
   assert.equal(args.at(-1), 'codex');
 });
@@ -295,24 +298,25 @@ if(args[0]==='run' && args.at(-1)==='kiro') process.exit(2);
       { mode: 0o700 },
     );
     const log = join(directory, 'calls');
-    const result = spawnSync(
-      process.execPath,
-      [
-        'scripts/native-qualification.mjs',
-        '--installed-only',
-        '--cli',
-        'all',
-        '--image',
-        image,
-        '--assets',
-        directory,
-      ],
-      {
-        cwd: new URL('../..', import.meta.url),
-        env: { ...process.env, PATH: directory, FIXTURE_CALLS: log },
-        encoding: 'utf8',
-      },
-    );
+    const matrix = (...args) =>
+      spawnSync(
+        process.execPath,
+        [
+          'scripts/native-qualification.mjs',
+          '--installed-only',
+          ...args,
+          '--image',
+          image,
+          '--assets',
+          directory,
+        ],
+        {
+          cwd: new URL('../..', import.meta.url),
+          env: { ...process.env, PATH: directory, FIXTURE_CALLS: log },
+          encoding: 'utf8',
+        },
+      );
+    const result = matrix('--cli', 'all');
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stdout, /Installed matrix: BLOCKED/);
     assert.doesNotMatch(result.stdout, /Offline native acceptance passed/);
@@ -327,6 +331,16 @@ if(args[0]==='run' && args.at(-1)==='kiro') process.exit(2);
       calls.filter((args) => args[0] === 'rm').map((args) => args.at(-1)),
       runs.map((args) => args[args.indexOf('--name') + 1]),
     );
+    const missingBindings = matrix(
+      '--cli',
+      'codex',
+      '--linux-bindings',
+      join(directory, 'missing'),
+    );
+    assert.equal(missingBindings.status, 2);
+    assert.match(missingBindings.stdout, /Linux regression tier: BLOCKED/);
+    assert.match(missingBindings.stdout, /Installed codex: PASS/);
+    assert.match(missingBindings.stdout, /Installed matrix: BLOCKED/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

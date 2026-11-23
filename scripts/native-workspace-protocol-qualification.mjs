@@ -37,7 +37,206 @@ const tool = (name, input) => ({ type: 'tool_use', id: `workspace${++toolId}`, n
 const bash = (command) => tool('Bash', { command });
 const write = (path, content) => tool('Write', { file_path: path, content });
 
-export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) {
+const issuedRequestId = (directive) => {
+  assert.equal(directive.kind, 'print');
+  const id = directive.message.match(/--request ([a-f0-9]{8})\b/)?.[1];
+  assert.ok(id, 'The pinned engine issued a request ID');
+  return id;
+};
+const publicationQuery = ({ publicationId, sequence }) => ({
+  publicationId,
+  publicationSequence: String(sequence),
+});
+
+// The conductor scripts tool choices. Claude runs the installed dispatcher and
+// authors only the two artifacts named by the pinned stage. The runtime owns
+// mirroring, interaction publication, interruption and fresh-session admission.
+async function qualifyProtectedMember({ driver, turn, read, capture, project }) {
+  const pendingFile = join(project, '.native-control/pending-question.json');
+  const continueDirective = async (name) => {
+    const directive = await read(name);
+    assert.equal(directive.kind, 'load-steering');
+    assert.match(directive.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
+    return capture(`${name}-stage`, directive.next);
+  };
+  const proof = (question) =>
+    driver.get('publication', { ...publicationQuery(question), evidence: '1' });
+  const firstSession = await turn('Start', [
+    capture('initial', 'aidlc next'),
+    async () =>
+      capture(
+        'offer',
+        `aidlc engine orchestrate next --propose express --request ${issuedRequestId(await read('initial'))}`,
+      ),
+    async () => write(pendingFile, JSON.stringify({ version: 3, ask: await read('offer') })),
+    async () => ({ type: 'text', text: (await read('offer')).question }),
+  ]);
+  const offer = await read('offer');
+  const first = await driver.interaction();
+  assert.equal(offer.ask_type, 'scope-confirm');
+  assert.equal(offer.proposed_scope, 'express');
+  assert.deepEqual(
+    first.pendingInput,
+    buildNativePendingInput({ spec: { version: 3, ask: offer } }),
+  );
+  assert.equal((await driver.get('publication')).id, first.publicationId);
+  assert.deepEqual((await proof(first)).engineApplication, []);
+  const selection = { answers: [{ selectedOptions: [0] }] };
+  const gateQuestion = 'Review the requirements. How would you like to proceed?';
+  const gateSpec = {
+    version: 2,
+    questions: [
+      { prompt: gateQuestion, options: [{ label: 'Approve' }, { label: 'Request Changes' }] },
+    ],
+  };
+  await turn(
+    first.pendingInput.questions[0].options[0].label,
+    [
+      capture('selected', 'aidlc next'),
+      async () => {
+        const id = issuedRequestId(await read('selected'));
+        assert.equal(
+          offer.choices[0].command,
+          `aidlc engine orchestrate next --scope express --request ${id}`,
+        );
+        return bash(
+          `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
+        );
+      },
+      // A live predecessor has no confirmed workspace-resume episode.
+      bash(
+        'aidlc next --resume 2> .native-control/denied-resume.txt; echo "$?" > .native-control/denied-resume.exit',
+      ),
+      capture('created', 'aidlc next'),
+      () => continueDirective('created'),
+      async () => {
+        const stage = await read('created-stage');
+        assert.equal(stage.stage, 'requirements-analysis');
+        assert.equal(stage.gate, true);
+        assert.equal(stage.produces.length, 2);
+        for (const path of stage.produces)
+          assert.match(
+            path,
+            /^aidlc\/spaces\/default\/intents\/[a-z0-9-]+\/inception\/requirements-analysis\/[a-z-]+\.md$/,
+          );
+        return write(join(project, stage.produces[0]), requirements);
+      },
+      async () => write(join(project, (await read('created-stage')).produces[1]), questions),
+      capture(
+        'opened',
+        'aidlc engine orchestrate report --stage requirements-analysis --result awaiting-approval',
+      ),
+      write(pendingFile, JSON.stringify(gateSpec)),
+      { type: 'text', text: gateQuestion },
+    ],
+    [],
+    { selection },
+  );
+  assert.equal(
+    await fs.readFile(join(project, '.native-control/denied-resume.exit'), 'utf8'),
+    '1\n',
+  );
+  assert.match(
+    await fs.readFile(join(project, '.native-control/denied-resume.txt'), 'utf8'),
+    /NATIVE_ENGINE_COMMAND_DENIED/,
+  );
+  const held = await driver.interaction();
+  assert.equal(held.pendingInput.kind, 'approval');
+  assert.equal(held.pendingInput.stage, 'requirements-analysis');
+  const history = await driver.get('interaction', publicationQuery(first));
+  assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
+  assert.equal(history.answer.context.membershipRecorded, true);
+  assert.equal(history.answer.text, offer.choices[0].label);
+  const before = await proof(held);
+  assert.equal(before.engineApplication.length, 1);
+  const [decision] = before.engineApplication;
+  assert.equal(decision.commandId, history.answer.id);
+  assert.equal(decision.interactionId, first.id);
+  assert.equal(decision.contentSha256, first.contentSha256);
+  assert.equal(decision.actorId, history.answer.actorId);
+  assert.equal(decision.application, 'applied');
+  assert.equal(before.effectivePlan.scope, 'express');
+  const gate = before.effectivePlan.stages.find((s) => s.id === held.pendingInput.stage);
+  assert.equal(gate.state, 'awaiting-approval');
+
+  // The accepted gate answer starts a turn. Interrupt its actual CLI tool
+  // before any protected command can consume that answer.
+  await turn(
+    'Approve',
+    [
+      bash(
+        `node -e 'require("fs").writeFileSync(".native-control/interrupt-ready","ready");setInterval(()=>{},1000)'`,
+      ),
+    ],
+    [],
+    { selection, interrupt: true },
+  );
+  const replacement = await turn('/aidlc --resume', [
+    capture('resumed', 'aidlc engine orchestrate next --resume'),
+    () => continueDirective('resumed'),
+    write(pendingFile, JSON.stringify(gateSpec)),
+    { type: 'text', text: gateQuestion },
+  ]);
+  assert.notEqual(replacement, firstSession);
+  const next = await read('resumed-stage');
+  assert.equal(next.stage, gate.id);
+  assert.equal(next.gate_only, true);
+  assert.equal(next.gate, true);
+  assert.deepEqual(next.produces, (await read('created-stage')).produces);
+  const recovered = await driver.interaction();
+  assert.deepEqual(recovered.pendingInput, held.pendingInput);
+  assert.notEqual(recovered.id, held.id);
+  assert.equal(recovered.response, null);
+  const after = await proof(recovered);
+  assert.equal(after.context.configurationSha256, before.context.configurationSha256);
+  assert.equal(after.effectivePlan.stages.find((s) => s.id === gate.id).state, gate.state);
+  assert.deepEqual(after.engineApplication, before.engineApplication);
+  assert.deepEqual(after.gates, before.gates);
+  assert.equal(after.workflowCompletion, 'not_verified');
+  assert.deepEqual(await driver.get('interaction', publicationQuery(first)), history);
+  const retained = await driver.get('interaction', publicationQuery(held));
+  assert.equal(retained.answer.interactionId, held.id);
+  assert.equal(retained.answer.text, 'Approve');
+  assert.equal(retained.answer.context.publicationId, held.publicationId);
+  assert.equal(retained.answer.resumeRetention.delivery, 'delivered');
+  const gateEvidence = await proof(held);
+  assert.equal(gateEvidence.memberDecision.commandId, retained.answer.id);
+  assert.equal(gateEvidence.memberDecision.label, 'Approve');
+  assert.equal(gateEvidence.memberDecision.membershipRecorded, true);
+  assert.equal(retained.answer.resultingPublication, null);
+  const native = await driver.finish({ expectedSessions: 2 });
+  console.log(
+    JSON.stringify({
+      probe: 'protected-member-workspace-resume',
+      harness: 'claude',
+      status: 'PASS',
+      packageId: after.context.packageId,
+      attemptId: after.context.attemptId,
+      originalPublication: first.publicationId,
+      originalInteraction: first.id,
+      acceptedOption: decision.commandId,
+      selectedOption: history.answer.text,
+      contentSha256: first.contentSha256,
+      presentationSha256: decision.presentationSha256,
+      interruptedPublication: held.publicationId,
+      retainedAnswer: retained.answer.id,
+      recoveredPublication: recovered.publicationId,
+      decisions: after.engineApplication.length,
+      retainedDelivery: retained.answer.resumeRetention.delivery,
+      predecessorResumeDenied: true,
+      freshSession: replacement !== firstSession,
+      gate: gate.id,
+      gateOnly: next.gate_only,
+      workflowCompletion: after.workflowCompletion,
+      ...native,
+    }),
+  );
+}
+
+export async function qualifyClaudeWorkspaceProtocol({
+  composed = false,
+  protectedWorkflow = false,
+} = {}) {
   const root = await fs.mkdtemp('/tmp/native-workspace-protocol-');
   const project = join(root, 'project');
   let home = join(root, 'home-1');
@@ -125,7 +324,14 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
       assert.equal(result.exitCode, 0, 'Attested offline package setup');
       assert.equal(result.cleanupComplete, true);
     }
-    if (composed) driver = await workspaceQualificationDriver({ root, project, pkg, provider });
+    if (composed)
+      driver = await workspaceQualificationDriver({
+        root,
+        project,
+        pkg,
+        provider,
+        protectedWorkflow,
+      });
     else await fs.mkdir(join(project, '.native-control'));
     const read = async (name) =>
       JSON.parse(await fs.readFile(join(project, '.native-control', `${name}.json`), 'utf8'));
@@ -145,7 +351,7 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
         session = await driver.turn(prompt, options);
         if (session) sessions.add(session);
         provider.result();
-        return;
+        return session;
       }
       const output = createNativeTurnOutput({ harness: 'claude', nativeSessionId: session });
       const result = await runNativeCommand(
@@ -192,6 +398,11 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
       ]);
       return read('stage');
     };
+
+    if (protectedWorkflow) {
+      await qualifyProtectedMember({ driver, turn, read, capture, project });
+      return;
+    }
 
     if (pkg.version === '2.11.1') {
       // Exercise the actual new intake protocol rather than forcing --scope

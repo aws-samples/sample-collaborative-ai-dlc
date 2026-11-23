@@ -92,6 +92,9 @@ export function installedDockerArgs({
 }) {
   return [
     ...offlineDockerArgs({ assets, root, name, packagedImage, dependenciesRoot }),
+    '-e',
+    `NATIVE_QUALIFICATION_IMAGE_DIGEST=${image.split('@').at(-1)}`,
+    ...(packagedImage ? ['-e', 'NATIVE_QUALIFICATION_PACKAGED=true'] : []),
     ...(cli === 'opencode' && opencodeCache
       ? [
           '--mount',

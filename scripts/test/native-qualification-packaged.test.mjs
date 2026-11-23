@@ -174,7 +174,7 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
     for (const path of [
       'scripts',
       'test',
-      'lambda/native-runtime-control',
+      'lambda/native-runtime-control/workflow-engine',
       'lambda/agentcore/test',
       'lambda/shared/test',
     ])
@@ -191,6 +191,10 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
     await writeFile(join(root, 'package.json'), '{"type":"module"}');
     await mkdir(join(root, 'lambda/native-runtime-control/test'), { recursive: true });
     for (const path of [
+      'api.js',
+      'authority.js',
+      'index.js',
+      'workflow-engine/service.js',
       'execution-worker.js',
       'execution-api.js',
       'execution-runtime.js',
@@ -204,7 +208,20 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       join(root, 'scripts/native-workspace-qualification-driver.mjs'),
       "import {executionIdentity} from '../lambda/native-runtime-control/execution-runtime.js';",
     );
+    await writeFile(
+      join(root, 'scripts/native-qualification-member.mjs'),
+      "import {handler} from '../lambda/native-runtime-control/index.js';",
+    );
+    await writeFile(
+      join(root, 'scripts/native-qualification-protected-engine.mjs'),
+      "import {createNativeWorkflowEngine} from '../lambda/native-runtime-control/workflow-engine/service.js';",
+    );
     staged = await stagePackagedQualification(root);
+    for (const path of ['index.js', 'workflow-engine/service.js'])
+      assert.equal(
+        await readlink(join(staged.directory, 'lambda/native-runtime-control', path)),
+        `/opt/native-runtime-control/${path}`,
+      );
     assert.match(
       await readFile(
         join(staged.directory, 'scripts/native-workspace-qualification-driver.mjs'),
@@ -221,7 +238,8 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       'lambda/agentcore/test/fixture.js',
     );
     const manifest = JSON.parse(await readFile(join(staged.directory, 'packaged-source.json')));
-    assert.equal(manifest.length, 2);
+    assert.ok(manifest.some((file) => file.path === '/opt/native-runtime-control/index.js'));
+    assert.ok(manifest.every((file) => !file.path.includes('/test/')));
     assert.ok(
       manifest.every(
         (entry) => entry.path.startsWith('/opt/') && /^[a-f0-9]{64}$/.test(entry.sha256),

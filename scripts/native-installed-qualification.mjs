@@ -57,6 +57,7 @@ const model = {
 
 let provider;
 let lifecycleFailed = false;
+let protectedBlocked = false;
 let phase = 'version';
 try {
   const versionHome = join(base, 'version-home');
@@ -255,14 +256,33 @@ try {
     // Each EFS scenario owns its own attested installation within the bounded tmpfs.
     await fs.rm(base, { recursive: true, force: true });
     phase = 'upstream-workspace-resume';
-    if (harness === 'claude') await qualifyClaudeWorkspaceProtocol({ composed: true });
-    else await qualifyWorkspaceTransport(harness);
-    report({ status: lifecycleFailed ? 'FAIL' : 'PASS' });
-    if (lifecycleFailed) process.exitCode = 1;
+    if (harness === 'claude') {
+      if (process.env.NATIVE_QUALIFICATION_PACKAGED === 'true' && pkg.version === '2.11.1') {
+        phase = 'protected-member-workspace-resume';
+        await qualifyClaudeWorkspaceProtocol({ composed: true, protectedWorkflow: true });
+      } else {
+        protectedBlocked = true;
+        report({
+          probe: 'protected-member-workspace-resume',
+          status: 'BLOCKED',
+          prerequisite: 'packaged image and attested workflow 2.11.1',
+        });
+      }
+      phase = 'upstream-workspace-resume';
+      await qualifyClaudeWorkspaceProtocol({ composed: true });
+    } else await qualifyWorkspaceTransport(harness);
+    report({ status: lifecycleFailed ? 'FAIL' : protectedBlocked ? 'BLOCKED' : 'PASS' });
+    if (lifecycleFailed || protectedBlocked) process.exitCode = lifecycleFailed ? 1 : 2;
   }
 } catch (error) {
-  report({ status: 'FAIL', phase, code: error.code ?? error.name, check: error.operator });
-  process.exitCode = 1;
+  const blocked = error.code === 'native_qualification_opencode_cache_required';
+  report({
+    status: blocked ? 'BLOCKED' : 'FAIL',
+    phase,
+    code: error.code ?? error.name,
+    check: error.operator,
+  });
+  process.exitCode = blocked ? 2 : 1;
 } finally {
   await provider?.close();
   await fs.rm(base, { recursive: true, force: true });

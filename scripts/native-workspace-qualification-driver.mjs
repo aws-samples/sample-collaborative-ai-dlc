@@ -25,7 +25,10 @@ import { createNativeExecutionApi } from '../lambda/native-runtime-control/execu
 import { executionIdentity } from '../lambda/native-runtime-control/execution-runtime.js';
 import { executionFixture } from '../lambda/native-runtime-control/test/execution-fixtures.js';
 import { memoryNativeObjects } from '../lambda/native-runtime-control/test/memory-objects.js';
-import { ACTOR } from '../lambda/native-runtime-control/test/fixtures.js';
+import { TABLE } from '../lambda/native-runtime-control/test/fixtures.js';
+import { createNativeArtifactRevisions } from '../lambda/shared/native-artifact-revision.js';
+import { qualificationMember } from './native-qualification-member.mjs';
+import { protectedWorkspaceEngine } from './native-qualification-protected-engine.mjs';
 import { localProviderInvocation } from './native-qualification-provider.mjs';
 
 export async function workspaceQualificationDriver({
@@ -36,13 +39,15 @@ export async function workspaceQualificationDriver({
   harness = 'claude',
   model = 'claude-sonnet-4-6',
   dependencyEnv = {},
+  protectedWorkflow = false,
 }) {
   const f = executionFixture({
     harness,
     model,
+    packageVersion: pkg.version,
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
   });
-  f.prepared.candidate.packagePin.version = pkg.version;
+  Object.assign(f.prepared, { harness, createdAt: f.now(), updatedAt: f.now() });
   const homeRoot = `${root}-homes`;
   const memory = memoryNativeObjects({
     bucket: f.configuration.publicationBucket,
@@ -107,11 +112,48 @@ export async function workspaceQualificationDriver({
   }
   f.prepared.inputDraft = { ...nativeDraftInputs(f.prepared), revision: 1, attachments };
   f.prepared.version += 1;
+  const publications = createNativePublications(storage);
+  const interactions = createNativeInteractions(storage);
+  const fence = createNativeExecutionFence(storage);
+  const engine = protectedWorkflow
+    ? await protectedWorkspaceEngine(f, pkg, storage, publications, interactions)
+    : null;
   // Keep the fixture transport's RUNTIME row coherent with its prepared read.
   for (const [key, row] of f.rows)
     if (row.sk === 'RUNTIME') f.rows.set(key, structuredClone(f.prepared));
   f.configuration.inputs = nativeInputSnapshot(f.prepared, storage.bucket);
-  await f.start();
+  const api = createNativeExecutionApi({
+    enabled: true,
+    store: f.store,
+    publications,
+    interactions,
+    revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
+    completionProof: engine?.completionProof,
+    configure: async () => f.configuration,
+    enqueue: async () => {},
+    authorizeSource: async () => {},
+  });
+  const member = qualificationMember(f, api);
+  try {
+    await assert.rejects(member.request('start', {}, { token: null }), {
+      code: 'NATIVE_AUTHORITY_FORBIDDEN',
+    });
+    const start = {
+      requestId: randomUUID(),
+      promptRevision: 0,
+      inputRevision: f.configuration.inputs.revision,
+    };
+    assert.equal(
+      (await member.request('start', start, { token: 'offline-nonmember', status: 403 })).code,
+      'NATIVE_PREPARATION_FORBIDDEN',
+    );
+    assert.equal(f.row(), undefined);
+    await member.request('start', start);
+  } catch (error) {
+    member.close();
+    await engine?.close();
+    throw error;
+  }
   const inputReads = attachmentReferences(attachments).map((file, index) => ({
     path: join(project, file.path),
     expected: content[index].text.split('\n').at(-1),
@@ -127,9 +169,6 @@ export async function workspaceQualificationDriver({
         Body: Buffer.from('Later unselected object version.'),
       }),
     );
-  const publications = createNativePublications(storage);
-  const interactions = createNativeInteractions(storage);
-  const fence = createNativeExecutionFence(storage);
   const env = {
     NATIVE_RUNTIME_MODE: 'isolated',
     NATIVE_EXECUTION_ENABLED: 'true',
@@ -160,6 +199,7 @@ export async function workspaceQualificationDriver({
       root,
       homeRoot,
       ...createNativeExecutionPorts({ env, s3: storage.s3 }),
+      ...(engine ? { prepareWorkflowEngine: (input) => engine.prepare({ ...input, env }) } : {}),
       inspectMount: async () => ({}), // Local filesystem, NOT AWS EFS proof.
       prepare: async () => {
         await fs.mkdir(join(project, '.native-control'), { recursive: true, mode: 0o700 });
@@ -199,7 +239,13 @@ export async function workspaceQualificationDriver({
         }
         cliTurns++;
         lastHome = input.env.HOME;
-        return runNativeCommand(localProviderInvocation(harness, input, provider.url));
+        return runNativeCommand(
+          localProviderInvocation(
+            harness,
+            { ...input, env: { ...input.env, ...engine?.env } },
+            provider.url,
+          ),
+        );
       },
     });
   let runtime = create();
@@ -250,16 +296,6 @@ export async function workspaceQualificationDriver({
     fence,
     project: async () => {},
   });
-  const api = createNativeExecutionApi({
-    enabled: true,
-    store: f.store,
-    publications,
-    interactions,
-    configure: async () => f.configuration,
-    enqueue: async () => {},
-    authorizeSource: async () => {},
-  });
-  const recheck = async () => {};
   const settle = async (status) => {
     for (let i = 0; i < 16; i++) {
       await supervisor(f.identity);
@@ -281,26 +317,33 @@ export async function workspaceQualificationDriver({
         // A waiting runtime is idle, not polled as a new workflow turn. The
         // next protected answer detects the expired session and is retained
         // as definitely undelivered; confirmation must not send it.
-        const question = await api.interaction(f.prepared, recheck);
+        const question = await member.request('interaction');
         const request = {
           requestId: randomUUID(),
           interactionId: question.id,
           contentSha256: question.contentSha256,
           text: 'Review the existing gate after waiting.',
         };
-        await api.respond(f.prepared, ACTOR, request, recheck);
+        await member.request('response', request);
         accepted.push(request);
       }
       await settle('RECOVERY_REQUIRED');
-      const request = { requestId: randomUUID(), recoveryId: f.row().recovery.id };
-      await assert.rejects(api.recover(f.prepared, request, recheck), {
-        code: 'NATIVE_EXECUTION_INVALID',
-      });
-      await api.recover(f.prepared, { ...request, confirmWorkspaceResume: true }, recheck);
+      const { execution } = await member.request('');
+      assert.equal(execution.recovery.canRecover, true);
+      const request = { requestId: randomUUID(), recoveryId: execution.recovery.id };
+      const before = f.row();
+      const refused = await member.request(
+        'recover',
+        { ...request, confirmWorkspaceResume: false },
+        { status: 400 },
+      );
+      assert.equal(refused.code, 'NATIVE_PREPARATION_INVALID');
+      assert.deepEqual(f.row(), before);
+      await member.request('recover', { ...request, confirmWorkspaceResume: true });
       loseAck = true;
       resumePending = false;
     } else if (!first) {
-      const question = await api.interaction(f.prepared, recheck);
+      const question = await member.request('interaction');
       const request = {
         requestId: randomUUID(),
         interactionId: question.id,
@@ -308,8 +351,24 @@ export async function workspaceQualificationDriver({
         text: prompt,
         ...(selection ? { selection } : {}),
       };
-      const reply = await api.respond(f.prepared, ACTOR, request, recheck);
-      const duplicate = await api.respond(f.prepared, ACTOR, request, recheck);
+      if (selection) {
+        const before = f.row();
+        const stale = await member.request(
+          'response',
+          { ...request, contentSha256: '0'.repeat(64) },
+          { status: 409 },
+        );
+        assert.equal(stale.code, 'NATIVE_EXECUTION_CONFLICT');
+        const invalid = await member.request(
+          'response',
+          { ...request, text: 'Different option' },
+          { status: 400 },
+        );
+        assert.equal(invalid.code, 'NATIVE_EXECUTION_INVALID');
+        assert.deepEqual(f.row(), before);
+      }
+      const reply = await member.request('response', request);
+      const duplicate = await member.request('response', request);
       assert.equal(duplicate.response.id, reply.response.id);
       accepted.push(request);
     }
@@ -317,7 +376,8 @@ export async function workspaceQualificationDriver({
   };
   return {
     inputReads,
-    interaction: () => api.interaction(f.prepared, recheck),
+    get: (route, query) => member.request(route, undefined, { query }),
+    interaction: () => member.request('interaction'),
     async turn(prompt, { interrupt = false, selection } = {}) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
@@ -367,13 +427,23 @@ export async function workspaceQualificationDriver({
           (await f.store.response(f.row(), request.interactionId)).requestId,
           request.requestId,
         );
-      await api.cancel(f.prepared, recheck);
+      const resume = f.row().workspaceResume;
+      const last = resumes.at(-1);
+      assert.deepEqual(resume, {
+        id: last.recoveryId,
+        sequence: last.sequence,
+        writerGeneration: last.writerGeneration,
+      });
+      assert.equal(f.row().writerGeneration, resume.writerGeneration);
+      assert.equal(f.row().lastRecoveryId, resume.id);
+      await member.request('cancel', {});
       await supervisor(f.identity);
       assert.equal(f.row().status, 'CANCELLED');
       assert.equal(f.row().stopConfirmation.writerGeneration, expectedSessions);
       return {
         publications: f.row().publication.sequence,
         cliTurns,
+        resume,
         sessions: sessions.size,
         setups,
         inputs: {
@@ -388,12 +458,14 @@ export async function workspaceQualificationDriver({
       };
     },
     async close() {
+      member.close();
       if (runtime.isBusy())
         await runtime.cancel({
           ...executionIdentity(f.row()),
           writerGeneration: f.row().writerGeneration,
         });
       await runtime.settle();
+      await engine?.close();
       await fs.rm(homeRoot, { recursive: true, force: true });
       await fs.chmod(join(project, '.aidlc/references'), 0o755).catch(() => {});
     },

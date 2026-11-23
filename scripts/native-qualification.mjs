@@ -135,31 +135,34 @@ if (!options.installedOnly) {
 const staged = options.packagedImage ? await stagePackagedQualification(root) : null;
 const containerOptions = { ...options, root: staged?.directory ?? root, dependenciesRoot: root };
 try {
+  const outcomes = [];
   if (options.linuxBindings) {
-    await verifyQualificationLinuxBindings(options.linuxBindings);
-    const name = `native-qualification-linux-${randomUUID()}`;
-    console.log(
-      '\nNative qualification: Linux process/filesystem/manifest regressions (scripted CLI)',
-    );
-    let result;
+    let status;
     try {
-      result = spawnSync('docker', linuxDockerArgs({ ...containerOptions, name }), {
-        cwd: root,
-        stdio: 'inherit',
-        timeout: 10 * 60_000,
-      });
-    } finally {
-      spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
+      await verifyQualificationLinuxBindings(options.linuxBindings);
+      const name = `native-qualification-linux-${randomUUID()}`;
+      console.log(
+        '\nNative qualification: Linux process/filesystem/manifest regressions (scripted CLI)',
+      );
+      try {
+        const result = spawnSync('docker', linuxDockerArgs({ ...containerOptions, name }), {
+          cwd: root,
+          stdio: 'inherit',
+          timeout: 10 * 60_000,
+        });
+        status = result.status === 0 ? 0 : 1;
+      } finally {
+        spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
+      }
+    } catch (error) {
+      status = error.code === 'ENOENT' ? 2 : 1;
+      console.error(`Linux binding verification: ${error.code ?? error.name}`);
     }
-    if (result.status !== 0) {
-      console.error('Linux regression tier: FAIL');
-      throw new Error('Linux regression tier failed');
-    }
-    console.log('Linux regression tier: PASS');
+    outcomes.push(status);
+    console.log(`Linux regression tier: ${installedStatus([status])}`);
   } else
     console.log('Linux-only regression tier: NOT RUN (supply --linux-bindings with image/assets).');
   if (options.image) {
-    const results = [];
     for (const cli of options.clis) {
       console.log(
         `Installed ${cli}: ${
@@ -182,13 +185,9 @@ try {
       }
       const status = installedStatus([result.status]);
       console.log(`Installed ${cli}: ${status}`);
-      results.push(status);
+      outcomes.push(result.status);
     }
-    const status = results.includes('FAIL')
-      ? 'FAIL'
-      : results.includes('BLOCKED')
-        ? 'BLOCKED'
-        : 'PASS';
+    const status = installedStatus(outcomes);
     console.log(
       `Installed matrix: ${status}; image=${options.image}; ${
         staged
