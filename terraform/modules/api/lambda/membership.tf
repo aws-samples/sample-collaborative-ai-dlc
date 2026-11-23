@@ -56,6 +56,40 @@ resource "aws_iam_role_policy" "membership_write" {
   })
 }
 
+locals {
+  membership_migration_environment = {
+    NEPTUNE_ENDPOINT        = var.neptune_endpoint
+    ACCESS_TABLE            = var.access_table_name
+    AUDIT_TABLE             = var.audit_table_name
+    COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
+    SSO_ROLE_CONFIG         = var.sso_role_config
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+  }
+
+  # Lambda rejects environments above 4 KB, measured as the serialized map. The
+  # SSO token trigger carries a subset of these variables and of the role config.
+  sso_role_config_environments = {
+    users               = local.users_environment
+    cognito-users       = local.cognito_users_environment
+    migrate-memberships = local.membership_migration_environment
+  }
+}
+
+# Fails the plan instead of the apply when the SSO role mappings no longer fit
+# in the environment of a Lambda that reads them.
+resource "terraform_data" "sso_role_config_size" {
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for environment in values(local.sso_role_config_environments) : length(jsonencode(environment)) <= 4096
+      ])
+      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of: ${join(", ", [for name, environment in local.sso_role_config_environments : name if length(jsonencode(environment)) > 4096])}. Reduce provider mappings."
+    }
+  }
+}
+
 resource "aws_iam_role" "membership_migration" {
   path                 = var.iam_role_path
   permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
@@ -115,16 +149,7 @@ module "membership_migration_lambda" {
   vpc_subnet_ids                    = var.private_subnet_ids
   vpc_security_group_ids            = [aws_security_group.lambda.id]
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
-  environment_variables = {
-    NEPTUNE_ENDPOINT        = var.neptune_endpoint
-    ACCESS_TABLE            = var.access_table_name
-    AUDIT_TABLE             = var.audit_table_name
-    COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
-    SSO_ROLE_CONFIG         = var.sso_role_config
-    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
-    POWERTOOLS_SERVICE_NAME = local.powertools_service_name
-    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
-  }
+  environment_variables             = local.membership_migration_environment
   depends_on = [
     aws_iam_role_policy.membership_migration,
     aws_iam_role_policy_attachment.membership_migration_basic,

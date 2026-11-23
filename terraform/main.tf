@@ -214,11 +214,6 @@ resource "terraform_data" "sso_preconditions" {
       ]))
       error_message = "SSO role mapping values must not be empty or whitespace-only."
     }
-
-    precondition {
-      condition     = length(jsonencode(local.sso_role_config)) <= 3500
-      error_message = "The normalized SSO role configuration exceeds the Lambda environment limit. Reduce provider mappings."
-    }
   }
 }
 
