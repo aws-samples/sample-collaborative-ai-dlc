@@ -3,7 +3,10 @@
 // authorities or grant them this service's credentials.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { inspectNativeRuntimeArchive } from '../../shared/native-runtime-package.js';
+import {
+  inspectNativeRuntimeArchive,
+  NATIVE_PACKAGE_LIMITS,
+} from '../../shared/native-runtime-package.js';
 import {
   NATIVE_ENGINE_PROFILE,
   engineDigest,
@@ -17,20 +20,40 @@ export {
 
 const engineDirectory = { claude: '.claude', codex: '.codex', opencode: '.aidlc' };
 
+// Keep one validated upstream projection in this engine process. The archive
+// reader still authorizes and returns the pinned bytes on every operation.
+// Workspace files and adapter-specific rewrites are created afresh below.
+let lastProjection;
+const readProjection = async (archive, harness) => {
+  if (
+    !NATIVE_ENGINE_PROFILE.harnesses.includes(harness) ||
+    !Buffer.isBuffer(archive) ||
+    archive.length > NATIVE_PACKAGE_LIMITS.compressedBytes
+  )
+    throw engineFailure('NATIVE_ENGINE_PACKAGE_UNSUPPORTED');
+  const reuse =
+    lastProjection?.harness === harness &&
+    lastProjection.sha256 === NATIVE_ENGINE_PROFILE.runtimeSha256;
+  // On a miss, hash and parse the same privately owned bytes even if the
+  // caller mutates its buffer while the asynchronous archive reader runs.
+  const bytes = reuse ? archive : Buffer.from(archive);
+  const sha256 = engineDigest(bytes);
+  if (sha256 !== NATIVE_ENGINE_PROFILE.runtimeSha256)
+    throw engineFailure('NATIVE_ENGINE_PACKAGE_UNSUPPORTED');
+  if (reuse) return lastProjection.retainedFiles;
+  const { retainedFiles } = await inspectNativeRuntimeArchive(bytes, {
+    version: NATIVE_ENGINE_PROFILE.version,
+    retainPrefix: `runtime/${harness}/`,
+  });
+  lastProjection = { sha256, harness, retainedFiles };
+  return retainedFiles;
+};
+
 // The destination is a new directory in the protected service, never the
 // coding workspace or a path supplied by an API caller. The caller owns its
 // disposal if validation or materialization fails.
 export const prepareNativeEngine = async ({ archive, harness, directory, adapterDirectory }) => {
-  if (
-    !NATIVE_ENGINE_PROFILE.harnesses.includes(harness) ||
-    !Buffer.isBuffer(archive) ||
-    engineDigest(archive) !== NATIVE_ENGINE_PROFILE.runtimeSha256
-  )
-    throw engineFailure('NATIVE_ENGINE_PACKAGE_UNSUPPORTED');
-  const { retainedFiles } = await inspectNativeRuntimeArchive(archive, {
-    version: NATIVE_ENGINE_PROFILE.version,
-    retainPrefix: `runtime/${harness}/`,
-  });
+  const retainedFiles = await readProjection(archive, harness);
   const installation = engineDirectory[harness];
   const modules = {};
   const adaptations = [];
