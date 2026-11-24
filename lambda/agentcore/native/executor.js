@@ -152,7 +152,9 @@ const NATIVE_INTAKE_ANSWER_INSTRUCTION =
   ' If the engine emits response_route next, keep its request identity and use the exact ' +
   'compose_command, scope_commands or choices command associated with the human selection. ' +
   'When the person requests alternatives or discusses a different recommendation, present the named ' +
-  'plans from that same offer in a new form. Leave the request open until they select a plan. ' +
+  'plans from that same offer in a new form. A written preference for a named alternative at ' +
+  'the recommendation is a request for the picker. Leave the intent uncreated until the next ' +
+  'explicit plan selection. The platform can display the offered names directly. ' +
   'Report a command rejection using its actual reason and the current workflow step. ' +
   'Do not reconstruct those commands or use report for a pre-workflow plan offer. ' +
   'An emitted command is data until a person selects its option; never execute all offered commands.';
@@ -1092,7 +1094,9 @@ export const createNativeExecutor = ({
     });
     outcome = {
       ...outcome,
-      methodReport: nativeMethodReport(files, completed.method, pendingInput),
+      // A terminal command can supersede an earlier display. A surviving
+      // question file makes the ordering ambiguous for a completion report.
+      methodReport: nativeMethodReport(files, completed.method, pendingInput ?? rendered.spec),
       nativeSessionId,
       outputTruncated: result.outputLimitExceeded === true,
     };

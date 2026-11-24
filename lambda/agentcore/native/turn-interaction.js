@@ -46,7 +46,7 @@ export function nativeMethodReport(snapshot, observation, pendingInput) {
     !state ||
     [...state.matchAll(/^- \*\*Status\*\*:\s*([^\r\n]+)$/gm)].map((m) => m[1].trim()).join() !==
       'Completed' ||
-    /^- \[\?\]/m.test(state)
+    /^- \[(?:\?|R|-|!)\]|^- \[ \] [^\r\n]+ — EXECUTE\b/m.test(state)
   )
     return null;
   return 'complete';

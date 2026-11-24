@@ -180,7 +180,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
   function* presentOffer() {
     // The installed conductor can forward the literal Start request as shell
     // words. Also exercise publication from the engine when it writes no form.
-    const initial = yield* runDirective('aidlc next Create a 3D version of the game');
+    const initial = yield* runDirective('aidlc next "Create a 3D version of the game"');
     if (!terminalResult) {
       const request = issuedRequestId(initial);
       const stale = request === '00000000' ? 'ffffffff' : '00000000';
@@ -192,6 +192,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     offer = yield* runDirective(
       `${nextCommand} --propose ${proposed} --request ${issuedRequestId(initial)}`,
     );
+    yield { command: 'aidlc --version' };
     return rejection ? `${rejection}\n\n${offer.question}` : offer.question;
   }
   const firstSession = await turn('Start', presentOffer());
@@ -219,24 +220,8 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     const other = { selectedOptions: [], freeText: 'Let’s use Express for this one' };
     const answer = harness === 'codex' ? other : { selectedOptions: [1] };
     function* requestPlanNames() {
-      if (harness === 'opencode')
-        return `Choose a plan. ${offer.scope_commands.map(({ scope }) => scope).join(', ')}`;
-      yield {
-        filePath: pendingFile,
-        content: JSON.stringify({
-          version: 2,
-          questions: [
-            {
-              prompt: 'Choose a plan.',
-              options: offer.scope_commands.map(({ scope, stages }) => ({
-                label: scope,
-                description: stages,
-              })),
-            },
-          ],
-        }),
-      };
-      return 'Choose a plan.';
+      yield { command: 'aidlc --version' };
+      return 'Which plan would you like?';
     }
     await turn(answer.freeText ?? offer.choices[1].label, requestPlanNames(), {
       selection: { answers: [answer] },

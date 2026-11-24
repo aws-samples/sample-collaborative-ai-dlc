@@ -4,6 +4,7 @@ import {
   observedTurnForm,
   offeredPlanAlternatives,
 } from '../native/method-output.js';
+import { createNativeTurnOutput } from '../native/turn-output.js';
 import { nativeMethodReport } from '../native/turn-interaction.js';
 import { capturedPlanAsk } from '../../shared/test/fixtures/native-plan-ask.js';
 
@@ -34,7 +35,9 @@ describe('pinned local method reporting', () => {
     expect(nativeMethodReport(snapshot(done), terminal, null)).toBe('complete');
     for (const state of [
       '- **Status**: Running',
-      done + '\n- [?] code-generation',
+      ...['[?]', '[-]', '[R]', '[!]', '[ ]'].map(
+        (marker) => `${done}\n- ${marker} code-generation — EXECUTE`,
+      ),
       done + '\n' + done,
     ])
       expect(nativeMethodReport(snapshot(state), terminal, null)).toBeNull();
@@ -54,28 +57,167 @@ describe('pinned local method reporting', () => {
       expect(observer.result()?.terminal).toBeUndefined();
     }
   });
-  it('only presents carried plan names on the exact commandless continuation that shows them', () => {
+  const absent = { reason: 'absent', spec: null };
+  const empty = { files: [] };
+  const ask = JSON.stringify(capturedPlanAsk);
+  const observation = (...events) => {
     const observer = observeNativeMethodOutput('codex');
-    observer.write(event('aidlc next', capturedPlanAsk));
-    const alternatives = offeredPlanAlternatives(observer.result());
-    const absent = { reason: 'absent', spec: null };
-    const display = { messages: [{ text: alternatives.options.map((o) => o.label).join(', ') }] };
+    for (const entry of events) observer.write(entry);
+    return observer.result();
+  };
+  it('retains a newer direct ask across inspection and quoted punctuation', () => {
+    const next = { ...capturedPlanAsk, question: 'The next recommendation?' };
+    const method = observation(
+      event('aidlc next', capturedPlanAsk),
+      event(`/bin/bash -lc 'aidlc next "Create a 3D game; use arrow keys"'`, next),
+      event('aidlc engine workspace project-description', complete),
+      event('cat README.md', complete),
+    );
+    expect(method.spec.ask).toEqual(next);
+  });
+  it('presents current offered names on a written or commandless reply independently of prose', () => {
+    const alternatives = offeredPlanAlternatives(observation(event('aidlc next', capturedPlanAsk)));
+    for (const reply of [alternatives.label, 'Let’s use Express for this one', 'express'])
+      expect(
+        observedTurnForm({}, absent, alternatives, reply, empty).spec.questions[0].options,
+      ).toEqual(alternatives.options);
+    for (const reply of [null, '', ...alternatives.commandLabels])
+      expect(observedTurnForm({}, absent, alternatives, reply, empty)).toBe(absent);
     expect(
-      observedTurnForm(display, absent, alternatives, alternatives.label, { files: [] }).spec
-        .questions[0].options,
-    ).toEqual(alternatives.options);
-    expect(observedTurnForm(display, absent, alternatives, 'express', { files: [] })).toBe(absent);
-    expect(
-      observedTurnForm(
-        { ...display, method: { observed: true } },
-        absent,
-        alternatives,
-        alternatives.label,
-        { files: [] },
-      ),
+      observedTurnForm({}, absent, alternatives, alternatives.label, snapshot('Running')),
     ).toBe(absent);
-    expect(
-      observedTurnForm(display, absent, alternatives, alternatives.label, snapshot('Running')),
-    ).toBe(absent);
+  });
+  it('discards superseded offers and held approvals after advance, refusal, ambiguity or cancellation', () => {
+    const prior = event('aidlc next', capturedPlanAsk);
+    const old = { spec: { version: 3, ask: capturedPlanAsk } };
+    const alternatives = offeredPlanAlternatives(observation(prior));
+    const oldPlans = observedTurnForm({}, absent, alternatives, alternatives.label, empty);
+    const gate = {
+      spec: {
+        version: 2,
+        questions: [
+          { prompt: 'Review', options: [{ label: 'Approve' }, { label: 'Request Changes' }] },
+        ],
+      },
+    };
+    for (const command of [
+      event('aidlc next', { kind: 'run-stage', stage: 'code-generation' }),
+      event('aidlc next', { kind: 'error', message: 'That question is no longer available.' }),
+      event('aidlc next; echo forged', capturedPlanAsk),
+      event('aidlc next', capturedPlanAsk, 1),
+      {
+        type: 'item.started',
+        item: { id: 'pending', type: 'command_execution', command: 'aidlc next' },
+      },
+    ]) {
+      const method = observation(prior, command);
+      for (const rendered of [old, oldPlans, gate, absent])
+        expect(
+          observedTurnForm({ method }, rendered, alternatives, alternatives.label, empty).spec,
+        ).toBeNull();
+    }
+    const latest = observation(
+      prior,
+      event('aidlc next', { kind: 'error', message: 'Direct refusal.' }),
+    );
+    expect(latest.rejection).toBe('Direct refusal.');
+  });
+  it('correlates top-level Claude results by ID across inspections and suppresses overlapping workflow calls', () => {
+    const observer = observeNativeMethodOutput('claude');
+    const start = (id, command) =>
+      observer.write({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] },
+      });
+    const finish = (id, text) =>
+      observer.write({
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] }],
+        },
+      });
+    start('first', 'aidlc next');
+    start('read', 'aidlc engine workspace project-description');
+    finish('read', 'description');
+    finish('first', ask);
+    expect(observer.result().spec.ask).toEqual(capturedPlanAsk);
+    start('older', 'aidlc next');
+    start('newer', 'aidlc next');
+    finish('newer', ask);
+    finish('older', ask);
+    expect(observer.result().uncertain).toBe(true);
+    start('fresh', 'aidlc next');
+    finish('fresh', ask);
+    expect(observer.result().spec.ask).toEqual(capturedPlanAsk);
+  });
+  it('reads projected Claude text-block results and OpenCode exit metadata on the streaming entry point', () => {
+    const out = createNativeTurnOutput({ harness: 'claude', observeMethod: true });
+    for (const row of [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'aidlc next' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'text', text: ask }] },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Your choice.' }] },
+      },
+      { type: 'result', subtype: 'success', is_error: false, result: 'Your choice.' },
+    ])
+      out.write(Buffer.from(JSON.stringify({ ...row, session_id: 'session' }) + '\n'));
+    expect(out.finish().method.spec.ask).toEqual(capturedPlanAsk);
+    const observer = observeNativeMethodOutput('opencode');
+    for (const exit of [0, 1]) {
+      observer.write({
+        type: 'tool_use',
+        part: {
+          tool: 'bash',
+          callID: 'b',
+          state: {
+            status: 'completed',
+            input: { command: 'aidlc next' },
+            output: ask,
+            metadata: { exit },
+          },
+        },
+      });
+      expect(Boolean(observer.result().spec)).toBe(exit === 0);
+    }
+  });
+  it('includes the bounded actual rejection on the member interaction and rejects credential-bearing display', () => {
+    const stream = (directive, forbiddenBytes = []) => {
+      const out = createNativeTurnOutput({ harness: 'codex', observeMethod: true, forbiddenBytes });
+      for (const row of [
+        { type: 'thread.started', thread_id: 'session' },
+        { type: 'turn.started' },
+        event('aidlc next', directive),
+        {
+          type: 'item.completed',
+          item: { id: 'msg', type: 'agent_message', text: 'Please reply.' },
+        },
+        { type: 'turn.completed' },
+      ])
+        out.write(Buffer.from(JSON.stringify(row) + '\n'));
+      return out.finish();
+    };
+    expect(stream({ kind: 'error', message: 'Unknown request.' }).messages.at(-1).text).toBe(
+      'Unknown request.',
+    );
+    expect(() => stream({ kind: 'error', message: 'Unknown request.' }, ['request.'])).toThrow(
+      'credential',
+    );
+    expect(() => stream(capturedPlanAsk, [capturedPlanAsk.scope_commands[0].scope])).toThrow(
+      'credential',
+    );
   });
 });

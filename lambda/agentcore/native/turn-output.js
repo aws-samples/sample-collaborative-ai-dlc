@@ -61,15 +61,16 @@ const methodProjection = {
         input: { command: leaf },
         tool_use_id: leaf,
         is_error: leaf,
-        content: leaf,
+        content: [{ type: leaf, text: leaf }],
       },
     ],
   },
-  tool_use_result: { stdout: leaf },
+  tool_use_result: { stdout: leaf, interrupted: leaf },
   part: {
     ...projection.part,
     tool: leaf,
-    state: { status: leaf, input: { command: leaf }, output: leaf },
+    callID: leaf,
+    state: { status: leaf, input: { command: leaf }, output: leaf, metadata: { exit: leaf } },
   },
 };
 const createProjectionParser = (onRecord, schemaRoot) => {
@@ -373,6 +374,17 @@ export const createNativeTurnOutput = ({
         harnessDecoder.finish();
         if (!session) invalid('incomplete');
         if (!messages.some((message) => message.text.trim())) invalid('text', 'no_visible_text');
+        const observed = method?.result();
+        if (observed?.rejection && !messages.some(({ text }) => text.includes(observed.rejection)))
+          add(observed.rejection);
+        // Carried plan names are not displayed until the next turn. Check their
+        // bytes while this turn still owns the matching credentials.
+        if (observed?.spec) {
+          const display = observed.spec.ask.scope_commands
+            .flatMap(({ scope, stages }) => [scope, stages])
+            .join('');
+          if (secrets.some((secret) => display.includes(secret))) invalid('credential');
+        }
         let normalized;
         try {
           normalized = nativeInteractionMessages(messages);
@@ -392,7 +404,7 @@ export const createNativeTurnOutput = ({
         return {
           nativeSessionId: session,
           messages: normalized,
-          ...(method ? { method: method.result() } : {}),
+          ...(method ? { method: observed } : {}),
         };
       } catch (error) {
         reject(error);
