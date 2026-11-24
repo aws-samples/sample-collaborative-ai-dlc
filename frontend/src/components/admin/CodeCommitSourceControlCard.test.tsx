@@ -61,6 +61,10 @@ describe('CodeCommitSourceControlCard', () => {
     expect(screen.getByLabelText('Role ARN')).toBeInTheDocument();
     expect(screen.getByLabelText('Repository region')).toBeInTheDocument();
     // Setup guide open by default on first setup, with the policies and the id.
+    expect(screen.getByRole('button', { name: 'Setup guide' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
     expect(screen.getByTestId('codecommit-trust-policy')).toHaveTextContent(EXTERNAL_ID);
     expect(screen.getByTestId('codecommit-permissions-policy')).toHaveTextContent(
       'ListRepositories',
@@ -143,8 +147,11 @@ describe('CodeCommitSourceControlCard', () => {
     await user.type(screen.getByLabelText('Role ARN'), 'arn:aws:iam::210987654321:role/new-role');
     await user.click(screen.getByLabelText('Repository region'));
     await user.click(await screen.findByRole('option', { name: 'eu-west-1' }));
-    await user.click(screen.getByRole('button', { name: /Setup guide/ }));
+    const toggle = screen.getByRole('button', { name: 'Setup guide' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle);
 
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByTestId('codecommit-permissions-policy')).toHaveTextContent(
       'arn:aws:codecommit:eu-west-1:210987654321:*',
     );
@@ -189,6 +196,21 @@ describe('CodeCommitSourceControlCard', () => {
     expect(screen.getByText(ROLE)).toBeInTheDocument();
     // The setup guide is collapsed, so the trust policy is not shown yet.
     expect(screen.queryByTestId('codecommit-trust-policy')).not.toBeInTheDocument();
+  });
+
+  it('configured: the setup guide opens from the same toggle as the other providers', async () => {
+    getConfig.mockResolvedValue(baseConfig({ roleArn: ROLE, region: 'eu-west-1' }));
+    const user = userEvent.setup();
+    render(<CodeCommitSourceControlCard />);
+
+    const toggle = await screen.findByRole('button', { name: 'Setup guide' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('codecommit-trust-policy')).toHaveTextContent(EXTERNAL_ID);
+    // One toggle only: no separate "Setup guide" button next to Change.
+    expect(screen.getAllByRole('button', { name: /setup guide/i })).toHaveLength(1);
   });
 
   it('a non-admin (403) sees an error, never the principals or external id', async () => {
