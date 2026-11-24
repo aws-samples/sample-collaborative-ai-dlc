@@ -36,9 +36,8 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           case "$GITHUB_REF" in
-            refs/heads/main) ;;
             refs/heads/release/*.x)
-              # A patch branch such as release/2.4.x only publishes its own line.
+              # A line branch such as release/2.4.x only publishes its own line.
               line="${GITHUB_REF#refs/heads/release/}"
               line="${line%.x}"
               if [[ ! "$line" =~ ^[0-9]+\.[0-9]+$ || "$VERSION" != "$line".* ]]; then
@@ -47,7 +46,7 @@ jobs:
               fi
               ;;
             *)
-              echo "Releases may only be dispatched from main or a release/X.Y.x branch." >&2
+              echo "Releases are dispatched from a release/X.Y.x branch; run Prepare Release Branch first for a new minor or major line." >&2
               exit 1
               ;;
           esac
@@ -84,7 +83,7 @@ jobs:
         run: |
           # A patch for an older line must not roll the demo back from a newer one.
           newest="$(git tag --list 'v*' | sed -E 's/^v//; s/[-+].*//' | sort -V | tail -n 1)"
-          if [[ "$GITHUB_REF" == refs/heads/main || "${newest%.*}" == "$(echo "$VERSION" | cut -d. -f1,2)" ]]; then
+          if [[ "${newest%.*}" == "$(echo "$VERSION" | cut -d. -f1,2)" ]]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"

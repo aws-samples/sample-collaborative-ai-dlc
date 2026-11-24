@@ -69,25 +69,46 @@ The stable GitHub Release becomes the normal release for the same core version, 
 
 ## Ongoing Releases
 
-Normal work and release preparation branch from and merge to `main`; minor and major releases are tagged only from `main`. Patch releases of an older line follow [Patch Releases](#patch-releases). For a minor release such as `2.1.0`:
+Every release — major, minor, or patch — is published from its permanent line branch, such as `release/2.5.x`; `main` is never tagged directly. Normal work keeps merging to `main`, and a release line only ever receives code that is already on `main`. The only extra step for a new minor or major version is creating its line branch.
 
-1. Start with a clean working tree, update `main`, and create the preparation branch:
+### Start a new line (minor and major versions)
+
+1. Confirm `main` is green and contains everything the new release needs.
+2. Dispatch **Prepare Release Branch** from `main` with the line, for example `2.5`. The workflow creates `release/2.5.x` at the dispatched `main` commit; it rejects a malformed line, an existing branch, and a line that is not newer than every published line. Branch protection for `release/*.x` in the repository settings covers the new branch (no force pushes or deletion, PR required).
+
+Nothing is tagged or published by this step, so the branch can be validated for as long as needed while `main` keeps moving. For a line that predates this process, create the branch from the line's latest tag instead, and make sure it contains the current release workflows before dispatching (a dispatch runs the workflow file of the dispatched branch):
+
+```bash
+git fetch origin --tags
+git push origin v2.4.0^{commit}:refs/heads/release/2.4.x
+```
+
+### Bring fixes to an existing line (patch versions)
+
+1. Fix `main` first: merge the fix through a normal PR into `main`. A fix branched from the release tag (for example `v2.4.0`) applies to both `main` and the release branch.
+2. Bring each fix to the release branch through a PR: merge the same fix branch, or cherry-pick the merged commit with `git cherry-pick -x` so the release commit names its `main` origin. Never add a change to a release branch that is not on `main`.
+
+### Prepare and publish (identical for every release)
+
+The steps below use a minor release, `2.5.0`; patches such as `2.4.1` and previews such as `2.5.0-preview0` use the same steps with their version and line.
+
+1. Start with a clean working tree, update the release branch, and create the preparation branch:
 
    ```bash
-   git switch main
+   git switch release/2.5.x
    git pull --ff-only
-   git switch -c release/2.1.0
+   git switch -c chore/release-2.5.0
    git fetch origin --tags
-   npm run release:prepare -- 2.1.0
+   npm run release:prepare -- 2.5.0
    ```
 
-2. Complete the new `CHANGELOG.md` entry by reviewing every change since the previous release (`git log v2.0.0..HEAD` for this release). Leave an empty `Unreleased` section for subsequent work. Record operator actions and compatibility changes, update installation examples, and replace `TBD` with the intended publication date before final validation.
+2. Complete the new `CHANGELOG.md` entry by reviewing every change since the previous release (`git log v2.4.0..HEAD` for this release). Leave an empty `Unreleased` section for subsequent work. Record operator actions and compatibility changes, update installation examples, and replace `TBD` with the intended publication date before final validation.
 3. Install the locked dependencies and run the checks used by CI. The backend tests require a running Docker-compatible container runtime for Gremlin Server and DynamoDB Local. CI tests the backend on Node.js 22 and 24; use Node.js 24 for the frontend build and lint checks.
 
    ```bash
    npm ci
    npm --prefix frontend ci
-   npm run release:check -- 2.1.0 --final --tag-must-not-exist
+   npm run release:check -- 2.5.0 --final --tag-must-not-exist
    npm run test:release
    npm test
    npm run lint
@@ -99,28 +120,12 @@ Normal work and release preparation branch from and merge to `main`; minor and m
 
    When documentation changes, also run `uv sync --group docs` and `uv run zensical build`.
 
-4. Test a fresh installation and an update from the previous stable release in a disposable deployment. For `2.1.0`, also follow the [managed build environment test](docs/development/testing.md#managed-build-environment-deployed-stack-test), verify credential selection and paused-stage recovery, export a workspace, and verify tracker delivery comments. Reauthorize Jira with `write:jira-work` before testing its write-back. Keep v1 adoption and upgrade coverage when those paths change.
-5. Open the preparation PR into `main` and require every CI check to pass. If `main` changes during validation, incorporate the changes and rerun the affected checks. Merge only after deployment testing succeeds.
-6. Confirm the merged commit is green, reports root version `2.1.0`, and has the intended changelog date. Dispatch **Publish Release** from `main` with version `2.1.0`. The workflow creates the annotated tag and GitHub Release, then starts the protected demo deployment described in [Demo deployment](docs/development/demo-deployment.md).
-7. Verify that `v2.1.0` points to the dispatched `main` commit, the installer lists and selects `2.1.0`, and the deployed status bar reports `AI-DLC v2.1.0`.
+4. Test a fresh installation and an update from the previous stable release in a disposable deployment. For a minor or major release, also follow the [managed build environment test](docs/development/testing.md#managed-build-environment-deployed-stack-test), verify credential selection and paused-stage recovery, export a workspace, and verify tracker delivery comments. Reauthorize Jira with `write:jira-work` before testing its write-back. Keep v1 adoption and upgrade coverage when those paths change.
+5. Open the preparation PR into the release branch and require every CI check to pass. If the release branch changes during validation, incorporate the changes and rerun the affected checks. Merge only after deployment testing succeeds.
+6. Confirm the merged release-branch commit is green, reports root version `2.5.0`, and has the intended changelog date. Dispatch **Publish Release** from `release/2.5.x` with version `2.5.0`. The workflow refuses every other branch and any version outside the branch's line: `release/2.5.x` publishes `2.5.0`, `2.5.1`, or `2.5.0-preview0` and rejects `2.6.1`. It creates the annotated tag and GitHub Release, then starts the protected demo deployment described in [Demo deployment](docs/development/demo-deployment.md) unless a newer release line already exists, so a patch of an older line never rolls the demo back.
+7. Verify that `v2.5.0` points to the dispatched release-branch commit, the installer lists and selects `2.5.0`, and the deployed status bar reports `AI-DLC v2.5.0`.
+8. Bring the release metadata back to `main` through a PR, so `main` carries the published changelog entry — and, for the newest line, the root version — into the next release.
 
-Creating the preparation branch does not publish a release. Do not tag that branch or manually recreate tags owned by the release workflow. Use the same process with the appropriate version and previous tag for subsequent minor or patch releases. Preview releases use explicit versions such as `2.2.0-preview0` and participate in installer discovery by default.
-
-## Patch Releases
-
-When `main` already contains changes that must not ship in a patch, publish the patch from a release branch for its minor line, such as `release/2.4.x` for `2.4.1`.
-
-1. Fix `main` first: merge the fix through a normal PR into `main`. A fix branched from the release tag (for example `v2.4.0`) applies to both `main` and the release branch.
-2. Create the release branch from the tag the first time the line needs a patch, and protect it like `main` (no force pushes or deletion, PR required):
-
-   ```bash
-   git fetch origin --tags
-   git push origin v2.4.0^{commit}:refs/heads/release/2.4.x
-   ```
-
-3. Bring each fix to the release branch through a PR: merge the same fix branch, or cherry-pick the merged commit with `git cherry-pick -x` so the release commit names its `main` origin. Never add a change to a release branch that is not on `main`.
-4. Prepare the patch on a branch from the release branch (`npm run release:prepare -- 2.4.1`, changelog entry, the checks and deployment tests listed above) and merge it into the release branch.
-5. Dispatch **Publish Release** from the release branch with version `2.4.1`. The workflow only publishes versions of the branch's own line. It deploys the demo only when no newer release line exists, so a patch of an older line never rolls the demo back.
-6. Add the `2.4.1` changelog entry to `main` through a PR, so the next release's changelog includes it.
+Preparation branches use the `chore/release-X.Y.Z` form; the `release/` namespace is reserved for line branches. Creating a line or preparation branch does not publish a release; do not tag those branches manually or recreate tags owned by the release workflow. Preview releases use explicit versions such as `2.5.0-preview0` and participate in installer discovery by default.
 
 `release/1.x` remains frozen. An exceptional v1 security fix branches from and returns to `release/1.x`; v2 code must not be merged into it.

@@ -29,6 +29,7 @@ const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
 const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
 const releaseWorkflow = join(root, '.github/workflows/release.yml');
+const prepareWorkflow = join(root, '.github/workflows/prepare-release.yml');
 const demoWorkflow = join(root, '.github/workflows/deploy-demo.yml');
 const mainDemoWorkflow = join(root, '.github/workflows/deploy-main.yml');
 const yjsDockerfile = join(root, 'lambda/yjs-server/Dockerfile');
@@ -273,6 +274,32 @@ test('release and main deployments use isolated protected environments and GitHu
       deployment.indexOf('- name: Deploy frontend'),
     'frontend deployment must follow the infrastructure script',
   );
+});
+
+test('releases publish only from line branches that the prepare workflow creates', () => {
+  const release = readFileSync(releaseWorkflow, 'utf8');
+  const prepareText = readFileSync(prepareWorkflow, 'utf8');
+  const prepare = yaml.load(prepareText);
+
+  // Publishing accepts no ref besides release/X.Y.x and pins the version to the branch line.
+  assert.match(release, /case "\$GITHUB_REF" in/);
+  assert.match(release, /refs\/heads\/release\/\*\.x\)/);
+  assert.doesNotMatch(release, /refs\/heads\/main/);
+  assert.match(release, /"\$VERSION" != "\$line"\.\*/);
+
+  // Line branches are created from main by the prepare workflow, with the publish permissions model.
+  assert.ok(
+    prepare.on.workflow_dispatch.inputs.line.required,
+    'the release line input is required',
+  );
+  assert.equal(prepare.permissions.contents, 'read');
+  assert.equal(prepare.jobs.prepare.permissions.contents, 'write');
+  assert.equal(prepare.concurrency.group, 'release', 'branch creation must not race a publish');
+  assert.match(prepareText, /"\$GITHUB_REF" != refs\/heads\/main/);
+  assert.match(prepareText, /\^\[0-9\]\+\\\.\[0-9\]\+\$/);
+  assert.match(prepareText, /git ls-remote --exit-code origin "refs\/heads\/release\/\$LINE\.x"/);
+  assert.match(prepareText, /git push origin "\$GITHUB_SHA:refs\/heads\/release\/\$LINE\.x"/);
+  assert.doesNotMatch(prepareText, /git tag -a|gh release create/);
 });
 
 test('demo deployments use the resolved backend for both concurrency and Terraform', () => {
