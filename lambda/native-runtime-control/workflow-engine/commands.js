@@ -294,6 +294,10 @@ export const nativeEngineCommand = ({
     validateCreation(args, state, member);
     return { args, member: false, creation: true };
   }
+  // AI-DLC resolves this read against the active intent in its own workspace.
+  // Other workspace verbs can change the intent or import documents.
+  if (route === 'workspace' && verb === 'project-description' && args.length === 3)
+    return { args, member: false, tool: 'aidlc-utility.ts' };
   // The pinned code-generation plan embeds the renderer's exact current
   // contract. Its other subcommands can fingerprint or change plan state.
   if (

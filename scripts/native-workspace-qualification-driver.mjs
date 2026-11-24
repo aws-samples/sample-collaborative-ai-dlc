@@ -408,6 +408,7 @@ export async function workspaceQualificationDriver({
   };
   return {
     inputReads,
+    originalPrompt: f.prepared.request.prompt,
     get: (route, query, options) => member.request(route, undefined, { query, ...options }),
     competition: () => competition,
     exportResult: gitResult && ((revision) => gitResult.verify(member, revision)),

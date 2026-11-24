@@ -5920,6 +5920,15 @@ recommended Classic, offered **Use a different plan** and had received zero
 replies. The other was running turn 1. Browser rendering, switching to Express
 and finishing on this version still need member evidence.
 
+At 12:51 UTC, engine 14 Codex intent `49542d30-ac9b-48f4-aca3-20b15704efa2`
+was awaiting a reply on turn 3 with zero form questions. The pinned stage
+instructions called `aidlc engine workspace project-description` to read the
+member’s saved request. The native service denied that read. The local fix
+routes it to the pinned utility for the active intent. The installed
+Requirements Analysis regression compares the returned description with the
+start prompt and checks that the plan selection remains the only applied
+decision. This fix still needs a DEV release and a signed-in run.
+
 | Item                          | What has been demonstrated                                                                                                                                                                                     | What will close it                                                                                                                                                                                                                      |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | NE-11 · Workflow completion   | The protected engine records decisions and ties its verdict to a publication. Installed Express runs reached completion.                                                                                       | Finish a signed-in DEV plan with required sensors and a model-backed reviewer. Match the displayed verdict, check and review outcomes, and downloaded result to the same revision.                                                      |
@@ -5967,6 +5976,10 @@ The release and installed receipts in the delivery worktree are
 `.native-evidence/native-scope-arm64-497bfa43-01/qualification.json`.
 The two incident reproductions are in `.native-evidence/native-intake-20261124-01/`
 and `.native-evidence/native-scope-incident-20261124-01/`.
+The turn 3 readback is in
+`.native-evidence/native-project-description-38ce6i_t/published-message-match.json`.
+Local installed runs for the description read are in
+`.native-evidence/project-description-fix-m875eprm/journeys.json`.
 The November 24 read-only preflight returned `READY` for engine 14 with zero
 blocking or unknown checks. Its receipt is in
 `.native-evidence/native-v14-readonly-20261124-01/observations/preflight-001.json`.

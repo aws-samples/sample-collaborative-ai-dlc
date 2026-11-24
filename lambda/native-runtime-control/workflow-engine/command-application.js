@@ -253,7 +253,10 @@ export const applyNativeEngineCommand = async (context) => {
         }
       : selected.creation
         ? await runner.tool('aidlc-utility.ts', ['intent-create', ...selected.args.slice(3)])
-        : await runner.tool(`aidlc-${selected.args[1]}.ts`, selected.args.slice(2));
+        : await runner.tool(
+            selected.tool ?? `aidlc-${selected.args[1]}.ts`,
+            selected.args.slice(2),
+          );
   if (selected.review)
     result = await completeNativeEngineReview({
       requested: result,

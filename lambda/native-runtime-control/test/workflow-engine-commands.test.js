@@ -18,6 +18,23 @@ const state = () => ({
   ],
 });
 describe('protected workflow command capabilities', () => {
+  it('reads the active project description without a member reply or workspace mutation', () => {
+    const args = ['engine', 'workspace', 'project-description'];
+    for (const stage of ['intent-capture', 'requirements-analysis']) {
+      const current = { directive: { kind: 'run-stage', stage }, decisions: [] };
+      expect(command([...args, '--project-dir', project], current)).toEqual({
+        args,
+        member: false,
+        tool: 'aidlc-utility.ts',
+      });
+      for (const other of [
+        [...args, '--project-dir', '/another-project'],
+        [...args, '--intent', 'another-intent'],
+        ['engine', 'workspace', 'reclassify'],
+      ])
+        expect(() => command(other, current)).toThrow('NATIVE_ENGINE_COMMAND_DENIED');
+    }
+  });
   it('renders the pinned code-generation Testing Contract without a member command', () => {
     const current = { ...state(), directive: { kind: 'run-stage', stage: 'code-generation' } };
     const args = ['engine', 'testing-posture', 'render'];

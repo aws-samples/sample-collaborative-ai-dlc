@@ -251,8 +251,10 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     };
     yield { command: `${nextCommand} --resume`, denied: true };
     stage = yield* loadStage(nextCommand);
-    if (terminalResult) return yield* presentExpressStage(stage, project, pendingFile);
     assert.equal(stage.stage, 'requirements-analysis');
+    const savedRequest = yield* runDirective('aidlc engine workspace project-description');
+    assert.equal(savedRequest.description, driver.originalPrompt);
+    if (terminalResult) return yield* presentExpressStage(stage, project, pendingFile);
     assert.equal(stage.gate, true);
     assert.equal(stage.produces.length, 2);
     for (const path of stage.produces)
