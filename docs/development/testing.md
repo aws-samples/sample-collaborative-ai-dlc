@@ -705,3 +705,66 @@ when diagnosing deployed infrastructure or routing behavior.
 
 The credentialed E2E is intentionally local and manual; it is not a GitHub
 Actions workflow.
+
+## Frontend design-system guards
+
+Two deterministic tests in the frontend suite (`npm --prefix frontend test`)
+protect the [UI conventions](ui-conventions.md). They read source files only
+and need neither Docker nor credentials.
+
+### Guard ratchet
+
+`frontend/src/test/dsGuards.test.ts` counts known anti-patterns in each source
+file and compares the counts with `frontend/src/test/dsGuards.baseline.json`.
+A file may never exceed its baseline count, and a file that is absent from the
+baseline must have none. Existing occurrences are tolerated until they are
+removed; new ones fail the test.
+
+| Guard                   | Counts                                                         |
+| ----------------------- | -------------------------------------------------------------- |
+| `details-element`       | The HTML `<details>` element                                   |
+| `window-confirm`        | Calls to `window.confirm(`                                     |
+| `font-size-below-11px`  | `text-[8px]`, `text-[9px]`, and `text-[10px]`                  |
+| `amber-text-workaround` | `text-amber-500` and `text-amber-600`                          |
+| `indigo-palette`        | Any `indigo-` palette class                                    |
+| `raw-status-jsx-text`   | An uppercase backend status, such as `FAILED`, as element text |
+
+The scan covers `frontend/src/**/*.ts` and `*.tsx`, excluding test files,
+`src/test/`, and the design-system primitives in `src/components/ui/`.
+`lib/statusModel.ts` is exempt from the status guard. The scan is textual, so a
+pattern inside a comment or a string also counts.
+
+When the test fails, replace the flagged pattern with the primitive named in
+the UI conventions. When a file drops below its baseline, the test prints it;
+tighten the baseline in the same change:
+
+```bash
+cd frontend
+UPDATE_DS_BASELINE=1 npx vitest run src/test/dsGuards.test.ts
+```
+
+This rewrites the baseline with the current counts, increases included. Review
+the diff before committing it: counts should only go down.
+
+### Token contrast
+
+`frontend/src/test/tokens.contrast.test.ts` parses the light (`:root`) and dark
+(`.dark`) token blocks of `frontend/src/index.css`, resolves `var()` chains,
+converts the colors to sRGB, and checks WCAG contrast ratios:
+
+- Every `--agent-*-fg` status text token reads at 4.5:1 or better on
+  `--background`, on `--card`, and on a 15 % tint of its own base color over
+  the card, in both themes. The tint is the status pill pattern.
+- `--warning` is a different color family from `--agent-waiting`, and
+  `--warning-fg` meets the same three ratios.
+- `--muted-foreground-on-tint` reads at 4.5:1 or better on the card and on a
+  10 % primary tint over the card.
+- Phase tokens are low-chroma, differ from every status color, and their
+  foreground reads at 4.5:1 or better on its fill.
+- `text-2xs` is 11 px on a 16 px line, and no font-size token is smaller than
+  11 px.
+- The animation plugin is registered and a global `prefers-reduced-motion`
+  rule exists.
+
+A failing case names the token and the theme. Fix the token value in
+`index.css`; do not relax the threshold.

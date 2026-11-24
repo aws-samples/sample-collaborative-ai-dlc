@@ -62,7 +62,7 @@ export function PhaseProgressRing({
         />
       </svg>
       {showValue && (
-        <span className="absolute text-[9px] font-semibold text-foreground">
+        <span className="absolute text-2xs font-semibold text-foreground">
           {Math.round(value)}%
         </span>
       )}

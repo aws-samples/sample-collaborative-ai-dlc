@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
-import { Loader2, CheckCircle2, XCircle, Clock, CirclePause } from 'lucide-react';
+import { StatusPill } from '@/components/ui/status-pill';
+import { getStatus, type StatusKeyMap } from '@/lib/statusModel';
 
 type AgentStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'failed' | 'timed_out' | null;
 
@@ -11,47 +11,22 @@ interface AgentStatusBadgeProps {
   className?: string;
 }
 
-const STATUS_CONFIG: Record<
-  string,
-  {
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-    className: string;
-    pulse?: boolean;
-  }
-> = {
-  idle: {
-    label: 'Idle',
-    icon: Clock,
-    className: 'bg-muted text-muted-foreground',
-  },
-  running: {
-    label: 'Running',
-    icon: Loader2,
-    className: 'bg-agent-running/15 text-agent-running border-agent-running/30',
-    pulse: true,
-  },
-  waiting: {
-    label: 'Waiting',
-    icon: CirclePause,
-    className: 'bg-agent-waiting/15 text-agent-waiting border-agent-waiting/30',
-    pulse: true,
-  },
-  completed: {
-    label: 'Completed',
-    icon: CheckCircle2,
-    className: 'bg-agent-success/15 text-agent-success border-agent-success/30',
-  },
-  failed: {
-    label: 'Failed',
-    icon: XCircle,
-    className: 'bg-agent-error/15 text-agent-error border-agent-error/30',
-  },
-  timed_out: {
-    label: 'Timed Out',
-    icon: Clock,
-    className: 'bg-agent-warning/15 text-agent-warning border-agent-warning/30',
-  },
+const STAGE_KEY: Record<NonNullable<AgentStatus>, StatusKeyMap['stage'] | 'TIMED_OUT'> = {
+  idle: 'PENDING',
+  running: 'RUNNING',
+  waiting: 'WAITING_FOR_HUMAN',
+  completed: 'SUCCEEDED',
+  failed: 'FAILED',
+  timed_out: 'TIMED_OUT',
+};
+
+const DOT_CLASS: Record<NonNullable<AgentStatus>, string> = {
+  idle: 'bg-muted-foreground',
+  running: 'bg-agent-running',
+  waiting: 'bg-agent-waiting',
+  completed: 'bg-agent-success',
+  failed: 'bg-agent-error',
+  timed_out: 'bg-agent-warning',
 };
 
 export function AgentStatusBadge({
@@ -60,45 +35,41 @@ export function AgentStatusBadge({
   compact = false,
   className,
 }: AgentStatusBadgeProps) {
-  const config = STATUS_CONFIG[status || 'idle'] || STATUS_CONFIG.idle;
-  const Icon = config.icon;
+  const key = status ?? 'idle';
+  const stageKey = STAGE_KEY[key];
+  const entry = getStatus('stage', stageKey);
   // Discussion assists are in-thread helpers, not pipeline phases.
-  const typeLabel = agentType === 'discussion' ? 'Discussion assist' : agentType;
+  const typeLabel =
+    agentType === 'discussion'
+      ? 'Discussion assist'
+      : agentType
+        ? `${agentType.charAt(0).toUpperCase()}${agentType.slice(1).replace(/[_-]/g, ' ')} agent`
+        : null;
 
   if (compact) {
     return (
-      <span className={cn('relative flex h-2.5 w-2.5', className)}>
-        {config.pulse && (
+      <span
+        role="img"
+        aria-label={entry.label}
+        className={cn('relative flex h-2.5 w-2.5 shrink-0', className)}
+      >
+        {entry.live && (
           <span
             className={cn(
-              'animate-ping absolute inline-flex h-full w-full rounded-full opacity-75',
-              status === 'running' ? 'bg-agent-running' : 'bg-agent-waiting',
+              'absolute inline-flex h-full w-full rounded-full opacity-75 motion-safe:animate-ping',
+              DOT_CLASS[key],
             )}
           />
         )}
-        <span
-          className={cn(
-            'relative inline-flex rounded-full h-2.5 w-2.5',
-            status === 'running'
-              ? 'bg-agent-running'
-              : status === 'waiting'
-                ? 'bg-agent-waiting'
-                : status === 'completed'
-                  ? 'bg-agent-success'
-                  : status === 'failed'
-                    ? 'bg-agent-error'
-                    : 'bg-muted-foreground',
-          )}
-        />
+        <span className={cn('relative inline-flex h-2.5 w-2.5 rounded-full', DOT_CLASS[key])} />
       </span>
     );
   }
 
   return (
-    <Badge variant="outline" className={cn('gap-1 font-medium', config.className, className)}>
-      <Icon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} />
-      {typeLabel && <span className="capitalize">{typeLabel.replace(/[_-]/g, ' ')}</span>}
-      <span>{config.label}</span>
-    </Badge>
+    <span className={cn('inline-flex items-center gap-2 text-xs', className)}>
+      {typeLabel && <span className="text-muted-foreground">{typeLabel}</span>}
+      <StatusPill kind="stage" status={stageKey} size="md" />
+    </span>
   );
 }

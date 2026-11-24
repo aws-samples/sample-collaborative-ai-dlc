@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @plugin "@tailwindcss/typography";
+@plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -17,10 +18,13 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-muted-foreground-on-tint: var(--muted-foreground-on-tint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -52,13 +56,23 @@
   --color-phase-review: var(--phase-review);
   --color-phase-review-foreground: var(--phase-review-foreground);
 
-  /* Agent status colors */
+  /* Agent status colors (fills) and text-safe foregrounds (>= 4.5:1 on bg, card, own 15 % tint) */
   --color-agent-idle: var(--agent-idle);
+  --color-agent-idle-fg: var(--agent-idle-fg);
   --color-agent-running: var(--agent-running);
+  --color-agent-running-fg: var(--agent-running-fg);
   --color-agent-waiting: var(--agent-waiting);
+  --color-agent-waiting-fg: var(--agent-waiting-fg);
   --color-agent-success: var(--agent-success);
+  --color-agent-success-fg: var(--agent-success-fg);
   --color-agent-error: var(--agent-error);
+  --color-agent-error-fg: var(--agent-error-fg);
   --color-agent-warning: var(--agent-warning);
+  --color-agent-warning-fg: var(--agent-warning-fg);
+
+  /* Type scale: 11 px is the floor (badges, counters, tabular meta) */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
 
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -83,11 +97,14 @@
   --secondary: oklch(0.96 0.003 286);
   --secondary-foreground: oklch(0.205 0.006 286);
   --muted: oklch(0.96 0.003 286);
-  --muted-foreground: oklch(0.55 0.014 286);
+  --muted-foreground: oklch(0.52 0.014 286);
+  --muted-foreground-on-tint: oklch(0.48 0.014 286);
   --accent: oklch(0.96 0.003 286);
   --accent-foreground: oklch(0.205 0.006 286);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.7 0.18 50);
+  --warning-fg: oklch(0.5 0.15 50);
   --border: oklch(0.915 0.006 286);
   --input: oklch(0.915 0.006 286);
   --ring: oklch(0.553 0.013 286);
@@ -109,27 +126,33 @@
   --sidebar-border: oklch(0.915 0.006 286);
   --sidebar-ring: oklch(0.553 0.013 286);
 
-  /* Phase colors */
-  --phase-initialization: oklch(0.588 0.02 260);
+  /* Phase colors: low-chroma, never equal to a status color */
+  --phase-initialization: oklch(0.47 0.04 250);
   --phase-initialization-foreground: oklch(0.985 0 0);
-  --phase-ideation: oklch(0.585 0.233 277);
+  --phase-ideation: oklch(0.5 0.08 277);
   --phase-ideation-foreground: oklch(0.985 0 0);
-  --phase-inception: oklch(0.606 0.25 292.717);
+  --phase-inception: oklch(0.5 0.08 300);
   --phase-inception-foreground: oklch(0.985 0 0);
-  --phase-construction: oklch(0.795 0.184 86.047);
-  --phase-construction-foreground: oklch(0.205 0.006 286);
-  --phase-operation: oklch(0.65 0.22 340);
+  --phase-construction: oklch(0.52 0.08 80);
+  --phase-construction-foreground: oklch(0.985 0 0);
+  --phase-operation: oklch(0.52 0.08 350);
   --phase-operation-foreground: oklch(0.985 0 0);
-  --phase-review: oklch(0.648 0.2 163);
+  --phase-review: oklch(0.5 0.07 175);
   --phase-review-foreground: oklch(0.985 0 0);
 
   /* Agent status */
   --agent-idle: oklch(0.55 0.014 286);
+  --agent-idle-fg: oklch(0.5 0.014 286);
   --agent-running: oklch(0.606 0.25 292.717);
+  --agent-running-fg: oklch(0.5 0.22 293);
   --agent-waiting: oklch(0.795 0.184 86.047);
+  --agent-waiting-fg: oklch(0.5 0.12 70);
   --agent-success: oklch(0.648 0.2 163);
+  --agent-success-fg: oklch(0.5 0.11 163);
   --agent-error: oklch(0.577 0.245 27.325);
-  --agent-warning: oklch(0.795 0.184 86.047);
+  --agent-error-fg: oklch(0.5 0.19 27);
+  --agent-warning: var(--warning);
+  --agent-warning-fg: var(--warning-fg);
 
   --radius: 0.625rem;
 }
@@ -148,10 +171,13 @@
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.24 0.012 286);
   --muted-foreground: oklch(0.65 0.015 286);
+  --muted-foreground-on-tint: oklch(0.89 0.012 286);
   --accent: oklch(0.24 0.012 286);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.78 0.17 55);
+  --warning-fg: oklch(0.82 0.15 55);
   --border: oklch(0.28 0.014 286);
   --input: oklch(0.28 0.014 286);
   --ring: oklch(0.553 0.013 286);
@@ -173,27 +199,33 @@
   --sidebar-border: oklch(0.28 0.014 286);
   --sidebar-ring: oklch(0.553 0.013 286);
 
-  /* Phase colors (slightly brighter for dark mode contrast) */
-  --phase-initialization: oklch(0.65 0.025 260);
-  --phase-initialization-foreground: oklch(0.985 0 0);
-  --phase-ideation: oklch(0.65 0.24 277);
-  --phase-ideation-foreground: oklch(0.985 0 0);
-  --phase-inception: oklch(0.67 0.26 292.717);
-  --phase-inception-foreground: oklch(0.985 0 0);
-  --phase-construction: oklch(0.828 0.189 84.429);
+  /* Phase colors (lighter fills with dark text for dark mode) */
+  --phase-initialization: oklch(0.78 0.04 250);
+  --phase-initialization-foreground: oklch(0.145 0 0);
+  --phase-ideation: oklch(0.8 0.08 277);
+  --phase-ideation-foreground: oklch(0.145 0 0);
+  --phase-inception: oklch(0.8 0.08 300);
+  --phase-inception-foreground: oklch(0.145 0 0);
+  --phase-construction: oklch(0.82 0.08 80);
   --phase-construction-foreground: oklch(0.145 0 0);
-  --phase-operation: oklch(0.7 0.23 340);
-  --phase-operation-foreground: oklch(0.985 0 0);
-  --phase-review: oklch(0.696 0.17 162.48);
-  --phase-review-foreground: oklch(0.985 0 0);
+  --phase-operation: oklch(0.8 0.08 350);
+  --phase-operation-foreground: oklch(0.145 0 0);
+  --phase-review: oklch(0.8 0.07 175);
+  --phase-review-foreground: oklch(0.145 0 0);
 
   /* Agent status (brighter for dark mode) */
   --agent-idle: oklch(0.65 0.015 286);
+  --agent-idle-fg: oklch(0.74 0.015 286);
   --agent-running: oklch(0.67 0.26 292.717);
+  --agent-running-fg: oklch(0.78 0.16 293);
   --agent-waiting: oklch(0.828 0.189 84.429);
+  --agent-waiting-fg: oklch(0.85 0.16 84.429);
   --agent-success: oklch(0.696 0.17 162.48);
+  --agent-success-fg: oklch(0.78 0.15 162.48);
   --agent-error: oklch(0.645 0.246 16.439);
-  --agent-warning: oklch(0.828 0.189 84.429);
+  --agent-error-fg: oklch(0.76 0.17 16.439);
+  --agent-warning: var(--warning);
+  --agent-warning-fg: var(--warning-fg);
 
   --radius: 0.625rem;
 }
@@ -253,6 +285,18 @@ body {
   }
   100% {
     transform: translateX(100%);
+  }
+}
+
+/* ─── Reduced motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

@@ -1,0 +1,494 @@
+// The single status registry: every status word, tone, icon and help sentence
+// the UI shows comes from here, so one backend value reads the same on every
+// surface (sidebar, Spaces, Space, Overview, Work, Observability, settings).
+//
+// Pure functions; clocks are injected (`now`) and `Date.now()` only appears
+// as a default parameter.
+
+import {
+  Ban,
+  CircleAlert,
+  CircleCheck,
+  CircleDashed,
+  CircleHelp,
+  CircleMinus,
+  CirclePause,
+  CircleSlash,
+  CircleX,
+  Clock,
+  GitMerge,
+  GitPullRequestDraft,
+  Hourglass,
+  LoaderCircle,
+  MessageCircleQuestion,
+  PencilLine,
+  RefreshCw,
+  Settings,
+  TriangleAlert,
+  Undo2,
+  Wifi,
+  WifiOff,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react';
+import type { ConnectionStatus } from '@/services/realtime';
+import type { IntentGate, IntentStatus, StageState, UnitState } from '@/services/intents';
+
+export type StatusKind = 'intent' | 'stage' | 'gate' | 'unit' | 'connection' | 'config' | 'sensor';
+
+export type StatusTone =
+  | 'neutral'
+  | 'running'
+  | 'waiting'
+  | 'success'
+  | 'danger'
+  | 'warning'
+  | 'info';
+
+export interface StatusEntry {
+  /** Title-case human label. Never a raw backend value. */
+  label: string;
+  tone: StatusTone;
+  icon: LucideIcon;
+  /** One plain sentence explaining the state. */
+  help: string;
+  /** Work is actively progressing: the only states allowed to animate. */
+  live?: boolean;
+}
+
+/** `resume_required`: answered, but the run was not woken up (resumeAvailable). */
+export type GateStatusKey = IntentGate['status'] | 'resume_required';
+/** Unit lanes add two display-only states on top of the backend UnitState. */
+export type UnitStatusKey = UnitState | 'WAITING_INPUT' | 'NEEDS_RECOVERY';
+export type ConfigStatusKey = 'configured' | 'incomplete' | 'error' | 'none' | 'unknown';
+export type SensorStatusKey = 'passed' | 'advisory' | 'inconclusive' | 'not_run' | 'blocking';
+
+export interface StatusKeyMap {
+  intent: IntentStatus;
+  stage: StageState;
+  gate: GateStatusKey;
+  unit: UnitStatusKey;
+  connection: ConnectionStatus;
+  config: ConfigStatusKey;
+  sensor: SensorStatusKey;
+}
+
+type Registry = { [K in StatusKind]: Record<StatusKeyMap[K], StatusEntry> };
+
+export const STATUS_REGISTRY: Registry = {
+  intent: {
+    DRAFT: {
+      label: 'Draft',
+      tone: 'neutral',
+      icon: PencilLine,
+      help: 'The intent is being prepared and has not started.',
+    },
+    CREATED: {
+      label: 'Starting',
+      tone: 'info',
+      icon: Hourglass,
+      help: 'The run was requested and is waiting to be picked up.',
+    },
+    RUNNING: {
+      label: 'Running',
+      tone: 'running',
+      icon: LoaderCircle,
+      help: 'An agent is working on the current stage.',
+      live: true,
+    },
+    WAITING: {
+      label: 'Waiting for input',
+      tone: 'waiting',
+      icon: MessageCircleQuestion,
+      help: 'The run is paused until someone answers a question or approves a stage.',
+    },
+    SUCCEEDED: {
+      label: 'Completed',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'Every stage in this run finished.',
+    },
+    FAILED: {
+      label: 'Failed',
+      tone: 'danger',
+      icon: CircleX,
+      help: 'The run stopped because a stage or the platform reported an error.',
+    },
+    CANCELLED: {
+      label: 'Cancelled',
+      tone: 'neutral',
+      icon: Ban,
+      help: 'Someone stopped this run before it finished.',
+    },
+  },
+  stage: {
+    PENDING: {
+      label: 'Not started',
+      tone: 'neutral',
+      icon: CircleDashed,
+      help: 'This stage runs after the stages before it finish.',
+    },
+    RUNNING: {
+      label: 'Running',
+      tone: 'running',
+      icon: LoaderCircle,
+      help: 'An agent is working on this stage.',
+      live: true,
+    },
+    WAITING_FOR_HUMAN: {
+      label: 'Waiting for input',
+      tone: 'waiting',
+      icon: MessageCircleQuestion,
+      help: 'This stage is paused until someone answers or approves.',
+    },
+    SUCCEEDED: {
+      label: 'Completed',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'This stage finished.',
+    },
+    FAILED: {
+      label: 'Failed',
+      tone: 'danger',
+      icon: CircleX,
+      help: 'This stage reported an error and the run stopped here.',
+    },
+    SKIPPED: {
+      label: 'Skipped',
+      tone: 'neutral',
+      icon: CircleSlash,
+      help: 'This stage was not needed for this run.',
+    },
+  },
+  gate: {
+    pending: {
+      label: 'Waiting for answer',
+      tone: 'waiting',
+      icon: MessageCircleQuestion,
+      help: 'Someone needs to answer before the run continues.',
+    },
+    answered: {
+      label: 'Answered',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'The answer was recorded and handed back to the run.',
+    },
+    approved: {
+      label: 'Approved',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'The stage output was approved.',
+    },
+    rejected: {
+      label: 'Changes requested',
+      tone: 'warning',
+      icon: Undo2,
+      help: 'A reviewer asked for changes to the stage output.',
+    },
+    superseded: {
+      label: 'Withdrawn',
+      tone: 'neutral',
+      icon: CircleMinus,
+      help: 'The question was closed unanswered because the run was cancelled or rewound.',
+    },
+    resume_required: {
+      label: 'Needs resume',
+      tone: 'warning',
+      icon: CirclePause,
+      help: 'The answer was saved, but the run did not pick it up and must be resumed.',
+    },
+  },
+  unit: {
+    PENDING: {
+      label: 'Pending',
+      tone: 'neutral',
+      icon: CircleDashed,
+      help: 'This unit waits for the units it depends on.',
+    },
+    READY: {
+      label: 'Ready',
+      tone: 'info',
+      icon: Clock,
+      help: 'Dependencies are done; this unit starts when a slot is free.',
+    },
+    RUNNING: {
+      label: 'Building',
+      tone: 'running',
+      icon: LoaderCircle,
+      help: 'An agent is building this unit.',
+      live: true,
+    },
+    PR_DRAFT: {
+      label: 'Draft review',
+      tone: 'info',
+      icon: GitPullRequestDraft,
+      help: 'A draft pull request is open for this unit.',
+    },
+    RECONCILING: {
+      label: 'Reconciling',
+      tone: 'running',
+      icon: RefreshCw,
+      help: 'The unit branch is being brought up to date with the intent branch.',
+      live: true,
+    },
+    PR_READY: {
+      label: 'Ready to merge',
+      tone: 'info',
+      icon: GitMerge,
+      help: 'The pull request is ready to be integrated.',
+    },
+    ADDRESSING_FEEDBACK: {
+      label: 'Fixing feedback',
+      tone: 'running',
+      icon: Wrench,
+      help: 'An agent is addressing review comments on this unit.',
+      live: true,
+    },
+    MERGING: {
+      label: 'Merging',
+      tone: 'running',
+      icon: GitMerge,
+      help: 'The unit is being merged into the intent branch.',
+      live: true,
+    },
+    MERGED: {
+      label: 'Integrated',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'The unit is merged into the intent branch.',
+    },
+    FAILED: {
+      label: 'Failed',
+      tone: 'danger',
+      icon: CircleX,
+      help: 'The unit could not be built or merged.',
+    },
+    BLOCKED: {
+      label: 'Blocked',
+      tone: 'warning',
+      icon: CircleMinus,
+      help: 'A unit this one depends on did not finish.',
+    },
+    WAITING_INPUT: {
+      label: 'Waiting for input',
+      tone: 'waiting',
+      icon: MessageCircleQuestion,
+      help: 'This unit is paused until someone answers or approves.',
+    },
+    NEEDS_RECOVERY: {
+      label: 'Needs recovery',
+      tone: 'warning',
+      icon: TriangleAlert,
+      help: 'This unit stopped and needs someone to decide how to continue.',
+    },
+  },
+  connection: {
+    connecting: {
+      label: 'Connecting',
+      tone: 'info',
+      icon: LoaderCircle,
+      help: 'Connecting to live updates.',
+    },
+    connected: {
+      label: 'Live updates',
+      tone: 'success',
+      icon: Wifi,
+      help: 'Changes from agents and teammates appear as they happen.',
+    },
+    disconnected: {
+      label: 'Live updates paused',
+      tone: 'warning',
+      icon: WifiOff,
+      help: 'The live connection dropped; reconnecting automatically.',
+    },
+    error: {
+      label: 'Live updates unavailable',
+      tone: 'danger',
+      icon: WifiOff,
+      help: 'The live connection failed; reload the page if this persists.',
+    },
+  },
+  config: {
+    configured: {
+      label: 'Configured',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'This setting is in place and ready to use.',
+    },
+    incomplete: {
+      label: 'Setup incomplete',
+      tone: 'warning',
+      icon: Settings,
+      help: 'Some required values are still missing.',
+    },
+    error: {
+      label: 'Needs attention',
+      tone: 'danger',
+      icon: CircleAlert,
+      help: 'The saved configuration does not work and needs to be fixed.',
+    },
+    none: {
+      label: 'Not configured',
+      tone: 'neutral',
+      icon: CircleDashed,
+      help: 'Nothing is set up here yet.',
+    },
+    unknown: {
+      label: 'Status unavailable',
+      tone: 'warning',
+      icon: CircleHelp,
+      help: 'The current status could not be loaded; try again.',
+    },
+  },
+  sensor: {
+    passed: {
+      label: 'Passed',
+      tone: 'success',
+      icon: CircleCheck,
+      help: 'The automated check ran and found no problem.',
+    },
+    advisory: {
+      label: 'Advisory finding',
+      tone: 'neutral',
+      icon: CircleAlert,
+      help: 'The check found something worth reviewing, but it does not block the run.',
+    },
+    inconclusive: {
+      label: 'Inconclusive',
+      tone: 'neutral',
+      icon: CircleHelp,
+      help: 'The check ran but could not reach a verdict; it does not block the run.',
+    },
+    not_run: {
+      label: 'Not run',
+      tone: 'neutral',
+      icon: CircleMinus,
+      help: 'The check could not run; it does not block the run.',
+    },
+    blocking: {
+      label: 'Blocking',
+      tone: 'danger',
+      icon: CircleX,
+      help: 'A required check failed and the run is held until it is resolved.',
+    },
+  },
+};
+
+/** Tone → class names. Token utilities are defined in index.css. */
+export const TONE_CLASSES: Record<StatusTone, { pill: string; text: string }> = {
+  neutral: { pill: 'bg-muted text-muted-foreground', text: 'text-muted-foreground' },
+  running: { pill: 'bg-agent-running/15 text-agent-running-fg', text: 'text-agent-running-fg' },
+  waiting: { pill: 'bg-agent-waiting/15 text-agent-waiting-fg', text: 'text-agent-waiting-fg' },
+  success: { pill: 'bg-agent-success/15 text-agent-success-fg', text: 'text-agent-success-fg' },
+  danger: { pill: 'bg-agent-error/15 text-agent-error-fg', text: 'text-agent-error-fg' },
+  warning: { pill: 'bg-warning/15 text-warning-fg', text: 'text-warning-fg' },
+  info: { pill: 'bg-agent-idle/15 text-agent-idle-fg', text: 'text-agent-idle-fg' },
+};
+
+function humanize(raw: string): string {
+  const words = raw.replace(/[_-]+/g, ' ').trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Unknown';
+}
+
+/** Registry lookup; an unknown value degrades to a neutral, humanized entry. */
+export function getStatus<K extends StatusKind>(kind: K, key: string): StatusEntry {
+  const entry = (STATUS_REGISTRY[kind] as Record<string, StatusEntry>)[key];
+  if (entry) return entry;
+  return {
+    label: humanize(key),
+    tone: 'neutral',
+    icon: CircleHelp,
+    help: 'This status is not recognised by this version of the app.',
+  };
+}
+
+// ── Time ─────────────────────────────────────────────────────────────────────
+
+type Clock = number | Date;
+
+const toMs = (clock: Clock) => (typeof clock === 'number' ? clock : clock.getTime());
+
+function parseMs(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+
+/**
+ * Elapsed time as a short phrase: "2 min", "3 h", "108 days". `coarse` rolls
+ * 60+ days into months and 365+ days into years ("4 months"). `compact` uses
+ * unit abbreviations for dense lists ("108 d", "4 mo", "1 y"). Empty string
+ * for a missing or unparseable timestamp.
+ */
+export function ageLabel(
+  since: string | number | null | undefined,
+  now: Clock = Date.now(),
+  { coarse = false, compact = false }: { coarse?: boolean; compact?: boolean } = {},
+): string {
+  const start = parseMs(since);
+  if (start === null) return '';
+  const diff = toMs(now) - start;
+  if (diff < MINUTE) return compact ? '<1 min' : 'under 1 min';
+  if (diff < HOUR) return `${Math.floor(diff / MINUTE)} min`;
+  if (diff < DAY) return `${Math.floor(diff / HOUR)} h`;
+  const days = Math.floor(diff / DAY);
+  if (coarse && days >= 365) {
+    const years = Math.floor(days / 365);
+    return compact ? `${years} y` : plural(years, 'year');
+  }
+  if (coarse && days >= 60) {
+    const months = Math.floor(days / 30);
+    return compact ? `${months} mo` : plural(months, 'month');
+  }
+  return compact ? `${days} d` : plural(days, 'day');
+}
+
+const STALLED_LABEL = 'Stalled';
+
+const TERMINAL_INTENT_STATUSES: ReadonlySet<string> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
+
+/** Statuses that ended: their age is a point in time ("ago"), never a duration. */
+const TERMINAL_STATUSES: Partial<Record<StatusKind, ReadonlySet<string>>> = {
+  intent: TERMINAL_INTENT_STATUSES,
+  stage: new Set<StageState>(['SUCCEEDED', 'FAILED', 'SKIPPED']),
+  gate: new Set<GateStatusKey>(['answered', 'approved', 'rejected', 'superseded']),
+  unit: new Set<UnitStatusKey>(['MERGED', 'FAILED']),
+};
+
+const COMPACT_LABELS: Partial<Record<string, string>> = {
+  'intent:WAITING': 'Waiting',
+  'stage:WAITING_FOR_HUMAN': 'Waiting',
+  'unit:WAITING_INPUT': 'Waiting',
+};
+
+/**
+ * The pill text for a status. Open states carry a duration:
+ * "Waiting for input · 108 days", "Stalled · no activity for 4 months";
+ * compact (dense lists) "Waiting · 108 d", "Stalled · 4 mo". Ended states
+ * carry a point in time: "Failed 59 days ago", compact "Failed 59 d ago".
+ */
+export function statusLabel<K extends StatusKind>(
+  kind: K,
+  status: string,
+  {
+    since,
+    stalled = false,
+    now = Date.now(),
+    compact = false,
+  }: { since?: string | null; stalled?: boolean; now?: Clock; compact?: boolean } = {},
+): string {
+  const age = since ? ageLabel(since, now, { coarse: stalled, compact }) : '';
+  if (stalled) {
+    if (!age) return STALLED_LABEL;
+    return compact ? `${STALLED_LABEL} · ${age}` : `${STALLED_LABEL} · no activity for ${age}`;
+  }
+  const label = (compact && COMPACT_LABELS[`${kind}:${status}`]) || getStatus(kind, status).label;
+  if (!age) return label;
+  return TERMINAL_STATUSES[kind]?.has(status) ? `${label} ${age} ago` : `${label} · ${age}`;
+}
