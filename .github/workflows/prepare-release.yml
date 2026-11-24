@@ -52,8 +52,13 @@ jobs:
           fi
           # A fix that exists only on a release branch would miss the new line:
           # refuse to start one while any release branch has commits main lacks.
+          # Only X.Y.x line branches take part in back-merges: release/1.x is
+          # frozen (v1 fixes never merge into v2 main) and other release/*
+          # names, such as preparation branches from the previous process, are
+          # not lines.
           unmerged=""
           for branch in $(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/*'); do
+            [[ "$branch" =~ ^release/[0-9]+\.[0-9]+\.x$ ]] || continue
             if ! git merge-base --is-ancestor "refs/remotes/origin/$branch" "$GITHUB_SHA"; then
               unmerged="$unmerged $branch"
             fi
