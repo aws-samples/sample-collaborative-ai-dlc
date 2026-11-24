@@ -167,6 +167,110 @@ describe('readImageScanFindings', () => {
     ]);
   });
 
+  describe('enhanced scan pages', () => {
+    const enhanced = (id, severity) => ({
+      severity,
+      packageVulnerabilityDetails: {
+        vulnerabilityId: id,
+        vulnerablePackages: [{ name: 'krb5', version: '1.21.3' }],
+      },
+    });
+    const page = (findings, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        // ECR counts only the findings of the page it returns.
+        findingSeverityCounts: findings.reduce(
+          (counts, finding) => ({
+            ...counts,
+            [finding.severity]: (counts[finding.severity] ?? 0) + 1,
+          }),
+          {},
+        ),
+        enhancedFindings: findings,
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const read = (...pages) => {
+      const send = vi.fn();
+      for (const response of pages) send.mockResolvedValueOnce(response);
+      send.mockResolvedValue(page([enhanced('CVE-LAST', 'LOW')], 'more'));
+      return {
+        send,
+        result: readImageScanFindings({
+          ecrClient: { send },
+          imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+          imageDigest: digest,
+          now: () => '2026-11-20T00:00:00.000Z',
+        }),
+      };
+    };
+
+    it('adds up the counts of every page and keeps the most severe findings', async () => {
+      const { send, result } = read(
+        page([enhanced('CVE-1', 'MEDIUM')], 'p2'),
+        page([enhanced('CVE-2', 'HIGH'), enhanced('CVE-3', 'HIGH')]),
+      );
+
+      await expect(result).resolves.toMatchObject({
+        status: 'ACTIVE',
+        severityCounts: { MEDIUM: 1, HIGH: 2 },
+        findingsTruncated: false,
+        incomplete: false,
+      });
+      expect((await result).findings.map((finding) => finding.id)).toEqual([
+        'CVE-2',
+        'CVE-3',
+        'CVE-1',
+      ]);
+      expect(send.mock.calls[1][0].input).toEqual({
+        repositoryName: 'core',
+        imageId: { imageDigest: digest },
+        nextToken: 'p2',
+      });
+    });
+
+    it('does not call a complete list truncated when ECR returns a token on its last page', async () => {
+      const { result } = read(page([enhanced('CVE-1', 'HIGH')], 'p2'), page([]));
+
+      await expect(result).resolves.toMatchObject({
+        severityCounts: { HIGH: 1 },
+        findingsTruncated: false,
+        incomplete: false,
+      });
+    });
+
+    it('stores a result larger than the seeding read bound as incomplete', async () => {
+      const { send, result } = read();
+
+      await expect(result).resolves.toMatchObject({
+        severityCounts: { LOW: 5 },
+        findingsTruncated: true,
+        incomplete: true,
+      });
+      expect(send).toHaveBeenCalledTimes(5);
+    });
+
+    it('keeps the pages already read as incomplete when a later page fails', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce(page([enhanced('CVE-1', 'HIGH')], 'p2'))
+        .mockRejectedValueOnce(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
+
+      await expect(
+        readImageScanFindings({
+          ecrClient: { send },
+          imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+          imageDigest: digest,
+        }),
+      ).resolves.toMatchObject({
+        severityCounts: { HIGH: 1 },
+        findings: [expect.objectContaining({ id: 'CVE-1' })],
+        incomplete: true,
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('keeps only https links of basic scan findings', async () => {
     const basic = (name, uri) => ({ name, severity: 'HIGH', uri, attributes: [] });
     const result = await readImageScanFindings({
@@ -253,6 +357,20 @@ describe('readGateScan findings bound', () => {
     expect(result.findings).toHaveLength(MAX_GATE_SCAN_FINDINGS);
     expect(result.findingsTruncated).toBe(truncated);
     expect(result.incomplete).toBe(false);
+  });
+
+  // The gate retries on its next poll instead of judging a partial result.
+  it('fails the read when a later page fails', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(page(0, 60, 'p2'))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('throttled'), { name: 'ThrottlingException' }),
+      );
+
+    await expect(
+      readGateScan({ ecrClient: { send }, repositoryName: 'core', imageDigest: digest }),
+    ).rejects.toThrow('throttled');
   });
 });
 
