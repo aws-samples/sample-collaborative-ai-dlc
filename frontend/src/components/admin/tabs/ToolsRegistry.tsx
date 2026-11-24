@@ -59,6 +59,7 @@ import {
 import { rustInstallerScript } from './tool-presets';
 import { ApiError } from '@/services/api';
 import { cn } from '@/lib/utils';
+import { ecrImageConsoleUrl, httpsHref, scanFindingsNote } from '@/lib/ecrConsole';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
 import { toolVersionArchitecture } from './environment-builder/model';
 
@@ -649,16 +650,18 @@ function ToolLifecycle({
           ? 'The image was built. ECR is checking its operating-system packages.'
           : version.status === 'SECURITY_REVIEW' && scanUnsupported
             ? 'ECR could not inspect this image format. This is a scan limitation, not a detected vulnerability.'
-            : version.status === 'SECURITY_REVIEW'
-              ? `ECR found ${critical} Critical and ${high} High package findings. Review them before continuing.`
-              : version.status === 'READY'
-                ? 'Build and checks are complete. Publish this version to make it available.'
-                : version.status === 'PUBLISHED' && !recommended
-                  ? 'Published versions can be selected explicitly. Make this recommended to use it by default.'
-                  : version.status === 'PUBLISHED'
-                    ? 'This is the recommended published version for the tool family.'
-                    : version.failure?.detail ||
-                      'The last attempt needs attention before continuing.';
+            : version.status === 'SECURITY_REVIEW' && version.scanFindings?.incomplete
+              ? `The part of the scan the platform read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings before continuing.`
+              : version.status === 'SECURITY_REVIEW'
+                ? `ECR found ${critical} Critical and ${high} High package findings. Review them before continuing.`
+                : version.status === 'READY'
+                  ? 'Build and checks are complete. Publish this version to make it available.'
+                  : version.status === 'PUBLISHED' && !recommended
+                    ? 'Published versions can be selected explicitly. Make this recommended to use it by default.'
+                    : version.status === 'PUBLISHED'
+                      ? 'This is the recommended published version for the tool family.'
+                      : version.failure?.detail ||
+                        'The last attempt needs attention before continuing.';
 
   return (
     <div className="rounded-xl border bg-card px-3 py-3">
@@ -759,6 +762,12 @@ const SOURCE_TRUST_LABELS = {
 
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
+  const incomplete = version.scanFindings?.incomplete === true;
+  const findingsNote = scanFindingsNote(
+    version.scanFindings,
+    Boolean(version.securityFindingsAcceptedAt),
+  );
+  const imageFindingsUrl = ecrImageConsoleUrl(version.imageUri, version.imageDigest);
   const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
   const scanLimitationAccepted =
     scanUnsupported &&
@@ -815,6 +824,28 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           )}
         </div>
       </div>
+      {findingsNote && (
+        <div
+          className={cn(
+            'rounded border p-3 text-[11px]',
+            incomplete
+              ? 'border-amber-500/40 bg-amber-500/5 text-amber-900 dark:text-amber-200'
+              : 'text-muted-foreground',
+          )}
+        >
+          <p>{findingsNote}</p>
+          {imageFindingsUrl && (
+            <a
+              href={imageFindingsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              View all findings in ECR <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      )}
       {findings.length > 0 && (
         <div className="divide-y overflow-hidden rounded border">
           {findings.map((finding, index) => (
@@ -826,9 +857,9 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
                 {finding.severity}
               </Badge>
               <span className="truncate font-mono">{finding.id}</span>
-              {finding.uri ? (
+              {httpsHref(finding.uri) ? (
                 <a
-                  href={finding.uri}
+                  href={httpsHref(finding.uri) ?? undefined}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 font-mono text-primary hover:underline"
@@ -1762,7 +1793,9 @@ export function ToolsRegistry() {
       title: scanUnsupported ? 'Continue without an automated package scan?' : 'Review findings?',
       description: scanUnsupported
         ? 'ECR could not inspect this image format. This does not mean a vulnerability was found. Continue only when you trust the publisher and download source.'
-        : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
+        : version.scanFindings?.incomplete
+          ? `The scan has more findings than the platform reads. The part it read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings in ECR first. Continuing records your review without a complete count and allows this version to be published.`
+          : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
       actionLabel: scanUnsupported ? 'Continue after review' : 'Accept findings',
       onConfirm: () =>
         void run('accept', () => toolsService.acceptFindings(tool.toolId, version.versionId)),

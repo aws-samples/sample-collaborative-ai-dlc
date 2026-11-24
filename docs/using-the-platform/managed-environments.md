@@ -402,6 +402,19 @@ normalized artifacts that intentionally contain no operating-system package
 database. Those versions also move to `SECURITY_REVIEW` with the scanner
 limitation retained as evidence.
 
+With ECR enhanced scanning (Amazon Inspector), findings reach ECR some time
+after Inspector completes a scan. A tool version or environment revision
+therefore stays in `SCANNING` until five minutes after the scan completed. Its
+severity counts then add up every page of the scan result; a result too large
+to read in full also moves to `SECURITY_REVIEW`.
+
+The evidence lists up to 100 findings, the most severe of every page read,
+with a link to the image in the ECR console for the complete list. For a
+result too large to read in full, the evidence and the acceptance confirmation
+say that the counts are partial and that the unread findings may include
+Critical or High vulnerabilities, and the validation evidence of an accepted
+revision records the scan as `ACCEPTED`.
+
 The administrator can:
 
 - Leave the version unpublished and remediate its source or dependencies.
@@ -808,6 +821,10 @@ the image has been created.
 | `SUPERSEDED`      | A newer revision is now published.                               | Existing intent snapshots remain valid          |
 | `FAILED`          | Image build, scan processing, or runtime validation failed.      | Inspect evidence and **Retry** when appropriate |
 | `RETIRED`         | The environment no longer accepts changes or new assignments.    | No restore action is currently available        |
+
+With ECR enhanced scanning, `SCANNING` lasts until five minutes after Amazon
+Inspector completes the image scan, to give its findings time to reach ECR
+(see [Security review](#security-review)).
 
 The evidence view separates image-build success, security findings, and runtime
 validation. A successful image can therefore remain visible even when it is

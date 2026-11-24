@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createToolsStatusHandler } from '../tools-status.js';
+import { ENHANCED_SCAN_SETTLE_MS } from '../build-lifecycle.js';
 
 const initialVersion = {
   toolId: 'dotnet-sdk',
@@ -154,6 +155,120 @@ describe('managed tool build status', () => {
           },
         ],
       },
+    });
+  });
+
+  it('judges an enhanced tool scan only once its findings have had time to reach ECR', async () => {
+    const store = mutableStore();
+    const enhancedClient = (completedAgoMs, severityCounts) => ({
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValueOnce({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - completedAgoMs),
+            findingSeverityCounts: severityCounts,
+          },
+        }),
+    });
+    const inspect = (client) =>
+      createToolsStatusHandler({ store, ecrClient: client, s3Client })(buildEvent);
+
+    // A read seconds after the scan sees none of the findings, or only some.
+    let result = await inspect(enhancedClient(13_000, {}));
+    expect(result).toMatchObject({ pending: true, version: { status: 'SCANNING' } });
+    result = await inspect(enhancedClient(13_000, { HIGH: 5 }));
+    expect(result).toMatchObject({ pending: true, version: { status: 'SCANNING' } });
+
+    result = await inspect(
+      enhancedClient(ENHANCED_SCAN_SETTLE_MS + 1000, { CRITICAL: 1, HIGH: 13 }),
+    );
+    expect(result.version).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { status: 'ACTIVE', severityCounts: { CRITICAL: 1, HIGH: 13 } },
+    });
+  });
+
+  it('sends an enhanced tool scan cut at the page bound to review', async () => {
+    const store = mutableStore();
+    const client = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValue({
+          imageScanStatus: { status: 'ACTIVE' },
+          imageScanFindings: {
+            imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+            findingSeverityCounts: { LOW: 1 },
+          },
+          nextToken: 'more',
+        }),
+    };
+
+    const result = await createToolsStatusHandler({ store, ecrClient: client, s3Client })(
+      buildEvent,
+    );
+
+    expect(result.version).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true, incomplete: true },
+    });
+  });
+
+  it('keeps a Critical tool finding from a later page for review', async () => {
+    const store = mutableStore();
+    const finding = (severity, id) => ({
+      severity,
+      packageVulnerabilityDetails: {
+        vulnerabilityId: id,
+        vulnerablePackages: [{ name: 'stdlib', version: 'go1.27.4' }],
+      },
+    });
+    const page = (severityCounts, enhancedFindings, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+        findingSeverityCounts: severityCounts,
+        enhancedFindings,
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const client = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValueOnce(
+          page(
+            { LOW: 100 },
+            Array.from({ length: 100 }, (_, index) => finding('LOW', `CVE-LOW-${index}`)),
+            'page-2',
+          ),
+        )
+        .mockResolvedValueOnce(page({ CRITICAL: 1 }, [finding('CRITICAL', 'CVE-CRITICAL')])),
+    };
+
+    const result = await createToolsStatusHandler({ store, ecrClient: client, s3Client })(
+      buildEvent,
+    );
+
+    expect(result.version.status).toBe('SECURITY_REVIEW');
+    expect(result.version.scanFindings).toMatchObject({
+      severityCounts: { CRITICAL: 1, LOW: 100 },
+      findingsTruncated: true,
+    });
+    expect(result.version.scanFindings).not.toHaveProperty('incomplete');
+    expect(result.version.scanFindings.findings).toHaveLength(100);
+    expect(result.version.scanFindings.findings[0]).toMatchObject({
+      id: 'CVE-CRITICAL',
+      severity: 'CRITICAL',
+      packageName: 'stdlib',
     });
   });
 

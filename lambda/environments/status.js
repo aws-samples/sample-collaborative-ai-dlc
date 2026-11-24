@@ -2,11 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
-import {
-  ECRClient,
-  DescribeImagesCommand,
-  DescribeImageScanFindingsCommand,
-} from '@aws-sdk/client-ecr';
+import { ECRClient, DescribeImagesCommand } from '@aws-sdk/client-ecr';
 import {
   BedrockAgentCoreControlClient,
   CreateAgentRuntimeCommand,
@@ -21,8 +17,8 @@ import {
 import {
   RETRYABLE_ECR_ERRORS,
   createBuildLifecycleHandler,
+  readGateScan,
   streamToString,
-  summarizeScanFindings,
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
@@ -310,16 +306,14 @@ const inspectImage = async ({
         { fromStatus: 'BUILDING' },
       );
     }
-    const scan = await ecrClient.send(
-      new DescribeImageScanFindingsCommand({
-        repositoryName,
-        imageId: { imageDigest: image.imageDigest },
-      }),
-    );
+    const gateScan = await readGateScan({
+      ecrClient,
+      repositoryName,
+      imageDigest: image.imageDigest,
+    });
+    if (gateScan.pending) return { environment, revision: scanning };
+    const { scan } = gateScan;
     const scanStatus = scan.imageScanStatus?.status;
-    if (scanStatus === 'IN_PROGRESS' || scanStatus === 'PENDING') {
-      return { environment, revision: scanning };
-    }
     if (scanStatus !== 'COMPLETE' && scanStatus !== 'ACTIVE') {
       return {
         environment,
@@ -332,16 +326,18 @@ const inspectImage = async ({
         ),
       };
     }
-    const severityCounts = scan.imageScanFindings?.findingSeverityCounts ?? {};
-    const verdict = evaluateScanFindings(
-      severityCounts,
-      Boolean(securityFindingsAcceptedAt(scanning)),
-    );
+    const { severityCounts, findings, findingsTruncated, incomplete } = gateScan;
+    const findingsAccepted = Boolean(securityFindingsAcceptedAt(scanning));
+    const verdict =
+      incomplete && !findingsAccepted
+        ? { allowed: false, status: 'SECURITY_REVIEW' }
+        : evaluateScanFindings(severityCounts, findingsAccepted);
     const scanFindings = {
       status: scanStatus,
       severityCounts,
-      findings: summarizeScanFindings(scan),
-      findingsTruncated: Boolean(scan.nextToken),
+      findings,
+      findingsTruncated,
+      ...(incomplete ? { incomplete: true } : {}),
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
@@ -795,10 +791,13 @@ const verifyLeasedRuntime = async ({
       return finalize(failureOutcome(outcome.error.message));
     }
     const { capabilities, deterministic } = outcome;
+    // An incomplete scan reached validation only through an administrator's
+    // acceptance, even when the findings it read hold no Critical or High.
     const elevatedFindings =
+      revision.scanFindings?.incomplete === true ||
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
         Number(revision.scanFindings?.severityCounts?.HIGH ?? 0) >
-      0;
+        0;
     return finalize({
       status: 'READY',
       verification: {

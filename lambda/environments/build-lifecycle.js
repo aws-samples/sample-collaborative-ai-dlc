@@ -44,33 +44,70 @@ export const streamToString = async (body) => {
 const findingAttribute = (finding, key) =>
   finding.attributes?.find((attribute) => attribute.key === key)?.value ?? null;
 
-export const summarizeScanFindings = (scan) => {
-  const severityOrder = new Map([
-    ['CRITICAL', 0],
-    ['HIGH', 1],
-    ['MEDIUM', 2],
-    ['LOW', 3],
-    ['INFORMATIONAL', 4],
-    ['UNDEFINED', 5],
-  ]);
-  // One vulnerability often affects several packages (openssl and libssl,
-  // say): the package breaks the tie, so the order never depends on ECR's.
-  return (scan.imageScanFindings?.findings ?? [])
-    .map((finding) => ({
-      id: finding.name ?? 'Unknown finding',
-      severity: finding.severity ?? 'UNDEFINED',
-      packageName: findingAttribute(finding, 'package_name'),
-      packageVersion: findingAttribute(finding, 'package_version'),
-      uri: finding.uri ?? null,
-    }))
-    .toSorted(
-      (left, right) =>
-        (severityOrder.get(left.severity) ?? 99) - (severityOrder.get(right.severity) ?? 99) ||
-        left.id.localeCompare(right.id) ||
-        String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
-        String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? '')),
-    );
+const SEVERITY_ORDER = new Map([
+  ['CRITICAL', 0],
+  ['HIGH', 1],
+  ['MEDIUM', 2],
+  ['LOW', 3],
+  ['INFORMATIONAL', 4],
+  ['UNTRIAGED', 5],
+  ['UNDEFINED', 6],
+]);
+
+// Most severe first. One vulnerability often affects several packages
+// (openssl and libssl, say): the package breaks the tie, so the order never
+// depends on ECR's.
+export const compareScanFindings = (left, right) =>
+  (SEVERITY_ORDER.get(left.severity) ?? 99) - (SEVERITY_ORDER.get(right.severity) ?? 99) ||
+  left.id.localeCompare(right.id) ||
+  String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
+  String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? ''));
+
+// Finding links come from vulnerability feeds and the UI renders them as
+// links: keep only https URLs.
+const httpsUrl = (value) => {
+  try {
+    return new URL(value).protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
 };
+
+const basicFinding = (finding) => ({
+  id: finding.name ?? 'Unknown finding',
+  severity: finding.severity ?? 'UNDEFINED',
+  packageName: findingAttribute(finding, 'package_name'),
+  packageVersion: findingAttribute(finding, 'package_version'),
+  uri: httpsUrl(finding.uri),
+});
+
+// One entry per affected package and version, as basic scanning reports
+// them (Inspector also lists the same package once per file path).
+const enhancedFindings = (finding) => {
+  const details = finding.packageVulnerabilityDetails ?? {};
+  const packages = details.vulnerablePackages?.length ? details.vulnerablePackages : [{}];
+  const uri = httpsUrl(details.sourceUrl) ?? httpsUrl(details.referenceUrls?.[0]);
+  const entries = new Map();
+  for (const affected of packages) {
+    const entry = {
+      id: details.vulnerabilityId ?? finding.title ?? 'Unknown finding',
+      severity: finding.severity ?? 'UNDEFINED',
+      packageName: affected.name ?? null,
+      packageVersion: affected.version ?? null,
+      uri,
+    };
+    entries.set(`${entry.packageName}\u0000${entry.packageVersion}`, entry);
+  }
+  return [...entries.values()];
+};
+
+// ECR returns basic scanning findings in `findings` and enhanced scanning
+// (Amazon Inspector) findings in `enhancedFindings`, each in its own shape.
+export const summarizeScanFindings = (scan) =>
+  [
+    ...(scan.imageScanFindings?.findings ?? []).map(basicFinding),
+    ...(scan.imageScanFindings?.enhancedFindings ?? []).flatMap(enhancedFindings),
+  ].toSorted(compareScanFindings);
 
 const repositoryNameFromImageUri = (imageUri) => {
   const path = String(imageUri ?? '')
@@ -122,6 +159,78 @@ export const readImageScanFindings = async ({
 
 export const isUnsupportedScan = (status, description) =>
   status === 'UNSUPPORTED_IMAGE' || /UnsupportedImageError/i.test(description ?? '');
+
+// Enhanced scanning (Amazon Inspector) reports ACTIVE as soon as an image is
+// under continuous scanning, and the findings of a finished scan reach ECR
+// some time after Inspector completes it: a read in that window returns no
+// findings, or only some. The scan gate judges an enhanced scan only once
+// this long has passed since the scan completed. The delay is not
+// documented; five minutes leaves a wide margin over the seconds observed.
+export const ENHANCED_SCAN_SETTLE_MS = 5 * 60 * 1000;
+const MAX_ENHANCED_SCAN_PAGES = 50;
+// The gate stores at most this many findings for review, the most severe of
+// every page it read, so a Critical finding on a later page is never left
+// out for Low ones on the first.
+export const MAX_GATE_SCAN_FINDINGS = 100;
+
+// Reads an image's scan for the scan gate. `pending` means the result cannot
+// be judged yet and the image stays SCANNING until a later poll. `incomplete`
+// means an enhanced result was cut at the page bound: its counts are partial
+// and the unread findings may include Critical or High ones, so the gate
+// sends it to review. `findingsTruncated` means the stored list does not
+// hold every finding.
+export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now = Date.now }) => {
+  const read = (nextToken) =>
+    ecrClient.send(
+      new DescribeImageScanFindingsCommand({
+        repositoryName,
+        imageId: { imageDigest },
+        ...(nextToken ? { nextToken } : {}),
+      }),
+    );
+  const scan = await read();
+  const status = scan.imageScanStatus?.status;
+  if (status === 'IN_PROGRESS' || status === 'PENDING') return { scan, pending: true };
+  if (status !== 'ACTIVE') {
+    return {
+      scan,
+      severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
+      findings: summarizeScanFindings(scan),
+      findingsTruncated: Boolean(scan.nextToken),
+    };
+  }
+  const completedAt = new Date(
+    scan.imageScanFindings?.imageScanCompletedAt ?? Number.NaN,
+  ).getTime();
+  if (Number.isNaN(completedAt) || now() - completedAt < ENHANCED_SCAN_SETTLE_MS) {
+    return { scan, pending: true };
+  }
+  // With enhanced scanning the severity counts cover only the findings of
+  // the returned page, and pages are not ordered by severity: add them up.
+  const severityCounts = {};
+  let findings = [];
+  let page = scan;
+  for (let pages = 1; ; pages += 1) {
+    for (const [severity, count] of Object.entries(
+      page.imageScanFindings?.findingSeverityCounts ?? {},
+    )) {
+      severityCounts[severity] = (severityCounts[severity] ?? 0) + Number(count ?? 0);
+    }
+    findings = [...findings, ...summarizeScanFindings(page)]
+      .toSorted(compareScanFindings)
+      .slice(0, MAX_GATE_SCAN_FINDINGS + 1);
+    if (!page.nextToken || pages >= MAX_ENHANCED_SCAN_PAGES) break;
+    page = await read(page.nextToken);
+  }
+  const incomplete = Boolean(page.nextToken);
+  return {
+    scan,
+    severityCounts,
+    findings: findings.slice(0, MAX_GATE_SCAN_FINDINGS),
+    findingsTruncated: incomplete || findings.length > MAX_GATE_SCAN_FINDINGS,
+    incomplete,
+  };
+};
 
 export const createBuildLifecycleHandler =
   ({ label, poll, handleBuildEvent, handleScanEvent }) =>
