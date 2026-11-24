@@ -248,17 +248,17 @@ the deployment boundary are recorded below.
 
 ## Responsibilities and data flow
 
-| Responsibility                                          | Owner                                                      |
-| ------------------------------------------------------- | ---------------------------------------------------------- |
-| Methodology steps, workflow records and required gates  | The pinned AI-DLC engine and coding harness                |
-| Method state and terminal report | Pinned AI-DLC in the same AgentCore workspace and the exact admitted publication |
-| Access, accepted commands and answers, execution state  | The platform's native authority                            |
-| Dispatch, status observation, cancellation and recovery | Native workers operating under current execution ownership |
-| Mutable project files and unfinished work               | The EFS workspace with one admitted writer                 |
-| Published revisions and accepted-answer history         | Durable platform records and versioned object storage      |
-| File relationships and graph navigation                 | A rebuildable projection of admitted publications          |
-| Shared drafts and presence                              | The collaboration service                                  |
-| Discussion assistance                                   | The discussion service and advisory Quorum execution       |
+| Responsibility                                          | Owner                                                                            |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Methodology steps, workflow records and required gates  | The pinned AI-DLC engine and coding harness                                      |
+| Method state and terminal report                        | Pinned AI-DLC in the same AgentCore workspace and the exact admitted publication |
+| Access, accepted commands and answers, execution state  | The platform's native authority                                                  |
+| Dispatch, status observation, cancellation and recovery | Native workers operating under current execution ownership                       |
+| Mutable project files and unfinished work               | The EFS workspace with one admitted writer                                       |
+| Published revisions and accepted-answer history         | Durable platform records and versioned object storage                            |
+| File relationships and graph navigation                 | A rebuildable projection of admitted publications                                |
+| Shared drafts and presence                              | The collaboration service                                                        |
+| Discussion assistance                                   | The discussion service and advisory Quorum execution                             |
 
 ```mermaid
 flowchart TB
@@ -5855,29 +5855,29 @@ the current contract for newly created executions.
 
 The candidate's installed qualification runs the published 2.11.1 binary with Claude Code, Codex and OpenCode against scripted loopback providers. It exercises the literal game request, reads the original project description from the method, lets two synthetic members compete for the same question, recovers unfinished work and imports the terminal Git bundle. The incident starts with three recommendation choices. Asking for alternatives keeps the intent uncreated and presents eleven named plans. Express selection reaches a two-option requirements gate. An unavailable request produces the method's own reason, “That question is no longer available; please describe the work again.” The current method does not persist the presented choice labels before creating its intent. The runtime therefore observes them from the installed tool's response.
 
-The exact image, ordinary-entry-path logs, Chrome incident screenshots, qualification receipt and guarded operator commands are staged in `.native-evidence/agentcore-method-candidate-02/`. Chrome uses published fixture interactions, synthetic HTTP acceptance and an in-memory Yjs relay. The independently deployed and signed-in evidence for this candidate is outstanding. Kiro's managed API-key service is needed before ACP initialization.
+The exact image, ordinary-entry-path logs, Chrome incident screenshots, qualification receipt and guarded operator commands are staged in `.native-evidence/agentcore-method-candidate-03/`. Chrome uses published fixture interactions, synthetic HTTP acceptance and an in-memory Yjs relay. The independently deployed and signed-in evidence for this candidate is outstanding. Kiro's managed API-key service is needed before ACP initialization.
 
 Start a fresh native intent after deploying the coordinated runtime, controller, IAM and frontend candidate. An existing intent pinned to the retired engine retains its publications, recorded replies and available versioned proof. Continue and Recover reject that pin. Do not edit its configuration, migrate its workspace, resubmit an old answer, or retire a live writer during a turn. Drain new admission and outstanding work before the operator removes the old services. Restoring old infrastructure can require new Lambda versions, role bindings and log groups. A rollback cannot recreate old version numbers or resume every old DEV run.
 
 The following conditions govern the independent NE-11–25 pass on the AgentCore candidate. Earlier dated entries below preserve the criteria and results in effect for their release.
 
-| Item | Remaining functionality or decision | Evidence still needed |
-| --- | --- | --- |
-| NE-11 | Independent engine attestation is retired. Use the method’s terminal report on the matching publication. Preserve failure and open gates. | Signed-in run with the method’s required checks and reviewers, a terminal revision and matching downloads. |
-| NE-12 | Hosted branch and PR creation, ambiguous write reconciliation, merge observation and tracker policy remain unfinished. | Identify the exact base, bundle, imported tree and hosted references when implemented. |
-| NE-13 | Shared history and revision-bound graph reads exist. | Two members reopen decisions and source files on the same revision. |
-| NE-14 | Shared reads and draft isolation exist. | Measure actual browser requests, navigation and account changes. |
-| NE-15 | Activity coalescing, instrumentation and cost coverage require assessment on this topology. | Count notification, API and storage work under member traffic. |
-| NE-16 | Evaluate remaining latency against measured supported entry points. | Measure cold/warm startup, useful output, publication and UI on the new image. |
-| NE-17 | Confirm abandoned work, retention and reclamation policy. | Exercise cancel, late writer, cleanup and retained artifacts. |
-| NE-18 | Kiro managed authentication remains a distinct prerequisite. | Repeat supported installed and gateway paths independently. |
-| NE-19 | Hosted delivery depends on NE-12. | Two signed-in profiles, competing submissions, discussion, Quorum, reconnect, revocation, completion and downloads. |
-| NE-20 | Deployed isolation and retention require validation after IAM removal. | Exercise allowed and denied IAM, EFS, S3 version and multipart paths. |
-| NE-21 | Assign alarm destinations, ownership and qualification workload. | Verify repair, drain, revocation and incident response at the intended load. |
-| NE-22 | Release publication and navigation remain outstanding. | Verify the reviewed deployment and member-facing documentation. |
-| NE-23 | The remote operation journal and its abandonment protocol are retired. Ordinary writer admission, uncertain delivery, cancel and fresh-session workspace resume own recovery. | Interrupt a current turn, fence its old writer, preserve unfinished files and the original answer, and present the current gate. |
-| NE-24 | Independent proof of application is retired. A written answer, including a request for alternatives, records only its submission. | Verify the current revision’s named options, one subsequent explicit selection, an actual rejection reason and a completed fresh run. |
-| NE-25 | Keep bounded consumers, repair and dead-letter handling. Supersede continuation of a specific retired DEV pin with a fresh supported execution. | Verify queues and DLQs after cutover and continue a fresh execution across a repair cycle. |
+| Item  | Remaining functionality or decision                                                                                                                                           | Evidence still needed                                                                                                                 |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| NE-11 | Independent engine attestation is retired. Use the method’s terminal report on the matching publication. Preserve failure and open gates.                                     | Signed-in run with the method’s required checks and reviewers, a terminal revision and matching downloads.                            |
+| NE-12 | Hosted branch and PR creation, ambiguous write reconciliation, merge observation and tracker policy remain unfinished.                                                        | Identify the exact base, bundle, imported tree and hosted references when implemented.                                                |
+| NE-13 | Shared history and revision-bound graph reads exist.                                                                                                                          | Two members reopen decisions and source files on the same revision.                                                                   |
+| NE-14 | Shared reads and draft isolation exist.                                                                                                                                       | Measure actual browser requests, navigation and account changes.                                                                      |
+| NE-15 | Activity coalescing, instrumentation and cost coverage require assessment on this topology.                                                                                   | Count notification, API and storage work under member traffic.                                                                        |
+| NE-16 | Evaluate remaining latency against measured supported entry points.                                                                                                           | Measure cold/warm startup, useful output, publication and UI on the new image.                                                        |
+| NE-17 | Confirm abandoned work, retention and reclamation policy.                                                                                                                     | Exercise cancel, late writer, cleanup and retained artifacts.                                                                         |
+| NE-18 | Kiro managed authentication remains a distinct prerequisite.                                                                                                                  | Repeat supported installed and gateway paths independently.                                                                           |
+| NE-19 | Hosted delivery depends on NE-12.                                                                                                                                             | Two signed-in profiles, competing submissions, discussion, Quorum, reconnect, revocation, completion and downloads.                   |
+| NE-20 | Deployed isolation and retention require validation after IAM removal.                                                                                                        | Exercise allowed and denied IAM, EFS, S3 version and multipart paths.                                                                 |
+| NE-21 | Assign alarm destinations, ownership and qualification workload.                                                                                                              | Verify repair, drain, revocation and incident response at the intended load.                                                          |
+| NE-22 | Release publication and navigation remain outstanding.                                                                                                                        | Verify the reviewed deployment and member-facing documentation.                                                                       |
+| NE-23 | The remote operation journal and its abandonment protocol are retired. Ordinary writer admission, uncertain delivery, cancel and fresh-session workspace resume own recovery. | Interrupt a current turn, fence its old writer, preserve unfinished files and the original answer, and present the current gate.      |
+| NE-24 | Independent proof of application is retired. A written answer, including a request for alternatives, records only its submission.                                             | Verify the current revision’s named options, one subsequent explicit selection, an actual rejection reason and a completed fresh run. |
+| NE-25 | Keep bounded consumers, repair and dead-letter handling. Supersede continuation of a specific retired DEV pin with a fresh supported execution.                               | Verify queues and DLQs after cutover and continue a fresh execution across a repair cycle.                                            |
 
 ### Historical release status on 2026-11-24
 
