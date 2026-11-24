@@ -150,11 +150,17 @@ export const isUnsupportedScan = (status, description) =>
 // documented; five minutes leaves a wide margin over the seconds observed.
 export const ENHANCED_SCAN_SETTLE_MS = 5 * 60 * 1000;
 const MAX_ENHANCED_SCAN_PAGES = 50;
+// The gate stores at most this many findings for review, the most severe of
+// every page it read, so a Critical finding on a later page is never left
+// out for Low ones on the first.
+export const MAX_GATE_SCAN_FINDINGS = 100;
 
 // Reads an image's scan for the scan gate. `pending` means the result cannot
 // be judged yet and the image stays SCANNING until a later poll. `incomplete`
-// means an enhanced result was cut at the page bound and may hide Critical or
-// High findings, so the gate sends it to review.
+// means an enhanced result was cut at the page bound: its counts are partial
+// and the unread findings may include Critical or High ones, so the gate
+// sends it to review. `findingsTruncated` means the stored list does not
+// hold every finding.
 export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now = Date.now }) => {
   const read = (nextToken) =>
     ecrClient.send(
@@ -171,6 +177,7 @@ export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now
     return {
       scan,
       severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
+      findings: summarizeScanFindings(scan),
       findingsTruncated: Boolean(scan.nextToken),
     };
   }
@@ -183,6 +190,7 @@ export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now
   // With enhanced scanning the severity counts cover only the findings of
   // the returned page, and pages are not ordered by severity: add them up.
   const severityCounts = {};
+  let findings = [];
   let page = scan;
   for (let pages = 1; ; pages += 1) {
     for (const [severity, count] of Object.entries(
@@ -190,11 +198,20 @@ export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now
     )) {
       severityCounts[severity] = (severityCounts[severity] ?? 0) + Number(count ?? 0);
     }
+    findings = [...findings, ...summarizeScanFindings(page)]
+      .toSorted(compareScanFindings)
+      .slice(0, MAX_GATE_SCAN_FINDINGS + 1);
     if (!page.nextToken || pages >= MAX_ENHANCED_SCAN_PAGES) break;
     page = await read(page.nextToken);
   }
-  const findingsTruncated = Boolean(page.nextToken);
-  return { scan, severityCounts, findingsTruncated, incomplete: findingsTruncated };
+  const incomplete = Boolean(page.nextToken);
+  return {
+    scan,
+    severityCounts,
+    findings: findings.slice(0, MAX_GATE_SCAN_FINDINGS),
+    findingsTruncated: incomplete || findings.length > MAX_GATE_SCAN_FINDINGS,
+    incomplete,
+  };
 };
 
 export const createBuildLifecycleHandler =
