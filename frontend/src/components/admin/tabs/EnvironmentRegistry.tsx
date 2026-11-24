@@ -421,7 +421,9 @@ export function EnvironmentRegistry() {
   ) =>
     setConfirmation({
       title: 'Accept security findings?',
-      description: `Accept ${critical} Critical and ${high} High security findings and continue to runtime validation? The findings remain visible after publication.`,
+      description: revision.scanFindings?.incomplete
+        ? `The scan has more findings than the platform reads. The part it read holds ${critical} Critical and ${high} High findings, and the unread findings may include more. Accept the findings without a complete count and continue to runtime validation? Review the complete findings in ECR first. The findings remain visible after publication.`
+        : `Accept ${critical} Critical and ${high} High security findings and continue to runtime validation? The findings remain visible after publication.`,
       actionLabel: 'Accept and continue',
       onConfirm: () =>
         void run(

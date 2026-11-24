@@ -216,7 +216,59 @@ describe('managed tool build status', () => {
 
     expect(result.version).toMatchObject({
       status: 'SECURITY_REVIEW',
-      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true },
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true, incomplete: true },
+    });
+  });
+
+  it('keeps a Critical tool finding from a later page for review', async () => {
+    const store = mutableStore();
+    const finding = (severity, id) => ({
+      severity,
+      packageVulnerabilityDetails: {
+        vulnerabilityId: id,
+        vulnerablePackages: [{ name: 'stdlib', version: 'go1.27.4' }],
+      },
+    });
+    const page = (severityCounts, enhancedFindings, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+        findingSeverityCounts: severityCounts,
+        enhancedFindings,
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const client = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}`, imageSizeInBytes: 1000 }],
+        })
+        .mockResolvedValueOnce(
+          page(
+            { LOW: 100 },
+            Array.from({ length: 100 }, (_, index) => finding('LOW', `CVE-LOW-${index}`)),
+            'page-2',
+          ),
+        )
+        .mockResolvedValueOnce(page({ CRITICAL: 1 }, [finding('CRITICAL', 'CVE-CRITICAL')])),
+    };
+
+    const result = await createToolsStatusHandler({ store, ecrClient: client, s3Client })(
+      buildEvent,
+    );
+
+    expect(result.version.status).toBe('SECURITY_REVIEW');
+    expect(result.version.scanFindings).toMatchObject({
+      severityCounts: { CRITICAL: 1, LOW: 100 },
+      findingsTruncated: true,
+    });
+    expect(result.version.scanFindings).not.toHaveProperty('incomplete');
+    expect(result.version.scanFindings.findings).toHaveLength(100);
+    expect(result.version.scanFindings.findings[0]).toMatchObject({
+      id: 'CVE-CRITICAL',
+      severity: 'CRITICAL',
+      packageName: 'stdlib',
     });
   });
 

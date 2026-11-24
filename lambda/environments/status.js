@@ -19,7 +19,6 @@ import {
   createBuildLifecycleHandler,
   readGateScan,
   streamToString,
-  summarizeScanFindings,
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
@@ -327,17 +326,18 @@ const inspectImage = async ({
         ),
       };
     }
-    const { severityCounts, findingsTruncated } = gateScan;
+    const { severityCounts, findings, findingsTruncated, incomplete } = gateScan;
     const findingsAccepted = Boolean(securityFindingsAcceptedAt(scanning));
     const verdict =
-      gateScan.incomplete && !findingsAccepted
+      incomplete && !findingsAccepted
         ? { allowed: false, status: 'SECURITY_REVIEW' }
         : evaluateScanFindings(severityCounts, findingsAccepted);
     const scanFindings = {
       status: scanStatus,
       severityCounts,
-      findings: summarizeScanFindings(scan),
+      findings,
       findingsTruncated,
+      ...(incomplete ? { incomplete: true } : {}),
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
@@ -791,10 +791,13 @@ const verifyLeasedRuntime = async ({
       return finalize(failureOutcome(outcome.error.message));
     }
     const { capabilities, deterministic } = outcome;
+    // An incomplete scan reached validation only through an administrator's
+    // acceptance, even when the findings it read hold no Critical or High.
     const elevatedFindings =
+      revision.scanFindings?.incomplete === true ||
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
         Number(revision.scanFindings?.severityCounts?.HIGH ?? 0) >
-      0;
+        0;
     return finalize({
       status: 'READY',
       verification: {

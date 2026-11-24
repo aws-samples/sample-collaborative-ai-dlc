@@ -262,9 +262,77 @@ describe('managed environment status handler', () => {
     expect(ecrClient.send).toHaveBeenCalledTimes(51);
     expect(result.revision).toMatchObject({
       status: 'SECURITY_REVIEW',
-      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true },
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true, incomplete: true },
     });
     expect(controlClient.send).not.toHaveBeenCalled();
+  });
+
+  it('keeps the most severe findings of every enhanced scan page for review', async () => {
+    const store = mutableStore();
+    const finding = (severity, id) => ({
+      severity,
+      packageVulnerabilityDetails: {
+        vulnerabilityId: id,
+        sourceUrl: `https://nvd.nist.gov/vuln/detail/${id}`,
+        vulnerablePackages: [{ name: 'openssl', version: '3.5.9' }],
+      },
+    });
+    const page = (severityCounts, enhancedFindings, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+        findingSeverityCounts: severityCounts,
+        enhancedFindings,
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        // A full first page of Low findings, then the Critical one.
+        .mockResolvedValueOnce(
+          page(
+            { LOW: 100 },
+            Array.from({ length: 100 }, (_, index) => finding('LOW', `CVE-LOW-${index}`)),
+            'page-2',
+          ),
+        )
+        .mockResolvedValueOnce(
+          page({ CRITICAL: 1, HIGH: 1 }, [
+            finding('HIGH', 'CVE-HIGH'),
+            finding('CRITICAL', 'CVE-CRITICAL'),
+          ]),
+        ),
+    };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store,
+      ecrClient,
+      controlClient: { send: vi.fn() },
+      runtimeClient: { send: vi.fn() },
+    })(buildEvent);
+
+    expect(result.revision.status).toBe('SECURITY_REVIEW');
+    const { scanFindings } = result.revision;
+    expect(scanFindings).toMatchObject({
+      severityCounts: { CRITICAL: 1, HIGH: 1, LOW: 100 },
+      findingsTruncated: true,
+    });
+    expect(scanFindings).not.toHaveProperty('incomplete');
+    expect(scanFindings.findings).toHaveLength(100);
+    expect(scanFindings.findings.slice(0, 3)).toEqual([
+      {
+        id: 'CVE-CRITICAL',
+        severity: 'CRITICAL',
+        packageName: 'openssl',
+        packageVersion: '3.5.9',
+        uri: 'https://nvd.nist.gov/vuln/detail/CVE-CRITICAL',
+      },
+      expect.objectContaining({ id: 'CVE-HIGH', severity: 'HIGH' }),
+      expect.objectContaining({ severity: 'LOW' }),
+    ]);
   });
 
   it('keeps an image SCANNING when a later enhanced scan page is throttled', async () => {
@@ -631,6 +699,64 @@ describe('managed environment status handler', () => {
       });
     },
   );
+
+  it.each([
+    [
+      'an accepted incomplete scan',
+      { severityCounts: { LOW: 50 }, incomplete: true },
+      true,
+      'ACCEPTED',
+    ],
+    ['a complete scan without Critical or High', { severityCounts: { LOW: 50 } }, false, 'PASSED'],
+  ])('records %s in the validation evidence', async (_, scanFindings, accepted, securityScan) => {
+    const verifying = {
+      ...revision,
+      status: 'VERIFYING',
+      scanFindings,
+      ...(accepted ? { securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z' } : {}),
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+      runtimeId: 'runtime-1',
+      runtimeVersion: '3',
+      runtimeEndpoint: 'revision_r_1',
+      runtimeEndpointArn:
+        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+    };
+    const runtimeClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () => JSON.stringify({ ok: true, clis: ['node'] }),
+          },
+        })
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () =>
+              JSON.stringify({
+                ok: true,
+                nonce: 'check-r-1',
+                compatibilityVersion: '1',
+                nonRoot: true,
+                workspaceWritable: true,
+                protectedRuntime: true,
+              }),
+          },
+        }),
+    };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store: mutableStore(verifying),
+      ecrClient: { send: vi.fn() },
+      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+      runtimeClient,
+    })({ action: 'poll' });
+
+    expect(result.results[0].revision).toMatchObject({
+      status: 'READY',
+      verification: { status: 'PASSED', securityScan },
+    });
+  });
 
   // capabilities spawns the image's CLIs (kiro-cli --list-models), so
   // qualification must run them under the policy agent work would get.
