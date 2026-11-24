@@ -53,6 +53,7 @@ export async function workspaceQualificationDriver({
     model,
     packageVersion: pkg.version,
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
+    ...(protectedWorkflow && !terminalResult ? { prompt: 'Create a 3D version of the game' } : {}),
   });
   Object.assign(f.prepared, { harness, createdAt: f.now(), updatedAt: f.now() });
   const homeRoot = `${root}-homes`;

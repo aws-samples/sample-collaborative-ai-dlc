@@ -937,6 +937,39 @@ describe('protected workflow engine journal recovery', () => {
   );
 });
 describe('protected workflow engine service', () => {
+  it('starts from the saved draft when Codex repeats its words on next and binds the issued form', async () => {
+    const prompt = 'Create a 3D version of the game';
+    const t = await setup({ prompt });
+    const intake = {
+      kind: 'print',
+      message: 'Run aidlc engine orchestrate next --propose <plan> --request 1234abcd',
+    };
+    t.hooks.orchestrate = (args) => (args.includes('--propose') ? capturedPlanAsk : intake);
+    const echo = ['next', ...prompt.split(' ')];
+    for (const args of [
+      ['next', 'Create a different game'],
+      [...echo, '--resume'],
+      ['next', '--scope', 'express', prompt],
+    ])
+      expect((await t.command(args)).result.failure).toBe('NATIVE_ENGINE_COMMAND_DENIED');
+    expect(t.memberMessages()).toBe(0);
+    const first = await t.request('execute', { args: echo });
+    expect(JSON.parse((await t.send(first)).result.stdout)).toEqual(intake);
+    expect(JSON.parse((await t.send(first)).result.stdout)).toEqual(intake);
+    expect(
+      JSON.parse((await t.command(['engine', 'orchestrate', 'next', prompt])).result.stdout),
+    ).toEqual(intake);
+    expect(t.calls).toEqual([['aidlc-orchestrate.ts', 'next', '--', prompt]]);
+    expect(t.memberMessages()).toBe(1);
+    await t.command(['next', '--propose', 'express', '--request', '1234abcd']);
+    const { result } = await t.send(await t.request('mirror'));
+    const published = await t.publish(result.pendingInput);
+    expect(result.pendingInput.questions[0].options.length).toBeGreaterThan(1);
+    expect(published.finalized.result.presentedInteractionId).toBe(published.interactionReceipt.id);
+    expect((await t.command(echo)).result.failure).toBe('NATIVE_ENGINE_COMMAND_DENIED');
+    expect(t.memberMessages()).toBe(1);
+  });
+
   it('delivers intake only to the scheduler and re-presents its retained request before an intent exists', async () => {
     const t = await setup();
     const intake = {

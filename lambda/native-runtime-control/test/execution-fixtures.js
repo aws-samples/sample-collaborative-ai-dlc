@@ -37,6 +37,7 @@ export const executionFixture = ({
   recoveryMode = 'efs-workspace-v1',
   packageVersion = '2.9.0',
   preparedDraft,
+  prompt,
 } = {}) => {
   const prepared = preparedDraft ?? {
     ...nativeRuntimeBindingKey(IDENTITY),
@@ -47,7 +48,7 @@ export const executionFixture = ({
     status: 'READY',
     version: 7,
     requestFingerprint: `sha256:${'d'.repeat(64)}`,
-    request: { ...request(), harness },
+    request: request({ harness, ...(prompt === undefined ? {} : { prompt }) }),
     candidate: candidate({ version: packageVersion }),
     archiveReceipt: receipt(),
     imageUri: IMAGE.uri,

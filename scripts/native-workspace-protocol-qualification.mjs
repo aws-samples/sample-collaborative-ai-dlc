@@ -180,11 +180,16 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   const nextCommand = 'aidlc engine orchestrate next';
   let offer, stage, next;
   function* presentOffer() {
-    const initial = yield* runDirective(nextCommand);
+    // The installed conductor can forward the literal Start request as shell
+    // words. Also exercise publication from the engine when it writes no form.
+    const initial = yield* runDirective(
+      terminalResult ? nextCommand : 'aidlc next Create a 3D version of the game',
+    );
     offer = yield* runDirective(
       `${nextCommand} --propose express --request ${issuedRequestId(initial)}`,
     );
-    yield { filePath: pendingFile, content: JSON.stringify({ version: 3, ask: offer }) };
+    if (terminalResult)
+      yield { filePath: pendingFile, content: JSON.stringify({ version: 3, ask: offer }) };
     return offer.question;
   }
   const firstSession = await turn('Start', presentOffer());

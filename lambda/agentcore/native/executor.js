@@ -1021,7 +1021,9 @@ export const createNativeExecutor = ({
         ...(workflowEngine
           ? [
               'Use the aidlc command on PATH for workflow operations. It preserves the protected workflow state across turns. ' +
-                'At the beginning of a turn run aidlc next; it consumes a newly accepted member selection using its original proposal. ' +
+                'On the first turn run the literal shell command `aidlc next` without arguments. The engine already has the original request. ' +
+                'Follow the returned proposal instruction to obtain the plan question and show it for the member to answer. ' +
+                'On a reply, `aidlc next` consumes a newly accepted member selection using its original proposal. ' +
                 'An aidlc engine log review request runs the required independent reviewer and records its result. ' +
                 'Follow the returned review step; do not supply a verdict, impersonate a reviewer, or duplicate that invocation. ' +
                 'Do not use a direct installed binary or rewrite workflow state, audit, review receipts or policy files. ' +

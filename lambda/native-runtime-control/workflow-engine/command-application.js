@@ -53,6 +53,22 @@ const recordDirective = (state, directive, filesSha256) => {
     });
   }
 };
+const nextCommand = ['engine', 'orchestrate', 'next'];
+const holdsInitialIntake = (state, before) =>
+  before.status === 'not_started' &&
+  !state.decisions.length &&
+  state.directive?.kind === 'print' &&
+  /--propose <plan> --request [a-f0-9]{8}\b/.test(state.directive.message);
+
+// The installed conductor calls `next $ARGUMENTS`. Recognize only a literal
+// echo of the admitted draft, whether the shell passed one string or words.
+// Supply the engine with the stored original, preserving whitespace and flags.
+const echoesStart = (args, text) => {
+  if (args.length <= 3 || !same(args.slice(0, 3), nextCommand)) return false;
+  const words = args.slice(args[3] === '--' ? 4 : 3);
+  if (!words.length || (args[3] !== '--' && words[0].startsWith('-'))) return false;
+  return words.join(' ') === text || same(words, text.trim().split(/\s+/u));
+};
 const selectCommand = async (context, before) => {
   const { state, row, draft, identity, runner, sessionId, request, workspace } = context;
   const workspaceResume =
@@ -61,8 +77,13 @@ const selectCommand = async (context, before) => {
   if (workspaceResume && (!state.initialMessage || before.status !== 'recorded'))
     throw engineFailure('NATIVE_ENGINE_STATE_UNAVAILABLE');
   const project = workspace.project;
-  const args = normalizeNativeEngineCommand(request.args ?? [], project);
-  const isNext = same(args, ['engine', 'orchestrate', 'next']);
+  let args = normalizeNativeEngineCommand(request.args ?? [], project);
+  if (
+    (!state.initialMessage || (!row.response && holdsInitialIntake(state, before))) &&
+    echoesStart(args, nativeDraftPrompt(draft).text)
+  )
+    args = nextCommand;
+  const isNext = same(args, nextCommand);
   const validate = (effective, member = null) =>
     nativeEngineCommand({
       args: effective,
@@ -203,12 +224,7 @@ export const applyNativeEngineCommand = async (context) => {
   // Before intent creation, bare next has no active workflow to schedule.
   // Re-present the pinned intake already held in the journal, including an
   // intake previously delivered to a startup hook. Never issue another one.
-  const heldIntake =
-    same(selected.args, ['engine', 'orchestrate', 'next']) &&
-    before.status === 'not_started' &&
-    !state.decisions.length &&
-    state.directive?.kind === 'print' &&
-    /--propose <plan> --request [a-f0-9]{8}\b/.test(state.directive.message);
+  const heldIntake = same(selected.args, nextCommand) && holdsInitialIntake(state, before);
   let result = heldIntake
     ? {
         exitCode: 0,
