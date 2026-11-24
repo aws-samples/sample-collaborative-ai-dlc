@@ -31,6 +31,7 @@ import type {
 } from '@/services/environments';
 import { environmentsService } from '@/services/environments';
 import { cn } from '@/lib/utils';
+import { ecrImageConsoleUrl, scanFindingsNote } from '@/lib/ecrConsole';
 import { isCatalogRecipe } from './model';
 import {
   ACTIVE_REVISION_STATUSES,
@@ -205,6 +206,9 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
   const high = Number(revision.scanFindings?.severityCounts?.HIGH ?? 0);
   const securityOnlyFailure =
     revision.failure?.reason === 'critical_vulnerability_findings' && Boolean(revision.imageDigest);
+  const incomplete = revision.scanFindings?.incomplete === true;
+  const findingsNote = scanFindingsNote(revision.scanFindings);
+  const imageFindingsUrl = ecrImageConsoleUrl(revision.imageUri, revision.imageDigest);
 
   return (
     <div className="space-y-4">
@@ -226,7 +230,7 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
         <div className="rounded-xl border p-3">
           <div className="flex items-center justify-between gap-2">
             <h4 className="text-xs font-semibold">Image check</h4>
-            {acceptedAt ? (
+            {acceptedAt || incomplete ? (
               <ShieldAlert className="h-4 w-4 text-amber-600" />
             ) : revision.scanFindings && critical + high === 0 ? (
               <ShieldCheck className="h-4 w-4 text-emerald-600" />
@@ -235,11 +239,13 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
           <p className="mt-2 text-[11px] text-muted-foreground">
             {acceptedAt
               ? 'Findings accepted'
-              : critical + high > 0
-                ? `${critical} Critical · ${high} High`
-                : revision.scanFindings
-                  ? 'Scan passed'
-                  : 'Not scanned yet'}
+              : incomplete
+                ? `Partial results: ${critical} Critical · ${high} High`
+                : critical + high > 0
+                  ? `${critical} Critical · ${high} High`
+                  : revision.scanFindings
+                    ? 'Scan passed'
+                    : 'Not scanned yet'}
           </p>
           {acceptedAt && (
             <p className="mt-1 text-[10px] text-muted-foreground">
@@ -271,6 +277,29 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
         >
           <p className="break-all">{revision.imageDigest}</p>
         </Disclosure>
+      )}
+
+      {findingsNote && (
+        <div
+          className={cn(
+            'rounded-xl border p-3 text-[11px]',
+            incomplete
+              ? 'border-amber-500/40 bg-amber-500/5 text-amber-900 dark:text-amber-200'
+              : 'text-muted-foreground',
+          )}
+        >
+          <p>{findingsNote}</p>
+          {imageFindingsUrl && (
+            <a
+              href={imageFindingsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              View all findings in ECR <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
       )}
 
       {findings.length > 0 && (

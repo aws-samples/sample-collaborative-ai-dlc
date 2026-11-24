@@ -579,6 +579,47 @@ describe('ToolsRegistry', () => {
     expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
   });
 
+  it('says the counts of an incomplete tool scan are partial before an admin accepts it', async () => {
+    const user = userEvent.setup();
+    const imageDigest = `sha256:${'c'.repeat(64)}`;
+    const reviewVersion = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      imageUri: '123456789012.dkr.ecr.eu-west-1.amazonaws.com/managed-tools',
+      imageDigest,
+      scanFindings: {
+        status: 'ACTIVE',
+        severityCounts: { CRITICAL: 1 },
+        findings: [
+          {
+            id: 'CVE-2026-2',
+            severity: 'CRITICAL',
+            packageName: 'stdlib',
+            packageVersion: 'go1.27.4',
+            uri: null,
+          },
+        ],
+        findingsTruncated: true,
+        incomplete: true,
+      },
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [reviewVersion] }]);
+    render(<ToolsRegistry />);
+
+    expect(await screen.findByText(/these counts are partial/)).toBeInTheDocument();
+    expect(screen.getByText('CVE-2026-2')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View all findings in ECR/ })).toHaveAttribute(
+      'href',
+      `https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/123456789012/managed-tools/_/image/sha256%3A${'c'.repeat(64)}/details?region=eu-west-1`,
+    );
+    await user.click(screen.getByRole('button', { name: 'Review package findings' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'The part it read holds 1 Critical and 0 High package findings',
+    );
+    await user.click(screen.getByRole('button', { name: 'Accept findings' }));
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
+  });
+
   it('shows an accepted ECR scan limitation as resolved evidence', async () => {
     const acceptedVersion = {
       ...publishedVersion,
