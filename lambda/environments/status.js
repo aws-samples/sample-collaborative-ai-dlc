@@ -791,10 +791,13 @@ const verifyLeasedRuntime = async ({
       return finalize(failureOutcome(outcome.error.message));
     }
     const { capabilities, deterministic } = outcome;
+    // An incomplete scan reached validation only through an administrator's
+    // acceptance, even when the findings it read hold no Critical or High.
     const elevatedFindings =
+      revision.scanFindings?.incomplete === true ||
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
         Number(revision.scanFindings?.severityCounts?.HIGH ?? 0) >
-      0;
+        0;
     return finalize({
       status: 'READY',
       verification: {

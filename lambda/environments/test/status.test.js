@@ -700,6 +700,64 @@ describe('managed environment status handler', () => {
     },
   );
 
+  it.each([
+    [
+      'an accepted incomplete scan',
+      { severityCounts: { LOW: 50 }, incomplete: true },
+      true,
+      'ACCEPTED',
+    ],
+    ['a complete scan without Critical or High', { severityCounts: { LOW: 50 } }, false, 'PASSED'],
+  ])('records %s in the validation evidence', async (_, scanFindings, accepted, securityScan) => {
+    const verifying = {
+      ...revision,
+      status: 'VERIFYING',
+      scanFindings,
+      ...(accepted ? { securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z' } : {}),
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+      runtimeId: 'runtime-1',
+      runtimeVersion: '3',
+      runtimeEndpoint: 'revision_r_1',
+      runtimeEndpointArn:
+        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+    };
+    const runtimeClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () => JSON.stringify({ ok: true, clis: ['node'] }),
+          },
+        })
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () =>
+              JSON.stringify({
+                ok: true,
+                nonce: 'check-r-1',
+                compatibilityVersion: '1',
+                nonRoot: true,
+                workspaceWritable: true,
+                protectedRuntime: true,
+              }),
+          },
+        }),
+    };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store: mutableStore(verifying),
+      ecrClient: { send: vi.fn() },
+      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+      runtimeClient,
+    })({ action: 'poll' });
+
+    expect(result.results[0].revision).toMatchObject({
+      status: 'READY',
+      verification: { status: 'PASSED', securityScan },
+    });
+  });
+
   // capabilities spawns the image's CLIs (kiro-cli --list-models), so
   // qualification must run them under the policy agent work would get.
   describe('qualification sandbox policy', () => {
