@@ -946,6 +946,13 @@ const buildMetricRow = ({
   // recorded (scraped from `kiro-cli /usage` by the runner). Stamped per sample
   // so a later plan/rate change never reprices history. Null for token samples.
   creditRate = null,
+  // True when the runner measured this sample from the CLI's own usage report,
+  // so it can be told apart from older samples, some of which were the agent's
+  // own estimate. Samples from before the flag carry none.
+  measured = false,
+  // True when the CLI ended without its usage report and the sample is what
+  // the runner could still count: a lower bound.
+  incomplete = false,
   now,
 }) => ({
   ...metricKey(executionId, now, metricId),
@@ -958,6 +965,8 @@ const buildMetricRow = ({
   metricId,
   resolvedModel,
   creditRate,
+  ...(measured ? { measured: true } : {}),
+  ...(incomplete ? { incomplete: true } : {}),
   // Free-form numeric bag: tokensInput, tokensOutput, contextWindowPct, ...
   metrics: metrics ?? {},
   timestamp: now,

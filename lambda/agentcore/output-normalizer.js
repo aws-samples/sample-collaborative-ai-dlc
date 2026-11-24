@@ -1,7 +1,16 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
 import { createKiroJsonlParser } from './cli/kiro-parser.js';
-import { claudeUsageMetrics } from './cli/claude-usage.js';
+import {
+  claudeModelUsageTotals,
+  claudeResultHasUsage,
+  claudeUsageMetrics,
+  claudeUsageSince,
+  createClaudeStepUsage,
+  nextClaudeSessionTotals,
+  withClaudeStepTotals,
+  withOneHourWrites,
+} from './cli/claude-usage.js';
 import { basename } from 'node:path';
 import { SUPPORTED_CLIS } from './cli/drivers.js';
 import { redactCredentialText, sensitiveEnvironmentValues } from '../shared/safe-event-logger.js';
@@ -489,6 +498,15 @@ export const createCliOutputSink = ({
   onError = () => {},
   usageBaseline = {},
   onTool = () => {},
+  // Claude: the session's usage totals already recorded (`totals`, per model),
+  // shared by every run of one session so a resume or a repair turn records
+  // only its own spend; `onSessionTotals` is told each new running total.
+  // `known: false` when a resumed session has no saved totals (it started
+  // before they were kept): see recordResultUsage. `claudeModel` is the
+  // configured main model, used when the stream doesn't name it.
+  claudeSession = null,
+  onSessionTotals = () => {},
+  claudeModel = null,
 }) => {
   if (PARSED_SINKS[cli]) {
     return createParsedSink({
@@ -506,14 +524,56 @@ export const createCliOutputSink = ({
   // Claude's stream-json is JSONL. Forward only human-readable assistant text,
   // plus completed tool calls paired by tool_use id.
   const pendingTools = new Map();
+  // Usage: the result's modelUsage (the whole tree, subagents included), as
+  // the spend since the session's totals last recorded; its `usage` (the
+  // top-level loop only) for an older Claude Code. With no usable result, the
+  // top-level loop's steps (createClaudeStepUsage), on flush.
+  const session = claudeSession ?? { totals: {} };
+  const steps = createClaudeStepUsage();
+  let usageRecorded = false;
+  // The main loop's model as the stream names it (its init event), the same
+  // id its modelUsage is keyed by; the configured model until then.
+  let mainModel = claudeModel;
+  const recordResultUsage = (event) => {
+    if (!claudeResultHasUsage(event)) return;
+    usageRecorded = true;
+    const totals = claudeModelUsageTotals(event);
+    const metrics = claudeUsageMetrics(event.usage);
+    if (!totals) {
+      if (metrics) onUsage(metrics, event);
+      return;
+    }
+    // A resumed session with no saved totals: modelUsage includes the spend
+    // already recorded for it, which can't be taken off. Record this call's
+    // top-level usage instead, a lower bound because it leaves out
+    // subagents, and keep modelUsage as the totals from here on.
+    if (session.known === false) {
+      session.known = true;
+      session.totals = totals;
+      onSessionTotals(session.totals);
+      if (metrics) onUsage(metrics, event, { model: mainModel, partial: true });
+      return;
+    }
+    const { since, estimated } = withOneHourWrites(
+      claudeUsageSince(totals, session.totals),
+      event,
+      mainModel,
+    );
+    session.totals = nextClaudeSessionTotals(session.totals, totals);
+    onSessionTotals(session.totals);
+    for (const [model, delta] of Object.entries(since)) {
+      onUsage(delta, event, { model, ...(estimated.includes(model) ? { partial: true } : {}) });
+    }
+  };
   const consumeLine = (line) => {
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
-      if (event.type === 'result') {
-        const metrics = claudeUsageMetrics(event.usage);
-        if (metrics) onUsage(metrics, event);
+      if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
+        mainModel = event.model || mainModel;
       }
+      if (event.type === 'assistant') steps.add(event);
+      if (event.type === 'result') recordResultUsage(event);
       const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {
         emitEvent(emit, text, displayForMessage(text));
@@ -577,9 +637,22 @@ export const createCliOutputSink = ({
       pending = lines.pop() ?? '';
       for (const line of lines) consumeLine(line);
     },
-    flush() {
+    // `cliExited`: the CLI exited by itself rather than being killed, so Claude
+    // Code saved the session's spend (see withClaudeStepTotals).
+    flush({ cliExited = false } = {}) {
       if (pending) consumeLine(pending);
       pending = '';
+      const fallback = usageRecorded ? null : steps.get();
+      if (fallback) {
+        usageRecorded = true;
+        // Kept under the main model, as its baseline is.
+        onUsage(fallback, null, { ...(mainModel ? { model: mainModel } : {}), partial: true });
+        // With no saved totals the baseline stays unknown.
+        if (cliExited && mainModel && session.known !== false) {
+          session.totals = withClaudeStepTotals(session.totals, mainModel, fallback);
+          onSessionTotals(session.totals);
+        }
+      }
     },
   };
 };

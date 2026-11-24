@@ -324,7 +324,7 @@ graph LR
 | `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                      |
 | `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                              |
 | `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                   |
-| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                      |
+| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric; `measured` and `incomplete` say how. |
 | `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                      |
 | `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                           |
 | `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                           |
@@ -337,6 +337,10 @@ graph LR
 | `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                            |
 | `DELIVERY#<runId>`                   | Final delivery    | Per-repository publication results, captured branch identity, and fenced retry attempt metadata. |
 | `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                   |
+
+A Claude stage's `STAGE#` row also keeps its session's usage totals so far
+(`cliUsageTotals`), written in the same transaction as the stage's usage
+samples, so a resumed session records only its own spend.
 
 `UNITPLAN` and `UNIT#…` rows are the scheduling source of truth. Their
 `UnitOfWork` representation in Neptune is a traceability and UI projection; the

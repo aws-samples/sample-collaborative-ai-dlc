@@ -23,6 +23,9 @@
 //       states and pages: [{number,url,state,sourceBranch,targetBranch,headSha,body}];
 //       throws instead of returning a partial list
 //   getBranchHead(ctx, repoId, branch)  -> head SHA | null
+//   listBranchesWithPrefix(ctx, repoId, prefix) -> every branch name starting
+//       with prefix; throws instead of returning a partial list
+//   deleteBranch(ctx, repoId, branch)   -> true | false when already gone
 //   createPullRequest(ctx, repoId, {...,draft?}) -> created/existing PR summary
 //   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status
 //   setPullRequestDraft(ctx, repoId, prRef, draft) -> normalized live status

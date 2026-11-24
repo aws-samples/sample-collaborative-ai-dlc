@@ -4990,6 +4990,7 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm1',
       resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      measured: true,
       metrics: {
         tokensInput: 1_000_000,
         tokensOutput: 1_000_000,
@@ -5007,6 +5008,9 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm2',
       // No own stamp — model must be joined from the stage row.
+      // The CLI ended without its usage report: a lower bound.
+      measured: true,
+      incomplete: true,
       metrics: { tokensInput: 500_000 },
       timestamp: '2026-01-01T00:00:01Z',
     });
@@ -5031,6 +5035,10 @@ describe('GET list + detail', () => {
     expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m2.cost.totalCost).toBeCloseTo(1.65);
     expect(byId.m2.metrics.tokensInput).toBe(500_000);
+    // Measured and incomplete samples say so; complete ones carry no flag.
+    expect(byId.m1).toMatchObject({ measured: true });
+    expect(byId.m1.incomplete).toBeUndefined();
+    expect(byId.m2).toMatchObject({ measured: true, incomplete: true });
   });
 
   it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {
@@ -14236,5 +14244,101 @@ describe('gateway execution grant retirement — intents writers', () => {
         orchestratorRunId: 'run-2',
       });
     });
+  });
+});
+describe('unused intent branch cleanup (opt-in)', () => {
+  const cancel = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/cancel`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+  const cleanupInvokes = () =>
+    orchestratorInvokes()
+      .map((call) => ({
+        name: call.args[0].input.DurableExecutionName,
+        type: call.args[0].input.InvocationType,
+        payload: JSON.parse(Buffer.from(call.args[0].input.Payload).toString()),
+      }))
+      .filter((invoke) => invoke.payload.action === 'cleanup-branches');
+  const waitingIntent = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-1',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    return { sub, projectId, intent, metaKey };
+  };
+  it('hands the cleanup of a cancelled run to the orchestrator, without waiting for it', async () => {
+    const { sub, projectId, intent } = await waitingIntent();
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('CANCELLED');
+    const [invoke, ...rest] = cleanupInvokes();
+    expect(rest).toEqual([]);
+    expect(invoke.type).toBe('Event');
+    expect(invoke.name).toMatch(/^branches-[0-9a-f]{32}$/);
+    expect(invoke.payload).toEqual({
+      action: 'cleanup-branches',
+      projectId,
+      intentId: intent.id,
+      executionId: intent.id,
+      runId: 'run-1',
+    });
+  });
+
+  it('still cancels when the cleanup cannot be requested', async () => {
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    lambdaMock.on(InvokeCommand, { FunctionName: 'orchestrator-test' }).rejects(new Error('down'));
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(procStore.get(metaKey).status).toBe('CANCELLED');
+  });
+
+  it('refuses a restart, rewind or cancel while the ended run is being cleaned up', async () => {
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'CANCELLED',
+      branchCleanupLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    for (const action of ['start', 'rewind', 'cancel']) {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/${action}`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({}),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('branch_cleanup_in_progress');
+    }
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      branchCleanupLeaseUntil: new Date(Date.now() - 1000).toISOString(),
+    });
+    // Once the lease lapses the request reaches its own checks again.
+    const after = await cancel(sub, projectId, intent.id);
+    expect(JSON.parse(after.body).code).not.toBe('branch_cleanup_in_progress');
+  });
+
+  it('requests a cleanup when an expired durable run is repaired to FAILED', async () => {
+    const { sub, projectId, intent, metaKey } = await waitingIntent();
+    const expired = new Error('callback timed out');
+    expired.name = 'CallbackTimeoutException';
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).rejectsOnce(expired);
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(res.statusCode).toBe(409);
+    expect(procStore.get(metaKey).status).toBe('FAILED');
+    expect(cleanupInvokes().map((invoke) => invoke.payload)).toEqual([
+      expect.objectContaining({ executionId: intent.id, runId: 'run-1' }),
+    ]);
   });
 });

@@ -691,6 +691,35 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
+// Every branch whose name starts with `prefix`; throws instead of returning a
+// partial list.
+const listBranchesWithPrefix = async (ctx, repoId, prefix) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/git/matching-refs/${encodeRefPath(`heads/${prefix}`)}`,
+  );
+  if (!res.ok) throw new ProviderError(res.status, 'Branch listing failed');
+  const refs = await res.json();
+  if (!Array.isArray(refs)) throw new ProviderError(502, 'Invalid branch listing response');
+  return refs
+    .map((ref) => (typeof ref?.ref === 'string' ? branchNameFromRef(ref.ref) : null))
+    .filter((name) => name?.startsWith(prefix));
+};
+
+// Delete a branch. Returns false when it no longer exists.
+const deleteBranch = async (ctx, repoId, branch) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/git/refs/${encodeRefPath(`heads/${branch}`)}`,
+    { method: 'DELETE' },
+  );
+  if (res.ok) return true;
+  if (res.status === 404 || res.status === 422) return false;
+  throw new ProviderError(res.status, 'Branch deletion failed');
+};
+
 // A 422 from POST /pulls is benign ONLY when the branches genuinely hold no
 // commits between them (normal in multi-repo projects). "Head does not exist"
 // used to be classified here too — that conflation masked the 2026-07 lost-work
@@ -1121,6 +1150,8 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,
@@ -1163,6 +1194,8 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  listBranchesWithPrefix,
+  deleteBranch,
   getBranchHead,
   findPullRequest,
   listPullRequests,

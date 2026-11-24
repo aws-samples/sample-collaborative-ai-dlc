@@ -1,6 +1,7 @@
 import { fetchMembershipRole } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { inspectDelivery } from '../shared/delivery-provider.js';
+import { deleteUnusedBranches } from '../shared/unused-branch-cleanup.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -75,6 +76,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   'add-issue-comment': 'write',
   'close-issue': 'write',
   'merge-branch': 'write',
+  'delete-unused-branches': 'write',
 });
 
 const getConnection = async () => {
@@ -358,6 +360,12 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
       return provider.closeIssue(ctx, repo, args.number);
     case 'merge-branch':
       return provider.mergeBranch(ctx, repo, args);
+    case 'delete-unused-branches':
+      return deleteUnusedBranches(provider, ctx, repo, {
+        branch: args.branch,
+        baseBranch: args.baseBranch,
+        deadline: args.deadline ?? null,
+      });
     default:
       throw Object.assign(new Error('Unsupported source-control operation'), {
         code: 'OPERATION_NOT_ALLOWED',

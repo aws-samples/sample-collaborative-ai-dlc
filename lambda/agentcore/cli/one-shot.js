@@ -43,6 +43,17 @@ import {
 } from '../stage-materializer.js';
 import { RUNTIME_MCP_GATEWAY_ONLY, gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
 
+// The usage sample a one-shot's caller records for it (store.recordMetric):
+// its metrics with the caller's call counter (`composeCalls`, ...), the model
+// and Kiro credit rate it ran with. Always `measured`: the metrics come from
+// the CLI's own usage report, never the agent's.
+export const oneShotUsage = (out, counter) => ({
+  metrics: { ...out.metrics, [counter]: 1 },
+  resolvedModel: out.model ?? null,
+  creditRate: out.creditRate ?? null,
+  measured: true,
+});
+
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
 // final `result` event mirrors the `--output-format json` payload (`result`
@@ -50,6 +61,7 @@ import { RUNTIME_MCP_GATEWAY_ONLY, gatewayOnlyMcp } from '../../shared/runtime-m
 // `result` string may be absent, so accumulated assistant text is the
 // fallback. Tolerant: unparseable lines are skipped, missing usage degrades
 // to null.
+
 export const parseClaudeOneShot = (stdout = '') => {
   let text = '';
   let usage = null;

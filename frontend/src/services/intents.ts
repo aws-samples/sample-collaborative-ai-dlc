@@ -469,6 +469,10 @@ export interface IntentMetric {
   // stage row) and its computed cost. Absent on legacy rows without a model.
   model?: string | null;
   cost?: MetricCost | null;
+  // Measured from the CLI's own usage report (absent on older samples).
+  measured?: boolean;
+  // A lower bound: the CLI ended without its usage report.
+  incomplete?: boolean;
 }
 
 export interface IntentOutput {

@@ -629,6 +629,7 @@ describe('compose-plan-start', () => {
       metrics: { tokensInput: 7, composeCalls: 1 },
       resolvedModel: null,
       creditRate: null,
+      measured: true,
     });
   });
 

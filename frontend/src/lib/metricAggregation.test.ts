@@ -153,6 +153,14 @@ describe('summarizeCost', () => {
     expect(out).toMatchObject({ totalCost: 0.5, priced: true, estimated: true });
   });
 
+  it('marks the total an estimate when a sample is an incomplete lower bound', () => {
+    const out = summarizeCost([
+      cs('s1', { tokensInput: 1000 }, { totalCost: 3, priced: true }),
+      { ...cs('s2', { tokensCacheRead: 1000 }, { totalCost: 1, priced: true }), incomplete: true },
+    ]);
+    expect(out).toMatchObject({ totalCost: 4, priced: true, estimated: true });
+  });
+
   it('does NOT cover an unpriced token sample from a DIFFERENT stage', () => {
     const out = summarizeCost([
       cs('s1', { credits: 12.5 }, { totalCost: 0.5, priced: true, estimated: true }),
