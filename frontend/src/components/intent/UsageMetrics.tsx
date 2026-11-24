@@ -29,9 +29,9 @@ interface UsageMetricsProps {
   // least one sample's model had no price entry (newer model / Kiro credits
   // without a captured rate) — we show "cost unavailable" instead of a
   // misleading number. `estimated === true` means Kiro credit-estimated dollars
-  // (priced at the plan's $/credit overage rate) are in the total — shown as
-  // "~$X.XX" and labelled an estimate, since in-plan credits are covered by the
-  // subscription and this is not billing truth.
+  // (priced at the plan's $/credit overage rate) are in the total, or a sample
+  // is a lower bound because its CLI ended without a usage report — shown as
+  // "~$X.XX" and labelled an estimate, since this is not billing truth.
   cost?: { totalCost: number; currency: string; priced: boolean; estimated?: boolean } | null;
   // 'peak' relabels the context gauge when rolled up across intents/stages.
   contextLabel?: string;

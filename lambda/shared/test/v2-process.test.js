@@ -79,6 +79,145 @@ describe('stage attempt ownership transactions', () => {
       });
     },
   );
+  const usageWrite = (extra = {}) => ({
+    executionId: 'e1',
+    stageInstanceId: 's1',
+    samples: [
+      { metrics: { tokensInput: 5 }, resolvedModel: 'opus', measured: true },
+      { metrics: { tokensInput: 2 }, resolvedModel: 'haiku', measured: true, incomplete: true },
+    ],
+    cliUsageTotals: { sessionId: 'sess-1', totals: { opus: { tokensInput: 9 } } },
+    requestId: 'req-1',
+    recordedAt: '2026-11-23T12:00:00.000Z',
+    ...extra,
+  });
+  const usageStore = (clock = '2026-11-23T12:05:00.000Z') => {
+    const ddb = { send: vi.fn(async () => ({})) };
+    return { ddb, store: createProcessStore({ ddb, tableName: 't', clock: () => clock }) };
+  };
+  it('records stage usage samples and the session totals in one fenced transaction', async () => {
+    const { ddb, store } = usageStore();
+    const rows = await store.recordStageUsage(usageWrite({ ownership }));
+    const transactions = ddb.send.mock.calls.filter(
+      ([command]) => command instanceof TransactWriteCommand,
+    );
+    expect(transactions).toHaveLength(1);
+    const { TransactItems: items } = transactions[0][0].input;
+    expect(items[0].ConditionCheck).toMatchObject({
+      Key: { sk: 'META' },
+      ExpressionAttributeValues: { ':ownedRun': 'run1' },
+    });
+    expect(items.slice(1, 3).map((item) => item.Put.Item)).toMatchObject([
+      { metricId: 'req-1-0', resolvedModel: 'opus', measured: true },
+      { metricId: 'req-1-1', resolvedModel: 'haiku', measured: true, incomplete: true },
+    ]);
+    expect(items[1].Put.Item.sk).toBe('METRIC#2026-11-23T12:00:00.000Z#req-1-0');
+    expect(items[1].Put.ConditionExpression).toBe('attribute_not_exists(pk)');
+    expect(items[3].Update).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'STAGE#s1' },
+      UpdateExpression: 'SET cliUsageTotals = :t',
+      ConditionExpression: 'attribute_exists(pk) AND stageCallbackId = :ownedCallback',
+      ExpressionAttributeValues: {
+        ':t': { sessionId: 'sess-1', totals: { opus: { tokensInput: 9 } } },
+        ':ownedCallback': 'cb1',
+      },
+    });
+    expect(rows.map((row) => row.metricId)).toEqual(['req-1-0', 'req-1-1']);
+  });
+  it('builds the same stage usage write when it is repeated, so a repeat is refused', async () => {
+    const { ddb, store } = usageStore();
+    await store.recordStageUsage(usageWrite({ ownership }));
+    await store.recordStageUsage(usageWrite({ ownership }));
+    const [first, second] = ddb.send.mock.calls
+      .filter(([command]) => command instanceof TransactWriteCommand)
+      .map(([command]) => command.input);
+    expect(second).toEqual(first);
+  });
+  it('refuses a fence for another stage than the one written', async () => {
+    const { ddb, store } = usageStore();
+    await expect(
+      store.recordStageUsage(usageWrite({ ownership: { ...ownership, stageInstanceId: 's2' } })),
+    ).rejects.toThrow('recordStageUsage ownership names another stage');
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+  it('records stage usage without totals, or without fencing for a legacy dispatch', async () => {
+    const { ddb, store } = usageStore();
+    await store.recordStageUsage(usageWrite({ cliUsageTotals: null }));
+    const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+    expect(items.map((item) => Object.keys(item)[0])).toEqual(['Put', 'Put']);
+    ddb.send.mockClear();
+    expect(await store.recordStageUsage(usageWrite({ samples: [], cliUsageTotals: null }))).toEqual(
+      [],
+    );
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+  const cancelled = (...codes) =>
+    Object.assign(new Error('cancelled'), {
+      name: 'TransactionCanceledException',
+      CancellationReasons: codes.map((Code) => ({ Code })),
+    });
+  // Items: run check, two samples, the totals update (with the stage check).
+  it.each([
+    ['run_fence', ['ConditionalCheckFailed', 'None', 'None', 'None']],
+    ['stage_fence', ['None', 'None', 'None', 'ConditionalCheckFailed']],
+  ])('says which fence refused stage usage (%s)', async (code, reasons) => {
+    const { ddb, store } = usageStore();
+    ddb.send.mockRejectedValueOnce(cancelled(...reasons));
+    await expect(store.recordStageUsage(usageWrite({ ownership }))).rejects.toMatchObject({
+      name: 'ConditionalCheckFailedException',
+      code,
+    });
+  });
+  it('returns the rows of a repeated write that already landed', async () => {
+    const { ddb, store } = usageStore();
+    ddb.send.mockRejectedValueOnce(
+      cancelled('None', 'ConditionalCheckFailed', 'ConditionalCheckFailed', 'None'),
+    );
+    const rows = await store.recordStageUsage(usageWrite({ ownership }));
+    expect(rows.map((row) => row.metricId)).toEqual(['req-1-0', 'req-1-1']);
+  });
+  it.each([
+    // Run check, stage check, two samples.
+    ['with ownership and no totals', { cliUsageTotals: null, ownership }, [2, 3], 'stage_fence', 1],
+    // Two samples, the totals update.
+    ['without ownership', {}, [0, 1], undefined, 2],
+  ])('maps refusals %s', async (_label, extra, puts, stageCode, stageIndex) => {
+    const { ddb, store } = usageStore();
+    const size = puts.length + 2;
+    const codes = (...failedAt) =>
+      Array.from({ length: size }, (_, i) =>
+        failedAt.includes(i) ? 'ConditionalCheckFailed' : 'None',
+      );
+    ddb.send.mockRejectedValueOnce(cancelled(...codes(...puts)));
+    const rows = await store.recordStageUsage(usageWrite(extra));
+    expect(rows.map((row) => row.metricId)).toEqual(['req-1-0', 'req-1-1']);
+    ddb.send.mockRejectedValueOnce(cancelled(...codes(stageIndex)));
+    const refused = await store.recordStageUsage(usageWrite(extra)).catch((error) => error);
+    expect(refused).toMatchObject({ name: 'ConditionalCheckFailedException' });
+    expect(refused.code).toBe(stageCode);
+  });
+  it('returns the rows of a write that landed even when the fence now refuses', async () => {
+    const { ddb, store } = usageStore();
+    ddb.send.mockRejectedValueOnce(
+      cancelled(
+        'ConditionalCheckFailed',
+        'ConditionalCheckFailed',
+        'ConditionalCheckFailed',
+        'None',
+      ),
+    );
+    const rows = await store.recordStageUsage(usageWrite({ ownership }));
+    expect(rows).toHaveLength(2);
+  });
+  it('rethrows a failure that is not a refused condition', async () => {
+    const { ddb, store } = usageStore();
+    ddb.send.mockRejectedValueOnce(
+      Object.assign(new Error('slow'), { name: 'ThrottlingException' }),
+    );
+    await expect(store.recordStageUsage(usageWrite({ ownership }))).rejects.toMatchObject({
+      name: 'ThrottlingException',
+    });
+  });
   it('fences gate answers with the same ownership checks as worker writes', async () => {
     const { ddb, store } = setup();
     await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', ownership });
@@ -334,7 +473,7 @@ describe('stage attempt ownership transactions', () => {
     });
     expect(tx.TransactItems[1].Update).toMatchObject({
       ConditionExpression:
-        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
       ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
     });
     expect(
@@ -2139,11 +2278,56 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
     );
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
+  it('claims an ended run for branch cleanup only while that run owns it', async () => {
+    store = createProcessStore({
+      ddb,
+      tableName: 'v2-proc',
+      clock: () => '2026-11-20T09:00:00.000Z',
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: { executionId: 'e1', status: 'FAILED' } });
+    const claimed = await store.claimBranchCleanup({
+      executionId: 'e1',
+      projectId: 'p1',
+      runId: 'run-1',
+      statuses: ['CANCELLED', 'FAILED'],
+      leaseMs: 60_000,
+    });
+    expect(claimed).toMatchObject({
+      status: 'FAILED',
+      branchCleanupLeaseUntil: expect.any(String),
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'orchestratorRunId = :run AND projectId = :project AND #status IN (:s0, :s1) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :now) AND (attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :now)',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':run': 'run-1',
+      ':project': 'p1',
+      ':s0': 'CANCELLED',
+      ':s1': 'FAILED',
+    });
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    expect(
+      await store.claimBranchCleanup({
+        executionId: 'e1',
+        projectId: 'p1',
+        runId: 'run-1',
+        statuses: ['FAILED'],
+        leaseMs: 60_000,
+      }),
+    ).toBeNull();
+    expect(
+      await store.releaseBranchCleanup({ executionId: 'e1', runId: 'run-1', leaseUntil: 'T' }),
+    ).toBe(false);
+  });
   it('unparks only the expected run and pending gate', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     ddb.on(GetCommand).resolves({ Item: { projectId: 'p1' } });
@@ -2157,7 +2341,7 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND (attribute_not_exists(branchCleanupLeaseUntil) OR branchCleanupLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
     );
     expect(input.ExpressionAttributeValues).toMatchObject({
       ':fromStatus': 'WAITING',
@@ -2632,6 +2816,10 @@ describe('unit dimension on row builders', () => {
     expect(buildHumanTaskRow({ ...base, humanTaskId: 'h1', kind: 'question' }).unitSlug).toBeNull();
     expect(buildOutputRow({ ...base, seq: 1, content: 'x' }).unitSlug).toBeNull();
     expect(buildMetricRow({ ...base, metricId: 'm1', metrics: {} }).unitSlug).toBeNull();
+    expect(buildMetricRow({ ...base, metricId: 'm1', metrics: {} })).not.toHaveProperty('measured');
+    expect(
+      buildMetricRow({ ...base, metricId: 'm1', metrics: {}, measured: true, incomplete: true }),
+    ).toMatchObject({ measured: true, incomplete: true });
     expect(
       buildSensorRow({
         ...base,

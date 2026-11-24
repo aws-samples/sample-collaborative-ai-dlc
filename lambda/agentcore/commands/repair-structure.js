@@ -21,7 +21,7 @@
 //     executionId, artifactTypes?, requestedCli?, cliModels? }.
 
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
-import { runOneShotPrompt } from '../cli/one-shot.js';
+import { runOneShotPrompt, oneShotUsage } from '../cli/one-shot.js';
 import { REGISTRY, extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
 import { currentArtifacts } from './derive-artifacts.js';
@@ -116,9 +116,7 @@ export const repairStructure = async (payload, deps) => {
           ?.recordMetric?.({
             executionId,
             stageInstanceId: `repair-${intentId}`,
-            metrics: { ...out.metrics, structureRepairCalls: 1 },
-            resolvedModel: out.model ?? null,
-            creditRate: out.creditRate ?? null,
+            ...oneShotUsage(out, 'structureRepairCalls'),
           })
           .catch(() => {});
       }

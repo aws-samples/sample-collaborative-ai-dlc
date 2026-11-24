@@ -11,7 +11,7 @@
 // stage flow are never blocked by it.
 
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
-import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
+import { runOneShotPrompt, extractJsonObject, oneShotUsage } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import {
@@ -244,9 +244,7 @@ export const deriveArtifacts = async (payload, deps) => {
                 executionId,
                 stageInstanceId,
                 unitSlug,
-                metrics: { ...out.metrics, enrichmentCalls: 1 },
-                resolvedModel: out.model ?? null,
-                creditRate: out.creditRate ?? null,
+                ...oneShotUsage(out, 'enrichmentCalls'),
               })
               .catch(() => {});
           },

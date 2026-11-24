@@ -73,4 +73,51 @@ describe('createDiscussionAssistStart', () => {
 
     expect(result.requestedCli).toBe('kiro');
   });
+
+  it('records the assist’s CLI-reported usage as measured, with no stage', async () => {
+    const recordMetric = vi.fn(async () => ({}));
+    const completed = Promise.withResolvers();
+    const ops = {
+      readProjectCliConfig: async () => ({ agentCli: 'claude', cliModels: null, tierModels: null }),
+      readDiscussionContext: async () => ({
+        discussion: { entity_type: 'artifact', entity_id: 'a-1', status: 'open' },
+        selected: [],
+        recent: [],
+        anchor: null,
+        intentMap: {},
+      }),
+      completeDiscussionAssist: async (input) => {
+        completed.resolve(input);
+        return { id: input.messageId, assistStatus: input.status, content: input.content };
+      },
+      close: async () => {},
+    };
+    const start = createDiscussionAssistStart({
+      openEngineGraph: async () => ops,
+      engineData: false,
+      store: { recordMetric },
+      availableClis: ['claude'],
+      materializeCliContextFn: async () => ({}),
+      oneShot: async () => ({
+        ok: true,
+        text: 'answer',
+        cli: 'claude',
+        model: 'm1',
+        metrics: { tokensInput: 9 },
+      }),
+      env: {},
+      log: () => {},
+    });
+    expect(await start(basePayload)).toMatchObject({ ok: true, accepted: true });
+    await completed.promise;
+    await vi.waitFor(() => expect(recordMetric).toHaveBeenCalled());
+    expect(recordMetric).toHaveBeenCalledExactlyOnceWith({
+      executionId: 'i1',
+      stageInstanceId: null,
+      metrics: { tokensInput: 9, discussionAssistCalls: 1 },
+      resolvedModel: 'm1',
+      creditRate: null,
+      measured: true,
+    });
+  });
 });
