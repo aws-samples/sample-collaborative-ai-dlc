@@ -18,7 +18,12 @@ import { applyNativeEngineCommand } from './command-application.js';
 import { engineGitDelta, engineGitSource, openEngineGitInput } from './git-evidence.js';
 import { nativeGitDeltaSha256 } from '../../shared/native-git-change-set.js';
 import { nativeEngineCompletionEvidence } from './evidence.js';
-import { nativeEngineAskInput, nativeEnginePresentation } from './presentation.js';
+import {
+  nativeEngineAskInput,
+  nativeEnginePresentation,
+  openNativePlanPicker,
+} from './presentation.js';
+import { nativeEngineSelectedCommand } from './commands.js';
 import { bindNativeEngineReply, nativeEngineReplyNotice } from './reply-binding.js';
 
 const same = isDeepStrictEqual;
@@ -123,6 +128,13 @@ const runNativeEngineCommand = async (context) => {
       files.filter((file) => nativeEngineAuthoredPath(file.path)),
       row.configuration.repository.commit,
     );
+  if (request.action === 'mirror' && row.response && workspace.state.directive?.kind === 'ask') {
+    // A turn can publish without making another CLI call. Its form must still
+    // show the plan names from the question that member actually answered.
+    const bound = await bindNativeEngineReply({ ...context, state: workspace.state });
+    if (bound && !nativeEngineSelectedCommand(bound.presented, bound.response))
+      openNativePlanPicker(workspace.state, decode(await runner.observe()), bound, null);
+  }
   const result =
     request.action === 'execute'
       ? await applyNativeEngineCommand({

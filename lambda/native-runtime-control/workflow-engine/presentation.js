@@ -87,3 +87,28 @@ export const assertNativeEnginePresentedQuestion = (state, observed, presented) 
   )
     fail();
 };
+
+// The package's "Use a different plan" choice delegates the next question
+// to its host. Its scope_commands already carry the request, plan and settings.
+// A written reply also needs an explicit named selection before it can run one.
+export const openNativePlanPicker = (state, observed, bound, selectedCommand) => {
+  const offer = bound?.presented.directive;
+  if (
+    selectedCommand ||
+    offer?.kind !== 'ask' ||
+    !['scope-confirm', 'compose-offer'].includes(offer.ask_type)
+  )
+    return;
+  assertNativeEnginePresentedQuestion(state, observed, bound.presented);
+  const menu = {
+    kind: 'ask',
+    ask_type: 'compose-offer',
+    response_route: 'next',
+    question: 'Which plan would you like to use?',
+    scope_commands: offer.scope_commands,
+    compose_command: offer.compose_command,
+  };
+  if (!nativeEngineAskInput(menu)) fail();
+  state.directive = menu;
+  state.planPickerReplyId = bound.response.commandId;
+};

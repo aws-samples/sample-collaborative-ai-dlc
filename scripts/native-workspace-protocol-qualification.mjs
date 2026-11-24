@@ -178,6 +178,8 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     }
   }
   const nextCommand = 'aidlc engine orchestrate next';
+  const alternate = !terminalResult && ['codex', 'opencode'].includes(harness);
+  const proposed = alternate ? 'mvp' : 'express';
   let offer, stage, next;
   function* presentOffer() {
     // The installed conductor can forward the literal Start request as shell
@@ -186,7 +188,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
       terminalResult ? nextCommand : 'aidlc next Create a 3D version of the game',
     );
     offer = yield* runDirective(
-      `${nextCommand} --propose express --request ${issuedRequestId(initial)}`,
+      `${nextCommand} --propose ${proposed} --request ${issuedRequestId(initial)}`,
     );
     if (terminalResult)
       yield { filePath: pendingFile, content: JSON.stringify({ version: 3, ask: offer }) };
@@ -194,9 +196,9 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   }
   const firstSession = await turn('Start', presentOffer());
   assert.ok(firstSession);
-  const first = await driver.interaction();
+  let first = await driver.interaction();
   assert.equal(offer.ask_type, 'scope-confirm');
-  assert.equal(offer.proposed_scope, 'express');
+  assert.equal(offer.proposed_scope, proposed);
   assert.deepEqual(
     first.pendingInput,
     buildNativePendingInput({ spec: { version: 3, ask: offer } }),
@@ -204,6 +206,34 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   assert.equal((await driver.get('publication')).id, first.publicationId);
   assert.deepEqual((await proof(first)).engineApplication, []);
   const selection = { answers: [{ selectedOptions: [0] }] };
+  let planSelection = selection;
+  let planLabel = offer.choices[0].label;
+  const expressCommand = offer.scope_commands.find((entry) => entry.scope === 'express').command;
+  if (alternate) {
+    const recommendation = first;
+    const other = { selectedOptions: [], freeText: 'Let’s use Express for this one' };
+    const answer = harness === 'codex' ? other : { selectedOptions: [1] };
+    function* requestPlanNames() {
+      // Codex tried the real offered scope before an explicit plan selection.
+      // OpenCode exercises publication with no subsequent workflow command.
+      if (harness === 'codex') {
+        const picker = yield* runDirective(expressCommand);
+        assert.equal(picker.ask_type, 'compose-offer');
+        assert.deepEqual(picker.scope_commands, offer.scope_commands);
+      }
+      return 'Choose a plan.';
+    }
+    await turn(answer.freeText ?? offer.choices[1].label, requestPlanNames(), {
+      selection: { answers: [answer] },
+    });
+    first = await driver.interaction();
+    assert.notEqual(first.publicationId, recommendation.publicationId);
+    assert.deepEqual((await proof(first)).engineApplication, []);
+    const plans = first.pendingInput.questions[0].options.map((option) => option.label);
+    assert.deepEqual(plans, ['compose', ...offer.scope_commands.map((entry) => entry.scope)]);
+    planLabel = 'express';
+    planSelection = { answers: [{ selectedOptions: [plans.indexOf(planLabel)] }] };
+  }
   const compete = harness === 'claude' || terminalResult;
   const gateQuestion = 'Review the requirements. How would you like to proceed?';
   const gateSpec = {
@@ -215,7 +245,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   const gateFile = { filePath: pendingFile, content: JSON.stringify(gateSpec) };
   function* selectAndPresentGate() {
     const id = issuedRequestId(yield* runDirective(nextCommand));
-    assert.equal(offer.choices[0].command, `${nextCommand} --scope express --request ${id}`);
+    assert.equal(expressCommand, `${nextCommand} --scope express --request ${id}`);
     yield {
       command: `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
     };
@@ -240,8 +270,8 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     return gateQuestion;
   }
   assert.equal(
-    await turn(first.pendingInput.questions[0].options[0].label, selectAndPresentGate(), {
-      selection,
+    await turn(planLabel, selectAndPresentGate(), {
+      selection: planSelection,
       compete,
     }),
     firstSession,
@@ -255,7 +285,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   assert.equal(history.answer.resultingPublication.publicationId, held.publicationId);
   assert.equal(history.answer.resultingPublication.publicationSequence, held.sequence);
   assert.equal(history.answer.context.membershipRecorded, true);
-  assert.equal(history.answer.text, offer.choices[0].label);
+  assert.equal(history.answer.text, planLabel);
   const before = await proof(held);
   assert.equal(before.engineApplication.length, 1);
   const [decision] = before.engineApplication;
@@ -358,6 +388,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
       originalInteraction: first.id,
       acceptedOption: decision.commandId,
       selectedOption: history.answer.text,
+      proposedPlan: proposed,
       contentSha256: first.contentSha256,
       presentationSha256: decision.presentationSha256,
       interruptedPublication: held.publicationId,

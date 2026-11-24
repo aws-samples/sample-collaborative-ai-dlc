@@ -26,7 +26,13 @@ export const bindNativeEngineReply = async (
 ) => {
   const pointer = row.response;
   const seen = (item) => item.commandId === pointer.commandId;
-  if (!pointer || state.decisions.some(seen) || unapplied(state).some(seen)) return null;
+  if (
+    !pointer ||
+    state.planPickerReplyId === pointer.commandId ||
+    state.decisions.some(seen) ||
+    unapplied(state).some(seen)
+  )
+    return null;
   const response = await executionStore.response(row, pointer.interactionId);
   if (
     !response ||

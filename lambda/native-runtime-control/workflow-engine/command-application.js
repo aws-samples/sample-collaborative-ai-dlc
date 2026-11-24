@@ -12,11 +12,12 @@ import {
 } from '../execution-store.js';
 import {
   nativeEngineCommand,
+  nativeEngineCommandWords,
   nativeEngineDirectiveSha,
   nativeEngineSelectedCommand,
   normalizeNativeEngineCommand,
 } from './commands.js';
-import { assertNativeEnginePresentedQuestion } from './presentation.js';
+import { assertNativeEnginePresentedQuestion, openNativePlanPicker } from './presentation.js';
 import { bindNativeEngineReply, noteNativeEngineOpenGate } from './reply-binding.js';
 import { observedEngineGitDelta } from './git-evidence.js';
 import { completeNativeEngineReview } from './review.js';
@@ -114,9 +115,27 @@ const selectCommand = async (context, before) => {
   // person's words. Any other accepted reply leaves this command without a
   // member: it is applied if it needs none and refused if it needs one.
   const bound = await bindNativeEngineReply(context);
+  const selectedCommand = bound && nativeEngineSelectedCommand(bound.presented, bound.response);
+  openNativePlanPicker(state, before, bound, selectedCommand);
+  if (row.response && state.planPickerReplyId === row.response.commandId) {
+    const menu = state.directive;
+    if (menu?.kind === 'ask' && menu.ask_type === 'compose-offer') {
+      const offered = [menu.compose_command, ...menu.scope_commands.map((entry) => entry.command)];
+      // A conductor can try the named scope before the member has picked it.
+      // Return the held question without executing that command or recording a decision.
+      if (
+        isNext ||
+        offered.some((command) =>
+          same(args, normalizeNativeEngineCommand(nativeEngineCommandWords(command), project)),
+        )
+      )
+        return { selected: { args }, member: null, heldQuestion: menu };
+      if (same(args.slice(0, 3), nextCommand)) throw engineFailure('NATIVE_ENGINE_COMMAND_DENIED');
+      return { selected: validate(args), member: null };
+    }
+  }
   if (bound) {
     const { response, presented } = bound;
-    const selectedCommand = nativeEngineSelectedCommand(presented, response);
     const exactSelection =
       selectedCommand && same(args, normalizeNativeEngineCommand(selectedCommand, project));
     const isAnswer = same(args.slice(0, 3), ['engine', 'log', 'answer']);
@@ -220,20 +239,21 @@ export const applyNativeEngineCommand = async (context) => {
   // Include that application in the before/after observation.
   const before = decode(await runner.observe());
   noteNativeEngineOpenGate(state, before);
-  const { selected, member } = await selectCommand(context, before);
+  const { selected, member, heldQuestion } = await selectCommand(context, before);
   // Before intent creation, bare next has no active workflow to schedule.
   // Re-present the pinned intake already held in the journal, including an
   // intake previously delivered to a startup hook. Never issue another one.
   const heldIntake = same(selected.args, nextCommand) && holdsInitialIntake(state, before);
-  let result = heldIntake
-    ? {
-        exitCode: 0,
-        stdout: Buffer.from(JSON.stringify(state.directive) + '\n'),
-        stderr: Buffer.alloc(0),
-      }
-    : selected.creation
-      ? await runner.tool('aidlc-utility.ts', ['intent-create', ...selected.args.slice(3)])
-      : await runner.tool(`aidlc-${selected.args[1]}.ts`, selected.args.slice(2));
+  let result =
+    heldQuestion || heldIntake
+      ? {
+          exitCode: 0,
+          stdout: Buffer.from(JSON.stringify(heldQuestion ?? state.directive) + '\n'),
+          stderr: Buffer.alloc(0),
+        }
+      : selected.creation
+        ? await runner.tool('aidlc-utility.ts', ['intent-create', ...selected.args.slice(3)])
+        : await runner.tool(`aidlc-${selected.args[1]}.ts`, selected.args.slice(2));
   if (selected.review)
     result = await completeNativeEngineReview({
       requested: result,

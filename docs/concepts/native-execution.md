@@ -112,9 +112,10 @@ package identity and runtime archive bytes. A different version or fork does not
 inherit support from a similar JSON shape. The adapter preserves question text,
 literal option labels (including recommendation text), descriptions, order and
 single/multiple selection semantics. The current scope-confirm offer includes
-three choices: its alternative-plan choice has no command and remains available
-for a human reply and AI-DLC follow-up. Scope/compose commands stay with the
-workflow's existing validation and binding owner; they are not browser actions.
+three choices. Selecting **Use a different plan** or sending a written reply
+opens the named plans and stage counts from that same engine offer. The member
+selects a plan on the new form. The protected engine binds that selection to
+the new publication and the original request before running the plan command.
 
 The current display transport accepts complete rendered question groups
 (`version: 2`) or the two pinned typed intake asks (`version: 3`,

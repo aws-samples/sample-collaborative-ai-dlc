@@ -1489,6 +1489,63 @@ describe('protected workflow engine service', () => {
     ...rest,
   ];
 
+  it.each([
+    ['different plan', { selectedOptions: [1] }, false],
+    ['written request', { selectedOptions: [], freeText: 'Let’s use Express' }, true],
+  ])(
+    'shows the offered plans after a %s and applies only the subsequent named choice',
+    async (_, answer, commandFirst) => {
+      const t = await setup();
+      try {
+        t.hooks.orchestrate = (args) => (args.includes('--scope') ? null : capturedPlanAsk);
+        await t.command([]);
+        const mirror = async () => (await t.send(await t.request('mirror'))).result.pendingInput;
+        const original = await mirror();
+        const shown = await t.publish(original);
+        await t.admit(shown);
+        const selection = { answers: [answer] };
+        await reply(t, shown, nativeAnswerText(original, selection), selection);
+        const priorCalls = t.calls.length;
+        const priorMessages = t.memberMessages();
+        const express = ['next', '--scope', 'express', '--request', '6b26fb88'];
+        if (commandFirst)
+          expect(JSON.parse((await t.command(express)).result.stdout).ask_type).toBe(
+            'compose-offer',
+          );
+        const form = await mirror();
+        expect(form.questions[0].options.map((option) => option.label)).toEqual([
+          'compose',
+          ...capturedPlanAsk.scope_commands.map((entry) => entry.scope),
+        ]);
+        expect(JSON.parse((await t.command([])).result.stdout).scope_commands).toEqual(
+          capturedPlanAsk.scope_commands,
+        );
+        expect((await t.command([...express.slice(0, -1), '1234abcd'])).result.failure).toBe(
+          'NATIVE_ENGINE_COMMAND_DENIED',
+        );
+        expect(t.calls).toHaveLength(priorCalls);
+        expect(t.memberMessages()).toBe(priorMessages);
+        const named = await t.publish(form);
+        expect((await t.proof(named)).engineApplication).toEqual([]);
+        await t.admit(named);
+        const index = form.questions[0].options.findIndex((option) => option.label === 'express');
+        const decision = await reply(t, named, 'express', {
+          answers: [{ selectedOptions: [index] }],
+        });
+        const command = await t.request('execute', { args: express });
+        const accepted = await t.send(command);
+        expect(accepted.result.exitCode).toBe(0);
+        expect(await t.send(command)).toEqual(accepted);
+        expect(t.memberMessages()).toBe(priorMessages + 1);
+        expect((await t.proof(await t.publish())).engineApplication).toMatchObject([
+          { commandId: decision.commandId, application: 'applied' },
+        ]);
+      } finally {
+        await t.close();
+      }
+    },
+  );
+
   it('applies the commands that need no member after a reply to a turn without a question, tells the agent why nothing was decided, and completes verified in the same attempt', async () => {
     const t = await setup();
     try {
