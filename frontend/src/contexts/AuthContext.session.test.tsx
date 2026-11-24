@@ -11,6 +11,9 @@ const auth = vi.hoisted(() => ({
 }));
 
 vi.mock('../services/auth', () => ({ authService: auth }));
+// The shared setup swaps in a fresh client per test; this file keeps the real
+// module so the logout → clear wiring itself is under test.
+vi.unmock('@/lib/queryClient');
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { queryClient, querySessionOpen } from '@/lib/queryClient';

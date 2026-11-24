@@ -24,7 +24,7 @@ Use `placeholderData` for an observer-local preview, not `setQueryData` or `init
 
 `staleTime` is a freshness window, not a polling interval. `gcTime` is TanStack's inactive retention timer; when consumers configure different retention for the same key, the longest applies.
 
-A small `QueryCache` subscriber additionally bounds unused data by count and approximate serialized size. It evicts the least recently used queries with **no observers and no request in flight**; it never evicts a screen's observed data. A visibility timer tightens the cap after 60 seconds hidden. Size is measured when a stored value changes and is an estimate, not an exact measurement of heap usage.
+A small `QueryCache` subscriber additionally bounds unused data by count and approximate serialized size. It evicts the least recently used queries with **no observers and no request in flight**, where use means a data change or an observer subscribing or leaving (a fresh `fetchQuery` hit does not count); it never evicts a screen's observed data. A visibility timer tightens the cap after 60 seconds hidden. Size is measured when a stored value changes and is an estimate, not an exact measurement of heap usage.
 
 ### Request sharing and cancellation
 

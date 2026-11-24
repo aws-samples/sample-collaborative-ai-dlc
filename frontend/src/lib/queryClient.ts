@@ -63,6 +63,8 @@ export function boundQueryMemory(client: QueryClient): () => void {
     }
     trimming = false;
   };
+  // Recency is the last cache event (data change, observer added or removed).
+  // A fresh fetchQuery() hit emits none, so it does not count as a use.
   const unsubscribe = cache.subscribe((event) => {
     const { query } = event;
     if (event.type === 'removed') return;
