@@ -216,8 +216,17 @@ jobs:
               fi
 
               deploy_commit="$(git rev-parse --verify "$tag_ref^{commit}")"
-              if ! git merge-base --is-ancestor "$deploy_commit" "$main_commit"; then
-                echo "Deployment tag $DEPLOY_REF ($deploy_commit) is not reachable from main." >&2
+              # Release tags are created on their protected release/X.Y.x line
+              # branch; releases that predate line branches were tagged on main.
+              line="$(cut -d. -f1,2 <<<"${DEPLOY_REF#v}")"
+              line_ref="refs/remotes/origin/release/$line.x"
+              if git rev-parse --verify --quiet "$line_ref^{commit}" >/dev/null &&
+                git merge-base --is-ancestor "$deploy_commit" "$line_ref"; then
+                trusted_branch="release/$line.x"
+              elif git merge-base --is-ancestor "$deploy_commit" "$main_commit"; then
+                trusted_branch="main"
+              else
+                echo "Deployment tag $DEPLOY_REF ($deploy_commit) is not reachable from release/$line.x or main." >&2
                 exit 1
               fi
               ;;
@@ -235,6 +244,7 @@ jobs:
                 echo "Deployment commit $deploy_commit is not reachable from main." >&2
                 exit 1
               fi
+              trusted_branch="main"
               ;;
             *)
               echo "ref_type must be release-tag or commit: $DEPLOY_REF_TYPE" >&2
@@ -242,7 +252,7 @@ jobs:
               ;;
           esac
 
-          echo "Verified $DEPLOY_REF resolves to main commit $deploy_commit."
+          echo "Verified $DEPLOY_REF resolves to $trusted_branch commit $deploy_commit."
           echo "DEPLOY_COMMIT=$deploy_commit" >> "$GITHUB_ENV"
 
       - name: Load release build authentication

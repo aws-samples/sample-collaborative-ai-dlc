@@ -38,11 +38,15 @@ deployment role access to the AWS account:
    approve its deployment.
 3. Disable administrator bypass for the protection rules.
 4. Under **Deployment branches and tags**, choose **Selected branches and
-   tags**, add `main`, and save the rule.
+   tags**, add `main` and the branch pattern `release/*.x`, and save the rule.
+   Release-triggered deployments run on the line branch that dispatched
+   **Publish Release**; manually triggered deployments run on `main`.
 
 Both release-triggered and manually triggered deployments wait for this
 approval. The workflow then verifies that the requested annotated release tag
-resolves to a commit reachable from `main` before requesting AWS credentials.
+resolves to a commit reachable from its protected `release/X.Y.x` line branch —
+or from `main` for releases that predate line branches — before requesting AWS
+credentials.
 
 Add these **environment variables**:
 
@@ -477,7 +481,7 @@ separate project names do not reduce the permissions granted by that policy.
 
 Before publishing the first release, confirm that the `demo-release` environment has
 the required reviewers, self-review prevention, administrator bypass disabled,
-and the `main` deployment branch rule. Also confirm that the `v*` tag ruleset
+and the `main` and `release/*.x` deployment branch rules. Also confirm that the `v*` tag ruleset
 is active and the deployment role has the selected deployment policy, with its
 scope reviewed for the account.
 
