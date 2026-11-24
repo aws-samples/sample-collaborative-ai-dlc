@@ -1,0 +1,74 @@
+name: Prepare Release Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      line:
+        description: New release line as X.Y without a v prefix (for example, 2.5)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate the new release line
+        env:
+          LINE: ${{ inputs.line }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Prepare Release Branch may only be dispatched from main." >&2
+            exit 1
+          fi
+          if [[ ! "$LINE" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "The release line must have the form X.Y, for example 2.5." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/heads/release/$LINE.x" >/dev/null; then
+            echo "release/$LINE.x already exists; dispatch Publish Release from it instead." >&2
+            exit 1
+          fi
+          # Old lines already have a branch or get one from their tag; a new line must be newer than all of them.
+          newest="$(git tag --list 'v*' | sed -E 's/^v//; s/[-+].*//' | cut -d. -f1,2 | sort -V | tail -n 1)"
+          if [[ -n "$newest" ]]; then
+            highest="$(printf '%s\n%s\n' "$newest" "$LINE" | sort -V | tail -n 1)"
+            if [[ "$LINE" == "$newest" || "$highest" != "$LINE" ]]; then
+              echo "$LINE is not newer than the existing $newest line." >&2
+              exit 1
+            fi
+          fi
+          # A fix that exists only on a release branch would miss the new line:
+          # refuse to start one while any release branch has commits main lacks.
+          # Only X.Y.x line branches take part in back-merges: release/1.x is
+          # frozen (v1 fixes never merge into v2 main) and other release/*
+          # names, such as preparation branches from the previous process, are
+          # not lines.
+          unmerged=""
+          for branch in $(git for-each-ref --format='%(refname:lstrip=3)' 'refs/remotes/origin/release/*'); do
+            [[ "$branch" =~ ^release/[0-9]+\.[0-9]+\.x$ ]] || continue
+            if ! git merge-base --is-ancestor "refs/remotes/origin/$branch" "$GITHUB_SHA"; then
+              unmerged="$unmerged $branch"
+            fi
+          done
+          if [[ -n "$unmerged" ]]; then
+            echo "Back-merge these release branches into main (with a merge commit, not a squash) first:$unmerged" >&2
+            exit 1
+          fi
+
+      - name: Create the release branch
+        env:
+          LINE: ${{ inputs.line }}
+        run: git push origin "$GITHUB_SHA:refs/heads/release/$LINE.x"
