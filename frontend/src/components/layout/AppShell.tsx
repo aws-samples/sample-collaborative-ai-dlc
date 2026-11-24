@@ -29,6 +29,10 @@ import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } fro
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
 import { setLastIntentSection } from '@/lib/intentSectionPreference';
+import { useLayoutEffect } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+import { installNavIntent } from '@/lib/navIntent';
+import { notifyNavigation } from '@/lib/routePrefetch';
 
 // ---------------------------------------------------------------------------
 // Route classification: determines whether the activity panel should default
@@ -82,6 +86,21 @@ export function AppShell() {
     intentId: string;
   }>();
   const location = useLocation();
+  const { user, isPlatformAdmin } = useAuth();
+  const navContext = useRef({
+    user: { isPlatformAdmin },
+    currentHref: location.pathname + location.search,
+  });
+  useLayoutEffect(() => {
+    navContext.current = {
+      user: { isPlatformAdmin },
+      currentHref: location.pathname + location.search,
+    };
+    if (user) notifyNavigation(navContext.current.currentHref, navContext.current.user);
+  }, [location.key, location.pathname, location.search, user, isPlatformAdmin]);
+  useEffect(() => {
+    if (user) return installNavIntent(() => navContext.current);
+  }, [user]);
   const inSprint = !!sprintId;
   // v2 intent pages get their own 3-tab activity panel (IntentActivityPanel),
   // mounted in the same slots as the sprint one and backed by IntentProvider.

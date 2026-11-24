@@ -18,11 +18,12 @@ Include every parameter that changes the response. In particular, compiled-workf
 
 ### React binding
 
-Factories return native `queryOptions`, not a second options format. The same factory works for a screen and an imperative read:
+Factories return native `queryOptions`, not a second options format. The same factory works for a screen, an imperative read, and a prefetch:
 
 ```tsx
 const detail = useQuery(intentDetailQuery(projectId, intentId));
 await queryClient.fetchQuery(intentDetailQuery(projectId, intentId));
+await queryClient.prefetchQuery(intentDetailQuery(projectId, intentId));
 ```
 
 `lib/authoringQueries.ts` and `lib/intentEntry.ts` own the shared descriptors. Each query function passes TanStack's `signal` to the transport. Keep HTTP calls in the domain service or authenticated API client; do not call a cache-backed service recursively from its own query function.
@@ -56,11 +57,11 @@ queryClient.setQueryData(queryKey, savedValue);
 
 ### Errors
 
-The client does not retry 401, 403, 404, or 410 responses; other failures retry once. A 403, 404, or 410 also drops the stored value, so a screen never shows data the user lost access to. Genuine session expiry is detected by the authenticated API client.
+The client does not retry 401, 403, 404, or 410 responses; other failures retry once. A 403, 404, or 410 also drops the stored value, so a screen never shows data the user lost access to. Genuine session expiry is detected by the authenticated API client. Prefetch failures are speculative and must not interrupt navigation.
 
 ## Session isolation
 
-`AuthContext` binds accepted users through `lib/persistentCache.ts` and ends that binding on logout, user switch, or expiry. The query client clears when the session ends, cancelling old queries as well as discarding their data, and `querySessionOpen` stays false until a user is bound again.
+`AuthContext` binds accepted users through `lib/persistentCache.ts` and ends that binding on logout, user switch, or expiry. The query client clears when the session ends, cancelling old queries as well as discarding their data, and `querySessionOpen` stays false until a user is bound again. The prefetch scheduler drops queued work at the same boundary.
 
 The existing document-reload boundary remains: signing in after a session ended, or switching users, starts a new document rather than reusing the old user's modules. The persisted sidebar summary is scoped to the user and cleared at session end.
 
@@ -72,6 +73,30 @@ Domain writes go through `afterWrite(write, ...prefixes)` (`lib/afterWrite.ts`):
 - Successful intent lifecycle writes invalidate the space's intent lists, including status-filtered lists, and re-read the spaces cache (`useProjectsCache`) that the sidebar and dashboard still read outside the query cache.
 
 `afterWrite` refreshes in `finally`: a failed response can still follow an applied write. Intent lifecycle writes refresh only on success. Keep this decision in the service so every caller uses the same policy.
+
+## Prefetch
+
+### Route registry
+
+`routes/registry.ts` defines the authenticated shell routes. Each entry owns its lazy page, optional access requirement, critical query factories, dependent queries, and heavy-read policy. The page and its prefetch must use the same factory and key.
+
+`lib/navIntent.ts` delegates hover, focus, pointer-down, and touch handling. Hover/focus waits for a cancellable 200 ms dwell; pressing warms immediately. Repeats are deduplicated by query freshness and in-flight sharing, not by a per-link cooldown. External, disabled, download, and opted-out links are ignored. Heavy routes (the graph, an intent whose cached detail exceeds 512 KiB) load code on hover and data only when navigation is imminent. Route chunks use `lazyWithPreload` so render and warming share the same import.
+
+### Budgets and gates
+
+`lib/prefetch.ts` adds scheduling around native `queryClient.prefetchQuery`:
+
+- At most **two requests** run and **eight tasks** wait. Intent-priority work precedes idle work; a full queue drops speculation, never foreground requests.
+- Save-Data, 2g/slow-2g, reduced-data preference, and a closed session suppress speculative data reads. Pressing may still load code.
+- Hidden tabs do not dispatch speculative work. Idle warming also avoids devices reporting 2 GB of memory or less.
+- Idle work waits for foreground fetching to go quiet; hover and press warming do not.
+- Navigation drops obsolete queued tasks and cancels inactive requests the destination does not need. Requests already observed by a screen are not cancelled as speculation.
+
+There is no parallel speculative data store, learned-byte estimator, per-link cooldown, hit/waste registry, or token-bucket API. Prefetched data uses the same native cache and inactive memory cap as other reads.
+
+The intent detail query starts its compiled view as soon as a detail a page is reading arrives; a speculative detail leaves the compile to the route prefetch. The provider reads the shared detail, compiled, and workflow-detail (`select` phases) queries; it keeps only the transcript and artifact-body merge state of its own.
+
+Never prefetch capability probes (they are cached foreground reads), composer execution previews (cached, foreground only), OAuth callbacks, verification endpoints, writes, realtime tokens, output transcripts, artifact content pages, or the slow on-demand space-usage aggregate. Graph and audit reads are not idle-warming candidates.
 
 ## Polling
 
@@ -90,4 +115,5 @@ A component that renders a transcript pane declares it with `useVisibleOutputPan
 - Add request-shaped keys to `qk` and a shared `queryOptions` factory. Forward `signal`; choose `staleTime` and `gcTime` deliberately.
 - Read with `useQuery`, or `fetchQuery` when an imperative caller needs the result. Use `useQueryData` only for non-retaining views.
 - Invalidate affected prefixes in services; cancel superseded reads before authoritative cache writes.
+- Register routes and their query factories once. Use normal links or `data-prefetch-href` instead of per-row hover timers.
 - Use `src/test/query.tsx` for query-owning component and hook tests. Setup creates a fresh client per test. Test application policies and request wiring rather than reimplementing TanStack's tests.

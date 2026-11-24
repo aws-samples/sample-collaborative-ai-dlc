@@ -1,6 +1,7 @@
-import { QueryCache, QueryClient, type Query } from '@tanstack/react-query';
+import { hashKey, QueryCache, QueryClient, type Query, type QueryKey } from '@tanstack/react-query';
 import { onUserCacheBound, onUserCacheEnded } from './persistentCache';
 
+export type { FetchQueryOptions as QueryOptions, QueryKey } from '@tanstack/react-query';
 const usage = new WeakMap<Query, { at: number; bytes: number }>();
 
 export function createQueryClient() {
@@ -104,5 +105,19 @@ export function boundQueryMemory(client: QueryClient): () => void {
     document.removeEventListener('visibilitychange', visibility);
   };
 }
+
+export function inactiveQueryBytes(client: QueryClient): number {
+  return client
+    .getQueryCache()
+    .getAll()
+    .filter((query) => !query.getObserversCount() && query.state.fetchStatus === 'idle')
+    .reduce((total, query) => total + (usage.get(query)?.bytes ?? 0), 0);
+}
+
+/** The size of the cached response for `key`, 0 when it is not cached. */
+export const knownQueryBytes = (client: QueryClient, key: QueryKey): number => {
+  const query = client.getQueryCache().get(hashKey(key));
+  return query ? (usage.get(query)?.bytes ?? 0) : 0;
+};
 
 boundQueryMemory(queryClient);
