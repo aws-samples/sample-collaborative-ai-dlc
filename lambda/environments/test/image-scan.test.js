@@ -1,6 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { createScanReadClient, readImageScanFindings } from '../build-lifecycle.js';
+import {
+  ENHANCED_SCAN_SETTLE_MS,
+  MAX_GATE_SCAN_FINDINGS,
+  createScanReadClient,
+  readGateScan,
+  readImageScanFindings,
+} from '../build-lifecycle.js';
 import { createHandler } from '../index.js';
 
 const digest = `sha256:${'c'.repeat(64)}`;
@@ -85,11 +91,24 @@ describe('readImageScanFindings', () => {
           enhancedFindings: [
             {
               severity: 'HIGH',
-              title: 'CVE-2026-1 - openssl',
+              title: 'CVE-2026-1 - openssl, libssl3t64',
               packageVulnerabilityDetails: {
                 vulnerabilityId: 'CVE-2026-1',
                 sourceUrl: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
-                vulnerablePackages: [{ name: 'openssl', version: '3.5.9' }],
+                vulnerablePackages: [
+                  { name: 'openssl', version: '3.5.9' },
+                  { name: 'libssl3t64', version: '3.5.9' },
+                ],
+              },
+            },
+            {
+              severity: 'LOW',
+              title: 'CVE-2026-9 - zlib',
+              packageVulnerabilityDetails: {
+                vulnerabilityId: 'CVE-2026-9',
+                // Only https links reach the UI.
+                sourceUrl: 'javascript:alert(1)',
+                vulnerablePackages: [{ name: 'zlib', version: '1.3' }],
               },
             },
             {
@@ -122,6 +141,13 @@ describe('readImageScanFindings', () => {
       {
         id: 'CVE-2026-1',
         severity: 'HIGH',
+        packageName: 'libssl3t64',
+        packageVersion: '3.5.9',
+        uri: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
+      },
+      {
+        id: 'CVE-2026-1',
+        severity: 'HIGH',
         packageName: 'openssl',
         packageVersion: '3.5.9',
         uri: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
@@ -133,6 +159,7 @@ describe('readImageScanFindings', () => {
         packageVersion: null,
         uri: null,
       },
+      { id: 'CVE-2026-9', severity: 'LOW', packageName: 'zlib', packageVersion: '1.3', uri: null },
     ]);
   });
 
@@ -161,6 +188,42 @@ describe('readImageScanFindings', () => {
       }),
     ).resolves.toBeNull();
     expect(ecrClient.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('readGateScan findings bound', () => {
+  const finding = (index) => ({
+    severity: 'LOW',
+    packageVulnerabilityDetails: {
+      vulnerabilityId: `CVE-${String(index).padStart(4, '0')}`,
+      vulnerablePackages: [{ name: 'zlib', version: '1.3' }],
+    },
+  });
+  const page = (from, to, nextToken) => ({
+    imageScanStatus: { status: 'ACTIVE' },
+    imageScanFindings: {
+      imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+      findingSeverityCounts: to > from ? { LOW: to - from } : {},
+      enhancedFindings: Array.from({ length: to - from }, (_, index) => finding(from + index)),
+    },
+    ...(nextToken ? { nextToken } : {}),
+  });
+  const read = (...pages) => {
+    const send = vi.fn();
+    for (const response of pages) send.mockResolvedValueOnce(response);
+    return readGateScan({ ecrClient: { send }, repositoryName: 'core', imageDigest: digest });
+  };
+
+  it.each([
+    ['every finding fits', [page(0, 60, 'p2'), page(60, MAX_GATE_SCAN_FINDINGS)], false],
+    // A last page can be empty and still carry a token, then none.
+    ['an empty last page', [page(0, MAX_GATE_SCAN_FINDINGS, 'p2'), page(0, 0)], false],
+    ['one finding too many', [page(0, 60, 'p2'), page(60, MAX_GATE_SCAN_FINDINGS + 1)], true],
+  ])('keeps the list complete when %s', async (_, pages, truncated) => {
+    const result = await read(...pages);
+    expect(result.findings).toHaveLength(MAX_GATE_SCAN_FINDINGS);
+    expect(result.findingsTruncated).toBe(truncated);
+    expect(result.incomplete).toBe(false);
   });
 });
 

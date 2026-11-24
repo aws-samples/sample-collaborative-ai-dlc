@@ -63,24 +63,35 @@ export const compareScanFindings = (left, right) =>
   String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
   String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? ''));
 
+// Finding links come from vulnerability feeds and the UI renders them as
+// links: keep only https URLs.
+const httpsUrl = (value) => {
+  try {
+    return new URL(value).protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
+};
+
 const basicFinding = (finding) => ({
   id: finding.name ?? 'Unknown finding',
   severity: finding.severity ?? 'UNDEFINED',
   packageName: findingAttribute(finding, 'package_name'),
   packageVersion: findingAttribute(finding, 'package_version'),
-  uri: finding.uri ?? null,
+  uri: httpsUrl(finding.uri),
 });
 
-const enhancedFinding = (finding) => {
+// One entry per affected package, as basic scanning reports them.
+const enhancedFindings = (finding) => {
   const details = finding.packageVulnerabilityDetails ?? {};
-  const affected = details.vulnerablePackages?.[0] ?? {};
-  return {
+  const packages = details.vulnerablePackages?.length ? details.vulnerablePackages : [{}];
+  return packages.map((affected) => ({
     id: details.vulnerabilityId ?? finding.title ?? 'Unknown finding',
     severity: finding.severity ?? 'UNDEFINED',
     packageName: affected.name ?? null,
     packageVersion: affected.version ?? null,
-    uri: details.sourceUrl ?? details.referenceUrls?.[0] ?? null,
-  };
+    uri: httpsUrl(details.sourceUrl ?? details.referenceUrls?.[0]),
+  }));
 };
 
 // ECR returns basic scanning findings in `findings` and enhanced scanning
@@ -88,7 +99,7 @@ const enhancedFinding = (finding) => {
 export const summarizeScanFindings = (scan) =>
   [
     ...(scan.imageScanFindings?.findings ?? []).map(basicFinding),
-    ...(scan.imageScanFindings?.enhancedFindings ?? []).map(enhancedFinding),
+    ...(scan.imageScanFindings?.enhancedFindings ?? []).flatMap(enhancedFindings),
   ].toSorted(compareScanFindings);
 
 const repositoryNameFromImageUri = (imageUri) => {
