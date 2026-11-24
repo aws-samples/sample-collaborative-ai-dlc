@@ -664,7 +664,7 @@ function PreviewTab() {
         </div>
       </ScrollArea>
       <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
-        <DialogContent className="grid h-[92vh] w-[min(96vw,1200px)] max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
+        <DialogContent className="grid h-[92vh] w-[96vw] max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b px-6 py-4 pr-14">
             <DialogTitle className="truncate text-base">
               {artifact.title || artifact.id}

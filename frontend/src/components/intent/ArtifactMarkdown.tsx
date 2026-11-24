@@ -10,6 +10,7 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cn } from '@/lib/utils';
 import type { PluggableList } from 'unified';
 import {
   buildReferenceDefinitions,
@@ -257,6 +258,17 @@ type MermaidState =
   | { status: 'error'; svg?: undefined; error: string };
 
 const markdownComponents: Components = {
+  // A table wider than its column scrolls on its own instead of being clipped
+  // by the preview's vertical-only scroll area.
+  table(props) {
+    const { node, ...rest } = props;
+    void node;
+    return (
+      <div className="my-4 max-w-full overflow-x-auto">
+        <table {...rest} className={cn('my-0', rest.className)} />
+      </div>
+    );
+  },
   pre(props) {
     const { children, node, ...rest } = props;
     void node;
