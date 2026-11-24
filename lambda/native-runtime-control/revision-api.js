@@ -6,8 +6,9 @@ import {
   nativeVerificationSummary,
   nativeWorkflowDefinition,
 } from '../shared/native-completion-evidence.js';
-import { engineGitVerification, engineGitDelta } from './workflow-engine/git-evidence.js';
-import { nativeEngineVerificationSummary } from './workflow-engine/proof-reader.js';
+import { engineGitVerification } from './historical-git-evidence.js';
+import { publicationGitDelta } from '../shared/native-git-change-set.js';
+import { nativeEngineVerificationSummary } from './historical-workflow-evidence.js';
 
 const invalid = () => {
   throw Object.assign(new Error('The named publication could not be verified'), {
@@ -22,7 +23,7 @@ export const nativeRevisionGitProof = async ({
   manifest,
   baseline,
 }) => {
-  const delta = engineGitDelta(manifest.sourceBaseline, baseline.manifest, baseline.changes);
+  const delta = publicationGitDelta(manifest.sourceBaseline, baseline.manifest, baseline.changes);
   try {
     const evidence =
       row.configuration.workflowEngine && completionProof
@@ -122,6 +123,7 @@ export const createNativeRevisionApi = ({
                 manifest.packageId,
                 row.configuration.harness,
               )),
+          ...(manifest.methodReport ? { methodReport: manifest.methodReport } : {}),
           definition: nativeWorkflowDefinition(manifest.packageId, row.configuration.harness),
           effectivePlan: protectedEvidence?.effectivePlan ?? 'not_recorded',
           engineApplication: protectedEvidence?.engineApplication ?? 'not_recorded',
@@ -191,6 +193,7 @@ export const createNativeRevisionApi = ({
         ...nativePublicationView(found.receipt, manifest),
         context: { ...found.identity, packageId: manifest.packageId },
         outcome: manifest.outcome,
+        ...(manifest.methodReport ? { methodReport: manifest.methodReport } : {}),
         interactionId: found.interaction?.id ?? null,
         verification: protectedEvidence
           ? nativeEngineVerificationSummary(protectedEvidence)

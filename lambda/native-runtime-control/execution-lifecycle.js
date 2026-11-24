@@ -575,6 +575,7 @@ export const verifyCompletedNativeTurn = async ({
       body.harness !== state.row.configuration.harness ||
       body.sequence !== nativeTurnSequence(state.row) ||
       body.publicationId !== receipt.id ||
+      (manifest.methodReport && body.pendingInput) ||
       body.nativeSessionId !== receipt.nativeSessionId
     )
       fail('NATIVE_INTERACTION_INVALID');
@@ -587,6 +588,7 @@ export const verifyCompletedNativeTurn = async ({
   state.row = await store.publish({
     row: state.row,
     publication: receipt,
+    ...(manifest.methodReport ? { methodReport: manifest.methodReport } : {}),
     measurements: nativePublicationMeasurements(report, state.row.configuration),
     ...(interaction ? { interaction, interactionContentSha256 } : {}),
   });

@@ -48,8 +48,6 @@ import NativeIntentFixture from '@/dev/NativeIntentFixture';
 import { buildNativePendingInput } from '../../../lambda/shared/native-pending-input.js';
 // @ts-expect-error The backend plan fixtures have no frontend declarations.
 import * as planFixture from '../../../lambda/shared/test/fixtures/native-plan-ask.js';
-// @ts-expect-error The protected service fixture drives the production journal, API and object codecs.
-import { setupNativeWorkflowEngine } from '../../../lambda/native-runtime-control/test/workflow-engine-service-fixture.js';
 // @ts-expect-error Backend composition fixture deliberately exercises real public producers.
 import { publishInteractionFixture } from '../../../lambda/native-runtime-control/test/interaction-presentation-fixture.js';
 // @ts-expect-error Pinned methodology/protocol vectors have no frontend declarations.
@@ -58,7 +56,7 @@ import * as aidlcFixture from '../../../lambda/shared/test/fixtures/native-aidlc
 import { nativeAnswerText as backendAnswerText } from '../../../lambda/shared/native-pending-input.js';
 
 const { aidlc211InteractionCases, aidlc211Identity } = aidlcFixture;
-const { capturedPlanAsk, capturedPlanFormSpec, proposedPlanSpec } = planFixture;
+const { proposedPlanSpec } = planFixture;
 
 const messages: NativeInteractionView['messages'] = [
   { type: 'text', text: 'Choose a workflow for these changes.' },
@@ -421,98 +419,6 @@ it('renders all proposed-plan choices and preserves one protected answer across 
     contentSha256: interaction.contentSha256,
     text: 'Use a different plan',
     selection: { answers: [{ selectedOptions: [1] }] },
-  });
-});
-
-it('applies the first J1 picker selection to the engine offer whose prompt the coding process changed', async () => {
-  const t = await setupNativeWorkflowEngine({ harness: 'claude', packageVersion: '2.11.1' });
-  const { f } = t;
-  t.hooks.orchestrate = (args: string[]) =>
-    args.includes('--scope')
-      ? { kind: 'print', message: 'Create the selected intent.' }
-      : capturedPlanAsk;
-  expect((await t.command([])).result.exitCode).toBe(0);
-  const shown = await t.publish(undefined, { spec: capturedPlanFormSpec });
-  expect(shown.finalized.result.presentedInteractionId).toBe(shown.interactionReceipt.id);
-  await t.admit(shown);
-  interaction = await f.api.interaction(f.prepared, f.recheck);
-  publication = await f.api.publication(f.prepared, f.recheck);
-  intent = {
-    ...intent,
-    id: f.identity.executionId,
-    projectId: f.identity.projectId,
-    harness: 'claude',
-    execution: (await f.api.status(f.prepared, f.recheck)).execution,
-  };
-  readInteraction.mockImplementation(() => f.api.interaction(f.prepared, f.recheck));
-  transport.post.mockImplementation(async (path: string, request: NativeReplyRequest) => {
-    expect(path).toBe(`/projects/${intent.projectId}/native-intents/${intent.id}/response`);
-    const accepted = await f.api.respond(f.prepared, 'responding-member', request, f.recheck, {
-      membershipId: 'test-member',
-      projectIdentity: f.prepared.projectIdentity,
-    });
-    intent = { ...intent, execution: accepted.execution };
-    return accepted;
-  });
-  renderPage(`/space/${intent.projectId}/native-intent/${intent.id}`);
-  const form = await screen.findByRole('form', { name: 'Workflow questions' });
-  expect(interaction.pendingInput!.questions[0].prompt).toBe(capturedPlanAsk.question);
-  // Markdown removes the space before each soft line break when rendering.
-  expect(form.textContent).toContain(capturedPlanAsk.question.replaceAll(' \n', '\n'));
-  expect(form.textContent).not.toContain(capturedPlanFormSpec.questions[0].prompt);
-  for (const { label } of capturedPlanAsk.choices)
-    expect(within(form).getByText(label)).toBeVisible();
-  const label = 'Go ahead with the "poc" plan';
-  fireEvent.click(within(form).getByText(label));
-  fireEvent.click(within(form).getByRole('button', { name: 'Submit Answer' }));
-  await screen.findByText('Reply accepted. Delivery pending.');
-  expect(transport.post).toHaveBeenCalledTimes(1);
-  const response = await t.execution.response(await t.row(), interaction.id);
-  expect(response).toMatchObject({
-    interactionId: interaction.id,
-    publicationId: publication.id,
-    contentSha256: interaction.contentSha256,
-    text: label,
-    selection: { answers: [{ selectedOptions: [0] }] },
-  });
-  const claim = await t.execution.claim(f.bindingIdentity);
-  await t.execution.release({ row: await t.execution.dispatched({ row: claim.row }) });
-  expect((await t.command(['next'])).result.exitCode).toBe(0);
-  expect(t.calls.at(-1)).toEqual([
-    'aidlc-orchestrate.ts',
-    'next',
-    '--scope',
-    'poc',
-    '--request',
-    '6b26fb88',
-  ]);
-  expect(
-    (
-      await t.command([
-        'engine',
-        'intent',
-        'create',
-        '--scope',
-        'poc',
-        '--request',
-        '6b26fb88',
-        '--label',
-        'clamp score',
-      ])
-    ).result.exitCode,
-  ).toBe(0);
-  expect(await t.proof(await t.publish())).toMatchObject({
-    effectivePlan: { scope: 'poc' },
-    engineApplication: [
-      {
-        commandId: response.commandId,
-        interactionId: interaction.id,
-        actorId: response.actorId,
-        application: 'applied',
-        effect: 'WORKFLOW_STARTED',
-      },
-    ],
-    unappliedReplies: [],
   });
 });
 

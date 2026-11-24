@@ -98,24 +98,6 @@ locals {
   # exact attempt pins. Runtime writes cannot match the separate control prefix.
   execution_runtime_boundary_statements = [
     {
-      Sid      = "InvokeOwnWorkflowEngine"
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunction"]
-      Resource = "${local.workflow_engine_arn}:native_*"
-    },
-    {
-      Sid      = "SubmitOwnWorkflowInputs"
-      Effect   = "Allow"
-      Action   = ["s3:PutObject", "s3:GetObjectVersion"]
-      Resource = "${aws_s3_bucket.publications.arn}/native-workflow-input/v1/*"
-    },
-    {
-      Sid      = "ReadOwnWorkflowResults"
-      Effect   = "Allow"
-      Action   = ["s3:GetObjectVersion"]
-      Resource = "${aws_s3_bucket.publications.arn}/native-workflow-output/v1/*"
-    },
-    {
       Sid      = "ReadNativeInputVersions"
       Effect   = "Allow"
       Action   = ["s3:GetObjectVersion"]
@@ -238,12 +220,6 @@ resource "aws_iam_role_policy" "execution_worker" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid      = "BindCapturedWorkflowEngineVersion"
-        Effect   = "Allow"
-        Action   = ["lambda:GetAlias", "lambda:CreateAlias"]
-        Resource = [local.workflow_engine_arn, "${local.workflow_engine_arn}:native_*"]
-      },
       { Sid = "SubmitFencedObservations", Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = "${local.base_environment.NATIVE_AUTHORITY_FUNCTION}:execution" },
       {
         Sid      = "NativeExecutionAuthority"

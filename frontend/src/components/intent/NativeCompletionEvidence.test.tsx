@@ -61,6 +61,15 @@ it('shows the recorded choice without a final approval button or an application 
   expect(screen.queryByRole('button', { name: /^approve/i })).not.toBeInTheDocument();
   expect(screen.getByText('Workflow completion: not verified')).toBeInTheDocument();
 });
+it('shows the method report for the matching terminal revision', async () => {
+  mocks.read.mockResolvedValue({
+    ...value(),
+    methodReport: 'complete',
+    workflowCompletion: 'not_verified',
+  });
+  render(<NativeCompletionEvidence {...props} />);
+  await screen.findByRole('heading', { name: 'AI-DLC reported complete' });
+});
 it('inspects pinned no-gate initialization, conditional and skipped stages without applying a plan', async () => {
   mocks.read.mockResolvedValue(value());
   render(<NativeCompletionEvidence {...props} />);

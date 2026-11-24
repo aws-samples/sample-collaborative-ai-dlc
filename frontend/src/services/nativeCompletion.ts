@@ -24,6 +24,7 @@ export interface NativeWorkflowDefinition {
   }[];
 }
 export interface NativeCompletionEvidence extends NativeRevisionTarget {
+  methodReport?: 'complete';
   workflowCompletion: 'complete' | 'failed' | 'not_verified';
   requiredChecks: 'not_recorded' | 'not_required' | 'passed' | 'failed' | 'incomplete';
   finalReview: 'not_recorded' | 'not_required' | 'ready' | 'concerns' | 'incomplete';
@@ -336,6 +337,8 @@ export const nativeCompletionService = {
     )
       invalid();
     const protectedResult = protectedEvidence(value);
+    if (value.methodReport !== undefined && (value.methodReport !== 'complete' || protectedResult))
+      invalid();
     if (
       !protectedResult &&
       (value.workflowCompletion !== 'not_verified' ||

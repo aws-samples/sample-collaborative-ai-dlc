@@ -16,7 +16,6 @@ import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { loadNativePackage } from './package-loader.js';
-import { prepareNativeEngineClient } from './workflow-client.js';
 import { runNativeCommand } from './command-runner.js';
 import { withGitCredential } from '../git-auth.js';
 import { nativeGitObjectFormat } from '../../shared/native-git-change-set.js';
@@ -133,7 +132,6 @@ export const createNativeExecutionPorts = ({
         : null;
       return snapshotNativeExecutionFiles({ ...input, gitBaseline });
     },
-    prepareWorkflowEngine: (input) => prepareNativeEngineClient({ ...input, env, s3 }),
     async prepareInputs({ payload, project, signal }) {
       checkIdentity(env, payload);
       checkAbort(signal);
@@ -507,6 +505,7 @@ export const createNativeExecutionPorts = ({
       packageId,
       nativeSessionId,
       outcome,
+      methodReport,
       repository,
       files,
       questionPath,
@@ -523,6 +522,7 @@ export const createNativeExecutionPorts = ({
         packageId,
         nativeSessionId,
         outcome,
+        methodReport,
         repository,
         files,
         questionPath,

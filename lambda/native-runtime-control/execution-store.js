@@ -1655,9 +1655,15 @@ export const createNativeExecutionStore = ({
       shape(
         input,
         ['row', 'publication'],
-        ['interaction', 'interactionContentSha256', 'measurements'],
+        ['interaction', 'interactionContentSha256', 'measurements', 'methodReport'],
       );
       const publication = publicationValue(input.publication);
+      if (Object.hasOwn(input, 'methodReport'))
+        check(
+          input.methodReport === 'complete' &&
+            publication.outcome === 'STOPPED' &&
+            input.interaction,
+        );
       const row = await owned(input.row);
       const interaction = input.interaction ? interactionValue(input.interaction, row) : null;
       if (interaction) {
@@ -1685,7 +1691,7 @@ export const createNativeExecutionStore = ({
         fail('CONFLICT');
       const next = {
         ...row,
-        status: interaction ? 'AWAITING_USER' : publication.outcome,
+        status: interaction && !input.methodReport ? 'AWAITING_USER' : publication.outcome,
         publication,
         publicationEpoch: row.epoch,
         projectionStatus: 'pending',

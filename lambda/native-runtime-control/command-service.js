@@ -29,7 +29,7 @@ import { nativeProjectionStatus } from './projection-store.js';
 import { createNativeResultStore, resultFailure } from './result-store.js';
 import { createNativeResultStorage } from './result-storage.js';
 import { createNativeEngineObjects } from '../shared/native-workflow-objects.js';
-import { createNativeEngineProofReader } from './workflow-engine/proof-reader.js';
+import { createNativeEngineProofReader } from './historical-workflow-evidence.js';
 
 const defaultDdb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const defaultSqs = new SQSClient({});

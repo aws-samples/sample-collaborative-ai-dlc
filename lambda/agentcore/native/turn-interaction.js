@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   buildNativePendingInput,
-  nativePendingInput,
   NATIVE_AIDLC_INTERACTION_CONTRACT,
   NATIVE_PENDING_INPUT_LIMITS,
   NATIVE_PENDING_SPEC_PATH,
@@ -29,6 +28,29 @@ const unavailable = (reason, bytes = 0) => ({
   reason,
   bytes: Math.min(bytes, NATIVE_PENDING_INPUT_LIMITS.specBytes + 1),
 });
+
+// The stock terminal directive must agree with the selected record in the
+// same quiescent snapshot. Generic `done` directives can also mean archived,
+// read-only or single-stage work. This is a report, never a verified verdict.
+export function nativeMethodReport(snapshot, observation, pendingInput) {
+  if (pendingInput || observation?.terminal !== 'complete') return null;
+  const files = new Map(snapshot.files.map((file) => [file.path, file.content]));
+  const text = (path) => files.get(path)?.toString('utf8').trim();
+  const space = text('aidlc/active-space');
+  if (!space || !segment(space)) return null;
+  const intents = `aidlc/spaces/${space}/intents`;
+  const intent = text(`${intents}/active-intent`);
+  if (!intent || !segment(intent)) return null;
+  const state = text(`${intents}/${intent}/aidlc-state.md`);
+  if (
+    !state ||
+    [...state.matchAll(/^- \*\*Status\*\*:\s*([^\r\n]+)$/gm)].map((m) => m[1].trim()).join() !==
+      'Completed' ||
+    /^- \[\?\]/m.test(state)
+  )
+    return null;
+  return 'complete';
+}
 
 /** Stage held at an engine approval gate ([?]) in this snapshot, or null. */
 export const nativeGateFromSnapshot = (snapshot) => {
@@ -261,7 +283,6 @@ export const decodeNativeTurnInteraction = ({
   interactionContract,
   snapshot,
   rendered,
-  enginePendingInput,
   messages,
   forbiddenBytes = [],
   onDiagnostic = () => {},
@@ -269,9 +290,7 @@ export const decodeNativeTurnInteraction = ({
   const renderedSpec = rendered.spec;
   const supported = interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT;
   const pendingInput = supported
-    ? enginePendingInput
-      ? nativePendingInput(enginePendingInput)
-      : buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
+    ? buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
     : null;
   const presentation = pendingInput
     ? null

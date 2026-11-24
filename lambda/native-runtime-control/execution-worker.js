@@ -863,7 +863,6 @@ export const createNativeExecutionWorker =
               iam,
               control,
               efs,
-              lambda,
               deployment,
               authorize,
             })(input),

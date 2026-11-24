@@ -97,6 +97,10 @@ const nativeActionErrors: Record<string, readonly [number, string]> = {
     'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
   ],
   NATIVE_EXECUTION_INVALID: [400, 'Invalid native execution request'],
+  NATIVE_EXECUTION_RETIRED_METHOD: [
+    409,
+    'This intent uses the retired workflow service. Start a fresh native intent to continue.',
+  ],
   NATIVE_EXECUTION_CONFLICT: [409, 'Native execution changed; refresh its status'],
   NATIVE_EXECUTION_UNAVAILABLE: [503, 'Native execution is unavailable; retry the same request'],
   NATIVE_EXECUTION_CREDENTIAL_REQUIRED: [

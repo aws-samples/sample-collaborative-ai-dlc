@@ -6,7 +6,6 @@ import { workflowSourceIdentity } from '../shared/workflow-source-bindings.js';
 import { nativeGitResultBranch } from '../shared/native-git-change-set.js';
 import { resolveNativeSourceCommit } from '../shared/native-application-source.js';
 import { sourceCredentialIdentity } from '../shared/source-credential-identity.js';
-import { readNativeWorkflowSettings } from '../shared/native-workflow-settings.js';
 
 const denied = () =>
   Object.assign(new Error('Source selection changed or is unavailable'), {
@@ -23,9 +22,7 @@ export const captureNativeSource = async ({
   repositories,
   resolveCommit = resolveNativeSourceCommit,
   metadataOnly = false,
-  workflowSettings = false,
   deliveryRef = false,
-  readSettings = readNativeWorkflowSettings,
 }) => {
   const { projectId, userId, provider, repository, bindingRevision } = input;
   workflowSourceIdentity(provider, repository);
@@ -67,28 +64,19 @@ export const captureNativeSource = async ({
     binding,
     requiredAccess: 'read',
   });
-  const source = workflowSettings
-    ? {
-        settings: await readSettings({
-          provider,
-          repository,
-          commit: input.commit,
-          token: credential.token,
-        }),
-      }
-    : metadataOnly
-      ? {}
-      : await resolveCommit({
-          provider,
-          repository,
-          token: credential.token,
-          ...(deliveryRef
-            ? {
-                branch: nativeGitResultBranch(input.executionId, input.sourceBranch),
-                allowMissing: true,
-              }
-            : {}),
-        });
+  const source = metadataOnly
+    ? {}
+    : await resolveCommit({
+        provider,
+        repository,
+        token: credential.token,
+        ...(deliveryRef
+          ? {
+              branch: nativeGitResultBranch(input.executionId, input.sourceBranch),
+              allowMissing: true,
+            }
+          : {}),
+      });
   await assertAccess();
   if (oauth) {
     if (!['owner', 'admin', 'member'].includes(await membership(binding.connectionUserId)))

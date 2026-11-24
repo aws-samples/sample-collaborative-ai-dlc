@@ -26,7 +26,7 @@ output "image_digest" {
 output "image_arm64_manifest_digest" {
   description = "Single ARM64 platform manifest selected from the exact runtime image index"
   value = one([
-    for manifest in data.docker_registry_image_manifests.native_engine.manifests : manifest.sha256_digest
+    for manifest in data.docker_registry_image_manifests.git_result.manifests : manifest.sha256_digest
     if manifest.os == "linux" && manifest.architecture == "arm64" &&
     contains(["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"], manifest.media_type)
   ])

@@ -142,6 +142,13 @@ export const nativeExecutionSummaries = async (drafts, { store, images, deployme
   });
 };
 
+const requireLocalMethod = (row) => {
+  if (row?.configuration.workflowEngine)
+    fail(
+      'NATIVE_EXECUTION_RETIRED_METHOD',
+      'This intent uses the retired workflow service. Start a fresh native intent to continue.',
+    );
+};
 const TERMINAL = new Set(['STOPPED', 'FAILED', 'CANCELLED', 'WAITING_FOR_INPUT']);
 
 // Temporary native admission limit until NE-18 qualifies Kiro's instruction
@@ -377,6 +384,7 @@ export const createNativeExecutionApi = ({
     },
     async recover(draft, input, recheck) {
       const existing = await read(draft, recheck);
+      requireLocalMethod(existing);
       if (existing) await requireImage(existing);
       await recheck(draft);
       const row = await store.recover({
@@ -404,6 +412,7 @@ export const createNativeExecutionApi = ({
       if (!current) fail('NATIVE_EXECUTION_NOT_FOUND', 'Native execution not found');
       const prior = await store.response(current, request.interactionId);
       if (!prior) {
+        requireLocalMethod(current);
         const { row, body } = await committedInteraction(draft, recheck);
         if (
           row.interaction.id !== request.interactionId ||

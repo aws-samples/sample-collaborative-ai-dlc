@@ -93,7 +93,6 @@ describe('separate native credentials Lambda entry', () => {
       ssm: f.ssm,
       secrets: f.secrets,
       env: f.env,
-      reviewerAlias: null,
       getMembershipSnapshot: expect.any(Function),
       invokeTracker: expect.any(Function),
     });

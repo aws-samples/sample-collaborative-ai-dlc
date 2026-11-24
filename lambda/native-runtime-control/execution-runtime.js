@@ -20,42 +20,6 @@ import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 import { nativeRuntimeEnvironment } from './provisioner.js';
 import { canonicalJson, runtimePolicyDocuments, samePolicy } from './policies.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
-import {
-  nativeEngineAlias,
-  nativeEngineArn,
-  nativeEngineObjectPrefix,
-} from '../shared/native-workflow-protocol.js';
-import { CreateAliasCommand, GetAliasCommand } from '@aws-sdk/client-lambda';
-
-const bindWorkflowEngine = async ({ config, execution, lambda, send }) => {
-  if (!config.workflowEngine) return;
-  if (!lambda) mismatch();
-  const pin = config.workflowEngine;
-  const query = {
-    FunctionName: pin.functionArn,
-    Name: nativeEngineAlias(executionIdentity(execution)),
-  };
-  let alias;
-  try {
-    alias = await send(lambda, new GetAliasCommand(query));
-  } catch (error) {
-    if (!absent(error)) throw error;
-    try {
-      await send(lambda, new CreateAliasCommand({ ...query, FunctionVersion: pin.version }));
-    } catch (createError) {
-      if (createError?.name !== 'ResourceConflictException') throw createError;
-    }
-    alias = await send(lambda, new GetAliasCommand(query));
-  }
-  // Never retarget an existing binding, including after an ambiguous create.
-  if (
-    alias.AliasArn !== nativeEngineArn(executionIdentity(execution), pin) ||
-    alias.FunctionVersion !== pin.version ||
-    Object.keys(alias.RoutingConfig?.AdditionalVersionWeights ?? {}).length
-  )
-    mismatch();
-};
-
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const mismatch = () => {
   throw Object.assign(new Error('Native execution runtime configuration changed'), {
@@ -78,23 +42,23 @@ export const executionIdentity = (row) => ({
   epoch: row.epoch,
   runtimeSessionId: row.runtimeSessionId,
 });
-export const executionRuntimeConfiguration = (draft, row) => ({
-  harness: row.configuration.harness,
-  recoveryMode: row.configuration.recoveryMode,
-  model: row.configuration.model,
-  prompt: nativeDraftPrompt(draft).text,
-  packageVersion: draft.candidate.packagePin.version,
-  inputs: structuredClone(row.configuration.inputs),
-  ...(row.configuration.workflowEngine
-    ? { workflowEngine: structuredClone(row.configuration.workflowEngine) }
-    : {}),
-  repository: {
-    provider: row.configuration.repository.provider,
-    repository: row.configuration.repository.repository,
-    branch: row.sourceBranch,
-    commit: row.sourceCommit,
-  },
-});
+export const executionRuntimeConfiguration = (draft, row) => {
+  if (row.configuration.workflowEngine) mismatch();
+  return {
+    harness: row.configuration.harness,
+    recoveryMode: row.configuration.recoveryMode,
+    model: row.configuration.model,
+    prompt: nativeDraftPrompt(draft).text,
+    packageVersion: draft.candidate.packagePin.version,
+    inputs: structuredClone(row.configuration.inputs),
+    repository: {
+      provider: row.configuration.repository.provider,
+      repository: row.configuration.repository.repository,
+      branch: row.sourceBranch,
+      commit: row.sourceCommit,
+    },
+  };
+};
 
 export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
   const config = execution.configuration;
@@ -121,28 +85,6 @@ export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
       ...base.permissionsPolicy,
       Statement: [
         ...base.permissionsPolicy.Statement,
-        ...(config.workflowEngine
-          ? [
-              {
-                Sid: 'InvokeOwnWorkflowEngine',
-                Effect: 'Allow',
-                Action: 'lambda:InvokeFunction',
-                Resource: nativeEngineArn(executionIdentity(execution), config.workflowEngine),
-              },
-              {
-                Sid: 'SubmitOwnWorkflowInputs',
-                Effect: 'Allow',
-                Action: ['s3:PutObject', 's3:GetObjectVersion'],
-                Resource: `${prefix}${config.publicationBucket}/${nativeEngineObjectPrefix(executionIdentity(execution), 'input')}*`,
-              },
-              {
-                Sid: 'ReadOwnWorkflowOutput',
-                Effect: 'Allow',
-                Action: 's3:GetObjectVersion',
-                Resource: `${prefix}${config.publicationBucket}/${nativeEngineObjectPrefix(executionIdentity(execution), 'output')}*`,
-              },
-            ]
-          : []),
         {
           Sid: 'ReadPinnedIntentInputs',
           Effect: 'Allow',
@@ -174,14 +116,7 @@ export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
 
 // Explicit pre-start transition. The preparation record/endpoint retains its
 // old image/version; this creates and verifies a separate executable version.
-export const createExecutionRuntimeUpgrade = ({
-  iam,
-  control,
-  efs,
-  lambda,
-  deployment,
-  authorize,
-}) => {
+export const createExecutionRuntimeUpgrade = ({ iam, control, efs, deployment, authorize }) => {
   const send = async (client, command) => {
     await authorize();
     return client.send(command, { abortSignal: AbortSignal.timeout(10000) });
@@ -189,7 +124,6 @@ export const createExecutionRuntimeUpgrade = ({
   return async ({ draft, execution }) => {
     const names = nativeRuntimeResourceNames(draft);
     const config = execution.configuration;
-    await bindWorkflowEngine({ config, execution, lambda, send });
     const documents = nativeExecutionPolicy({ draft, execution, deployment });
     const original = runtimePolicyDocuments({
       deployment: { ...deployment, imageUri: draft.imageUri, imageDigest: draft.imageDigest },

@@ -1,3 +1,28 @@
+locals {
+  git_result_arn = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.name}-git-result"
+}
+
+moved {
+  from = aws_ecr_repository_policy.workflow_engine
+  to   = aws_ecr_repository_policy.git_result
+}
+
+resource "aws_ecr_repository_policy" "git_result" {
+  repository = split(":repository/", var.image_repository_arn)[1]
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "NativeGitResultImage"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      Condition = {
+        ArnLike = { "aws:SourceArn" = [local.git_result_arn, "${local.git_result_arn}:*"] }
+      }
+    }]
+  })
+}
+
 # Derived result artifacts have no publication, recovery, or execution writes.
 resource "aws_iam_role" "results" {
   path                 = var.iam_role_path
@@ -65,7 +90,7 @@ resource "aws_lambda_function" "git_result" {
   }
   environment { variables = merge(local.base_environment, local.execution_environment) }
   tags       = var.tags
-  depends_on = [aws_ecr_repository_policy.workflow_engine, aws_iam_role_policy.results, aws_cloudwatch_log_group.git_result]
+  depends_on = [aws_ecr_repository_policy.git_result, aws_iam_role_policy.results, aws_cloudwatch_log_group.git_result]
 }
 resource "aws_cloudwatch_log_group" "git_result" {
   name              = "/aws/lambda/${local.name}-git-result"

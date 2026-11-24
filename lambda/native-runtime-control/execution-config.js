@@ -30,7 +30,6 @@ import { mergeTierModels } from '../shared/tier-models.js';
 import { resolveStageModel } from '../shared/model-resolver.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeExecutionConfiguration } from './execution-store.js';
-import { nativeEngineDeploymentPin } from '../shared/native-workflow-protocol.js';
 import { ID, UUID, UUID_V4, matches, nativeDraftRequest, pinPackageJob } from './store.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../shared/native-recovery-mode.js';
@@ -353,7 +352,6 @@ export const createNativeExecutionConfiguration =
       if (!matches(actorId, ID) || !ddb?.send || !ssm?.send) fail('INVALID');
       const deployment = nativeExecutionDeployment(env);
       const pins = nativePreparedConfigurationPins(draft);
-      const workflowEngine = nativeEngineDeploymentPin(env, pins);
       const g = await (typeof graph === 'function' ? graph() : graph);
       if (!g?.V) fail('UNAVAILABLE');
       const project = await readProject(g, draft);
@@ -454,7 +452,6 @@ export const createNativeExecutionConfiguration =
       });
       return nativeExecutionConfiguration({
         ...pins,
-        ...(workflowEngine ? { workflowEngine } : {}),
         recoveryMode: NATIVE_WORKSPACE_RECOVERY,
         model,
         credentialBinding,

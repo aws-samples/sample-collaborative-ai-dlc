@@ -85,33 +85,6 @@ describe('current native runtime envelopes', () => {
     }
   });
 
-  it.each([start, reply, resume])(
-    'carries an optional captured workflow engine pin for $command',
-    (command) => {
-      const workflowEngine = {
-        profileId: 'aidlc-2.11.1-native-1',
-        producerSha256: 'b'.repeat(64),
-        functionArn: 'arn:aws:lambda:us-east-1:123456789012:function:native-workflow',
-        version: '7',
-      };
-      const pinned = { ...command, configuration: { ...turn.configuration, workflowEngine } };
-      expect(nativeRuntimeCommand(pinned)).toBe(pinned);
-      for (const invalid of [
-        null,
-        true,
-        { ...workflowEngine, version: '0' },
-        { ...workflowEngine, functionArn: `${workflowEngine.functionArn}:live` },
-        { ...workflowEngine, verified: true },
-      ])
-        expect(() =>
-          nativeRuntimeCommand({
-            ...command,
-            configuration: { ...turn.configuration, workflowEngine: invalid },
-          }),
-        ).toThrow(expect.objectContaining(rejected));
-    },
-  );
-
   it.each([start, reply, resume])('rejects old or unpinned turn fields for $command', (command) => {
     for (const patch of [
       { schemaVersion: 1 },
@@ -119,6 +92,7 @@ describe('current native runtime envelopes', () => {
       { sequence: '1' },
       { configuration: { ...turn.configuration, recoveryMode: 'snapshot-v1' } },
       { configuration: { ...turn.configuration, approved: true } },
+      { configuration: { ...turn.configuration, workflowEngine: {} } },
       {
         configuration: {
           ...turn.configuration,

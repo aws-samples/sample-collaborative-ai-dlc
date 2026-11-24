@@ -1,7 +1,3 @@
-// This facade is a separate Lambda. Dispatch owns its unqualified ARN.
-// An isolated reviewer role can invoke only its binding-specific alias, which
-// returns the captured model credential only. Coding/check roles receive no
-// invocation grant. Caller class comes from AWS's invoked ARN, never payload.
 import { isDeepStrictEqual } from 'node:util';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
@@ -13,7 +9,6 @@ import {
   nativeExecutionConfiguration,
   nativeConfirmedWorkspaceResume as confirmedWorkspaceResume,
   nativeTurnSequence,
-  nativeWriterGeneration,
 } from './execution-store.js';
 import {
   nativeExecutionDeployment,
@@ -25,7 +20,6 @@ import { ID, UUID_V4, matches } from './store.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
 import { isNativeSourceBranch, isNativeSourceCommit } from './execution-source.js';
-import { nativeReviewerAlias } from '../shared/native-workflow-protocol.js';
 
 const CODES = Object.freeze({
   INVALID: 'NATIVE_EXECUTION_CREDENTIALS_INVALID',
@@ -46,8 +40,7 @@ class CredentialDenial extends Error {
 const fail = (suffix) => {
   throw new CredentialDenial(suffix);
 };
-const assertGitCredential = (git, reviewerAlias) => {
-  if (reviewerAlias) return;
+const assertGitCredential = (git) => {
   if (
     typeof git?.token !== 'string' ||
     !git.token.trim() ||
@@ -56,8 +49,6 @@ const assertGitCredential = (git, reviewerAlias) => {
   )
     fail('SOURCE_CHANGED');
 };
-const executionGitCredential = (reviewerAlias, dependencies) =>
-  reviewerAlias ? null : resolveBindingCredential({ ...dependencies, requiredAccess: 'read' });
 const same = isDeepStrictEqual;
 const safeText = (value, max = 512) =>
   typeof value === 'string' &&
@@ -105,13 +96,10 @@ const preparedSnapshot = (draft) => ({
   runtimeVersion: draft.runtimeVersion,
   runtimeEndpoint: draft.runtimeEndpoint,
 });
-const authorizeExecution = (row, payload, deployment, reviewerAlias) => {
+const authorizeExecution = (row, payload, deployment) => {
   if (
     !row ||
-    (!(reviewerAlias ? ['DISPATCHING', 'RUNNING'] : ['UPGRADING', 'DISPATCHING']).includes(
-      row.status,
-    ) &&
-      !confirmedWorkspaceResume(row)) ||
+    (!['UPGRADING', 'DISPATCHING'].includes(row.status) && !confirmedWorkspaceResume(row)) ||
     row.cancelRequested !== false ||
     row.scope?.projectId !== payload.projectId ||
     row.scope?.executionId !== payload.executionId ||
@@ -119,19 +107,12 @@ const authorizeExecution = (row, payload, deployment, reviewerAlias) => {
     row.epoch !== payload.epoch
   )
     fail('NOT_ACTIVE');
-  if (
-    reviewerAlias &&
-    (!row.configuration.workflowEngine ||
-      reviewerAlias !== nativeReviewerAlias({ ...row.scope, bindingId: row.bindingId }))
-  )
-    fail('FORBIDDEN');
   // Store.get is a validating consistent read, but validate the configuration
   // again at this secret boundary, including injected stores used by tests.
   const config = nativeExecutionConfiguration(row.configuration);
   if (
     nativeTurnSequence(row) > 1 &&
     !confirmedWorkspaceResume(row) &&
-    !reviewerAlias &&
     (row.status !== 'DISPATCHING' ||
       row.response?.deliveryStatus !== 'pending' ||
       row.response.sequence !== nativeTurnSequence(row) ||
@@ -165,16 +146,8 @@ const authorizeExecution = (row, payload, deployment, reviewerAlias) => {
   )
     fail('CHANGED');
 };
-// A turn after the first carries the accepted reply that started it, except a
-// turn started by a confirmed workspace resume. Dispatch sees that resume while
-// RECOVERING; a reviewer runs later, while the resumed writer is RUNNING.
-const resumedTurn = (row) =>
-  row.response === undefined &&
-  row.workspaceResume?.sequence === nativeTurnSequence(row) &&
-  row.workspaceResume.writerGeneration === nativeWriterGeneration(row);
-const assertAcceptedResponse = async (executionStore, execution, reviewerAlias) => {
+const assertAcceptedResponse = async (executionStore, execution) => {
   if (nativeTurnSequence(execution) <= 1 || confirmedWorkspaceResume(execution)) return;
-  if (reviewerAlias && resumedTurn(execution)) return;
   if (!execution.response) fail('CHANGED');
   const response = await executionStore.response?.(execution, execution.response.interactionId);
   if (
@@ -264,7 +237,6 @@ export const createNativeExecutionCredentials =
     getMembershipSnapshot,
     imagePolicy,
     invokeTracker,
-    reviewerAlias = null,
   }) =>
   async (payload) => {
     try {
@@ -283,9 +255,9 @@ export const createNativeExecutionCredentials =
         imagePolicy ??
         createNativeRuntimeImagePolicy({ ddb, tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE, env });
       const execution = structuredClone(await executionStore.get(scope));
-      authorizeExecution(execution, payload, deployment, reviewerAlias);
+      authorizeExecution(execution, payload, deployment);
       await authorizeImage(images, execution, deployment);
-      await assertAcceptedResponse(executionStore, execution, reviewerAlias);
+      await assertAcceptedResponse(executionStore, execution);
       const prepared = structuredClone(await preparationStore.get(scope));
       authorizePreparation(prepared, execution);
       const actorMembership = await membership(
@@ -334,7 +306,13 @@ export const createNativeExecutionCredentials =
         projectId: scope.projectId,
       };
       if (!(await readCredentialBindingValue(ssm, modelRequest))) fail('MODEL_UNAVAILABLE');
-      const git = await executionGitCredential(reviewerAlias, { ddb, ssm, secrets, binding });
+      const git = await resolveBindingCredential({
+        ddb,
+        ssm,
+        secrets,
+        binding,
+        requiredAccess: 'read',
+      });
       if (
         !isNativeSourceCommit(execution.sourceCommit) ||
         !isNativeSourceBranch(execution.sourceBranch) ||
@@ -348,7 +326,7 @@ export const createNativeExecutionCredentials =
       // Rotation within that source is accepted; disappearance never falls back.
       const modelValue = await readCredentialBindingValue(ssm, modelRequest);
       if (!modelValue) fail('MODEL_UNAVAILABLE');
-      assertGitCredential(git, reviewerAlias);
+      assertGitCredential(git);
 
       if (
         !same(
@@ -386,7 +364,7 @@ export const createNativeExecutionCredentials =
       authorizePreparation(currentPreparation, execution);
       if (!same(currentPreparation, prepared)) fail('CHANGED');
       const currentExecution = structuredClone(await executionStore.get(scope));
-      authorizeExecution(currentExecution, payload, deployment, reviewerAlias);
+      authorizeExecution(currentExecution, payload, deployment);
       if (!same(currentExecution, execution)) fail('CHANGED');
       // A revocation written during the slow provider path still wins.
       await authorizeImage(images, currentExecution, deployment);
@@ -401,7 +379,8 @@ export const createNativeExecutionCredentials =
         epoch: execution.epoch,
         runtimeSessionId: execution.runtimeSessionId,
         model: { provider: execution.configuration.credentialBinding.provider, value: modelValue },
-        ...(!reviewerAlias ? { git: { username: git.username, password: git.token }, source } : {}),
+        git: { username: git.username, password: git.token },
+        source,
       };
     } catch (error) {
       // Neither provider exception messages/causes nor payloads are logged or

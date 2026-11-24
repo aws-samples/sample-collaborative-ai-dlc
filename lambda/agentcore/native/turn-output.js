@@ -1,6 +1,7 @@
 // A streaming, bounded projection of harness JSONL. Ignored strings (including
 // arbitrarily large tool output) are validated and drained, never retained.
 // Only completed user-visible assistant messages may leave this module.
+import { observeNativeMethodOutput } from './method-output.js';
 import { nativeInteractionMessages } from '../../shared/native-interaction.js';
 import {
   nativeOutputDiagnostic,
@@ -46,7 +47,32 @@ const projection = {
 // Parse the entire grammar, retaining only the above projection. Values before
 // their type discriminator remain bounded; an oversized reasoning field can
 // be discarded, while an oversized assistant field fails instead of truncating.
-const createProjectionParser = (onRecord) => {
+const methodProjection = {
+  ...projection,
+  item: { ...projection.item, command: leaf, exit_code: leaf, aggregated_output: leaf },
+  message: {
+    role: leaf,
+    content: [
+      {
+        type: leaf,
+        text: leaf,
+        id: leaf,
+        name: leaf,
+        input: { command: leaf },
+        tool_use_id: leaf,
+        is_error: leaf,
+        content: leaf,
+      },
+    ],
+  },
+  tool_use_result: { stdout: leaf },
+  part: {
+    ...projection.part,
+    tool: leaf,
+    state: { status: leaf, input: { command: leaf }, output: leaf },
+  },
+};
+const createProjectionParser = (onRecord, schemaRoot) => {
   let stack = [];
   let token = null;
   let root;
@@ -70,7 +96,7 @@ const createProjectionParser = (onRecord) => {
   };
   const childSchema = () => {
     const parent = stack.at(-1);
-    return parent ? (parent.array ? parent.schema?.[0] : parent.child) : projection;
+    return parent ? (parent.array ? parent.schema?.[0] : parent.child) : schemaRoot;
   };
   const finishToken = () => {
     const current = token;
@@ -218,6 +244,7 @@ export const createNativeTurnOutput = ({
   nativeSessionId: expectedSession = null,
   forbiddenBytes = [],
   onDiagnostic,
+  observeMethod = false,
 } = {}) => {
   if (
     !['codex', 'claude', 'opencode', 'kiro'].includes(harness) ||
@@ -266,27 +293,36 @@ export const createNativeTurnOutput = ({
       for (let n = 0; n < count; n++) bytes -= Buffer.byteLength(messages.pop().text);
     },
   });
-  const parser = createProjectionParser((event) => {
-    records++;
-    if (!event || typeof event !== 'object' || Array.isArray(event))
-      invalid('shape', 'record_shape');
-    recordType = event.type;
-    // The bridge's incremental activity is not an interaction record.
-    if (harness === 'kiro' && event.transport === 'kiro-acp-activity' && event.schemaVersion === 1)
-      return;
-    // Retain conflict checks across all identity fields, but only the selected
-    // decoder can recognize its protocol's records and terminal boundary.
-    for (const value of [
-      event.thread_id,
-      event.session_id,
-      event.sessionID,
-      event.sessionId,
-      event.part?.sessionID,
-      event.part?.sessionId,
-    ])
-      observeSession(value);
-    harnessDecoder.write(event);
-  });
+  const method = observeMethod ? observeNativeMethodOutput(harness) : null;
+  const parser = createProjectionParser(
+    (event) => {
+      records++;
+      if (!event || typeof event !== 'object' || Array.isArray(event))
+        invalid('shape', 'record_shape');
+      recordType = event.type;
+      // The bridge's incremental activity is not an interaction record.
+      if (
+        harness === 'kiro' &&
+        event.transport === 'kiro-acp-activity' &&
+        event.schemaVersion === 1
+      )
+        return;
+      // Retain conflict checks across all identity fields, but only the selected
+      // decoder can recognize its protocol's records and terminal boundary.
+      for (const value of [
+        event.thread_id,
+        event.session_id,
+        event.sessionID,
+        event.sessionId,
+        event.part?.sessionID,
+        event.part?.sessionId,
+      ])
+        observeSession(value);
+      harnessDecoder.write(event);
+      method?.write(event);
+    },
+    method ? methodProjection : projection,
+  );
   const reject = (error) => {
     if (failure) return;
     const safeCode = nativeRuntimeFailureCode(error);
@@ -353,7 +389,11 @@ export const createNativeTurnOutput = ({
           )
         )
           invalid('credential');
-        return { nativeSessionId: session, messages: normalized };
+        return {
+          nativeSessionId: session,
+          messages: normalized,
+          ...(method ? { method: method.result() } : {}),
+        };
       } catch (error) {
         reject(error);
         throw failure;

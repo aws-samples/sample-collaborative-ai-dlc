@@ -18,7 +18,6 @@ TERRAFORM = MODULE.parents[2]
 REPO = TERRAFORM.parent
 EXECUTION = (MODULE / "execution.tf").read_text()
 MAIN = (MODULE / "main.tf").read_text()
-WORKFLOW = (MODULE / "workflow-engine.tf").read_text()
 ROOT = (TERRAFORM / "native-runtime-preparation.tf").read_text()
 ROUTES = (TERRAFORM / "modules/api/native-intents.tf").read_text()
 GATEWAY = (TERRAFORM / "modules/api/main.tf").read_text()
@@ -202,7 +201,7 @@ class NativeExecutionWiring(unittest.TestCase):
         extension = EXECUTION.split("execution_runtime_boundary_statements = [", 1)[1].split("\n}\n", 1)[0]
         self.assertEqual(
             actions(extension),
-            {"s3:GetObjectVersion", "s3:PutObject", "s3:GetObject", "lambda:InvokeFunction"},
+            {"s3:GetObjectVersion", "s3:PutObject", "s3:GetObject"},
         )
         self.assertIn("${var.native_packages_bucket_arn}/native-packages/v1/*", extension)
         self.assertIn("${aws_s3_bucket.publications.arn}/native-executions/*", extension)
@@ -210,206 +209,22 @@ class NativeExecutionWiring(unittest.TestCase):
             action.startswith(("dynamodb:", "ssm:", "secretsmanager:", "neptune-db:", "codebuild:", "iam:"))
             for action in actions(boundary) | actions(extension)
         ))
-        # The only Lambda a coding runtime may ever reach is a binding alias of
-        # the protected workflow engine. The per-execution role narrows this
-        # maximum to its own alias; credentials and authority stay unreachable.
-        self.assertFalse(any(action.startswith("lambda:") for action in actions(boundary)))
-        self.assertEqual(extension.count('"lambda:InvokeFunction"'), 1)
-        invoke = extension.split('Sid      = "InvokeOwnWorkflowEngine"', 1)[1].split("},", 1)[0]
-        self.assertEqual(actions(invoke), {"lambda:InvokeFunction"})
-        self.assertRegex(invoke, r'Resource\s*=\s*"\$\{local\.workflow_engine_arn\}:native_\*"\s*$')
-        for forbidden in ["credentials", "NATIVE_AUTHORITY_FUNCTION", "workflow_credential_arn"]:
-            self.assertNotIn(forbidden, extension)
+        self.assertFalse(any(action.startswith("lambda:") for action in actions(extension) | actions(boundary)))
+        self.assertNotIn("native-workflow-", extension)
 
-    def test_runtime_submits_inputs_and_reads_results_but_cannot_author_protected_evidence(self):
-        extension = EXECUTION.split("execution_runtime_boundary_statements = [", 1)[1].split("\n}\n", 1)[0]
-        runtime = block(MAIN, 'resource "aws_iam_policy" "runtime_boundary"') + extension
-        scope = "v1/" + "a" * 64 + "/binding/attempt/1/request/"
-        self.assertTrue(permits_s3(runtime, "s3:PutObject", f"native-workflow-input/{scope}files.json.gz"))
-        self.assertTrue(permits_s3(runtime, "s3:GetObjectVersion", f"native-workflow-input/{scope}files.json.gz"))
-        self.assertTrue(permits_s3(runtime, "s3:GetObjectVersion", f"native-workflow-output/{scope}result.json.gz"))
-        for action in ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:GetObject"]:
-            with self.subTest(prefix="output", action=action):
-                self.assertFalse(permits_s3(runtime, action, f"native-workflow-output/{scope}evidence.json.gz"))
-        for prefix in ["native-workflow-state", "native-workflow-job"]:
-            for action in ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]:
-                with self.subTest(prefix=prefix, action=action):
-                    self.assertFalse(permits_s3(runtime, action, f"{prefix}/{scope}snapshot.json.gz"))
-
-    def test_protected_engine_is_the_only_new_control_writer_and_cannot_reach_credentials(self):
-        engine = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_engine"')
-        self.assertTrue(has_control_mutation(engine))
-        journal = engine.split('Sid       = "JournalProtectedWorkflow"', 1)[1].split("},", 1)[0]
-        self.assertEqual(
-            actions(journal),
-            {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"},
-        )
-        self.assertRegex(journal, r"Resource\s*=\s*aws_dynamodb_table\.bindings\.arn")
-        self.assertIn('"dynamodb:LeadingKeys" = ["NATIVE#*"]', journal)
-        self.assertFalse({"dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:Query", "dynamodb:BatchWriteItem"} & actions(engine))
-        self.assertFalse(any(
-            action.startswith(("ssm:", "secretsmanager:", "bedrock", "elasticfilesystem:", "sqs:"))
-            for action in actions(engine)
-        ))
-        self.assertFalse({"neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery"} & actions(engine))
-        # It may ask the existing input owners; it never redeems a credential.
-        invoke = engine.split('Sid      = "UseExistingNativeInputOwners"', 1)[1].split("},", 1)[0]
-        self.assertRegex(invoke, r"Resource\s*=\s*\[var\.source_control_function_arn, var\.trackers_function_arn\]")
-        self.assertEqual(engine.count('"lambda:InvokeFunction"'), 1)
-        alias = engine.split('Sid      = "BindModelOnlyReviewerVersion"', 1)[1].split("},", 1)[0]
-        self.assertEqual(actions(alias), {"lambda:GetAlias", "lambda:CreateAlias"})
-        self.assertFalse({"lambda:UpdateAlias", "lambda:DeleteAlias", "lambda:UpdateFunctionCode"} & actions(engine))
-        for key in ["native-workflow-state", "native-workflow-output", "native-workflow-job"]:
-            self.assertTrue(permits_s3(engine, "s3:PutObject", f"{key}/v1/scope/request/object.json.gz"))
-            for action in ["s3:DeleteObject", "s3:DeleteObjectVersion"]:
-                self.assertFalse(permits_s3(engine, action, f"{key}/v1/scope/request/object.json.gz"))
-        self.assertFalse(permits_s3(engine, "s3:PutObject", "native-executions/v1/scope/manifest.json"))
-        self.assertFalse(permits_s3(engine, "s3:PutObject", "native-workflow-input/v1/scope/request/files.json.gz"))
-        self.assertFalse(permits_s3(engine, "s3:PutObject", "native-execution-control/v1/scope/state.json"))
-        # No other adapter gains a control-table mutation through this change.
-        for name in ["workflow_check"]:
-            self.assertFalse(has_control_mutation(block(WORKFLOW, f'resource "aws_iam_role_policy" "{name}"')))
-        self.assertFalse(has_control_mutation(block(WORKFLOW, 'resource "aws_iam_policy" "workflow_review_boundary"')))
-
-    def test_engine_discovers_only_the_saved_operation_result_and_snapshot_versions(self):
-        engine = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_engine"')
-        lookup = engine.split('Sid      = "FindSavedOperationVersions"', 1)[1].split("\n      },", 1)[0]
-        self.assertEqual(actions(lookup), {"s3:ListBucketVersions"})
-        self.assertRegex(lookup, r"Resource\s*=\s*aws_s3_bucket\.publications\.arn")
-        prefix = re.search(r'StringLike\s*=\s*\{\s*"s3:prefix"\s*=\s*\[([^\]]+)\]', lookup)
-        self.assertEqual(set(re.findall(r'"([^"]+)"', prefix.group(1))), {
-            "native-workflow-state/v1/*/snapshot.json.gz",
-            "native-workflow-output/v1/*/result.json.gz",
-        })
-        self.assertEqual(engine.count('"s3:ListBucketVersions"'), 1)
-        for purpose, name in [("state", "snapshot"), ("output", "result")]:
-            key = f"native-workflow-{purpose}/v1/scope/request/{name}.json.gz"
-            self.assertTrue(permits_s3(engine, "s3:GetObjectVersion", key))
-            self.assertFalse(permits_s3(engine, "s3:GetObject", key))
-
-    def test_engine_can_pass_only_job_roles_and_create_only_bounded_reviewers(self):
-        engine = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_engine"')
-        passed = engine.split('Sid       = "PassOnlyWorkflowJobRoles"', 1)[1].split("},", 1)[0]
-        self.assertEqual(actions(passed), {"iam:PassRole"})
-        self.assertRegex(passed, r"Resource\s*=\s*\[aws_iam_role\.workflow_check\.arn, local\.workflow_review_arn\]")
-        self.assertIn('"iam:PassedToService" = "codebuild.amazonaws.com"', passed)
-        created = engine.split('Sid       = "CreateBoundedReviewerRoles"', 1)[1].split("},", 1)[0]
-        self.assertEqual(actions(created), {"iam:CreateRole"})
-        self.assertIn('"iam:PermissionsBoundary" = aws_iam_policy.workflow_review_boundary.arn', created)
-        self.assertRegex(created, r"Resource\s*=\s*local\.workflow_review_arn")
-        self.assertFalse({
-            "iam:AttachRolePolicy", "iam:DeleteRole", "iam:DeleteRolePolicy",
-            "iam:UpdateAssumeRolePolicy", "iam:PutRolePermissionsBoundary",
-            "iam:DeleteRolePermissionsBoundary", "iam:CreatePolicy",
-        } & actions(engine))
-        for sid in ["TagReviewerRoles", "ValidateReviewerRoles"]:
-            statement = engine.split(f'Sid      = "{sid}"', 1)[1].split("},", 1)[0]
-            self.assertRegex(statement, r"Resource\s*=\s*local\.workflow_review_arn")
-        self.assertRegex(WORKFLOW, r'workflow_review_path\s*=\s*"/native-reviews/"')
-        self.assertIn("role${local.workflow_review_path}native_review_*", WORKFLOW)
-        builds = [
-            engine.split(f'Sid      = "{sid}"', 1)[1].split("},", 1)[0]
-            for sid in ["StartIsolatedWorkflowJobs", "ObserveAndStopOwnedWorkflowJobs"]
-        ]
-        self.assertEqual(actions(builds[0]), {"codebuild:StartBuild"})
-        self.assertEqual(actions(builds[1]), {"codebuild:BatchGetBuilds", "codebuild:StopBuild"})
-        for statement in builds:
-            self.assertRegex(statement, r"Resource\s*=\s*local\.workflow_job_arn")
-        self.assertFalse({"codebuild:UpdateProject", "codebuild:CreateProject", "codebuild:StartBuildBatch"} & actions(engine))
-
-    def test_isolated_check_and_reviewer_jobs_hold_no_authority(self):
-        check = block(WORKFLOW, 'resource "aws_iam_role_policy" "workflow_check"')
-        self.assertIn("Statement = local.workflow_image_statements", check)
-        images = WORKFLOW.split("workflow_image_statements = [", 1)[1].split("\n  ]\n", 1)[0]
-        self.assertEqual(actions(images), {
-            "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer",
-            "ecr:BatchGetImage", "ecr:GetAuthorizationToken",
-        })
-        boundary = block(WORKFLOW, 'resource "aws_iam_policy" "workflow_review_boundary"')
-        self.assertEqual(actions(boundary), {"lambda:InvokeFunction"})
-        self.assertRegex(boundary, r'Resource\s*=\s*"\$\{local\.workflow_credential_arn\}:review_\*"')
-        self.assertNotIn("workflow_engine_arn", boundary)
-        trust = WORKFLOW.split("workflow_job_trust = jsonencode(", 1)[1].split("\n  })\n", 1)[0]
-        self.assertRegex(trust, r'Principal\s*=\s*\{ Service = "codebuild\.amazonaws\.com" \}')
-        self.assertRegex(trust, r'"aws:SourceAccount"\s*=\s*local\.account_id')
-        self.assertRegex(trust, r'"aws:SourceArn"\s*=\s*local\.workflow_job_arn')
-        project = block(WORKFLOW, 'resource "aws_codebuild_project" "workflow"')
-        self.assertRegex(project, r"privileged_mode\s*=\s*false")
-        self.assertRegex(project, r'type\s*=\s*"NO_SOURCE"')
-        self.assertRegex(project, r'artifacts\s*\{\s*type\s*=\s*"NO_ARTIFACTS"\s*\}')
-        self.assertEqual(project.count('status = "DISABLED"'), 2)
-        self.assertRegex(project, r'image\s*=\s*"\$\{var\.image_repository_url\}@\$\{var\.image_digest\}"')
-        self.assertNotIn("vpc_config", project)
-        self.assertNotIn("environment_variable", project)
-        # The Terraform buildspec and the one compared at runtime are one value.
-        job = (REPO / "lambda/shared/native-workflow-job.js").read_text()
-        for phase in ["prepare", "run", "publish"]:
-            self.assertIn(f"/usr/local/bin/node /opt/agentcore/native/workflow-job.mjs {phase}", WORKFLOW)
-            self.assertIn(f"${{NATIVE_ENGINE_JOB_ENTRY}} {phase}", job)
-        self.assertIn("NATIVE_ENGINE_JOB_ENTRY = '/opt/agentcore/native/workflow-job.mjs'", job)
-
-    def test_engine_runs_the_qualified_image_at_a_published_version_captured_only_by_authority(self):
-        function = block(WORKFLOW, 'resource "aws_lambda_function" "workflow_engine"')
-        self.assertRegex(function, r'package_type\s*=\s*"Image"')
-        self.assertRegex(function, r'image_uri\s*=\s*"\$\{var\.image_repository_url\}@\$\{var\.image_arm64_manifest_digest\}"')
-        self.assertRegex(function, r"publish\s*=\s*true")
-        self.assertRegex(function, r'architectures\s*=\s*\["arm64"\]')
-        self.assertRegex(function, r'command\s*=\s*\["workflow-engine-entry\.handler"\]')
-        # The runtime interface client reads both from its environment.
-        entry = re.findall(r'"([^"]+)"', function.split("entry_point = [", 1)[1].split("]", 1)[0])
-        self.assertEqual(entry, [
-            "/usr/bin/env",
-            "LAMBDA_TASK_ROOT=/opt/native-runtime-control",
-            "_HANDLER=workflow-engine-entry.handler",
-            "/usr/local/bin/node",
-            "/opt/native-lambda-interface/node_modules/aws-lambda-ric/index.mjs",
-        ])
-        self.assertRegex(function, r'working_directory\s*=\s*"/opt/native-runtime-control"')
-        self.assertRegex(function, r'NATIVE_WORKFLOW_ENGINE_SHA256\s*=\s*trimprefix\(var\.image_digest, "sha256:"\)')
-        self.assertRegex(
-            function,
-            r"NATIVE_EXECUTION_CREDENTIALS_VERSION\s*=\s*module\.execution_credentials\[0\]\.lambda_function_version",
-        )
-        self.assertNotIn("function_url", WORKFLOW)
-        self.assertNotIn("aws_lambda_permission", WORKFLOW)
-        self.assertNotIn("AGENT_SETTINGS_SSM_PREFIX", function)
-        self.assertRegex(block(EXECUTION, 'module "execution_credentials"'), r"publish\s*=\s*true")
-        capture = WORKFLOW.split("workflow_capture_environment = {", 1)[1].split("}", 1)[0]
-        self.assertRegex(capture, r"NATIVE_WORKFLOW_ENGINE_VERSION\s*=\s*aws_lambda_function\.workflow_engine\.version")
-        users = [
-            source.name for source in MODULE.glob("*.tf")
-            if "local.workflow_capture_environment" in source.read_text()
-        ]
-        self.assertEqual(users, ["authority.tf"])
-        self.assertRegex(ROOT, r"image_arm64_manifest_digest\s*=\s*module\.agentcore\.image_arm64_manifest_digest")
-        worker = block(EXECUTION, 'resource "aws_iam_role_policy" "execution_worker"')
-        bind = worker.split('Sid      = "BindCapturedWorkflowEngineVersion"', 1)[1].split("},", 1)[0]
-        self.assertEqual(actions(bind), {"lambda:GetAlias", "lambda:CreateAlias"})
-        self.assertIn('[local.workflow_engine_arn, "${local.workflow_engine_arn}:native_*"]', bind)
-        self.assertFalse({"lambda:UpdateAlias", "lambda:DeleteAlias"} & actions(worker))
-
-    def test_engine_image_policy_admits_only_this_function_as_lambda_documents(self):
-        policy = block(WORKFLOW, 'resource "aws_ecr_repository_policy" "workflow_engine"')
-        self.assertRegex(policy, r'Principal\s*=\s*\{ Service = "lambda\.amazonaws\.com" \}')
-        self.assertEqual(actions(policy), {"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"})
-        # The documented condition is the function ARN in aws:SourceArn. A
-        # condition key the service may not send would refuse every retrieval.
-        condition = policy.split("Condition = {", 1)[1]
-        self.assertRegex(
-            condition,
-            r'ArnLike\s*=\s*\{ "aws:SourceArn" = \[local\.workflow_engine_arn, "\$\{local\.workflow_engine_arn\}:\*", local\.git_result_arn, "\$\{local\.git_result_arn\}:\*"\] \}',
-        )
-        self.assertNotIn("SourceAccount", condition)
-        self.assertEqual(condition.count("aws:"), 1)
-        function = block(WORKFLOW, 'resource "aws_lambda_function" "workflow_engine"')
-        self.assertIn("aws_ecr_repository_policy.workflow_engine", function.split("depends_on", 1)[1])
+    def test_git_result_owns_existing_image_policy(self):
+        results = (MODULE / "results.tf").read_text()
+        policy = block(results, 'resource "aws_ecr_repository_policy" "git_result"')
+        self.assertIn('[local.git_result_arn, "${local.git_result_arn}:*"]', policy)
+        self.assertIn('from = aws_ecr_repository_policy.workflow_engine', results)
+        self.assertNotIn('codebuild:', EXECUTION)
 
     def test_engine_manifest_lookup_names_the_tag_and_the_index_digest(self):
         # kreuzwerker/docker 3.9.0 requests `repo@sha256:<hex>` as repository
         # `repo@sha256`, tag `<hex>` (404 from a real registry). Only
         # `repo:tag@sha256:<hex>` is requested by digest.
         agentcore = (TERRAFORM / "modules/compute/agentcore/main.tf").read_text()
-        lookup = block(agentcore, 'data "docker_registry_image_manifests" "native_engine"')
+        lookup = block(agentcore, 'data "docker_registry_image_manifests" "git_result"')
         self.assertRegex(
             lookup,
             r'name\s*=\s*"\$\{aws_ecr_repository\.agentcore\.repository_url\}:\$\{local\.agentcore_image_tag\}'

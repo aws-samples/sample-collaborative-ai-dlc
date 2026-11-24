@@ -256,7 +256,9 @@ export function useNativeReply({
       } else if (err instanceof ApiError && err.status === 409) {
         setState('conflict');
         setError(
-          'This interaction changed or a reply was already accepted. Refresh status to see the current turn.',
+          err.body?.code === 'NATIVE_EXECUTION_RETIRED_METHOD'
+            ? 'This intent uses the retired workflow service. Start a fresh native intent to continue.'
+            : 'This interaction changed or a reply was already accepted. Refresh status to see the current turn.',
         );
         void onRefresh();
         return 'conflict';

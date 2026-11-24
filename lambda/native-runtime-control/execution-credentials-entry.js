@@ -59,17 +59,9 @@ export const createNativeExecutionCredentialsLambda =
     let result;
     try {
       const arn = context?.invokedFunctionArn;
-      let reviewerAlias = null;
       if (arn) {
         const base = `arn:${env.AWS_PARTITION || 'aws'}:lambda:${env.AWS_REGION}:${env.NATIVE_RUNTIME_ACCOUNT_ID}:function:${env.AWS_LAMBDA_FUNCTION_NAME}`;
-        if (arn !== base) {
-          if (
-            !arn.startsWith(`${base}:`) ||
-            !/^review_[a-f0-9]{32}$/.test(arn.slice(base.length + 1))
-          )
-            return { ok: false, code: 'NATIVE_EXECUTION_CREDENTIALS_FORBIDDEN' };
-          reviewerAlias = arn.slice(base.length + 1);
-        }
+        if (arn !== base) return { ok: false, code: 'NATIVE_EXECUTION_CREDENTIALS_FORBIDDEN' };
       }
       const createFacade = await facadeFactory();
       const documentClient = ddb ?? DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -104,7 +96,6 @@ export const createNativeExecutionCredentialsLambda =
         ssm: ssm ?? new SSMClient({}),
         secrets: secrets ?? new SecretsManagerClient({}),
         env,
-        reviewerAlias,
         getMembershipSnapshot,
         invokeTracker: (input) =>
           invokeNativeInputOwner(lambda ?? new LambdaClient({}), env.TRACKERS_FUNCTION, input),

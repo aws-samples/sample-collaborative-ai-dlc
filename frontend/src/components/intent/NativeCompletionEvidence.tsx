@@ -142,12 +142,18 @@ export function CompletionDetails({
       className="space-y-2 rounded-md border p-3 text-sm"
     >
       <h3 className="font-medium">
-        Workflow completion:{' '}
-        {evidence?.workflowCompletion === 'complete'
-          ? 'complete'
-          : evidence?.workflowCompletion === 'failed'
-            ? 'failed'
-            : 'not verified'}
+        {evidence?.methodReport === 'complete' ? (
+          'AI-DLC reported complete'
+        ) : (
+          <>
+            Workflow completion:{' '}
+            {evidence?.workflowCompletion === 'complete'
+              ? 'complete'
+              : evidence?.workflowCompletion === 'failed'
+                ? 'failed'
+                : 'not verified'}
+          </>
+        )}
       </h3>
       <p>
         Human approval is required only where the pinned AI-DLC workflow and selected plan define
@@ -291,6 +297,11 @@ export function NativeWorkflowProgress({
         )
       )}
 
+      {evidence?.methodReport === 'complete' && (
+        <p role="status" className="text-sm font-medium">
+          AI-DLC reported complete
+        </p>
+      )}
       {evidence?.workflowCompletion === 'complete' && (
         <p role="status" className="text-sm font-medium">
           Workflow completed{evidence.requiredChecks === 'failed' && ' with failed checks'}

@@ -8,7 +8,7 @@ import {
   nativeGitResultBranch,
   nativeGitObjectFormat,
 } from '../shared/native-git-change-set.js';
-import { engineGitDelta } from './workflow-engine/git-evidence.js';
+import { publicationGitDelta } from '../shared/native-git-change-set.js';
 import { RESULT_MAX_BYTES, resultFailure } from './result-store.js';
 import { gitIdentity } from '../shared/git-identity.js';
 
@@ -20,7 +20,7 @@ export const nativeGitResultTarget = (row, located) => {
   const { manifest, baseline } = located;
   if (!baseline?.changes) throw resultFailure('GIT_DELTA_UNAVAILABLE');
   if (!baseline.manifest.git?.baseObjects) throw resultFailure('GIT_BASE_UNAVAILABLE');
-  const delta = engineGitDelta(manifest.sourceBaseline, baseline.manifest, baseline.changes);
+  const delta = publicationGitDelta(manifest.sourceBaseline, baseline.manifest, baseline.changes);
   const branch = nativeGitResultBranch(row.scope.executionId, delta.repository.branch);
   return { repository: delta.repository, branch, deltaSha256: nativeGitDeltaSha256(delta) };
 };

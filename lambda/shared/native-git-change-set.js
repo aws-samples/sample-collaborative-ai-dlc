@@ -82,3 +82,15 @@ export const nativeGitChanges = (base, result) => {
   }
   return changes;
 };
+
+const publicationGitSource = ({ receipt, epoch }) => ({
+  id: receipt.id,
+  versionId: receipt.manifest.versionId,
+  epoch,
+});
+
+export const publicationGitDelta = (pointer, base, changes) => ({
+  sourceBaseline: publicationGitSource(pointer),
+  repository: { provider: base.git.provider, repository: base.git.repository, ...base.repository },
+  changes: changes.map(({ path, before, after }) => ({ path, before, after })),
+});

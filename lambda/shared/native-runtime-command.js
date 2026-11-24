@@ -1,7 +1,6 @@
 // Current engine-to-runtime envelopes. Public member requests never carry
 // these ownership, configuration or credential fields.
 import { nativeExecutionInputs, nativeInputStorageId } from './native-inputs.js';
-import { nativeEnginePin } from './native-workflow-pin.js';
 const IDENTITY = [
   'projectId',
   'executionId',
@@ -50,7 +49,6 @@ const turnConfiguration = (value) =>
     'packageVersion',
     'repository',
     'inputs',
-    ...(value?.workflowEngine ? ['workflowEngine'] : []),
   ]) &&
   value.recoveryMode === 'efs-workspace-v1' &&
   fields(value.repository, ['provider', 'repository', 'branch', 'commit']);
@@ -77,7 +75,6 @@ export const nativeRuntimeCommand = (value, command = value?.command) => {
     )
       invalid();
     try {
-      if (value.configuration.workflowEngine) nativeEnginePin(value.configuration.workflowEngine);
       const inputs = nativeExecutionInputs(value.configuration.inputs);
       if (inputs.storageId !== nativeInputStorageId(value)) invalid();
     } catch {

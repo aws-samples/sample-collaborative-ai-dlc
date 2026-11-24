@@ -244,7 +244,7 @@ data "aws_ecr_image" "agentcore" {
 # `<hex>`, and the registry answers 404. With `repo:tag@sha256:<hex>` it drops
 # the tag and requests the manifest by digest, so the lookup stays pinned to
 # the exact index. Verified against a real registry; do not shorten it.
-data "docker_registry_image_manifests" "native_engine" {
+data "docker_registry_image_manifests" "git_result" {
   name = "${aws_ecr_repository.agentcore.repository_url}:${local.agentcore_image_tag}@${data.aws_ecr_image.agentcore.image_digest}"
   lifecycle {
     postcondition {

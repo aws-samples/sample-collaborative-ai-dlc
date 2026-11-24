@@ -160,6 +160,7 @@ const validateManifest = (value, identity) => {
       'createdAt',
       'nativeSessionId',
       'outcome',
+      ...(Object.hasOwn(value, 'methodReport') ? ['methodReport'] : []),
       'repository',
       'files',
       'question',
@@ -187,6 +188,10 @@ const validateManifest = (value, identity) => {
         /^[A-Za-z0-9_-]{1,128}$/.test(value.nativeSessionId))
     ) ||
     !['WAITING_FOR_INPUT', 'STOPPED'].includes(value.outcome) ||
+    (Object.hasOwn(value, 'methodReport') &&
+      (value.methodReport !== 'complete' ||
+        value.outcome !== 'STOPPED' ||
+        !value.nativeSessionId)) ||
     !exact(value.repository, ['commit', 'branch']) ||
     !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value.repository.commit ?? '') ||
     typeof value.repository.branch !== 'string' ||
@@ -360,6 +365,7 @@ export const createNativePublications = ({
       packageId,
       nativeSessionId,
       outcome,
+      methodReport,
       repository,
       files,
       questionPath = null,
@@ -415,6 +421,7 @@ export const createNativePublications = ({
           createdAt: now(),
           nativeSessionId,
           outcome,
+          ...(methodReport === undefined ? {} : { methodReport }),
           repository,
           files: normalized.map(({ content: _content, ...file }) => ({
             ...file,

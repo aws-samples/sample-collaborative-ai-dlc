@@ -1,11 +1,11 @@
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { isDeepStrictEqual } from 'node:util';
-import { nativeEnginePublicationKey } from './store.js';
+import { nativeExecutionKey } from './execution-store.js';
 import {
   nativeEngineFileDigest,
   nativeEnginePin,
   engineFailure,
-} from '../../shared/native-workflow-protocol.js';
+} from '../shared/native-workflow-protocol.js';
 
 // This reader never trusts a runtime-provided "verified" property. The
 // authority row must name the exact already-admitted publication, configuration
@@ -15,12 +15,10 @@ export const createNativeEngineProofReader =
   async ({ row, found, manifest }) => {
     if (!row.configuration.workflowEngine) return null;
     const pin = nativeEnginePin(row.configuration.workflowEngine, row.configuration);
-    const key = nativeEnginePublicationKey(
-      row.scope,
-      found.identity.attemptId,
-      found.identity.epoch,
-      found.receipt.id,
-    );
+    const key = {
+      ...nativeExecutionKey(row.scope),
+      sk: `ENGINE#${found.identity.attemptId}#${found.identity.epoch}#PUBLICATION#${found.receipt.id}`,
+    };
     const receipt = (
       await ddb.send(
         new GetCommand({

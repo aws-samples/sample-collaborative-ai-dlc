@@ -4,10 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { createNativeExecutionCredentials } from '../execution-credentials.js';
-import {
-  NATIVE_ENGINE_PROFILE,
-  nativeReviewerAlias,
-} from '../../shared/native-workflow-protocol.js';
 import { nativePreparedConfigurationPins, nativePromptSha256 } from '../execution-config.js';
 import { prepareBinding } from '../../shared/source-control-bindings.js';
 import { ACTOR, MEMBERSHIP, OTHER, PROJECT, owner, resources, setup } from './fixtures.js';
@@ -15,19 +11,7 @@ import { ACTOR, MEMBERSHIP, OTHER, PROJECT, owner, resources, setup } from './fi
 const spies = vi.hoisted(() => ({
   git: vi.fn(),
   source: vi.fn(),
-  pins: vi.fn((pins) => pins),
 }));
-// A package ID is the digest of its verified pin, so no fixture pin can equal
-// the reviewed engine profile's. Only the derived ID is substituted for the
-// engine cases; pin validation itself still runs against the real draft.
-vi.mock('../execution-config.js', async (original) => {
-  const actual = await original();
-  return {
-    ...actual,
-    nativePreparedConfigurationPins: (draft) =>
-      spies.pins(actual.nativePreparedConfigurationPins(draft)),
-  };
-});
 vi.mock('../../shared/source-control-credentials.js', () => ({
   resolveBindingCredential: spies.git,
 }));
@@ -239,7 +223,6 @@ beforeEach(() => {
     actor: 'must-not-be-returned',
   });
   spies.source.mockReset().mockResolvedValue(SOURCE);
-  spies.pins.mockReset().mockImplementation((pins) => pins);
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -247,37 +230,6 @@ afterEach(() => {
 });
 
 describe('controller-only native credential facade', () => {
-  it.each(['own', 'another binding'])(
-    'gives the %s isolated reviewer only its model credential',
-    async (scope) => {
-      const f = await fixture();
-      f.state.row.status = 'RUNNING';
-      f.state.row.configuration.packageId = NATIVE_ENGINE_PROFILE.packageId;
-      spies.pins.mockImplementation((pins) => ({
-        ...pins,
-        packageId: NATIVE_ENGINE_PROFILE.packageId,
-      }));
-      f.state.row.configuration.workflowEngine = {
-        profileId: NATIVE_ENGINE_PROFILE.id,
-        producerSha256: IMAGE.digest.slice(7),
-        functionArn: 'arn:aws:lambda:us-east-1:123456789012:function:test-workflow',
-        version: '7',
-      };
-      const reviewerAlias = nativeReviewerAlias({
-        ...f.state.row.scope,
-        bindingId: scope === 'own' ? f.state.row.bindingId : '77777777-7777-4777-8777-777777777777',
-      });
-      const result = await f.invoke(undefined, { reviewerAlias });
-      if (scope === 'own') {
-        expect(result).toMatchObject({ ok: true, model: { value: MODEL } });
-        expect(result).not.toHaveProperty('git');
-        expect(result).not.toHaveProperty('source');
-      } else
-        expect(result).toMatchObject({ ok: false, code: 'NATIVE_EXECUTION_CREDENTIALS_FORBIDDEN' });
-      expect(spies.git).not.toHaveBeenCalled();
-      expect(f.secrets.send).not.toHaveBeenCalled();
-    },
-  );
   it.each(['unchanged', 'revoked', 'changed during resolution'])(
     'rechecks admitted tracker access as the original starter: %s',
     async (state) => {

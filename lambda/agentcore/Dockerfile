@@ -128,9 +128,7 @@ RUN uv venv --python /usr/bin/python3 /opt/markitdown \
 # recursive chown layer is needed later.
 #
 # Runtime code under /opt is owned by root and readable by everyone. The node
-# runtime user and the engine Lambda's sandbox user only read it. An isolated
-# check or reviewer job runs its child as node between two phases of a root
-# observer that imports this code, so node must never be able to replace it.
+# runtime user and the Git result Lambda read it.
 RUN install -d -o root -g root -m 0755 \
     /opt/agentcore \
     /opt/shared \
@@ -147,7 +145,7 @@ RUN cd /opt/agentcore \
     && npm cache clean --force
 
 # App code: the agentcore package + the shared/ helpers it imports via ../shared,
-# and the protected workflow engine, which imports the same shared/ helpers.
+# and the Git result builder, which imports the same shared/ helpers.
 # The symbolic mode keeps a restrictive checkout (0600 files, 0700 directories)
 # readable by the runtime user without a recursive chown or chmod layer.
 COPY --chown=root:root --chmod=u=rwX,go=rX agentcore/ /opt/agentcore/
@@ -158,26 +156,16 @@ COPY --from=native-lambda-interface --chown=root:root /opt/native-lambda-interfa
 # One dependency tree. Node resolves packages upward from the importing file,
 # so /opt/shared and /opt/native-runtime-control never reach
 # /opt/agentcore/node_modules by themselves; both link to that one install.
-# The engine must not get an install of its own: it hands objects of the graph
-# library to shared/ helpers, and two copies of that library do not recognise
-# each other's objects. With two installs the engine's membership query reached
-# the graph malformed and every engine request was refused. The engine's
-# packages are therefore declared in lambda/agentcore/package.json.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules \
     && ln -s /opt/agentcore/node_modules /opt/native-runtime-control/node_modules
 
-# Fail the build if the engine or the shared helpers could load a second copy of
-# a package, or if the engine entry does not load from the one tree. The install
-# above is not locked, so npm may also nest a second copy of the graph library
-# inside the one tree when a dependent package asks for another version range:
-# exactly one copy may be installed.
+# Verify the installed Git result entry and its shared dependency tree.
 RUN /usr/bin/git --version \
     && node -e "import('/opt/native-runtime-control/result-worker.js').then((entry) => process.exit(typeof entry.handler === 'function' ? 0 : 1))" \
     && test "$(readlink -f /opt/shared/node_modules)" = /opt/agentcore/node_modules \
     && test "$(readlink -f /opt/native-runtime-control/node_modules)" = /opt/agentcore/node_modules \
     && test -z "$(find /opt/shared /opt/native-runtime-control -mindepth 2 -name node_modules -print -quit)" \
-    && test "$(find /opt/agentcore/node_modules -type d -path '*/node_modules/gremlin' | wc -l)" -eq 1 \
-    && node -e "import('/opt/native-runtime-control/workflow-engine-entry.js').then((entry) => process.exit(typeof entry.handler === 'function' ? 0 : 1))"
+    && test "$(find /opt/agentcore/node_modules -type d -path '*/node_modules/gremlin' | wc -l)" -eq 1
 
 # gh verifies native upstream provenance, including the installer's offline
 # package path. Native runs are ARM64 only; the optional platform amd64 image
@@ -204,9 +192,7 @@ ARG ENABLE_NATIVE_INTERACTION_PROBE=false
 RUN ENABLE_NATIVE_INTERACTION_PROBE="${ENABLE_NATIVE_INTERACTION_PROBE}" \
     node /opt/agentcore/native/install-probe-fixture.mjs
 
-# CodeBuild's observer runs as root and drops project/reviewer children to node
-# (uid/gid 1000). Fail the build if any runtime code is owned by, or writable
-# for, that user. Runtime state belongs under HOME or the workspace, not /opt.
+# Keep installed runtime code read-only to the runtime user. Runtime state belongs under HOME or the workspace, not /opt.
 RUN test "$(id -u node)" = 1000 && test "$(id -g node)" = 1000 \
     && test -z "$(find /opt/agentcore /opt/shared /opt/native-runtime-control /opt/native-lambda-interface \
         ! -type l \( -user node -o -group node -o -perm /022 \) -print -quit)"

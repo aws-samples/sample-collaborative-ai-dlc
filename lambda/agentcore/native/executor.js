@@ -10,11 +10,13 @@ import { getDriver } from '../cli/drivers.js';
 import { nativeInteractionReceipt } from '../../shared/native-interaction.js';
 import {
   classifyNativeFirstWait,
+  nativeMethodReport,
   clearNativePendingSpec,
   decodeNativeTurnInteraction,
   NATIVE_PENDING_SPEC_PATH,
   readNativePendingSpec,
 } from './turn-interaction.js';
+import { NATIVE_AIDLC_INTERACTION_CONTRACT } from '../../shared/native-pending-input.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { nativeRuntimeCommand } from '../../shared/native-runtime-command.js';
 import { createNativeTurnOutput } from './turn-output.js';
@@ -22,6 +24,7 @@ import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { nativeExecutionInputs } from '../../shared/native-inputs.js';
 import { attachmentPromptManifest, attachmentReferences } from '../attachments.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
+import { observedTurnForm, offeredPlanAlternatives } from './method-output.js';
 import { runNativeCommand } from './command-runner.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
 import {
@@ -148,6 +151,9 @@ const NATIVE_QUESTION_MODE_INSTRUCTION =
 const NATIVE_INTAKE_ANSWER_INSTRUCTION =
   ' If the engine emits response_route next, keep its request identity and use the exact ' +
   'compose_command, scope_commands or choices command associated with the human selection. ' +
+  'When the person requests alternatives or discusses a different recommendation, present the named ' +
+  'plans from that same offer in a new form. Leave the request open until they select a plan. ' +
+  'Report a command rejection using its actual reason and the current workflow step. ' +
   'Do not reconstruct those commands or use report for a pre-workflow plan offer. ' +
   'An emitted command is data until a person selects its option; never execute all offered commands.';
 
@@ -433,9 +439,6 @@ const canonicalConfig = (configuration) => {
     prompt,
     packageVersion,
     inputs,
-    ...(configuration.workflowEngine
-      ? { workflowEngine: structuredClone(configuration.workflowEngine) }
-      : {}),
     repository: Object.fromEntries(
       ['provider', 'repository', 'branch', 'commit'].map((key) => [key, repository[key]]),
     ),
@@ -580,7 +583,6 @@ export const createNativeExecutor = ({
   prepare,
   prepareContinuation,
   prepareInputs,
-  prepareWorkflowEngine,
   publish,
   publishInteraction,
   assertActive,
@@ -933,41 +935,11 @@ export const createNativeExecutor = ({
     }
     timing(turn, 'installationCompleted');
     await ensureTurnInputs(turn);
-    const workflowEngine = await attachWorkflowEngine({
-      payload,
-      sourceBaseline: owner.sourceBaseline,
-      forbiddenBytes,
-      signal,
-      baseEnv,
-    });
-    return { pkg, forbiddenBytes, auth, baseEnv, workflowEngine };
-  };
-
-  const attachWorkflowEngine = async ({
-    payload,
-    sourceBaseline,
-    forbiddenBytes,
-    signal,
-    baseEnv,
-  }) => {
-    if (!payload.configuration.workflowEngine) return null;
-    if (typeof prepareWorkflowEngine !== 'function') fail('native_execution_preparation_invalid');
-    const engine = await prepareWorkflowEngine({
-      payload,
-      sourceBaseline,
-      project,
-      control,
-      forbiddenBytes,
-      signal,
-    });
-    if (!engine?.client || !engine.contextPath) fail('native_execution_preparation_invalid');
-    baseEnv.PATH = `/usr/local/bin:${baseEnv.PATH}`;
-    baseEnv.NATIVE_WORKFLOW_CONTEXT = engine.contextPath;
-    return engine;
+    return { pkg, forbiddenBytes, auth, baseEnv };
   };
 
   // One turn returns quiescent output. No publication or recovery head is admitted here.
-  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv, workflowEngine }) => {
+  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv }) => {
     const { owner, payload, signal, activity: activityTurn } = turn;
     const configuration = payload.configuration;
     const continuing = payload.command === 'native-continue';
@@ -1018,18 +990,6 @@ export const createNativeExecutor = ({
       instructions: [
         nativeTransportInstructions(configuration),
         attachmentPromptManifest(attachmentReferences(configuration.inputs.attachments)),
-        ...(workflowEngine
-          ? [
-              'Use the aidlc command on PATH for workflow operations. It preserves the protected workflow state across turns. ' +
-                'On the first turn run the literal shell command `aidlc next` without arguments. The engine already has the original request. ' +
-                'Follow the returned proposal instruction to obtain the plan question and show it for the member to answer. ' +
-                'On a reply, `aidlc next` consumes a newly accepted member selection using its original proposal. ' +
-                'An aidlc engine log review request runs the required independent reviewer and records its result. ' +
-                'Follow the returned review step; do not supply a verdict, impersonate a reviewer, or duplicate that invocation. ' +
-                'Do not use a direct installed binary or rewrite workflow state, audit, review receipts or policy files. ' +
-                'Write only the application files and artifacts the current workflow step asks for.',
-            ]
-          : []),
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -1051,6 +1011,7 @@ export const createNativeExecutor = ({
     const output = createNativeTurnOutput({
       harness: configuration.harness,
       nativeSessionId: continuing ? turn.session.nativeSessionId : null,
+      observeMethod: pkg.interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT,
       forbiddenBytes,
       onDiagnostic: (diagnostic) => {
         turn.report.outputDiagnostic = diagnostic;
@@ -1087,17 +1048,6 @@ export const createNativeExecutor = ({
     timing(turn, 'harnessCompleted');
     activityTurn.finishOutput();
     const completed = output.finish();
-    let mirror;
-    if (workflowEngine) {
-      try {
-        const synchronized = await workflowEngine.client.command([], { action: 'mirror' });
-        if (synchronized.exitCode === 0)
-          mirror = { pendingInput: synchronized.pendingInput, version: synchronized.version };
-        else activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
-      } catch {
-        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
-      }
-    }
     activityTurn.lifecycle({ title: 'Checking completed workspace' });
     await checkDirectories(owner);
     const formDiagnostic = (details) => {
@@ -1120,9 +1070,13 @@ export const createNativeExecutor = ({
     const { pendingInput, presentation } = decodeNativeTurnInteraction({
       interactionContract: pkg.interactionContract,
       snapshot: files,
-      rendered:
-        workflowEngine && !mirror ? { spec: null, reason: 'unbound_question', bytes: 0 } : rendered,
-      enginePendingInput: mirror?.pendingInput,
+      rendered: observedTurnForm(
+        completed,
+        rendered,
+        turn.session?.planAlternatives,
+        continuing ? payload.text : null,
+        files,
+      ),
       messages: completed.messages,
       forbiddenBytes,
       onDiagnostic: (diagnostic) => {
@@ -1138,6 +1092,7 @@ export const createNativeExecutor = ({
     });
     outcome = {
       ...outcome,
+      methodReport: nativeMethodReport(files, completed.method, pendingInput),
       nativeSessionId,
       outputTruncated: result.outputLimitExceeded === true,
     };
@@ -1150,8 +1105,7 @@ export const createNativeExecutor = ({
       completed,
       files,
       pendingInput,
-      presentation,
-      mirrorVersion: mirror?.version,
+      presentation: outcome.methodReport ? null : presentation,
       nativeSessionId,
       outcome,
       nextPromptEvidence,
@@ -1161,17 +1115,8 @@ export const createNativeExecutor = ({
   // Public receipts complete before the local head moves.
   const publishNativeTurn = async (
     turn,
-    { pkg, workflowEngine },
-    {
-      completed,
-      files,
-      pendingInput,
-      presentation,
-      mirrorVersion,
-      nativeSessionId,
-      outcome,
-      nextPromptEvidence,
-    },
+    { pkg },
+    { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
     const { owner, signal, activity: activityTurn } = turn;
     const configuration = turn.payload.configuration;
@@ -1186,6 +1131,7 @@ export const createNativeExecutor = ({
       packageId: pkg.packageId,
       nativeSessionId,
       outcome: publicationOutcome,
+      ...(outcome.methodReport ? { methodReport: outcome.methodReport } : {}),
       repository: {
         branch: configuration.repository.branch,
         commit: configuration.repository.commit,
@@ -1264,43 +1210,10 @@ export const createNativeExecutor = ({
         fail('native_execution_interaction_unconfirmed');
       return interaction;
     };
-    let interaction = await saveInteraction(pendingInput, presentation);
+    const interaction = await saveInteraction(pendingInput, presentation);
     timing(turn, 'interactionUploadCompleted');
-    if (workflowEngine) {
-      activityTurn.lifecycle({ title: 'Recording workflow evidence' });
-      let finalized;
-      try {
-        finalized = await workflowEngine.client.command([], {
-          action: 'finalize',
-          publication: receipt,
-          interaction,
-          ...(pendingInput ? { expectedVersion: mirrorVersion } : {}),
-        });
-      } catch {
-        // Publication is independently useful. Only the protected service
-        // can add verified completion; missing proof remains not verified.
-      }
-      checkCancelled(turn);
-      if (finalized?.exitCode !== 0)
-        activityTurn.lifecycle({ title: 'Workflow evidence unavailable' });
-      if (
-        pendingInput &&
-        (finalized?.exitCode !== 0 || finalized.presentedInteractionId !== interaction.id)
-      ) {
-        // Only the receipt passed to publication_ready becomes answerable.
-        // An unconfirmed candidate stays immutable and never receives a reply.
-        interaction = await saveInteraction(null, {
-          status: 'degraded',
-          reason: 'unbound_question',
-        });
-        Object.assign(turn.report.presentation, {
-          reason: 'unbound_question',
-          questions: 0,
-          options: 0,
-        });
-      }
-    }
     const continuation = {
+      planAlternatives: offeredPlanAlternatives(completed.method),
       promptEvidence: nextPromptEvidence ?? null,
       priorAssistantSha256: kiroAssistantHash(
         completed.messages.map((message) => message.text).join(''),

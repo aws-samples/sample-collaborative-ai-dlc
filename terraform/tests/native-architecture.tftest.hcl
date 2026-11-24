@@ -157,22 +157,6 @@ run "admission_closed_retains_services_and_owners" {
     error_message = "Admission shutdown must retain existing-run execution and credential resources."
   }
   assert {
-    condition     = aws_lambda_function.workflow_engine.package_type == "Image" && aws_lambda_function.workflow_engine.publish && aws_lambda_function.workflow_engine.image_uri == "123456789012.dkr.ecr.us-east-1.amazonaws.com/test@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    error_message = "The protected workflow engine must run the qualified ARM64 manifest as a published version."
-  }
-  assert {
-    condition     = aws_lambda_function.workflow_engine.environment[0].variables.NATIVE_WORKFLOW_ENGINE_SHA256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    error_message = "The producer identity recorded in evidence must be the runtime image index that executions pin."
-  }
-  assert {
-    condition     = aws_codebuild_project.workflow.environment[0].privileged_mode == false && aws_codebuild_project.workflow.source[0].type == "NO_SOURCE" && aws_codebuild_project.workflow.artifacts[0].type == "NO_ARTIFACTS" && aws_codebuild_project.workflow.environment[0].image == "123456789012.dkr.ecr.us-east-1.amazonaws.com/test@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    error_message = "Isolated check and reviewer jobs must run the pinned image without source, artifacts or privileged mode."
-  }
-  assert {
-    condition     = aws_iam_role.workflow_engine.name != aws_iam_role.workflow_check.name && length(regexall("dynamodb:|lambda:Invoke|s3:", aws_iam_role_policy.workflow_check.policy)) == 0
-    error_message = "The check job role must hold no table, storage or invocation authority."
-  }
-  assert {
     condition     = toset(keys(aws_lambda_alias.authority)) == toset(["commands", "execution", "preparation", "projection", "results"])
     error_message = "Authority must expose exactly the five IAM-isolated caller aliases."
   }
