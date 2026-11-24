@@ -81,17 +81,24 @@ const basicFinding = (finding) => ({
   uri: httpsUrl(finding.uri),
 });
 
-// One entry per affected package, as basic scanning reports them.
+// One entry per affected package and version, as basic scanning reports
+// them (Inspector also lists the same package once per file path).
 const enhancedFindings = (finding) => {
   const details = finding.packageVulnerabilityDetails ?? {};
   const packages = details.vulnerablePackages?.length ? details.vulnerablePackages : [{}];
-  return packages.map((affected) => ({
-    id: details.vulnerabilityId ?? finding.title ?? 'Unknown finding',
-    severity: finding.severity ?? 'UNDEFINED',
-    packageName: affected.name ?? null,
-    packageVersion: affected.version ?? null,
-    uri: httpsUrl(details.sourceUrl ?? details.referenceUrls?.[0]),
-  }));
+  const uri = httpsUrl(details.sourceUrl) ?? httpsUrl(details.referenceUrls?.[0]);
+  const entries = new Map();
+  for (const affected of packages) {
+    const entry = {
+      id: details.vulnerabilityId ?? finding.title ?? 'Unknown finding',
+      severity: finding.severity ?? 'UNDEFINED',
+      packageName: affected.name ?? null,
+      packageVersion: affected.version ?? null,
+      uri,
+    };
+    entries.set(`${entry.packageName}\u0000${entry.packageVersion}`, entry);
+  }
+  return [...entries.values()];
 };
 
 // ECR returns basic scanning findings in `findings` and enhanced scanning

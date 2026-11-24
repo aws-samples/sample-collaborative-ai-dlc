@@ -23,7 +23,17 @@ export const scanFindingsNote = (
       : `${partial} Review the complete findings in ECR before accepting them.`;
   }
   if (scanFindings?.findingsTruncated && scanFindings.findings?.length) {
-    return `Showing ${scanFindings.findings.length} findings, most severe first. The complete list is in ECR.`;
+    return 'This list may not hold every finding. The complete list is in ECR.';
   }
   return null;
+};
+
+// Finding links come from vulnerability feeds: render only https links,
+// including those stored before the scan read filtered them.
+export const httpsHref = (value?: string | null) => {
+  try {
+    return value && new URL(value).protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
 };

@@ -96,8 +96,10 @@ describe('readImageScanFindings', () => {
                 vulnerabilityId: 'CVE-2026-1',
                 sourceUrl: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
                 vulnerablePackages: [
-                  { name: 'openssl', version: '3.5.9' },
+                  { name: 'openssl', version: '3.5.9', filePath: '/usr/bin/openssl' },
                   { name: 'libssl3t64', version: '3.5.9' },
+                  // The same package at another path is listed once.
+                  { name: 'openssl', version: '3.5.9', filePath: '/opt/node/openssl' },
                 ],
               },
             },
@@ -116,6 +118,8 @@ describe('readImageScanFindings', () => {
               title: 'GHSA-xxxx - cap-primitives',
               packageVulnerabilityDetails: {
                 vulnerabilityId: 'GHSA-xxxx',
+                // A link that is not https falls back to the reference.
+                sourceUrl: 'http://example.test/GHSA-xxxx',
                 referenceUrls: ['https://github.com/advisories/GHSA-xxxx'],
                 vulnerablePackages: [{ name: 'cap-primitives', version: '4.0.2' }],
               },
@@ -160,6 +164,31 @@ describe('readImageScanFindings', () => {
         uri: null,
       },
       { id: 'CVE-2026-9', severity: 'LOW', packageName: 'zlib', packageVersion: '1.3', uri: null },
+    ]);
+  });
+
+  it('keeps only https links of basic scan findings', async () => {
+    const basic = (name, uri) => ({ name, severity: 'HIGH', uri, attributes: [] });
+    const result = await readImageScanFindings({
+      ecrClient: client({
+        imageScanStatus: { status: 'COMPLETE' },
+        imageScanFindings: {
+          findingSeverityCounts: { HIGH: 3 },
+          findings: [
+            basic('CVE-A', 'https://security-tracker.debian.org/tracker/CVE-A'),
+            basic('CVE-B', 'javascript:alert(1)'),
+            basic('CVE-C', 'not a url'),
+          ],
+        },
+      }),
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+      imageDigest: digest,
+    });
+
+    expect(result.findings.map(({ id, uri }) => [id, uri])).toEqual([
+      ['CVE-A', 'https://security-tracker.debian.org/tracker/CVE-A'],
+      ['CVE-B', null],
+      ['CVE-C', null],
     ]);
   });
 

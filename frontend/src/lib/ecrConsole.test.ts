@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ecrImageConsoleUrl, scanFindingsNote } from './ecrConsole';
+import { ecrImageConsoleUrl, httpsHref, scanFindingsNote } from './ecrConsole';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 
@@ -21,6 +21,16 @@ describe('ecrImageConsoleUrl', () => {
   });
 });
 
+describe('httpsHref', () => {
+  it('keeps only https links', () => {
+    expect(httpsHref('https://nvd.nist.gov/vuln/detail/CVE-1')).toBe(
+      'https://nvd.nist.gov/vuln/detail/CVE-1',
+    );
+    for (const value of ['javascript:alert(1)', 'http://example.test', 'relative/path', '', null])
+      expect(httpsHref(value)).toBeNull();
+  });
+});
+
 describe('scanFindingsNote', () => {
   it('warns that the counts of an incomplete scan are partial', () => {
     expect(scanFindingsNote({ incomplete: true, findingsTruncated: true })).toMatch(
@@ -34,7 +44,7 @@ describe('scanFindingsNote', () => {
 
   it('says the list is cut when it does not hold every finding', () => {
     expect(scanFindingsNote({ findingsTruncated: true, findings: [{}, {}] })).toBe(
-      'Showing 2 findings, most severe first. The complete list is in ECR.',
+      'This list may not hold every finding. The complete list is in ECR.',
     );
   });
 
