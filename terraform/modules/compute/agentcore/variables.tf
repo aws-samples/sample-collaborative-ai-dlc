@@ -185,9 +185,15 @@ variable "vpc_id" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR of the VPC, used to carve dedicated AgentCore subnets. Required when network_mode = VPC."
+  description = "CIDR of the VPC, used to carve dedicated AgentCore subnets (unless subnet_ids is set) and for in-VPC security group rules. Required when network_mode = VPC."
   type        = string
   default     = ""
+}
+
+variable "subnet_ids" {
+  description = "Existing private subnets for the runtime ENIs, instead of dedicated subnets carved from vpc_cidr. Up to 2 in AgentCore-supported AZs are used; they need internet egress. Empty = carve dedicated subnets."
+  type        = list(string)
+  default     = []
 }
 
 variable "private_route_table_ids" {

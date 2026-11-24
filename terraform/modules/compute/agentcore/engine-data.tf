@@ -176,7 +176,7 @@ module "engine_data_lambda" {
   # Neptune is VPC-only. The tools Lambda's security group already allows the
   # same egress (Neptune port inside the VPC, HTTPS for AWS APIs), and the
   # Gateway is a precondition of engine-data, so it is reused.
-  vpc_subnet_ids         = aws_subnet.agentcore[*].id
+  vpc_subnet_ids         = local.runtime_subnet_ids
   vpc_security_group_ids = [aws_security_group.mcp_tools[0].id]
 
   # runtime_mcp_credentials = gateway_only: responses carrying execution META

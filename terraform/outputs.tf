@@ -134,12 +134,12 @@ output "s3_bucket_name" {
 # VPC Endpoints
 output "s3_endpoint_id" {
   description = "S3 VPC endpoint ID"
-  value       = module.vpc_endpoints.s3_endpoint_id
+  value       = one(module.vpc_endpoints[*].s3_endpoint_id)
 }
 
 output "dynamodb_endpoint_id" {
   description = "DynamoDB VPC endpoint ID"
-  value       = module.vpc_endpoints.dynamodb_endpoint_id
+  value       = one(module.vpc_endpoints[*].dynamodb_endpoint_id)
 }
 
 # S3 Buckets

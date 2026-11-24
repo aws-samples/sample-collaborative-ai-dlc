@@ -24,6 +24,13 @@ lambda_vpc_scope = "required"
 # one, which keeps inbound internet traffic blocked.
 vpc_block_public_access_exclusion = false
 
+# Deploy into an existing VPC instead of creating one. Set both together; see
+# docs/getting-started/setup.md ("Deploy into an existing VPC").
+# existing_vpc_id             = "vpc-0123456789abcdef0"
+# existing_private_subnet_ids = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+# Set to false when the VPC already has S3 and DynamoDB gateway endpoints.
+# enable_vpc_gateway_endpoints = true
+
 # Optional AWS WAF protection for CloudFront, API Gateway, and Cognito.
 enable_waf = false
 

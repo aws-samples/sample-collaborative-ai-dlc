@@ -226,7 +226,7 @@ module "mcp_tools_lambda" {
   create_role = false
   lambda_role = aws_iam_role.mcp_tools[0].arn
 
-  vpc_subnet_ids         = aws_subnet.agentcore[*].id
+  vpc_subnet_ids         = local.runtime_subnet_ids
   vpc_security_group_ids = [aws_security_group.mcp_tools[0].id]
 
   environment_variables = {
@@ -370,7 +370,7 @@ module "mcp_interceptor_lambda" {
   create_role = false
   lambda_role = aws_iam_role.mcp_interceptor[0].arn
 
-  vpc_subnet_ids         = aws_subnet.agentcore[*].id
+  vpc_subnet_ids         = local.runtime_subnet_ids
   vpc_security_group_ids = [aws_security_group.mcp_interceptor[0].id]
 
   environment_variables = merge({

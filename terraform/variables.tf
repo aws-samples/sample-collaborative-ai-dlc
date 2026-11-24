@@ -78,6 +78,24 @@ variable "lambda_vpc_scope" {
   }
 }
 
+variable "existing_vpc_id" {
+  description = "ID of an existing VPC to deploy into instead of creating one. When set, the platform creates no VPC, subnets, internet or NAT gateways or route tables, and AgentCore uses existing_private_subnet_ids rather than carving its own subnets. Set together with existing_private_subnet_ids"
+  type        = string
+  default     = null
+}
+
+variable "existing_private_subnet_ids" {
+  description = "Private subnet IDs in existing_vpc_id, in at least two Availability Zones. Each needs an explicit route table association with internet egress (for example a NAT gateway); AgentCore uses up to two of them in its supported Availability Zones"
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_vpc_gateway_endpoints" {
+  description = "Create the S3 and DynamoDB gateway VPC endpoints on the private route tables. Set to false when the VPC already has them (for example an existing_vpc_id whose owner provides them)"
+  type        = bool
+  default     = true
+}
+
 variable "vpc_block_public_access_exclusion" {
   description = "Exclude the private subnets (bidirectional) and the NAT gateway subnets (egress-only) from account-level VPC Block Public Access. Required when the account enables Block Public Access in either mode: CloudFront VPC origins cannot reach the internal Yjs ALB otherwise, and in bidirectional mode the NAT gateways lose internet egress."
   type        = bool

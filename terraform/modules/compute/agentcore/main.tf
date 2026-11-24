@@ -131,6 +131,23 @@ locals {
   # range (offset 200) so they never collide with networking's public (0..) or
   # private (10..) subnets.
   agentcore_subnet_azs = slice(local.agentcore_az_names, 0, min(2, length(local.agentcore_az_names)))
+
+  # With subnet_ids set, use up to 2 of those in supported AZs instead of
+  # carving dedicated subnets (for VPCs whose address space is managed elsewhere).
+  use_provided_subnets = local.vpc_enabled && length(var.subnet_ids) > 0
+  provided_supported_subnet_ids = [
+    for id in(local.use_provided_subnets ? var.subnet_ids : []) : id
+    if contains(local.agentcore_az_ids, data.aws_subnet.provided[id].availability_zone_id)
+  ]
+  runtime_subnet_ids = local.use_provided_subnets ? slice(
+    local.provided_supported_subnet_ids, 0, min(2, length(local.provided_supported_subnet_ids))
+  ) : aws_subnet.agentcore[*].id
+}
+
+data "aws_subnet" "provided" {
+  for_each = local.use_provided_subnets ? toset(var.subnet_ids) : toset([])
+
+  id = each.value
 }
 
 module "dynamodb_kms_runtime_access" {
@@ -740,7 +757,7 @@ resource "aws_ssm_parameter" "kiro_api_key" {
 # ---------------------------------------------------------------------------
 
 resource "aws_subnet" "agentcore" {
-  count = local.vpc_enabled ? length(local.agentcore_subnet_azs) : 0
+  count = local.vpc_enabled && !local.use_provided_subnets ? length(local.agentcore_subnet_azs) : 0
 
   vpc_id            = var.vpc_id
   availability_zone = local.agentcore_subnet_azs[count.index]
@@ -776,6 +793,13 @@ resource "aws_security_group" "agentcore" {
   }
 
   tags = var.tags
+
+  lifecycle {
+    precondition {
+      condition     = !local.use_provided_subnets || length(local.provided_supported_subnet_ids) > 0
+      error_message = "None of subnet_ids is in an AgentCore-supported Availability Zone (see agentcore_supported_az_ids)."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -854,7 +878,7 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   network_configuration = {
     network_mode = var.network_mode
     network_mode_config = local.vpc_enabled ? {
-      subnets         = aws_subnet.agentcore[*].id
+      subnets         = local.runtime_subnet_ids
       security_groups = aws_security_group.agentcore[*].id
     } : null
   }
