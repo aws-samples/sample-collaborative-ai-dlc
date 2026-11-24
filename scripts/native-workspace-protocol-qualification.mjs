@@ -72,6 +72,10 @@ function* loadStage(command) {
   assert.match(steering.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
   return yield* runDirective(steering.next);
 }
+function* requestPlanNames() {
+  yield { command: 'aidlc --version' };
+  return 'Which plan would you like?';
+}
 async function readBoth(driver, route, parameters) {
   const [original, reopened] = await Promise.all(
     [initiator, respondent].map(({ token }) => driver.get(route, parameters, { token })),
@@ -219,10 +223,6 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     const recommendation = first;
     const other = { selectedOptions: [], freeText: 'Let’s use Express for this one' };
     const answer = harness === 'codex' ? other : { selectedOptions: [1] };
-    function* requestPlanNames() {
-      yield { command: 'aidlc --version' };
-      return 'Which plan would you like?';
-    }
     await turn(answer.freeText ?? offer.choices[1].label, requestPlanNames(), {
       selection: { answers: [answer] },
     });

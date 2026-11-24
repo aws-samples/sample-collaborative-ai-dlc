@@ -57,7 +57,7 @@ function methodCommand(text) {
     // An argument named aidlc is commonly the workspace directory (ls aidlc).
     // Only an indirect invocation makes the provenance of its result unclear.
     if (
-      /\/aidlc$/.test(words[0]) ||
+      words[0]?.endsWith('/aidlc') ||
       (['env', 'exec', 'command'].includes(words[0]) &&
         words.slice(1).some((word) => /(?:^|\/)aidlc$/.test(word)))
     )
