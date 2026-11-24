@@ -60,6 +60,35 @@ describe('AgentCore git credential isolation', () => {
       gatewayGrant: null,
     });
   });
+
+  it('declares the stage attempt only on grant-less requests', async () => {
+    const broker = vi.fn(async () => ({ committer: null, username: 'user', password: 'inert' }));
+    const attempt = { ...context, stageCallbackId: 'cb-1' };
+    await resolveGitCommitter(attempt, { broker });
+    await withGitCredential(attempt, async () => {}, { broker, ...fsHarness() });
+    expect(broker).toHaveBeenNthCalledWith(1, {
+      ...context,
+      requiredAccess: 'identity',
+      stageCallbackId: 'cb-1',
+    });
+    expect(broker).toHaveBeenNthCalledWith(2, {
+      ...context,
+      requiredAccess: 'write',
+      stageCallbackId: 'cb-1',
+    });
+    // No attempt to declare: the legacy shape is unchanged.
+    await resolveGitCommitter(context, { broker });
+    expect(broker).toHaveBeenLastCalledWith({ ...context, requiredAccess: 'identity' });
+    // With engine data the verified grant names the attempt; nothing is declared.
+    vi.stubEnv('ENGINE_DATA_FUNCTION', 'engine-data');
+    await runWithGatewayGrant('grant-one', () => resolveGitCommitter(attempt, { broker }));
+    expect(broker).toHaveBeenLastCalledWith({
+      ...context,
+      requiredAccess: 'identity',
+      action: 'source-control',
+      gatewayGrant: 'grant-one',
+    });
+  });
   it('uses a temporary askpass helper and destroys its environment and directory', async () => {
     const secret = ['temporary', 'broker', 'secret'].join('-');
     const broker = vi.fn(async () => ({

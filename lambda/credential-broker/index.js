@@ -53,12 +53,34 @@ const AUTHORITY_ERROR_CODES = new Set([
 // The engine commits and pushes at EVERY stage exit, including park: a gate on
 // a non-lane stage flips META to WAITING before the CLI exits, so the park-exit
 // push (and its committer-identity resolve) arrives while the execution is
-// already parked. Serve exactly that window: a verified, unretired stage grant
-// whose attempt owns the very gate the execution is parked on. Anything else —
-// no grant (legacy runtimes), another attempt's grant, an engine gate, a
-// cleared pointer, or any non-WAITING status — keeps the strict rule.
-const parkedStageWindowAllows = async ({ grant, execution, executionId, ddbClient, env }) => {
-  if (grant?.mode !== 'stage' || !grant.stageCallbackId) return false;
+// already parked. Serve exactly that window: identity or write access for the
+// attempt that owns the very gate the execution is parked on, while that gate
+// is still pending. Anything else — another attempt, an engine gate, an
+// answered or superseded gate, a cleared pointer, a read, or any non-WAITING
+// status — keeps the strict rule.
+const PARK_EXIT_ACCESS = new Set(['identity', 'write']);
+
+// Which attempt is asking. A verified grant names it, and only a stage grant
+// names one. A grant-less request (no engine data, or a pre-engine-data
+// runtime) can only declare it: that runtime role reads and writes process
+// state directly, so the declaration is no proof of identity, but it keeps a
+// stale attempt (rewound, superseded) from pushing into a parked execution.
+const requestingAttempt = (grant, request) => {
+  if (grant) return grant.mode === 'stage' ? grant.stageCallbackId || null : null;
+  return typeof request.stageCallbackId === 'string' && request.stageCallbackId
+    ? request.stageCallbackId
+    : null;
+};
+
+const parkedStageWindowAllows = async ({
+  attempt,
+  requiredAccess,
+  execution,
+  executionId,
+  ddbClient,
+  env,
+}) => {
+  if (!attempt || !PARK_EXIT_ACCESS.has(requiredAccess)) return false;
   if (execution.status !== 'WAITING' || !execution.pendingHumanTaskId) return false;
   const { Item: gate } = await ddbClient.send(
     new GetCommand({
@@ -67,7 +89,7 @@ const parkedStageWindowAllows = async ({ grant, execution, executionId, ddbClien
       ConsistentRead: true,
     }),
   );
-  return Boolean(gate) && gate.stageCallbackId === grant.stageCallbackId;
+  return Boolean(gate) && gate.status === 'pending' && gate.stageCallbackId === attempt;
 };
 
 const authorizeCredentialRequest = async (
@@ -124,7 +146,14 @@ const authorizeCredentialRequest = async (
   }
   if (
     !CREDENTIAL_ACTIVE_EXECUTION_STATUSES.has(execution.status) &&
-    !(await parkedStageWindowAllows({ grant, execution, executionId, ddbClient, env }))
+    !(await parkedStageWindowAllows({
+      attempt: requestingAttempt(grant, request),
+      requiredAccess,
+      execution,
+      executionId,
+      ddbClient,
+      env,
+    }))
   ) {
     throw Object.assign(new Error('Execution is not active'), {
       code: 'EXECUTION_NOT_ACTIVE',

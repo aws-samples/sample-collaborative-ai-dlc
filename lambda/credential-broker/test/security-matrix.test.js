@@ -254,9 +254,9 @@ describe('broker source-control security matrix', () => {
 
 // The park-exit push window: the engine's commit+push at a parked stage exit
 // arrives while META is already WAITING (the gate parks it before the CLI
-// exits). Only the parked attempt's own verified stage grant may be served.
+// exits). Only the attempt that owns the pending parked gate may be served.
 describe('broker parked-stage push window', () => {
-  const parkedDeps = ({ execution = {}, gate } = {}) => {
+  const parkedDeps = ({ execution = {}, gate, env: brokerEnv = env } = {}) => {
     const meta = {
       projectId: 'p',
       intentId: 'i',
@@ -285,7 +285,7 @@ describe('broker parked-stage push window', () => {
         throw new Error('secret read tripwire');
       }),
     };
-    return { ddbClient, ssmClient, env, verifyGrant };
+    return { ddbClient, ssmClient, env: brokerEnv, verifyGrant };
   };
   const stageGrant = (overrides = {}) =>
     token({
@@ -327,6 +327,8 @@ describe('broker parked-stage push window', () => {
   it.each([
     ['the gate row is missing', { gate: undefined }],
     ['the parked gate carries no attempt (engine gate)', { gate: { status: 'pending' } }],
+    ['the parked gate was answered', { gate: { ...parkedGate, status: 'answered' } }],
+    ['the parked gate was superseded', { gate: { ...parkedGate, status: 'superseded' } }],
     [
       'META no longer points at a gate',
       { gate: parkedGate, execution: { pendingHumanTaskId: null } },
@@ -336,6 +338,24 @@ describe('broker parked-stage push window', () => {
       authorizeCredentialRequest(
         { ...request, gatewayGrant: await stageGrant() },
         parkedDeps(options),
+      ),
+    ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
+  });
+
+  it('denies read access to the parked attempt', async () => {
+    await expect(
+      authorizeCredentialRequest(
+        { ...request, requiredAccess: 'read', gatewayGrant: await stageGrant() },
+        parkedDeps({ gate: parkedGate }),
+      ),
+    ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
+  });
+
+  it('never lets a declared attempt stand in for the one a grant names', async () => {
+    await expect(
+      authorizeCredentialRequest(
+        { ...request, stageCallbackId: 'cb-1', gatewayGrant: await token() },
+        parkedDeps({ gate: parkedGate }),
       ),
     ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
   });
@@ -360,6 +380,89 @@ describe('broker parked-stage push window', () => {
       ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
     },
   );
+});
+
+// Grant-less requests (enable_engine_data off, or a pre-engine-data runtime in
+// transition) declare their stage attempt. The window is the same one.
+describe.each([
+  ['without engine data', { V2_PROCESS_TABLE: 'process' }],
+  ['in transition', env],
+])('broker parked-stage push window for grant-less requests %s', (_mode, brokerEnv) => {
+  const { action: _action, ...legacyRequest } = request;
+  const parked = (gate, execution = {}) => {
+    const meta = {
+      projectId: 'p',
+      intentId: 'i',
+      status: 'WAITING',
+      pendingHumanTaskId: 'q-1',
+      repos: ['acme/api'],
+      gitProvider: 'github',
+      ...execution,
+    };
+    const binding = {
+      status: 'active',
+      actorName: 'App',
+      actorEmail: 'app@example.test',
+      capabilities: { repositoryWrite: true },
+    };
+    const ddbClient = {
+      send: vi.fn(async ({ input }) => {
+        if (!input.Key.pk) return { Item: binding };
+        if (String(input.Key.sk ?? '').startsWith('HUMAN#')) return { Item: gate };
+        return { Item: meta };
+      }),
+    };
+    const ssmClient = {
+      send: vi.fn(() => {
+        throw new Error('secret read tripwire');
+      }),
+    };
+    return { ddbClient, ssmClient, env: brokerEnv, verifyGrant: vi.fn() };
+  };
+  const parkedGate = { stageCallbackId: 'cb-1', status: 'pending' };
+  beforeEach(() => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+  });
+
+  it.each(['identity', 'write'])(
+    'serves %s access to the declared attempt that owns the pending parked gate',
+    async (requiredAccess) => {
+      const deps = parked(parkedGate);
+      await expect(
+        authorizeCredentialRequest(
+          { ...legacyRequest, requiredAccess, stageCallbackId: 'cb-1' },
+          deps,
+        ),
+      ).resolves.toBeDefined();
+      expect(deps.verifyGrant).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['no attempt is declared', {}, parkedGate],
+    ['another attempt is declared', { stageCallbackId: 'cb-other' }, parkedGate],
+    ['the declaration is not a string', { stageCallbackId: { $ne: null } }, parkedGate],
+    ['read access is asked', { stageCallbackId: 'cb-1', requiredAccess: 'read' }, parkedGate],
+    ['the gate has no attempt', { stageCallbackId: 'cb-1' }, { status: 'pending' }],
+    ['the gate was answered', { stageCallbackId: 'cb-1' }, { ...parkedGate, status: 'answered' }],
+    ['the gate row is missing', { stageCallbackId: 'cb-1' }, undefined],
+  ])('denies while WAITING when %s', async (_name, fields, gate) => {
+    await expect(
+      authorizeCredentialRequest({ ...legacyRequest, ...fields }, parked(gate)),
+    ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
+  });
+
+  it.each([
+    ['the execution is CANCELLED', { status: 'CANCELLED' }],
+    ['META no longer points at a gate', { pendingHumanTaskId: null }],
+  ])('denies the declared attempt when %s', async (_name, execution) => {
+    await expect(
+      authorizeCredentialRequest(
+        { ...legacyRequest, stageCallbackId: 'cb-1' },
+        parked(parkedGate, execution),
+      ),
+    ).rejects.toMatchObject({ code: 'EXECUTION_NOT_ACTIVE' });
+  });
 });
 
 describe('broker source-control rollout modes', () => {

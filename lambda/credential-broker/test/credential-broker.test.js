@@ -59,8 +59,8 @@ describe('credential broker authorization', () => {
     }
   });
 
-  // WAITING included: without a verified stage grant for the parked attempt
-  // (the legacy request shape carries none) there is no park-exit push window.
+  // WAITING included: a request that names no stage attempt (neither a stage
+  // grant nor a declared stageCallbackId) gets no park-exit push window.
   it.each(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED'])(
     'denies credential resolution for terminal/inactive status %s',
     async (status) => {
