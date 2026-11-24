@@ -1,5 +1,7 @@
-import { api } from './api';
+import { api, type ApiGetOptions } from './api';
 import type { BusinessRole } from './projects';
+import { afterWrite } from '../lib/afterWrite';
+import { qk } from '../lib/queryKeys';
 
 // Workflows — the composition roots that reference and arrange library blocks.
 // A workflow has a phase tree (define-your-own, nestable, inline) and stage
@@ -245,39 +247,53 @@ const setIntentParams = (params: URLSearchParams, intent?: ExistingIntentContext
   params.set('intentId', intent.intentId);
 };
 
+// Unpinned compiled views (qk.compiled with no version) follow the live draft,
+// so every workflow write drops that workflow's cached views (detail, compiled,
+// phases) and the list, whose summaries carry name, status and updatedAt.
+const workflowWrite = <T>(id: string, request: Promise<T>): Promise<T> =>
+  afterWrite(request, ['workflow', id], qk.workflows());
+
 export const workflowsService = {
-  list: () => api.get<{ workflows: WorkflowSummary[] }>('/workflows'),
-  get: (id: string, version?: number) =>
-    api.get<Workflow>(`/workflows/${id}${version ? `?version=${version}` : ''}`),
-  create: (input: CreateWorkflowInput) => api.post<WorkflowSummary>('/workflows', input),
+  // Raw reads: cached callers go through lib/authoringQueries.ts, which uses
+  // these as fetchers (a cached read here would deadlock a same-key fetcher).
+  list: (options?: ApiGetOptions) =>
+    api.get<{ workflows: WorkflowSummary[] }>('/workflows', options),
+  get: (id: string, version?: number, options?: ApiGetOptions) =>
+    api.get<Workflow>(`/workflows/${id}${version ? `?version=${version}` : ''}`, options),
+  create: (input: CreateWorkflowInput) =>
+    workflowWrite(input.id, api.post<WorkflowSummary>('/workflows', input)),
   update: (id: string, input: UpdateWorkflowInput) =>
-    api.put<WorkflowSummary>(`/workflows/${id}`, input),
-  delete: (id: string) => api.delete(`/workflows/${id}`),
+    workflowWrite(id, api.put<WorkflowSummary>(`/workflows/${id}`, input)),
+  delete: (id: string) => workflowWrite(id, api.delete(`/workflows/${id}`)),
 
   // Whole-tree replace — send the full ordered, nestable node list.
   putPhases: (id: string, phases: PhaseNodeInput[]) =>
-    api.put<Workflow>(`/workflows/${id}/phases`, { phases }),
+    workflowWrite(id, api.put<Workflow>(`/workflows/${id}/phases`, { phases })),
 
   addPlacement: (id: string, input: PlacementInput) =>
-    api.post<Placement>(`/workflows/${id}/placements`, input),
+    workflowWrite(id, api.post<Placement>(`/workflows/${id}/placements`, input)),
   updatePlacement: (id: string, stageId: string, input: Partial<PlacementInput>) =>
-    api.put<Placement>(`/workflows/${id}/placements/${stageId}`, input),
+    workflowWrite(id, api.put<Placement>(`/workflows/${id}/placements/${stageId}`, input)),
   removePlacement: (id: string, stageId: string) =>
-    api.delete(`/workflows/${id}/placements/${stageId}`),
+    workflowWrite(id, api.delete(`/workflows/${id}/placements/${stageId}`)),
 
   addScopeRef: (id: string, scopeId: string, scopeTenant?: string) =>
-    api.post<ScopeRef>(`/workflows/${id}/scopes`, { scopeId, scopeTenant }),
-  removeScopeRef: (id: string, scopeId: string) => api.delete(`/workflows/${id}/scopes/${scopeId}`),
+    workflowWrite(id, api.post<ScopeRef>(`/workflows/${id}/scopes`, { scopeId, scopeTenant })),
+  removeScopeRef: (id: string, scopeId: string) =>
+    workflowWrite(id, api.delete(`/workflows/${id}/scopes/${scopeId}`)),
   putScopeMembership: (id: string, scopeId: string, stageIds: string[], scopeTenant?: string) =>
-    api.put<Workflow>(`/workflows/${id}/scopes/${scopeId}/membership`, {
-      stageIds,
-      scopeTenant,
-    }),
+    workflowWrite(
+      id,
+      api.put<Workflow>(`/workflows/${id}/scopes/${scopeId}/membership`, {
+        stageIds,
+        scopeTenant,
+      }),
+    ),
 
   addRuleRef: (id: string, ruleId: string, layer: RuleLayer, ruleTenant?: string) =>
-    api.post<RuleRef>(`/workflows/${id}/rules`, { ruleId, layer, ruleTenant }),
+    workflowWrite(id, api.post<RuleRef>(`/workflows/${id}/rules`, { ruleId, layer, ruleTenant })),
   removeRuleRef: (id: string, layer: RuleLayer, ruleId: string) =>
-    api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`),
+    workflowWrite(id, api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`)),
 
   // The derived scope-grid + autonomy + stage-graph for this workflow.
   //
@@ -299,6 +315,7 @@ export const workflowsService = {
     releaseImporterRevision?: number | null,
     intent?: ExistingIntentContext,
     libraryRelease?: string | null,
+    options?: ApiGetOptions,
   ) => {
     const params = new URLSearchParams();
     if (version) params.set('version', String(version));
@@ -306,9 +323,10 @@ export const workflowsService = {
     setIntentParams(params, intent);
     setLibraryReleaseParam(params, libraryRelease);
     const qs = params.toString();
-    return api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(
-      `/workflows/${id}/compiled${qs ? `?${qs}` : ''}`,
-    );
+    const path = `/workflows/${id}/compiled${qs ? `?${qs}` : ''}`;
+    return options
+      ? api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(path, options)
+      : api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(path);
   },
   executionPreview: (
     id: string,

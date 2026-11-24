@@ -11,7 +11,7 @@ import {
 const WS_URL = import.meta.env.VITE_WEBSOCKET_URL;
 const YJS_URL = import.meta.env.VITE_YJS_SERVER_URL;
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 type MessageHandler = (data: any) => void;
 
 interface ConnectionRequest {
@@ -28,9 +28,12 @@ const targetKey = (target: RealtimeScopeTarget): string => {
 
 export class RealtimeService {
   private ws: WebSocket | null = null;
-  private status: ConnectionStatus = 'disconnected';
+  private status: ConnectionStatus = 'idle';
   private handlers: Map<string, Set<MessageHandler>> = new Map();
   private statusHandlers: Set<(status: ConnectionStatus) => void> = new Set();
+  private connectionOwnerKey: string | null = null;
+  private connectionOwnerGeneration = 0;
+  private connectionOwners = new Set<symbol>();
   private reconnectAttempts = 0;
   private request: ConnectionRequest | null = null;
   private generation = 0;
@@ -66,10 +69,59 @@ export class RealtimeService {
     return this.startConnection(documentId, scopeTarget);
   }
 
+  /**
+   * Retain the shared app socket for one screen. Same-channel screens share
+   * ownership; a later channel supersedes older leases so stale route cleanup
+   * cannot close the channel now in use.
+   */
+  acquireConnection(
+    documentId: string,
+    explicitTarget?: RealtimeScopeTarget,
+  ): { ready: Promise<void>; release: () => void } {
+    const existingTarget =
+      this.request?.documentId === documentId ? this.request.scopeTarget : null;
+    const scopeTarget = explicitTarget ?? existingTarget ?? scopeTargetForChannel(documentId);
+    if (!scopeTarget) throw new Error(`Unknown realtime documentId format: ${documentId}`);
+
+    const ownerKey = `${documentId}:${targetKey(scopeTarget)}`;
+    if (this.connectionOwnerKey !== ownerKey) {
+      this.connectionOwnerKey = ownerKey;
+      this.connectionOwnerGeneration++;
+      this.connectionOwners.clear();
+    }
+    const generation = this.connectionOwnerGeneration;
+    const owner = Symbol(documentId);
+    this.connectionOwners.add(owner);
+
+    return {
+      ready: this.connect(documentId, scopeTarget),
+      release: () => {
+        if (
+          generation !== this.connectionOwnerGeneration ||
+          this.connectionOwnerKey !== ownerKey ||
+          !this.connectionOwners.delete(owner)
+        ) {
+          return;
+        }
+        if (this.connectionOwners.size === 0) {
+          this.connectionOwnerGeneration++;
+          this.connectionOwnerKey = null;
+          this.disconnect();
+        }
+      },
+    };
+  }
+
   private async startConnection(
     documentId: string,
     scopeTarget: RealtimeScopeTarget,
   ): Promise<void> {
+    const ownerKey = `${documentId}:${targetKey(scopeTarget)}`;
+    if (this.connectionOwnerKey !== null && this.connectionOwnerKey !== ownerKey) {
+      this.connectionOwnerGeneration++;
+      this.connectionOwnerKey = null;
+      this.connectionOwners.clear();
+    }
     this.clearReconnect();
 
     const request: ConnectionRequest = {
@@ -189,7 +241,7 @@ export class RealtimeService {
     this.reconnectAttempts = 0;
     this.clearReconnect();
     this.closeTransport();
-    this.setStatus('disconnected');
+    this.setStatus('idle');
   }
 
   send(action: string, data: any): void {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { STATUS_REGISTRY, ageLabel, getStatus, statusLabel, type StatusKind } from './statusModel';
+import {
+  STATUS_REGISTRY,
+  ageLabel,
+  getStatus,
+  latestActivityAt,
+  statusLabel,
+  type StatusKind,
+} from './statusModel';
 
 const NOW = Date.parse('2026-11-22T12:00:00Z');
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
@@ -57,6 +64,15 @@ describe('status labels', () => {
     ['connection', 'connected', 'Live updates · 2 days'],
   ] as const)('%s %s: ended states read "ago", open ones a duration → %s', (kind, status, out) => {
     expect(statusLabel(kind, status, { since: daysAgo(2), now: NOW })).toBe(out);
+  });
+});
+
+describe('latestActivityAt', () => {
+  it('returns the most recent valid timestamp', () => {
+    expect(latestActivityAt([daysAgo(3), null, 'nope', minutesAgo(2), undefined, daysAgo(1)])).toBe(
+      minutesAgo(2),
+    );
+    expect(latestActivityAt([null, undefined])).toBeUndefined();
   });
 });
 

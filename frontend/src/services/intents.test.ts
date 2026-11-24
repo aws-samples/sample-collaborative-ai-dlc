@@ -85,4 +85,69 @@ describe('intentsService request paths', () => {
       '/projects/p1/intents/i1/artifacts/design%2Fhead/versions/design%2Fhead%3Av1',
     );
   });
+
+  it('get / list pass an optional signal through, otherwise the plain GET', async () => {
+    const controller = new AbortController();
+    await intentsService.get('p1', 'i1', { signal: controller.signal });
+    expect(get).toHaveBeenLastCalledWith('/projects/p1/intents/i1?artifactContent=separate', {
+      signal: controller.signal,
+    });
+    await intentsService.list('p1', undefined, { signal: controller.signal });
+    expect(get).toHaveBeenLastCalledWith('/projects/p1/intents', { signal: controller.signal });
+    await intentsService.list('p1', 'WAITING');
+    expect(get.mock.calls.at(-1)).toEqual(['/projects/p1/intents?status=WAITING']);
+  });
+});
+
+describe('intentsService list invalidation', () => {
+  beforeEach(async () => {
+    const { queryClient } = await import('@/lib/queryClient');
+    queryClient.clear();
+    post.mockReset().mockResolvedValue({ id: 'new' });
+    del.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('makes a fresh cached space list re-read after create, cancel, start and delete succeed', async () => {
+    const { queryClient } = await import('@/lib/queryClient');
+    const { qk } = await import('@/lib/queryKeys');
+    const fetcher = vi.fn().mockResolvedValue([{ id: 'old' }]);
+    const listQuery = { queryKey: qk.projectIntents('p1'), queryFn: fetcher };
+    const waitingQuery = {
+      queryKey: [...qk.projectIntents('p1'), 'status', 'WAITING'],
+      queryFn: vi.fn().mockResolvedValue([]),
+    };
+
+    for (const write of [
+      () => intentsService.create('p1', { title: 'New' } as never),
+      () => intentsService.cancel('p1', 'i1'),
+      () => intentsService.start('p1', 'i1'),
+      () => intentsService.delete('p1', 'i1'),
+    ]) {
+      await queryClient.fetchQuery(listQuery);
+      await queryClient.fetchQuery(waitingQuery);
+      const before = fetcher.mock.calls.length;
+      // Fresh: the Space would not refetch on its own.
+      await queryClient.fetchQuery(listQuery);
+      expect(fetcher.mock.calls.length).toBe(before);
+
+      await write();
+
+      expect(queryClient.getQueryState(qk.projectIntents('p1'))?.isInvalidated).toBe(true);
+      expect(queryClient.getQueryState(waitingQuery.queryKey)?.isInvalidated).toBe(true);
+      await queryClient.fetchQuery(listQuery);
+      expect(fetcher.mock.calls.length).toBe(before + 1);
+    }
+  });
+
+  it('keeps the cached list when the write fails', async () => {
+    const { queryClient } = await import('@/lib/queryClient');
+    const { qk } = await import('@/lib/queryKeys');
+    const fetcher = vi.fn().mockResolvedValue([{ id: 'old' }]);
+    await queryClient.fetchQuery({ queryKey: qk.projectIntents('p1'), queryFn: fetcher });
+    post.mockRejectedValueOnce(new Error('409'));
+
+    await expect(intentsService.create('p1', { title: 'New' } as never)).rejects.toThrow('409');
+
+    expect(queryClient.getQueryState(qk.projectIntents('p1'))?.isInvalidated).toBe(false);
+  });
 });

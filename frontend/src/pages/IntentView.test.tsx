@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
@@ -1484,6 +1484,7 @@ describe('IntentView', () => {
       await screen.findByRole('button', { name: 'Approve — continue to stage-b' }),
     ).toBeInTheDocument();
     unmount();
+    clearIntentCache();
 
     // Final stage: null = approving completes the workflow.
     get.mockResolvedValue(validationDetail(null));

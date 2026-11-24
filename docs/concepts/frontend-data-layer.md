@@ -6,9 +6,28 @@ Application WebSocket events and Yjs document sync remain separate transports. A
 
 ## Query cache
 
+### Keys
+
+Use the factories in `lib/queryKeys.ts` (`qk`) for hierarchical, request-shaped keys:
+
+- Space reads live under `['project', projectId, …]`.
+- Intent detail lives under `['intent', projectId, intentId, …]`.
+- Workflow detail and compilation live under `['workflow', workflowId, …]`.
+
+Include every parameter that changes the response. In particular, compiled-workflow keys include the version, release, importer revision, and intent-specific pin. A shared prefix permits targeted invalidation without merging distinct responses.
+
 ### React binding
 
-Use native `queryOptions` and native result fields: `data`, `error`, `isPending`, `isFetching`, `isPlaceholderData`, `dataUpdatedAt`, and `refetch`. Each query function passes TanStack's `signal` to the transport. Keep HTTP calls in the domain service or authenticated API client.
+Factories return native `queryOptions`, not a second options format. The same factory works for a screen and an imperative read:
+
+```tsx
+const detail = useQuery(intentDetailQuery(projectId, intentId));
+await queryClient.fetchQuery(intentDetailQuery(projectId, intentId));
+```
+
+`lib/authoringQueries.ts` and `lib/intentEntry.ts` own the shared descriptors. Each query function passes TanStack's `signal` to the transport. Keep HTTP calls in the domain service or authenticated API client; do not call a cache-backed service recursively from its own query function.
+
+Use native result fields: `data`, `error`, `isPending`, `isFetching`, `isPlaceholderData`, `dataUpdatedAt`, and `refetch`.
 
 Use `placeholderData` for an observer-local preview, not `setQueryData` or `initialData` for incomplete server records.
 
@@ -45,13 +64,28 @@ The client does not retry 401, 403, 404, or 410 responses; other failures retry 
 
 The existing document-reload boundary remains: signing in after a session ended, or switching users, starts a new document rather than reusing the old user's modules. The persisted sidebar summary is scoped to the user and cleared at session end.
 
+## Invalidation rules
+
+Domain writes go through `afterWrite(write, ...prefixes)` (`lib/afterWrite.ts`): once the write settles it invalidates each prefix and supersedes reads that started before it (cancelled and restarted, so their waiters get post-write data). Active queries refetch; inactive queries remain stale until needed.
+
+- Workflow writes invalidate the workflow prefix and workflow list. The prefix covers compiled views.
+- Successful intent lifecycle writes invalidate the space's intent lists, including status-filtered lists.
+
+`afterWrite` refreshes in `finally`: a failed response can still follow an applied write. Intent lifecycle writes refresh only on success. Keep this decision in the service so every caller uses the same policy.
+
+## Polling
+
+Use `refetchInterval` on the query that owns the data. Leave `refetchIntervalInBackground` false so TanStack pauses background polling. The interval may depend on query state: live intent detail uses 8 seconds, waiting intents 30 seconds, and terminal intents stop polling. Realtime invalidation remains the primary update path; polling recovers dropped events.
+
+`useVisiblePoll` is reserved for non-query work such as catching up and merging independently paginated visible transcript panes. Do not introduce another timer for an ordinary query refresh.
+
 ## Reading without retaining
 
 `useQueryData(key)` uses `useSyncExternalStore`, a `QueryCache` subscription, and `getQueryData`. It does not create a query or an observer, fetch data, or extend retention. Use it for small status views that should update when data arrives without keeping it in memory.
 
 ## Checklist for changes
 
-- Forward `signal`; choose `staleTime` and `gcTime` deliberately.
+- Add request-shaped keys to `qk` and a shared `queryOptions` factory. Forward `signal`; choose `staleTime` and `gcTime` deliberately.
 - Read with `useQuery`, or `fetchQuery` when an imperative caller needs the result. Use `useQueryData` only for non-retaining views.
-- Cancel superseded reads before authoritative cache writes.
+- Invalidate affected prefixes in services; cancel superseded reads before authoritative cache writes.
 - Use `src/test/query.tsx` for query-owning component and hook tests. Setup creates a fresh client per test. Test application policies and request wiring rather than reimplementing TanStack's tests.

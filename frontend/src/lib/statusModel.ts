@@ -291,6 +291,12 @@ export const STATUS_REGISTRY: Registry = {
     },
   },
   connection: {
+    idle: {
+      label: 'Live updates off',
+      tone: 'neutral',
+      icon: WifiOff,
+      help: 'This page is not subscribed to live updates.',
+    },
     connecting: {
       label: 'Connecting',
       tone: 'info',
@@ -421,6 +427,23 @@ function parseMs(value: string | number | null | undefined): number | null {
   const ms = typeof value === 'number' ? value : Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
 }
+
+/** The newest (or oldest) parseable timestamp, as given. */
+function pickTimestamp(
+  timestamps: readonly (string | null | undefined)[],
+  oldest = false,
+): string | undefined {
+  let best: { ms: number; value: string } | undefined;
+  for (const value of timestamps) {
+    const ms = parseMs(value);
+    if (ms === null || !value) continue;
+    if (!best || (oldest ? ms < best.ms : ms > best.ms)) best = { ms, value };
+  }
+  return best?.value;
+}
+
+export const latestActivityAt = (timestamps: readonly (string | null | undefined)[]) =>
+  pickTimestamp(timestamps);
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

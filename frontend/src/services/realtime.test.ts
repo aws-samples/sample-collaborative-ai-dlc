@@ -159,6 +159,70 @@ describe('RealtimeService', () => {
     expect(MockWebSocket.instances[1].url).toContain('documentId=intent%3Aintent-2');
   });
 
+  it('keeps a same-channel socket until its final screen releases it', async () => {
+    const service = new RealtimeService(false);
+    const target = { intentId: 'intent-1', projectId: 'project-1' };
+    const first = service.acquireConnection('intent:intent-1', target);
+    const second = service.acquireConnection('intent:intent-1', target);
+    await flushPromises();
+    MockWebSocket.instances[0].open();
+    await Promise.all([first.ready, second.ready]);
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    first.release();
+    expect(service.getStatus()).toBe('connected');
+
+    second.release();
+    expect(service.getStatus()).toBe('idle');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not let late cleanup from an older channel close the current channel', async () => {
+    const service = new RealtimeService(false);
+    const first = service.acquireConnection('intent:intent-1', {
+      intentId: 'intent-1',
+      projectId: 'project-1',
+    });
+    await flushPromises();
+    MockWebSocket.instances[0].open();
+    await first.ready;
+
+    const second = service.acquireConnection('intent:intent-2', {
+      intentId: 'intent-2',
+      projectId: 'project-1',
+    });
+    await flushPromises();
+    MockWebSocket.instances[1].open();
+    await second.ready;
+    first.release();
+
+    expect(service.getStatus()).toBe('connected');
+    expect(MockWebSocket.instances[1].readyState).toBe(MockWebSocket.OPEN);
+
+    second.release();
+    expect(service.getStatus()).toBe('idle');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('shows unexpected disconnection as paused, then clears retry work on release', async () => {
+    const service = new RealtimeService(false);
+    const connection = service.acquireConnection('intent:intent-1', {
+      intentId: 'intent-1',
+      projectId: 'project-1',
+    });
+    await flushPromises();
+    MockWebSocket.instances[0].open();
+    await connection.ready;
+
+    MockWebSocket.instances[0].serverClose();
+    expect(service.getStatus()).toBe('disconnected');
+    expect(vi.getTimerCount()).toBe(1);
+
+    connection.release();
+    expect(service.getStatus()).toBe('idle');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('ignores malformed frames and isolates a failing message handler', async () => {
     const service = new RealtimeService(false);
     const received: string[] = [];

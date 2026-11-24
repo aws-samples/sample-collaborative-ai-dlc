@@ -22,7 +22,7 @@ import {
   type IntentSteering,
   type StageState,
 } from '@/services/intents';
-import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
+import type { CompiledWorkflow, PhaseNode } from '@/services/workflows';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import {
   stageResponsibilitiesService,
@@ -33,6 +33,16 @@ import {
 import { realtimeService } from '@/services/realtime';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
+import { useVisiblePoll } from '@/hooks/useVisiblePoll';
+import { queryClient } from '@/lib/queryClient';
+import { isCancelledError } from '@tanstack/react-query';
+import { errorHttpStatus, isNotFoundStatus } from '@/lib/httpStatus';
+import { qk } from '@/lib/queryKeys';
+import { useQuery } from '@tanstack/react-query';
+import { latestActivityAt } from '@/lib/statusModel';
+import { getIntentStageSelection } from '@/lib/intentStageSelection';
+import { intentCompiledQuery, intentDetailQuery } from '@/lib/intentEntry';
+import { workflowDetailQuery } from '@/lib/authoringQueries';
 import {
   applyArtifactContents,
   artifactContentIdentities,
@@ -97,11 +107,21 @@ export interface AgentFocusRequest {
   seq: number;
 }
 
+export type ActivityTab = 'agent' | 'timeline' | 'discussions' | 'preview';
+
+// A request to show one activity-panel tab; `seq` makes repeated requests for
+// the same tab distinct so each click re-opens it.
+export interface ActivityTabRequest {
+  tab: ActivityTab;
+  seq: number;
+}
+
 // Lazy transcript pane state. The detail DTO carries NO outputs (a long run's
 // transcript is megabytes and the DTO is polled) — each pane's durable history
 // is fetched once, on first display, from GET .../outputs, and merged with the
 // live websocket chunks that arrived meanwhile (deduped by seq).
-export type OutputPaneStatus = 'unseeded' | 'loading' | 'seeded';
+// 'error': the first fetch failed; recovery paths and ensureOutputs retry it.
+export type OutputPaneStatus = 'unseeded' | 'loading' | 'seeded' | 'error';
 interface OutputPane {
   status: OutputPaneStatus;
   /** Durable chunks fetched from the outputs endpoint. */
@@ -115,6 +135,28 @@ interface OutputPane {
   cursor: number;
   /** Live websocket chunks (kept until seeding merges or supersedes them). */
   live: IntentOutput[];
+  /** Rendered size in characters (seeded rows + live tail). */
+  size: number;
+  /** Size ceiling; raised by loadEarlierOutput, reset on eviction. */
+  cap: number;
+  /** Older rows were dropped to stay under `cap`. */
+  truncated: boolean;
+  /** Highest seq dropped by the cap (0 = nothing dropped). */
+  droppedThroughSeq: number;
+  /**
+   * On-demand view of the transcript's beginning, for a pane already at the
+   * max cap: `rows` cover everything up to `cursor` (each further load
+   * continues from it). Bounded by the max cap: past it the oldest rows go and
+   * `headDropped` is set. Dropped when the pane closes or is reset.
+   */
+  earlier: { rows: IntentOutput[]; cursor: number; size: number; headDropped: boolean } | null;
+  earlierLoading: boolean;
+  /** Bumped when the pane is reset, so in-flight pages for the old state drop. */
+  epoch: number;
+  /** Explicit visibility from setPaneVisible; undefined = recent ensureOutputs. */
+  visible: boolean | undefined;
+  lastEnsuredAt: number;
+  lastAccessAt: number;
 }
 
 interface IntentContextValue {
@@ -124,6 +166,10 @@ interface IntentContextValue {
   compiled: CompiledWorkflow | null;
   loading: boolean;
   error: string | null;
+  /** HTTP status of the failed detail load (404 → the intent no longer exists), null otherwise. */
+  errorStatus: number | null;
+  /** The detail request was refused as missing or gone: the intent was deleted or never existed. */
+  notFound: boolean;
 
   // Workflow phase metadata (from the full Workflow object, not compiled DTO).
   workflowPhases: PhaseNode[] | null;
@@ -160,6 +206,28 @@ interface IntentContextValue {
   ensureOutputs: (key: string) => void;
   /** Seeding state for a pane key (re-render via outputVersion). */
   outputPaneStatus: (key: string) => OutputPaneStatus;
+  /**
+   * Declare whether a pane is on screen. Visible panes get the periodic
+   * catch-up; without a declaration a pane counts as visible for 60 s after
+   * its last ensureOutputs.
+   */
+  setPaneVisible: (key: string, visible: boolean) => void;
+  /**
+   * Older output was dropped from this pane to keep it under its size cap and
+   * is not on screen yet (also true while a loaded beginning leaves a gap).
+   */
+  hasEarlierOutput: (key: string) => boolean;
+  /** Part of the trimmed output is already shown in front of the tail. */
+  hasLoadedEarlierOutput: (key: string) => boolean;
+  /**
+   * Recover trimmed output: raise the pane's size cap and refetch, or, once at
+   * the max cap, load the transcript's beginning in front of the retained tail.
+   */
+  loadEarlierOutput: (key: string) => void;
+  /** Most recent activity seen: events, stages, streamed output, intent.updatedAt. */
+  lastActivityAt: string | null;
+  /** Gates still waiting for a human (same list as pendingGates). */
+  openGates: IntentGate[];
 
   // Shared UI state — selection is keyed by `stageRowKey` (instance-aware:
   // two unit instances of one stage select independently).
@@ -168,6 +236,11 @@ interface IntentContextValue {
   agentFocus: AgentFocusRequest | null;
   /** Focus the sidebar Agent tab on a stage's output (null → run-level). */
   focusOutput: (stageInstanceId: string | null) => void;
+  activityTabRequest: ActivityTabRequest | null;
+  /** Open the activity panel on one of its tabs. */
+  openActivityTab: (tab: ActivityTab) => void;
+  /** Open the activity panel on the Timeline tab (what "View activity" means on the Work page). */
+  openTimeline: () => void;
 
   /** Preview tab: the artifact currently displayed (null = nothing selected). */
   previewArtifactId: string | null;
@@ -200,122 +273,113 @@ interface IntentContextValue {
   resumeIntent: () => Promise<void>;
 }
 
-// ── Module-level stale-while-revalidate cache ───────────────────────────────
-// Mirrors the pattern in src/hooks/useProjectsCache.ts: show last-known data
-// instantly on revisit, refetch in the background, update if changed.
-// Uses LRU eviction (delete+re-insert on access moves key to Map iteration end).
-const INTENT_CACHE_MAX = 20;
-
 // Artifact-body page fetch: attempts and the base back-off between them.
 const ARTIFACT_CONTENT_ATTEMPTS = 3;
 const ARTIFACT_CONTENT_RETRY_MS = 500;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-interface IntentCacheEntry {
-  detail: IntentDetail;
-  compiled: CompiledWorkflow | null;
-  compiledKey: string | null;
-  workflowPhases: PhaseNode[] | null;
+// Polling cadence (ARCH §D): live runs and deliveries every 8 s, a run parked
+// on a human every 30 s (websocket events still reload at once), none when
+// terminal. Paused while the tab is hidden.
+const LIVE_POLL_MS = 8_000;
+const WAITING_POLL_MS = 30_000;
+const OUTPUT_CATCH_UP_MS = 8_000;
+
+// Transcript retention (ARCH §B).
+const PANE_CAP_CHARS = 512 * 1024;
+const PANE_MAX_CAP_CHARS = 2 * 1024 * 1024;
+const PANE_VISIBLE_WINDOW_MS = 60_000;
+const RETAINED_HIDDEN_PANES = 3;
+
+const isCancelled = isCancelledError;
+
+interface LoadFlight {
+  inflight: Promise<void> | null;
+  trailing: Promise<void> | null;
 }
 
-interface CompiledCacheEntry {
-  intentKey: string;
-  request: Promise<CompiledWorkflow>;
+const rowSize = (row: IntentOutput) => (row.content ?? '').length;
+
+const isPaneVisible = (pane: OutputPane, at: number) =>
+  pane.visible ?? at - pane.lastEnsuredAt < PANE_VISIBLE_WINDOW_MS;
+
+const needsCatchUp = (pane: OutputPane, at: number) =>
+  pane.status === 'seeded' ||
+  ((pane.status === 'error' || pane.status === 'unseeded') && isPaneVisible(pane, at));
+
+// Drop a pane's durable history (in-flight pages for the old state are
+// discarded by the epoch bump); the caller re-seeds or evicts it.
+function resetPane(pane: OutputPane) {
+  pane.epoch += 1;
+  pane.status = 'unseeded';
+  pane.seededRows = [];
+  pane.maxSeededSeq = 0;
+  pane.cursor = 0;
+  pane.truncated = false;
+  pane.droppedThroughSeq = 0;
+  pane.earlier = null;
+  pane.earlierLoading = false;
 }
 
-const intentCache = new Map<string, IntentCacheEntry>();
-const compiledCache = new Map<string, CompiledCacheEntry>();
-
-function intentCacheKey(projectId: string, intentId: string): string {
-  return `${projectId}#${intentId}`;
+// The loaded beginning of a capped transcript, rendered in front of the
+// retained tail: only rows the cap dropped (the rest are already shown), plus a
+// marker when the beginning does not reach the tail.
+function gapMarker(key: string, seq: number, timestamp: string): IntentOutput {
+  return {
+    seq,
+    stageInstanceId: key === INTENT_OUTPUT_KEY ? null : key,
+    kind: 'system',
+    content: '\n… Part of the output is not shown here (too large to display) …\n\n',
+    timestamp,
+    display: {
+      type: 'system',
+      level: 'info',
+      title: 'Part of the output is not shown here (too large to display)',
+    },
+  };
 }
 
-function intentCacheGet(key: string): IntentCacheEntry | undefined {
-  const entry = intentCache.get(key);
-  if (entry) {
-    // LRU promotion: move to end of Map iteration order
-    intentCache.delete(key);
-    intentCache.set(key, entry);
+function earlierHead(pane: OutputPane, key: string): IntentOutput[] {
+  if (!pane.earlier) return [];
+  const head = pane.earlier.rows.filter((row) => row.seq <= pane.droppedThroughSeq);
+  if (pane.earlier.headDropped) {
+    head.unshift(gapMarker(key, 0, head[0]?.timestamp ?? ''));
   }
-  return entry;
-}
-
-function trimIntentCache() {
-  while (intentCache.size > INTENT_CACHE_MAX) {
-    const oldest = intentCache.keys().next().value!;
-    intentCache.delete(oldest);
-    deleteCompiledForIntent(oldest);
+  if (pane.earlier.cursor < pane.droppedThroughSeq) {
+    head.push(gapMarker(key, pane.earlier.cursor, head.at(-1)?.timestamp ?? ''));
   }
+  return head;
 }
 
-function compiledCacheKey(
-  projectId: string,
-  intentId: string,
-  workflowId: string,
-  workflowVersion: number | undefined,
-  releaseId: string | undefined,
-  importerRevision: number | undefined,
-): string {
-  return [
-    projectId,
-    intentId,
-    workflowId,
-    workflowVersion ?? '',
-    releaseId ?? '',
-    importerRevision ?? '',
-  ].join('#');
-}
+const earlierGapRemains = (pane: OutputPane) =>
+  pane.truncated && (!pane.earlier || pane.earlier.cursor < pane.droppedThroughSeq);
 
-function deleteCompiledForIntent(intentKey: string, exceptKey?: string) {
-  for (const [key, entry] of compiledCache) {
-    if (entry.intentKey === intentKey && key !== exceptKey) compiledCache.delete(key);
-  }
-}
-
-function trimCompiledCache() {
-  while (compiledCache.size > INTENT_CACHE_MAX) {
-    const oldest = compiledCache.keys().next().value!;
-    compiledCache.delete(oldest);
-  }
-}
-
-function getPinnedCompiled(
-  key: string,
-  intentKey: string,
-  workflowId: string,
-  workflowVersion: number | undefined,
-  releaseId: string | undefined,
-  importerRevision: number | undefined,
-  existingIntent?: { projectId: string; intentId: string },
-): Promise<CompiledWorkflow> {
-  const cached = compiledCache.get(key);
-  if (cached) {
-    compiledCache.delete(key);
-    compiledCache.set(key, cached);
-    return cached.request;
-  }
-
-  let entry: CompiledCacheEntry;
-  const request = workflowsService
-    .compiled(workflowId, workflowVersion, releaseId, importerRevision, existingIntent)
-    .catch((error) => {
-      if (compiledCache.get(key) === entry) compiledCache.delete(key);
-      throw error;
-    });
-  entry = { intentKey, request };
-  compiledCache.set(key, entry);
-  trimCompiledCache();
-  return request;
-}
-
-/** Clear the module-level intent cache (for test isolation). */
+/** Drop cached intent and workflow reads (for test isolation). */
 export function clearIntentCache() {
-  intentCache.clear();
-  compiledCache.clear();
+  queryClient.removeQueries({ queryKey: ['intent'] });
+  queryClient.removeQueries({ queryKey: ['workflow'] });
 }
 
 const IntentContext = createContext<IntentContextValue | undefined>(undefined);
+
+// Keep these callbacks in their own scope. In the provider's render scope,
+// openTimeline captures openActivityTab alongside the loading callbacks; their
+// independently changing dependencies can chain old render scopes and details.
+function useActivityTabRequest(onAgentFocus?: () => void) {
+  const [activityTabRequest, setActivityTabRequest] = useState<ActivityTabRequest | null>(null);
+  const activityTabSeq = useRef(0);
+  const openActivityTab = useCallback(
+    (tab: ActivityTab) => {
+      activityTabSeq.current += 1;
+      setActivityTabRequest({ tab, seq: activityTabSeq.current });
+      onAgentFocus?.();
+    },
+    [onAgentFocus],
+  );
+  const openTimeline = useCallback(() => openActivityTab('timeline'), [openActivityTab]);
+  return { activityTabRequest, openActivityTab, openTimeline };
+}
 
 export function IntentProvider({
   children,
@@ -339,10 +403,9 @@ export function IntentProvider({
   }, []);
   // One artifact-body sync at a time; a load during a sync queues one more.
   const contentSyncRef = useRef({ running: false, again: false });
-  const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
-  const [workflowPhases, setWorkflowPhases] = useState<PhaseNode[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
 
   // Live agent.question gates accumulated by humanTaskId (D3 multi-gate).
   // Seeded from the assembled detail, then upserted on each agent.question.
@@ -360,6 +423,7 @@ export function IntentProvider({
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [agentFocus, setAgentFocus] = useState<AgentFocusRequest | null>(null);
   const focusSeq = useRef(0);
+  const { activityTabRequest, openActivityTab, openTimeline } = useActivityTabRequest(onAgentFocus);
 
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
   const [previewItemId, setPreviewItemId] = useState<string | null>(null);
@@ -369,7 +433,6 @@ export function IntentProvider({
 
   // Guards late async resolutions (compiled fetch) against route changes.
   const activeIntentRef = useRef(intentId);
-  const fetchedWorkflowKeyRef = useRef<string | null>(null);
   activeIntentRef.current = intentId;
 
   // The detail carries no artifact bodies: page them in after each load and
@@ -383,12 +446,7 @@ export function IntentProvider({
     }
     state.running = true;
     const forIntent = intentId;
-    const cacheKey = intentCacheKey(projectId, intentId);
-    const commit = (next: IntentDetail) => {
-      commitDetail(next);
-      const entry = intentCache.get(cacheKey);
-      if (entry) entry.detail = next;
-    };
+    const commit = commitDetail;
     const fetchPage = async (cursor: string | null) => {
       for (let attempt = 1; ; attempt += 1) {
         try {
@@ -442,11 +500,14 @@ export function IntentProvider({
     }
   }, [projectId, intentId, commitDetail]);
 
-  const load = useCallback(async () => {
-    if (!projectId || !intentId) return;
-    try {
-      const fetched = await intentsService.get(projectId, intentId);
-      if (activeIntentRef.current !== intentId) return;
+  // The raw detail last applied, so a re-render with the same query data does
+  // not re-apply it.
+  const appliedRef = useRef<IntentDetail | null>(null);
+
+  const applyDetail = useCallback(
+    (fetched: IntentDetail) => {
+      if (activeIntentRef.current !== intentId || appliedRef.current === fetched) return;
+      appliedRef.current = fetched;
       const previous = detailRef.current;
       const dto = carryArtifactContent(
         fetched,
@@ -455,113 +516,65 @@ export function IntentProvider({
       commitDetail(dto);
       void syncArtifactContents();
       setError(null);
+      setErrorStatus(null);
+      setLoading(false);
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
+    },
+    [intentId, commitDetail, syncArtifactContents],
+  );
 
-      const cacheKey = intentCacheKey(projectId, intentId);
-      const prevEntry = intentCacheGet(cacheKey);
-      const workflowId = dto.intent.workflowId;
-      const releasePin = dto.intent.methodologyRelease;
-      const releasePinned = Boolean(releasePin);
-      const releaseId = releasePin?.releaseId;
-      const importerRevision = releasePin?.importerRevision;
-      const compiledKey = workflowId
-        ? compiledCacheKey(
-            projectId,
-            intentId,
-            workflowId,
-            dto.intent.workflowVersion ?? undefined,
-            releaseId,
-            importerRevision,
-          )
-        : null;
-      // Only pinned intents carry a compile identity. Unpinned entries keep a
-      // null key so their reloads behave as before: the previous compiled
-      // workflow stays visible until the refetch replaces it.
-      const pinnedCompiledKey = releasePinned ? compiledKey : null;
-      deleteCompiledForIntent(cacheKey, pinnedCompiledKey ?? undefined);
+  const remoteDetail = useQuery({
+    ...intentDetailQuery(projectId, intentId),
+    enabled: Boolean(projectId && intentId),
+    refetchOnWindowFocus: ({ state: { data } }) =>
+      data?.delivery?.status === 'in_progress' ||
+      ['RUNNING', 'CREATED', 'WAITING'].includes(data?.intent.status ?? ''),
+    refetchInterval: ({ state: { data } }) =>
+      data?.delivery?.status === 'in_progress' ||
+      data?.intent.status === 'RUNNING' ||
+      data?.intent.status === 'CREATED'
+        ? LIVE_POLL_MS
+        : data?.intent.status === 'WAITING'
+          ? WAITING_POLL_MS
+          : false,
+  });
+  // Pinned: one compile per pin identity. Unpinned: the shared compile of the
+  // workflow version. The detail query starts it as soon as a detail arrives.
+  // A failed compile is retried by the next detail read, not by this observer.
+  const compiledQuery = useQuery({
+    ...intentCompiledQuery(remoteDetail.data),
+    enabled: (query) => query.state.status !== 'error',
+  });
+  const compiled = compiledQuery.data ?? null;
 
-      if (releasePinned) {
-        const sameCompileIdentity = Boolean(
-          pinnedCompiledKey && prevEntry?.compiledKey === pinnedCompiledKey,
-        );
-        const cachedCompiled = sameCompileIdentity ? (prevEntry?.compiled ?? null) : null;
-        intentCache.set(cacheKey, {
-          detail: dto,
-          compiled: cachedCompiled,
-          compiledKey: pinnedCompiledKey,
-          workflowPhases: sameCompileIdentity ? (prevEntry?.workflowPhases ?? null) : null,
+  // Single flight: a reload requested while one runs waits for it, then at
+  // most one trailing reload runs (something changed after the first began).
+  const flightRef = useRef<LoadFlight>({ inflight: null, trailing: null });
+  const load = useCallback((): Promise<void> => {
+    const flight = flightRef.current;
+    const start = (): Promise<void> => {
+      const run: Promise<void> = queryClient
+        .refetchQueries({ queryKey: qk.intentDetail(projectId, intentId), exact: true })
+        .finally(() => {
+          if (flight.inflight === run) flight.inflight = null;
         });
-        setCompiled(cachedCompiled);
-        if (!sameCompileIdentity) setWorkflowPhases(null);
-        else if (cachedCompiled) setWorkflowPhases(cachedCompiled.phases ?? []);
-      } else {
-        intentCache.set(cacheKey, {
-          detail: dto,
-          compiled: prevEntry?.compiled ?? null,
-          compiledKey: null,
-          workflowPhases: prevEntry?.workflowPhases ?? null,
-        });
-      }
-      trimIntentCache();
-
-      if (workflowId) {
-        const compileRequest =
-          releasePinned && compiledKey
-            ? getPinnedCompiled(
-                compiledKey,
-                cacheKey,
-                workflowId,
-                dto.intent.workflowVersion ?? undefined,
-                releaseId,
-                importerRevision,
-                { projectId, intentId },
-              )
-            : workflowsService.compiled(
-                workflowId,
-                dto.intent.workflowVersion ?? undefined,
-                releaseId,
-                importerRevision,
-              );
-        compileRequest
-          .then((c) => {
-            if (activeIntentRef.current !== intentId) return;
-            const entry = intentCache.get(cacheKey);
-            if (!entry || entry.compiledKey !== pinnedCompiledKey) return;
-            setCompiled(c);
-            entry.compiled = c;
-            if (releasePinned) {
-              entry.workflowPhases = c.phases ?? [];
-              setWorkflowPhases(c.phases ?? []);
-            }
-          })
-          .catch(() => {});
-
-        const workflowKey = `${dto.intent.workflowId}@${dto.intent.workflowVersion ?? ''}`;
-        if (!releasePinned && fetchedWorkflowKeyRef.current !== workflowKey) {
-          fetchedWorkflowKeyRef.current = workflowKey;
-          workflowsService
-            .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
-            .then((wf) => {
-              if (activeIntentRef.current !== intentId) return;
-              setWorkflowPhases(wf.phases);
-              const entry = intentCache.get(cacheKey);
-              if (entry) entry.workflowPhases = wf.phases;
-            })
-            .catch(() => {
-              fetchedWorkflowKeyRef.current = null;
-            });
-        }
-      }
-    } catch (err) {
-      if (activeIntentRef.current !== intentId) return;
-      setError(err instanceof Error ? err.message : 'Failed to load intent');
-    } finally {
-      if (activeIntentRef.current === intentId) setLoading(false);
-    }
-  }, [projectId, intentId, commitDetail, syncArtifactContents]);
+      flight.inflight = run;
+      return run;
+    };
+    if (!projectId || !intentId) return Promise.resolve();
+    if (!flight.inflight) return start();
+    flight.trailing ??= flight.inflight.then(() => {
+      flight.trailing = null;
+      return start();
+    });
+    return flight.trailing;
+  }, [projectId, intentId]);
+  const reload = load;
 
   useEffect(() => {
     contentSyncRef.current = { running: false, again: false };
+    flightRef.current = { inflight: null, trailing: null };
+    appliedRef.current = null;
     outputBufRef.current = new Map();
     outputRowsRef.current = new Map();
     panesRef.current = new Map();
@@ -569,63 +582,54 @@ export function IntentProvider({
     setSelectedStageId(null);
     setAgentFocus(null);
     setError(null);
-    fetchedWorkflowKeyRef.current = null;
+    setErrorStatus(null);
+    commitDetail(null);
+    setLiveGates(new Map());
+    // A cached detail (stale or not) is applied by the effect below.
+    setLoading(Boolean(projectId && intentId));
+  }, [projectId, intentId, commitDetail]);
 
-    if (projectId && intentId) {
-      const cached = intentCacheGet(intentCacheKey(projectId, intentId));
-      if (cached) {
-        commitDetail(cached.detail);
-        setCompiled(cached.compiled);
-        setWorkflowPhases(cached.workflowPhases);
-        setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
-        setLoading(false);
-        if (cached.compiled && cached.detail.intent.workflowId) {
-          fetchedWorkflowKeyRef.current = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
-        }
-      } else {
-        commitDetail(null);
-        setCompiled(null);
-        setWorkflowPhases(null);
-        setLiveGates(new Map());
-        setLoading(true);
-      }
-      load();
-    } else {
-      commitDetail(null);
-      setCompiled(null);
-      setWorkflowPhases(null);
-      setLiveGates(new Map());
-      setLoading(false);
-    }
-  }, [projectId, intentId, load, commitDetail]);
-
-  // Polling backstop. Lifecycle/failure transitions are broadcast live by the
-  // orchestrator, but WS frames can be dropped, so while a run is mid-flight
-  // (CREATED during init-ws, RUNNING, WAITING) we also poll on a slow interval
-  // to guarantee init-ws progress and FAILED transitions reach the UI.
-  const pollStatus = detail?.intent.status;
-  const deliveryPending = detail?.delivery?.status === 'in_progress';
   useEffect(() => {
-    if (
-      !deliveryPending &&
-      (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus))
-    )
-      return;
-    const id = setInterval(load, 8000);
-    return () => clearInterval(id);
-  }, [pollStatus, deliveryPending, load]);
+    if (remoteDetail.data) applyDetail(remoteDetail.data);
+    else if (remoteDetail.isSuccess) setLoading(false);
+    const failure = remoteDetail.error;
+    if (!failure || isCancelled(failure)) return;
+    const status = errorHttpStatus(failure);
+    setError(failure.message || 'Failed to load intent');
+    setErrorStatus(status);
+    setLoading(false);
+    if (status !== null && [403, 404, 410].includes(status)) {
+      appliedRef.current = null;
+      commitDetail(null);
+      setLiveGates(new Map());
+      outputBufRef.current.clear();
+      outputRowsRef.current.clear();
+      panesRef.current.clear();
+      setOutputVersion((version) => version + 1);
+      setSelectedStageId(null);
+      setAgentFocus(null);
+      setPreviewArtifactId(null);
+      setPreviewItemId(null);
+    }
+  }, [remoteDetail.data, remoteDetail.isSuccess, remoteDetail.error, applyDetail, commitDetail]);
+
+  // Polling backstop (ARCH §D). Lifecycle/failure transitions are broadcast
+  // live by the orchestrator, but WS frames can be dropped, so a live run is
+  // also polled. A poll right after another load (websocket burst, return to a
+  // visible tab) is skipped.
+  const pollStatus = detail?.intent.status;
 
   // Refetch debouncing (docs/v2-parallel.md WP7): every lifecycle event used
   // to trigger an immediate full-DTO refetch — N parallel lanes multiply
   // stage/unit/metric events, so bursts must coalesce. Trailing debounce: the
   // first event arms a short timer; every event inside the window rides the
-  // same fetch. The 8s poll and post-mutation reloads stay immediate.
+  // same fetch. The poll and post-mutation reloads stay immediate.
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleLoad = useCallback(() => {
     if (loadTimerRef.current) return;
     loadTimerRef.current = setTimeout(() => {
       loadTimerRef.current = null;
-      load();
+      void load();
     }, 250);
   }, [load]);
   useEffect(
@@ -639,7 +643,23 @@ export function IntentProvider({
   const paneOf = useCallback((key: string): OutputPane => {
     let pane = panesRef.current.get(key);
     if (!pane) {
-      pane = { status: 'unseeded', seededRows: [], maxSeededSeq: 0, cursor: 0, live: [] };
+      pane = {
+        status: 'unseeded',
+        seededRows: [],
+        maxSeededSeq: 0,
+        cursor: 0,
+        live: [],
+        size: 0,
+        cap: PANE_CAP_CHARS,
+        truncated: false,
+        droppedThroughSeq: 0,
+        earlier: null,
+        earlierLoading: false,
+        epoch: 0,
+        visible: undefined,
+        lastEnsuredAt: 0,
+        lastAccessAt: Date.now(),
+      };
       panesRef.current.set(key, pane);
     }
     return pane;
@@ -647,14 +667,36 @@ export function IntentProvider({
 
   // Rebuild a pane's render string: durable history + the live tail (chunks
   // newer than the seed, in seq order — websocket frames can only race the
-  // seed fetch, not each other, but sorting is cheap and safe).
+  // seed fetch, not each other, but sorting is cheap and safe). Over the cap,
+  // the oldest rows go (down to 7/8 of it, so streaming does not trim on every
+  // chunk); the newest row always stays.
   const renderPane = useCallback(
     (key: string) => {
       const pane = paneOf(key);
       const tail = pane.live
         .filter((c) => c.seq > pane.maxSeededSeq)
         .toSorted((a, b) => a.seq - b.seq);
-      const rows = [...pane.seededRows, ...tail];
+      let rows = [...pane.seededRows, ...tail];
+      let size = rows.reduce((n, row) => n + rowSize(row), 0);
+      if (size > pane.cap) {
+        const target = (pane.cap * 7) / 8;
+        let drop = 0;
+        while (size > target && drop < rows.length - 1) {
+          size -= rowSize(rows[drop]);
+          drop += 1;
+        }
+        const dropped = new Set(rows.slice(0, drop));
+        pane.droppedThroughSeq = rows
+          .slice(0, drop)
+          .reduce((m, row) => Math.max(m, row.seq), pane.droppedThroughSeq);
+        pane.seededRows = pane.seededRows.filter((row) => !dropped.has(row));
+        pane.live = pane.live.filter((row) => !dropped.has(row));
+        rows = rows.slice(drop);
+        pane.truncated = true;
+      }
+      pane.size = size;
+      const head = earlierHead(pane, key);
+      if (head.length > 0) rows = [...head, ...rows];
       outputRowsRef.current.set(key, rows);
       outputBufRef.current.set(key, rows.map((c) => c.content).join(''));
       setOutputVersion((n) => n + 1);
@@ -670,12 +712,18 @@ export function IntentProvider({
       if (!projectId || !intentId) return;
       const pane = paneOf(key);
       if (pane.status === 'loading') return;
-      const initial = pane.status === 'unseeded';
+      const initial = pane.status === 'unseeded' || pane.status === 'error';
       if (initial) {
         pane.status = 'loading';
         setOutputVersion((n) => n + 1);
       }
       const forIntent = intentId;
+      const epoch = pane.epoch;
+      // Responses for a pane that was reset or evicted meanwhile are dropped.
+      const current = () =>
+        activeIntentRef.current === forIntent &&
+        panesRef.current.get(key) === pane &&
+        pane.epoch === epoch;
       // A long transcript arrives in pages: follow `more` while the cursor moves.
       const fetchPage = (first: boolean): Promise<void> =>
         intentsService
@@ -684,12 +732,15 @@ export function IntentProvider({
             ...(first && initial ? {} : { afterSeq: pane.cursor }),
           })
           .then(({ outputs: durable, cursor, more }): Promise<void> | undefined => {
-            if (activeIntentRef.current !== forIntent) return;
+            if (!current()) return;
             const before = first && initial ? -1 : pane.cursor;
             const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
             durable.forEach((row) => bySeq.set(row.seq, row));
             pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
-            pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+            pane.maxSeededSeq = Math.max(
+              pane.maxSeededSeq,
+              pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0),
+            );
             // A server without the cursor resumes from the pane's own last chunk.
             // Catch-ups can overlap, so a late older response must not move the
             // cursor back.
@@ -704,43 +755,197 @@ export function IntentProvider({
             return undefined;
           });
       fetchPage(true).catch(() => {
-        if (activeIntentRef.current !== forIntent) return;
-        if (initial && pane.status === 'loading') pane.status = 'unseeded';
+        if (!current()) return;
+        if (initial && pane.status === 'loading') pane.status = 'error';
         setOutputVersion((n) => n + 1);
       });
     },
     [projectId, intentId, paneOf, renderPane],
   );
 
-  // Fetch a pane's durable transcript once on first display.
+  // Retention: visible panes, plus the 3 most recently used hidden panes with
+  // durable history. An evicted pane keeps only its live tail and is re-seeded
+  // on its next display.
+  const evictHiddenPanes = useCallback(() => {
+    const at = Date.now();
+    const hidden = [...panesRef.current]
+      .filter(([, pane]) => pane.status === 'seeded' && !isPaneVisible(pane, at))
+      .toSorted(([, a], [, b]) => b.lastAccessAt - a.lastAccessAt);
+    let changed = false;
+    for (const [key, pane] of hidden.slice(RETAINED_HIDDEN_PANES)) {
+      resetPane(pane);
+      pane.cap = PANE_CAP_CHARS;
+      if (pane.live.length === 0) {
+        panesRef.current.delete(key);
+        outputBufRef.current.delete(key);
+        outputRowsRef.current.delete(key);
+      } else {
+        renderPane(key);
+      }
+      changed = true;
+    }
+    if (changed) setOutputVersion((n) => n + 1);
+  }, [renderPane]);
+
+  // Fetch a pane's durable transcript on first display (or again after a
+  // failed first fetch); a pane shown again after it stopped counting as
+  // visible catches up what it missed.
   const ensureOutputs = useCallback(
     (key: string) => {
-      if (paneOf(key).status === 'unseeded') syncOutputs(key);
+      const pane = paneOf(key);
+      const at = Date.now();
+      const wasVisible = isPaneVisible(pane, at);
+      pane.lastEnsuredAt = at;
+      pane.lastAccessAt = at;
+      if (pane.visible === false) pane.visible = undefined;
+      if (
+        pane.status === 'unseeded' ||
+        pane.status === 'error' ||
+        (pane.status === 'seeded' && !wasVisible)
+      ) {
+        syncOutputs(key);
+      }
+      evictHiddenPanes();
     },
-    [paneOf, syncOutputs],
+    [paneOf, syncOutputs, evictHiddenPanes],
   );
 
-  const catchUpOutputs = useCallback(() => {
+  const setPaneVisible = useCallback(
+    (key: string, visible: boolean) => {
+      const pane = panesRef.current.get(key);
+      if (!pane) return;
+      const at = Date.now();
+      const wasVisible = isPaneVisible(pane, at);
+      pane.visible = visible;
+      pane.lastAccessAt = at;
+      if (visible && !wasVisible && pane.status === 'seeded') syncOutputs(key);
+      if (!visible && pane.earlier) {
+        pane.earlier = null;
+        renderPane(key);
+      }
+      evictHiddenPanes();
+    },
+    [syncOutputs, renderPane, evictHiddenPanes],
+  );
+
+  const hasEarlierOutput = useCallback((key: string) => {
+    const pane = panesRef.current.get(key);
+    return !!pane && earlierGapRemains(pane);
+  }, []);
+  const hasLoadedEarlierOutput = useCallback(
+    (key: string) => !!panesRef.current.get(key)?.earlier,
+    [],
+  );
+
+  // The beginning of a transcript beyond the max cap: page from seq 0 (or, on
+  // a further request, from where the loaded part stops) until the rows the
+  // cap dropped are covered or this request's 512 KiB budget is spent (a
+  // marker then stands for the part in between). Kept outside the capped rows
+  // so streaming never trims it; dropped when the pane closes.
+  const fetchEarlierOutput = useCallback(
+    (key: string, pane: OutputPane) => {
+      const forIntent = intentId;
+      const epoch = pane.epoch;
+      const current = () =>
+        activeIntentRef.current === forIntent &&
+        panesRef.current.get(key) === pane &&
+        pane.epoch === epoch;
+      const previous = pane.earlier;
+      const rows: IntentOutput[] = [];
+      let size = 0;
+      const fetchPage = (afterSeq: number | undefined): Promise<number> =>
+        intentsService
+          .outputs(projectId, forIntent, {
+            stageInstanceId: key,
+            ...(afterSeq === undefined ? {} : { afterSeq }),
+          })
+          .then(({ outputs: page, cursor, more }) => {
+            for (const row of page.toSorted((a, b) => a.seq - b.seq)) {
+              if (size + rowSize(row) > PANE_CAP_CHARS && rows.length > 0) {
+                return rows.at(-1)!.seq;
+              }
+              rows.push(row);
+              size += rowSize(row);
+            }
+            const next = typeof cursor === 'number' ? cursor : (page.at(-1)?.seq ?? afterSeq ?? 0);
+            const advanced = afterSeq === undefined || next > afterSeq;
+            if (more && advanced && next < pane.droppedThroughSeq && current()) {
+              return fetchPage(next);
+            }
+            return next;
+          });
+      pane.earlierLoading = true;
+      fetchPage(previous?.cursor)
+        .then((reached) => {
+          if (!current()) return;
+          const merged = [...(previous?.rows ?? []), ...rows];
+          let total = (previous?.size ?? 0) + size;
+          let headDropped = previous?.headDropped ?? false;
+          while (total > PANE_MAX_CAP_CHARS && merged.length > 1) {
+            total -= rowSize(merged.shift()!);
+            headDropped = true;
+          }
+          pane.earlier = {
+            rows: merged,
+            cursor: Math.max(reached, previous?.cursor ?? 0),
+            size: total,
+            headDropped,
+          };
+          renderPane(key);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          pane.earlierLoading = false;
+        });
+    },
+    [projectId, intentId, renderPane],
+  );
+
+  const loadEarlierOutput = useCallback(
+    (key: string) => {
+      const pane = panesRef.current.get(key);
+      if (!pane || pane.status === 'loading' || pane.earlierLoading) return;
+      if (!projectId || !intentId) return;
+      const at = Date.now();
+      pane.lastEnsuredAt = at;
+      pane.lastAccessAt = at;
+      if (pane.cap >= PANE_MAX_CAP_CHARS) {
+        if (earlierGapRemains(pane)) fetchEarlierOutput(key, pane);
+        return;
+      }
+      pane.cap = Math.min(pane.cap * 2, PANE_MAX_CAP_CHARS);
+      resetPane(pane);
+      syncOutputs(key);
+    },
+    [projectId, intentId, syncOutputs, fetchEarlierOutput],
+  );
+
+  // A reconnect cannot replay frames from API Gateway: catch up every pane
+  // holding durable history (bounded by retention) as soon as the channel
+  // returns. While RUNNING, visible panes also catch up periodically so a
+  // silent intermediary drop heals without user action. Both paths also retry
+  // a visible pane whose first fetch failed.
+  const catchUpSeededOutputs = useCallback(() => {
+    const at = Date.now();
     for (const [key, pane] of panesRef.current) {
-      if (pane.status !== 'loading') syncOutputs(key);
+      if (needsCatchUp(pane, at)) syncOutputs(key);
     }
   }, [syncOutputs]);
-
-  // A reconnect cannot replay frames from API Gateway. Catch up every pane
-  // from DynamoDB as soon as the channel returns, and periodically while a run
-  // is active so even a silent intermediary drop heals without user action.
+  const catchUpVisibleOutputs = useCallback(() => {
+    const at = Date.now();
+    for (const [key, pane] of panesRef.current) {
+      if (needsCatchUp(pane, at) && isPaneVisible(pane, at)) syncOutputs(key);
+    }
+    evictHiddenPanes();
+  }, [syncOutputs, evictHiddenPanes]);
   useEffect(
     () =>
       realtimeService.onStatusChange((status) => {
-        if (status === 'connected') catchUpOutputs();
+        if (status === 'connected') catchUpSeededOutputs();
       }),
-    [catchUpOutputs],
+    [catchUpSeededOutputs],
   );
-  useEffect(() => {
-    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
-    const id = setInterval(catchUpOutputs, 8000);
-    return () => clearInterval(id);
-  }, [pollStatus, catchUpOutputs]);
+  useVisiblePoll(catchUpVisibleOutputs, pollStatus === 'RUNNING' ? OUTPUT_CATCH_UP_MS : null);
 
   const outputPaneStatus = useCallback(
     (key: string): OutputPaneStatus => panesRef.current.get(key)?.status ?? 'unseeded',
@@ -817,6 +1022,11 @@ export function IntentProvider({
         if (pane.live.length > 5000) {
           pane.live = pane.live.slice(-4000);
         }
+        pane.size += rowSize(row);
+        if (pane.size > pane.cap) {
+          renderPane(key);
+          return;
+        }
         // Fast path: append to the render string (renderPane would re-join the
         // whole live tail on every streamed token).
         outputBufRef.current.set(key, (outputBufRef.current.get(key) ?? '') + evt.content);
@@ -859,7 +1069,7 @@ export function IntentProvider({
         scheduleLoad();
       }
     },
-    [scheduleLoad, paneOf, projectId, intentId],
+    [scheduleLoad, paneOf, renderPane, projectId, intentId],
   );
   useIntentEvents(projectId, intentId, onEvent);
 
@@ -891,9 +1101,16 @@ export function IntentProvider({
   // caller navigates back to the project page.
   const deleteIntent = useCallback(async () => {
     await intentsService.delete(projectId, intentId);
-    const cacheKey = intentCacheKey(projectId, intentId);
-    intentCache.delete(cacheKey);
-    deleteCompiledForIntent(cacheKey);
+    // A pinned compile is this intent's own (keyed by the intent); an unpinned
+    // one is shared with other intents of the workflow and stays.
+    const current = detailRef.current;
+    if (
+      current?.intent.id === intentId &&
+      current.intent.workflowId &&
+      current.intent.methodologyRelease
+    )
+      queryClient.removeQueries({ queryKey: intentCompiledQuery(current).queryKey });
+    queryClient.removeQueries({ queryKey: qk.intentDetail(projectId, intentId) });
   }, [projectId, intentId]);
 
   const rewindIntent = useCallback(
@@ -960,6 +1177,26 @@ export function IntentProvider({
   // would silently drop all but the last lane), and every instance becomes its
   // own IntentStageRow carrying its unitSlug. Instances of one plan stage sort
   // by unitSlug for a stable render order.
+  // Pinned intents take their phases from the pinned compile; unpinned ones
+  // follow the workflow's live draft (workflow writes invalidate ['workflow', id]).
+  const unpinnedWorkflowId =
+    detail && !detail.intent.methodologyRelease ? detail.intent.workflowId || null : null;
+  const unpinnedPhases = useQuery({
+    ...workflowDetailQuery(unpinnedWorkflowId ?? '', detail?.intent.workflowVersion),
+    select: (workflow) => workflow.phases,
+    enabled: Boolean(unpinnedWorkflowId),
+  });
+  const workflowPhases = unpinnedWorkflowId
+    ? (unpinnedPhases.data ?? null)
+    : detail?.intent.methodologyRelease && compiled
+      ? (compiled.phases ?? [])
+      : null;
+
+  const initializationPhasePaths = useMemo<Set<string>>(() => {
+    if (!workflowPhases) return new Set();
+    return new Set(workflowPhases.filter((p) => p.phaseId === 'initialization').map((p) => p.path));
+  }, [workflowPhases]);
+
   const stageRows = useMemo<IntentStageRow[]>(() => {
     const byStageId = new Map<string, IntentStage[]>();
     for (const s of detail?.stages ?? []) {
@@ -991,8 +1228,19 @@ export function IntentProvider({
     // A composed grid replaces the named-scope projection (`scope` is then only
     // the provenance label), so it must win over the scope's baseline grid.
     const grid = detail?.intent.composedGrid ?? (scope ? compiled?.scopeGrid?.[scope] : undefined);
+    const selectedIds = new Set(
+      detail && compiled
+        ? getIntentStageSelection(detail.intent, compiled, initializationPhasePaths).selected.map(
+            (n) => n.stageId,
+          )
+        : [],
+    );
     const planNodes = (compiled?.graph.nodes ?? [])
-      .filter((n) => !grid || grid[n.stageId] === 'EXECUTE')
+      .filter((n) =>
+        initializationPhasePaths.has(n.phasePath ?? '')
+          ? !grid || grid[n.stageId] === 'EXECUTE'
+          : selectedIds.has(n.stageId),
+      )
       .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const planIds = new Set(planNodes.map((n) => n.stageId));
     const rows: IntentStageRow[] = planNodes.flatMap((n, i): IntentStageRow[] => {
@@ -1070,7 +1318,7 @@ export function IntentProvider({
       });
     }
     return rows;
-  }, [detail, compiled, workflowPhases]);
+  }, [detail, compiled, workflowPhases, initializationPhasePaths]);
 
   // Compiled edges restricted to the rendered (in-scope) stages — the graph
   // AND the per-stage dependency list derive from these (the compiled DTO has
@@ -1082,6 +1330,22 @@ export function IntentProvider({
 
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
+
+  const detailActivityAt = useMemo(() => {
+    const stamps: (string | null | undefined)[] = [detail?.intent.updatedAt];
+    for (const event of detail?.events ?? []) stamps.push(event.timestamp);
+    for (const stage of detail?.stages ?? []) {
+      stamps.push(stage.startedAt, stage.completedAt, stage.updatedAt);
+    }
+    return latestActivityAt(stamps);
+  }, [detail]);
+  // Output rows live in a mutated ref (re-render via outputVersion): read the
+  // newest row of each pane on every render, which is a handful of reads.
+  const lastActivityAt =
+    latestActivityAt([
+      detailActivityAt,
+      ...[...outputRowsRef.current.values()].map((rows) => rows.at(-1)?.timestamp),
+    ]) ?? null;
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
 
   const { project } = useProjectCache(projectId);
@@ -1154,11 +1418,6 @@ export function IntentProvider({
     [detail],
   );
 
-  const initializationPhasePaths = useMemo<Set<string>>(() => {
-    if (!workflowPhases) return new Set();
-    return new Set(workflowPhases.filter((p) => p.phaseId === 'initialization').map((p) => p.path));
-  }, [workflowPhases]);
-
   const phaseNameOf = useCallback(
     (phasePath: string): string => {
       const capitalize = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -1186,6 +1445,8 @@ export function IntentProvider({
         compiled,
         loading,
         error,
+        errorStatus,
+        notFound: isNotFoundStatus(errorStatus),
         workflowPhases,
         phaseNameOf,
         initializationPhasePaths,
@@ -1217,10 +1478,19 @@ export function IntentProvider({
         stageNameOf,
         ensureOutputs,
         outputPaneStatus,
+        setPaneVisible,
+        hasEarlierOutput,
+        hasLoadedEarlierOutput,
+        loadEarlierOutput,
+        lastActivityAt,
+        openGates: pendingGates,
         selectedStageId,
         setSelectedStageId,
         agentFocus,
         focusOutput,
+        activityTabRequest,
+        openActivityTab,
+        openTimeline,
         previewArtifactId,
         previewItemId,
         previewSeq,
@@ -1228,7 +1498,7 @@ export function IntentProvider({
         openArtifactPreview,
         clearPreviewAnchor,
         openItemPreview,
-        reload: load,
+        reload,
         answerGate,
         reviseGate,
         cancelIntent,

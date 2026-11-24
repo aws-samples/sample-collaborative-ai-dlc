@@ -1,5 +1,7 @@
 import type { AidlcSettingValue } from '../lib/aidlcSettings';
-import { api } from './api';
+import { api, type ApiGetOptions } from './api';
+import { refreshAfterWrite } from '../lib/afterWrite';
+import { qk } from '../lib/queryKeys';
 import type { AgentCli, ConversationLanguage } from './projects';
 import type { AgentCredentialSource } from './agents';
 
@@ -1212,18 +1214,38 @@ export interface IntentAudit {
   advisories: IntentAuditAdvisory[];
 }
 
+const withOptions = <T>(path: string, options?: ApiGetOptions) =>
+  options ? api.get<T>(path, options) : api.get<T>(path);
+
+// Writes that add, remove or re-status an intent make every cached view of the
+// space's list (qk.projectIntents and its status supplements) outdated.
+// A rejected intent write changes no list, so only success refreshes it.
+const listWrite = <T>(projectId: string, request: Promise<T>): Promise<T> =>
+  request.then((result) => {
+    refreshAfterWrite(qk.projectIntents(projectId));
+    return result;
+  });
+
 export const intentsService = {
-  list: (projectId: string, status?: IntentStatus) =>
-    api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
+  // `options.signal` lets the query cache cancel the read;
+  // omitted, the request is exactly the plain GET.
+  list: (projectId: string, status?: IntentStatus, options?: ApiGetOptions) =>
+    withOptions<Intent[]>(
+      `/projects/${projectId}/intents${status ? `?status=${status}` : ''}`,
+      options,
+    ),
   // Artifact bodies are paged separately (artifactContents).
-  get: (projectId: string, intentId: string) =>
-    api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}?artifactContent=separate`),
+  get: (projectId: string, intentId: string, options?: ApiGetOptions) =>
+    withOptions<IntentDetail>(
+      `/projects/${projectId}/intents/${intentId}?artifactContent=separate`,
+      options,
+    ),
   projectMetrics: (projectId: string) =>
     api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
-  graph: (projectId: string, intentId: string) =>
-    api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
-  audit: (projectId: string, intentId: string) =>
-    api.get<IntentAudit>(`/projects/${projectId}/intents/${intentId}/audit`),
+  graph: (projectId: string, intentId: string, options?: ApiGetOptions) =>
+    withOptions<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`, options),
+  audit: (projectId: string, intentId: string, options?: ApiGetOptions) =>
+    withOptions<IntentAudit>(`/projects/${projectId}/intents/${intentId}/audit`, options),
   // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
   // scopes to one pane — the literal "intent" is the stage-less workspace/init
   // bucket; `afterSeq` fetches only chunks emitted after a known sequence, and
@@ -1270,7 +1292,7 @@ export const intentsService = {
       { comments },
     ),
   create: (projectId: string, input: CreateIntentInput) =>
-    api.post<Intent>(`/projects/${projectId}/intents`, input),
+    listWrite(projectId, api.post<Intent>(`/projects/${projectId}/intents`, input)),
   // DRAFT-only header edit (the collaborative draft page's auto-save target):
   // title/prompt/scope/composedGrid/skipStageIds. 409 once the intent starts.
   draftEditState: (projectId: string, intentId: string) =>
@@ -1317,18 +1339,23 @@ export const intentsService = {
       agentCli?: AgentCli;
     } = {},
   ) => api.post<ComposeSession>(`/projects/${projectId}/intents/${intentId}/compose`, input),
-  listComposes: (projectId: string, intentId: string) =>
-    api.get<{ composes: ComposeSession[] }>(`/projects/${projectId}/intents/${intentId}/composes`),
+  listComposes: (projectId: string, intentId: string, options?: ApiGetOptions) => {
+    const path = `/projects/${projectId}/intents/${intentId}/composes`;
+    return options
+      ? api.get<{ composes: ComposeSession[] }>(path, options)
+      : api.get<{ composes: ComposeSession[] }>(path);
+  },
   // Presigned PUT for an external analysis report (report-mode input).
   composeReportUpload: (projectId: string, intentId: string) =>
     api.post<{ uploadUrl: string; key: string; expiresIn: number }>(
       `/projects/${projectId}/intents/${intentId}/compose-report-upload`,
       {},
     ),
-  attachments: (projectId: string, intentId: string) =>
-    api.get<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
-      `/projects/${projectId}/intents/${intentId}/attachments`,
-    ),
+  attachments: (projectId: string, intentId: string, options?: ApiGetOptions) => {
+    const path = `/projects/${projectId}/intents/${intentId}/attachments`;
+    type Result = { attachments: IntentAttachment[]; attachmentRevision: number };
+    return options ? api.get<Result>(path, options) : api.get<Result>(path);
+  },
   trackerAttachments: (projectId: string, intentId: string) =>
     api.get<{ attachments?: TrackerAttachmentCandidate[]; reason?: string }>(
       `/projects/${projectId}/intents/${intentId}/attachments/import`,
@@ -1372,9 +1399,13 @@ export const intentsService = {
       skipStageIds?: string[];
       composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
     },
-  ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
+  ) =>
+    listWrite(
+      projectId,
+      api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
+    ),
   cancel: (projectId: string, intentId: string) =>
-    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+    listWrite(projectId, api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {})),
   exportWorkflow: (projectId: string, intentId: string, harness?: NativeExportHarness) =>
     api.post<NativeWorkflowExport>(
       `/projects/${projectId}/intents/${intentId}/export`,
@@ -1383,7 +1414,7 @@ export const intentsService = {
   // Permanent delete: removes the intent's graph data, process state and
   // realtime docs. Owner/admin only; refused (409) while RUNNING.
   delete: (projectId: string, intentId: string) =>
-    api.delete(`/projects/${projectId}/intents/${intentId}`),
+    listWrite(projectId, api.delete(`/projects/${projectId}/intents/${intentId}`)),
   // Steering rewind: restart the run from `fromStageId` (409 while RUNNING —
   // wait for the stage to park or finish). Guidance is optional: with it this
   // is a corrective rewind (a steering row the restarted stage consumes);
