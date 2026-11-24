@@ -408,6 +408,13 @@ therefore stays in `SCANNING` until five minutes after the scan completed. Its
 severity counts then add up every page of the scan result; a result too large
 to read in full also moves to `SECURITY_REVIEW`.
 
+The evidence lists up to 100 findings, the most severe of every page read,
+with a link to the image in the ECR console for the complete list. For a
+result too large to read in full, the evidence and the acceptance confirmation
+say that the counts are partial and that the unread findings may include
+Critical or High vulnerabilities, and the validation evidence of an accepted
+revision records the scan as `ACCEPTED`.
+
 The administrator can:
 
 - Leave the version unpublished and remediate its source or dependencies.
