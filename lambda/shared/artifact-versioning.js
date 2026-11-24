@@ -68,6 +68,39 @@ export const artifactAliases = (row) => {
   }
 };
 
+// Routes and edit jobs accept the logical key returned as contentKey. Legacy
+// authored ids/aliases remain valid only when they identify one logical output.
+export const resolveArtifactGroup = (rows, intentId, reference) => {
+  const exact = rows.filter((row) => artifactLogicalKeyFromRow(row, intentId) === reference);
+  if (exact.length) return exact;
+  const keys = new Set(
+    rows
+      .filter((row) => row.id === reference || artifactAliases(row).includes(reference))
+      .map((row) => artifactLogicalKeyFromRow(row, intentId)),
+  );
+  if (keys.size > 1) {
+    const error = new Error(
+      `Artifact "${reference}" is ambiguous across stage or unit outputs; use its contentKey`,
+    );
+    error.code = 'ambiguous_artifact';
+    throw error;
+  }
+  return rows.filter((row) => keys.has(artifactLogicalKeyFromRow(row, intentId)));
+};
+
+export const readArtifactHead = async (g, intentId, reference, { withContent = true } = {}) => {
+  const entries = await readIntentArtifactEntries(g, intentId, { withContent: false });
+  const head = selectCanonicalArtifact(resolveArtifactGroup(entries, intentId, reference));
+  if (!head || !withContent) return head;
+  const [props] = await g
+    .V(head.vertexId)
+    .hasLabel('Artifact')
+    .has('intent_id', intentId)
+    .valueMap(true)
+    .toList();
+  return props ? { vertexId: head.vertexId, ...flattenVertexMap(props) } : null;
+};
+
 const rowTimestamp = (row) =>
   String(row?.updated_at || row?.edited_at || row?.created_at || row?.archived_at || '');
 

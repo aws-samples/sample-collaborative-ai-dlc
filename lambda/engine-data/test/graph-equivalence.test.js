@@ -13,7 +13,8 @@ import { createEngineGraphOps } from '../../shared/engine-graph-ops.js';
 import { createGraphManager } from '../../shared/mcp/graph-manager.js';
 import { createGraphWriter } from '../../shared/mcp/graph-writer.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
-import { readCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
+import { artifactLogicalKey, readCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
+import { fetchDownstreamClosure, markArtifactsStale } from '../../shared/artifact-edit.js';
 import { createGraphGateway } from '../graph-gateway.js';
 
 const __ = gremlin.process.statics;
@@ -411,9 +412,82 @@ describe('local and remote graph operations are equivalent', () => {
   });
 });
 
+describe('lane-specific edits through the graph gateway (#714)', () => {
+  it('preserves logical addresses through reads, Quorum writes and drift marking', async () => {
+    const scope = { projectId: 'p-1', intentId: 'i-1', executionId: 'e-1', sectionIndex: 1 };
+    // A valid logical key may exceed the 512-character authored-id limit.
+    const units = ['alpha-' + 'u'.repeat(480), 'beta'];
+    const references = units.map((unitSlug) =>
+      artifactLogicalKey({
+        ...scope,
+        unitSlug,
+        stageInstanceId: `si-${unitSlug}`,
+        artifactType: 'requirements',
+      }),
+    );
+    await seedBoth(async (g) => {
+      await g.V().drop().next();
+      await g.addV('Intent').property('id', 'i-1').property('project_id', 'p-1').next();
+      await createGraphWriter({
+        g,
+        scope: { ...scope, stageInstanceId: 'si-root' },
+        clock: CLOCK,
+      }).createArtifact({ id: 'root', artifactType: 'design', content: '# Root' });
+      for (const unitSlug of units) {
+        await createGraphWriter({
+          g,
+          scope: { ...scope, unitSlug, stageInstanceId: `si-${unitSlug}` },
+          clock: CLOCK,
+        }).createArtifact({
+          id: 'shared',
+          artifactType: 'requirements',
+          content: `# ${unitSlug}`,
+          links: [{ edge: 'CONSUMES', toId: 'root' }],
+        });
+      }
+    });
+    expect(references[0].length).toBeGreaterThan(512);
+    const closure = await both('fetchDownstreamClosure', { artifactId: 'root' });
+    expect(closure.result.map((row) => row.id).toSorted()).toEqual(references.toSorted());
+    await both('markArtifactsStale', {
+      sourceArtifactId: 'root',
+      artifactIds: references,
+      editId: 'qe-1',
+    });
+    const edited = await both('applyArtifactEdit', {
+      artifactId: references[0],
+      editId: 'qe-1',
+      content: '# Changed alpha',
+    });
+    expect(edited.ok).toBe(true);
+    expect((await both('getArtifactForEdit', { artifactId: references[0] })).result.content).toBe(
+      '# Changed alpha',
+    );
+    const beta = (await both('getArtifactForEdit', { artifactId: references[1] })).result;
+    expect(beta.content).toBe('# beta');
+    expect(beta.stale_since).toBeTruthy();
+    expect(
+      (await both('verifyArtifact', { artifactId: references[1], note: 'Reviewed beta' })).ok,
+    ).toBe(true);
+    expect(
+      (await both('getArtifactForEdit', { artifactId: references[1] })).result.stale_since,
+    ).toBeUndefined();
+    expect(
+      (
+        await both('applyArtifactEdit', {
+          artifactId: 'shared',
+          editId: 'qe-1',
+          content: '# Wrong lane',
+        })
+      ).error.code,
+    ).toBe('ambiguous_artifact');
+  });
+});
+
 // Counts, at the graph boundary, how many artifact bodies each traversal returns.
 const countingBodies = (g) => {
   let bodies = 0;
+  let metadataReads = 0;
   const hasBody = (value) => {
     if (value instanceof Map) return value.has('content') || [...value.values()].some(hasBody);
     return Array.isArray(value) && value.some(hasBody);
@@ -423,6 +497,7 @@ const countingBodies = (g) => {
       const value = target[key];
       if (key !== 'V') return typeof value === 'function' ? value.bind(target) : value;
       return (...args) => {
+        if (args.length === 0) metadataReads += 1;
         const traversal = target.V(...args);
         const toList = traversal.toList.bind(traversal);
         traversal.toList = async () => {
@@ -434,8 +509,69 @@ const countingBodies = (g) => {
       };
     },
   });
-  return { g: counted, bodies: () => bodies };
+  return { g: counted, bodies: () => bodies, metadataReads: () => metadataReads };
 };
+
+describe('canonical artifact edit references', () => {
+  it('returns the same logical closure for a legacy id and a logical root address', async () => {
+    const g = partitionGraph('engine-data-edit-references');
+    await g.V().drop().next();
+    await createEngineGraphOps({ g, scope: OWN, clock: CLOCK }).ensureIntent({ title: 'Edit' });
+    const keys = {};
+    for (const id of ['root', 'consumer', 'leaf']) {
+      const scope = { ...OWN, stageInstanceId: `si-${id}` };
+      keys[id] = artifactLogicalKey({ ...scope, artifactType: 'requirements' });
+      await createGraphWriter({ g, scope, clock: CLOCK }).createArtifact({
+        id,
+        artifactType: 'requirements',
+        content: `# ${id}`,
+        links:
+          id === 'root'
+            ? []
+            : [{ edge: 'CONSUMES', toId: id === 'consumer' ? 'root' : 'consumer' }],
+      });
+    }
+    for (const artifactId of ['root', keys.root]) {
+      const closure = await fetchDownstreamClosure({ g, intentId: OWN.intentId, artifactId });
+      expect(closure.map(({ id, depth }) => [id, depth])).toEqual([
+        [keys.consumer, 1],
+        [keys.leaf, 2],
+      ]);
+    }
+  });
+
+  it('marks a batch from one metadata read, accepting legacy ids and skipping missing or superseded heads', async () => {
+    const g = partitionGraph('engine-data-stale-batch');
+    await g.V().drop().next();
+    await createEngineGraphOps({ g, scope: OWN, clock: CLOCK }).ensureIntent({ title: 'Edit' });
+    const keys = {};
+    for (const id of ['alpha', 'beta', 'retired']) {
+      const scope = { ...OWN, stageInstanceId: `si-${id}` };
+      keys[id] = artifactLogicalKey({ ...scope, artifactType: 'requirements' });
+      await createGraphWriter({ g, scope, clock: CLOCK }).createArtifact({
+        id,
+        artifactType: 'requirements',
+        content: `# ${id}`,
+      });
+    }
+    await g.V().has('Artifact', 'id', 'retired').property('superseded_at', CLOCK()).next();
+    const counter = countingBodies(g);
+    const marked = await markArtifactsStale({
+      g: counter.g,
+      intentId: OWN.intentId,
+      artifactIds: ['alpha', keys.beta, 'missing', 'retired'],
+      reason: 'edit:root:qe-1',
+      now: CLOCK(),
+    });
+    expect(counter.metadataReads()).toBe(1);
+    expect(counter.bodies()).toBe(0);
+    expect(marked).toEqual([keys.alpha, keys.beta]);
+    expect(await g.V().hasLabel('Artifact').has('stale_since').values('id').toList()).toEqual([
+      'alpha',
+      'beta',
+    ]);
+  });
+});
 
 describe('per-artifact engine reads', () => {
   it('load only the named head body, whatever the size of the intent', async () => {

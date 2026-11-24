@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import {
   Fragment,
   isValidElement,
@@ -23,6 +24,7 @@ import {
 
 export interface MarkdownArtifactLink {
   id: string;
+  contentKey?: string;
   title: string | null;
   /** When given, identifiers this document defines link to their place in it. */
   content?: string | null;
@@ -63,7 +65,12 @@ export function buildPreviewReferenceIndex(
   derivedItems: MarkdownDerivedItemLink[],
   { preserveText = false }: PreviewReferenceOptions = {},
 ): PreviewReferenceIndex {
-  const artifactsById = new Map(artifacts.map((artifact) => [artifact.id.toLowerCase(), artifact]));
+  const artifactsById = new Map<string, MarkdownArtifactLink>();
+  for (const artifact of artifacts) {
+    const id = artifact.id.toLowerCase();
+    if (artifacts.filter((candidate) => candidate.id.toLowerCase() === id).length === 1)
+      artifactsById.set(id, artifact);
+  }
   const itemsByKey = new Map(
     derivedItems.flatMap((item) =>
       [item.slug, item.id].filter(Boolean).map((key) => [referenceKey(key!), item] as const),
@@ -155,7 +162,7 @@ export function buildPreviewReferenceIndex(
       segments.push(
         artifact
           ? {
-              href: `#artifact-${encodeURIComponent(artifact.id)}`,
+              href: `#artifact-${encodeURIComponent(artifactReference(artifact))}`,
               text: artifact.title || artifact.id,
             }
           : { text: match[0] },

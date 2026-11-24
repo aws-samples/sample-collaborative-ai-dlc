@@ -309,6 +309,7 @@ describe('ProvenanceTree — focus navigation', () => {
         artifacts: [
           doc({
             id: artifactId,
+            contentKey: 'sectioned-logical-key',
             title: 'Sectioned design',
             createdByStageInstanceId: 'si-sectioned',
           }),
@@ -347,6 +348,24 @@ describe('ProvenanceTree — focus navigation', () => {
 
     expect(stage).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText(item.label)).toBeInTheDocument();
+  });
+
+  it('opens each same-id document using its own logical address', () => {
+    const openArtifactPreview = vi.fn();
+    renderTree({
+      detail: {
+        artifacts: [
+          doc({ title: 'Alpha document', contentKey: 'alpha-key' }),
+          doc({ title: 'Beta document', contentKey: 'beta-key' }),
+        ],
+      } as IntentDetail,
+      stageRows: [row()],
+      openArtifactPreview,
+    });
+    fireEvent.click(screen.getByText('Alpha document'));
+    expect(openArtifactPreview).toHaveBeenLastCalledWith('alpha-key');
+    fireEvent.click(screen.getByText('Beta document'));
+    expect(openArtifactPreview).toHaveBeenLastCalledWith('beta-key');
   });
 });
 

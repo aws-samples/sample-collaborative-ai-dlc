@@ -1,3 +1,4 @@
+import { artifactReference, findArtifactByReference } from '@/contexts/artifactContent';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, GitPullRequest, Layers, Package } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -158,7 +159,7 @@ export function ProvenanceTree({
 
   const expandToArtifact = useCallback(
     (artifactId: string) => {
-      const doc = documents.find((d) => d.id === artifactId);
+      const doc = findArtifactByReference(documents, artifactId);
       if (!doc) return;
       const prov = getProvenance(doc);
       const phasePath = prov.phasePath || '__other__';
@@ -184,14 +185,16 @@ export function ProvenanceTree({
       const item = itemId ? derivedItems.find((i) => i.id === itemId) : null;
       const targetArtifactId = item?.artifactId ?? filterArtifactId ?? null;
 
-      if (targetArtifactId && documentIdSet.has(targetArtifactId)) {
-        expandToArtifact(targetArtifactId);
-        setExpandedDocs((p) => new Set([...p, targetArtifactId]));
+      const doc = findArtifactByReference(documents, targetArtifactId);
+      if (doc) {
+        const reference = artifactReference(doc);
+        expandToArtifact(reference);
+        setExpandedDocs((p) => new Set([...p, reference]));
       } else {
         setOtherItemsExpanded(true);
       }
     },
-    [derivedItems, expandToArtifact, documentIdSet],
+    [derivedItems, expandToArtifact, documents],
   );
 
   // The focus handler closes over per-render state; subscribe to the bus once
@@ -201,22 +204,28 @@ export function ProvenanceTree({
   useEffect(() => {
     focusHandlerRef.current = (focus: WorkProductFocus) => {
       if (focus.kind === 'artifact') {
-        expandToArtifact(focus.id);
-        scrollAndFlash(`artifact-${focus.id}`);
-        openArtifactPreview(focus.id);
+        const doc = findArtifactByReference(documents, focus.id);
+        if (!doc) return;
+        const reference = artifactReference(doc);
+        expandToArtifact(reference);
+        scrollAndFlash(`artifact-${reference}`);
+        openArtifactPreview(reference);
         return;
       }
       // DerivedItemCountChip sends {kind:'item', id:'', filterArtifactId}
       if (!focus.id && focus.filterArtifactId) {
-        expandToArtifact(focus.filterArtifactId);
-        setExpandedDocs((p) => new Set([...p, focus.filterArtifactId!]));
-        scrollAndFlash(`artifact-${focus.filterArtifactId}`);
+        const doc = findArtifactByReference(documents, focus.filterArtifactId);
+        if (!doc) return;
+        const reference = artifactReference(doc);
+        expandToArtifact(reference);
+        setExpandedDocs((p) => new Set([...p, reference]));
+        scrollAndFlash(`artifact-${reference}`);
         return;
       }
       expandToItem(focus.id, focus.filterArtifactId);
       scrollAndFlash(focus.id ? `item-${focus.id}` : 'provenance-other-items');
     };
-  }, [expandToArtifact, expandToItem, openArtifactPreview]);
+  }, [documents, expandToArtifact, expandToItem, openArtifactPreview]);
 
   useEffect(() => onWorkProductFocus((focus) => focusHandlerRef.current(focus)), []);
 
@@ -302,10 +311,10 @@ export function ProvenanceTree({
                       const docItems = itemsByArtifact.get(doc.id) ?? [];
                       const visibleItems = docItems.filter((i) => !HIDDEN_ITEM_TYPES.has(i.type));
                       const hasItems = visibleItems.length > 0;
-                      const isExpanded = expandedDocs.has(doc.id);
+                      const isExpanded = expandedDocs.has(artifactReference(doc));
 
                       return (
-                        <Fragment key={doc.id}>
+                        <Fragment key={artifactReference(doc)}>
                           {documentIndex === branchBeforeIndex && renderedBranchItem && (
                             <UnitBranchEntry
                               item={renderedBranchItem}
@@ -320,8 +329,8 @@ export function ProvenanceTree({
                             itemCount={visibleItems.length}
                             hasItems={hasItems}
                             expanded={isExpanded}
-                            onToggle={() => toggleDoc(doc.id)}
-                            onPreview={() => openArtifactPreview(doc.id)}
+                            onToggle={() => toggleDoc(artifactReference(doc))}
+                            onPreview={() => openArtifactPreview(artifactReference(doc))}
                           />
                           {isExpanded && hasItems && (
                             <div className="space-y-0.5 pl-5">
@@ -473,7 +482,7 @@ function DocumentRow({
 }) {
   return (
     <div
-      id={`artifact-${doc.id}`}
+      id={`artifact-${artifactReference(doc)}`}
       className="group/doc flex items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 hover:bg-muted/50 transition-colors"
     >
       {hasItems ? (

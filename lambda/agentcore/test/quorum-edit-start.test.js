@@ -5,7 +5,7 @@ import {
   bounded,
   REWRITE_DOC_LIMIT,
 } from '../commands/quorum-edit-shared.js';
-import { createQuorumEditPlanStart } from '../commands/quorum-edit-plan-start.js';
+import { buildPlanPrompt, createQuorumEditPlanStart } from '../commands/quorum-edit-plan-start.js';
 import { createQuorumEditApplyStart } from '../commands/quorum-edit-apply-start.js';
 import { sanitizeProps } from '../mcp/graph-writer.js';
 
@@ -16,6 +16,27 @@ describe('sanitizePlan', () => {
     { id: 'a2', title: 'Trends', artifactType: 'market-trends', depth: 1 },
     { id: 'a3', title: 'Build vs buy', artifactType: 'build-vs-buy', depth: 2 },
   ];
+
+  it('presents logical addresses as JSON strings and retains both lanes in the plan', () => {
+    const lanes = ['alpha', 'beta'].map((unit) => ({
+      id: JSON.stringify(['intent', '1', unit, `stage-${unit}`, 'requirements']),
+      title: unit,
+    }));
+    const prompt = buildPlanPrompt({
+      artifact: {},
+      changeDescription: 'Clarify',
+      downstream: lanes,
+    });
+    for (const lane of lanes) expect(prompt).toContain(`artifactId: ${JSON.stringify(lane.id)}`);
+    const parsed = JSON.parse(
+      JSON.stringify({
+        items: lanes.map((lane) => ({ artifactId: lane.id, action: 'update' })),
+      }),
+    );
+    expect(
+      sanitizePlan({ parsed, downstream: lanes }).items.map((item) => item.artifactId),
+    ).toEqual(lanes.map((lane) => lane.id));
+  });
 
   it('keeps only REAL closure members, dedupes, and coerces unknown actions', () => {
     const plan = sanitizePlan({
@@ -153,7 +174,7 @@ describe('quorum-edit-plan-start', () => {
       oneShot: vi.fn(async ({ prompt }) => {
         // The prompt carries the change + the downstream inventory.
         expect(prompt).toContain('Target the EU market');
-        expect(prompt).toContain('artifactId: a2');
+        expect(prompt).toContain('artifactId: "a2"');
         return {
           ok: true,
           text: JSON.stringify({

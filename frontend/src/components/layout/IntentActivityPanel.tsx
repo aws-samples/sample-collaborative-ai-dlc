@@ -1,3 +1,4 @@
+import { artifactReference, findArtifactByReference } from '@/contexts/artifactContent';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -548,10 +549,12 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
               <div className="flex flex-wrap gap-1 pt-0.5">
                 {event.artifacts.map((artifact) => (
                   <button
-                    key={artifact.id}
+                    key={artifactReference(artifact)}
                     type="button"
                     className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-                    onClick={() => focusWorkProduct({ kind: 'artifact', id: artifact.id })}
+                    onClick={() =>
+                      focusWorkProduct({ kind: 'artifact', id: artifactReference(artifact) })
+                    }
                   >
                     {artifact.title || artifact.id}
                   </button>
@@ -601,11 +604,11 @@ function PreviewTab() {
   const overlayRef = useRef<HTMLDivElement>(null);
   // Shared module-level SWR cache + in-flight dedup → no extra fetch.
   const { derivedItems, getNeighbors } = useIntentGraph(projectId, intentId);
-  const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
+  const artifact = findArtifactByReference(detail?.artifacts ?? [], previewArtifactId);
   const item = previewItemId ? (derivedItems.find((n) => n.id === previewItemId) ?? null) : null;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [overlayOpen, setOverlayOpen] = useState(false);
-  const editing = artifact != null && editingId === artifact.id;
+  const editing = artifact != null && editingId === artifactReference(artifact);
   // A link to an identifier's definition opens its document at that row or
   // heading, in whichever view of the preview is showing. Once per click: the
   // anchor is cleared afterwards, so edits, refreshes and opening the overlay
@@ -649,6 +652,7 @@ function PreviewTab() {
       <ScrollArea className="flex-1">
         <div ref={previewRef}>
           <ArtifactPreviewContent
+            key={artifactReference(artifact)}
             artifact={artifact}
             artifacts={detail?.artifacts ?? []}
             derivedItems={derivedItems}
@@ -656,7 +660,7 @@ function PreviewTab() {
             onOpenItem={openItemPreview}
             editing={editing}
             onDoneEditing={() => setEditingId(null)}
-            onStartEdit={() => setEditingId(artifact.id)}
+            onStartEdit={() => setEditingId(artifactReference(artifact))}
             onOpenOverlay={() => setOverlayOpen(true)}
             onRetryContent={retryContent}
             discussions={discussions}
@@ -676,6 +680,7 @@ function PreviewTab() {
           <ScrollArea className="min-h-0">
             <div ref={overlayRef}>
               <ArtifactPreviewContent
+                key={artifactReference(artifact)}
                 artifact={artifact}
                 artifacts={detail?.artifacts ?? []}
                 derivedItems={derivedItems}
@@ -683,7 +688,7 @@ function PreviewTab() {
                 onOpenItem={openItemPreview}
                 editing={editing}
                 onDoneEditing={() => setEditingId(null)}
-                onStartEdit={() => setEditingId(artifact.id)}
+                onStartEdit={() => setEditingId(artifactReference(artifact))}
                 onRetryContent={retryContent}
                 discussions={discussions}
                 className="px-6 py-5"
@@ -780,7 +785,7 @@ function ArtifactPreviewContent({
           <ArtifactContent
             artifactType={artifact.artifactType}
             content={artifact.content}
-            artifactId={artifact.id}
+            artifactId={artifactReference(artifact)}
             title={title}
             artifacts={artifacts}
             derivedItems={derivedItems}

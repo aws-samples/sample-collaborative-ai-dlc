@@ -26,9 +26,17 @@
 import gremlin from 'gremlin';
 import { randomUUID } from 'node:crypto';
 import { flattenVertexMap } from './graph-rows.js';
-import { selectCurrentArtifactHeads } from './artifact-versioning.js';
+import {
+  artifactLogicalKeyFromRow,
+  readArtifactHead,
+  readIntentArtifactEntries,
+  resolveArtifactGroup,
+  selectCanonicalArtifact,
+  selectCurrentArtifactHeads,
+} from './artifact-versioning.js';
 
-const { cardinality } = gremlin.process;
+const { cardinality, t: T } = gremlin.process;
+const __ = gremlin.process.statics;
 
 // The edges that make an artifact "downstream" of another. All three are
 // evidence of consumption/derivation the system already records: agents wire
@@ -97,73 +105,93 @@ export const collectDownstreamClosure = async ({
 };
 
 // Gremlin-bound neighbor fetcher: CURRENT artifacts one in-edge hop downstream
-// of `artifactId`, with the edge labels that connect them. Intent-scoped on
-// both ends (artifact ids are only unique within an intent — see
-// graph-writer.js INTENT_SCOPED_LABELS).
-export const makeDownstreamNeighborsFetcher = (g, intentId) => async (artifactId) => {
-  const byId = new Map();
-  for (const edge of DOWNSTREAM_EDGES) {
-    const rows = await g
-      .V()
-      .has('Artifact', 'id', artifactId)
-      .has('intent_id', intentId)
-      .in_(edge)
-      .hasLabel('Artifact')
-      .has('intent_id', intentId)
-      .valueMap(true)
-      .toList();
-    for (const row of selectCurrentArtifactHeads(rows.map(flattenVertexMap), intentId)) {
-      if (!row.id) continue;
-      const existing = byId.get(row.id);
-      if (existing) {
-        existing.edges.push(edge);
-      } else {
-        byId.set(row.id, {
-          id: row.id,
-          title: row.title ?? null,
-          artifactType: row.artifact_type ?? null,
-          staleSince: row.stale_since ?? null,
-          edges: [edge],
-        });
+// of the selected head, with the edge labels that connect them. Resolve each
+// endpoint by logical identity and intent ownership; authored ids may repeat.
+export const makeDownstreamNeighborsFetcher = (g, intentId) => {
+  const entries = readIntentArtifactEntries(g, intentId, { withContent: false });
+  return async (artifactId) => {
+    const allRows = await entries;
+    const root = selectCanonicalArtifact(resolveArtifactGroup(allRows, intentId, artifactId));
+    if (!root) return [];
+    const heads = selectCurrentArtifactHeads(allRows, intentId);
+    const currentVertices = new Set(heads.map((row) => row.vertexId));
+    const byId = new Map();
+    for (const edge of DOWNSTREAM_EDGES) {
+      const rows = await g
+        .V(root.vertexId)
+        .hasLabel('Artifact')
+        .has('intent_id', intentId)
+        .in_(edge)
+        .hasLabel('Artifact')
+        .has('intent_id', intentId)
+        .hasNot('superseded_at')
+        .project('vertexId', 'props')
+        .by(T.id)
+        .by(__.valueMap(true))
+        .toList();
+      for (const entry of rows) {
+        if (!currentVertices.has(entry.get('vertexId'))) continue;
+        const row = flattenVertexMap(entry.get('props'));
+        if (!row.id) continue;
+        const reference = artifactLogicalKeyFromRow(row, intentId);
+        const existing = byId.get(reference);
+        if (existing) {
+          existing.edges.push(edge);
+        } else {
+          byId.set(reference, {
+            id: reference,
+            title: row.title || row.id,
+            artifactType: row.artifact_type ?? null,
+            staleSince: row.stale_since ?? null,
+            edges: [edge],
+          });
+        }
       }
     }
-  }
-  return [...byId.values()];
+    return [...byId.values()];
+  };
 };
 
 /**
  * The full downstream closure of one artifact in this intent (root excluded).
+ * Emit logical keys regardless of whether the caller used a key or a legacy id.
  */
-export const fetchDownstreamClosure = async ({ g, intentId, artifactId, maxDepth, maxNodes }) =>
-  collectDownstreamClosure({
+export const fetchDownstreamClosure = async ({ g, intentId, artifactId, maxDepth, maxNodes }) => {
+  const head = await readArtifactHead(g, intentId, artifactId, { withContent: false });
+  if (!head) return [];
+  return collectDownstreamClosure({
     neighborsOf: makeDownstreamNeighborsFetcher(g, intentId),
-    rootId: artifactId,
+    rootId: artifactLogicalKeyFromRow(head, intentId),
     ...(maxDepth ? { maxDepth } : {}),
     ...(maxNodes ? { maxNodes } : {}),
   });
+};
 
 // Position a traversal on the intent-scoped artifact vertex.
-const artifactAt = (g, intentId, artifactId) =>
-  g.V().has('Artifact', 'id', artifactId).has('intent_id', intentId);
+const artifactAt = (g, intentId, vertexId) =>
+  g.V(vertexId).hasLabel('Artifact').has('intent_id', intentId);
 
 /**
  * Stamp the stale drift marker on a set of artifacts. `reason` names the edit
  * that caused the drift (e.g. `edit:<sourceArtifactId>:<editId|human>`), so
  * the audit trail and the Quorum flow can trace a marker back to its cause.
  * Overwrites an existing marker — the LATEST upstream edit is the one the
- * badge should point at. Returns the ids actually marked.
+ * badge should point at. Returns the logical keys actually marked.
  */
 export const markArtifactsStale = async ({ g, intentId, artifactIds = [], reason, now }) => {
+  if (artifactIds.length === 0) return [];
   const ts = now ?? new Date().toISOString();
+  const entries = await readIntentArtifactEntries(g, intentId, { withContent: false });
   const marked = [];
   for (const id of artifactIds) {
-    const exists = await artifactAt(g, intentId, id).hasNext();
-    if (!exists) continue;
-    await artifactAt(g, intentId, id)
+    const head = selectCanonicalArtifact(resolveArtifactGroup(entries, intentId, id));
+    if (!head || head.superseded_at) continue;
+    await artifactAt(g, intentId, head.vertexId)
+      .hasNot('superseded_at')
       .property(cardinality.single, 'stale_since', ts)
       .property(cardinality.single, 'stale_reason', String(reason ?? ''))
       .next();
-    marked.push(id);
+    marked.push(artifactLogicalKeyFromRow(head, intentId));
   }
   return marked;
 };
@@ -172,9 +200,12 @@ export const markArtifactsStale = async ({ g, intentId, artifactIds = [], reason
  * Clear the stale marker (rehabilitation: the artifact was updated or
  * explicitly verified). Best-effort — a vertex without the marker is a no-op.
  */
-export const clearArtifactStale = async ({ g, intentId, artifactId }) => {
+export const clearArtifactStale = async ({ g, intentId, artifactId, vertexId }) => {
+  const targetId =
+    vertexId ?? (await readArtifactHead(g, intentId, artifactId, { withContent: false }))?.vertexId;
+  if (targetId === undefined) return;
   try {
-    await artifactAt(g, intentId, artifactId)
+    await artifactAt(g, intentId, targetId)
       .has('stale_since')
       .properties('stale_since', 'stale_reason')
       .drop()
@@ -205,11 +236,11 @@ export const applyArtifactEdit = async ({
   now,
 }) => {
   if (!EDIT_ORIGINS.includes(origin)) throw new Error(`invalid edit origin: ${origin}`);
-  const exists = await artifactAt(g, intentId, artifactId).hasNext();
-  if (!exists) throw new Error(`Artifact "${artifactId}" not found`);
+  const head = await readArtifactHead(g, intentId, artifactId, { withContent: false });
+  if (!head || head.superseded_at) throw new Error(`Artifact "${artifactId}" not found`);
   const ts = now ?? new Date().toISOString();
   const editRevision = randomUUID();
-  let target = artifactAt(g, intentId, artifactId);
+  let target = artifactAt(g, intentId, head.vertexId).hasNot('superseded_at');
   // Test the revision and epoch in the SAME graph mutation as the content write.
   // A preflight read alone permits a delayed autosave to overwrite another editor.
   if (ifEditRevision !== undefined)
@@ -241,8 +272,8 @@ export const applyArtifactEdit = async ({
     error.code = 'edit_conflict';
     throw error;
   }
-  await clearArtifactStale({ g, intentId, artifactId });
-  return { artifactId, editedAt: ts, editRevision };
+  await clearArtifactStale({ g, intentId, vertexId: head.vertexId });
+  return { artifactId: artifactLogicalKeyFromRow(head, intentId), editedAt: ts, editRevision };
 };
 
 /**
@@ -259,17 +290,18 @@ export const verifyArtifact = async ({
   note = '',
   now,
 }) => {
-  const exists = await artifactAt(g, intentId, artifactId).hasNext();
-  if (!exists) throw new Error(`Artifact "${artifactId}" not found`);
+  const head = await readArtifactHead(g, intentId, artifactId, { withContent: false });
+  if (!head || head.superseded_at) throw new Error(`Artifact "${artifactId}" not found`);
   const ts = now ?? new Date().toISOString();
-  await artifactAt(g, intentId, artifactId)
+  await artifactAt(g, intentId, head.vertexId)
+    .hasNot('superseded_at')
     .property(cardinality.single, 'verified_by', String(verifiedBy ?? ''))
     .property(cardinality.single, 'verified_by_name', String(verifiedByName ?? ''))
     .property(cardinality.single, 'verified_at', ts)
     .property(cardinality.single, 'verify_note', String(note ?? ''))
     .next();
-  await clearArtifactStale({ g, intentId, artifactId });
-  return { artifactId, verifiedAt: ts };
+  await clearArtifactStale({ g, intentId, vertexId: head.vertexId });
+  return { artifactId: artifactLogicalKeyFromRow(head, intentId), verifiedAt: ts };
 };
 
 export default {

@@ -384,6 +384,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   const resolveArtifactEntry = async (id, { preferCurrentScope = true } = {}) => {
     const rows = await readIntentArtifactEntries(g, scope.intentId);
+    const exact = rows.filter((row) => artifactLogicalKeyFromRow(row, scope.intentId) === id);
+    if (exact.length) return selectCanonicalArtifact(exact);
     const matching = rows.filter(
       (row) => row.id === id || artifactAliases(row).includes(String(id)),
     );

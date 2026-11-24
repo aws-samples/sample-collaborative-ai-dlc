@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useEffect, useRef, useState } from 'react';
 import { Check, Loader2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -31,13 +32,17 @@ export function ArtifactContentEditor({
     useCollaborativeArtifactContent({
       projectId,
       intentId,
-      artifactId: artifact.id,
+      artifactId: artifactReference(artifact),
       collaborationEpoch: artifact.collaborationEpoch,
       userName,
       userColor: generateColor(userName || artifact.id),
       enabled: true,
       readSaveVersion: async () => {
-        const current = await intentsService.artifactEditState(projectId, intentId, artifact.id);
+        const current = await intentsService.artifactEditState(
+          projectId,
+          intentId,
+          artifactReference(artifact),
+        );
         if (current.collaborationEpoch !== (artifact.collaborationEpoch ?? null))
           throw new Error('Artifact was replaced — reload before editing');
         return current.editRevision;
@@ -49,7 +54,7 @@ export function ArtifactContentEditor({
         await intentsService.updateArtifactContent(
           projectId,
           intentId,
-          artifact.id,
+          artifactReference(artifact),
           value,
           artifact.collaborationEpoch ?? null,
           version ?? null,
@@ -67,7 +72,7 @@ export function ArtifactContentEditor({
   const seededRef = useRef(false);
   useEffect(() => {
     seededRef.current = false;
-  }, [artifact.id, artifact.collaborationEpoch]);
+  }, [artifact.contentKey, artifact.id, artifact.collaborationEpoch]);
   useEffect(() => {
     if (!synced || !contentLoaded || seededRef.current) return;
     seededRef.current = true;

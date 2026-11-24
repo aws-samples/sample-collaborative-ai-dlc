@@ -13,6 +13,7 @@
 // with, so the index and the preview's anchors agree on where every block starts
 // and ends.
 
+import { artifactReference } from '@/contexts/artifactContent';
 import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
@@ -39,6 +40,7 @@ export interface ReferenceDefinition {
 
 export interface DefinableArtifact {
   id: string;
+  contentKey?: string;
   title: string | null;
   content?: string | null;
   createdAt?: string | null;
@@ -196,9 +198,9 @@ export function buildReferenceDefinitions(
       index.set(id, {
         id,
         kind,
-        artifactId: artifact.id,
+        artifactId: artifactReference(artifact),
         artifactTitle: artifact.title || artifact.id,
-        anchor: referenceAnchor(artifact.id, id),
+        anchor: referenceAnchor(artifactReference(artifact), id),
       });
     }
   }

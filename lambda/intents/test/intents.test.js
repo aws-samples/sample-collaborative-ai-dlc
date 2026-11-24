@@ -62,6 +62,8 @@ import {
   methodologyReleasePinFromManifest,
 } from '../../shared/release-resolver.js';
 import { conditionCheckPasses } from '../../shared/test/ddb-condition-eval.js';
+import { createGraphWriter } from '../../shared/mcp/graph-writer.js';
+import { archiveArtifactsForStages, artifactLogicalKey } from '../../shared/artifact-versioning.js';
 
 const RELEASE_PROFILE = 'current-stable';
 
@@ -5636,78 +5638,105 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     ]);
   });
 
-  it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
-    const sub = `u-${randomUUID()}`;
-    const projectId = await seedV2Project(sub);
-    const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    const humanTaskId = `h-${randomUUID()}`;
-    const artifactId = `a-${randomUUID()}`;
-    seedGate(intent.id, humanTaskId, { status: 'pending', callbackId: 'cb-h1' });
-    await g
-      .addV('Intent')
-      .property('id', intent.id)
-      .property('project_id', projectId)
-      .property('title', 'Intent')
-      .next();
-    await g
-      .addV('Question')
-      .property('id', humanTaskId)
-      .property('intent_id', intent.id)
-      .property('stage_instance_id', 'si-req')
-      .property('questions', '[{"text":"?"}]')
-      .as('q')
-      .V()
-      .has('Intent', 'id', intent.id)
-      .addE('CONTAINS')
-      .to('q')
-      .next();
-    await g
-      .addV('Artifact')
-      .property('id', artifactId)
-      .property('intent_id', intent.id)
-      .property('artifact_type', 'requirements-analysis')
-      .property('title', 'Requirements')
-      .property('created_by_stage_instance_id', 'si-req')
-      .as('a')
-      .V()
-      .has('Intent', 'id', intent.id)
-      .addE('CONTAINS')
-      .to('a')
-      .next();
-
-    const res = await answerGate(sub, projectId, intent.id, humanTaskId);
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).status).toBe('answered');
-    expect(
+  it.each([false, true])(
+    'answers a pending gate (CAS) and links only its stage (superseded=%s)',
+    async (superseded) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const humanTaskId = `h-${randomUUID()}`;
+      const artifactId = `a-${randomUUID()}`;
+      seedGate(intent.id, humanTaskId, { status: 'pending', callbackId: 'cb-h1' });
       await g
+        .addV('Intent')
+        .property('id', intent.id)
+        .property('project_id', projectId)
+        .property('title', 'Intent')
+        .next();
+      await g
+        .addV('Question')
+        .property('id', humanTaskId)
+        .property('intent_id', intent.id)
+        .property('stage_instance_id', 'si-req')
+        .property('questions', '[{"text":"?"}]')
+        .as('q')
         .V()
-        .has('Question', 'id', humanTaskId)
-        .out('INFLUENCES')
-        .has('id', artifactId)
-        .hasNext(),
-    ).toBe(true);
-    const question = await g.V().has('Question', 'id', humanTaskId).valueMap().next();
-    expect(question.value.get('answered_by_name')[0]).toBe(`${sub}@x`);
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to('q')
+        .next();
+      // Insert the other lane first: resolving the shared authored id would
+      // otherwise accidentally select the right vertex and hide the regression.
+      await g
+        .addV('Artifact')
+        .property('id', artifactId)
+        .property('intent_id', intent.id)
+        .property('artifact_type', 'requirements-analysis')
+        .property('created_by_stage_instance_id', 'si-req:unit-beta')
+        .as('beta')
+        .V()
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to('beta')
+        .next();
 
-    const detail = await handler({
-      httpMethod: 'GET',
-      path: `/projects/${projectId}/intents/${intent.id}`,
-      pathParameters: { projectId, intentId: intent.id },
-      ...claims(sub),
-    });
-    const event = JSON.parse(detail.body).events.find((e) => e.type === 'v2.question.answered');
-    expect(event).toMatchObject({
-      humanTaskId,
-      answeredByName: `${sub}@x`,
-      artifacts: [{ id: artifactId, title: 'Requirements' }],
-    });
-    // The gate carries a callbackId → the suspended orchestrator is resumed via
-    // SendDurableExecutionCallbackSuccess (NOT a fresh Invoke).
-    const cbCalls = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
-    expect(cbCalls).toHaveLength(1);
-    expect(cbCalls[0].args[0].input.CallbackId).toBe('cb-h1');
-    expect(orchestratorInvokes()).toHaveLength(0);
-  });
+      // Preserve the existing provenance contract for superseded stage outputs.
+      await g
+        .addV('Artifact')
+        .property('id', artifactId)
+        .property('intent_id', intent.id)
+        .property('artifact_type', 'requirements-analysis')
+        .property('title', 'Requirements')
+        .property('created_by_stage_instance_id', 'si-req')
+        .as('a')
+        .V()
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to('a')
+        .next();
+      if (superseded) {
+        await g
+          .V()
+          .has('Artifact', 'id', artifactId)
+          .has('created_by_stage_instance_id', 'si-req')
+          .property('superseded_at', new Date().toISOString())
+          .next();
+      }
+      const res = await answerGate(sub, projectId, intent.id, humanTaskId);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).status).toBe('answered');
+      expect(
+        await g
+          .V()
+          .has('Question', 'id', humanTaskId)
+          .out('INFLUENCES')
+          .has('id', artifactId)
+          .values('created_by_stage_instance_id')
+          .toList(),
+      ).toEqual(['si-req']);
+      const question = await g.V().has('Question', 'id', humanTaskId).valueMap().next();
+      expect(question.value.get('answered_by_name')[0]).toBe(`${sub}@x`);
+
+      const detail = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      const event = JSON.parse(detail.body).events.find((e) => e.type === 'v2.question.answered');
+      expect(event).toMatchObject({
+        humanTaskId,
+        answeredByName: `${sub}@x`,
+        artifacts: [{ id: artifactId, title: 'Requirements' }],
+      });
+      // The gate carries a callbackId → the suspended orchestrator is resumed via
+      // SendDurableExecutionCallbackSuccess (NOT a fresh Invoke).
+      const cbCalls = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
+      expect(cbCalls).toHaveLength(1);
+      expect(cbCalls[0].args[0].input.CallbackId).toBe('cb-h1');
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
 
   it('does NOT resume when answering a sibling gate without a callbackId (D3)', async () => {
     const sub = `u-${randomUUID()}`;
@@ -9680,13 +9709,20 @@ const seedEditFixture = async (sub) => {
   await seedArtifact(intent.id, 'bvb', { type: 'build-vs-buy', title: 'Build vs buy' });
   await linkArtifacts(intent.id, 'trends', 'mr', 'CONSUMES');
   await linkArtifacts(intent.id, 'bvb', 'trends', 'DERIVED_FROM');
-  return { projectId, intent };
+  const references = Object.fromEntries(
+    [
+      ['mr', 'market-research'],
+      ['trends', 'market-trends'],
+      ['bvb', 'build-vs-buy'],
+    ].map(([id, artifactType]) => [id, artifactLogicalKey({ intentId: intent.id, artifactType })]),
+  );
+  return { projectId, intent, references };
 };
 
 describe('GET /artifacts/{id}/impact', () => {
   it('returns the transitive downstream closure + the edit-blocking verdict', async () => {
     const sub = `u-${randomUUID()}`;
-    const { projectId, intent } = await seedEditFixture(sub);
+    const { projectId, intent, references } = await seedEditFixture(sub);
     const res = await handler({
       httpMethod: 'GET',
       path: `/projects/${projectId}/intents/${intent.id}/artifacts/mr/impact`,
@@ -9695,9 +9731,10 @@ describe('GET /artifacts/{id}/impact', () => {
     });
     expect(res.statusCode).toBe(200);
     const impact = JSON.parse(res.body);
+    expect(impact.artifactId).toBe(references.mr);
     expect(impact.downstream.map((d) => [d.id, d.depth])).toEqual([
-      ['trends', 1],
-      ['bvb', 2],
+      [references.trends, 1],
+      [references.bvb, 2],
     ]);
     expect(impact.downstream[0].via).toEqual(['CONSUMES']);
     expect(impact).toMatchObject({ executionActive: false, editBlocked: false });
@@ -9914,6 +9951,230 @@ const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =
     ...claims(sub),
   });
 
+describe('artifact addressing across unit lanes (#714)', () => {
+  const fixture = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    for (const [index, unitSlug] of ['alpha', 'beta'].entries()) {
+      const writer = createGraphWriter({
+        g,
+        scope: {
+          projectId,
+          intentId: intent.id,
+          executionId: intent.id,
+          stageInstanceId: `si-spec:unit-${unitSlug}`,
+          sectionIndex: 1,
+          unitSlug,
+        },
+        clock: () => `2026-01-01T00:00:0${index}.000Z`,
+      });
+      await writer.createArtifact({
+        id: 'spec',
+        artifactType: 'requirements',
+        title: unitSlug,
+        content: `# ${unitSlug}`,
+      });
+    }
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.artifacts).toHaveLength(2);
+    expect(detail.artifacts.map((a) => a.id)).toEqual(['spec', 'spec']);
+    return { sub, projectId, intent, artifacts: detail.artifacts };
+  };
+
+  it('refuses an ambiguous authored id instead of returning the newest lane', async () => {
+    const { sub, projectId, intent } = await fixture();
+    const response = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/spec/versions`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: 'spec' },
+      ...claims(sub),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).code).toBe('ambiguous_artifact');
+  });
+
+  it('addresses each lane by the logical key already returned with its content', async () => {
+    const { sub, projectId, intent, artifacts } = await fixture();
+    for (const artifact of artifacts) {
+      const response = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/artifacts/${encodeURIComponent(artifact.contentKey)}/versions`,
+        pathParameters: { projectId, intentId: intent.id, artifactId: artifact.contentKey },
+        ...claims(sub),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).current.unitSlug).toBe(artifact.unitSlug);
+    }
+  });
+
+  it('edits and marks only the selected lane, then verifies only its consumer', async () => {
+    const { sub, projectId, intent, artifacts } = await fixture();
+    const alpha = artifacts.find((artifact) => artifact.unitSlug === 'alpha');
+    const consumers = new Map();
+    for (const artifact of artifacts) {
+      const scope = {
+        projectId,
+        intentId: intent.id,
+        executionId: intent.id,
+        stageInstanceId: `si-consumer:unit-${artifact.unitSlug}`,
+        sectionIndex: 1,
+        unitSlug: artifact.unitSlug,
+      };
+      await createGraphWriter({ g, scope }).createArtifact({
+        id: 'consumer',
+        artifactType: 'market-trends',
+        title: `${artifact.unitSlug} consumer`,
+        content: '# Consumer',
+        links: [{ edge: 'CONSUMES', toId: artifact.contentKey }],
+      });
+      consumers.set(
+        artifact.unitSlug,
+        artifactLogicalKey({ ...scope, artifactType: 'market-trends' }),
+      );
+    }
+    const impact = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/${encodeURIComponent(alpha.contentKey)}/impact`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: alpha.contentKey },
+      ...claims(sub),
+    });
+    expect(impact.statusCode).toBe(200);
+    expect(JSON.parse(impact.body).downstream.map((row) => row.id)).toEqual([
+      consumers.get('alpha'),
+    ]);
+
+    const edited = await putContent(sub, projectId, intent.id, alpha.contentKey, '# Alpha edited', {
+      collaborationEpoch: alpha.collaborationEpoch,
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(JSON.parse(edited.body).staleMarked).toEqual([consumers.get('alpha')]);
+    const read = (id, unit) =>
+      g.V().has('Artifact', 'id', id).has('intent_id', intent.id).has('unit_slug', unit);
+    expect((await read('spec', 'alpha').values('content').next()).value).toBe('# Alpha edited');
+    expect((await read('spec', 'beta').values('content').next()).value).toBe('# beta');
+    expect(await read('consumer', 'alpha').has('stale_since').hasNext()).toBe(true);
+    expect(await read('consumer', 'beta').has('stale_since').hasNext()).toBe(false);
+
+    const verified = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/${encodeURIComponent(consumers.get('alpha'))}/verify`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: consumers.get('alpha') },
+      body: '{}',
+      ...claims(sub),
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(await read('consumer', 'alpha').has('verified_by', sub).hasNext()).toBe(true);
+    expect(await read('consumer', 'alpha').has('stale_since').hasNext()).toBe(false);
+    expect(await read('consumer', 'beta').has('verified_by').hasNext()).toBe(false);
+  });
+
+  it('keeps same-id archived versions in their own lane', async () => {
+    const { sub, projectId, intent, artifacts } = await fixture();
+    await archiveArtifactsForStages({
+      g,
+      intentId: intent.id,
+      stageInstanceIds: artifacts.map((artifact) => artifact.createdByStageInstanceId),
+      restartId: 'restart-lanes',
+      reason: 'Redo',
+      actor: sub,
+    });
+    for (const artifact of artifacts) {
+      const response = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/artifacts/${encodeURIComponent(artifact.contentKey)}/versions/spec%3Av1`,
+        pathParameters: {
+          projectId,
+          intentId: intent.id,
+          artifactId: artifact.contentKey,
+          versionId: 'spec:v1',
+        },
+        ...claims(sub),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({
+        unitSlug: artifact.unitSlug,
+        content: `# ${artifact.unitSlug}`,
+      });
+    }
+  });
+
+  it('stores the selected logical address for Quorum and preserves authorization', async () => {
+    const { sub, projectId, intent, artifacts } = await fixture();
+    const alpha = artifacts.find((artifact) => artifact.unitSlug === 'alpha');
+    const event = {
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/${encodeURIComponent(alpha.contentKey)}/quorum-edit`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: alpha.contentKey },
+      body: JSON.stringify({ changeDescription: 'Clarify alpha' }),
+    };
+    expect((await handler({ ...event, ...claims(`outsider-${randomUUID()}`) })).statusCode).toBe(
+      403,
+    );
+    const otherProject = await seedV2Project(sub);
+    expect(
+      (
+        await handler({
+          ...event,
+          pathParameters: { ...event.pathParameters, projectId: otherProject },
+          ...claims(sub),
+        })
+      ).statusCode,
+    ).toBe(404);
+    const response = await handler({ ...event, ...claims(sub) });
+    expect(response.statusCode).toBe(202);
+    const rows = [...procStore.values()].filter((row) => row.sk?.startsWith('QEDIT#'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].artifactId).toBe(alpha.contentKey);
+  });
+
+  it.each([
+    ['GET', 'impact', {}],
+    ['POST', 'verify', {}],
+    ['POST', 'quorum-edit', { changeDescription: 'Clarify' }],
+    ['PUT', 'content', { content: '# changed', collaborationEpoch: null, ifEditRevision: null }],
+  ])(
+    'refuses ambiguous %s %s requests before mutating either lane',
+    async (httpMethod, route, body) => {
+      const { sub, projectId, intent } = await fixture();
+      const response = await handler({
+        httpMethod,
+        path: `/projects/${projectId}/intents/${intent.id}/artifacts/spec/${route}`,
+        pathParameters: { projectId, intentId: intent.id, artifactId: 'spec' },
+        body: JSON.stringify(body),
+        ...claims(sub),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).code).toBe('ambiguous_artifact');
+      expect(
+        await g
+          .V()
+          .has('Artifact', 'id', 'spec')
+          .has('intent_id', intent.id)
+          .has('edited_by')
+          .hasNext(),
+      ).toBe(false);
+      expect(
+        await g
+          .V()
+          .has('Artifact', 'id', 'spec')
+          .has('intent_id', intent.id)
+          .has('verified_by')
+          .hasNext(),
+      ).toBe(false);
+    },
+  );
+});
+
 describe('PUT /artifacts/{id}/content (simple edit)', () => {
   it('rejects a delayed older projection and accepts a retry with the current revision', async () => {
     const sub = `u-${randomUUID()}`;
@@ -9962,11 +10223,12 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
   });
   it('writes content + human provenance, marks the closure stale, records the event', async () => {
     const sub = `u-${randomUUID()}`;
-    const { projectId, intent } = await seedEditFixture(sub);
+    const { projectId, intent, references } = await seedEditFixture(sub);
     const res = await putContent(sub, projectId, intent.id, 'mr', '# Market research\nEU focus.');
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.staleMarked.toSorted()).toEqual(['bvb', 'trends']);
+    expect(body.artifactId).toBe(references.mr);
+    expect(body.staleMarked.toSorted()).toEqual([references.bvb, references.trends].toSorted());
 
     // The vertex carries the new content + the server-stamped provenance.
     const detail = JSON.parse(
@@ -9998,7 +10260,7 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
     expect(mr.staleSince).toBeNull(); // the edited doc itself is never stale
     const trends = detail.artifacts.find((a) => a.id === 'trends');
     expect(trends.staleSince).toBeTruthy();
-    expect(trends.staleReason).toContain('edit:mr');
+    expect(trends.staleReason).toContain(`edit:${references.mr}`);
     // Audit event landed in the feed.
     expect(detail.events.some((e) => e.type === 'v2.artifact.edited')).toBe(true);
   });
@@ -10067,7 +10329,7 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
 
   it('a parked run (WAITING) is editable and the edit is announced via a steering row', async () => {
     const sub = `u-${randomUUID()}`;
-    const { projectId, intent } = await seedEditFixture(sub);
+    const { projectId, intent, references } = await seedEditFixture(sub);
     setStatus(intent.id, { status: 'WAITING' });
     const res = await putContent(sub, projectId, intent.id, 'mr', '# EU focus');
     expect(res.statusCode).toBe(200);
@@ -10076,6 +10338,7 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
     // next deterministic injection point (gate resume / fresh stage start).
     expect(body.steering).toMatchObject({ kind: 'artifact-edit', status: 'pending' });
     expect(body.steering.message).toContain('Market research');
+    expect(body.steering.message).toContain(references.mr);
     const steerRows = [...procStore.values()].filter(
       (r) => r.pk === `EXEC#${intent.id}` && r.sk.startsWith('STEER#'),
     );
@@ -10146,12 +10409,12 @@ const startQuorumEdit = (sub, projectId, intentId, artifactId, changeDescription
 describe('POST /artifacts/{id}/quorum-edit', () => {
   it('creates the QEDIT session and hands off to the orchestrator', async () => {
     const sub = `u-${randomUUID()}`;
-    const { projectId, intent } = await seedEditFixture(sub);
+    const { projectId, intent, references } = await seedEditFixture(sub);
     const res = await startQuorumEdit(sub, projectId, intent.id, 'mr', 'Target the EU market');
     expect(res.statusCode).toBe(202);
     const body = JSON.parse(res.body);
     expect(body).toMatchObject({
-      artifactId: 'mr',
+      artifactId: references.mr,
       state: 'PLANNING',
       changeDescription: 'Target the EU market',
     });
@@ -10175,6 +10438,7 @@ describe('POST /artifacts/{id}/quorum-edit', () => {
     );
     expect(detail.quorumEdits).toHaveLength(1);
     expect(detail.quorumEdits[0].state).toBe('PLANNING');
+    expect(detail.quorumEdits[0].artifactId).toBe(references.mr);
   });
 
   it('409s a second edit while one is live, and blocks simple edits + start too', async () => {

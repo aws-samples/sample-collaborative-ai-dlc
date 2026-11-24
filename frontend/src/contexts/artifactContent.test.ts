@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { IntentArtifact, IntentDetail } from '@/services/intents';
 import {
   applyArtifactContents,
+  findArtifactByReference,
   artifactContentIdentities,
   carryArtifactContent,
   markArtifactContentsFailed,
@@ -21,6 +22,17 @@ const artifact = (id: string, over: Partial<IntentArtifact> = {}): IntentArtifac
 const detail = (artifacts: IntentArtifact[]) => ({ artifacts }) as unknown as IntentDetail;
 
 describe('artifactContent', () => {
+  it('resolves logical keys and unambiguous legacy ids or aliases, never a shared id', () => {
+    const alpha = artifact('design', { contentKey: 'alpha-key', aliases: ['old-alpha'] });
+    const beta = artifact('design', { contentKey: 'beta-key' });
+    expect(findArtifactByReference([alpha, beta], 'alpha-key')).toBe(alpha);
+    expect(findArtifactByReference([alpha, beta], 'beta-key')).toBe(beta);
+    expect(findArtifactByReference([alpha, beta], 'design')).toBeNull();
+    expect(findArtifactByReference([alpha, beta], 'old-alpha')).toBe(alpha);
+    expect(findArtifactByReference([alpha], 'design')).toBe(alpha);
+    expect(findArtifactByReference([alpha, beta], null)).toBeNull();
+  });
+
   it('attaches bodies only to the revision they were fetched for', () => {
     const started = detail([artifact('a'), artifact('b')]);
     const identities = artifactContentIdentities(started);

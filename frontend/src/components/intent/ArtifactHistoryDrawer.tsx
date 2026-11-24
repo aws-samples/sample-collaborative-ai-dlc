@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useEffect, useState } from 'react';
 import { History, LoaderCircle } from 'lucide-react';
 import { useIntent } from '@/contexts/IntentContext';
@@ -31,7 +32,13 @@ export function ArtifactHistoryDrawer({
   className?: string;
 }) {
   if ((artifact.versionCount ?? 0) < 1) return null;
-  return <ArtifactHistoryDrawerContent artifact={artifact} className={className} />;
+  return (
+    <ArtifactHistoryDrawerContent
+      key={artifactReference(artifact)}
+      artifact={artifact}
+      className={className}
+    />
+  );
 }
 
 function ArtifactHistoryDrawerContent({
@@ -42,6 +49,7 @@ function ArtifactHistoryDrawerContent({
   className?: string;
 }) {
   const { projectId, intentId } = useIntent();
+  const reference = artifactReference(artifact);
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<ArtifactVersions | null>(null);
   const [selectedId, setSelectedId] = useState('current');
@@ -56,7 +64,7 @@ function ArtifactHistoryDrawerContent({
     setLoading(true);
     setError(null);
     intentsService
-      .artifactVersions(projectId, intentId, artifact.id)
+      .artifactVersions(projectId, intentId, reference)
       .then((result) => {
         if (!cancelled) setHistory(result);
       })
@@ -69,7 +77,7 @@ function ArtifactHistoryDrawerContent({
     return () => {
       cancelled = true;
     };
-  }, [artifact.id, history, intentId, open, projectId]);
+  }, [reference, history, intentId, open, projectId]);
 
   const selectVersion = async (version: ArtifactVersionSummary) => {
     setSelectedId(version.versionId);
@@ -81,7 +89,7 @@ function ArtifactHistoryDrawerContent({
     setError(null);
     try {
       setSelectedVersion(
-        await intentsService.artifactVersion(projectId, intentId, artifact.id, version.versionId),
+        await intentsService.artifactVersion(projectId, intentId, reference, version.versionId),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load version');

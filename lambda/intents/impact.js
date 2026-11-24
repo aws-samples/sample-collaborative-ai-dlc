@@ -103,7 +103,7 @@ export const buildArtifactImpact = async ({ g, intentId, artifact, plan = null, 
   const downstream = await fetchDownstreamClosure({
     g,
     intentId,
-    artifactId: artifact.id,
+    artifactId: artifact.reference,
   });
   const consumingStages = collectConsumingStages({
     plan,
@@ -118,7 +118,7 @@ export const buildArtifactImpact = async ({ g, intentId, artifact, plan = null, 
   });
   const active = activeQuorumEdit(records.quorumEdits ?? []);
   return {
-    artifactId: artifact.id,
+    artifactId: artifact.reference,
     artifactType: artifact.artifactType ?? artifact.artifact_type ?? null,
     consumingStages,
     downstream: downstream.map((d) => ({

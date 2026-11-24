@@ -129,6 +129,24 @@ describe('ArtifactHistoryDrawer', () => {
     expect(screen.queryByRole('button', { name: /restore|edit/i })).not.toBeInTheDocument();
   });
 
+  it('uses the lane key for history and drops the previous lane on selection changes', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ArtifactHistoryDrawer artifact={{ ...artifact, contentKey: 'alpha-key' }} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    expect(await screen.findByText('Current body')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Generation 1/ }));
+    expect(await screen.findByText('Archived body')).toBeInTheDocument();
+    expect(artifactVersion).toHaveBeenCalledWith('p1', 'i1', 'alpha-key', 'design:v1');
+
+    rerender(<ArtifactHistoryDrawer artifact={{ ...artifact, contentKey: 'beta-key' }} />);
+    expect(screen.queryByText('Archived body')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    expect(await screen.findByText('Current body')).toBeInTheDocument();
+    expect(artifactVersions).toHaveBeenLastCalledWith('p1', 'i1', 'beta-key');
+  });
+
   it('shows the current body as loading until it arrives', async () => {
     const user = userEvent.setup();
     render(<ArtifactHistoryDrawer artifact={{ ...artifact, content: undefined }} />);

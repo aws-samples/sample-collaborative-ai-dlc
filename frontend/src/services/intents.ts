@@ -598,7 +598,8 @@ export interface IntentArtifact {
   content?: string | null;
   // Set when the body could not be shown: too large to page, or the fetch failed.
   contentUnavailable?: 'too_large' | 'error';
-  // Opaque key pairing this head with its body (ids can repeat across lanes).
+  // Stable logical address for this head, its body and artifact routes.
+  // Authored ids can repeat across lanes; use this key when available.
   contentKey?: string;
 }
 
@@ -770,7 +771,7 @@ export interface IntentActivityEvent {
   answer?: unknown;
   answeredBy?: string | null;
   answeredByName?: string | null;
-  artifacts?: { id: string; title: string }[];
+  artifacts?: { id: string; title: string; contentKey?: string }[];
   // A bounded slice of the durable event's `detail`, forwarded only for the
   // fields the timeline renders. Kept to a whitelist rather than the whole
   // object: `detail` carries agent text and ids the feed has no business

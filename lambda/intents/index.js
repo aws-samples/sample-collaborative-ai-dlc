@@ -129,10 +129,13 @@ import {
   legacyVersionId,
   readCheckpointArtifactVersions,
   readArtifactContents,
+  readArtifactHead,
+  resolveArtifactGroup,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
 import { htmlArtifactRefusal } from '../shared/html-artifact.js';
+import { flattenVertexMap } from '../shared/graph-rows.js';
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
@@ -1088,6 +1091,7 @@ const fetchArtifacts = async (g, intentId) =>
 
 const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   id: row.id,
+  contentKey: artifactLogicalKeyFromRow(row),
   artifactType: row.artifact_type ?? null,
   title: row.title ?? null,
   createdByExecutionId: row.created_by_execution_id ?? null,
@@ -1147,23 +1151,16 @@ const fetchPullRequests = async (g, intentId) => {
   }));
 };
 
-// One artifact by id, scoped to the intent (agent-chosen artifact ids are only
-// unique within an intent — a bare id match could bind to a foreign intent's
-// same-id vertex). Compact shape for the edit routes.
+// Resolve a logical address (or unambiguous authored id/alias) within the
+// intent. Every edit response and job uses the canonical logical address,
+// including requests from older tabs that still send authored ids.
 const fetchArtifactRow = async (g, intentId, artifactId) => {
-  const rows = await readIntentArtifactEntries(g, intentId);
-  const logicalKeys = new Set(
-    rows
-      .filter((row) => row.id === artifactId || artifactAliases(row).includes(artifactId))
-      .map((row) => artifactLogicalKeyFromRow(row, intentId)),
-  );
-  const row = selectCanonicalArtifact(
-    rows.filter((candidate) => logicalKeys.has(artifactLogicalKeyFromRow(candidate, intentId))),
-  );
+  const row = await readArtifactHead(g, intentId, artifactId, { withContent: false });
   if (!row) return null;
   return {
     id: row.id,
     vertexId: row.vertexId,
+    reference: artifactLogicalKeyFromRow(row, intentId),
     artifactType: row.artifact_type ?? null,
     title: row.title ?? null,
     supersededAt: row.superseded_at ?? null,
@@ -1198,19 +1195,8 @@ const versionSummary = (row, { versionId = row.id, legacy = false } = {}) => ({
 
 const fetchArtifactHistory = async (g, intentId, artifactId) => {
   const rows = await readIntentArtifactEntries(g, intentId);
-  const groups = new Map();
-  for (const row of rows) {
-    const key = artifactLogicalKeyFromRow(row, intentId);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(row);
-  }
-  const candidates = [...groups.values()]
-    .filter((group) =>
-      group.some((row) => row.id === artifactId || artifactAliases(row).includes(artifactId)),
-    )
-    .map((group) => ({ group, head: selectCanonicalArtifact(group) }));
-  const selected = selectCanonicalArtifact(candidates.map(({ head }) => head).filter(Boolean));
-  const entry = candidates.find(({ head }) => head?.vertexId === selected?.vertexId);
+  const group = resolveArtifactGroup(rows, intentId, artifactId);
+  const entry = { group, head: selectCanonicalArtifact(group) };
   if (!entry?.head) return null;
 
   const versionRows = (
@@ -1248,11 +1234,22 @@ const fetchInfluencedArtifacts = async (g, questionId) => {
     .has('Question', 'id', questionId)
     .out('INFLUENCES')
     .hasLabel('Artifact')
-    .project('id', 'title')
-    .by('id')
-    .by(__.coalesce(__.values('title'), __.constant('')))
+    .valueMap(
+      'id',
+      'title',
+      'intent_id',
+      'artifact_logical_key',
+      'section_index',
+      'unit_slug',
+      'created_by_stage_instance_id',
+      'artifact_type',
+      'collaborator',
+    )
     .toList();
-  return rows.map((r) => ({ id: r.get('id'), title: r.get('title') || r.get('id') }));
+  return rows.map((r) => {
+    const row = flattenVertexMap(r);
+    return { id: row.id, title: row.title || row.id, contentKey: artifactLogicalKeyFromRow(row) };
+  });
 };
 
 const syncAnsweredQuestionVertex = async ({ g, intentId, gate, answer, responder, answeredAt }) => {
@@ -1272,30 +1269,28 @@ const syncAnsweredQuestionVertex = async ({ g, intentId, gate, answer, responder
 
 const linkQuestionToStageArtifacts = async (g, intentId, gate) => {
   if (!gate.stageInstanceId) return;
-  const artifactIds = await g
+  const artifactVertexIds = await g
     .V()
     .has('Intent', 'id', intentId)
     .out('CONTAINS')
     .hasLabel('Artifact')
     .has('created_by_stage_instance_id', gate.stageInstanceId)
-    .values('id')
+    .has('intent_id', intentId)
+    .id()
     .toList();
-  for (const artifactId of artifactIds) {
+  for (const artifactVertexId of artifactVertexIds) {
     const exists = await g
       .V()
       .has('Question', 'id', gate.humanTaskId)
       .outE('INFLUENCES')
-      // Scope the artifact end by intent_id: agent-chosen artifact ids are only
-      // unique within an intent, so a bare id match could bind to a foreign
-      // intent's same-id vertex.
-      .where(__.inV().has('Artifact', 'id', artifactId).has('intent_id', intentId))
+      .where(__.inV().hasId(artifactVertexId))
       .hasNext();
     if (!exists) {
       await g
         .V()
         .has('Question', 'id', gate.humanTaskId)
         .addE('INFLUENCES')
-        .to(__.V().has('Artifact', 'id', artifactId).has('intent_id', intentId))
+        .to(__.V(artifactVertexId))
         .next();
     }
   }
@@ -2502,7 +2497,7 @@ const handleArtifactContentUpdate = async ({
       code: 'edit_precondition_required',
     });
   }
-  const canonicalArtifactId = artifact.id;
+  const canonicalArtifactId = artifact.reference;
   const responder = getResponder(event);
   // Closure BEFORE the write (root is excluded by construction either way).
   const downstream = await fetchDownstreamClosure({
@@ -2673,11 +2668,14 @@ const handleArtifactVerify = async ({
   }
   const artifact = await fetchArtifactRow(g, intentId, artifactId);
   if (!artifact) return response(404, { error: 'Artifact not found' });
+  if (artifact.supersededAt) {
+    return response(409, { error: 'Artifact is superseded — verify its replacement instead' });
+  }
   const responder = getResponder(event);
   const result = await verifyArtifact({
     g,
     intentId,
-    artifactId: artifact.id,
+    artifactId: artifact.reference,
     verifiedBy: responder.sub,
     verifiedByName: responder.displayName,
     note: typeof data.note === 'string' ? data.note : '',
@@ -2751,7 +2749,7 @@ const handleArtifactQuorumEdit = async ({
   const row = await store.createQuorumEdit({
     executionId: intentId,
     editId: newEditId,
-    artifactId: artifact.id,
+    artifactId: artifact.reference,
     artifactType: artifact.artifactType,
     artifactTitle: artifact.title,
     changeDescription,
@@ -6263,11 +6261,9 @@ const handleGetIntent = async ({ event, projectId, intentId, g, response }) => {
   // `contentKey` pairs each head with its body from /artifacts: ids can repeat
   // across lanes, logical keys cannot.
   const heads = await readArtifactHeads(g, intentId, { withContent: !separateContent });
-  const artifacts = heads.map(({ logicalKey, group, head }) => {
+  const artifacts = heads.map(({ group, head }) => {
     const { content, ...rest } = mapArtifactHead(head, group.length - 1);
-    return separateContent
-      ? { ...rest, contentKey: logicalKey }
-      : { ...rest, content, contentKey: logicalKey };
+    return separateContent ? rest : { ...rest, content };
   });
   const pullRequests = await fetchPullRequests(g, intentId);
   const stagesByInstance = new Map(
@@ -7491,6 +7487,8 @@ export const handler = async (event, context) => {
 
     return response(405, { error: 'Method not allowed' });
   } catch (error) {
+    if (error?.code === 'ambiguous_artifact')
+      return response(409, { error: error.message, code: error.code });
     if (error?.code === 'YJS_CLEANUP_PENDING')
       return response(409, {
         error: 'Collaboration cleanup is in progress. Retry deletion shortly.',

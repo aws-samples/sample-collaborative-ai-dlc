@@ -234,8 +234,29 @@ agent-supplied metadata. Common fields include:
 - `stage_attempt`
 - `created_at`
 
-Artifact IDs are chosen by agents and are only unique within an intent.
-Artifact and section lookups are therefore always scoped by `intent_id`.
+Artifact IDs are chosen by agents and can repeat across stage or unit outputs,
+even within one intent. The artifact DTO's `contentKey` is the stable logical
+address for a head: it identifies its intent, section, unit, producing stage,
+type, and any persona or sibling-document slot. The UI uses it for previews,
+history, edits, and collaboration documents. Artifact routes accept this key
+in the `artifactId` path parameter (URL-encoded), and the edit-state query
+accepts it as `editState`. An authored ID or alias remains accepted when it
+names exactly one logical output; ambiguous requests return HTTP 409 with
+`code: ambiguous_artifact`.
+
+Edits, verification, and downstream drift marking resolve that address to a
+single intent-owned head. Edit and impact responses, downstream closures, stale
+marker results, Quorum sessions and new plans, and edit steering messages always
+use logical addresses, even when the request used an unambiguous authored ID.
+Existing Quorum sessions and approved plans can still use unambiguous IDs.
+This keeps later work bound to the same logical outputs. Existing duplicate
+IDs and historical heads need no data migration. Deploy the backend and agent
+runtime before the frontend that sends logical addresses; older tabs can still
+use unambiguous IDs, but must reload to select duplicate-ID outputs. Refreshed
+editors use a collaboration document keyed by the logical address and load the
+persisted content; existing epoch and revision checks still protect autosaves.
+
+Artifact and section lookups are always scoped by `intent_id`.
 Derived item IDs include their intent and type, while questions, steering, and
 other operational vertices use globally unique or deterministic IDs.
 
