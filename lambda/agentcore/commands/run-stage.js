@@ -106,6 +106,7 @@ import { resolveStageModel } from '../model-resolver.js';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
 import { isLoopBackAnswer } from '../../shared/gate-answer.js';
+import { isCodeGenerationStage } from '../../shared/stage-loopback.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
@@ -5236,6 +5237,27 @@ const runStageAttempt = async (
   }
 
   await refreshCompletedGitResult();
+
+  // A successful CLI exit and READY review are not evidence of implementation.
+  // Check the whole attempt after repairs, including commits from parked legs
+  // and ensemble drafts. Unknown provenance still widens sensor inspection; it
+  // must not be mistaken for proof that no files changed. Release-policy human
+  // gates evaluate this provenance and offer a recorded override: loop-backs and
+  // guided rewinds can legitimately keep earlier code without making new edits.
+  // Without that gate (including unit lanes), a clean attempt must fail here.
+  if (
+    repos.length > 0 &&
+    isCodeGenerationStage(stage) &&
+    changedFileProvenance.state === 'known' &&
+    changedFileProvenance.files.length === 0 &&
+    (!stage.policy || !stageHasHumanGate({ stage, unitSlug }))
+  ) {
+    return fail(
+      stageInstanceId,
+      'code_generation_no_changes',
+      `Stage ${stageLabel} changed no repository files and has no supported approval gate for accepting a no-change attempt. Artifacts and reviewer approval alone do not complete code generation. Retrying or rewinding without new repository changes will fail again.`,
+    );
+  }
 
   // 6b. Deterministic sensors, GATE plane. `fire_on: gate` fires
   // once per existing declared deliverable as the stage opens its gate, so it

@@ -209,6 +209,99 @@ describe('validation gate with findings', () => {
     expect(gate.findings[0].code).toBe('review_advisory_findings');
   });
 
+  it('holds a clean code-generation attempt for an explicit override before build-and-test', async () => {
+    const codeStage = {
+      ...GATED_STAGE,
+      stageId: 'code-generation',
+      policy: POLICY,
+      outputArtifacts: [{ artifact: 'code-generation-plan' }],
+    };
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [
+          codeStage,
+          {
+            stageId: 'build-and-test',
+            stageInstanceId: 'si-bt',
+            humanValidation: 'none',
+          },
+        ],
+      },
+    }));
+    deps.store.getStage = vi.fn(async () => ({
+      stageInstanceId: 'si-1',
+      attempt: 1,
+      pendingCodeCommitRefs: null,
+    }));
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFileProvenance: { state: 'known', files: [] },
+    });
+    const reason = 'The implementation is already present; npm run lint ENOENT was environmental.';
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason,
+    });
+    deps.store.createHumanTask.mockImplementation(async (args) => {
+      expect(invokes.filter((p) => p.command === 'run-stage-start').map((p) => p.stageId)).toEqual([
+        'code-generation',
+      ]);
+      return { ...args, status: 'pending' };
+    });
+
+    const result = await run();
+    expect(result.ok).toBe(true);
+    expect(openedGate().options).toEqual(['request-changes', 'override-and-approve']);
+    expect(openedGate().findings).toEqual([
+      expect.objectContaining({
+        code: 'code_generation_no_changes',
+        severity: 'blocking',
+      }),
+    ]);
+    expect(deps.store.putReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stage-approval',
+        attempt: 1,
+        choice: 'override-and-approve',
+        decidedBy: 'u1',
+        detail: expect.objectContaining({
+          findingCodes: ['code_generation_no_changes'],
+          reason,
+        }),
+      }),
+    );
+    expect(invokes.filter((p) => p.command === 'run-stage-start').map((p) => p.stageId)).toEqual([
+      'code-generation',
+      'build-and-test',
+    ]);
+  });
+
+  it('does not require repository changes when no repositories are configured', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: [] }));
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [
+          {
+            ...GATED_STAGE,
+            policy: POLICY,
+            outputArtifacts: ['code-generation-plan'],
+          },
+        ],
+      },
+    }));
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFileProvenance: { state: 'known', files: [] },
+    });
+    await run();
+    expect(openedGate().options).toEqual(['approve', 'request-changes']);
+    expect(openedGate()).not.toHaveProperty('findings');
+  });
+
   it('keeps a terminal adversarial NOT-READY advisory at a human gate', async () => {
     stageVerdict = () => ({
       ok: true,

@@ -23,6 +23,7 @@
 import { isQuestionChannelOutput } from './aidlc-capabilities.js';
 import { resolveSensorVerdict } from './sensor-verdict.js';
 import { eventTypeOf } from './v2-process-keys.js';
+import { isCodeGenerationStage } from './stage-loopback.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -34,6 +35,7 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['review.advisory-find
 // findings list sees the most fundamental problem first.
 const FINDING_CODES = Object.freeze([
   'required_artifact_missing',
+  'code_generation_no_changes',
   'summary_confirmation_missing',
   'summary_confirmation_stale',
   'plan_approval_missing',
@@ -292,6 +294,10 @@ const evaluateGatePreconditions = ({
   // observed" (the orchestrator re-read, which sees receipts and events but not
   // the workspace), and an unobserved set is never reported as missing.
   producedArtifacts = null,
+  // The runner's final Git observation after reviewer repairs, including retained
+  // commits from this attempt. Pass null when no repositories are configured or
+  // no observation is available (including older runtime results).
+  changedFileProvenance = null,
   // Approved inputs whose content changed since their producing stage was
   // approved (change control). Empty/null when the check did not run.
   changedInputs = [],
@@ -327,6 +333,24 @@ const evaluateGatePreconditions = ({
         }),
       );
     }
+  }
+
+  if (
+    isCodeGenerationStage(stage) &&
+    changedFileProvenance?.state === 'known' &&
+    changedFileProvenance.files?.length === 0
+  ) {
+    findings.push(
+      finding({
+        code: 'code_generation_no_changes',
+        severity: 'blocking',
+        title: 'Code generation changed no repository files in this attempt',
+        overridable: true,
+        receiptKind: 'stage-approval',
+        remediation:
+          'Request changes to resolve an implementation blocker, or override with a reason if the existing code already satisfies the work. Retrying or rewinding without new changes will raise this finding again.',
+      }),
+    );
   }
 
   if (summaryConfirmationRequired(policy, events, attempt)) {

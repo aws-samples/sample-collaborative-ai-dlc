@@ -1918,8 +1918,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     reviewVerdict: outcome.result?.reviewAdvisory ?? null,
                     ensembleEvidence: outcome.result?.ensembleEvidence ?? null,
                     changedInputs: outcome.result?.changedInputs ?? [],
-                    // `required_artifact_missing` is the one check the orchestrator
-                    // cannot derive from receipts: it needs what the stage actually
+                    // A clean attempt may legitimately keep code from before a
+                    // loop-back or guided rewind. It requires a recorded human
+                    // override, never an automatic or plain approval.
+                    changedFileProvenance:
+                      (meta.repos ?? []).length > 0
+                        ? (outcome.result?.changedFileProvenance ?? null)
+                        : null,
+                    // The required-output check also needs what the stage actually
                     // LEFT BEHIND. `producedHeads` is that observation (the container's
                     // graph read of the artifact heads), and its artifact types are the
                     // produced set. An EMPTY array is a successful observation of

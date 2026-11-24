@@ -70,6 +70,59 @@ describe('evaluateGatePreconditions: the inert path', () => {
   });
 });
 
+describe('evaluateGatePreconditions: code-generation changes', () => {
+  const stage = {
+    stageId: 'implement',
+    outputArtifacts: [{ artifact: 'code-generation-plan' }],
+  };
+
+  it('blocks a known-empty attempt with a recorded override available', () => {
+    const result = evaluateGatePreconditions({
+      stage,
+      policy: POLICY,
+      changedFileProvenance: { state: 'known', files: [] },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.findings).toEqual([
+      expect.objectContaining({
+        code: 'code_generation_no_changes',
+        severity: 'blocking',
+        overridable: true,
+        receiptKind: 'stage-approval',
+      }),
+    ]);
+  });
+
+  it.each([
+    null,
+    { state: 'unknown', reason: 'git_committed_files_failed' },
+    { state: 'known', files: ['src/api.ts'] },
+  ])('does not classify absent, unknown or nonempty evidence as no changes: %j', (provenance) => {
+    expect(
+      evaluateGatePreconditions({
+        stage,
+        policy: POLICY,
+        changedFileProvenance: provenance,
+      }),
+    ).toEqual({ ok: true, findings: [] });
+  });
+
+  it('keeps unpinned runs and artifact-only stages outside this gate check', () => {
+    const changedFileProvenance = { state: 'known', files: [] };
+    expect(evaluateGatePreconditions({ stage, changedFileProvenance })).toEqual({
+      ok: true,
+      findings: [],
+    });
+    expect(
+      evaluateGatePreconditions({
+        stage: STAGE,
+        policy: POLICY,
+        changedFileProvenance,
+      }),
+    ).toEqual({ ok: true, findings: [] });
+  });
+});
+
 describe('evaluateGatePreconditions: required outputs', () => {
   it('blocks, and offers an override on the record, when a required output is missing', () => {
     const result = evaluateGatePreconditions({
