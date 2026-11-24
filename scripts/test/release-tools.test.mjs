@@ -289,9 +289,9 @@ test('release and main deployments use isolated protected environments and GitHu
 // release branch is merged back into main with a real merge commit (never squashed), so
 // main carries every fix that customers already have.
 //
-// The safety net: "Prepare Release Branch" refuses to start a new line while any release
-// branch still has commits that main lacks. A fix shipped in 2.5.1 can therefore not
-// quietly disappear again in 2.6.0 because someone forgot the back-merge.
+// The safety net: "Prepare Release Branch" refuses to start a new line while any
+// release/X.Y.x line branch still has commits that main lacks. A fix shipped in 2.5.1 can
+// therefore not quietly disappear again in 2.6.0 because someone forgot the back-merge.
 //
 // This test pins the workflow wiring that keeps all of the above true.
 test('releases publish only from line branches that the prepare workflow creates', () => {
@@ -331,6 +331,80 @@ test('releases publish only from line branches that the prepare workflow creates
   assert.match(demo, /line_ref="refs\/remotes\/origin\/release\/\$line\.x"/);
   assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$line_ref"/);
   assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
+});
+
+// Only X.Y.x line branches take part in back-merges. Other release/* names —
+// the frozen release/1.x maintenance line (v1 fixes never merge into v2 main)
+// and preparation branches from the previous naming, such as release/2.1.0 —
+// must not block new lines, or the first dispatch would fail forever.
+test('the new-line guard ignores release branches that are not X.Y.x lines', () => {
+  const prepare = yaml.load(readFileSync(prepareWorkflow, 'utf8'));
+  const validate = prepare.jobs.prepare.steps.find(
+    (step) => step.name === 'Validate the new release line',
+  ).run;
+
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-prepare-guard-'));
+  const gitEnv = {
+    GIT_AUTHOR_NAME: 'release-tools-test',
+    GIT_AUTHOR_EMAIL: 'release-tools-test@example.com',
+    GIT_COMMITTER_NAME: 'release-tools-test',
+    GIT_COMMITTER_EMAIL: 'release-tools-test@example.com',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  const git = (cwd, ...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...gitEnv } }).trim();
+
+  // The origin repository: main carries v2.4.0 and has moved on, release/2.4.x
+  // is fully back-merged, and release/2.1.0 (an old preparation branch) and the
+  // frozen release/1.x both hold commits that main lacks.
+  const origin = join(fixture, 'origin');
+  mkdirSync(origin);
+  git(origin, 'init', '-q', '-b', 'main');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'base');
+  git(origin, 'branch', 'release/2.1.0');
+  git(origin, 'branch', 'release/1.x');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'release 2.4.0');
+  git(origin, 'tag', 'v2.4.0');
+  git(origin, 'branch', 'release/2.4.x');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'main moves on');
+  for (const branch of ['release/2.1.0', 'release/1.x']) {
+    git(origin, 'switch', '-q', branch);
+    git(origin, 'commit', '--allow-empty', '-q', '-m', `only on ${branch}`);
+  }
+  git(origin, 'switch', '-q', 'main');
+
+  const clone = join(fixture, 'clone');
+  git(fixture, 'clone', '-q', origin, clone);
+  const guardEnv = {
+    ...gitEnv,
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: git(clone, 'rev-parse', 'HEAD'),
+    LINE: '2.5',
+  };
+
+  // Neither the stale preparation branch nor frozen release/1.x block the line.
+  const accepted = run('bash', ['-e', '-o', 'pipefail', '-c', validate], {
+    cwd: clone,
+    env: guardEnv,
+  });
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  // A real line branch with a commit that main lacks still blocks, and the
+  // error names only that branch.
+  git(origin, 'switch', '-q', '-c', 'release/2.3.x', 'v2.4.0^');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'fix only on release/2.3.x');
+  git(origin, 'switch', '-q', 'main');
+  git(clone, 'fetch', '-q', 'origin');
+  const blocked = run('bash', ['-e', '-o', 'pipefail', '-c', validate], {
+    cwd: clone,
+    env: guardEnv,
+  });
+  assert.notEqual(blocked.status, 0, 'an unmerged line branch must block a new line');
+  assert.match(blocked.stderr, /Back-merge these release branches into main .*release\/2\.3\.x/);
+  assert.doesNotMatch(blocked.stderr, /release\/2\.1\.0|release\/1\.x/);
+
+  rmSync(fixture, { recursive: true, force: true });
 });
 
 test('demo deployments use the resolved backend for both concurrency and Terraform', () => {
