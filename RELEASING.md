@@ -69,7 +69,7 @@ The stable GitHub Release becomes the normal release for the same core version, 
 
 ## Ongoing Releases
 
-Every release — major, minor, or patch — is published from its permanent line branch, such as `release/2.5.x`; `main` is never tagged directly. Normal work keeps merging to `main`, and a release line only ever receives code that is already on `main`. The only extra step for a new minor or major version is creating its line branch.
+Every release — major, minor, or patch — is published from its permanent line branch, such as `release/2.5.x`; `main` is never tagged directly. Normal feature work keeps merging to `main`; patch fixes are made on their release line and return to `main` through back-merge PRs. The only extra step for a new minor or major version is creating its line branch.
 
 ### Start a new line (minor and major versions)
 
@@ -85,8 +85,10 @@ git push origin v2.4.0^{commit}:refs/heads/release/2.4.x
 
 ### Bring fixes to an existing line (patch versions)
 
-1. Fix `main` first: merge the fix through a normal PR into `main`. A fix branched from the release tag (for example `v2.4.0`) applies to both `main` and the release branch.
-2. Bring each fix to the release branch through a PR: merge the same fix branch, or cherry-pick the merged commit with `git cherry-pick -x` so the release commit names its `main` origin. Never add a change to a release branch that is not on `main`.
+1. Branch from the release line, not from `main`: `git switch -c fix/<topic> release/2.4.x`. Open the fix PR against `release/2.4.x`, so the fix is reviewed and CI-tested on the exact code being patched.
+2. After publishing the patch, return the line to `main` with the back-merge PR described in the publishing steps below. Merge every `release/X.Y.x` → `main` PR with a **merge commit**, never a squash or rebase: a squash breaks the shared ancestry, so every later back-merge of that line re-conflicts on the same changes. Where `main` has moved on, resolve conflicts in favor of `main` — the back-merge carries fixes and release metadata, it never reverts newer work. When back-merging an older line, keep `main`'s root version; only the newest line's back-merge updates it.
+
+A fix must never exist only on a release branch. **Prepare Release Branch** refuses to start a new line while any release branch has commits that have not reached `main`, so a forgotten back-merge blocks the next minor instead of letting it ship without the fix.
 
 ### Prepare and publish (identical for every release)
 
@@ -124,7 +126,7 @@ The steps below use a minor release, `2.5.0`; patches such as `2.4.1` and previe
 5. Open the preparation PR into the release branch and require every CI check to pass. If the release branch changes during validation, incorporate the changes and rerun the affected checks. Merge only after deployment testing succeeds.
 6. Confirm the merged release-branch commit is green, reports root version `2.5.0`, and has the intended changelog date. Dispatch **Publish Release** from `release/2.5.x` with version `2.5.0`. The workflow refuses every other branch and any version outside the branch's line: `release/2.5.x` publishes `2.5.0`, `2.5.1`, or `2.5.0-preview0` and rejects `2.6.1`. It creates the annotated tag and GitHub Release, then starts the protected demo deployment described in [Demo deployment](docs/development/demo-deployment.md) unless a newer release line already exists, so a patch of an older line never rolls the demo back.
 7. Verify that `v2.5.0` points to the dispatched release-branch commit, the installer lists and selects `2.5.0`, and the deployed status bar reports `AI-DLC v2.5.0`.
-8. Bring the release metadata back to `main` through a PR, so `main` carries the published changelog entry — and, for the newest line, the root version — into the next release.
+8. Back-merge the release branch into `main` through a PR merged with a merge commit, so `main` carries every fix and the published changelog entry — and, for the newest line, the root version — into the next release.
 
 Preparation branches use the `chore/release-X.Y.Z` form; the `release/` namespace is reserved for line branches. Creating a line or preparation branch does not publish a release; do not tag those branches manually or recreate tags owned by the release workflow. Preview releases use explicit versions such as `2.5.0-preview0` and participate in installer discovery by default.
 
