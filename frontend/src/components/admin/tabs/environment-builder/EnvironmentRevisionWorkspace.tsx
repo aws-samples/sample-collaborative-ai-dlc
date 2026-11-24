@@ -31,7 +31,7 @@ import type {
 } from '@/services/environments';
 import { environmentsService } from '@/services/environments';
 import { cn } from '@/lib/utils';
-import { ecrImageConsoleUrl, scanFindingsNote } from '@/lib/ecrConsole';
+import { ecrImageConsoleUrl, httpsHref, scanFindingsNote } from '@/lib/ecrConsole';
 import { isCatalogRecipe } from './model';
 import {
   ACTIVE_REVISION_STATUSES,
@@ -319,9 +319,9 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
                 >
                   {finding.severity}
                 </Badge>
-                {finding.uri ? (
+                {httpsHref(finding.uri) ? (
                   <a
-                    href={finding.uri}
+                    href={httpsHref(finding.uri) ?? undefined}
                     target="_blank"
                     rel="noreferrer"
                     className="truncate font-mono text-[11px] text-primary hover:underline"

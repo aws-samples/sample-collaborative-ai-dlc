@@ -59,7 +59,7 @@ import {
 import { rustInstallerScript } from './tool-presets';
 import { ApiError } from '@/services/api';
 import { cn } from '@/lib/utils';
-import { ecrImageConsoleUrl, scanFindingsNote } from '@/lib/ecrConsole';
+import { ecrImageConsoleUrl, httpsHref, scanFindingsNote } from '@/lib/ecrConsole';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
 import { toolVersionArchitecture } from './environment-builder/model';
 
@@ -857,9 +857,9 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
                 {finding.severity}
               </Badge>
               <span className="truncate font-mono">{finding.id}</span>
-              {finding.uri ? (
+              {httpsHref(finding.uri) ? (
                 <a
-                  href={finding.uri}
+                  href={httpsHref(finding.uri) ?? undefined}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 font-mono text-primary hover:underline"
