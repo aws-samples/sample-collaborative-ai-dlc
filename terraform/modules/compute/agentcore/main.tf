@@ -155,7 +155,7 @@ module "dynamodb_kms_runtime_access" {
 resource "aws_ecr_repository" "agentcore" {
   name                 = "${var.project_name}-agentcore-${var.environment}"
   image_tag_mutability = "MUTABLE"
-  force_delete         = var.environment == "dev"
+  force_delete         = var.environment != "prod"
 
   image_scanning_configuration {
     scan_on_push = true

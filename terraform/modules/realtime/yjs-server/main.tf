@@ -73,7 +73,7 @@ data "aws_ecr_image" "yjs_server" {
 resource "aws_ecr_repository" "yjs_server" {
   name                 = "${var.project_name}-yjs-server-${var.environment}"
   image_tag_mutability = "MUTABLE"
-  force_delete         = var.environment == "dev"
+  force_delete         = var.environment != "prod"
 
   image_scanning_configuration {
     scan_on_push = true
