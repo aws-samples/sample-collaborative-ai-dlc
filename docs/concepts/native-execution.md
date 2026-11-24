@@ -5857,7 +5857,7 @@ the current contract for newly created executions.
 
 ### AgentCore cutover and verification inventory
 
-The independent local verification is in `.native-evidence/agentcore-method-independent-05/`. Its `RESULTS.md` identifies the exact checkout, installed image, inventory-specific receipts and outstanding member and operator observations. The signed-in deployment gates in NE-11 through NE-25 remain open. Each row below names the additional observation or implementation needed to close that item.
+The independent local verification is in `.native-evidence/agentcore-method-independent-06/`. Its `RESULTS.md` identifies the exact checkout, installed image, inventory-specific receipts and outstanding member and operator observations. The signed-in deployment gates in NE-11 through NE-25 remain open. Each row below names the additional observation or implementation needed to close that item.
 
 The official 2.11.1 method supplies the recommendation, named scopes and their stage descriptions. The runtime observes the current turn’s shell result and carries display fields to the one continuation admitted against the matching interaction and publication. At a recommendation, a written request for a different plan opens the named picker without selecting a plan. Its subsequent explicit selection belongs to the picker’s publication. Read-only project-description inspection preserves the offer. A newer workflow directive, rejection, unresolved command or an advanced workspace can supersede it. A bounded rejection from the pinned tool is visible in the response. The terminal report requires the pinned method’s completion directive, the matching completed workspace and publication, and no unresolved gate or question. An in-progress, rejected or unstarted executable stage prevents that report.
 
@@ -5884,6 +5884,12 @@ The following conditions govern the independent NE-11–25 pass on the AgentCore
 | NE-23 | The remote operation journal and its abandonment protocol are retired. Ordinary writer admission, uncertain delivery, cancel and fresh-session workspace resume own recovery. | Interrupt a current turn, fence its old writer, preserve unfinished files and the original answer, and present the current gate.      |
 | NE-24 | Independent proof of application is retired. A written answer, including a request for alternatives, records only its submission.                                             | Verify the current revision’s named options, one subsequent explicit selection, an actual rejection reason and a completed fresh run. |
 | NE-25 | Keep bounded consumers, repair and dead-letter handling. Supersede continuation of a specific retired DEV pin with a fresh supported execution.                               | Verify queues and DLQs after cutover and continue a fresh execution across a repair cycle.                                            |
+
+Local acceptance milestones within the open release items:
+
+- [x] NE-11/24. Reproduce the base picker loss through the installed Codex, member API and Chrome. Exercise literal punctuation, inspection, a written request, newer asks, direct method rejection and advancement. Keep the submission, publication and terminal method report separately identifiable.
+- [x] NE-12/13. Download and import a local terminal bundle against its captured Start parent, verify the result tree, and resolve the graph source and file bytes to the same publication.
+- [x] NE-21/25. Exercise the ordinary and lost-acknowledgement repair scans on 12,000 disposable DynamoDB Local rows, and check the release drain rejects an uncertain writer and unaccounted jobs. DEV queue metrics and alarm configuration are baseline observations on the retiring release.
 
 ### Superseded AgentCore package verification on 2026-11-24
 

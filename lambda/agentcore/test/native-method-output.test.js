@@ -132,6 +132,7 @@ describe('pinned local method reporting', () => {
       item: { id: 'shell', type: 'command_execution', command: 'aidlc next' },
     };
     const sidecar = { spec: { version: 3, ask: capturedPlanAsk } };
+    expect(observedTurnForm({}, sidecar, null, null, snapshot('Running'))).toBe(sidecar);
     const indirect = event('node -e \'execFileSync("aidlc", args)\' > out', capturedPlanAsk);
     expect(observedTurnForm({ method: observation(indirect) }, sidecar, null, null, empty)).toBe(
       sidecar,

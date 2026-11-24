@@ -235,10 +235,17 @@ export function offeredPlanAlternatives(method) {
 }
 
 export function observedTurnForm({ method }, rendered, alternatives, reply, snapshot) {
-  const created = snapshot.files.some((file) =>
-    /^aidlc\/spaces\/[^/]+\/intents\/active-intent$/.test(file.path),
+  const space = snapshot.files
+    .find((file) => file.path === 'aidlc/active-space')
+    ?.content?.toString('utf8')
+    .trim();
+  const created = snapshot.files.some(({ path }) =>
+    space
+      ? path === `aidlc/spaces/${space}/intents/active-intent`
+      : /^aidlc\/spaces\/[^/]+\/intents\/active-intent$/.test(path),
   );
   if (
+    method &&
     created &&
     (method?.spec?.ask?.ask_type === 'scope-confirm' ||
       (!method?.spec && rendered.spec?.ask?.ask_type === 'scope-confirm'))
