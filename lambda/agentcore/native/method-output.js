@@ -52,7 +52,7 @@ function methodCommand(text) {
     /^-(?:lc|cl|c)$/.test(words[1])
   )
     words = literalWords(words[2]);
-  if (!words) return 'uncertain';
+  if (!words) return 'opaque';
   if (words[0] !== 'aidlc')
     return words.some((word) => /(?:^|\/)aidlc$/.test(word)) ? 'uncertain' : null;
   const [, group, subject, operation] = words;
@@ -130,6 +130,13 @@ export function observeNativeMethodOutput(harness) {
     pending.delete(id);
     if (!command && !started) return;
     if (pending.size) for (const key of pending.keys()) pending.set(key, 'uncertain');
+    // An indirect shell has no attributable method stdout. Preserve the
+    // independent, turn-cleared display transport when there was no earlier
+    // observation. It cannot recover a prior ask or synthesize alternatives.
+    if ((started ?? command) === 'opaque' && !pending.size && (!latest || latest.unattributed)) {
+      latest = { unattributed: true };
+      return;
+    }
     latest = methodResult(
       pending.size || (started && command && started !== command)
         ? 'uncertain'
@@ -141,8 +148,19 @@ export function observeNativeMethodOutput(harness) {
   return {
     write(event) {
       if (harness === 'codex' && event.item?.type === 'command_execution') {
-        const item = event.item,
-          command = methodCommand(item.command);
+        const item = event.item;
+        // Some completed shells omit the command. A correlated start supplies
+        // it. Without either, stdout cannot describe the method. A separately
+        // rendered current form remains usable when no method offer preceded it.
+        if (
+          event.type === 'item.completed' &&
+          item.command === undefined &&
+          !pending.has(item.id)
+        ) {
+          latest = !latest || latest.unattributed ? { unattributed: true } : unknown;
+          return;
+        }
+        const command = item.command === undefined ? null : methodCommand(item.command);
         if (event.type === 'item.started') start(item.id, command);
         if (event.type === 'item.completed')
           finish(
@@ -217,6 +235,15 @@ export function offeredPlanAlternatives(method) {
 }
 
 export function observedTurnForm({ method }, rendered, alternatives, reply, snapshot) {
+  const created = snapshot.files.some((file) =>
+    /^aidlc\/spaces\/[^/]+\/intents\/active-intent$/.test(file.path),
+  );
+  if (
+    created &&
+    (method?.spec?.ask?.ask_type === 'scope-confirm' ||
+      (!method?.spec && rendered.spec?.ask?.ask_type === 'scope-confirm'))
+  )
+    return stale;
   if (method?.spec) return method;
   if (method?.rejection || method?.uncertain || method?.terminal) return stale;
   if (method?.otherAsk && rendered.spec?.version === 3) return stale;
@@ -246,7 +273,7 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
     typeof reply !== 'string' ||
     !reply.trim() ||
     alternatives.commandLabels.includes(reply) ||
-    snapshot.files.some((file) => /^aidlc\/spaces\/[^/]+\/intents\/active-intent$/.test(file.path))
+    created
   )
     return rendered;
   const spec = {

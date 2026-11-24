@@ -1217,7 +1217,7 @@ export const createNativeExecutor = ({
     const interaction = await saveInteraction(pendingInput, presentation);
     timing(turn, 'interactionUploadCompleted');
     const continuation = {
-      planAlternatives: offeredPlanAlternatives(completed.method),
+      planAlternatives: pendingInput ? offeredPlanAlternatives(completed.method) : null,
       promptEvidence: nextPromptEvidence ?? null,
       priorAssistantSha256: kiroAssistantHash(
         completed.messages.map((message) => message.text).join(''),

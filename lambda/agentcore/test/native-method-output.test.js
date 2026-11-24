@@ -122,6 +122,37 @@ describe('pinned local method reporting', () => {
     );
     expect(latest.rejection).toBe('Direct refusal.');
   });
+  it('uses correlated Codex starts and preserves independently rendered current forms for unattributed shell output', () => {
+    const result = {
+      type: 'item.completed',
+      item: { id: 'shell', type: 'command_execution', exit_code: 0, aggregated_output: ask },
+    };
+    const start = {
+      type: 'item.started',
+      item: { id: 'shell', type: 'command_execution', command: 'aidlc next' },
+    };
+    const sidecar = { spec: { version: 3, ask: capturedPlanAsk } };
+    const indirect = event('node -e \'execFileSync("aidlc", args)\' > out', capturedPlanAsk);
+    expect(observedTurnForm({ method: observation(indirect) }, sidecar, null, null, empty)).toBe(
+      sidecar,
+    );
+    expect(
+      observedTurnForm({ method: observation(indirect) }, sidecar, null, null, snapshot('Running'))
+        .spec,
+    ).toBeNull();
+    expect(observation(start, result).spec.ask).toEqual(capturedPlanAsk);
+    const own = { spec: { version: 2, questions: [{ prompt: 'Current question?', options: [] }] } };
+    const previous = event('aidlc next', capturedPlanAsk);
+    const offer = offeredPlanAlternatives(observation(previous));
+    expect(observedTurnForm({ method: observation(result) }, own, null, null, empty)).toBe(own);
+    expect(
+      observedTurnForm({ method: observation(result) }, absent, offer, offer.label, empty).spec,
+    ).toBeNull();
+    expect(
+      observedTurnForm({ method: observation(previous, result) }, own, offer, offer.label, empty)
+        .spec,
+    ).toBeNull();
+  });
   it('correlates top-level Claude results by ID across inspections and suppresses overlapping workflow calls', () => {
     const observer = observeNativeMethodOutput('claude');
     const start = (id, command) =>
