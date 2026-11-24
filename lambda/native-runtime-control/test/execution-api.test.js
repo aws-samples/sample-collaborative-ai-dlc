@@ -10,6 +10,7 @@ import {
   nativePublicationScope,
 } from '../../shared/native-publication.js';
 import { executionFixture } from './execution-fixtures.js';
+import { NATIVE_ENGINE_PROFILE } from '../../shared/native-workflow-pin.js';
 import { ACTOR, OTHER, TABLE } from './fixtures.js';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 
@@ -198,6 +199,41 @@ const pause = (f, predicate) => {
 };
 
 describe('native execution API with real protected storage', () => {
+  it('reads a retired pin but rejects new responses and recovery before any write', async () => {
+    const f = fixture();
+    f.prepared.candidate.packagePin.packageId = NATIVE_ENGINE_PROFILE.packageId;
+    f.rows.set(
+      canonicalJson({ pk: f.prepared.pk, sk: f.prepared.sk }),
+      structuredClone(f.prepared),
+    );
+    f.configuration.packageId = NATIVE_ENGINE_PROFILE.packageId;
+    f.configuration.workflowEngine = {
+      profileId: NATIVE_ENGINE_PROFILE.id,
+      producerSha256: f.configuration.image.digest.slice(7),
+      functionArn: `arn:aws:lambda:us-east-1:${f.configuration.accountId}:function:historical-engine`,
+      version: '14',
+    };
+    await f.start();
+    expect((await f.api.status(f.prepared, f.recheck)).execution.status).toBe('REQUESTED');
+    const before = f.row(),
+      retired = { code: 'NATIVE_EXECUTION_RETIRED_METHOD' };
+    await expect(f.api.recover(f.prepared, {}, f.recheck)).rejects.toMatchObject(retired);
+    await expect(
+      f.api.respond(
+        f.prepared,
+        ACTOR,
+        {
+          requestId: OTHER,
+          interactionId: 'a'.repeat(64),
+          contentSha256: 'b'.repeat(64),
+          text: 'inspect',
+        },
+        f.recheck,
+      ),
+    ).rejects.toMatchObject(retired);
+    expect(f.row()).toEqual(before);
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
   it('returns a narrow absent/status/start DTO and never exposes authority or credentials', async () => {
     const f = fixture();
     expect(await f.api.status(f.prepared, f.recheck)).toEqual({

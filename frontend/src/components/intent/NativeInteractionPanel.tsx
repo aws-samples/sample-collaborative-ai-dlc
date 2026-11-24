@@ -300,7 +300,7 @@ export function useNativeReply({
       synced: shared.synced,
       connected: shared.connected,
       // Collaborators may keep editing after this tab froze its request.
-      diverged: request.current !== null && request.current.text !== text,
+      diverged: !structured && request.current !== null && request.current.text !== text,
     },
   };
 }

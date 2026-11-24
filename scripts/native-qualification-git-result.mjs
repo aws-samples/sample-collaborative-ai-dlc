@@ -16,6 +16,7 @@ import { captureNativeSourceBaseline } from '../lambda/agentcore/native/source-b
 import { createNativeResultStore } from '../lambda/native-runtime-control/result-store.js';
 import { createNativeResultStorage } from '../lambda/native-runtime-control/result-storage.js';
 import { handler } from '../lambda/native-runtime-control/result-worker.js';
+import { starterGame, gamePage } from './native-qualification-game.mjs';
 import { initiator, respondent } from './native-qualification-member.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -91,10 +92,9 @@ async function verifyImportedBundle({
   assert.ok(delta.changes.some((c) => c.path === 'obsolete.bin' && c.before && c.after === null));
   assert.equal(expected.has('obsolete.bin'), false);
   assert.equal(expected.get('run').mode, '100755');
-  assert.equal(
-    expected.get('counter.js').sha256,
-    hash('export const increment = value => value + 1;\n'),
-  );
+  assert.equal(expected.get('game3d.html').sha256, hash(gamePage));
+  const output = execFileSync('./run', { cwd: imported, encoding: 'utf8' });
+  assert.match(output, /pass 1/);
   return expected.size;
 }
 
@@ -110,20 +110,16 @@ export async function qualificationGitResult({
   const origin = join(root, 'start-source');
   await fs.mkdir(origin);
   git(origin, 'init', '-q', '-b', 'main');
-  await fs.writeFile(
-    join(origin, 'README.md'),
-    '# Counter fixture\n\nImplement the counter described in the Start request.\n',
-  );
-  await fs.writeFile(join(origin, 'run'), '#!/bin/sh\nnode --test counter.test.mjs\n');
+  await fs.writeFile(join(origin, 'README.md'), '# Catch the target\n\nOpen play.html to play.\n');
+  await fs.writeFile(join(origin, 'play.html'), starterGame);
+  await fs.writeFile(join(origin, 'run'), '#!/bin/sh\nnode --test game.test.mjs\n');
   await fs.writeFile(join(origin, 'obsolete.bin'), Buffer.from([0, 254]));
   await fs.writeFile(join(origin, 'unchanged.txt'), 'Retain these Start bytes.\n');
   git(origin, 'add', '.');
   git(origin, 'commit', '-qm', 'Authorized fixture Start');
   const commit = git(origin, 'rev-parse', 'HEAD').toString().trim();
-  f.prepared.request.prompt =
-    'Create a local integer counter that increments its input by one and prove it with a Node test. Make the starter test launcher executable and remove the obsolete sample.';
   f.configuration.promptSha256 = hash(f.prepared.request.prompt);
-  Object.assign(f.configuration.repository, { repository: 'qualification/counter', commit });
+  Object.assign(f.configuration.repository, { repository: 'qualification/catch', commit });
   const jobs = createNativeResultStore({ ddb: f.ddb, tableName, now: f.now });
   const queue = [];
   // Local S3 download transport. Use the normal SDK presigner and follow the
@@ -305,9 +301,10 @@ export async function qualificationGitResult({
         terminal: delta.terminal,
         changeCount: delta.changes.length,
         codeChanges: delta.changes.filter((c) =>
-          ['obsolete.bin', 'run', 'counter.js', 'counter.test.mjs'].includes(c.path),
+          ['obsolete.bin', 'run', 'game.mjs', 'game3d.html', 'game.test.mjs'].includes(c.path),
         ),
         treeFiles,
+        importedTest: 'passed',
         bundleBytes: bundleBytes.length,
         bundleSha256: hash(bundleBytes),
         version,

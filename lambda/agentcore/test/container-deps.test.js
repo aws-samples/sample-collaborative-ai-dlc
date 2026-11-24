@@ -143,10 +143,12 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
   });
 });
 
-it('packages the dependency closure of the Git result Lambda', () => {
-  const externals = walk(
-    path.join(agentcoreDir, '..', 'native-runtime-control', 'result-worker.js'),
-  );
+it('packages the Git builder and its dependency closure in the runtime image', () => {
+  // result-worker lazily imports the ZIP implementation only for non-Git
+  // requests. The commands service sends those to the separately packaged
+  // results Lambda. Docker also imports the common handler at build time.
+  const externals = walk(path.join(agentcoreDir, '..', 'native-runtime-control', 'git-result.js'));
+  expect(externals.size).toBeGreaterThan(0);
   expect([...externals.keys()].filter((name) => !declared.has(name))).toEqual([]);
 });
 

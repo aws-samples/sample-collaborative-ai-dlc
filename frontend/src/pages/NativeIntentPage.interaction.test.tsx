@@ -413,6 +413,7 @@ it('renders all proposed-plan choices and preserves one protected answer across 
   fireEvent.submit(form);
   fireEvent.submit(form);
   await screen.findByText('Reply accepted. Delivery pending.');
+  expect(screen.queryByText(/The shared draft changed after you sent/)).not.toBeInTheDocument();
   expect(transport.post).toHaveBeenCalledTimes(1);
   expect(transport.post.mock.calls[0][1]).toMatchObject({
     interactionId: interaction.id,

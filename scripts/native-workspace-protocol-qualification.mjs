@@ -20,6 +20,7 @@ import {
 import { dependencyInstall } from './native-qualification-dependencies.mjs';
 import { initiator, respondent } from './native-qualification-member.mjs';
 import { workspaceQualificationDriver } from './native-workspace-qualification-driver.mjs';
+import { gameModule, gamePage, gameTest } from './native-qualification-game.mjs';
 import { buildNativePendingInput } from '../lambda/shared/native-pending-input.js';
 
 const requirements =
@@ -147,6 +148,9 @@ async function qualifyCompetingHistory({
   };
 }
 async function qualifyLocalMember({ harness, driver, provider, project, terminalResult }) {
+  const gameRequirements =
+    '# Catch game requirements\n\nMove the target in depth when the player scores.\n';
+  const gameQuestions = '# Catch game questions\n\nKeep the existing click-to-score controls.\n';
   const pendingFile = join(project, '.native-control/pending-question.json');
   const unfinished = {
     filePath: join(project, 'nested/unfinished-review.txt'),
@@ -170,17 +174,13 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     }
   }
   const nextCommand = 'aidlc engine orchestrate next';
-  const alternate = !terminalResult && ['codex', 'opencode'].includes(harness);
+  const alternate = ['codex', 'opencode'].includes(harness);
   const proposed = alternate ? 'mvp' : 'express';
   let offer, stage, next, rejection;
   function* presentOffer() {
     // The installed conductor can forward the literal Start request as shell
     // words. Also exercise publication from the engine when it writes no form.
-    const initial = yield* runDirective(
-      terminalResult
-        ? `aidlc next '${driver.originalPrompt}'`
-        : 'aidlc next Create a 3D version of the game',
-    );
+    const initial = yield* runDirective('aidlc next Create a 3D version of the game');
     if (!terminalResult) {
       const request = issuedRequestId(initial);
       const stale = request === '00000000' ? 'ffffffff' : '00000000';
@@ -268,7 +268,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     const id = expressCommand.match(/--request ([a-f0-9]{8})/)[1];
     assert.match(JSON.stringify(creation), /intent create/);
     yield {
-      command: `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
+      command: `aidlc engine intent create --scope express --request ${id} --label qualification-game`,
     };
     stage = yield* loadStage(nextCommand);
     assert.equal(stage.stage, 'requirements-analysis');
@@ -282,8 +282,8 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
         path,
         /^aidlc\/spaces\/default\/intents\/[a-z0-9-]+\/inception\/requirements-analysis\/[a-z-]+\.md$/,
       );
-    yield { filePath: join(project, stage.produces[0]), content: requirements };
-    yield { filePath: join(project, stage.produces[1]), content: questions };
+    yield { filePath: join(project, stage.produces[0]), content: gameRequirements };
+    yield { filePath: join(project, stage.produces[1]), content: gameQuestions };
     const opened = yield* runDirective(
       `aidlc engine orchestrate report --stage ${stage.stage} --result awaiting-approval`,
     );
@@ -352,8 +352,8 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
   assert.equal(next.gate_only, true);
   assert.equal(next.gate, true);
   assert.deepEqual(next.produces, stage.produces);
-  assert.equal(await fs.readFile(join(project, next.produces[0]), 'utf8'), requirements);
-  assert.equal(await fs.readFile(join(project, next.produces[1]), 'utf8'), questions);
+  assert.equal(await fs.readFile(join(project, next.produces[0]), 'utf8'), gameRequirements);
+  assert.equal(await fs.readFile(join(project, next.produces[1]), 'utf8'), gameQuestions);
   assert.equal(await fs.readFile(unfinished.filePath, 'utf8'), unfinished.content);
   assert.equal(provider.result().inputReadWitnesses, driver.inputReads.length);
   const recovered = await driver.interaction();
@@ -454,12 +454,12 @@ function* presentExpressStage(directive, project, pendingFile) {
     assert.ok(plan && instructions);
     yield {
       filePath: join(project, plan),
-      content: `# Counter plan\n\n## Summary\nCreate a local integer counter and test increment(1).\n\n- [ ] Write the counter regression.\n- [ ] Implement increment and run the test.\n\n${contract}\n`,
+      content: `# Counter plan\n\n## Summary\nRender the existing catch game in three dimensions and test depth changes.\n\n- [ ] Write the target movement regression.\n- [ ] Implement the 3D catch target and run the test.\n\n${contract}\n`,
     };
     yield {
       filePath: join(project, instructions),
       content:
-        '# Unit test instructions\n\nRun `node --test counter.test.mjs`. The regression expects increment(1) to equal 2.\n',
+        '# Unit test instructions\n\nRun `node --test game.test.mjs`. Each score changes the target position in depth.\n',
     };
     let build = yield* runDirective('aidlc engine orchestrate next');
     if (build.kind === 'load-steering') {
@@ -470,15 +470,9 @@ function* presentExpressStage(directive, project, pendingFile) {
     assert.equal(build.stage, directive.stage);
     assert.equal(build.plan_approval?.status, 'approved');
     assert.equal(build.plan_approval.skipped, true);
-    yield {
-      filePath: join(project, 'counter.test.mjs'),
-      content:
-        "import {test} from 'node:test';\nimport assert from 'node:assert/strict';\nimport {increment} from './counter.js';\ntest('increments once', () => assert.equal(increment(1),2));\n",
-    };
-    yield {
-      filePath: join(project, 'counter.js'),
-      content: 'export const increment = value => value + 1;\n',
-    };
+    yield { filePath: join(project, 'game.test.mjs'), content: gameTest };
+    yield { filePath: join(project, 'game.mjs'), content: gameModule };
+    yield { filePath: join(project, 'game3d.html'), content: gamePage };
     const result = yield { command: 'chmod +x run && rm obsolete.bin && ./run' };
     assert.match(result, /pass 1/);
   }
@@ -490,11 +484,11 @@ function* presentExpressStage(directive, project, pendingFile) {
       continue;
     const content = path.endsWith('.json')
       ? JSON.stringify({
-          requirement: 'increment an integer by one',
-          implementation: 'counter.js',
-          test: 'counter.test.mjs',
+          requirement: 'play the catch game in three dimensions',
+          implementation: 'game3d.html',
+          test: 'game.test.mjs',
         }) + '\n'
-      : `# ${directive.stage}\n\nThe fixture implements a local integer counter. The Node regression expects increment(1) to equal 2. Run it with ./run.\n`;
+      : `# ${directive.stage}\n\nOpen game3d.html on a local HTTP server to play. Clicking the target changes the score and its position in depth. Run ./run to test movement.\n`;
     yield { filePath: join(project, path), content };
   }
   const report = yield* runDirective(
@@ -648,7 +642,7 @@ async function qualifyExpressResult({
   assert.deepEqual(historical.engineApplication, before.engineApplication);
   const graph = await readBoth(driver, 'graph');
   assert.equal(graph.publicationId, revision.id);
-  const file = revision.files.find((entry) => entry.path === 'counter.js');
+  const file = revision.files.find((entry) => entry.path === 'game3d.html');
   assert.ok(file);
   const artifact = graph.nodes.find((node) => node.id === file.id);
   assert.equal(artifact.sha256, file.sha256);
@@ -660,7 +654,7 @@ async function qualifyExpressResult({
   );
   assert.equal(source.publicationId, revision.id);
   assert.equal(source.sha256, file.sha256);
-  assert.match(source.content, /export const increment/);
+  assert.equal(source.content, gamePage);
   const exported = await driver.exportResult(revision);
   console.log(
     JSON.stringify({
@@ -676,6 +670,7 @@ async function qualifyExpressResult({
       graphPublication: graph.publicationId,
       downloadedFile: { id: file.id, path: source.path, sha256: source.sha256 },
       producer: verified.producer,
+      projectDescription: driver.originalPrompt,
       workflowCompletion: verified.workflowCompletion,
       requiredChecks: verified.requiredChecks,
       finalReview: verified.finalReview,
