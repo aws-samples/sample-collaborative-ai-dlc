@@ -607,6 +607,10 @@ describe('ToolsRegistry', () => {
     render(<ToolsRegistry />);
 
     expect(await screen.findByText(/these counts are partial/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The part of the scan the platform read holds 1 Critical and 0 High/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ECR found 1 Critical and 0 High/)).not.toBeInTheDocument();
     expect(screen.getByText('CVE-2026-2')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /View all findings in ECR/ })).toHaveAttribute(
       'href',

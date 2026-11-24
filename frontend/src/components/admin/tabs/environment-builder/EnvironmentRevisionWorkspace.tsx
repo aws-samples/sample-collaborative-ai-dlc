@@ -207,7 +207,7 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
   const securityOnlyFailure =
     revision.failure?.reason === 'critical_vulnerability_findings' && Boolean(revision.imageDigest);
   const incomplete = revision.scanFindings?.incomplete === true;
-  const findingsNote = scanFindingsNote(revision.scanFindings);
+  const findingsNote = scanFindingsNote(revision.scanFindings, Boolean(acceptedAt));
   const imageFindingsUrl = ecrImageConsoleUrl(revision.imageUri, revision.imageDigest);
 
   return (

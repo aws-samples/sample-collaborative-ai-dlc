@@ -24,13 +24,17 @@ describe('ecrImageConsoleUrl', () => {
 describe('scanFindingsNote', () => {
   it('warns that the counts of an incomplete scan are partial', () => {
     expect(scanFindingsNote({ incomplete: true, findingsTruncated: true })).toMatch(
-      /counts are partial.*may include Critical or High/,
+      /counts are partial.*may include Critical or High.*before accepting them/,
     );
+    // After acceptance the note records the decision instead of asking for it.
+    const accepted = scanFindingsNote({ incomplete: true, findingsTruncated: true }, true);
+    expect(accepted).toMatch(/counts are partial.*accepted them without a complete count/);
+    expect(accepted).not.toMatch(/before accepting/);
   });
 
-  it('says only the most severe findings are listed when the list is cut', () => {
+  it('says the list is cut when it does not hold every finding', () => {
     expect(scanFindingsNote({ findingsTruncated: true, findings: [{}, {}] })).toBe(
-      'Showing the 2 most severe findings. The complete list is in ECR.',
+      'Showing 2 findings, most severe first. The complete list is in ECR.',
     );
   });
 

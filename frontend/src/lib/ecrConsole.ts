@@ -13,12 +13,17 @@ export const ecrImageConsoleUrl = (imageUri?: string | null, imageDigest?: strin
 // stopped at the platform's read bound, so its counts are partial.
 export const scanFindingsNote = (
   scanFindings?: { incomplete?: boolean; findingsTruncated?: boolean; findings?: unknown[] } | null,
+  accepted = false,
 ) => {
   if (scanFindings?.incomplete) {
-    return 'The scan has more findings than the platform reads, so these counts are partial and the unread findings may include Critical or High vulnerabilities. Review the complete findings in ECR before accepting them.';
+    const partial =
+      'The scan has more findings than the platform reads, so these counts are partial and the unread findings may include Critical or High vulnerabilities.';
+    return accepted
+      ? `${partial} An administrator accepted them without a complete count.`
+      : `${partial} Review the complete findings in ECR before accepting them.`;
   }
   if (scanFindings?.findingsTruncated && scanFindings.findings?.length) {
-    return `Showing the ${scanFindings.findings.length} most severe findings. The complete list is in ECR.`;
+    return `Showing ${scanFindings.findings.length} findings, most severe first. The complete list is in ECR.`;
   }
   return null;
 };
