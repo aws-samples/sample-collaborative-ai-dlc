@@ -262,9 +262,77 @@ describe('managed environment status handler', () => {
     expect(ecrClient.send).toHaveBeenCalledTimes(51);
     expect(result.revision).toMatchObject({
       status: 'SECURITY_REVIEW',
-      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true },
+      scanFindings: { severityCounts: { LOW: 50 }, findingsTruncated: true, incomplete: true },
     });
     expect(controlClient.send).not.toHaveBeenCalled();
+  });
+
+  it('keeps the most severe findings of every enhanced scan page for review', async () => {
+    const store = mutableStore();
+    const finding = (severity, id) => ({
+      severity,
+      packageVulnerabilityDetails: {
+        vulnerabilityId: id,
+        sourceUrl: `https://nvd.nist.gov/vuln/detail/${id}`,
+        vulnerablePackages: [{ name: 'openssl', version: '3.5.9' }],
+      },
+    });
+    const page = (severityCounts, enhancedFindings, nextToken) => ({
+      imageScanStatus: { status: 'ACTIVE' },
+      imageScanFindings: {
+        imageScanCompletedAt: new Date(Date.now() - ENHANCED_SCAN_SETTLE_MS - 1000),
+        findingSeverityCounts: severityCounts,
+        enhancedFindings,
+      },
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const ecrClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({ imageDetails: [{ imageDigest: `sha256:${'b'.repeat(64)}` }] })
+        // A full first page of Low findings, then the Critical one.
+        .mockResolvedValueOnce(
+          page(
+            { LOW: 100 },
+            Array.from({ length: 100 }, (_, index) => finding('LOW', `CVE-LOW-${index}`)),
+            'page-2',
+          ),
+        )
+        .mockResolvedValueOnce(
+          page({ CRITICAL: 1, HIGH: 1 }, [
+            finding('HIGH', 'CVE-HIGH'),
+            finding('CRITICAL', 'CVE-CRITICAL'),
+          ]),
+        ),
+    };
+
+    const result = await createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
+      store,
+      ecrClient,
+      controlClient: { send: vi.fn() },
+      runtimeClient: { send: vi.fn() },
+    })(buildEvent);
+
+    expect(result.revision.status).toBe('SECURITY_REVIEW');
+    const { scanFindings } = result.revision;
+    expect(scanFindings).toMatchObject({
+      severityCounts: { CRITICAL: 1, HIGH: 1, LOW: 100 },
+      findingsTruncated: true,
+    });
+    expect(scanFindings).not.toHaveProperty('incomplete');
+    expect(scanFindings.findings).toHaveLength(100);
+    expect(scanFindings.findings.slice(0, 3)).toEqual([
+      {
+        id: 'CVE-CRITICAL',
+        severity: 'CRITICAL',
+        packageName: 'openssl',
+        packageVersion: '3.5.9',
+        uri: 'https://nvd.nist.gov/vuln/detail/CVE-CRITICAL',
+      },
+      expect.objectContaining({ id: 'CVE-HIGH', severity: 'HIGH' }),
+      expect.objectContaining({ severity: 'LOW' }),
+    ]);
   });
 
   it('keeps an image SCANNING when a later enhanced scan page is throttled', async () => {

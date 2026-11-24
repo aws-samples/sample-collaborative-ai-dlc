@@ -19,7 +19,6 @@ import {
   createBuildLifecycleHandler,
   readGateScan,
   streamToString,
-  summarizeScanFindings,
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
@@ -327,17 +326,18 @@ const inspectImage = async ({
         ),
       };
     }
-    const { severityCounts, findingsTruncated } = gateScan;
+    const { severityCounts, findings, findingsTruncated, incomplete } = gateScan;
     const findingsAccepted = Boolean(securityFindingsAcceptedAt(scanning));
     const verdict =
-      gateScan.incomplete && !findingsAccepted
+      incomplete && !findingsAccepted
         ? { allowed: false, status: 'SECURITY_REVIEW' }
         : evaluateScanFindings(severityCounts, findingsAccepted);
     const scanFindings = {
       status: scanStatus,
       severityCounts,
-      findings: summarizeScanFindings(scan),
+      findings,
       findingsTruncated,
+      ...(incomplete ? { incomplete: true } : {}),
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
