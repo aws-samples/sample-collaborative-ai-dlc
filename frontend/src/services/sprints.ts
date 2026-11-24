@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, type ApiGetOptions } from './api';
 
 export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW' | 'COMPLETED';
 export type AgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | null;
@@ -46,7 +46,10 @@ export interface Sprint {
 // v1 sprints are read-only: create/update/delete were removed with the v1
 // engine — only the GET routes remain.
 export const sprintsService = {
-  list: (projectId: string) => api.get<Sprint[]>(`/projects/${projectId}/sprints`),
+  list: (projectId: string, options?: ApiGetOptions) =>
+    options
+      ? api.get<Sprint[]>(`/projects/${projectId}/sprints`, options)
+      : api.get<Sprint[]>(`/projects/${projectId}/sprints`),
   get: (projectId: string, sprintId: string) =>
     api.get<Sprint>(`/projects/${projectId}/sprints/${sprintId}`),
 };

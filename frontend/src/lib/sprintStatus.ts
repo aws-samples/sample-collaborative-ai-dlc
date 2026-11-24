@@ -1,5 +1,6 @@
 import type { Sprint } from '@/services/sprints';
 import type { Intent } from '@/services/intents';
+import { deriveIntentStatus } from '@/lib/statusModel';
 
 export type EffectiveSprintStatus =
   | 'passed'
@@ -21,8 +22,28 @@ export function effectiveSprintStatus(sprint: Sprint | null | undefined): Effect
   return 'idle';
 }
 
-export function isAttentionStatus(status: EffectiveSprintStatus): boolean {
-  return status === 'waiting' || status === 'failed';
+export function intentAttention(intent: {
+  status: Intent['status'];
+  pendingHumanTaskId?: string | null;
+  resumeRequired?: Intent['resumeRequired'] | boolean;
+}): 'resume' | 'input' | 'failed' | null {
+  if (intent.status === 'FAILED') return 'failed';
+  if (intent.status !== 'WAITING') return null;
+  if (intent.resumeRequired) return 'resume';
+  return intent.pendingHumanTaskId ? 'input' : null;
+}
+
+/**
+ * "Needs attention": a human must act — answer, resume, deal with a failure,
+ * or unstick a stalled run. The one rule behind the Spaces inbox, the sidebar
+ * filter and its count, and the space badges.
+ */
+export function needsAttention(
+  intent: Parameters<typeof intentAttention>[0] & Pick<Intent, 'updatedAt' | 'createdAt'>,
+  now: number = Date.now(),
+): boolean {
+  if (intentAttention(intent) !== null) return true;
+  return deriveIntentStatus(intent, { now }).stalled;
 }
 
 export function isActiveStatus(status: EffectiveSprintStatus): boolean {

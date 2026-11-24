@@ -12,6 +12,7 @@ import { matchPath } from 'react-router';
 import type { QueryKey, FetchQueryOptions as QueryOptions } from '@tanstack/react-query';
 import { knownQueryBytes, queryClient } from '@/lib/queryClient';
 import { intentDetailQuery, intentCompiledQuery } from '@/lib/intentEntry';
+import { projectIntentsQuery } from '@/hooks/useProjectsCache';
 import type { IntentDetail } from '@/services/intents';
 import { qk } from '@/lib/queryKeys';
 import * as pages from './pages';
@@ -40,6 +41,8 @@ export interface RouteEntry {
   dependent?: (ctx: RouteCtx, criticalData: unknown[]) => QueryOptions<any, any, any, any>[];
   /** true / predicate: chunk on hover, data only when navigation is imminent. */
   heavy?: boolean | ((ctx: RouteCtx) => boolean);
+  /** Likely next hrefs from this page, for idle warming. At most 3. */
+  idleNext?: (ctx: RouteCtx) => string[];
   /** Pages rendered in this page's Outlet; `path` relative, '' for the index. Chunk only. */
   children?: readonly { path: string; page: RoutePage }[];
 }
@@ -60,6 +63,11 @@ const intentDependent = (_ctx: RouteCtx, [detail]: unknown[]) =>
 const heavyIntent = (ctx: RouteCtx) =>
   knownQueryBytes(queryClient, qk.intentDetail(param(ctx, 'projectId'), param(ctx, 'intentId'))) >
   512 * 1024;
+
+const intentSections = (ctx: RouteCtx) => {
+  const base = `/space/${param(ctx, 'projectId')}/intent/${param(ctx, 'intentId')}`;
+  return { work: base, overview: `${base}/observability`, graph: `${base}/graph` };
+};
 
 export const APP_ROUTES: readonly RouteEntry[] = [
   {
@@ -113,6 +121,7 @@ export const APP_ROUTES: readonly RouteEntry[] = [
   {
     path: '/space/:projectId',
     page: pages.Project,
+    critical: (ctx) => [projectIntentsQuery(param(ctx, 'projectId'))],
   },
   {
     path: '/space/:projectId/settings',
@@ -142,6 +151,10 @@ export const APP_ROUTES: readonly RouteEntry[] = [
     critical: intentCritical,
     dependent: intentDependent,
     heavy: heavyIntent,
+    idleNext: (ctx) => {
+      const { work, graph } = intentSections(ctx);
+      return [work, graph];
+    },
   },
   {
     path: '/space/:projectId/intent/:intentId/audit',
@@ -155,6 +168,10 @@ export const APP_ROUTES: readonly RouteEntry[] = [
     critical: intentCritical,
     dependent: intentDependent,
     heavy: heavyIntent,
+    idleNext: (ctx) => {
+      const { overview, graph } = intentSections(ctx);
+      return [overview, graph];
+    },
   },
   {
     path: '/space/:projectId/intent/:intentId',
@@ -162,6 +179,10 @@ export const APP_ROUTES: readonly RouteEntry[] = [
     critical: intentCritical,
     dependent: intentDependent,
     heavy: heavyIntent,
+    idleNext: (ctx) => {
+      const { overview, graph } = intentSections(ctx);
+      return [overview, graph];
+    },
   },
   {
     // Retired v1 sprint pages: rendered for history, warmed as chunks only.

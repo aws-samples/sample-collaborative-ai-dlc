@@ -83,6 +83,35 @@ export function prefetchHref(href: string, options: PrefetchHrefOptions = {}): v
   }
 }
 
+/** Whether a non-imminent prefetch of `href` would read data: light route, a stale critical read. */
+export function hrefWantsData(href: string, user: RouteCtx['user']): boolean {
+  try {
+    const target = resolve(href, user);
+    if (!target) return false;
+    const { entry } = target.route;
+    const heavy = typeof entry.heavy === 'function' ? entry.heavy(target.ctx) : entry.heavy;
+    return (
+      !heavy &&
+      (entry.critical?.(target.ctx) ?? []).some(
+        (query) =>
+          queryClient
+            .getQueryCache()
+            .find({ queryKey: query.queryKey })
+            ?.isStaleByTime(typeof query.staleTime === 'number' ? query.staleTime : 30_000) ?? true,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Code only, under the hover gate and the route's `requires`. */
+export function preloadHref(href: string, user: RouteCtx['user']): void {
+  const target = resolve(href, user);
+  if (!target || !canPreloadOnHover()) return;
+  preloadCode(target.route);
+}
+
 function preloadCode(route: NonNullable<ReturnType<typeof resolve>>['route']) {
   try {
     void route.preload().catch(() => undefined);

@@ -5,8 +5,10 @@ import { bindUserCache, endUserCache } from './persistentCache';
 import { foregroundNavigation } from './prefetch';
 import {
   cancelHrefPrefetch,
+  hrefWantsData,
   notifyNavigation,
   prefetchHref,
+  preloadHref,
   setRoutePrefetchContext,
 } from './routePrefetch';
 import { qk } from './queryKeys';
@@ -219,5 +221,33 @@ describe('route prefetch execution', () => {
     const paths = apiGet.mock.calls.map(([path]) => String(path));
     expect(paths).toEqual(['/projects/p/intents/i?artifactContent=separate']);
     expect(resolveRoute('/auth/callback')).toBeUndefined();
+  });
+});
+
+describe('idle-next helpers', () => {
+  const member = { isPlatformAdmin: false };
+
+  it('reports data wanted only for a light route with a stale critical read', () => {
+    expect(hrefWantsData(small, member)).toBe(true);
+    queryClient.setQueryData(qk.intentDetail('p', 'small'), detail);
+    expect(hrefWantsData(small, member)).toBe(false);
+    // The graph route is heavy: code only until navigation is imminent.
+    expect(hrefWantsData('/space/p/intent/other/graph', member)).toBe(false);
+    expect(hrefWantsData('/workflows', member)).toBe(false);
+    expect(hrefWantsData('/nowhere', member)).toBe(false);
+  });
+
+  it('preloads code only, never for a route the user may not open or under Save-Data', () => {
+    preloadHref('/workflows', member);
+    expect(preload).not.toHaveBeenCalled();
+    preloadHref(small, member);
+    expect(preload).toHaveBeenCalledOnce();
+    Object.defineProperty(navigator, 'connection', {
+      value: { saveData: true },
+      configurable: true,
+    });
+    preloadHref(small, member);
+    expect(preload).toHaveBeenCalledOnce();
+    expect(apiGet).not.toHaveBeenCalled();
   });
 });

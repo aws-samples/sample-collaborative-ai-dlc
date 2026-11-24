@@ -1,8 +1,44 @@
+// Opening an intent from a list: one entry rule and one warm-up, shared by the
+// sidebar, the command palette and every intent list.
+//
+// Entry rule: Work when a human action is pending (a question, an approval, or
+// a resume the run still needs), otherwise Overview. Lists must not pick
+// different pages for the same intent.
+
 import { queryOptions, skipToken } from '@tanstack/react-query';
 import { querySessionOpen } from '@/lib/queryClient';
 import { qk } from '@/lib/queryKeys';
-import { intentsService, type IntentDetail } from '@/services/intents';
+import {
+  intentsService,
+  type IntentDetail,
+  type IntentGate,
+  type IntentStatus,
+} from '@/services/intents';
+import { intentSectionPath } from '@/lib/intentSectionPreference';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
+
+export interface IntentEntryLike {
+  id: string;
+  status: IntentStatus;
+  pendingHumanTaskId?: string | null;
+  resumeRequired?: boolean | object | null;
+  gates?: readonly Pick<IntentGate, 'status'>[] | null;
+}
+
+function intentNeedsHumanAction(intent: IntentEntryLike): boolean {
+  if (intent.status !== 'WAITING') return false;
+  if (intent.pendingHumanTaskId) return true;
+  if (intent.resumeRequired) return true;
+  return (intent.gates ?? []).some((gate) => gate.status === 'pending');
+}
+
+export function intentEntryPath(projectId: string, intent: IntentEntryLike): string {
+  return intentSectionPath(
+    projectId,
+    intent.id,
+    intentNeedsHumanAction(intent) ? 'work' : 'overview',
+  );
+}
 
 /**
  * The one `qk.intentDetail` read (hover warm, pages, IntentProvider). A detail

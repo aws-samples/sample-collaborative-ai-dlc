@@ -33,6 +33,7 @@ import { useLayoutEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { installNavIntent } from '@/lib/navIntent';
 import { notifyNavigation } from '@/lib/routePrefetch';
+import { useIdleNext } from '@/hooks/useIdleNext';
 
 // ---------------------------------------------------------------------------
 // Route classification: determines whether the activity panel should default
@@ -101,6 +102,7 @@ export function AppShell() {
   useEffect(() => {
     if (user) return installNavIntent(() => navContext.current);
   }, [user]);
+  useIdleNext(Boolean(user), isPlatformAdmin);
   const inSprint = !!sprintId;
   // v2 intent pages get their own 3-tab activity panel (IntentActivityPanel),
   // mounted in the same slots as the sprint one and backed by IntentProvider.

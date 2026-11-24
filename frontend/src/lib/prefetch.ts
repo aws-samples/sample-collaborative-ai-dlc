@@ -51,6 +51,38 @@ function onIdle(run: () => void): () => void {
   return () => clearTimeout(id);
 }
 
+export function runAtIdle(run: () => void): () => void {
+  return onIdle(() => {
+    if (canPrefetchAtIdle()) run();
+  });
+}
+
+export function afterQueriesSettle(keys: readonly QueryKey[], run: () => void): () => void {
+  const start = Date.now();
+  const stop = () => {
+    unsubscribe();
+    clearTimeout(timer);
+  };
+  const check = () => {
+    if (
+      !keys.every((key) => {
+        const state = queryClient.getQueryState(key);
+        return (
+          state?.fetchStatus !== 'fetching' &&
+          ((state?.status !== 'pending' && state) || Date.now() - start >= 3_000)
+        );
+      })
+    )
+      return;
+    stop();
+    run();
+  };
+  const unsubscribe = queryClient.getQueryCache().subscribe(check);
+  const timer = setTimeout(check, 3_000);
+  check();
+  return stop;
+}
+
 function pump(): void {
   if (!queue.length) return;
   if (!canPreloadOnHover()) {

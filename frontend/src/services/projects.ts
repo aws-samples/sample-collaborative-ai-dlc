@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, type ApiGetOptions } from './api';
 import type { GitProvider } from './gitProvider';
 import type { ProjectEnvironmentAssignment } from './environments';
 
@@ -219,14 +219,19 @@ export interface CustomRule {
 }
 
 // REST pages are bounded; callers that need the directory follow every token,
-// including an empty page left by stale index memberships.
-async function listPages<T>(path: string): Promise<T[]> {
+// including an empty page left by stale index memberships. The signal reaches
+// every page request and stops the loop between pages.
+async function listPages<T>(path: string, { signal }: ApiGetOptions = {}): Promise<T[]> {
   const items: T[] = [];
   let nextToken: string | null = null;
   do {
-    const page: { items: T[]; nextToken: string | null } | T[] = await api.get(
-      `${path}?paged=1${nextToken ? `&nextToken=${encodeURIComponent(nextToken)}` : ''}`,
-    );
+    if (signal?.aborted) throw new DOMException('The request was aborted.', 'AbortError');
+    const pagePath: string = `${path}?paged=1${nextToken ? `&nextToken=${encodeURIComponent(nextToken)}` : ''}`;
+    type Page = { items: T[]; nextToken: string | null } | T[];
+    // Without options the request is exactly the plain GET.
+    const page: Page = signal
+      ? await api.get<Page>(pagePath, { signal })
+      : await api.get<Page>(pagePath);
     // A rolled-back backend may still return the legacy array.
     if (Array.isArray(page)) return [...items, ...page];
     items.push(...page.items);
@@ -236,7 +241,7 @@ async function listPages<T>(path: string): Promise<T[]> {
 }
 
 export const projectsService = {
-  list: () => listPages<Project>('/projects'),
+  list: (options?: ApiGetOptions) => listPages<Project>('/projects', options),
   get: (id: string) => api.get<Project>(`/projects/${id}`),
   create: (input: CreateProjectInput) => api.post<Project>('/projects', input),
   update: (id: string, input: UpdateProjectInput) => api.put<Project>(`/projects/${id}`, input),

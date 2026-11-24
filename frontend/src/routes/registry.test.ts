@@ -173,6 +173,7 @@ describe('resolveRoute', () => {
     expect(pageName(href)).toBe(page);
     expect(route.entry.critical).toBeUndefined();
     expect(route.entry.dependent).toBeUndefined();
+    expect(route.entry.idleNext).toBeUndefined();
     await route.preload();
     expect(pages.SprintLayout.preload).toHaveBeenCalledTimes(1);
     expect(pages[page as keyof typeof pages].preload).toHaveBeenCalledTimes(1);
@@ -210,5 +211,18 @@ describe('route descriptors use the page factories', () => {
 
   it('marks the graph page heavy', () => {
     expect(resolveRoute('/space/p1/intent/i1/graph')?.entry.heavy).toBe(true);
+  });
+
+  it('derives idle next hrefs from the intent sections', () => {
+    const overview = '/space/p1/intent/i1/observability';
+    expect(resolveRoute(overview)!.entry.idleNext!(ctxFor(overview))).toEqual([
+      '/space/p1/intent/i1',
+      '/space/p1/intent/i1/graph',
+    ]);
+    const work = '/space/p1/intent/i1';
+    expect(resolveRoute(work)!.entry.idleNext!(ctxFor(work))).toEqual([
+      '/space/p1/intent/i1/observability',
+      '/space/p1/intent/i1/graph',
+    ]);
   });
 });

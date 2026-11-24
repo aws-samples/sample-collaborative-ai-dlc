@@ -7,13 +7,58 @@ const get = vi.hoisted(() => vi.fn());
 vi.mock('@/services/intents', () => ({ intentsService: intents }));
 vi.mock('@/services/api', () => ({ api: { get } }));
 
-import { intentDetailQuery, intentCompiledQuery } from './intentEntry';
+import { intentEntryPath, intentDetailQuery, intentCompiledQuery } from './intentEntry';
 import { qk } from './queryKeys';
 import { queryClient } from './queryClient';
 import type { IntentDetail } from '@/services/intents';
 
+const WORK = '/space/p1/intent/i1';
+const OVERVIEW = '/space/p1/intent/i1/observability';
+
 beforeEach(() => {
   intents.get.mockReset();
+});
+
+describe('intentEntryPath', () => {
+  it('opens Work when a human task is pending', () => {
+    expect(intentEntryPath('p1', { id: 'i1', status: 'WAITING', pendingHumanTaskId: 'task' })).toBe(
+      WORK,
+    );
+  });
+
+  it('opens Work when the run waits on a pending gate', () => {
+    expect(
+      intentEntryPath('p1', {
+        id: 'i1',
+        status: 'WAITING',
+        gates: [{ status: 'pending' }, { status: 'answered' }],
+      }),
+    ).toBe(WORK);
+  });
+
+  it('opens Work when an answered gate still needs a resume', () => {
+    expect(intentEntryPath('p1', { id: 'i1', status: 'WAITING', resumeRequired: true })).toBe(WORK);
+  });
+
+  it('opens Overview for an automatic wait with no pending human action', () => {
+    expect(intentEntryPath('p1', { id: 'i1', status: 'WAITING' })).toBe(OVERVIEW);
+    expect(
+      intentEntryPath('p1', { id: 'i1', status: 'WAITING', gates: [{ status: 'answered' }] }),
+    ).toBe(OVERVIEW);
+  });
+
+  it('opens Overview for running and finished intents', () => {
+    expect(intentEntryPath('p1', { id: 'i1', status: 'RUNNING' })).toBe(OVERVIEW);
+    expect(intentEntryPath('p1', { id: 'i1', status: 'SUCCEEDED' })).toBe(OVERVIEW);
+    expect(intentEntryPath('p1', { id: 'i1', status: 'FAILED' })).toBe(OVERVIEW);
+    expect(intentEntryPath('p1', { id: 'i1', status: 'CANCELLED' })).toBe(OVERVIEW);
+  });
+
+  it('ignores a stale pending task id once the run has moved on', () => {
+    expect(
+      intentEntryPath('p1', { id: 'i1', status: 'SUCCEEDED', pendingHumanTaskId: 'old-task' }),
+    ).toBe(OVERVIEW);
+  });
 });
 
 describe('intentDetailQuery', () => {

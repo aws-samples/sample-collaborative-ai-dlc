@@ -3,7 +3,8 @@
 // surface (sidebar, Spaces, Space, Overview, Work, Observability, settings).
 //
 // Pure functions; clocks are injected (`now`) and `Date.now()` only appears
-// as a default parameter.
+// as a default parameter. The one hook (`useIntentStatus`) only reads the
+// shared query cache so list surfaces derive exactly what the intent page does.
 
 import {
   Ban,
@@ -31,8 +32,17 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
+import { useQueryData } from '@/hooks/useQueryData';
+import { qk } from '@/lib/queryKeys';
 import type { ConnectionStatus } from '@/services/realtime';
-import type { IntentGate, IntentStatus, StageState, UnitState } from '@/services/intents';
+import type {
+  Intent,
+  IntentGate,
+  IntentStage,
+  IntentStatus,
+  StageState,
+  UnitState,
+} from '@/services/intents';
 
 export type StatusKind = 'intent' | 'stage' | 'gate' | 'unit' | 'connection' | 'config' | 'sensor';
 
@@ -418,6 +428,9 @@ export function getStatus<K extends StatusKind>(kind: K, key: string): StatusEnt
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
+/** A RUNNING/CREATED run with no recorded activity for this long is stalled. */
+const STALL_AFTER_MS = 30 * 60 * 1000;
+
 type Clock = number | Date;
 
 const toMs = (clock: Clock) => (typeof clock === 'number' ? clock : clock.getTime());
@@ -480,6 +493,113 @@ export function ageLabel(
   return compact ? `${days} d` : plural(days, 'day');
 }
 
+// ── Derivations ──────────────────────────────────────────────────────────────
+
+export interface DerivedIntentStatus {
+  key: IntentStatus;
+  /** RUNNING/CREATED with no activity for STALL_AFTER_MS. Never animate. */
+  stalled: boolean;
+  /** Stalled: last activity. WAITING: when the oldest open gate opened. */
+  since?: string;
+}
+
+type GateLike = Pick<IntentGate, 'humanTaskId' | 'status' | 'createdAt'> & {
+  updatedAt?: string | null;
+};
+
+type StageLike = Pick<IntentStage, 'state'> &
+  Partial<Pick<IntentStage, 'parkedAt' | 'startedAt' | 'completedAt' | 'updatedAt'>>;
+
+type IntentLike = Pick<Intent, 'status' | 'updatedAt' | 'createdAt'> & {
+  pendingHumanTaskId?: string | null;
+};
+
+/**
+ * When the wait began: the OLDEST open decision (pending gate or stage parked
+ * for a human), whichever one is "current". Every surface that knows the
+ * gates shows the same age. Without them the age is unknown — the intent's
+ * updatedAt is the newest gate, not the oldest, so a list row would read a
+ * different number from the header until the detail arrives (review R3-5).
+ * Known-but-empty gates fall back to updatedAt.
+ */
+function waitingSince(
+  intent: IntentLike,
+  gates: readonly GateLike[] | undefined,
+  stages: readonly StageLike[] | undefined,
+): string | undefined {
+  if (!gates && !stages) return undefined;
+  const starts = [
+    ...(gates ?? []).filter((g) => g.status === 'pending').map((g) => g.createdAt ?? g.updatedAt),
+    ...(stages ?? [])
+      .filter((s) => s.state === 'WAITING_FOR_HUMAN')
+      .map((s) => s.parkedAt ?? s.updatedAt),
+  ];
+  return pickTimestamp(starts, true) ?? intent.updatedAt ?? undefined;
+}
+
+/**
+ * The status to display for an intent. `lastActivityAt` is the newest event,
+ * stage or output timestamp the caller knows (see `latestActivityAt`); without
+ * it the intent's own updatedAt/createdAt is used. Pass `gates`/`stages` when
+ * known so a WAITING intent reports its oldest open decision.
+ */
+export function deriveIntentStatus(
+  intent: IntentLike,
+  {
+    now = Date.now(),
+    lastActivityAt,
+    gates,
+    stages,
+  }: {
+    now?: Clock;
+    lastActivityAt?: string | null;
+    gates?: readonly GateLike[];
+    stages?: readonly StageLike[];
+  } = {},
+): DerivedIntentStatus {
+  const key = intent.status;
+  if (key === 'RUNNING' || key === 'CREATED') {
+    const last = latestActivityAt([lastActivityAt, intent.updatedAt, intent.createdAt]);
+    if (last && toMs(now) - Date.parse(last) > STALL_AFTER_MS) {
+      return { key, stalled: true, since: last };
+    }
+    return { key, stalled: false };
+  }
+  if (key === 'WAITING') {
+    const since = waitingSince(intent, gates, stages);
+    return since ? { key, stalled: false, since } : { key, stalled: false };
+  }
+  return { key, stalled: false };
+}
+
+export interface DetailLike {
+  intent: IntentLike;
+  gates?: readonly GateLike[] | null;
+  stages?: readonly StageLike[] | null;
+  events?: readonly { timestamp?: string | null }[] | null;
+}
+
+/**
+ * The status derived from a full intent detail — what the intent page header
+ * shows. Activity is the newest of the intent, its events and its stages.
+ */
+export function statusFromDetail(
+  detail: DetailLike,
+  { now = Date.now(), lastActivityAt }: { now?: Clock; lastActivityAt?: string | null } = {},
+): DerivedIntentStatus {
+  const stamps = [lastActivityAt, detail.intent.updatedAt];
+  for (const event of detail.events ?? []) stamps.push(event.timestamp);
+  for (const stage of detail.stages ?? []) {
+    stamps.push(stage.startedAt, stage.completedAt, stage.updatedAt);
+  }
+  return deriveIntentStatus(detail.intent, {
+    now,
+    lastActivityAt: latestActivityAt(stamps),
+    gates: detail.gates ?? undefined,
+    stages: detail.stages ?? undefined,
+  });
+}
+
 const STALLED_LABEL = 'Stalled';
 
 const TERMINAL_INTENT_STATUSES: ReadonlySet<string> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
@@ -522,4 +642,50 @@ export function statusLabel<K extends StatusKind>(
   const label = (compact && COMPACT_LABELS[`${kind}:${status}`]) || getStatus(kind, status).label;
   if (!age) return label;
   return TERMINAL_STATUSES[kind]?.has(status) ? `${label} ${age} ago` : `${label} · ${age}`;
+}
+
+// ── One status per intent, on every surface ──────────────────────────────────
+
+type IntentSummaryLike = IntentLike & { id?: string; resumeRequired?: unknown };
+
+/** A detail older than the summary is ignored: the summary is the newer truth. */
+function isCurrentDetail(
+  intent: IntentSummaryLike,
+  detail: DetailLike | null | undefined,
+): detail is DetailLike {
+  return (
+    Boolean(detail?.intent) &&
+    (parseMs(detail!.intent.updatedAt) ?? 0) >= (parseMs(intent.updatedAt) ?? 0)
+  );
+}
+
+const WATCHED: ReadonlySet<IntentStatus> = new Set(['WAITING', 'RUNNING', 'CREATED']);
+
+/**
+ * The status every surface shows for an intent: exactly what the intent header
+ * shows when the shared `qk.intentDetail` entry is cached (peeked: this never
+ * fetches and never keeps the entry from being evicted), else the summary.
+ * Only active intents are watched: a terminal status reads the same from the
+ * summary.
+ */
+export function useIntentStatus(
+  projectId: string | null | undefined,
+  intent: IntentSummaryLike | null | undefined,
+  {
+    now,
+    fallback,
+  }: {
+    now?: Clock;
+    /** What the caller derived without the detail (e.g. with extra activity evidence). */
+    fallback?: DerivedIntentStatus;
+  } = {},
+): DerivedIntentStatus {
+  const detailKey =
+    projectId && intent?.id && WATCHED.has(intent.status)
+      ? qk.intentDetail(projectId, intent.id)
+      : null;
+  const detail = useQueryData<DetailLike>(detailKey);
+  if (!intent) return fallback ?? { key: 'DRAFT', stalled: false };
+  if (isCurrentDetail(intent, detail)) return statusFromDetail(detail, { now });
+  return fallback ?? deriveIntentStatus(intent, { now });
 }
