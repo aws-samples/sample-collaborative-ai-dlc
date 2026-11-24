@@ -154,6 +154,37 @@ describe('pinned local method reporting', () => {
         .spec,
     ).toBeNull();
   });
+  it('distinguishes a directory argument from a method invocation and drops earlier rendered options on same-turn progress', () => {
+    const first = event('aidlc next', capturedPlanAsk);
+    const method = observation(first, event('/bin/sh -lc "ls aidlc"', 'spaces'));
+    expect(method.spec.ask).toEqual(capturedPlanAsk);
+    const group = {
+      spec: {
+        version: 2,
+        questions: [
+          {
+            prompt: capturedPlanAsk.question,
+            options: capturedPlanAsk.choices.map(({ label }) => ({ label })),
+          },
+        ],
+      },
+    };
+    const plans = observedTurnForm(
+      {},
+      absent,
+      offeredPlanAlternatives(method),
+      'Show alternatives',
+      empty,
+    );
+    for (const latest of [
+      { kind: 'run-stage', stage: 'requirements-analysis' },
+      { kind: 'ask', ask_type: 'unrecognized' },
+    ]) {
+      const after = observation(first, event('aidlc next', latest));
+      for (const rendered of [group, plans])
+        expect(observedTurnForm({ method: after }, rendered, null, null, empty).spec).toBeNull();
+    }
+  });
   it('correlates top-level Claude results by ID across inspections and suppresses overlapping workflow calls', () => {
     const observer = observeNativeMethodOutput('claude');
     const start = (id, command) =>

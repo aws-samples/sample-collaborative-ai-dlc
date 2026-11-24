@@ -53,8 +53,17 @@ function methodCommand(text) {
   )
     words = literalWords(words[2]);
   if (!words) return 'opaque';
-  if (words[0] !== 'aidlc')
-    return words.some((word) => /(?:^|\/)aidlc$/.test(word)) ? 'uncertain' : null;
+  if (words[0] !== 'aidlc') {
+    // An argument named aidlc is commonly the workspace directory (ls aidlc).
+    // Only an indirect invocation makes the provenance of its result unclear.
+    if (
+      /\/aidlc$/.test(words[0]) ||
+      (['env', 'exec', 'command'].includes(words[0]) &&
+        words.slice(1).some((word) => /(?:^|\/)aidlc$/.test(word)))
+    )
+      return 'opaque';
+    return null;
+  }
   const [, group, subject, operation] = words;
   // This particular utility reads the description, even if no intent exists yet.
   if (
@@ -110,6 +119,7 @@ function methodResult(command, output, ok) {
 
 export function observeNativeMethodOutput(harness) {
   let latest = null;
+  let offerLabels = null;
   const pending = new Map();
   let overflow = false;
   function start(id, command) {
@@ -144,6 +154,17 @@ export function observeNativeMethodOutput(harness) {
       output,
       ok,
     );
+    if (latest.spec) {
+      const ask = latest.spec.ask;
+      offerLabels = new Set([
+        ...buildNativePendingInput({ spec: latest.spec }).questions[0].options.map(
+          ({ label }) => label,
+        ),
+        ...ask.scope_commands.map(({ scope }) => scope),
+      ]);
+    } else if (offerLabels && (latest.advanced || latest.otherAsk)) {
+      latest = { ...latest, supersededLabels: offerLabels };
+    }
   }
   return {
     write(event) {
@@ -253,8 +274,7 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
     return stale;
   if (method?.spec) return method;
   if (method?.rejection || method?.uncertain || method?.terminal) return stale;
-  if (method?.otherAsk && rendered.spec?.version === 3) return stale;
-  if (method?.advanced) {
+  if (method?.otherAsk || method?.advanced) {
     if (rendered.spec?.version === 3) return stale;
     const potentialGate = buildNativePendingInput({
       gate: { stage: 'unknown' },
@@ -263,13 +283,13 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
     if (potentialGate?.kind === 'approval' && !nativeGateFromSnapshot(snapshot)) return stale;
     const labels = potentialGate?.questions[0]?.options.map((option) => option.label);
     if (
-      alternatives &&
       labels?.length &&
       labels.every(
         (label) =>
-          alternatives.options.some((option) => option.label === label) ||
-          alternatives.commandLabels.includes(label) ||
-          label === alternatives.label,
+          method.supersededLabels?.has(label) ||
+          alternatives?.options.some((option) => option.label === label) ||
+          alternatives?.commandLabels.includes(label) ||
+          label === alternatives?.label,
       )
     )
       return stale;
