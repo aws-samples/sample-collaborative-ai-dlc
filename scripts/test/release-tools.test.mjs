@@ -301,6 +301,12 @@ test('releases publish only from line branches that the prepare workflow creates
   assert.match(prepareText, /git push origin "\$GITHUB_SHA:refs\/heads\/release\/\$LINE\.x"/);
   assert.doesNotMatch(prepareText, /git tag -a|gh release create/);
 
+  // A new line must not start while a fix sits un-back-merged on any release branch.
+  assert.match(
+    prepareText,
+    /git merge-base --is-ancestor "refs\/remotes\/origin\/\$branch" "\$GITHUB_SHA"/,
+  );
+
   // The demo guard trusts a release tag on its own protected line branch and
   // keeps the main fallback only for releases that predate line branches.
   const demo = readFileSync(demoWorkflow, 'utf8');
