@@ -300,6 +300,13 @@ test('releases publish only from line branches that the prepare workflow creates
   assert.match(prepareText, /git ls-remote --exit-code origin "refs\/heads\/release\/\$LINE\.x"/);
   assert.match(prepareText, /git push origin "\$GITHUB_SHA:refs\/heads\/release\/\$LINE\.x"/);
   assert.doesNotMatch(prepareText, /git tag -a|gh release create/);
+
+  // The demo guard trusts a release tag on its own protected line branch and
+  // keeps the main fallback only for releases that predate line branches.
+  const demo = readFileSync(demoWorkflow, 'utf8');
+  assert.match(demo, /line_ref="refs\/remotes\/origin\/release\/\$line\.x"/);
+  assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$line_ref"/);
+  assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
 });
 
 test('demo deployments use the resolved backend for both concurrency and Terraform', () => {

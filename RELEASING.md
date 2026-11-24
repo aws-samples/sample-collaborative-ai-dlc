@@ -74,7 +74,7 @@ Every release — major, minor, or patch — is published from its permanent lin
 ### Start a new line (minor and major versions)
 
 1. Confirm `main` is green and contains everything the new release needs.
-2. Dispatch **Prepare Release Branch** from `main` with the line, for example `2.5`. The workflow creates `release/2.5.x` at the dispatched `main` commit; it rejects a malformed line, an existing branch, and a line that is not newer than every published line. Branch protection for `release/*.x` in the repository settings covers the new branch (no force pushes or deletion, PR required).
+2. Dispatch **Prepare Release Branch** from `main` with the line, for example `2.5`. The workflow creates `release/2.5.x` at the dispatched `main` commit; it rejects a malformed line, an existing branch, and a line that is not newer than every published line. Branch protection for `release/*.x` in the repository settings covers the new branch (no force pushes or deletion, PR required), and the `demo-release` environment's deployment branch rules must include `release/*.x` so a publish from the branch can start the demo deployment (see [Demo deployment](docs/development/demo-deployment.md)).
 
 Nothing is tagged or published by this step, so the branch can be validated for as long as needed while `main` keeps moving. For a line that predates this process, create the branch from the line's latest tag instead, and make sure it contains the current release workflows before dispatching (a dispatch runs the workflow file of the dispatched branch):
 
