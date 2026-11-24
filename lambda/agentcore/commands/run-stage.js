@@ -533,11 +533,15 @@ const buildReviewerPrompt = ({
   reviewerPersona,
   knowledge,
   round,
+  // Forwarded like runReviewer's dispatchPersona call does, so this renders
+  // the exact prompt the reviewer runs with when a language is set (#784).
+  conversationLanguage = null,
 }) =>
   composePersonaPrompt({
     brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
     persona: reviewerPersona,
     knowledge,
+    conversationLanguage,
     role: 'reviewer',
     stageId: stage.stageId,
     // The reviewer's MCP role carries neither checkpoint tool and no

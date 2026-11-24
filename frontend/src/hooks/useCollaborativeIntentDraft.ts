@@ -119,13 +119,21 @@ export function useCollaborativeIntentDraft(
   // the rest of the draft and names the tag it dropped. Kept until a member
   // picks the language again, so nobody starts the run on a language the page
   // no longer shows.
-  const [conversationLanguageRejection, setConversationLanguageRejection] = useState<{
+  const [conversationLanguageRejection, setRejectionState] = useState<{
     tag: string;
     reason: string;
   } | null>(null);
+  // Written together with the state, not on render: Start reads it right after
+  // `flushDraft` resolves, before React has rendered the save's state update.
   const languageRejectionRef = useRef<{ tag: string; reason: string } | null>(null);
-  languageRejectionRef.current = conversationLanguageRejection;
-  useEffect(() => setConversationLanguageRejection(null), [doc]);
+  const setConversationLanguageRejection = useCallback(
+    (rejection: { tag: string; reason: string } | null) => {
+      languageRejectionRef.current = rejection;
+      setRejectionState(rejection);
+    },
+    [],
+  );
+  useEffect(() => setConversationLanguageRejection(null), [doc, setConversationLanguageRejection]);
   // Sticky, PER DOCUMENT: has this draft ever had a per-intent setting? A
   // release that authors none never puts a key in the map, so this stays false
   // and the save body omits `aidlcSettings` entirely — which is the request
@@ -405,7 +413,7 @@ export function useCollaborativeIntentDraft(
       if (!tag && !config.has('conversationLanguage')) return;
       config.set('conversationLanguage', next);
     },
-    [doc],
+    [doc, setConversationLanguageRejection],
   );
 
   const setSkipStageIds = useCallback(
@@ -480,7 +488,7 @@ export function useCollaborativeIntentDraft(
         }
       },
     });
-  }, [projectId, intentId, flushDocument, getSaveData, doc]);
+  }, [projectId, intentId, flushDocument, getSaveData, doc, setConversationLanguageRejection]);
 
   const { flushLatest } = useAutoSave(getSaveData, save, [localRevision], {
     enabled: synced && !!intentId,

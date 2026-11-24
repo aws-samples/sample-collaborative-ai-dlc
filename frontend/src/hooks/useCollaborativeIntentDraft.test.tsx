@@ -332,6 +332,34 @@ describe('useCollaborativeIntentDraft — conversation language (#784)', () => {
     expect(a.result.current.isConversationLanguageRejected()).toBe(false);
   });
 
+  it('reports the rejection as soon as the flush resolves, before any render', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const { a } = bothSeeded({ conversationLanguage: korean });
+    api.update.mockResolvedValueOnce(
+      intent({
+        draftRevision: 8,
+        conversationLanguage: korean,
+        conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+    });
+    // Start's sequence: await the flush, then check — all inside one act, so
+    // React has not rendered the save's state update yet.
+    const draft = a.result.current;
+    let afterFlush: boolean | undefined;
+    let afterPick: boolean | undefined;
+    await act(async () => {
+      await draft.flushDraft();
+      afterFlush = draft.isConversationLanguageRejected();
+      draft.setConversationLanguage('ja');
+      afterPick = draft.isConversationLanguageRejected();
+    });
+    expect(afterFlush).toBe(true);
+    expect(afterPick).toBe(false);
+  });
+
   it('clearing a draft that never had one writes nothing', async () => {
     const a = member('Alice');
     act(() => {

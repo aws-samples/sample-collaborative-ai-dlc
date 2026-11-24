@@ -22,6 +22,10 @@ const displayName = (ofTag: string, inLocale: string): string | null => {
 };
 
 // null for an empty input (= unset), a resolved value, or an error string.
+// Mirrors lambda/shared/conversation-language.js: codes Intl still names but
+// that name no language to write prose in.
+const NON_LANGUAGE_CODES = new Set(['zxx', 'mul']);
+
 export const resolveConversationLanguage = (
   raw: string,
 ): { value: ConversationLanguage | null } | { error: string } => {
@@ -39,7 +43,7 @@ export const resolveConversationLanguage = (
   if (!tag || !CANONICAL_TAG_PATTERN.test(tag)) {
     return { error: 'Use a language[-Script][-Region] tag such as "ko", "ja" or "pt-BR"' };
   }
-  const englishName = displayName(tag, 'en');
+  const englishName = NON_LANGUAGE_CODES.has(tag.split('-')[0]) ? null : displayName(tag, 'en');
   if (!englishName) return { error: `"${tag}" does not name a known language` };
   const nativeName = displayName(tag, tag) ?? englishName;
   return { value: { tag, englishName, nativeName } };

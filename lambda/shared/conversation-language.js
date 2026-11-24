@@ -29,6 +29,11 @@ const CANONICAL_TAG_PATTERN = /^[a-z]{2,3}(-[A-Z][a-z]{3})?(-(?:[A-Z]{2}|\d{3}))
 // only has to stop abuse before canonicalization runs.
 const MAX_TAG_LENGTH = 35;
 
+// Special-purpose codes `Intl.DisplayNames` still names ("No linguistic
+// content", "Multiple languages") but that name no language to write prose in.
+// `und`, `mis` and the private-use range are already unnamed.
+const NON_LANGUAGE_CODES = new Set(['zxx', 'mul']);
+
 const invalid = (message) => ({
   error: { code: 'conversation_language_invalid', message },
 });
@@ -69,7 +74,7 @@ export const normalizeConversationLanguage = (raw) => {
       `conversationLanguage must be a language[-Script][-Region] tag such as "ko", "ja" or "pt-BR"`,
     );
   }
-  const englishName = displayName(tag, 'en');
+  const englishName = NON_LANGUAGE_CODES.has(tag.split('-')[0]) ? null : displayName(tag, 'en');
   if (!englishName) {
     return invalid(`"${tag}" does not name a known language`);
   }
@@ -107,10 +112,13 @@ export const conversationLanguageLabel = (language) => {
 //
 // What must stay English is restated here because the block is the only place
 // the instruction reaches every CLI (see the header note on #800). The list
-// covers the platform's own machine-read tokens and upstream's preserved
-// literals; keys/ids/enums keep structured blocks parseable, and the catch-all
-// option literal keeps the question UI's English-worded catch-all detection
-// working (QuestionEditor injects its own free-text "Other" otherwise).
+// covers the platform's own machine-read tokens and restates upstream's
+// "Conversation language — preserved tokens" (v2.6.18 core/memory/org.md):
+// engine-compared answers and sentinels, sensor-matched headings, register
+// tags and verdicts. Keys/ids/enums keep structured blocks parseable, and the
+// catch-all option literal keeps the question UI's English-worded catch-all
+// detection working (QuestionEditor injects its own free-text "Other"
+// otherwise). Prose headings an agent writes itself follow the language.
 export const renderConversationLanguageBlock = (language) => {
   const label = conversationLanguageLabel(language);
   if (!label) return '';
@@ -119,24 +127,37 @@ export const renderConversationLanguageBlock = (language) => {
     '',
     `Conversation language: ${label}`,
     '',
-    `Write all prose in ${label}: artifact content and headings, questions and`,
-    'their answer options, summaries, review findings and explanations.',
+    `Write all prose in ${label}: artifact content, questions and their answer`,
+    'options, summaries, review findings and explanations. Localize the prose',
+    'around a fixed token, never the token itself.',
     '',
     'The following stay in English exactly as specified, regardless of the',
     'conversation language:',
     '',
-    '- code, identifiers, file paths and branch names;',
+    '- code, identifiers, file paths, branch names, mermaid keywords and',
+    '  cross-references;',
     '- the commit description passed to `describe_changes`;',
     '- keys, ids and enumerated values in fenced YAML or JSON blocks and in tool',
     '  parameters (prose-valued fields such as descriptions follow the',
-    '  conversation language);',
-    '- in `units:` blocks, the `name`, `kind` and `depends_on` values;',
-    '- the collaboration tokens `## Positions`, `AGREE:`,',
-    '  `OBJECT (knowledge):`, `OBJECT (judgment):`, `**Collaborator:**` and',
-    '  `**Reviewer:**`;',
+    '  conversation language); in `units:` blocks, the `name`, `kind` and',
+    '  `depends_on` values;',
+    '- stable IDs such as `FR-1`, `ENT-001` and `BR1.1`;',
+    '- `[Answer]:` tags with their option letters, the catch-all answer option',
+    '  `X. Other (please specify)`, and the assumption-confirmation options',
+    '  `A. Accept assumptions` and `B. Convert to follow-up questions`;',
+    '- the `None.` and `None` sentinels;',
+    '- the headings `## Sources`, `## Assumptions & Open Questions`,',
+    '  `## Assumption Confirmation`, `## Review` and `## Positions`, and any H2',
+    '  heading taken from a stage template;',
+    '- the source-register tags `[desc]`, `[scope]`, `[assumption]`, `[Q<n>]` and',
+    '  `[memory:M<n>]`, with their prefixes `Initial description:` and',
+    '  `Workflow-selected scope:`;',
+    '- the reviewer verdicts `READY` and `NOT-READY`;',
+    '- the collaboration tokens `AGREE:`, `OBJECT:`, `OBJECT (knowledge):`,',
+    '  `OBJECT (judgment):`, `**Collaborator:**` and `**Reviewer:**`;',
+    '- the field labels, status values and checkbox states of `aidlc-state.md`;',
     '- artifact slugs and `[[slug]]` links;',
-    '- any literal your instructions say to write exactly, including the',
-    '  catch-all answer option `X. Other (please specify)`.',
+    '- any other literal your instructions say to write exactly.',
   ].join('\n');
 };
 

@@ -50,6 +50,13 @@ describe('normalizeConversationLanguage', () => {
     );
   });
 
+  it.each(['zxx', 'mul', 'mul-Latn', 'und', 'mis'])(
+    'rejects the special-purpose code %s, which names no language for prose',
+    (tag) => {
+      expect(normalizeConversationLanguage(tag).error.code).toBe('conversation_language_invalid');
+    },
+  );
+
   it('rejects extensions, variants and private-use tags', () => {
     for (const raw of ['en-US-x-foo', 'de-DE-1901', 'en-u-ca-buddhist']) {
       expect(normalizeConversationLanguage(raw).error.code).toBe('conversation_language_invalid');
@@ -112,6 +119,33 @@ describe('renderConversationLanguageBlock', () => {
     expect(block).toContain('`units:`');
     expect(block).toContain('`[[slug]]`');
     expect(block).toContain('`X. Other (please specify)`');
+    // Upstream's preserved tokens (v2.6.18 core/memory/org.md): literals the
+    // engine compares, sensors match or reviewers emit.
+    for (const token of [
+      '`[Answer]:`',
+      '`A. Accept assumptions`',
+      '`B. Convert to follow-up questions`',
+      '`None.`',
+      '`## Sources`',
+      '`## Assumptions & Open Questions`',
+      '`## Assumption Confirmation`',
+      '`## Review`',
+      '`[desc]`',
+      '`[memory:M<n>]`',
+      '`Initial description:`',
+      '`Workflow-selected scope:`',
+      '`READY`',
+      '`NOT-READY`',
+      '`OBJECT:`',
+      '`FR-1`',
+      'mermaid keywords',
+      'H2',
+    ]) {
+      expect(block).toContain(token);
+    }
+    // Headings are not prose to translate wholesale: template and sensor H2s
+    // stay English.
+    expect(block).not.toContain('artifact content and headings');
   });
 });
 
