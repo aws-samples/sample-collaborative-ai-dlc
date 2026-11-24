@@ -76,6 +76,66 @@ describe('readImageScanFindings', () => {
     expect(second).toEqual(first);
   });
 
+  it('lists the findings of an enhanced scan, which ECR returns in their own shape', async () => {
+    const result = await readImageScanFindings({
+      ecrClient: client({
+        imageScanStatus: { status: 'ACTIVE' },
+        imageScanFindings: {
+          findingSeverityCounts: { HIGH: 1, CRITICAL: 1, MEDIUM: 1 },
+          enhancedFindings: [
+            {
+              severity: 'HIGH',
+              title: 'CVE-2026-1 - openssl',
+              packageVulnerabilityDetails: {
+                vulnerabilityId: 'CVE-2026-1',
+                sourceUrl: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
+                vulnerablePackages: [{ name: 'openssl', version: '3.5.9' }],
+              },
+            },
+            {
+              severity: 'CRITICAL',
+              title: 'GHSA-xxxx - cap-primitives',
+              packageVulnerabilityDetails: {
+                vulnerabilityId: 'GHSA-xxxx',
+                referenceUrls: ['https://github.com/advisories/GHSA-xxxx'],
+                vulnerablePackages: [{ name: 'cap-primitives', version: '4.0.2' }],
+              },
+            },
+            // A finding without package details still shows up.
+            { severity: 'MEDIUM', title: 'Untitled package finding' },
+          ],
+        },
+      }),
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+      imageDigest: digest,
+      now: () => '2026-11-20T00:00:00.000Z',
+    });
+
+    expect(result.findings).toEqual([
+      {
+        id: 'GHSA-xxxx',
+        severity: 'CRITICAL',
+        packageName: 'cap-primitives',
+        packageVersion: '4.0.2',
+        uri: 'https://github.com/advisories/GHSA-xxxx',
+      },
+      {
+        id: 'CVE-2026-1',
+        severity: 'HIGH',
+        packageName: 'openssl',
+        packageVersion: '3.5.9',
+        uri: 'https://security-tracker.debian.org/tracker/CVE-2026-1',
+      },
+      {
+        id: 'Untitled package finding',
+        severity: 'MEDIUM',
+        packageName: null,
+        packageVersion: null,
+        uri: null,
+      },
+    ]);
+  });
+
   it('returns no result while the scan is pending or cannot run', async () => {
     for (const status of ['PENDING', 'IN_PROGRESS', 'FAILED', 'UNSUPPORTED_IMAGE', undefined]) {
       await expect(
