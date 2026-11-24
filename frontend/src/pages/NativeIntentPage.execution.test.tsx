@@ -45,7 +45,7 @@ vi.mock('@/contexts/DiscussionContext', () => ({
     throw new Error('Platform discussion mounted on native route');
   },
 }));
-import NativeIntentPage from './NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 
 const ready: NativeIntent = {
   id: 'run-1',
@@ -88,9 +88,7 @@ const execution: NativeExecution = {
   projectionStatus: 'complete',
 };
 function executionStatus() {
-  return within(screen.getByRole('region', { name: 'Native execution status' })).getByRole(
-    'status',
-  );
+  return screen.getByRole('status', { name: 'Intent status' });
 }
 const waiting: NativeIntent = { ...ready, execution };
 const publication: NativePublication = {
@@ -159,7 +157,10 @@ function renderPage() {
     <MemoryRouter initialEntries={['/space/project-1/native-intent/run-1']}>
       <Link to="/space/project-1/native-intent/run-2">Other native run</Link>
       <Routes>
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+        <Route
+          path="/space/:projectId/native-intent/:intentId/*"
+          element={<NativeIntentFixture />}
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -177,7 +178,7 @@ async function click(name: string) {
   await act(async () => fireEvent.click(screen.getByRole('button', { name })));
 }
 function cleared() {
-  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Native intent$/);
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Intent$/);
   expect(screen.queryByText(ready.prompt)).not.toBeInTheDocument();
   expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
   expect(screen.queryByText('export const pipe = 1;')).not.toBeInTheDocument();
@@ -205,7 +206,7 @@ it('shows the admitted dependency retention policy without changing published so
       /Generated node_modules dependencies remain in the persistent workspace/,
     ),
   ).toBeInTheDocument();
-  await userEvent.setup().click(screen.getByRole('tab', { name: 'Files' }));
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Work' }));
   expect(await screen.findByRole('button', { name: /src\/pipe.ts/ })).toBeInTheDocument();
 });
 afterEach(() => {
@@ -528,14 +529,14 @@ it('reloads committed files and links a retained manifest graph to the named fil
   await screen.findByText('Which pipe style?');
   expect(api.start).not.toHaveBeenCalled();
   expect(api.prepare).not.toHaveBeenCalled();
-  expect(screen.getByText(/Current committed revision 1/)).toBeInTheDocument();
+  expect(screen.getByText(/Published revision 1/)).toBeInTheDocument();
   for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR', 'Delete intent'])
     expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   first.unmount();
   renderPage();
   await screen.findByText('Which pipe style?');
   expect(api.publication).toHaveBeenCalledTimes(2);
-  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(screen.getByRole('button', { name: 'Graph' }));
   expect(await screen.findByRole('link', { name: 'Open file for Pipe source' })).toHaveAttribute(
     'href',
     `/space/project-1/native-intent/run-1?nativeRevision=1.${publicationId}&nativeFile=${codeId}%3A${publication.files[1].sha256}`,
@@ -551,6 +552,7 @@ it('does not announce a question until its committed file is available', async (
   api.file.mockReturnValueOnce(pending.promise);
   renderPage();
   await screen.findByText('Loading the published question file…');
+  fireEvent.click(screen.getByText('Workflow details'));
   const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
   expect(
     screen.getByText('Loading the published question file…').compareDocumentPosition(evidence) &
@@ -570,7 +572,7 @@ it('handles binary content without interpreting it as markdown, an image or exec
   const user = userEvent.setup();
   renderPage();
   await screen.findByText('Which pipe style?');
-  await user.click(screen.getByRole('tab', { name: 'Files' }));
+  await user.click(screen.getByRole('button', { name: 'Work' }));
   await user.click(screen.getByRole('button', { name: /assets\/pipe.png/ }));
   expect(await screen.findByText(/Binary file. Preview is not available/)).toBeInTheDocument();
   expect(screen.queryByText('AAEC')).not.toBeInTheDocument();
@@ -598,11 +600,11 @@ it.each(['file', 'graph', 'publication'] as const)(
     await click('Refresh status');
     if (operation === 'file') {
       api.file.mockRejectedValueOnce(new ApiError(403, 'File access revoked'));
-      await user.click(screen.getByRole('tab', { name: 'Files' }));
+      await user.click(screen.getByRole('button', { name: 'Work' }));
       await user.click(screen.getByRole('button', { name: /src\/pipe.ts/ }));
     } else {
       api.graph.mockRejectedValueOnce(new ApiError(403, 'Graph access revoked'));
-      await user.click(screen.getByRole('tab', { name: 'Graph' }));
+      await user.click(screen.getByRole('button', { name: 'Graph' }));
     }
     await screen.findByRole('alert');
     cleared();
@@ -625,7 +627,7 @@ it.each(['listing', 'expiry', 'reset'] as const)(
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('Loading the published question file…');
-    await user.click(screen.getByRole('tab', { name: 'Graph' }));
+    await user.click(screen.getByRole('button', { name: 'Graph' }));
     expect(api.graph).toHaveBeenCalledTimes(1);
     api.get.mockRejectedValue(new ApiError(403, 'Signed out'));
     await act(async () => {
@@ -653,9 +655,9 @@ it('clears already-loaded files and graph on a later file denial', async () => {
   const user = userEvent.setup();
   renderPage();
   await screen.findByText('Which pipe style?');
-  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('link', { name: 'Open file for Pipe source' });
-  await user.click(screen.getByRole('tab', { name: 'Files' }));
+  await user.click(screen.getByRole('button', { name: 'Work' }));
   await user.click(screen.getByRole('button', { name: /src\/pipe.ts/ }));
   await screen.findByText('export const pipe = 1;');
   api.file.mockRejectedValueOnce(new ApiError(404, 'File is no longer available'));
@@ -698,9 +700,9 @@ it('honors a late file denial after an isolated graph transport error', async ()
   const user = userEvent.setup();
   renderPage();
   await screen.findByText('Loading the published question file…');
-  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('alert');
-  expect(screen.getByText(ready.title)).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Knowledge graph' })).toBeInTheDocument();
   await act(async () => pending.reject(new ApiError(403, 'Membership revoked')));
   cleared();
 });
@@ -741,16 +743,16 @@ it('links a verified section to its source lines and preserves file access after
   const user = userEvent.setup();
   renderPage();
   await screen.findByText('Which pipe style?');
-  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(screen.getByRole('button', { name: 'Graph' }));
   expect(await screen.findByRole('link', { name: 'Open file for Source section' })).toHaveAttribute(
     'href',
     `/space/project-1/native-intent/run-1?nativeRevision=1.${publicationId}&nativeFile=${file.id}%3A${file.sha256}#L1-L1`,
   );
-  await user.click(screen.getByRole('tab', { name: 'Files' }));
+  await user.click(screen.getByRole('button', { name: 'Work' }));
   api.graph.mockRejectedValueOnce(new Error('Graph unavailable'));
-  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('alert');
-  await user.click(screen.getByRole('tab', { name: 'Overview' }));
+  await user.click(screen.getByRole('button', { name: 'Work' }));
   expect(await screen.findByText('Which pipe style?')).toBeInTheDocument();
 });
 
@@ -786,14 +788,16 @@ it.each(['publication', 'file', 'graph'] as const)(
     renderPage();
     if (operation === 'graph') {
       await screen.findByText('Which pipe style?');
-      await user.click(screen.getByRole('tab', { name: 'Graph' }));
+      await user.click(screen.getByRole('button', { name: 'Graph' }));
     }
     await screen.findByRole('alert');
-    expect(screen.getByText(ready.title)).toBeInTheDocument();
+    if (operation === 'graph')
+      expect(screen.getByRole('region', { name: 'Knowledge graph' })).toBeInTheDocument();
+    else expect(screen.getByText(ready.title)).toBeInTheDocument();
     expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Open file for/ })).not.toBeInTheDocument();
     if (operation === 'graph') {
-      await user.click(screen.getByRole('tab', { name: 'Overview' }));
+      await user.click(screen.getByRole('button', { name: 'Work' }));
       expect(await screen.findByText('Which pipe style?')).toBeInTheDocument();
     } else expect(screen.getByRole('button', { name: 'Reload publication' })).toBeEnabled();
   },
@@ -817,13 +821,12 @@ it('observes another member cancelling a legacy wait after graph projection catc
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(executionStatus()).toHaveTextContent('Waiting for input');
   expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
-  await act(async () =>
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0 }),
-  );
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Graph' })));
   expect(screen.getByText(/Graph projection is still pending/)).toBeInTheDocument();
   expect(api.graph).not.toHaveBeenCalled();
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(api.graph).toHaveBeenCalledTimes(1);
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Work' })));
   api.get.mockResolvedValueOnce({
     ...waiting,
     execution: {
@@ -1022,9 +1025,9 @@ it.each([
     });
     renderPage();
     await screen.findByText('Which pipe style?');
-    expect(
-      screen.getByText(`${message} Any committed revision remains available below.`),
-    ).toBeVisible();
+    expect(screen.getByText(message)).toBeVisible();
+    expect(screen.getByText(`Failure: ${failureCode}`)).not.toBeVisible();
+    await userEvent.click(screen.getByText('Error details'));
     expect(screen.getByText(`Failure: ${failureCode}`)).toBeVisible();
     expect(
       screen.queryByRole('button', {

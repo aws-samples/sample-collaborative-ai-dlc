@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import NativeIntentPage from '@/pages/NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 import { api, ApiError } from '@/services/api';
 import type { NativeReplyRequest } from '@/services/nativeIntents';
 import { nativeInteractionFixture } from './native-interaction.fixture';
@@ -95,7 +95,10 @@ root.render(
       </aside>
       <MemoryRouter initialEntries={['/space/preview-project/native-intent/preview-run']}>
         <Routes>
-          <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+          <Route
+            path="/space/:projectId/native-intent/:intentId/*"
+            element={<NativeIntentFixture />}
+          />
           <Route
             path="*"
             element={

@@ -100,10 +100,10 @@ function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: 
           className="block text-muted-foreground underline"
           onClick={() => navigate(`/space/${projectId}`)}
         >
-          View native intents in space
+          View all intents in space
         </button>
       )}
-      {listing.loading && <p role="status">Loading native intents…</p>}
+      {listing.loading && <p role="status">Loading intents…</p>}
       {listing.error && (
         <div role="alert" className="text-destructive">
           {listing.error}
@@ -112,7 +112,7 @@ function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: 
             disabled={listing.loading}
             onClick={() => void refreshNativeIntents(projectId, 'refresh', true)}
           >
-            Retry native intents
+            Retry loading intents
           </button>
         </div>
       )}

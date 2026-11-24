@@ -25,7 +25,10 @@ export function groupByPhase(rows: IntentStageRow[]): PhaseGroup[] {
 
 export type PhaseState = 'done' | 'active' | 'pending';
 
-export function derivePhaseState(group: PhaseGroup, currentPhase?: string | null): PhaseState {
+export function derivePhaseState(
+  group: { phase: string; done: number; total: number; rows: { state: string }[] },
+  currentPhase?: string | null,
+): PhaseState {
   if (group.done === group.total && group.total > 0) return 'done';
   if (
     group.rows.some((r) => r.state === 'RUNNING' || r.state === 'WAITING_FOR_HUMAN') ||

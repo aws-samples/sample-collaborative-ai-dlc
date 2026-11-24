@@ -1,3 +1,4 @@
+import { parseNativeHistoryLocation } from '@/lib/nativeRevisionLinks';
 import { isNativeIntentRoute } from '@/lib/intentDiscovery';
 import { Outlet, useParams, useLocation } from 'react-router';
 import { cn } from '@/lib/utils';
@@ -37,13 +38,12 @@ const NON_WORK_SUFFIXES = ['/graph', '/audit', '/compose', '/observability'];
 
 /** True when the given pathname represents a "work" route where the panel opens. */
 export function shouldDefaultOpen(pathname: string): boolean {
-  if (isNativeIntentRoute(pathname)) return !pathname.endsWith('/new');
   // Sprint routes are always work routes.
   if (/\/sprint\//.test(pathname)) return true;
   // Intent creation is a focused form, not an active intent workspace.
-  if (/\/intent\/new(?:\/|$)/.test(pathname)) return false;
+  if (/\/(?:native-)?intent\/new(?:\/|$)/.test(pathname)) return false;
   // Intent routes: open unless the path ends with a non-work section.
-  if (/\/intent\//.test(pathname)) {
+  if (/\/(?:native-)?intent\//.test(pathname)) {
     return !NON_WORK_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
   }
   // Top-level (dashboard, observability, blocks, etc.) — panel hidden anyway.
@@ -85,11 +85,17 @@ export function AppShell() {
   const onProjectPage = !!projectId && !inSprint && !inIntent && !inNative;
   // Graph pages render a full-bleed canvas with their own toolbar: the shell's
   // content padding would float that toolbar mid-pane, so drop it there.
-  const onGraphPage = !inNative && location.pathname.endsWith('/graph');
+  const onGraphPage =
+    location.pathname.endsWith('/graph') &&
+    (!inNative || parseNativeHistoryLocation(location.search).mode === 'current');
 
   useEffect(() => {
-    if (!inNative && intentId) setLastIntentSection(intentId, detectSection(location.pathname));
-  }, [inNative, intentId, location.pathname]);
+    if (intentId)
+      setLastIntentSection(
+        inNative ? `native:${projectId}:${intentId}` : intentId,
+        detectSection(location.pathname),
+      );
+  }, [inNative, projectId, intentId, location.pathname]);
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable

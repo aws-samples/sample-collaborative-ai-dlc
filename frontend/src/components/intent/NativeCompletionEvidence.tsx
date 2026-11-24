@@ -1,3 +1,10 @@
+import { WorkflowPhaseDiagram, type DiagramStage } from './IntentPhaseDiagram';
+import {
+  WorkflowPhaseBreadcrumb,
+  type IntentPhase,
+  type StepState,
+} from '@/components/layout/IntentPipelineBar';
+import { humanizeStageId } from './documentHelpers';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Button } from '@/components/ui/button';
 import { useOptionalAuth } from '@/contexts/AuthContext';
@@ -18,6 +25,13 @@ import {
 } from '@/services/nativeCompletion';
 import type { NativeRevisionTarget } from '@/services/nativeHistory';
 
+const diagramStates: Record<StepState, DiagramStage['state']> = {
+  done: 'SUCCEEDED',
+  running: 'RUNNING',
+  failed: 'FAILED',
+  pending: 'PENDING',
+  unknown: 'UNKNOWN',
+};
 interface Props {
   projectId: string;
   executionId: string;
@@ -49,12 +63,32 @@ export function NativeCompletionEvidence(props: Props) {
   );
 }
 
-function Completion({ projectId, executionId, attemptId, target, onAccessFailure }: Props) {
-  const { publicationId, publicationSequence } = target;
+function Completion(props: Props) {
+  const observation = usePublicationCompletion(
+    props.projectId,
+    props.executionId,
+    props.attemptId,
+    props.target,
+    props.onAccessFailure,
+  );
+  return <CompletionDetails observation={observation} target={props.target} />;
+}
+
+// Callers key the reader to the authorized member, intent, attempt and named publication.
+export function usePublicationCompletion(
+  projectId: string,
+  executionId: string,
+  attemptId: string | undefined,
+  target: NativeRevisionTarget | null,
+  onAccessFailure: Props['onAccessFailure'],
+) {
+  const publicationId = target?.publicationId;
+  const publicationSequence = target?.publicationSequence;
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [error, setError] = useState(false);
   const [reload, setReload] = useState(0);
   useEffect(() => {
+    if (!attemptId || !publicationId || publicationSequence === undefined) return;
     let active = true;
     const epoch = currentSessionEpoch();
     const access = getNativeListing(projectId).accessRevision ?? 0;
@@ -85,6 +119,22 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
     reload,
     onAccessFailure,
   ]);
+  const refresh = () => {
+    setEvidence(null);
+    setError(false);
+    setReload((n) => n + 1);
+  };
+  return { evidence, error, refresh };
+}
+
+type Observation = ReturnType<typeof usePublicationCompletion>;
+export function CompletionDetails({
+  observation: { evidence, error, refresh },
+  target,
+}: {
+  observation: Observation;
+  target: NativeRevisionTarget;
+}) {
   const decision = evidence?.memberDecision;
   return (
     <section
@@ -108,13 +158,7 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
           <p>
             Completion evidence is unavailable. Files, results and current replies remain available.
           </p>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setError(false);
-              setReload((n) => n + 1);
-            }}
-          >
+          <Button variant="outline" onClick={refresh}>
             Retry evidence
           </Button>
         </>
@@ -170,18 +214,98 @@ function Completion({ projectId, executionId, attemptId, target, onAccessFailure
             </p>
           )}
           {evidence.definition && <Definition definition={evidence.definition} />}
-          <Button
-            variant="outline"
-            onClick={() => {
-              setEvidence(null);
-              setReload((n) => n + 1);
-            }}
-          >
+          <Button variant="outline" onClick={refresh}>
             Refresh evidence
           </Button>
         </>
       )}
     </section>
+  );
+}
+
+export function NativeWorkflowProgress({
+  presentation,
+  observation: { evidence, error },
+}: {
+  presentation: 'work' | 'overview';
+  observation: Observation;
+}) {
+  const groups = new Map<string, IntentPhase>();
+  const plan =
+    evidence?.policyStatus === 'protected_engine' && evidence.effectivePlan !== 'not_recorded'
+      ? evidence.effectivePlan
+      : null;
+  for (const stage of plan?.stages ?? []) {
+    const group = groups.get(stage.phase) ?? { phase: stage.phase, steps: [], excluded: 0 };
+    if (stage.action === 'SKIP') group.excluded++;
+    else {
+      const states: Record<string, StepState> = {
+        completed: 'done',
+        skipped: 'done',
+        'in-progress': 'running',
+        failed: 'failed',
+        pending: 'pending',
+        'not-started': 'pending',
+      };
+      group.steps.push({ stageId: stage.id, state: states[stage.state] ?? 'unknown' });
+    }
+    groups.set(stage.phase, group);
+  }
+  return (
+    <div className="space-y-2">
+      {plan ? (
+        presentation === 'overview' ? (
+          <WorkflowPhaseDiagram
+            phaseNameOf={humanizeStageId}
+            phases={[...groups.values()]
+              .filter((group) => group.steps.length)
+              .map((group) => ({
+                phase: group.phase,
+                total: group.steps.length,
+                done: group.steps.filter((step) => step.state === 'done').length,
+                rows: group.steps.map((step) => ({
+                  stageId: step.stageId,
+                  label: humanizeStageId(step.stageId),
+                  stageInstanceId: null,
+                  unitSlug: null,
+                  state: diagramStates[step.state],
+                })),
+              }))}
+          />
+        ) : (
+          <WorkflowPhaseBreadcrumb
+            phases={[...groups.values()].filter((group) => group.steps.length)}
+            scope={plan.scope}
+            phaseNameOf={humanizeStageId}
+          />
+        )
+      ) : (
+        presentation === 'overview' && (
+          <p className="text-sm text-muted-foreground">
+            {error
+              ? 'Workflow progress is unavailable.'
+              : evidence
+                ? 'No workflow plan is recorded for this revision.'
+                : 'Loading workflow progress…'}
+          </p>
+        )
+      )}
+
+      {evidence?.workflowCompletion === 'complete' && (
+        <p role="status" className="text-sm font-medium">
+          Workflow completed{evidence.requiredChecks === 'failed' && ' with failed checks'}
+          {evidence.finalReview === 'concerns' &&
+            (evidence.requiredChecks === 'failed'
+              ? ' and review concerns'
+              : ' with review concerns')}
+        </p>
+      )}
+      {evidence?.workflowCompletion === 'failed' && (
+        <p role="status" className="text-sm font-medium text-destructive">
+          Workflow failed
+        </p>
+      )}
+    </div>
   );
 }
 

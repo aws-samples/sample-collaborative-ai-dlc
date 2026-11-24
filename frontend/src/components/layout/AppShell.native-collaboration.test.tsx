@@ -180,7 +180,7 @@ function member(name: string, entry = '/space/project/native-intent/one') {
         <MemoryRouter initialEntries={[entry]}>
           <Routes>
             <Route element={<AppShell />}>
-              <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
+              <Route path="/space/:projectId/native-intent/:intentId/*" element={<IntentView />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -412,7 +412,7 @@ describe('shared native reply drafts', () => {
     });
     const box = within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' });
     const response = within(view.container).getByText('Confirm the next required human decision.');
-    expect(box.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(response.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(view.container).getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(service.respond).toHaveBeenCalledTimes(1);
     view.unmount();
@@ -426,7 +426,7 @@ describe('shared native reply drafts', () => {
 
     for (const view of [ada, grace]) {
       expect(
-        within(view.container).getByRole('region', { name: 'Native execution status' }),
+        within(view.container).getByRole('status', { name: 'Intent status' }),
       ).toHaveTextContent('Awaiting member reply');
       expect(
         within(view.container).getByRole('region', { name: 'Reply progress' }),
@@ -480,7 +480,7 @@ describe('shared native reply drafts', () => {
     await within(ada.container).findByText('Reply accepted. Delivery pending.');
     for (const view of [ada, grace]) {
       expect(
-        within(view.container).getByRole('region', { name: 'Native execution status' }),
+        within(view.container).getByRole('status', { name: 'Intent status' }),
       ).toHaveTextContent('Continuing agent');
       expect(within(view.container).queryByText('Awaiting member reply')).toBeNull();
       expect(within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
@@ -705,7 +705,7 @@ describe('native graph source links in the shared Intent shell', () => {
   it('follows a section and reopens its copied file link as a second member after the same path changes', async () => {
     const { current, read } = await fixture();
     const first = member('Member A');
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Graph' }), { button: 0 });
+    fireEvent.click(await screen.findByRole('button', { name: 'Graph' }));
     const source = await screen.findByRole('link', { name: 'Open file for Scope' });
     const copied = source.getAttribute('href')!;
     expect(copied).toBe(`${href}#L2-L3`);
@@ -747,8 +747,8 @@ describe('native graph source links in the shared Intent shell', () => {
   it('offers the same source when a member inspects a section through a graph relationship', async () => {
     await fixture();
     member('Member A');
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Graph' }), { button: 0 });
-    const canvas = within(screen.getByRole('tabpanel', { name: 'Graph' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Graph' }));
+    const canvas = within(screen.getByRole('region', { name: 'Knowledge graph' }));
     fireEvent.click(await canvas.findByText('Moving pipes'));
     fireEvent.click(canvas.getByRole('button', { name: /Scope.*Section/i }));
     expect(canvas.getByText('Lines 2–3 (markdown-section)')).toBeVisible();
@@ -834,8 +834,8 @@ describe('native artifact discussion and Quorum', () => {
         : thread,
     );
     const view = member('Ada');
-    fireEvent.mouseDown(await within(view.container).findByRole('tab', { name: 'Files' }));
-    fireEvent.click(await within(view.container).findByRole('tab', { name: 'Files' }));
+    fireEvent.mouseDown(await within(view.container).findByRole('button', { name: 'Work' }));
+    fireEvent.click(await within(view.container).findByRole('button', { name: 'Work' }));
     fireEvent.click(await within(view.container).findByRole('button', { name: /docs\/plan\.md/ }));
     fireEvent.click(await within(view.container).findByRole('button', { name: 'Discuss' }));
     await waitFor(() =>

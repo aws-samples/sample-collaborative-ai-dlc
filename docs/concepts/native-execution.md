@@ -6165,6 +6165,7 @@ the current contract for newly created executions.
       **Dev milestone, 2026-11-21.** Graph source links open the exact published file and its recorded lines in History (`af429ab3`).
       The dashboard, sidebar and space list surface shared replies and eligible fresh-session recovery on loaded pages (`7e539b23`).
       Two-member reopening and status transitions passed locally. Signed-in dev acceptance remains open.
+      Native intents use the standard Intent sidebar (Overview, Work and Graph), workflow progress and work products. The routed regression covers browser Back, draft continuity and exact published-file links.
 - [ ] **NE-14 — Simplify frontend reads and state acceptance.** Coalesce overlapping
       detail loads and reuse revision/access/session checks. Remove per-item
       discovery detail reads where a protected execution summary or shared request

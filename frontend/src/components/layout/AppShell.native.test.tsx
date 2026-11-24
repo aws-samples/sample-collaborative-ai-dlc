@@ -93,7 +93,7 @@ vi.mock('@/hooks/useResizablePanel', () => ({
   }),
 }));
 import { AppShell } from './AppShell';
-import NativeIntentPage from '@/pages/NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 const dto = {
   intent: {
     id: 'same',
@@ -121,7 +121,10 @@ const renderShell = (native = false) =>
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/space/:projectId/intent/:intentId" element={<p>Platform body</p>} />
-          <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+          <Route
+            path="/space/:projectId/native-intent/:intentId/*"
+            element={<NativeIntentFixture />}
+          />
         </Route>
       </Routes>
     </MemoryRouter>,

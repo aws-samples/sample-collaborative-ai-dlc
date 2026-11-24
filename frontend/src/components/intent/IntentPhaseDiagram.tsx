@@ -28,8 +28,6 @@ export function IntentPhaseDiagram() {
     [planReady, stageRows, initializationPhasePaths],
   );
 
-  const [expandedManual, setExpandedManual] = useState<Record<string, boolean>>({});
-
   if (!planReady) {
     return (
       <div className="space-y-2" aria-hidden="true">
@@ -40,6 +38,40 @@ export function IntentPhaseDiagram() {
     );
   }
 
+  return (
+    <WorkflowPhaseDiagram
+      phases={phases}
+      currentPhasePath={currentPhasePath}
+      phaseNameOf={phaseNameOf}
+      selectedStageId={selectedStageId}
+      setSelectedStageId={setSelectedStageId}
+    />
+  );
+}
+export type DiagramStage = Pick<IntentStageRow, 'stageId' | 'stageInstanceId' | 'unitSlug'> & {
+  state: IntentStageRow['state'] | 'UNKNOWN';
+  label?: string;
+};
+export interface DiagramPhase {
+  phase: string;
+  rows: DiagramStage[];
+  done: number;
+  total: number;
+}
+export function WorkflowPhaseDiagram({
+  phases,
+  currentPhasePath,
+  phaseNameOf,
+  selectedStageId,
+  setSelectedStageId,
+}: {
+  phases: DiagramPhase[];
+  currentPhasePath?: string | null;
+  phaseNameOf: (phase: string) => string;
+  selectedStageId?: string | null;
+  setSelectedStageId?: (stageId: string | null) => void;
+}) {
+  const [expandedManual, setExpandedManual] = useState<Record<string, boolean>>({});
   if (phases.length === 0) {
     return <p className="text-sm text-muted-foreground">No phases resolved yet.</p>;
   }
@@ -142,8 +174,8 @@ export function IntentPhaseDiagram() {
                   // per-unit sub-rows so once-per-workflow stages before it
                   // (design) and after it (build & test) keep their position.
                   type Segment =
-                    | { kind: 'flat'; rows: IntentStageRow[] }
-                    | { kind: 'units'; order: string[]; byUnit: Map<string, IntentStageRow[]> };
+                    | { kind: 'flat'; rows: DiagramStage[] }
+                    | { kind: 'units'; order: string[]; byUnit: Map<string, DiagramStage[]> };
                   const segments: Segment[] = [];
                   for (const row of group.rows) {
                     if (!row.unitSlug) {
@@ -164,7 +196,7 @@ export function IntentPhaseDiagram() {
                     last.byUnit.get(row.unitSlug)!.push(row);
                   }
 
-                  const chipRow = (rows: IntentStageRow[], hideUnitSlug: boolean) => (
+                  const chipRow = (rows: DiagramStage[], hideUnitSlug: boolean) => (
                     <div className="flex flex-wrap items-center gap-1">
                       {rows.map((row, rowIdx) => (
                         <div
@@ -179,10 +211,15 @@ export function IntentPhaseDiagram() {
                             isActive={isActive}
                             palette={palette}
                             selected={selectedStageId === stageRowKey(row)}
-                            onToggle={() =>
-                              setSelectedStageId(
-                                selectedStageId === stageRowKey(row) ? null : stageRowKey(row),
-                              )
+                            onToggle={
+                              setSelectedStageId
+                                ? () =>
+                                    setSelectedStageId(
+                                      selectedStageId === stageRowKey(row)
+                                        ? null
+                                        : stageRowKey(row),
+                                    )
+                                : undefined
                             }
                             hideUnitSlug={hideUnitSlug}
                           />
@@ -233,11 +270,11 @@ function StageChip({
   onToggle,
   hideUnitSlug,
 }: {
-  row: IntentStageRow;
+  row: DiagramStage;
   isActive: boolean;
   palette: ReturnType<typeof phaseColorAt>;
   selected: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
   hideUnitSlug: boolean;
 }) {
   const chipState = row.state;
@@ -247,10 +284,11 @@ function StageChip({
   const isWaiting = chipState === 'WAITING_FOR_HUMAN';
   const isFailed = chipState === 'FAILED';
 
+  const Chip = onToggle ? 'button' : 'span';
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
+    <Chip
+      type={onToggle ? 'button' : undefined}
+      aria-pressed={onToggle ? selected : undefined}
       onClick={onToggle}
       className={cn(
         'relative flex flex-col items-center justify-center rounded-md border-2 text-center transition-all',
@@ -295,7 +333,7 @@ function StageChip({
                 : 'text-foreground/80',
         )}
       >
-        {row.stageId}
+        {row.label ?? row.stageId}
       </span>
       {row.unitSlug && !hideUnitSlug && (
         <span
@@ -350,6 +388,6 @@ function StageChip({
           )}
         />
       )}
-    </button>
+    </Chip>
   );
 }

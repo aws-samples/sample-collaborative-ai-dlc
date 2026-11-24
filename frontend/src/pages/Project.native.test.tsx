@@ -42,7 +42,7 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 import Project, { clearIntentsCacheForTests } from './Project';
-import NativeIntentPage from './NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 
 const summary = (id = 'same'): NativeIntentSummary => ({
   id,
@@ -71,7 +71,10 @@ const renderPage = () =>
     <MemoryRouter initialEntries={['/space/p1']}>
       <Routes>
         <Route path="/space/:projectId" element={<Project />} />
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+        <Route
+          path="/space/:projectId/native-intent/:intentId/*"
+          element={<NativeIntentFixture />}
+        />
         <Route path="/space/:projectId/intent/:intentId" element={<p>Platform detail route</p>} />
       </Routes>
     </MemoryRouter>,
@@ -133,7 +136,10 @@ describe('Space native discovery', () => {
         prompt: 'Protected native prompt',
       });
       await userEvent.click({ a: affected, b: unprepared, c: healthy }[target]!);
-      expect(await screen.findByText('Protected native prompt')).toBeVisible();
+      await screen.findByText('Protected native prompt');
+      const original = screen.queryByText('Original request');
+      if (original) fireEvent.click(original);
+      expect(screen.getByText('Protected native prompt')).toBeVisible();
       expect(mocks.nativeGet).toHaveBeenLastCalledWith('p1', target);
       expect(screen.queryByText('Platform detail route')).not.toBeInTheDocument();
     },
@@ -142,7 +148,7 @@ describe('Space native discovery', () => {
     mocks.nativeGet.mockRejectedValueOnce(new Error('Status unavailable'));
     renderPage();
     await screen.findByRole('button', { name: /Native same Native Execution status unavailable/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry loading intents' }));
     expect(
       await screen.findByRole('button', { name: /Native same Native Workspace ready/ }),
     ).toBeVisible();
@@ -337,7 +343,7 @@ describe('Space native discovery', () => {
     );
     expect(screen.getByText('Platform same')).toBeInTheDocument();
     mocks.nativeList.mockResolvedValueOnce({ items: [summary()], nextCursor: null });
-    await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry loading intents' }));
     expect(await screen.findByText('Native same')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(mocks.list).toHaveBeenCalledTimes(1);
@@ -352,7 +358,7 @@ describe('Space native discovery', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(/no longer accessible/),
     );
     expect(screen.getByText('Platform same')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry loading intents' }));
     expect(screen.queryByText('Native same')).not.toBeInTheDocument();
   });
 });

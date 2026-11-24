@@ -26,14 +26,16 @@ export function intentSectionPath(
   projectId: string,
   intentId: string,
   section: IntentSection,
+  backend: 'platform' | 'native' = 'platform',
 ): string {
+  const base = `/space/${encodeURIComponent(projectId)}/${backend === 'native' ? 'native-intent' : 'intent'}/${encodeURIComponent(intentId)}`;
   switch (section) {
     case 'work':
-      return `/space/${projectId}/intent/${intentId}`;
+      return base;
     case 'graph':
-      return `/space/${projectId}/intent/${intentId}/graph`;
+      return `${base}/graph`;
     case 'overview':
     default:
-      return `/space/${projectId}/intent/${intentId}/observability`;
+      return `${base}/observability`;
   }
 }

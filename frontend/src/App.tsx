@@ -136,10 +136,13 @@ function App() {
                     path="/space/:projectId/native-intent/new"
                     element={<NewNativeIntentPage />}
                   />
-                  <Route
-                    path="/space/:projectId/native-intent/:intentId"
-                    element={<IntentView />}
-                  />
+                  {['', '/observability', '/graph'].map((section) => (
+                    <Route
+                      key={section}
+                      path={`/space/:projectId/native-intent/:intentId${section}`}
+                      element={<IntentView />}
+                    />
+                  ))}
                   <Route
                     path="/space/:projectId/intent/:intentId/compose"
                     element={<IntentComposePage />}

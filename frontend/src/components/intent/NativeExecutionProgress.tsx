@@ -1,3 +1,4 @@
+import { IntentProgressCard } from './AgentProgressCard';
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { formatDuration } from './stageStyle';
@@ -129,80 +130,102 @@ export function NativeExecutionProgress({
   }, [activity?.rows, activity?.events, since, execution.attemptId, execution.turnSequence]);
   const stale = activity?.observedAt != null && Date.parse(now) - activity.observedAt > 10_000;
   return (
-    <section aria-label="Reply progress" className="space-y-2 rounded-md border bg-muted/30 p-4">
-      <p role="status" className="text-sm font-medium">
-        {replyStatus(execution, reply)}
-      </p>
-      {execution.turnSequence != null && (
-        <p className="text-xs">
-          Turn {execution.turnSequence} · attempt {execution.attemptId}
-          {writer > 0 && ` · latest observed writer ${writer}`}
-          {unpublished && ' · no committed publication for this turn'}
-        </p>
-      )}
-      {execution.turnSequence != null && unpublished && (
-        <NativeTurnObservations
-          attemptId={execution.attemptId}
-          sequence={execution.turnSequence}
-          events={activity?.events}
+    <section aria-label="Reply progress" className="space-y-2">
+      {continuing ? (
+        <IntentProgressCard
+          statusLabel={execution.status === 'RUNNING' ? 'Running' : 'Starting agent'}
+          statusSummary={
+            reply.receipt
+              ? replyStatus(execution, reply)
+              : (runtimeUpdate?.display?.title ?? (lastAt ? lastLabel : null))
+          }
+          onOutput={onViewActivity}
         />
-      )}
-      {execution.recovery?.reason === 'DELIVERY_UNCERTAIN' && reply.receipt && (
-        <p className="text-sm">The reply is saved.</p>
-      )}
-      {waiting && (
-        <p className="text-sm text-muted-foreground">
-          Waiting since reply acceptance: {formatDuration(reply.receipt!.acceptedAt, now)}. You can
-          leave this page and return to this intent.
+      ) : (
+        <p
+          role="status"
+          className={
+            reply.awaitingReply && reply.state === 'idle' ? 'sr-only' : 'text-sm font-medium'
+          }
+        >
+          {replyStatus(execution, reply)}
         </p>
       )}
-      {reply.state === 'sending' && !reply.receipt && (
-        <p className="text-sm text-muted-foreground">
-          Waiting for the server to confirm acceptance.
-        </p>
-      )}
-      {continuing && activity && (
-        <p className="text-xs text-muted-foreground">
-          {lastAt
-            ? `${lastLabel} last observed ${formatDuration(lastAt, now)} ago.`
-            : 'No activity has been observed for this turn yet.'}{' '}
-          Quiet intervals do not confirm that the agent has stopped.
-        </p>
-      )}
-      {firstUseful && (
-        <p className="text-xs text-muted-foreground">
-          First useful output from this writer: {firstUseful.timestamp} (runtime capture).
-        </p>
-      )}
-      {continuing && runtimeUpdate && (
-        <p className="break-words text-sm text-muted-foreground">
-          Last runtime update: {runtimeUpdate.display!.title}{' '}
-          <span className="text-xs">({formatDuration(runtimeUpdate.timestamp, now)} ago)</span>
-        </p>
-      )}
-      {activity && (
-        <p className="text-xs text-muted-foreground">
-          {activity.error
-            ? 'Activity updates are unavailable. The last observations may be incomplete.'
-            : stale
-              ? 'Activity has not refreshed recently. The last observations may be outdated.'
-              : activity.observedAt === null
-                ? 'Activity has not been confirmed yet.'
-                : 'Activity checked'}
-          {activity.observedAt !== null && (
-            <>
-              {' '}
-              {activity.error || stale ? 'Last activity check: ' : ''}
-              {formatDuration(new Date(activity.observedAt).toISOString(), now)} ago.
-            </>
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Activity details</summary>
+        <div className="mt-2 space-y-2">
+          {execution.turnSequence != null && (
+            <p className="text-xs">
+              Turn {execution.turnSequence} · attempt {execution.attemptId}
+              {writer > 0 && ` · latest observed writer ${writer}`}
+              {unpublished && ' · no committed publication for this turn'}
+            </p>
           )}
-        </p>
-      )}
-      {onViewActivity && (
-        <Button variant="ghost" size="sm" onClick={onViewActivity}>
-          View activity
-        </Button>
-      )}
+          {execution.turnSequence != null && unpublished && (
+            <NativeTurnObservations
+              attemptId={execution.attemptId}
+              sequence={execution.turnSequence}
+              events={activity?.events}
+            />
+          )}
+          {execution.recovery?.reason === 'DELIVERY_UNCERTAIN' && reply.receipt && (
+            <p className="text-sm">The reply is saved.</p>
+          )}
+          {waiting && (
+            <p className="text-sm text-muted-foreground">
+              Waiting since reply acceptance: {formatDuration(reply.receipt!.acceptedAt, now)}. You
+              can leave this page and return to this intent.
+            </p>
+          )}
+          {reply.state === 'sending' && !reply.receipt && (
+            <p className="text-sm text-muted-foreground">
+              Waiting for the server to confirm acceptance.
+            </p>
+          )}
+          {continuing && activity && (
+            <p className="text-xs text-muted-foreground">
+              {lastAt
+                ? `${lastLabel} last observed ${formatDuration(lastAt, now)} ago.`
+                : 'No activity has been observed for this turn yet.'}{' '}
+              Quiet intervals do not confirm that the agent has stopped.
+            </p>
+          )}
+          {firstUseful && (
+            <p className="text-xs text-muted-foreground">
+              First useful output from this writer: {firstUseful.timestamp} (runtime capture).
+            </p>
+          )}
+          {continuing && runtimeUpdate && (
+            <p className="break-words text-sm text-muted-foreground">
+              Last runtime update: {runtimeUpdate.display!.title}{' '}
+              <span className="text-xs">({formatDuration(runtimeUpdate.timestamp, now)} ago)</span>
+            </p>
+          )}
+          {activity && (
+            <p className="text-xs text-muted-foreground">
+              {activity.error
+                ? 'Activity updates are unavailable. The last observations may be incomplete.'
+                : stale
+                  ? 'Activity has not refreshed recently. The last observations may be outdated.'
+                  : activity.observedAt === null
+                    ? 'Activity has not been confirmed yet.'
+                    : 'Activity checked'}
+              {activity.observedAt !== null && (
+                <>
+                  {' '}
+                  {activity.error || stale ? 'Last activity check: ' : ''}
+                  {formatDuration(new Date(activity.observedAt).toISOString(), now)} ago.
+                </>
+              )}
+            </p>
+          )}
+          {!continuing && onViewActivity && (
+            <Button variant="ghost" size="sm" onClick={onViewActivity}>
+              View activity
+            </Button>
+          )}
+        </div>
+      </details>
     </section>
   );
 }

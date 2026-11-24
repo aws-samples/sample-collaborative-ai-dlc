@@ -40,7 +40,7 @@ function renderSidebar(path = '/dashboard') {
         <Route path="/space/:projectId/intent/:intentId" element={<AppSidebar />} />
         <Route path="/space/:projectId/intent/:intentId/observability" element={<AppSidebar />} />
         <Route path="/space/:projectId/intent/:intentId/graph" element={<AppSidebar />} />
-        <Route path="/space/:projectId/native-intent/:intentId" element={<AppSidebar />} />
+        <Route path="/space/:projectId/native-intent/:intentId/*" element={<AppSidebar />} />
         <Route path="*" element={<AppSidebar />} />
       </Routes>
     </MemoryRouter>,
@@ -148,7 +148,7 @@ describe('AppSidebar native discovery routing', () => {
       'aria-current',
       'page',
     );
-    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: /intent sections/i })).toHaveLength(1);
   });
   it.each([
     ['DRAFT', 'Draft'],
@@ -159,24 +159,24 @@ describe('AppSidebar native discovery routing', () => {
     renderSidebar('/space/p1/native-intent/same');
     expect(screen.getByText(label)).toBeInTheDocument();
   });
-  it('keeps platform section tabs off native routes even with the same UUID', () => {
+  it('shows the selected native intent sections even with a colliding platform UUID', () => {
     setup();
     renderSidebar('/space/p1/native-intent/same');
     expect(screen.getByText('Native same')).toBeInTheDocument();
     expect(screen.getByText('Workspace ready')).toBeInTheDocument();
-    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: /intent sections/i })).toHaveLength(1);
     expect(screen.queryByTestId('pinned-selected-intent')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
       'aria-current',
       'page',
     );
   });
-  it('native discovery navigates to status and removes platform tabs', async () => {
+  it('native discovery switches the section navigation to the authorized native intent', async () => {
     setup();
     renderSidebar('/space/p1/intent/same');
     expect(screen.getByRole('navigation', { name: /intent sections/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Native same/ }));
-    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('navigation', { name: /intent sections/i })).toHaveLength(1);
     expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
       'aria-current',
       'page',

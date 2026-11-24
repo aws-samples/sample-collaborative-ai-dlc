@@ -243,10 +243,6 @@ export function NativeIntentCreation({
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
-      <p className="text-sm text-muted-foreground">
-        Create a draft, correct its prompt and prepare its workspace before Start. AI-DLC owns the
-        workflow questions and approvals. Native creation currently supports AI-DLC 2.11.1.
-      </p>
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -261,47 +257,52 @@ export function NativeIntentCreation({
       ) : (
         capabilities && (
           <>
-            {selection ? (
-              <section
-                className="space-y-2 rounded-md border p-4"
-                aria-label="Selected workflow package"
-              >
-                <h2 className="text-sm font-semibold">Workflow package</h2>
-                <p className="text-sm">
-                  {selection.source.repository} · {selection.job.package.release}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Download verified · {selection.job.package.commit}
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
+            <div className="space-y-4">
+              <form id="intent-request" onSubmit={submit}>
+                <IntentRequestFields
+                  title={title}
+                  prompt={prompt}
+                  onTitleChange={onTitleChange}
+                  onPromptChange={onPromptChange}
                   disabled={locked}
-                  onClick={() => {
-                    setSelection(null);
-                    replaceQuery({ sourceId: null, packageJobId: null, bindingRevision: null });
-                  }}
+                />
+              </form>
+              {selection ? (
+                <section
+                  className="space-y-2 rounded-md border p-4"
+                  aria-label="Selected workflow package"
                 >
-                  Choose another package
-                </Button>
-              </section>
-            ) : (
-              <WorkflowSourcesSection
-                projectId={projectId}
-                canEdit={project.userRole === 'owner' || project.userRole === 'admin'}
-                defaultRelease="v2.11.1"
-                onSelectPackage={selectPackage}
-              />
-            )}
-            <form onSubmit={submit} className="space-y-4">
-              <IntentRequestFields
-                title={title}
-                prompt={prompt}
-                onTitleChange={onTitleChange}
-                onPromptChange={onPromptChange}
-                disabled={locked}
-              />
+                  <h2 className="text-sm font-semibold">Workflow package</h2>
+                  <p className="text-sm">
+                    {selection.source.repository} · {selection.job.package.release}
+                  </p>
+                  <div className="text-xs text-muted-foreground">
+                    <details>
+                      <summary className="cursor-pointer">Version details</summary>
+                      {selection.job.package.commit}
+                    </details>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={locked}
+                    onClick={() => {
+                      setSelection(null);
+                      replaceQuery({ sourceId: null, packageJobId: null, bindingRevision: null });
+                    }}
+                  >
+                    Choose another package
+                  </Button>
+                </section>
+              ) : (
+                <WorkflowSourcesSection
+                  projectId={projectId}
+                  canEdit={project.userRole === 'owner' || project.userRole === 'admin'}
+                  defaultRelease="v2.11.1"
+                  onSelectPackage={selectPackage}
+                />
+              )}
               <NativeApplicationSourcePicker
                 repos={project.repos}
                 value={repository ? selectedRepo : ''}
@@ -346,14 +347,13 @@ export function NativeIntentCreation({
                 </div>
               </div>
               <details className="rounded-md border p-3">
-                <summary className="cursor-pointer text-sm font-medium">
-                  Settings that apply to native execution
-                </summary>
+                <summary className="cursor-pointer text-sm font-medium">Execution settings</summary>
                 <div className="mt-3">
                   <NativeSettingsNotice />
                 </div>
               </details>
               <Button
+                form="intent-request"
                 type="submit"
                 disabled={
                   creating ||
@@ -365,7 +365,7 @@ export function NativeIntentCreation({
               >
                 {creating ? 'Creating draft…' : locked ? 'Retry same draft' : 'Create native draft'}
               </Button>
-            </form>
+            </div>
           </>
         )
       )}

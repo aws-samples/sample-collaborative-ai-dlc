@@ -89,6 +89,36 @@ export function AgentProgressCard() {
   }
 
   return (
+    <IntentProgressCard
+      statusLabel={statusLabel}
+      stageName={stageName}
+      phaseName={phaseName}
+      elapsed={elapsed}
+      lastLines={lastLines}
+      statusSummary={statusSummary}
+      onOutput={() => focusOutput(runningRow?.stageInstanceId ?? null)}
+    />
+  );
+}
+
+export function IntentProgressCard({
+  statusLabel,
+  stageName,
+  phaseName,
+  elapsed,
+  lastLines,
+  statusSummary,
+  onOutput,
+}: {
+  statusLabel: string;
+  stageName?: string | null;
+  phaseName?: string | null;
+  elapsed?: string | null;
+  lastLines?: string;
+  statusSummary?: string | null;
+  onOutput?: () => void;
+}) {
+  return (
     <div className="relative overflow-hidden rounded-lg border border-agent-running/30 bg-agent-running/[0.04]">
       <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
         <div className="h-full w-1/2 bg-gradient-to-r from-transparent via-agent-running/60 to-transparent animate-shimmer" />
@@ -115,17 +145,16 @@ export function AgentProgressCard() {
             </pre>
           )}
           {!lastLines && statusSummary && (
-            <p className="mt-1 text-xs text-muted-foreground">{statusSummary}</p>
+            <p role="status" className="mt-1 text-xs text-muted-foreground">
+              {statusSummary}
+            </p>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 shrink-0 text-xs"
-          onClick={() => focusOutput(runningRow?.stageInstanceId ?? null)}
-        >
-          View live output
-        </Button>
+        {onOutput && (
+          <Button variant="ghost" size="sm" className="h-7 shrink-0 text-xs" onClick={onOutput}>
+            View live output
+          </Button>
+        )}
       </div>
     </div>
   );

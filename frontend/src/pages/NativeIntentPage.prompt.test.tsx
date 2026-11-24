@@ -16,7 +16,7 @@ vi.mock('@/services/nativeIntents', async (original) => ({
   ...(await original<typeof import('@/services/nativeIntents')>()),
   nativeIntentsService: service,
 }));
-import NativeIntentPage from './NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 
 const initial: NativeIntent = {
   id: 'run-1',
@@ -67,7 +67,10 @@ function page() {
       <Link to="/space/project-1/native-intent/run-2">Switch intent</Link>
       <Link to="/space/project-2/native-intent/run-1">Switch project</Link>
       <Routes>
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+        <Route
+          path="/space/:projectId/native-intent/:intentId/*"
+          element={<NativeIntentFixture />}
+        />
       </Routes>
     </MemoryRouter>,
   );

@@ -42,7 +42,7 @@ vi.mock('@/contexts/DiscussionContext', () => ({
     throw new Error('Platform discussion mounted on native route');
   },
 }));
-import NativeIntentPage from './NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 // Exercise the production producer as well as the rendered consumer.
 // @ts-expect-error The backend JS workspace intentionally has no frontend declarations.
 import { buildNativePendingInput } from '../../../lambda/shared/native-pending-input.js';
@@ -172,7 +172,10 @@ function renderPage(path = '/space/project-1/native-intent/run-1') {
     <MemoryRouter initialEntries={[path]}>
       <Link to="/space/project-1/native-intent/run-2">Other run</Link>
       <Routes>
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+        <Route
+          path="/space/:projectId/native-intent/:intentId/*"
+          element={<NativeIntentFixture />}
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -705,6 +708,7 @@ it('presents OpenCode decision and delivery evidence through the real decoder wi
   completionTransport(async (value) => value, 'opencode');
   renderPage();
   await loaded();
+  fireEvent.click(screen.getByText('Workflow details'));
   const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
   await within(evidence).findByText(/Approve · requirements-analysis · member-1/);
   expect(within(evidence).getByText(/Runtime delivery: delivered/)).toBeVisible();
@@ -719,6 +723,7 @@ it('keeps the current reply first and usable while independent evidence loads an
   completionTransport(() => pending.promise);
   renderPage();
   const reply = await loaded();
+  fireEvent.click(screen.getByText('Workflow details'));
   const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
   expect(within(evidence).getByText(/Loading evidence/)).toBeVisible();
   expect(reply.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -745,8 +750,8 @@ it('renders actual ordered text and composer tables without a fake artifact or v
   expect(screen.queryByRole('region', { name: 'Published question' })).not.toBeInTheDocument();
   expect(readFile).not.toHaveBeenCalled();
   expect(textbox).not.toHaveAttribute('readonly');
-  expect(screen.getByText('Review the published response in Current.')).toBeInTheDocument();
-  expect(screen.getByText(/one member sends it to continue this session/)).toBeInTheDocument();
+  expect(screen.getByRole('status', { name: 'Intent status' })).toBeInTheDocument();
+  expect(screen.getByText(/Send your reply to continue/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
   for (const name of ['Edit artifacts', 'Create unit PR', 'Delete intent']) {
     expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
@@ -760,7 +765,7 @@ it('preserves the draft and request identity through navigation, an uncertain PO
   renderPage();
   const text = '  poc\nKeep 🐦 simple  ';
   await typeReply(text);
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   const node = await screen.findByRole('button', { name: 'Open response for AI-DLC turn' });
   fireEvent.keyDown(node, { key: 'Enter' });
   expect(await loaded()).toHaveValue(text);
@@ -810,7 +815,7 @@ it('shows sending and accepted feedback before a slow status refresh, with one P
   const form = screen.getByRole('form', { name: 'Reply to AI-DLC' });
   expect(progress.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(
-    form.compareDocumentPosition(screen.getByText(messages[0].text)) &
+    screen.getByText(messages[0].text).compareDocumentPosition(form) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(transport.post).toHaveBeenCalledTimes(1);
@@ -1269,7 +1274,7 @@ it('a file denial invalidates an in-flight reply acknowledgement and discards it
   await typeReply('private draft');
   await click('Send reply');
   readFile.mockRejectedValue(new ApiError(403, 'denied'));
-  await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   await click(/src\/pipe.ts/);
   await screen.findByText(/Native intent access is no longer available/);
   cleared();
@@ -1292,7 +1297,7 @@ it('a graph denial clears interaction text and ignores a late interaction refres
   readInteraction.mockReturnValueOnce(pending.promise);
   await click('Refresh status');
   readGraph.mockRejectedValue(new ApiError(403, 'denied'));
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByText(/Native intent access is no longer available/);
   await act(async () => pending.resolve(initialInteraction));
   cleared();
@@ -1362,11 +1367,11 @@ it('retries graph loading without dropping an uncertain reply or request ID', as
   await click('Send reply');
   const first = transport.post.mock.calls[0];
   readGraph.mockRejectedValueOnce(new ApiError(502, 'transient graph error'));
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('alert');
-  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   expect(screen.getByRole('textbox')).toHaveValue('keep this exact draft');
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('button', { name: 'Open response for AI-DLC turn' });
   await click('Open response for AI-DLC turn');
   await loaded();
@@ -1418,10 +1423,10 @@ it('rejects graph nodes pointing to a different interaction', async () => {
   });
   renderPage();
   await loaded();
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('alert');
   expect(screen.queryByRole('button', { name: /Open response for/ })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   expect(screen.getByText(messages[0].text)).toBeInTheDocument();
 });
 
@@ -1635,7 +1640,7 @@ it('keeps committed files, graph and the same saved reply through recovery and t
   transport.post.mockReturnValueOnce(pending.promise);
   renderPage();
   await loaded();
-  await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   await click(/src\/pipe.ts/);
   await screen.findByText('pipe');
   await click('Resume in fresh session');
@@ -1656,9 +1661,9 @@ it('keeps committed files, graph and the same saved reply through recovery and t
   expect(screen.getByText('pipe')).toBeInTheDocument();
   expect(readFile).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('button', { name: 'Resume in fresh session' })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Graph' }));
   await screen.findByRole('button', { name: 'Open response for AI-DLC turn' });
-  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   expect(await loaded()).toHaveValue('poc');
   expect(
     screen.getByText(
@@ -1843,7 +1848,7 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(interaction.response).toEqual(savedReply);
-    expect(screen.getByText(/Current committed revision 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Published revision 1/)).toBeInTheDocument();
 
     intent = {
       ...intent,
@@ -2090,7 +2095,7 @@ it.each(['access-revision', 'session-expiry', 'file-denial'] as const)(
       await act(async () => notifySessionExpired());
     } else {
       readFile.mockRejectedValue(new ApiError(403, 'denied'));
-      await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Work' }));
       await click(/src\/pipe.ts/);
       await screen.findByText(/Native intent access is no longer available/);
     }

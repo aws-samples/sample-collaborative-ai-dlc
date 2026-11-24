@@ -67,23 +67,22 @@ it('renders top-level navigation without an active platform intent', () => {
   expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Spaces');
   expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).not.toBeInTheDocument();
 });
-it('native breadcrumb stays on native status even if platform context has the same UUID', () => {
+it('native breadcrumb identifies the Work section even if platform context has the same UUID', () => {
   state.native = [native];
   state.intent = { id: 'same', projectId: 'p1', title: 'Platform title' };
   renderHeader('/space/p1/native-intent/same');
   const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
-  expect(within(crumbs).getByText('Workspace ready')).toBeInTheDocument();
-  expect(within(crumbs).queryByText('Work')).not.toBeInTheDocument();
+  expect(within(crumbs).getByText('Work')).toBeInTheDocument();
   expect(within(crumbs).queryByText('Platform title')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Toggle activity panel' })).toBeInTheDocument();
   fireEvent.click(within(crumbs).getByRole('button', { name: 'Protected native' }));
   expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
 });
-it('uses a native status breadcrumb without requiring any platform provider or cached summary', () => {
+it('uses the Work breadcrumb without requiring any platform provider or cached summary', () => {
   renderHeader('/space/p1/native-intent/same');
-  fireEvent.click(screen.getByRole('button', { name: 'Native intent' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Intent' }));
   expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
-  expect(screen.getByText('Status')).toBeInTheDocument();
+  expect(screen.getByText('Work')).toBeInTheDocument();
 });
 it.each([false, true])(
   'keeps breadcrumb navigation truthful when status is unavailable (previous execution: %s)',
@@ -99,11 +98,7 @@ it.each([false, true])(
     ];
     renderHeader('/space/p1/native-intent/same');
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
-    expect(
-      within(crumbs).getByText(
-        previous ? 'Execution cancelled (status outdated)' : 'Execution status unavailable',
-      ),
-    ).toBeInTheDocument();
+    expect(within(crumbs).getByText('Work')).toBeInTheDocument();
     expect(within(crumbs).queryByText('Workspace ready')).not.toBeInTheDocument();
     fireEvent.click(within(crumbs).getByRole('button', { name: 'Protected native' }));
     expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
@@ -111,7 +106,7 @@ it.each([false, true])(
 );
 it('labels native creation without platform activity controls', () => {
   renderHeader('/space/p1/native-intent/new');
-  expect(screen.getByText('New native intent')).toBeInTheDocument();
+  expect(screen.getByText('New intent')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).not.toBeInTheDocument();
 });
 it('preserves platform graph breadcrumbs and activity control', () => {

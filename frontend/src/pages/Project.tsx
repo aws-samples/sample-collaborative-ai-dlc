@@ -608,13 +608,13 @@ function IntentsView({
                 disabled={native.loading}
                 onClick={() => void native.refresh()}
               >
-                Retry native intents
+                Retry loading intents
               </Button>
             </div>
           )}
           {native.loading && (
             <p role="status" className="text-xs text-muted-foreground">
-              Loading native intents…
+              Loading intents…
             </p>
           )}
           {loading ? (

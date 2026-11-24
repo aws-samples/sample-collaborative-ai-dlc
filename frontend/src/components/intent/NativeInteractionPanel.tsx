@@ -92,7 +92,7 @@ function useSharedReplyDraft({
   return { connected: docId !== null, yText, awareness, remoteUsers, synced, text };
 }
 
-// Kept in the publication owner, so switching Overview / Files / Graph does
+// Kept in the publication owner, so switching Overview / Work / Graph does
 // not discard a draft or the identity of an uncertain POST.
 export function useNativeReply({
   intent,
@@ -353,19 +353,29 @@ export function NativeInteractionPanel({
 }) {
   const bytes = new TextEncoder().encode(reply.text).length;
   const recovery = ['RECOVERY_REQUIRED', 'RECOVERING'].includes(executionStatus);
+  const showQuestionForm = Boolean(reply.structured && !reply.receipt);
+  const response = (
+    <Card id="native-assistant-response">
+      <CardHeader>
+        <CardTitle className="text-sm">AI-DLC response</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Turn {interaction.sequence} · {new Date(interaction.createdAt).toLocaleString()}
+        </p>
+      </CardHeader>
+      <CardContent className="min-w-0 space-y-4 overflow-x-auto">
+        {interaction.messages.map((message, index) => (
+          <div key={index} className="prose prose-sm max-w-none break-words dark:prose-invert">
+            <ArtifactMarkdown content={message.text} />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
   return (
     <section aria-label="Published AI-DLC response" className="space-y-4">
       <NativePresentationNotice interaction={interaction} />
-      {!reply.receipt && (
-        <p className="text-sm">
-          Review the{' '}
-          <a href="#native-assistant-response" className="underline">
-            AI-DLC response
-          </a>{' '}
-          before answering.
-        </p>
-      )}
-      {reply.structured && !reply.receipt ? (
+      {!showQuestionForm && response}
+      {showQuestionForm ? (
         <section aria-label="Answer AI-DLC" className="space-y-2">
           {reply.answerEditor ? (
             <QuestionEditor
@@ -386,8 +396,7 @@ export function NativeInteractionPanel({
             <p className="text-sm text-muted-foreground">Loading the shared answer…</p>
           )}
           <p className="text-xs text-muted-foreground">
-            Answer the questions together in this form. Project members can edit together; one
-            member submits the complete answer set to AI-DLC.
+            Members can edit together. One person submits the answers.
           </p>
           {reply.error && (
             <p role="alert" className="text-sm text-destructive">
@@ -430,9 +439,7 @@ export function NativeInteractionPanel({
             rows={4}
           />
           <p id="native-reply-help" className="text-xs text-muted-foreground">
-            Project members edit this draft together; one member sends it to continue this session.{' '}
-            {bytes.toLocaleString()} / {NATIVE_REPLY_MAX_BYTES.toLocaleString()} bytes. Drafts are
-            kept while someone has this turn open, not after everyone leaves.
+            Members can edit together. Send your reply to continue.
           </p>
           {reply.shared.diverged && (
             <p role="status" className="text-xs text-muted-foreground">
@@ -465,21 +472,7 @@ export function NativeInteractionPanel({
           </Button>
         </form>
       )}
-      <Card id="native-assistant-response">
-        <CardHeader>
-          <CardTitle className="text-sm">AI-DLC response</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Turn {interaction.sequence} · {new Date(interaction.createdAt).toLocaleString()}
-          </p>
-        </CardHeader>
-        <CardContent className="min-w-0 space-y-4 overflow-x-auto">
-          {interaction.messages.map((message, index) => (
-            <div key={index} className="prose prose-sm max-w-none break-words dark:prose-invert">
-              <ArtifactMarkdown content={message.text} />
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      {showQuestionForm && response}
     </section>
   );
 }

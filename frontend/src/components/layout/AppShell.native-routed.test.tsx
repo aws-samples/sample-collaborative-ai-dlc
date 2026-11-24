@@ -1,7 +1,8 @@
+import { nativeCompletionService } from '@/services/nativeCompletion';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Link, MemoryRouter, Route, Routes } from 'react-router';
+import { Link, MemoryRouter, Route, Routes, useNavigate } from 'react-router';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import {
@@ -27,6 +28,7 @@ const service = vi.hoisted(() => ({
   list: vi.fn(),
   publication: vi.fn(),
   interaction: vi.fn(),
+  graph: vi.fn(),
   historyList: vi.fn(),
   revision: vi.fn(),
   decision: vi.fn(),
@@ -173,11 +175,16 @@ function emit(name: string, value: unknown) {
 }
 const hint = (id = 'one') =>
   emit('agent.output', { executionBackend: 'native', projectId: 'project', intentId: id });
+function BrowserHistoryControls() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate(-1)}>Browser back</button>;
+}
 function workspace(search = '', reactStrictMode = false) {
   return render(
     <ThemeProvider>
       <AuthProvider>
         <MemoryRouter initialEntries={[`/space/project/native-intent/one${search}`]}>
+          <BrowserHistoryControls />
           <Link to="/space/project/native-intent/two">Switch run</Link>
           <Link to="/space/other-project/native-intent/one">Switch project</Link>
           <Routes>
@@ -189,7 +196,13 @@ function workspace(search = '', reactStrictMode = false) {
               }
             >
               <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
-              <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
+              {['', '/observability', '/graph'].map((section) => (
+                <Route
+                  key={section}
+                  path={`/space/:projectId/native-intent/:intentId${section}`}
+                  element={<IntentView />}
+                />
+              ))}
             </Route>
           </Routes>
         </MemoryRouter>
@@ -327,7 +340,10 @@ it.each(['project', '40000000-0000-4000-8000-000000000005'])(
                 }
               >
                 <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
-                <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
+                <Route
+                  path="/space/:projectId/native-intent/:intentId/*"
+                  element={<IntentView />}
+                />
                 <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
               </Route>
             </Routes>
@@ -497,9 +513,9 @@ it('opens a blank native draft from confirmed cancellation and explicitly prepar
     0,
     0,
   );
-  expect(
-    within(screen.getByRole('region', { name: 'Native execution status' })).getByRole('status'),
-  ).toHaveTextContent('Start requested');
+  expect(screen.getByRole('status', { name: 'Intent status' })).toHaveTextContent(
+    'Start requested',
+  );
   expect(service.inputs).not.toHaveBeenCalled();
   expect(service.savePrompt).not.toHaveBeenCalled();
   expect(service.recover).not.toHaveBeenCalled();
@@ -602,18 +618,21 @@ it('reopens a named historical proposal and file in the shared shell and isolate
   expect(screen.queryByText('Earlier exact proposal')).not.toBeInTheDocument();
 });
 
-function waitingDetail(status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY_REQUIRED') {
+function waitingDetail(
+  status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY_REQUIRED',
+  publicationId = 'publication',
+) {
   const waiting = detail();
   waiting.execution = {
     ...waiting.execution!,
     status,
-    publicationId: 'publication',
+    publicationId,
     projectionStatus: 'complete',
     ...(status === 'AWAITING_USER' ? { interactionId: INTERACTION_ID, turnSequence: 1 } : {}),
   };
   service.get.mockResolvedValue(waiting);
   service.publication.mockResolvedValue({
-    id: 'publication',
+    id: publicationId,
     sequence: 1,
     createdAt: time,
     files: [],
@@ -625,7 +644,7 @@ function waitingDetail(status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY
     sequence: 1,
     kind: 'assistant_turn',
     harness: 'codex',
-    publicationId: 'publication',
+    publicationId,
     messages: [{ type: 'text', text: 'Committed workflow question.' }],
     contentSha256: 'a'.repeat(64),
     createdAt: time,
@@ -639,7 +658,7 @@ it('puts the supported question before the request and keeps pinned configuratio
   workspace();
   const response = await screen.findByRole('region', { name: 'Published AI-DLC response' });
   expect(
-    response.compareDocumentPosition(screen.getByText('Request')) &
+    response.compareDocumentPosition(screen.getByText('Original request')) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(screen.queryByText('fixed-model')).not.toBeInTheDocument();
@@ -670,16 +689,16 @@ it('puts the supported question before the request and keeps pinned configuratio
   ).toBeVisible();
   await userEvent.click(within(configuration).getAllByRole('button', { name: 'Close' })[0]);
   expect(reply).toHaveValue('Keep this shared answer draft.');
-  await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   expect(screen.getByText('Work products')).toBeVisible();
-  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Work' }));
   expect(screen.getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
     'Keep this shared answer draft.',
   );
 });
 
 it.each([
-  ['SESSION_LOST', true, 'The previous runtime is stopped. Confirm a fresh session'],
+  ['SESSION_LOST', true, 'Resume to continue from the work already saved.'],
   ['DELIVERY_UNCERTAIN', false, 'this command cannot be replayed through recovery'],
 ] as const)(
   'puts %s recovery before the published response and preserves recovery authority',
@@ -697,8 +716,8 @@ it.each([
     service.get.mockResolvedValue(recovery);
     workspace();
     const response = await screen.findByRole('region', { name: 'Published AI-DLC response' });
-    const status = screen.getByRole('region', { name: 'Native execution status' });
-    expect(within(status).getByText(explanation, { exact: false })).toBeVisible();
+    const status = screen.getByRole('status', { name: 'Intent status' });
+    expect(screen.getByText(explanation, { exact: false })).toBeVisible();
     expect(
       status.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -740,8 +759,8 @@ it.each([
       execution: null,
     });
     workspace();
-    const status = await screen.findByRole('region', { name: 'Native execution status' });
-    expect(within(status).getByRole('status')).toHaveTextContent(label);
+    const status = await screen.findByRole('status', { name: 'Intent status' });
+    expect(status).toHaveTextContent(label);
     expect(screen.getByRole('button', { name: 'Start agent' })).toHaveProperty(
       'disabled',
       state !== 'READY',
@@ -767,8 +786,8 @@ it.each([
       execution: { ...detail().execution!, status: state },
     });
     workspace();
-    const status = await screen.findByRole('region', { name: 'Native execution status' });
-    expect(within(status).getByRole('status')).toHaveTextContent(label);
+    const status = await screen.findByRole('status', { name: 'Intent status' });
+    expect(status).toHaveTextContent(label);
     expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
     if (cancellable) {
@@ -780,11 +799,9 @@ it.each([
       expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
     }
     if (state === 'STOPPED') {
-      expect(
-        within(status).getByText(/does not establish that the workflow is complete/),
-      ).toBeVisible();
+      expect(screen.queryByText('Workflow completed')).not.toBeInTheDocument();
     }
-    expect(screen.getByText('Task one')).toBeVisible();
+    expect(screen.getByText('Task one')).toBeInTheDocument();
   },
 );
 
@@ -815,11 +832,8 @@ it('shares the mount, manual refreshes and pending polls and retries a transient
   });
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(service.get).toHaveBeenCalledTimes(3);
-  expect(
-    screen.getByText(
-      /The agent turn stopped. This does not establish that the workflow is complete/,
-    ),
-  ).toBeVisible();
+  expect(screen.getByRole('status', { name: 'Intent status' })).toHaveTextContent('Agent stopped');
+  expect(screen.queryByText('Workflow completed')).not.toBeInTheDocument();
   expect(screen.queryByRole('alert')).toBeNull();
   await act(async () => vi.advanceTimersByTimeAsync(9000));
   expect(service.get).toHaveBeenCalledTimes(3);
@@ -879,6 +893,7 @@ it.each(['changed', 'covered', 'denied', 'switch'] as const)(
     if (outcome === 'switch') {
       await act(async () => fireEvent.click(screen.getByRole('link', { name: 'Switch run' })));
       await act(async () => old.reject(new ApiError(403, 'old membership')));
+      await userEvent.click(screen.getByText('Original request'));
       expect(screen.getByText('Task two')).toBeVisible();
       expect(service.get).toHaveBeenCalledTimes(3);
       expect(service.get).toHaveBeenLastCalledWith('project', 'two');
@@ -1099,17 +1114,25 @@ it('updates cached navigation status from the routed workspace after another mem
   service.list.mockResolvedValue({ items: [summary], nextCursor: null });
   await refreshNativeIntents('project');
   workspace();
-  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' });
-  await waitFor(() => expect(within(breadcrumbs).getByText('Waiting for input')).toBeVisible());
+  expect(await screen.findByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Work');
+  await waitFor(() =>
+    expect(screen.getByRole('status', { name: 'Intent status' })).toHaveTextContent(
+      'Waiting for input',
+    ),
+  );
   service.get.mockResolvedValue({
     ...waiting,
     execution: { ...waiting.execution!, status: 'CANCELLED', revision: 8 },
   });
   await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
-  await waitFor(() => expect(within(breadcrumbs).getByText('Execution cancelled')).toBeVisible());
-  expect(
-    within(screen.getByRole('region', { name: 'Native execution status' })).getByRole('status'),
-  ).toHaveTextContent('Execution cancelled');
+  await waitFor(() =>
+    expect(screen.getByRole('status', { name: 'Intent status' })).toHaveTextContent(
+      'Execution cancelled',
+    ),
+  );
+  expect(screen.getByRole('status', { name: 'Intent status' })).toHaveTextContent(
+    'Execution cancelled',
+  );
   expect(getNativeListing('project').items[0].execution?.status).toBe('CANCELLED');
   expect(getNativeListing('project').items[0]).not.toHaveProperty('prompt');
   expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
@@ -1151,6 +1174,7 @@ it.each(waitingCleanupCases)(
     });
     expect(screen.queryByText(waiting.prompt)).not.toBeInTheDocument();
     if (replaced) {
+      fireEvent.click(screen.getByText('Original request'));
       expect(screen.getByText(next.prompt)).toBeVisible();
       expect(service.get).toHaveBeenLastCalledWith(next.projectId, next.id);
     }
@@ -1306,4 +1330,122 @@ it('applies image policy changes at the same execution revision while preserving
   fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send reply' })).toBeEnabled());
   expect(reply).toHaveValue('Keep my composer draft.');
+});
+
+it('uses Overview, Work and Graph from the normal sidebar and preserves the shared reply across browser navigation', async () => {
+  const user = userEvent.setup();
+  const publicationId = 'b'.repeat(64);
+  const intent = waitingDetail('AWAITING_USER', publicationId);
+  intent.title = 'Improve checkout';
+  intent.prompt = 'Help customers review their order before paying.';
+  const file = {
+    id: `nf-${'f'.repeat(64)}`,
+    path: 'requirements/order-summary.md',
+    role: 'document',
+    bytes: 43,
+    sha256: 'a'.repeat(64),
+    mediaType: 'text/markdown',
+  };
+  service.publication.mockResolvedValue({
+    id: publicationId,
+    sequence: 1,
+    createdAt: time,
+    files: [file],
+    question: null,
+    projectionStatus: 'complete',
+  });
+  service.graph.mockResolvedValue({
+    publicationId,
+    nodes: [
+      {
+        id: 'scope',
+        type: 'Artifact',
+        label: 'Order summary',
+        artifactId: file.id,
+        sha256: file.sha256,
+      },
+    ],
+    edges: [],
+  });
+  const evidence = vi.spyOn(nativeCompletionService, 'read').mockResolvedValue({
+    publicationId,
+    publicationSequence: 1,
+    workflowCompletion: 'not_verified',
+    requiredChecks: 'not_required',
+    finalReview: 'not_required',
+    humanApproval: 'incomplete',
+    context: {
+      projectId: 'project',
+      executionId: 'one',
+      attemptId: 'attempt',
+      epoch: 1,
+      configurationSha256: 'e'.repeat(64),
+      packageId: 'fixture',
+      harness: 'codex',
+    },
+    policyStatus: 'protected_engine',
+    effectivePlan: {
+      scope: 'Express',
+      name: 'Express',
+      sha256: 'a'.repeat(64),
+      stages: [
+        {
+          id: 'workspace-detection',
+          phase: 'initialization',
+          action: 'EXECUTE',
+          state: 'completed',
+        },
+        {
+          id: 'requirements-analysis',
+          phase: 'inception',
+          action: 'EXECUTE',
+          state: 'in-progress',
+        },
+        { id: 'code-generation', phase: 'construction', action: 'EXECUTE', state: 'pending' },
+      ],
+    },
+    engineApplication: [],
+    definition: null,
+    memberDecision: null,
+    decisionDelivery: null,
+  });
+  workspace();
+  const sections = await screen.findByRole('navigation', { name: 'Intent sections' });
+  const section = (name: string) => within(sections).getByRole('button', { name });
+  expect(
+    within(sections)
+      .getAllByRole('button')
+      .map((button) => button.textContent),
+  ).toEqual(['Overview', 'Work', 'Graph']);
+  expect(section('Work')).toHaveAttribute('aria-current', 'page');
+  const reply = await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
+  await waitFor(() => expect(reply).not.toHaveAttribute('readonly'));
+  await user.clear(reply);
+  await user.type(reply, 'Keep the order summary visible.');
+  expect(screen.getByRole('region', { name: 'Work products' })).toBeVisible();
+  expect(screen.queryByRole('tablist', { name: 'Native intent views' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Native execution status' })).toBeNull();
+  expect(await screen.findByTestId('intent-phase-breadcrumb')).toBeVisible();
+  await user.click(section('Overview'));
+  expect(section('Overview')).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByText('Initial prompt')).toBeVisible();
+  expect(screen.getByText(intent.prompt)).toBeVisible();
+  expect(screen.getByText('Execution progress')).toBeVisible();
+  expect(screen.getByText(/requirements analysis/i)).toBeVisible();
+  await user.click(section('Graph'));
+  expect(section('Graph')).toHaveAttribute('aria-current', 'page');
+  await waitFor(() => expect(service.graph).toHaveBeenCalledExactlyOnceWith('project', 'one'));
+  expect(screen.getByRole('region', { name: 'Knowledge graph' })).toBeVisible();
+  expect(await screen.findByRole('link', { name: 'Open file for Order summary' })).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'Browser back' }));
+  expect(section('Overview')).toHaveAttribute('aria-current', 'page');
+  await user.click(screen.getByRole('button', { name: 'Browser back' }));
+  expect(section('Work')).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
+    'Keep the order summary visible.',
+  );
+  expect(evidence).toHaveBeenCalledTimes(1);
+  evidence.mockRestore();
+  expect(service.platformGet).not.toHaveBeenCalled();
+  expect(service.start).not.toHaveBeenCalled();
 });

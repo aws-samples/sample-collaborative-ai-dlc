@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
+import { Bot, Clock, Eye, Maximize2, MessageSquare, RefreshCw, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
@@ -148,6 +148,18 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
             </TabsList>
           </Tabs>
         </div>
+        {executionBackend === 'native' && (activeTab === 'agent' || activeTab === 'timeline') && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            aria-label="Refresh activity"
+            title="Refresh activity"
+            onClick={() => ensureOutputs(INTENT_OUTPUT_KEY)}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -162,17 +174,10 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
       {/* Content. The Discuss tab swaps between the thread list and the open
           thread; the Agent tab manages its own scrolling (stick-to-bottom), so
           both render outside the shared ScrollArea. */}
-      {executionBackend === 'native' && (
-        <div className="border-b px-3 py-2 text-xs text-muted-foreground">
-          <p>
-            Recorded activity is not workflow approval or completion. Earlier lifecycle history and
-            unreported usage may be unavailable.
-          </p>
-          {activityError && <p role="alert">{activityError}</p>}
-          <Button variant="ghost" size="sm" onClick={() => ensureOutputs(INTENT_OUTPUT_KEY)}>
-            Refresh activity
-          </Button>
-        </div>
+      {executionBackend === 'native' && activityError && (
+        <p role="alert" className="border-b px-3 py-2 text-xs text-destructive">
+          {activityError}
+        </p>
       )}
       {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
         <DiscussionPanel />

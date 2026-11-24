@@ -29,6 +29,8 @@ describe('shouldDefaultOpen', () => {
   it('opens activity for native runs and leaves creation focused', () => {
     expect(shouldDefaultOpen('/space/p1/native-intent/i1')).toBe(true);
     expect(shouldDefaultOpen('/space/p1/native-intent/new')).toBe(false);
+    expect(shouldDefaultOpen('/space/p1/native-intent/i1/graph')).toBe(false);
+    expect(shouldDefaultOpen('/space/p1/native-intent/i1/observability')).toBe(false);
   });
 
   it('returns false for intent graph', () => {

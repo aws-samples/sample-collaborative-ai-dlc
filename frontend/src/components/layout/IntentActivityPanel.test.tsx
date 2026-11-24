@@ -219,9 +219,6 @@ it('uses the shared timeline for native committed facts and provides scoped refr
     expect(
       screen.getByText('Turn 1: Response published; awaiting a human reply'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Earlier lifecycle history and unreported usage may be unavailable/),
-    ).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('History may be incomplete');
     await user.click(screen.getByRole('button', { name: 'Refresh activity' }));
     expect(mocks.ensureOutputs).toHaveBeenLastCalledWith('intent');

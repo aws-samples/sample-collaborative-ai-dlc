@@ -1,3 +1,5 @@
+import { IntentSectionTabs } from './IntentSectionTabs';
+import { detectSection } from '@/components/layout/IntentPipelineBar';
 import { useNavigate, useLocation, useParams } from 'react-router';
 import { useMemo, useState } from 'react';
 import {
@@ -5,13 +7,11 @@ import {
   ArrowUpDown,
   Blocks,
   CheckCircle2,
-  Eye,
   History,
   LayoutDashboard,
   ListFilter,
   Loader2,
   MessageCircleQuestion,
-  Network,
   Plus,
   Settings,
   Workflow,
@@ -42,7 +42,6 @@ import {
 } from '@/lib/sprintStatus';
 import {
   getLastIntentSection,
-  setLastIntentSection,
   intentSectionPath,
   type IntentSection,
 } from '@/lib/intentSectionPreference';
@@ -261,6 +260,24 @@ export function AppSidebar() {
     },
   );
 
+  const currentNative = isNativeRoute ? intentCtx?.nativeWorkspace?.intent : null;
+  const nativeSections =
+    isNativeRoute && projectId && intentId ? (
+      <IntentSectionTabs
+        projectId={projectId}
+        intentId={intentId}
+        backend="native"
+        currentSection={detectSection(location.pathname)}
+        onNavigate={navigate}
+      />
+    ) : null;
+  const selectedNativeOutsideList =
+    currentNative?.id === intentId &&
+    currentNative?.projectId === projectId &&
+    !projects.some(
+      ({ project, nativeIntents }) =>
+        project.id === projectId && nativeIntents?.items.some((item) => item.id === intentId),
+    );
   const pinnedSelectedIntent: IterationItem | null = useMemo(() => {
     if (!showIntentTabs || !projectId || !intentId) return null;
     const alreadyInList = filteredIterations.some(
@@ -443,11 +460,14 @@ export function AppSidebar() {
           </div>
 
           <div className="flex flex-col gap-0.5">
-            {filteredIterations.length === 0 && !pinnedSelectedIntent && (
-              <span className="px-3 py-2 text-[10px] text-sidebar-foreground/40">
-                {FILTER_EMPTY[iterationFilter]}
-              </span>
-            )}
+            {filteredIterations.length === 0 &&
+              !pinnedSelectedIntent &&
+              !selectedNativeOutsideList &&
+              !sortedProjects.some(({ nativeIntents }) => nativeIntents?.items.length) && (
+                <span className="px-3 py-2 text-[10px] text-sidebar-foreground/40">
+                  {FILTER_EMPTY[iterationFilter]}
+                </span>
+              )}
             {pinnedSelectedIntent && (
               <div
                 data-testid="pinned-selected-intent"
@@ -515,25 +535,28 @@ export function AppSidebar() {
                 </div>
               );
             })}
-          </div>
-        </div>
-        {sortedProjects.some(
-          ({ nativeIntents }) =>
-            nativeIntents?.items.length ||
-            nativeIntents?.error ||
-            nativeIntents?.loading ||
-            nativeIntents?.nextCursor,
-        ) && (
-          <div className="px-3 pb-3" aria-label="Native workspaces">
-            <p className="px-3 py-1.5 text-[13px] font-medium">Native workspaces</p>
+            {selectedNativeOutsideList && currentNative && (
+              <div className="px-3 py-1 text-[11px]">
+                <div className="flex items-center gap-2 py-1 text-sidebar-foreground/80">
+                  <Activity
+                    className="h-3.5 w-3.5 shrink-0 text-sidebar-foreground/50"
+                    aria-hidden="true"
+                  />
+                  <span className="truncate font-medium">{currentNative.title}</span>
+                </div>
+                {nativeSections}
+              </div>
+            )}
             {sortedProjects.map(({ project, nativeIntents: native }) => {
               if (!native) return null;
               return (
                 <div key={project.id} className="px-3 py-1 text-[11px]">
                   <NativeIntentPreview
+                    sidebar
                     projectId={project.id}
                     projectName={project.name}
                     items={native.items}
+                    selectedSections={project.id === projectId ? nativeSections : undefined}
                     selectedId={isNativeRoute && projectId === project.id ? intentId : undefined}
                   />
                   {(native.items.length > 1 || native.nextCursor) && (
@@ -541,7 +564,7 @@ export function AppSidebar() {
                       className="text-[10px] underline"
                       onClick={() => navigate(`/space/${project.id}`)}
                     >
-                      View native intents in space
+                      View all intents in space
                     </button>
                   )}
                   {native.error && (
@@ -552,18 +575,18 @@ export function AppSidebar() {
                         disabled={native.loading}
                         onClick={() => void refreshNativeIntents(project.id, 'refresh', true)}
                       >
-                        Retry native intents
+                        Retry loading intents
                       </button>
                     </div>
                   )}
                   {native.loading && (
-                    <p className="text-[10px] text-muted-foreground">Loading native intents…</p>
+                    <p className="text-[10px] text-muted-foreground">Loading intents…</p>
                   )}
                 </div>
               );
             })}
           </div>
-        )}
+        </div>
       </ScrollArea>
 
       <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
@@ -634,47 +657,4 @@ function IterationStatusIcon({ status }: { status: EffectiveSprintStatus }) {
     default:
       return <Activity className="h-3.5 w-3.5 text-sidebar-foreground/40 shrink-0" />;
   }
-}
-
-const SECTION_NAV: { key: IntentSection; label: string; icon: typeof Eye }[] = [
-  { key: 'overview', label: 'Overview', icon: Eye },
-  { key: 'work', label: 'Work', icon: Activity },
-  { key: 'graph', label: 'Graph', icon: Network },
-];
-
-function IntentSectionTabs({
-  projectId,
-  intentId,
-  currentSection,
-  onNavigate,
-}: {
-  projectId: string;
-  intentId: string;
-  currentSection: IntentSection;
-  onNavigate: (path: string) => void;
-}) {
-  return (
-    <nav className="flex flex-col gap-px pl-7 pr-1 py-1" aria-label="Intent sections">
-      {SECTION_NAV.map(({ key, label, icon: Icon }) => (
-        <button
-          key={key}
-          type="button"
-          aria-current={currentSection === key ? 'page' : undefined}
-          onClick={() => {
-            setLastIntentSection(intentId, key);
-            onNavigate(intentSectionPath(projectId, intentId, key));
-          }}
-          className={cn(
-            'flex items-center gap-2 px-2.5 py-[3px] text-[11px] font-medium rounded-md transition-colors text-left w-full',
-            currentSection === key
-              ? 'bg-sidebar-accent/70 text-sidebar-foreground'
-              : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground/80',
-          )}
-        >
-          <Icon className="h-3 w-3 shrink-0" />
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
 }

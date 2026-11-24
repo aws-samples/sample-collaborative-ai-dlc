@@ -25,7 +25,7 @@ vi.mock('@/services/nativeIntents', () => ({
     list: (...a: unknown[]) => list(...a),
   },
 }));
-import NativeIntentPage from './NativeIntentPage';
+import NativeIntentFixture from '@/dev/NativeIntentFixture';
 
 const draft: NativeIntent = {
   id: 'run-1',
@@ -53,7 +53,10 @@ const renderPage = ({ navigation = false } = {}) =>
         <Link to="/space/project-1/native-intent/run-2">Open another native intent</Link>
       )}
       <Routes>
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeIntentPage />} />
+        <Route
+          path="/space/:projectId/native-intent/:intentId/*"
+          element={<NativeIntentFixture />}
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -145,7 +148,7 @@ async function clickButton(name: string) {
 }
 
 function expectProtectedContentCleared() {
-  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Native intent$/);
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Intent$/);
   expect(screen.queryByRole('heading', { name: draft.title })).not.toBeInTheDocument();
   expect(screen.queryByText(draft.prompt)).not.toBeInTheDocument();
   expect(screen.queryByText(/awslabs\/aidlc-workflows/)).not.toBeInTheDocument();
@@ -206,7 +209,7 @@ it('does not equate workspace readiness with an agent run', async () => {
   get.mockResolvedValue({ ...draft, status: 'READY' });
   renderPage();
   expect(await screen.findByRole('status')).toHaveTextContent('Workspace ready');
-  expect(screen.getByText(/The agent has not started/)).toBeVisible();
+  expect(screen.queryByText('Workflow completed')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
   expect(screen.queryByRole('button', { name: 'Prepare workspace' })).not.toBeInTheDocument();
 });

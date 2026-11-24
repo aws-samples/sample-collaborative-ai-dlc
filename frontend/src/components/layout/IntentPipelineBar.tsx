@@ -16,7 +16,12 @@ export function detectSection(pathname: string): IntentSection {
   return 'work';
 }
 
-type StepState = 'done' | 'running' | 'failed' | 'pending';
+export type StepState = 'done' | 'running' | 'failed' | 'pending' | 'unknown';
+export interface IntentPhase {
+  phase: string;
+  steps: { stageId: string; state: StepState }[];
+  excluded: number;
+}
 
 function stepState(rows: IntentStage[]): StepState {
   if (rows.length === 0) return 'pending';
@@ -41,7 +46,6 @@ export function IntentPhaseBreadcrumb({
     workflowPhases,
     currentPhasePath,
   } = useIntent();
-  const [openPhase, setOpenPhase] = useState<string | null>(null);
 
   const phases = useMemo(() => {
     if (!detail || !compiled || !workflowPhases) return [];
@@ -104,10 +108,35 @@ export function IntentPhaseBreadcrumb({
   if (!intent || phases.length === 0) return null;
 
   return (
+    <WorkflowPhaseBreadcrumb
+      phases={phases}
+      scope={intent.scope}
+      phaseNameOf={phaseNameOf}
+      currentPhasePath={currentPhasePath}
+      onOpenScopeDefinition={onOpenScopeDefinition}
+    />
+  );
+}
+
+export function WorkflowPhaseBreadcrumb({
+  phases,
+  scope,
+  phaseNameOf,
+  currentPhasePath,
+  onOpenScopeDefinition,
+}: {
+  phases: IntentPhase[];
+  scope?: string | null;
+  phaseNameOf: (phase: string) => string;
+  currentPhasePath?: string | null;
+  onOpenScopeDefinition?: () => void;
+}) {
+  const [openPhase, setOpenPhase] = useState<string | null>(null);
+  return (
     <div className="space-y-2" data-testid="intent-phase-breadcrumb">
-      {intent.scope && (
+      {scope && (
         <div className="flex items-center">
-          <ScopeBadge scope={intent.scope} className="px-2 py-0 text-[10px]" />
+          <ScopeBadge scope={scope} className="px-2 py-0 text-[10px]" />
         </div>
       )}
       <div

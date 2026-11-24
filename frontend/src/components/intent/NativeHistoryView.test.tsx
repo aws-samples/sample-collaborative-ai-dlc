@@ -203,7 +203,7 @@ it('times the first visible current publication after a pending turn, even when 
     expect(mocks.publication).toHaveBeenCalledTimes(1);
     mounted.unmount();
     render(view(published, [event]));
-    await screen.findByText(/Current committed revision 2/);
+    await screen.findByText(/Published revision 2/);
     expect(screen.getByText(/Publication to first visible display/)).toHaveTextContent(
       'unavailable',
     );
@@ -304,10 +304,10 @@ it('keeps large current files obtainable without attempting the inline transport
   current.files[0] = { ...current.files[0], bytes: 32 * 1024 * 1024 };
   mocks.publication.mockResolvedValue(current);
   mount('');
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Files' }), { button: 0, ctrlKey: false });
   await screen.findByText(current.files[0].path);
   fireEvent.click(screen.getByRole('button', { name: new RegExp(current.files[0].path) }));
   await screen.findByText(/File exceeds the 3 MiB inline limit/);
+  fireEvent.click(screen.getByText('Download work'));
   expect(screen.getByRole('button', { name: 'Prepare Git bundle' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Prepare file download' })).toBeInTheDocument();
   expect(mocks.file).not.toHaveBeenCalled();
@@ -322,7 +322,7 @@ it('removes graph links while a refreshed manifest awaits matching provenance', 
     nodes: [{ id: fileId, type: 'Artifact', label: 'Source', artifactId: fileId, sha256: hash }],
   });
   const view = (onAccessFailure: (err: unknown) => void) => (
-    <MemoryRouter>
+    <MemoryRouter initialEntries={['/space/p/native-intent/i/graph']}>
       <NativeIntentContent
         intent={intent}
         onAccessFailure={onAccessFailure}
@@ -331,7 +331,6 @@ it('removes graph links while a refreshed manifest awaits matching provenance', 
     </MemoryRouter>
   );
   const rendered = render(view(mocks.denied));
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0 });
   await screen.findByRole('link', { name: 'Open file for Source' });
   mocks.publication.mockResolvedValue({
     ...original,
@@ -499,7 +498,6 @@ it('requests the selected history entry’s Git bundle while the run awaits inpu
 it('withholds current result actions when the publication sequence disagrees with the admitted head', async () => {
   mount('', { ...intent, execution: { ...intent.execution!, publicationSequence: 1 } });
   await screen.findByRole('alert');
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Files' }), { button: 0, ctrlKey: false });
   expect(screen.queryByRole('button', { name: 'Prepare Git bundle' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Prepare result archive' })).toBeNull();
   expect(mocks.request).not.toHaveBeenCalled();

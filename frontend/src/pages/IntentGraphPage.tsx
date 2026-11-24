@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
-import { GraphCanvas } from '@/components/graph/GraphCanvas';
+import { IntentGraphSurface } from '@/components/intent/IntentGraphSurface';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -42,68 +42,65 @@ export default function IntentGraphPage() {
   }
 
   return (
-    <div className="h-full min-w-0 overflow-hidden">
-      <GraphCanvas
-        nodes={visibleNodes}
-        edges={visibleEdges}
-        title="Knowledge graph"
-        loading={loading}
-        error={error}
-        headerLeading={
-          <div
-            role="group"
-            aria-label="Graph layer"
-            className="flex items-center rounded-md border bg-muted/30 p-0.5 shrink-0"
-          >
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setLayer('artifacts')}
-                  aria-label="Artifacts layer"
-                  aria-pressed={layer === 'artifacts'}
-                  className={cn(
-                    'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
-                    layer === 'artifacts'
-                      ? 'bg-background shadow-sm text-foreground'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  <Layers className="h-3 w-3" />
-                  <span className="hidden sm:inline">Artifacts</span>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Artifacts only</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setLayer('all')}
-                  aria-label={
-                    hasCodeTraceability ? 'Items, Units and Code layer' : 'Items and Units layer'
-                  }
-                  aria-pressed={layer === 'all'}
-                  className={cn(
-                    'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
-                    layer === 'all'
-                      ? 'bg-background shadow-sm text-foreground'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  <Box className="h-3 w-3" />
-                  <span className="hidden sm:inline">
-                    {hasCodeTraceability ? '+ Items, Units & Code' : '+ Items & Units'}
-                  </span>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {hasCodeTraceability
-                  ? 'Include derived items, units, and implementation files'
-                  : 'Include derived items & units'}
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        }
-      />
-    </div>
+    <IntentGraphSurface
+      nodes={visibleNodes}
+      edges={visibleEdges}
+      loading={loading}
+      error={error}
+      headerLeading={
+        <div
+          role="group"
+          aria-label="Graph layer"
+          className="flex items-center rounded-md border bg-muted/30 p-0.5 shrink-0"
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setLayer('artifacts')}
+                aria-label="Artifacts layer"
+                aria-pressed={layer === 'artifacts'}
+                className={cn(
+                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
+                  layer === 'artifacts'
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <Layers className="h-3 w-3" />
+                <span className="hidden sm:inline">Artifacts</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Artifacts only</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setLayer('all')}
+                aria-label={
+                  hasCodeTraceability ? 'Items, Units and Code layer' : 'Items and Units layer'
+                }
+                aria-pressed={layer === 'all'}
+                className={cn(
+                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
+                  layer === 'all'
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <Box className="h-3 w-3" />
+                <span className="hidden sm:inline">
+                  {hasCodeTraceability ? '+ Items, Units & Code' : '+ Items & Units'}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {hasCodeTraceability
+                ? 'Include derived items, units, and implementation files'
+                : 'Include derived items & units'}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      }
+    />
   );
 }

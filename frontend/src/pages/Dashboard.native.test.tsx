@@ -81,7 +81,7 @@ const renderPage = () =>
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/space/:projectId" element={<p>Space route</p>} />
-        <Route path="/space/:projectId/native-intent/:intentId" element={<NativeRoute />} />
+        <Route path="/space/:projectId/native-intent/:intentId/*" element={<NativeRoute />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -149,7 +149,7 @@ it.each(['Grid view', 'List view'])(
       expect(screen.getByRole('button', { name: `Native ${label}` })).toBeVisible();
     }
     expect(screen.queryByRole('button', { name: /Outdated wait|Unconfirmed recovery/ })).toBeNull();
-    expect(screen.getByRole('button', { name: 'View native intents in space' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'View all intents in space' })).toBeVisible();
     await userEvent.click(screen.getByText('1 more waiting'));
     await userEvent.click(
       screen.getByRole('button', { name: 'Native Other question: Awaiting member reply' }),
@@ -210,7 +210,7 @@ it('shows a visible partial error with a native retry', async () => {
   state.projects = [project({ ...native, error: 'Native listing unavailable' })];
   renderPage();
   expect(screen.getByRole('alert')).toHaveTextContent('Native listing unavailable');
-  await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Retry loading intents' }));
   expect(state.refreshNative).toHaveBeenCalledWith('p1', 'refresh', true);
 });
 it.each([false, true])(

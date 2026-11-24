@@ -80,7 +80,7 @@ const renderPage = (url = entry) =>
         <Route path="/space/:projectId/native-intent/new" element={<NewNativeIntentPage />} />
         <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
         <Route
-          path="/space/:projectId/native-intent/:intentId"
+          path="/space/:projectId/native-intent/:intentId/*"
           element={<p>Native workspace status</p>}
         />
       </Routes>
@@ -136,7 +136,7 @@ afterEach(() => vi.restoreAllMocks());
 it('explains native settings before creating a draft without loading current private settings', async () => {
   renderPage();
   await screen.findByLabelText('Coding harness');
-  await userEvent.click(screen.getByText('Settings that apply to native execution'));
+  await userEvent.click(screen.getByText('Execution settings'));
   expect(
     screen.getByText(
       /managed environments, custom MCP servers and uploaded custom rules do not apply/,
@@ -185,7 +185,7 @@ it.each([false, true])(
           <Route path="/space/:projectId/native-intent/new" element={<NewNativeIntentPage />} />
           <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
           <Route
-            path="/space/:projectId/native-intent/:intentId"
+            path="/space/:projectId/native-intent/:intentId/*"
             element={<p>Native workspace status</p>}
           />
         </Routes>

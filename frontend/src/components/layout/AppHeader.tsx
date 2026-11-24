@@ -1,3 +1,4 @@
+import { intentSectionPath } from '@/lib/intentSectionPreference';
 import { useNavigate, useParams, useLocation } from 'react-router';
 import {
   PanelLeftClose,
@@ -30,10 +31,8 @@ import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCach
 import { useIntentOptional } from '@/contexts/IntentContext';
 import { getNativeListing, useNativeListingVersion } from '@/hooks/useNativeIntents';
 import {
-  discoveryPath,
   isNativeIntentRoute,
   isPlatformIntent,
-  nativeIntentStatusLabel,
   type NativeDiscoveredIntent,
   nativeIntentTitle,
 } from '@/lib/intentDiscovery';
@@ -298,27 +297,24 @@ function buildBreadcrumbs(
     crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
   }
 
-  if (params.projectId && isNativeIntentRoute(pathname)) {
-    if (params.intentId) {
-      crumbs.push({
-        label: nativeIntent ? nativeIntentTitle(nativeIntent) : 'Native intent',
-        href: nativeIntent
-          ? discoveryPath(params.projectId, { backend: 'native', intent: nativeIntent })
-          : `/space/${encodeURIComponent(params.projectId)}/native-intent/${encodeURIComponent(params.intentId)}`,
-      });
-      crumbs.push({
-        label: nativeIntent ? nativeIntentStatusLabel(nativeIntent) : 'Status',
-      });
-    } else {
-      crumbs.push({ label: 'New native intent' });
-    }
+  if (params.projectId && isNativeIntentRoute(pathname) && !params.intentId) {
+    crumbs.push({ label: 'New intent' });
     return crumbs;
   }
 
-  // Intent routes: Spaces > Space > Intent > section
   if (params.intentId && params.projectId) {
-    const intentLabel = intentTitle || 'Intent';
-    const intentHref = `/space/${params.projectId}/intent/${params.intentId}`;
+    const native = isNativeIntentRoute(pathname);
+    const intentLabel = native
+      ? nativeIntent
+        ? nativeIntentTitle(nativeIntent)
+        : 'Intent'
+      : intentTitle || 'Intent';
+    const intentHref = intentSectionPath(
+      params.projectId,
+      params.intentId,
+      'work',
+      native ? 'native' : 'platform',
+    );
 
     if (pathname.endsWith('/observability')) {
       crumbs.push({ label: intentLabel, href: intentHref });
