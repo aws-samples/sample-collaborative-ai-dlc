@@ -106,13 +106,13 @@ test('release forwards every deployment configuration secret through the reusabl
     .flatMap((value) =>
       [...String(value).matchAll(/\bsecrets\.([A-Z_][A-Z0-9_]*)/g)].map((match) => match[1]),
     )
-    .sort();
+    .toSorted();
 
   assert.ok(configurationSecrets.includes('APP_DOMAIN'));
   assert.ok(configurationSecrets.includes('SSO_CONFIG'));
   assert.equal(typeof release.secrets, 'object', 'release must use explicit secret mappings');
   assert.deepEqual(
-    Object.keys(release.secrets ?? {}).sort(),
+    Object.keys(release.secrets ?? {}).toSorted(),
     configurationSecrets,
     'release must forward all deployment configuration secrets, without unrelated secrets',
   );
@@ -276,6 +276,24 @@ test('release and main deployments use isolated protected environments and GitHu
   );
 });
 
+// How releasing and bug fixing works, in plain words:
+//
+// Every minor or major release lives on its own branch. Running the "Prepare Release
+// Branch" workflow from main creates release/X.Y.x (for example release/2.5.x) from the
+// current main. The changelog and version bump land on that branch through a normal PR,
+// and the "Publish Release" workflow is then run from the branch itself — it creates the
+// vX.Y.Z tag and deploys. main itself is never tagged or published directly.
+//
+// Bug fixes go to the release branch first: branch off release/X.Y.x, fix, PR back into
+// release/X.Y.x, and publish the patch (for example v2.5.1) from there. Afterwards the
+// release branch is merged back into main with a real merge commit (never squashed), so
+// main carries every fix that customers already have.
+//
+// The safety net: "Prepare Release Branch" refuses to start a new line while any release
+// branch still has commits that main lacks. A fix shipped in 2.5.1 can therefore not
+// quietly disappear again in 2.6.0 because someone forgot the back-merge.
+//
+// This test pins the workflow wiring that keeps all of the above true.
 test('releases publish only from line branches that the prepare workflow creates', () => {
   const release = readFileSync(releaseWorkflow, 'utf8');
   const prepareText = readFileSync(prepareWorkflow, 'utf8');
