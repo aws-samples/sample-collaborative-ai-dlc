@@ -67,7 +67,7 @@ flowchart TB
 
 ### Components
 
-**Browser.** A React 19 single-page application built with Vite. It uses AWS Amplify for direct Cognito SRP login and, when enabled, Cognito-hosted OIDC/SAML federation. It calls the REST API with the resulting Cognito JWT as a Bearer token and opens two distinct WebSocket connections: one to the application WebSocket API for agent progress and notifications, and one to the Yjs collaboration server for real-time spec editing.
+**Browser.** A React 19 single-page application built with Vite. It uses AWS Amplify for direct Cognito SRP login and, when enabled, Cognito-hosted OIDC/SAML federation. It calls the REST API with the resulting Cognito JWT as a Bearer token and opens two distinct WebSocket connections: one to the application WebSocket API for agent progress and notifications, and one to the Yjs collaboration server for real-time spec editing. How the application caches, prefetches, and polls REST data is described in [Frontend data layer](frontend-data-layer.md).
 
 **CloudFront.** A single distribution multiplexes all client traffic over one domain. The default behavior serves the SPA from a private S3 bucket via Origin Access Control. `/api/*` routes to the REST API Gateway. `/ws` routes to the WebSocket API Gateway. `/yjs/*` routes through a CloudFront VPC Origin to an internal ALB sitting in front of the Yjs collaboration server. Routing through one distribution lets every backend share a single domain and a single TLS certificate, and keeps the SPA's API and WebSocket calls same-origin.
 
