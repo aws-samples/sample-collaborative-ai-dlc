@@ -59,6 +59,7 @@ import {
 import { rustInstallerScript } from './tool-presets';
 import { ApiError } from '@/services/api';
 import { cn } from '@/lib/utils';
+import { ecrImageConsoleUrl, scanFindingsNote } from '@/lib/ecrConsole';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
 import { toolVersionArchitecture } from './environment-builder/model';
 
@@ -759,6 +760,9 @@ const SOURCE_TRUST_LABELS = {
 
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
+  const incomplete = version.scanFindings?.incomplete === true;
+  const findingsNote = scanFindingsNote(version.scanFindings);
+  const imageFindingsUrl = ecrImageConsoleUrl(version.imageUri, version.imageDigest);
   const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
   const scanLimitationAccepted =
     scanUnsupported &&
@@ -815,6 +819,28 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           )}
         </div>
       </div>
+      {findingsNote && (
+        <div
+          className={cn(
+            'rounded border p-3 text-[11px]',
+            incomplete
+              ? 'border-amber-500/40 bg-amber-500/5 text-amber-900 dark:text-amber-200'
+              : 'text-muted-foreground',
+          )}
+        >
+          <p>{findingsNote}</p>
+          {imageFindingsUrl && (
+            <a
+              href={imageFindingsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 text-primary hover:underline"
+            >
+              View all findings in ECR <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      )}
       {findings.length > 0 && (
         <div className="divide-y overflow-hidden rounded border">
           {findings.map((finding, index) => (
@@ -1762,7 +1788,9 @@ export function ToolsRegistry() {
       title: scanUnsupported ? 'Continue without an automated package scan?' : 'Review findings?',
       description: scanUnsupported
         ? 'ECR could not inspect this image format. This does not mean a vulnerability was found. Continue only when you trust the publisher and download source.'
-        : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
+        : version.scanFindings?.incomplete
+          ? `The scan has more findings than the platform reads. The part it read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings in ECR first. Continuing records your review without a complete count and allows this version to be published.`
+          : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
       actionLabel: scanUnsupported ? 'Continue after review' : 'Accept findings',
       onConfirm: () =>
         void run('accept', () => toolsService.acceptFindings(tool.toolId, version.versionId)),

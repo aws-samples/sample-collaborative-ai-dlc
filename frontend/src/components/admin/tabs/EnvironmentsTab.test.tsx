@@ -694,6 +694,64 @@ describe('EnvironmentsTab', () => {
     expect(acceptFindings).toHaveBeenCalledWith('custom', 'r-1');
   });
 
+  it('says the counts of an incomplete scan are partial before an admin accepts it', async () => {
+    const user = userEvent.setup();
+    const securityEnvironment = { ...custom, status: 'SECURITY_REVIEW' };
+    // The pages read hold no Critical or High finding, but more were not read.
+    const securityRevision = {
+      ...revision,
+      status: 'SECURITY_REVIEW',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: scanFindings.imageDigest,
+      scanFindings: {
+        ...scanFindings,
+        status: 'ACTIVE',
+        severityCounts: { LOW: 2 },
+        findings: [
+          {
+            id: 'CVE-2026-1',
+            severity: 'LOW',
+            packageName: 'zlib',
+            packageVersion: '1.3',
+            uri: null,
+          },
+        ],
+        findingsTruncated: true,
+        incomplete: true,
+      },
+    };
+    list.mockResolvedValue([securityEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : {
+            environment: securityEnvironment,
+            revisions: [securityRevision],
+            publishedRevision: null,
+          },
+    );
+    acceptFindings.mockResolvedValue({
+      environment: securityEnvironment,
+      revision: securityRevision,
+    });
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByText('Partial results: 0 Critical · 0 High')).toBeInTheDocument();
+    expect(screen.queryByText('Scan passed')).not.toBeInTheDocument();
+    expect(screen.getByText(/these counts are partial/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View all findings in ECR/ })).toHaveAttribute(
+      'href',
+      `https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/111111111111/environments/_/image/sha256%3A${'b'.repeat(64)}/details?region=eu-west-1`,
+    );
+    await user.click(screen.getByRole('button', { name: 'Review findings' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog).toHaveTextContent('The scan has more findings than the platform reads');
+    expect(dialog).toHaveTextContent('without a complete count');
+    expect(dialog).not.toHaveTextContent('Accept 0 Critical and 0 High');
+    await user.click(screen.getByRole('button', { name: 'Accept and continue' }));
+    expect(acceptFindings).toHaveBeenCalledWith('custom', 'r-1');
+  });
+
   it('shows live lifecycle progress with CodeBuild and ECR links', async () => {
     const buildingEnvironment = {
       ...custom,

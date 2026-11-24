@@ -156,6 +156,8 @@ export interface EnvironmentRevision {
     severityCounts?: Record<string, number>;
     findings?: EnvironmentScanFinding[];
     findingsTruncated?: boolean;
+    // The scan stopped at the platform's read bound: the counts are partial.
+    incomplete?: boolean;
     evaluatedAt?: string;
     imageDigest?: string;
   } | null;
