@@ -184,7 +184,10 @@ describe('quorum-edit-plan-start', () => {
       expect.objectContaining({ editId: 'qe-1', fields: { plan: result.plan } }),
     );
     expect(store.recordMetric).toHaveBeenCalledWith(
-      expect.objectContaining({ metrics: expect.objectContaining({ quorumEditCalls: 1 }) }),
+      expect.objectContaining({
+        metrics: expect.objectContaining({ quorumEditCalls: 1 }),
+        measured: true,
+      }),
     );
   });
 
@@ -513,6 +516,7 @@ describe('quorum-edit-apply-start', () => {
         metrics: { tokensInput: 10, quorumEditCalls: 1 },
         resolvedModel: 'm1',
         creditRate: 2,
+        measured: true,
       },
       {
         executionId: 'i1',
@@ -520,6 +524,7 @@ describe('quorum-edit-apply-start', () => {
         metrics: { tokensInput: 4, quorumEditCalls: 1 },
         resolvedModel: null,
         creditRate: null,
+        measured: true,
       },
     ]);
   });
@@ -928,6 +933,14 @@ describe('repair-structure', () => {
     expect(deps.deriveArtifacts).toHaveBeenCalledWith(
       expect.objectContaining({ artifactTypes: ['requirements'] }),
     );
+    expect(deps.store.recordMetric).toHaveBeenCalledExactlyOnceWith({
+      executionId: 'i1',
+      stageInstanceId: 'repair-i1',
+      metrics: { tokensInput: 5, structureRepairCalls: 1 },
+      resolvedModel: null,
+      creditRate: null,
+      measured: true,
+    });
   });
 
   it('never writes an answer the extractor cannot parse into items', async () => {

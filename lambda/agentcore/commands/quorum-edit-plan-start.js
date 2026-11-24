@@ -20,7 +20,7 @@ import { runCredentialJob } from '../credential-session.js';
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
-import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
+import { runOneShotPrompt, extractJsonObject, oneShotUsage } from '../cli/one-shot.js';
 import { quorumCliModels } from '../model-resolver.js';
 import {
   PLAN_CONTEXT_DOC_LIMIT,
@@ -184,9 +184,7 @@ export const createQuorumEditPlanStart = ({
                 ?.recordMetric?.({
                   executionId,
                   stageInstanceId: `qedit-${editId}`,
-                  metrics: { ...out.metrics, quorumEditCalls: 1 },
-                  resolvedModel: out.model ?? null,
-                  creditRate: out.creditRate ?? null,
+                  ...oneShotUsage(out, 'quorumEditCalls'),
                 })
                 .catch(() => {});
             }

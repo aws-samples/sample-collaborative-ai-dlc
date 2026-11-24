@@ -44,6 +44,9 @@ describe('source-control project contract', () => {
   it('classifies tracker closure as a project-bound write operation', () => {
     expect(SOURCE_CONTROL_OPERATIONS['close-issue']).toBe('write');
   });
+  it('classifies unused branch deletion as a project-bound write operation', () => {
+    expect(SOURCE_CONTROL_OPERATIONS['delete-unused-branches']).toBe('write');
+  });
 
   it('requires one authentication type per provider', () => {
     expect(

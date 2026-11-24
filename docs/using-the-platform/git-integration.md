@@ -86,6 +86,7 @@ All git operations are owned by the engine — agents never run git and never ho
 - During parallel construction, each unit of work gets a section-specific per-unit branch. Intent PR delivery merges it through the engine; PR-per-unit delivery opens draft unit-to-intent reviews and serializes readiness in dependency order.
 - The engine commits and pushes after every stage, so work is durable even if a run is cancelled. Its commit messages are Conventional Commits (see [Engine-owned git](../concepts/execution.md#engine-owned-git)).
 - On success, the pull/merge request opens from the intent branch onto the base branch.
+- The intent branch is pushed to every repository of the space when the workspace is set up, and each unit branch to every repository when its lane starts, so a repository the intent never changes keeps branches that point only at commits already on its base branch. The engine deletes them when a run ends, whether it succeeded, failed or was cancelled. A repository keeps all of the intent's branches (`aidlc/<title-slug>` and every `aidlc/<title-slug>--…`) if any of them has a commit its base branch lacks or an open pull/merge request. A rewind or restart creates the intent branch again; while the cleanup runs, which usually takes seconds, a restart, rewind or cancel of that intent is refused with `branch_cleanup_in_progress` so a new run's branches can't be deleted. Deleting needs a credential that may delete branches; a refused deletion, for example of a protected branch, leaves the branch where it is.
 
 ## Binding a tracker to a space
 

@@ -7,7 +7,7 @@ import { runCredentialJob } from '../credential-session.js';
 // message vertex, and broadcasts `discussion.message` on the intent channel.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { DEFAULT_ONE_SHOT_TIMEOUT_MS, runOneShotPrompt } from '../cli/one-shot.js';
+import { DEFAULT_ONE_SHOT_TIMEOUT_MS, runOneShotPrompt, oneShotUsage } from '../cli/one-shot.js';
 import { gatewayGrantExpiresAt } from '../../shared/gateway-grant.js';
 import { currentGatewayGrant } from '../mcp/gateway-context.js';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
@@ -296,9 +296,7 @@ export const createDiscussionAssistStart = ({
             ?.recordMetric?.({
               executionId: intentId,
               stageInstanceId: null,
-              metrics: { ...out.metrics, discussionAssistCalls: 1 },
-              resolvedModel: out.model ?? null,
-              creditRate: out.creditRate ?? null,
+              ...oneShotUsage(out, 'discussionAssistCalls'),
             })
             .catch(() => {});
         }

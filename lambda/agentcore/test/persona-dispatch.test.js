@@ -89,6 +89,7 @@ describe('dispatchPersona — role: reviewer', () => {
         sectionIndex: null,
         resolvedModel: 'us.anthropic.claude-haiku-4-5',
         metrics: { tokensInput: 10, tokensOutput: 2 },
+        measured: true,
       });
       expect(publish).toHaveBeenCalledOnce();
     },

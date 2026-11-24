@@ -8,6 +8,7 @@ export const STAGE_ATTEMPT_METHODS = Object.freeze([
   'createHumanTask',
   'supersedeHumanTask',
   'setCommitDescription',
+  'recordStageUsage',
 ]);
 
 // A worker's immutable identity follows it into every recovery write.
@@ -16,6 +17,7 @@ export const scopeStageAttempt = (store, ownership) => {
   if (!ownership?.orchestratorRunId || !ownership?.stageCallbackId) return store;
   const scoped = { ...store };
   for (const method of STAGE_ATTEMPT_METHODS) {
+    if (typeof store[method] !== 'function') continue;
     scoped[method] = (input) => store[method]({ ...input, ownership });
   }
   return scoped;
