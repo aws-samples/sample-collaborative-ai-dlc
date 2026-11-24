@@ -778,8 +778,10 @@ describe('EnvironmentsTab', () => {
 
     render(<EnvironmentsTab />);
 
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'ECR is inspecting its operating-system packages',
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'ECR is inspecting its operating-system packages',
+      ),
     );
     expect(screen.getByRole('link', { name: /CodeBuild logs/ })).toHaveAttribute(
       'href',
