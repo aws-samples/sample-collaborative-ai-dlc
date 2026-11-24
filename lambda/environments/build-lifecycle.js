@@ -44,33 +44,52 @@ export const streamToString = async (body) => {
 const findingAttribute = (finding, key) =>
   finding.attributes?.find((attribute) => attribute.key === key)?.value ?? null;
 
-export const summarizeScanFindings = (scan) => {
-  const severityOrder = new Map([
-    ['CRITICAL', 0],
-    ['HIGH', 1],
-    ['MEDIUM', 2],
-    ['LOW', 3],
-    ['INFORMATIONAL', 4],
-    ['UNDEFINED', 5],
-  ]);
-  // One vulnerability often affects several packages (openssl and libssl,
-  // say): the package breaks the tie, so the order never depends on ECR's.
-  return (scan.imageScanFindings?.findings ?? [])
-    .map((finding) => ({
-      id: finding.name ?? 'Unknown finding',
-      severity: finding.severity ?? 'UNDEFINED',
-      packageName: findingAttribute(finding, 'package_name'),
-      packageVersion: findingAttribute(finding, 'package_version'),
-      uri: finding.uri ?? null,
-    }))
-    .toSorted(
-      (left, right) =>
-        (severityOrder.get(left.severity) ?? 99) - (severityOrder.get(right.severity) ?? 99) ||
-        left.id.localeCompare(right.id) ||
-        String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
-        String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? '')),
-    );
+const SEVERITY_ORDER = new Map([
+  ['CRITICAL', 0],
+  ['HIGH', 1],
+  ['MEDIUM', 2],
+  ['LOW', 3],
+  ['INFORMATIONAL', 4],
+  ['UNTRIAGED', 5],
+  ['UNDEFINED', 6],
+]);
+
+// Most severe first. One vulnerability often affects several packages
+// (openssl and libssl, say): the package breaks the tie, so the order never
+// depends on ECR's.
+export const compareScanFindings = (left, right) =>
+  (SEVERITY_ORDER.get(left.severity) ?? 99) - (SEVERITY_ORDER.get(right.severity) ?? 99) ||
+  left.id.localeCompare(right.id) ||
+  String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
+  String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? ''));
+
+const basicFinding = (finding) => ({
+  id: finding.name ?? 'Unknown finding',
+  severity: finding.severity ?? 'UNDEFINED',
+  packageName: findingAttribute(finding, 'package_name'),
+  packageVersion: findingAttribute(finding, 'package_version'),
+  uri: finding.uri ?? null,
+});
+
+const enhancedFinding = (finding) => {
+  const details = finding.packageVulnerabilityDetails ?? {};
+  const affected = details.vulnerablePackages?.[0] ?? {};
+  return {
+    id: details.vulnerabilityId ?? finding.title ?? 'Unknown finding',
+    severity: finding.severity ?? 'UNDEFINED',
+    packageName: affected.name ?? null,
+    packageVersion: affected.version ?? null,
+    uri: details.sourceUrl ?? details.referenceUrls?.[0] ?? null,
+  };
 };
+
+// ECR returns basic scanning findings in `findings` and enhanced scanning
+// (Amazon Inspector) findings in `enhancedFindings`, each in its own shape.
+export const summarizeScanFindings = (scan) =>
+  [
+    ...(scan.imageScanFindings?.findings ?? []).map(basicFinding),
+    ...(scan.imageScanFindings?.enhancedFindings ?? []).map(enhancedFinding),
+  ].toSorted(compareScanFindings);
 
 const repositoryNameFromImageUri = (imageUri) => {
   const path = String(imageUri ?? '')
