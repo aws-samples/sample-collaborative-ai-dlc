@@ -12,12 +12,7 @@ each backend retains its own execution commands.
 
 !!! note "Feature status"
 
-    On November 24, DEV serves the shared Intent workspace and pins new native
-    runs to engine 14. Claude Code, Codex and OpenCode each completed Express
-    and produced a Git bundle in the installed image with scripted providers.
-    The complete signed-in DEV journey is still open. Hosted branch and pull
-    request publication are unfinished. See the
-    [release status and next member run](#release-status-on-2026-11-24).
+    The AgentCore candidate runs the installed AI-DLC binary in the intent workspace. DEV evidence from the earlier engine deployment is historical. Hosted Git publication and signed-in candidate acceptance remain open. See the [current verification inventory](#agentcore-cutover-and-verification-inventory).
 
 ## Working with a native intent
 
@@ -45,7 +40,7 @@ are locally and installed-image qualified, with deployed artifacts independently
 verified on 2026-11-11.
 Members have created and started intents in DEV. The November 24 Codex runs
 exposed two defects between Start and the first stage after plan selection.
-The [release status](#release-status-on-2026-11-24) records the affected
+The [release status](#historical-release-status-on-2026-11-24) records the affected
 versions and the remaining signed-in check.
 
 The release implementation uses platform-wide native admission controls and
@@ -103,10 +98,7 @@ is shown as uncertain or unavailable.
 If a structured form cannot be captured, the response remains available for
 inspection and an eligible turn can accept a written reply. The platform does not
 invent missing options, answer questions automatically or advance a human gate.
-The protected engine records a reply with no matching question as unapplied.
-It can continue operations that require no member decision and direct the
-agent to present the open question. NE-24 still needs a signed-in run that
-shows the notice, restores the form and reaches completion in the same attempt.
+The member can inspect exactly what was accepted, who submitted it and whether delivery was observed. The platform cannot attribute a workflow decision to that submission. An interrupted or ambiguous delivery retains the original answer and its status. Recovery presents the current gate and never resends that answer.
 Current forms support up to 32 questions and 16 options per question, with written
 answers where required. Unsupported forms must remain explicit rather than lose
 questions or choices.
@@ -118,10 +110,9 @@ literal option labels (including recommendation text), descriptions, order and
 single/multiple selection semantics. The current scope-confirm offer includes
 three choices. Selecting **Use a different plan** or sending a written reply
 opens the named plans and stage counts from that same engine offer. The member
-selects a plan on the new form. The protected engine binds that selection to
-the new publication and the original request before running the plan command.
+selects a plan on the new form. The platform admits that selection against the new publication. The installed conductor follows the command supplied with the original request.
 
-The current display transport accepts complete rendered question groups
+The runtime passively observes bounded top-level shell results for the pinned typed asks. The stock request record stores the request but omits the displayed choice labels. A current-turn display file can also supply complete rendered question groups
 (`version: 2`) or the two pinned typed intake asks (`version: 3`,
 `scope-confirm`/`compose-offer`). Both produce the same validated pending-input
 schema, version 2. The obsolete four-question version 1 is removed. Unsupported,
@@ -193,41 +184,9 @@ Workflow completion must follow the pinned methodology's effective plan,
 required checks, review outcomes and human gates. Native does not add a blanket
 final approval beyond the selected workflow's requirements.
 
-Completion is reported per published revision as **complete**, **failed** or
-**not verified**. An agent stopping, a successful CLI exit, a published review
-document or an accepted approval answer is not sufficient evidence of workflow
-completion, and none of them changes that report.
+**AI-DLC reported complete** describes the selected publication. The runtime must observe the pinned tool's terminal directive on the current turn, find the matching active intent completed in the quiescent snapshot, and publish the files with no pending question or open gate. Readers bind the report to the admitted publication, attempt, sequence and file digest. A continuing directive, assistant prose, an exited harness, an accepted answer or a writable state file alone cannot produce this report. An execution failure retains its failure status and available diagnostic. A paused or unrecognized turn has no terminal report.
 
-For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
-protected workflow engine owned by this project is the completion authority.
-Earlier DEV member runs reached real gates and displayed their incomplete
-verdicts. A signed-in run through required checks, a model-backed review and a
-verified terminal revision remains open under NE-11. The pinned engine's own records are not an
-independent authority, because the coding process can write the state and
-human-presence files its guards read. The protected engine therefore runs the
-same pinned engine code in a separate service with its own workspace and state:
-
-- The coding runtime's `aidlc` command forwards workflow operations to that
-  service. It submits the workspace's files and receives the engine's result and
-  file changes. It cannot write the engine's state, journal or evidence.
-- The engine records the effective plan, each stage directive it issued, the
-  member decisions it applied, and the checks and reviews it observed. Project
-  checks and independent reviewers run as separate isolated jobs.
-- After each publication the engine writes one immutable evidence record bound
-  to that exact revision. **Complete** requires the engine's own terminal
-  completion, every required gate applied from an authenticated member decision,
-  every required check and review observed and still current, and result files
-  identical to those the engine saw at its terminal step. **Failed** is the
-  engine's own recorded failure for those files. Everything else, including a
-  turn stopped at an open gate, a later file change, a missing or stale
-  observation, or an unavailable engine, is **not verified**.
-
-The pinned workflow decides what blocks completion. If it completes with a failed
-advisory check or reviewer concerns, the revision is reported complete and the
-failed checks or concerns are shown beside it. Native adds no approval of its own.
-
-Executions started before this change, other packages and Kiro have no protected
-engine. Their results remain readable and remain **not verified**.
+The ordinary harness runs the pinned method and its checks, reviewer instructions and human gates in the intent's EFS checkout inside AgentCore. The launcher passes every argument to the installed binary. The platform records authenticated submissions, delivery observations and immutable publication history. It makes no independent claim about the application of a decision, reviewer identity or check verdict. Historical immutable engine evidence remains readable where its original version and publication match.
 
 The dev deployment lets members compare a publication with its
 Start commit, inspect reviewer coverage, and prepare the exact changes as a Git
@@ -292,7 +251,7 @@ the deployment boundary are recorded below.
 | Responsibility                                          | Owner                                                      |
 | ------------------------------------------------------- | ---------------------------------------------------------- |
 | Methodology steps, workflow records and required gates  | The pinned AI-DLC engine and coding harness                |
-| Authoritative workflow state and completion evidence    | The protected workflow engine, for the reviewed package    |
+| Method state and terminal report | Pinned AI-DLC in the same AgentCore workspace and the exact admitted publication |
 | Access, accepted commands and answers, execution state  | The platform's native authority                            |
 | Dispatch, status observation, cancellation and recovery | Native workers operating under current execution ownership |
 | Mutable project files and unfinished work               | The EFS workspace with one admitted writer                 |
@@ -5892,7 +5851,31 @@ The development-data decision above also removes preservation of those existing
 executions as a prerequisite; it does not authorize automatic replay or weaken
 the current contract for newly created executions.
 
-### Release status on 2026-11-24
+### AgentCore cutover and verification inventory
+
+Start a fresh native intent after deploying the coordinated runtime, controller, IAM and frontend candidate. An existing intent pinned to the retired engine retains its publications, recorded replies and available versioned proof. Continue and Recover reject that pin. Do not edit its configuration, migrate its workspace, resubmit an old answer, or retire a live writer during a turn. Drain new admission and outstanding work before the operator removes the old services. Restoring old infrastructure can require new Lambda versions, role bindings and log groups. A rollback cannot recreate old version numbers or resume every old DEV run.
+
+The following conditions govern the independent NE-11–25 pass on the AgentCore candidate. Earlier dated entries below preserve the criteria and results in effect for their release.
+
+| Item | Remaining functionality or decision | Evidence still needed |
+| --- | --- | --- |
+| NE-11 | Independent engine attestation is retired. Use the method’s terminal report on the matching publication. Preserve failure and open gates. | Signed-in run with the method’s required checks and reviewers, a terminal revision and matching downloads. |
+| NE-12 | Hosted branch and PR creation, ambiguous write reconciliation, merge observation and tracker policy remain unfinished. | Identify the exact base, bundle, imported tree and hosted references when implemented. |
+| NE-13 | Shared history and revision-bound graph reads exist. | Two members reopen decisions and source files on the same revision. |
+| NE-14 | Shared reads and draft isolation exist. | Measure actual browser requests, navigation and account changes. |
+| NE-15 | Activity coalescing, instrumentation and cost coverage require assessment on this topology. | Count notification, API and storage work under member traffic. |
+| NE-16 | Evaluate remaining latency against measured supported entry points. | Measure cold/warm startup, useful output, publication and UI on the new image. |
+| NE-17 | Confirm abandoned work, retention and reclamation policy. | Exercise cancel, late writer, cleanup and retained artifacts. |
+| NE-18 | Kiro managed authentication remains a distinct prerequisite. | Repeat supported installed and gateway paths independently. |
+| NE-19 | Hosted delivery depends on NE-12. | Two signed-in profiles, competing submissions, discussion, Quorum, reconnect, revocation, completion and downloads. |
+| NE-20 | Deployed isolation and retention require validation after IAM removal. | Exercise allowed and denied IAM, EFS, S3 version and multipart paths. |
+| NE-21 | Assign alarm destinations, ownership and qualification workload. | Verify repair, drain, revocation and incident response at the intended load. |
+| NE-22 | Release publication and navigation remain outstanding. | Verify the reviewed deployment and member-facing documentation. |
+| NE-23 | The remote operation journal and its abandonment protocol are retired. Ordinary writer admission, uncertain delivery, cancel and fresh-session workspace resume own recovery. | Interrupt a current turn, fence its old writer, preserve unfinished files and the original answer, and present the current gate. |
+| NE-24 | Independent proof of application is retired. A written answer, including a request for alternatives, records only its submission. | Verify the current revision’s named options, one subsequent explicit selection, an actual rejection reason and a completed fresh run. |
+| NE-25 | Keep bounded consumers, repair and dead-letter handling. Supersede continuation of a specific retired DEV pin with a fresh supported execution. | Verify queues and DLQs after cutover and continue a fresh execution across a repair cycle. |
+
+### Historical release status on 2026-11-24
 
 **NE-01 through NE-10 are closed.** They cover the release contract, EFS
 recovery through the application, removal of snapshot restore, turn ownership
@@ -5947,7 +5930,7 @@ decision. This fix still needs a DEV release and a signed-in run.
 | NE-24 · Unapplied reply       | Installed tests cover continued progress after a reply with no recorded question. In an earlier live run the expected notice and form were missing after recovery.                                             | Observe the notice, re-presented question, explicit answer and verified completion in the same live attempt. Intermediate revisions must retain their incomplete verdicts.                                                              |
 | NE-25 · Retry loop            | Corrected consumers and dead-letter queues are deployed. The November 19 purge and empty-queue measurements passed. A November 24 read found the original engine 1 intent still awaiting its member on turn 1. | Continuation of that specific pre-purge execution is the sole outstanding condition. Its selection remains the member’s.                                                                                                                |
 
-#### Next member run
+#### Member run planned for the previous release
 
 1. **Start with the reported Codex path on engine 14.** An existing unanswered
    offer can exercise the switch to Express if that is the member's choice.
@@ -6180,7 +6163,7 @@ deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
       verified 2026-11-11** at `dfe39f6fcce446f020ba3778646b1edd32a90999`, including
       packages, aliases, runtime settings, IAM/routes and frontend bytes. Live
       acceptance remains separate.
-- [ ] **NE-11 — Implement verified workflow completion.** Connect evidence of the
+- [ ] **NE-11 — Workflow completion.** The current completion condition appears in the AgentCore inventory above. Earlier implementation history follows. Connect evidence of the
       pinned effective plan, applied human decisions and required checks/reviews to
       the exact final result. Resolve the methodology/isolation dependency instead
       of treating mutable harness files or prose as independent approval evidence.
@@ -6318,7 +6301,7 @@ deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
       On the cancellation candidate (`39af3627`), the Linux process owner reports whether a command launched before cancellation. All 12 targeted cases passed in 24 consecutive installed runs.
       **Dev milestone, 2026-11-23.** Engine 11 (`830b1cf5`) passed 129 independent service checks and its official ReadOnly preflight returned READY. Installed Claude, Codex and OpenCode applied the protected choice once and resumed at the recorded gate. Kiro still requires managed authentication. Signed-in acceptance remains open.
 - [ ] **NE-19 — Qualify the complete two-member journey.** Run create → start → question
-      → implementation → required checks/gates → verified completion → downloadable
+      → implementation → required checks/gates → AI-DLC reported complete → downloadable
       result and Git delivery with separate authenticated browser profiles. Include
       competing answers, change requests, historical discussions, Quorum failure/retry,
       reconnect, logout/login, account switching, token expiry and revocation.
@@ -6366,7 +6349,7 @@ deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
       matches the shipped behavior, supported combinations and recovery limits, and
       the work list accurately records completed release work and any explicitly
       deferred follow-ups.
-- [ ] **NE-23 — Abandon an engine operation that never finishes.** A protected
+- [ ] **NE-23 — Recover interrupted work.** The AgentCore inventory supersedes this historical engine requirement. A protected
       engine operation interrupted by a Lambda timeout, an uncertain job start or a
       cancelled request stays pending in its journal. Later workflow commands in
       that attempt are refused as busy forever and workspace resume cannot recover
@@ -6388,7 +6371,7 @@ deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
       discard the predecessor's saved versions and continue from the last committed snapshot.
       Engine v6 (`6389d2dc`) passed all 122 independent dev deployment checks on 2026-11-21.
       Installed Express and POC resumed at their original open gate. Recovery in a live member run remains open.
-- [ ] **NE-24 — Keep a turn usable after a reply the engine cannot bind.** On
+- [ ] **NE-24 — Keep a turn usable after an unstructured reply.** The AgentCore inventory supersedes the following historical application-proof requirement. On
       the November 16 image, a turn could finish without a captured question.
       The application accepted a written reply. The protected engine then
       refused every workflow command in the next turn with
@@ -6429,7 +6412,7 @@ deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
       reply. Recovery stopped before a new form. Revision 3 lacked the
       `unappliedReplies` entry and its member-facing notice. Continued progress
       and verified completion after that reply remain open.
-- [ ] **NE-25 — Stop retrying queue pointers that can never be served.** The
+- [ ] **NE-25 — Stop retrying queue pointers that can never be served.** Use a fresh supported pin for the remaining continuation test. The older purge history follows. The
       execution, cancellation and projection consumers reported every thrown
       error as a batch item failure and their queues had no receive-count
       cutoff. A pointer to an execution the current contract rejects was

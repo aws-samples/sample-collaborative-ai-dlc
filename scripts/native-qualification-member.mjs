@@ -59,13 +59,20 @@ export function qualificationMember(f, execution, membership, jobs) {
     return { Payload: Buffer.from(JSON.stringify(result)) };
   });
   return {
-    async request(route, body, { status = body ? 202 : 200, query, token = initiator.token } = {}) {
+    async request(
+      route,
+      body,
+      { status = body ? 202 : 200, query, fileId, token = initiator.token } = {},
+    ) {
       const resource = `/api/projects/{projectId}/native-intents/{intentId}${route ? `/${route}` : ''}`;
       const { projectId, executionId: intentId } = f.identity;
       const response = await handler({
         resource,
-        path: resource.replace('{projectId}', projectId).replace('{intentId}', intentId),
-        pathParameters: { projectId, intentId },
+        path: resource
+          .replace('{projectId}', projectId)
+          .replace('{intentId}', intentId)
+          .replace('{fileId}', fileId ?? ''),
+        pathParameters: { projectId, intentId, ...(fileId ? { fileId } : {}) },
         httpMethod: body ? 'POST' : 'GET',
         requestContext: { authorizer: { claims: { sub: 'untrusted-forwarded-actor' } } },
         headers: token ? { Authorization: `Bearer ${token}` } : {},

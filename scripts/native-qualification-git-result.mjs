@@ -203,9 +203,8 @@ export async function qualificationGitResult({
         query: { ...target, source: '1' },
       });
       const delta = source.gitChangeSet;
-      assert.equal(delta.terminal, 'matched');
-      assert.equal(delta.review, 'not_required');
-      assert.equal(delta.sha256, delta.terminalSha256);
+      assert.equal(delta.terminal, 'not_recorded');
+      assert.equal(delta.review, 'not_verified');
       assert.equal(delta.repository.commit, commit);
       const request = {
         requestId: randomUUID(),
@@ -255,8 +254,8 @@ export async function qualificationGitResult({
         assert.equal(result.publicationSequence, publicationSequence);
         assert.deepEqual(result.delivery.verification, pending.delivery.verification);
         assert.equal(result.delivery.sourceBaselineId, delta.sourceBaselineId);
-        assert.equal(result.delivery.deltaSha256, delta.sha256);
-        assert.equal(result.delivery.verification.terminal, 'matched');
+        assert.equal(result.delivery.deltaSha256, pending.delivery.deltaSha256);
+        assert.equal(result.delivery.verification.terminal, 'not_recorded');
         assert.ok(Date.parse(result.download.expiresAt) > Date.now());
         const url = new URL(result.download.downloadUrl);
         assert.equal(url.origin, endpoint);
@@ -302,7 +301,7 @@ export async function qualificationGitResult({
         branch: ready.delivery.branch,
         commit: ready.delivery.commit,
         tree: ready.delivery.tree,
-        deltaSha256: delta.sha256,
+        deltaSha256: ready.delivery.deltaSha256,
         terminal: delta.terminal,
         changeCount: delta.changes.length,
         codeChanges: delta.changes.filter((c) =>

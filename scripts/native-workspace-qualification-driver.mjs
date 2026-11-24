@@ -1,5 +1,7 @@
 // The existing native controller fixture and production runtime/storage owners,
 // with installed CLI tools and a scripted loopback provider. No private exporter.
+import { verifyNativeReleaseDirectory } from '../lambda/shared/native-runtime-package.js';
+import { describeNativePackagePin } from '../lambda/shared/native-package-pin.js';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
@@ -34,7 +36,6 @@ import {
   qualificationMembership,
   competeForQuestion,
 } from './native-qualification-member.mjs';
-import { protectedWorkspaceEngine } from './native-qualification-protected-engine.mjs';
 import { localProviderInvocation } from './native-qualification-provider.mjs';
 
 export async function workspaceQualificationDriver({
@@ -45,7 +46,7 @@ export async function workspaceQualificationDriver({
   harness = 'claude',
   model = 'claude-sonnet-4-6',
   dependencyEnv = {},
-  protectedWorkflow = false,
+  memberJourney = false,
   terminalResult = false,
 }) {
   const f = executionFixture({
@@ -53,8 +54,25 @@ export async function workspaceQualificationDriver({
     model,
     packageVersion: pkg.version,
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
-    ...(protectedWorkflow && !terminalResult ? { prompt: 'Create a 3D version of the game' } : {}),
+    ...(memberJourney ? { prompt: 'Create a 3D version of the game' } : {}),
   });
+  if (memberJourney) {
+    const pin = await verifyNativeReleaseDirectory({
+      directory: pkg.directory,
+      source: {
+        provider: 'github',
+        repository: 'awslabs/aidlc-workflows',
+        release: 'v2.11.1',
+        commit: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+      },
+    });
+    const { materializationId } = describeNativePackagePin(pin, null);
+    Object.assign(f.prepared.candidate, { packagePin: pin, materializationId });
+    Object.assign(f.prepared.archiveReceipt, { materializationId });
+    Object.assign(f.configuration, { packageId: pin.packageId, materializationId });
+    const digest = process.env.NATIVE_QUALIFICATION_IMAGE_DIGEST;
+    f.configuration.image = { uri: f.configuration.image.uri.split('@')[0] + '@' + digest, digest };
+  }
   Object.assign(f.prepared, { harness, createdAt: f.now(), updatedAt: f.now() });
   const homeRoot = `${root}-homes`;
   const memory = memoryNativeObjects({
@@ -137,9 +155,6 @@ export async function workspaceQualificationDriver({
   const interactions = createNativeInteractions(storage);
   const fence = createNativeExecutionFence(storage);
   const membership = qualificationMembership(f.identity.projectId);
-  const engine = protectedWorkflow
-    ? await protectedWorkspaceEngine(f, pkg, storage, publications, interactions, membership)
-    : null;
   // Keep the fixture transport's RUNTIME row coherent with its prepared read.
   for (const [key, row] of f.rows)
     if (row.sk === 'RUNTIME') f.rows.set(key, structuredClone(f.prepared));
@@ -151,7 +166,6 @@ export async function workspaceQualificationDriver({
     interactions,
     revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
     activity: createNativeActivityStore({ ddb: f.ddb, tableName: TABLE, now: f.now }),
-    completionProof: engine?.completionProof,
     results: gitResult?.results,
     configure: async () => f.configuration,
     enqueue: async () => {},
@@ -176,7 +190,6 @@ export async function workspaceQualificationDriver({
   } catch (error) {
     member.close();
     await gitResult?.close();
-    await engine?.close();
     throw error;
   }
   const inputReads = attachmentReferences(attachments).map((file, index) => ({
@@ -224,7 +237,6 @@ export async function workspaceQualificationDriver({
       root,
       homeRoot,
       ...createNativeExecutionPorts({ env, s3: storage.s3 }),
-      ...(engine ? { prepareWorkflowEngine: (input) => engine.prepare({ ...input, env }) } : {}),
       inspectMount: async () => ({}), // Local filesystem, NOT AWS EFS proof.
       prepare: async ({ signal }) => {
         const sourceBaseline =
@@ -267,13 +279,7 @@ export async function workspaceQualificationDriver({
         }
         cliTurns++;
         lastHome = input.env.HOME;
-        return runNativeCommand(
-          localProviderInvocation(
-            harness,
-            { ...input, env: { ...input.env, ...engine?.env } },
-            provider.url,
-          ),
-        );
+        return runNativeCommand(localProviderInvocation(harness, input, provider.url));
       },
     });
   let runtime = create();
@@ -328,7 +334,7 @@ export async function workspaceQualificationDriver({
     for (let i = 0; i < 16; i++) {
       await supervisor(f.identity);
       await runtime.settle();
-      if (f.row().status === status) return;
+      if ([status].flat().includes(f.row().status)) return;
     }
     throw Error(`Native authority ${f.row().status}, ${latestError}, ${f.row().failureCode}`);
   };
@@ -413,7 +419,6 @@ export async function workspaceQualificationDriver({
     competition: () => competition,
     exportResult: gitResult && ((revision) => gitResult.verify(member, revision)),
     revoke: membership.revoke,
-    selectedCommand: engine?.selectedCommand,
     interaction: () => member.request('interaction'),
     async turn(
       prompt,
@@ -443,7 +448,7 @@ export async function workspaceQualificationDriver({
         await loseSession();
         return null;
       }
-      await settle('AWAITING_USER');
+      await settle(['AWAITING_USER', 'STOPPED']);
       assert.equal(cliTurns, beforeTurns + 1, 'Duplicate/lost ACK does not replay a CLI turn');
       assert.equal(f.row().publication.sequence, before + 1);
       assert.equal(f.row().recoveryCheckpoint, undefined);
@@ -506,7 +511,6 @@ export async function workspaceQualificationDriver({
           writerGeneration: f.row().writerGeneration,
         });
       await runtime.settle();
-      await engine?.close();
       await fs.rm(homeRoot, { recursive: true, force: true });
       await fs.chmod(join(project, '.aidlc/references'), 0o755).catch(() => {});
     },

@@ -157,9 +157,47 @@ const removesDeposedPackageHelper = (change) => {
       isDeepStrictEqual(current.change.actions, ['update']))
   );
 };
+// A method cutover retires only these dedicated engine resources. Retained
+// runs still depend on the ordinary authority, storage and Git builder. A
+// partial listing, service replacement or loss of the image policy is unsafe.
+const retiredMethodResources = new Set([
+  'aws_lambda_function.workflow_engine',
+  'aws_cloudwatch_log_group.workflow_engine',
+  'aws_iam_role.workflow_engine',
+  'aws_iam_role_policy.workflow_engine',
+  'aws_iam_role_policy_attachment.workflow_engine_basic',
+  'aws_codebuild_project.workflow',
+  'aws_iam_role.workflow_check',
+  'aws_iam_role_policy.workflow_check',
+  'aws_iam_policy.workflow_review_boundary',
+]);
+const nativePrefix = 'module.native_runs[0].';
+const keepsNativeMethodConsumers = [
+  'aws_dynamodb_table.bindings',
+  'aws_s3_bucket.publications',
+  'module.authority.aws_lambda_function.this[0]',
+  'aws_lambda_function.git_result',
+  'aws_ecr_repository_policy.git_result',
+].every((suffix) => {
+  const current = currentChanges.get(nativePrefix + suffix);
+  return (
+    current?.mode === 'managed' &&
+    current.change.before &&
+    current.change.after &&
+    (isDeepStrictEqual(current.change.actions, ['no-op']) ||
+      isDeepStrictEqual(current.change.actions, ['update']))
+  );
+});
+const retiresMethodResource = (change) =>
+  keepsNativeMethodConsumers &&
+  change.mode === 'managed' &&
+  change.address === nativePrefix + change.type + '.' + change.name &&
+  retiredMethodResources.has(change.type + '.' + change.name) &&
+  isDeepStrictEqual(change.change.actions, ['delete']);
 const removesProtectedNativeService = (change) =>
   change.address.startsWith('module.native_runs[') &&
   !nativeRemovalVerified &&
+  !retiresMethodResource(change) &&
   !replacesNativePackageHelper(change) &&
   !removesDeposedPackageHelper(change);
 

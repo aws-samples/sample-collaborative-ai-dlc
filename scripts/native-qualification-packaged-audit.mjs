@@ -23,9 +23,6 @@ for (const [role, path] of Object.entries({
   resultStorage: 'native-runtime-control/result-storage.js',
   resultStore: 'native-runtime-control/result-store.js',
   publicHandler: 'native-runtime-control/index.js',
-  protectedEngine: 'native-runtime-control/workflow-engine/service.js',
-  journal: 'native-runtime-control/workflow-engine/store.js',
-  proofReader: 'native-runtime-control/workflow-engine/proof-reader.js',
 })) {
   loadedFrom[role] = await fs.realpath(`/fixture/lambda/${path}`);
   assert.equal(loadedFrom[role], `/opt/${path}`);

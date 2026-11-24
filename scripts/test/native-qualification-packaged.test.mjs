@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
-import { engineTransport } from '../native-qualification-engine-transport.mjs';
 import { mkdir, mkdtemp, writeFile, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -32,49 +29,6 @@ test('the actual bundled controller adapter retains authoritative Start through 
     );
   } finally {
     await rm(staged.directory, { recursive: true, force: true });
-  }
-});
-
-test('the child reads only the exact retained Start manifest version, and cannot write it', async () => {
-  const identity = {
-    projectId: randomUUID(),
-    executionId: randomUUID(),
-    bindingId: randomUUID(),
-    attemptId: randomUUID(),
-    epoch: 1,
-  };
-  const manifest = { key: 'native-executions/fixture/manifest.json', versionId: 'v1' };
-  const seen = [];
-  const transport = await engineTransport({
-    identity: () => identity,
-    sourceManifest: () => manifest,
-    s3: {
-      send: async (command) => {
-        seen.push(command.input);
-        return { VersionId: 'v1', Body: Readable.from([Buffer.from('pinned')]) };
-      },
-    },
-  });
-  const send = (route, input) =>
-    fetch(`http://127.0.0.1:${transport.env.NATIVE_FIXTURE_PORT}/${route}`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-  const target = { Key: manifest.key, VersionId: manifest.versionId };
-  try {
-    const exact = await send('get', target);
-    assert.equal(exact.status, 200);
-    assert.equal(Buffer.from((await exact.json()).Body, 'base64').toString(), 'pinned');
-    for (const [route, input] of [
-      ['get', { Key: target.Key }],
-      ['get', { ...target, VersionId: 'v2' }],
-      ['get', { ...target, Key: 'another-manifest' }],
-      ['put', { ...target, Body: 'YQ==' }],
-    ])
-      assert.equal((await send(route, input)).status, 400);
-    assert.deepEqual(seen, [target]);
-  } finally {
-    await transport.close();
   }
 });
 
@@ -250,41 +204,6 @@ test('OpenCode copies the result of its exact bash call through its installed wr
   }
 });
 
-test('protected Codex resume requires the correlated command-denied result', async () => {
-  for (const [output, allowed] of [
-    ['Process exited with code 1\nOutput:\nNATIVE_ENGINE_COMMAND_DENIED', true],
-    ['Process exited with code 1\nOutput:\nNATIVE_ENGINE_UNAVAILABLE', false],
-    ['Process running with session ID 42\nOutput:\nNATIVE_ENGINE_COMMAND_DENIED', false],
-  ]) {
-    const provider = await qualificationProvider('codex');
-    function* script() {
-      yield { command: 'aidlc engine orchestrate next --resume', denied: true };
-      return 'Waiting for confirmation.';
-    }
-    const post = (input) =>
-      fetch(`${provider.url}/v1/responses`, {
-        method: 'POST',
-        body: JSON.stringify({ tools: [{ name: 'exec_command' }], input }),
-      });
-    try {
-      provider.begin({ turn: 1, script: script() });
-      const response = await (await post([])).text();
-      const call = codexToolCall(response);
-      const next = await post([{ type: 'function_call_output', call_id: call.call_id, output }]);
-      if (allowed) {
-        assert.equal(next.status, 200);
-        assert.match(await next.text(), /Waiting for confirmation/);
-        provider.result();
-      } else {
-        assert.equal(next.status, 400);
-        assert.throws(() => provider.result());
-      }
-    } finally {
-      await provider.close();
-    }
-  }
-});
-
 test('packaged mode admits immutable local content IDs and mounts tests without replacing production', async () => {
   const localImage = `sha256:${'b'.repeat(64)}`;
   const options = qualificationOptions([
@@ -313,13 +232,7 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
   const root = await mkdtemp(join(tmpdir(), 'packaged-stage-test-'));
   let staged;
   try {
-    for (const path of [
-      'scripts',
-      'test',
-      'lambda/native-runtime-control/workflow-engine',
-      'lambda/agentcore/test',
-      'lambda/shared/test',
-    ])
+    for (const path of ['scripts', 'test', 'lambda/agentcore/test', 'lambda/shared/test'])
       await mkdir(join(root, path), { recursive: true });
     for (const path of [
       'package.json',
@@ -340,7 +253,6 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       'result-worker.js',
       'result-store.js',
       'result-storage.js',
-      'workflow-engine/service.js',
       'execution-worker.js',
       'execution-api.js',
       'execution-runtime.js',
@@ -358,15 +270,10 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
       join(root, 'scripts/native-qualification-member.mjs'),
       "import {handler} from '../lambda/native-runtime-control/index.js';",
     );
-    await writeFile(
-      join(root, 'scripts/native-qualification-protected-engine.mjs'),
-      "import {createNativeWorkflowEngine} from '../lambda/native-runtime-control/workflow-engine/service.js';",
-    );
     staged = await stagePackagedQualification(root);
     for (const path of [
       'index.js',
       'activity-store.js',
-      'workflow-engine/service.js',
       'result-worker.js',
       'result-storage.js',
       'result-store.js',

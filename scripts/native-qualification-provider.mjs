@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { performance } from 'node:perf_hooks';
 import { dirname } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 // Scripted conductor step only. 2.11.1 first saves the person's request and
 // asks the agent to propose a plan for that exact request. It is not a human
@@ -77,27 +77,36 @@ export function sendClaudeResponse(res, request, blocks, id) {
   res.end();
 }
 
-function sendCodexResponse(res, text, command, id, maxOutputTokens = 1000) {
-  const item = command
+function sendCodexResponse(res, text, command, id, maxOutputTokens = 1000, patch) {
+  const item = patch
     ? {
-        id: `fc_${id}`,
+        id: `ct_${id}`,
         call_id: `call_${id}`,
-        type: 'function_call',
-        name: 'exec_command',
-        arguments: JSON.stringify({
-          cmd: command,
-          max_output_tokens: maxOutputTokens,
-          yield_time_ms: 10_000,
-        }),
+        type: 'custom_tool_call',
+        name: 'apply_patch',
+        input: patch,
         status: 'completed',
       }
-    : {
-        id: `msg_${id}`,
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'output_text', text, annotations: [] }],
-      };
+    : command
+      ? {
+          id: `fc_${id}`,
+          call_id: `call_${id}`,
+          type: 'function_call',
+          name: 'exec_command',
+          arguments: JSON.stringify({
+            cmd: command,
+            max_output_tokens: maxOutputTokens,
+            yield_time_ms: 10_000,
+          }),
+          status: 'completed',
+        }
+      : {
+          id: `msg_${id}`,
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text, annotations: [] }],
+        };
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   for (const [type, data] of [
     ['response.created', { response: { id: `resp_${id}`, status: 'in_progress', output: [] } }],
@@ -169,17 +178,31 @@ const contentText = (content) =>
 
 // Advance the protected journey only on the result of the tool we just sent.
 // A title request, an earlier tool result or an unfinished exec is not a receipt.
-function scriptedToolOutput(harness, request, { id, denied }) {
+function scriptedToolOutput(harness, request, { id, rejection, patch }) {
   let output;
   if (harness === 'codex') {
     output = request.input?.findLast(
-      (item) => item.type === 'function_call_output' && item.call_id === `call_${id}`,
+      (item) =>
+        item.type === (patch ? 'custom_tool_call_output' : 'function_call_output') &&
+        item.call_id === `call_${id}`,
     )?.output;
+    if (patch) {
+      assert.ok(
+        typeof output === 'string' && !/patch (?:failed|rejected)|could not|blocked/i.test(output),
+        `Installed patch result: ${String(output).slice(0, 500)}`,
+      );
+      return output;
+    }
     const exit = output?.match(/^Process exited with code (\d+)$/m)?.[1];
-    if (exit !== (denied ? '1' : '0')) {
+    if (exit !== (rejection ? '1' : '0')) {
       const error = new Error('Installed exec did not finish with the expected exit code');
       error.code = output?.match(/\bNATIVE_[A-Z_]+\b/)?.[0] ?? 'fixture_exec_failed';
       error.fixtureExit = exit ?? 'unfinished-or-missing';
+      // Only the packaged method's refusal category is retained. Tool
+      // arguments, free-form model output and provider requests stay private.
+      error.fixtureReason = output?.match(
+        /(?:Plan Approval|plan approval|plan-approval|PreToolUse|denied|blocked|refused)[^\n]{0,170}/i,
+      )?.[0];
       throw error;
     }
   } else if (harness === 'opencode') {
@@ -188,10 +211,7 @@ function scriptedToolOutput(harness, request, { id, denied }) {
     );
     assert.ok(result, 'Installed OpenCode result for this tool call');
     output = contentText(result.content);
-    if (
-      !denied &&
-      /(?:no current Plan Approval receipt matches|NATIVE_ENGINE_EDIT_DENIED)/.test(output)
-    )
+    if (!rejection && /no current Plan Approval receipt matches/.test(output))
       throw Object.assign(new Error('Installed OpenCode refused the tool call'), {
         code: 'fixture_opencode_tool_refused',
       });
@@ -200,30 +220,40 @@ function scriptedToolOutput(harness, request, { id, denied }) {
       .at(-1)
       ?.content?.find?.((item) => item.type === 'tool_result' && item.tool_use_id === id);
     output = contentText(result?.content);
-    if (Boolean(result?.is_error) !== Boolean(denied)) {
+    if (Boolean(result?.is_error) !== Boolean(rejection)) {
       const error = new Error('Unexpected installed Claude tool status');
-      error.code = output?.match(/\bNATIVE_ENGINE_[A-Z_]+\b/)?.[0] ?? 'fixture_claude_tool_failed';
+      error.code = 'fixture_claude_tool_failed';
       throw error;
     }
   }
   assert.equal(typeof output, 'string', 'Installed result for this tool call');
-  if (denied) assert.match(output, /\bNATIVE_ENGINE_COMMAND_DENIED\b/);
+  if (rejection) assert.match(output, rejection);
   return output;
 }
 
 const shellWord = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+const offersPatch = (request) =>
+  request.tools.some((entry) => entry.name === 'apply_patch' && entry.type === 'custom');
+
 function sendScriptedStep(harness, request, res, { value, done }, id) {
   const { command, filePath, content } = done ? {} : value;
   const text = done ? value : '';
   if (done) assert.equal(typeof text, 'string');
   else assert.ok(command || (filePath && typeof content === 'string'));
   if (harness === 'codex') {
-    // exec_command is the same installed tool for commands and workspace writes.
-    const cmd =
-      command ??
-      (filePath &&
-        `mkdir -p ${shellWord(dirname(filePath))} && printf %s ${shellWord(content)} > ${shellWord(filePath)}`);
-    sendCodexResponse(res, text, cmd, id, 8192);
+    let patch;
+    if (filePath && offersPatch(request)) {
+      patch = `*** Begin Patch\n*** Add File: ${filePath}\n${content
+        .replace(/\n$/, '')
+        .split('\n')
+        .map((line) => '+' + line)
+        .join('\n')}\n*** End Patch`;
+    }
+    const shellWrite =
+      filePath &&
+      !patch &&
+      `mkdir -p ${shellWord(dirname(filePath))} && printf %s ${shellWord(content)} > ${shellWord(filePath)}`;
+    sendCodexResponse(res, text, command || shellWrite, id, 8192, patch);
   } else if (harness === 'opencode') {
     const tool = done
       ? null
@@ -303,7 +333,7 @@ export async function qualificationProvider(
         const user = (request.messages ?? request.input)?.findLast((item) => item.role === 'user');
         assert.ok(
           contentText(user?.content)?.includes(expectedAnswer),
-          'Protected answer delivered',
+          'Accepted answer delivered',
         );
       }
       if (primary)
@@ -366,7 +396,7 @@ export async function qualificationProvider(
           const { filePath, content } = outstanding.write;
           assert.deepEqual(
             await readFile(filePath),
-            Buffer.from(content),
+            Buffer.from(outstanding.patch && !content.endsWith('\n') ? content + '\n' : content),
             'Installed file tool wrote the requested bytes',
           );
         }
@@ -376,7 +406,8 @@ export async function qualificationProvider(
           ? null
           : {
               id,
-              denied: step.value.denied,
+              rejection: step.value.rejection,
+              patch: harness === 'codex' && Boolean(step.value.filePath) && offersPatch(request),
               ...(verifyWrites && step.value.filePath ? { write: step.value } : {}),
               tool: step.value.command?.split(' ').slice(1, 4).join(' ') ?? 'write',
             };

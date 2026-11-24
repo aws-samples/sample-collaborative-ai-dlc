@@ -281,3 +281,34 @@ test('native service removal requires an evaluated empty protected inventory and
   assert.equal(inspect(['delete'], { ...service, proof }).status, 0);
   assert.equal(inspect(['delete'], { proof }).status, 1); // storage has its own guard
 });
+
+test('retires only dedicated workflow resources while the authority, storage and Git result survive', () => {
+  const prefix = 'module.native_runs[0].';
+  const survivors = [
+    'aws_dynamodb_table.bindings',
+    'aws_s3_bucket.publications',
+    'module.authority.aws_lambda_function.this[0]',
+    'aws_lambda_function.git_result',
+    'aws_ecr_repository_policy.git_result',
+  ].map((suffix) => ({
+    address: prefix + suffix,
+    mode: 'managed',
+    change: { actions: ['update'], before: { id: 'original' }, after: { id: 'original' } },
+  }));
+  const retired = {
+    type: 'aws_lambda_function',
+    address: prefix + 'aws_lambda_function.workflow_engine',
+    before: { id: 'retired' },
+    additionalChanges: survivors,
+  };
+  assert.equal(inspect(['delete'], retired).status, 0);
+  assert.equal(inspect(['delete', 'create'], retired).status, 1);
+  assert.equal(
+    inspect(['delete'], { ...retired, additionalChanges: survivors.slice(0, -1) }).status,
+    1,
+  );
+  assert.equal(
+    inspect(['delete'], { ...retired, address: prefix + 'aws_lambda_function.git_result' }).status,
+    1,
+  );
+});

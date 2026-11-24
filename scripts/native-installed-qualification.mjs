@@ -57,7 +57,7 @@ const model = {
 
 let provider;
 let lifecycleFailed = false;
-let protectedBlocked = false;
+let memberBlocked = false;
 let phase = 'version';
 try {
   const versionHome = join(base, 'version-home');
@@ -255,12 +255,12 @@ try {
     provider = undefined;
     // Each EFS scenario owns its own attested installation within the bounded tmpfs.
     await fs.rm(base, { recursive: true, force: true });
-    let protectedFailed = false;
-    const cases = ['protected-member-workspace-resume', 'protected-member-terminal-git-result'];
+    let memberFailed = false;
+    const cases = ['local-member-workspace-resume', 'local-member-terminal-git-result'];
     for (const probe of cases) {
       phase = probe;
       if (process.env.NATIVE_QUALIFICATION_PACKAGED !== 'true' || pkg.version !== '2.11.1') {
-        protectedBlocked = true;
+        memberBlocked = true;
         report({
           probe,
           status: 'BLOCKED',
@@ -270,11 +270,11 @@ try {
       }
       try {
         await qualifyWorkspaceTransport(harness, {
-          protectedWorkflow: true,
-          terminalResult: probe === 'protected-member-terminal-git-result',
+          memberJourney: true,
+          terminalResult: probe === 'local-member-terminal-git-result',
         });
       } catch (error) {
-        protectedFailed = true;
+        memberFailed = true;
         report({
           probe,
           status: 'FAIL',
@@ -294,9 +294,9 @@ try {
     phase = 'upstream-workspace-resume';
     if (harness === 'claude') await qualifyClaudeWorkspaceProtocol({ composed: true });
     else await qualifyWorkspaceTransport(harness);
-    const failed = lifecycleFailed || protectedFailed;
-    report({ status: failed ? 'FAIL' : protectedBlocked ? 'BLOCKED' : 'PASS' });
-    if (failed || protectedBlocked) process.exitCode = failed ? 1 : 2;
+    const failed = lifecycleFailed || memberFailed;
+    report({ status: failed ? 'FAIL' : memberBlocked ? 'BLOCKED' : 'PASS' });
+    if (failed || memberBlocked) process.exitCode = failed ? 1 : 2;
   }
 } catch (error) {
   const blocked = error.code === 'native_qualification_opencode_cache_required';

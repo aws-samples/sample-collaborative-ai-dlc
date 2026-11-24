@@ -87,18 +87,13 @@ async function qualifyCompetingHistory({
   held,
   history,
   gateEvidence,
-  decision,
-  offer,
+
   retained,
 }) {
   const race = driver.competition();
   assert.equal(history.answer.id, race.commandId);
   assert.equal(history.answer.actorId, race.winner);
   assert.equal(history.answer.context.contentSha256, first.contentSha256);
-  assert.equal(decision.textSha256, race.textSha256);
-  assert.equal(decision.sequence, history.answer.sequence);
-  const selectedCommand = await driver.selectedCommand(held.publicationId, race.commandId);
-  assert.equal(`aidlc ${selectedCommand.join(' ')}`, offer.choices[0].command);
   const query = publicationQuery(first);
   const original = await readBoth(driver, 'publication', query);
   assert.equal(original.id, first.publicationId);
@@ -116,7 +111,7 @@ async function qualifyCompetingHistory({
   assert.deepEqual(
     acceptedTurns.map((event) => [event.replyToPublicationId, event.actor, event.turnSequence]),
     [
-      [first.publicationId, respondent.actorId, decision.sequence],
+      [first.publicationId, respondent.actorId, history.answer.sequence],
       [held.publicationId, initiator.actorId, retained.answer.sequence],
     ],
   );
@@ -139,13 +134,10 @@ async function qualifyCompetingHistory({
   return {
     initiator: initiator.actorId,
     ...race,
-    selectedCommand,
-    effect: decision.effect,
     acceptedRevision: accepted.revision,
     resultingRevision: published.revision,
     acceptedSequence: accepted.turnSequence,
     originalSequence: first.sequence,
-    appliedDecisions: gateEvidence.engineApplication.length,
     acceptedTurns: acceptedTurns.length,
     acceptedForQuestion: acceptedTurns.filter(
       (event) => event.replyToPublicationId === first.publicationId,
@@ -154,11 +146,11 @@ async function qualifyCompetingHistory({
     revokedReadCode: denied.code,
   };
 }
-async function qualifyProtectedMember({ harness, driver, provider, project, terminalResult }) {
+async function qualifyLocalMember({ harness, driver, provider, project, terminalResult }) {
   const pendingFile = join(project, '.native-control/pending-question.json');
   const unfinished = {
     filePath: join(project, 'nested/unfinished-review.txt'),
-    content: 'Review in progress.',
+    content: 'Review in progress.\n',
   };
   const proof = (question) =>
     driver.get('publication', { ...publicationQuery(question), evidence: '1' });
@@ -180,23 +172,32 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   const nextCommand = 'aidlc engine orchestrate next';
   const alternate = !terminalResult && ['codex', 'opencode'].includes(harness);
   const proposed = alternate ? 'mvp' : 'express';
-  let offer, stage, next;
+  let offer, stage, next, rejection;
   function* presentOffer() {
     // The installed conductor can forward the literal Start request as shell
     // words. Also exercise publication from the engine when it writes no form.
     const initial = yield* runDirective(
-      terminalResult ? nextCommand : 'aidlc next Create a 3D version of the game',
+      terminalResult
+        ? `aidlc next '${driver.originalPrompt}'`
+        : 'aidlc next Create a 3D version of the game',
     );
+    if (!terminalResult) {
+      const request = issuedRequestId(initial);
+      const stale = request === '00000000' ? 'ffffffff' : '00000000';
+      const refused = yield* runDirective(`${nextCommand} --scope express --request ${stale}`);
+      assert.equal(refused.kind, 'error');
+      assert.match(refused.message, /question is no longer available/);
+      rejection = refused.message;
+    }
     offer = yield* runDirective(
       `${nextCommand} --propose ${proposed} --request ${issuedRequestId(initial)}`,
     );
-    if (terminalResult)
-      yield { filePath: pendingFile, content: JSON.stringify({ version: 3, ask: offer }) };
-    return offer.question;
+    return rejection ? `${rejection}\n\n${offer.question}` : offer.question;
   }
   const firstSession = await turn('Start', presentOffer());
   assert.ok(firstSession);
   let first = await driver.interaction();
+  if (rejection) assert.ok(first.messages.some(({ text }) => text.includes(rejection)));
   assert.equal(offer.ask_type, 'scope-confirm');
   assert.equal(offer.proposed_scope, proposed);
   assert.deepEqual(
@@ -204,7 +205,11 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     buildNativePendingInput({ spec: { version: 3, ask: offer } }),
   );
   assert.equal((await driver.get('publication')).id, first.publicationId);
-  assert.deepEqual((await proof(first)).engineApplication, []);
+  assert.equal((await proof(first)).engineApplication, 'not_recorded');
+  const activeIntent = join(project, 'aidlc/spaces/default/intents/active-intent');
+  const noSelectedIntent = async () => assert.rejects(fs.access(activeIntent), { code: 'ENOENT' });
+  await noSelectedIntent();
+  assert.equal(first.pendingInput.questions[0].options.length, 3);
   const selection = { answers: [{ selectedOptions: [0] }] };
   let planSelection = selection;
   let planLabel = offer.choices[0].label;
@@ -214,13 +219,23 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     const other = { selectedOptions: [], freeText: 'Let’s use Express for this one' };
     const answer = harness === 'codex' ? other : { selectedOptions: [1] };
     function* requestPlanNames() {
-      // Codex tried the real offered scope before an explicit plan selection.
-      // OpenCode exercises publication with no subsequent workflow command.
-      if (harness === 'codex') {
-        const picker = yield* runDirective(expressCommand);
-        assert.equal(picker.ask_type, 'compose-offer');
-        assert.deepEqual(picker.scope_commands, offer.scope_commands);
-      }
+      if (harness === 'opencode')
+        return `Choose a plan. ${offer.scope_commands.map(({ scope }) => scope).join(', ')}`;
+      yield {
+        filePath: pendingFile,
+        content: JSON.stringify({
+          version: 2,
+          questions: [
+            {
+              prompt: 'Choose a plan.',
+              options: offer.scope_commands.map(({ scope, stages }) => ({
+                label: scope,
+                description: stages,
+              })),
+            },
+          ],
+        }),
+      };
       return 'Choose a plan.';
     }
     await turn(answer.freeText ?? offer.choices[1].label, requestPlanNames(), {
@@ -228,9 +243,14 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
     });
     first = await driver.interaction();
     assert.notEqual(first.publicationId, recommendation.publicationId);
-    assert.deepEqual((await proof(first)).engineApplication, []);
+    assert.equal((await proof(first)).engineApplication, 'not_recorded');
     const plans = first.pendingInput.questions[0].options.map((option) => option.label);
-    assert.deepEqual(plans, ['compose', ...offer.scope_commands.map((entry) => entry.scope)]);
+    assert.deepEqual(
+      plans,
+      offer.scope_commands.map((entry) => entry.scope),
+    );
+    await noSelectedIntent();
+    assert.equal(plans.length, 11);
     planLabel = 'express';
     planSelection = { answers: [{ selectedOptions: [plans.indexOf(planLabel)] }] };
   }
@@ -244,12 +264,12 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   };
   const gateFile = { filePath: pendingFile, content: JSON.stringify(gateSpec) };
   function* selectAndPresentGate() {
-    const id = issuedRequestId(yield* runDirective(nextCommand));
-    assert.equal(expressCommand, `${nextCommand} --scope express --request ${id}`);
+    const creation = yield* runDirective(expressCommand);
+    const id = expressCommand.match(/--request ([a-f0-9]{8})/)[1];
+    assert.match(JSON.stringify(creation), /intent create/);
     yield {
       command: `aidlc engine intent create --scope express --request ${id} --label qualification-counter`,
     };
-    yield { command: `${nextCommand} --resume`, denied: true };
     stage = yield* loadStage(nextCommand);
     assert.equal(stage.stage, 'requirements-analysis');
     const savedRequest = yield* runDirective('aidlc engine workspace project-description');
@@ -289,16 +309,9 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   assert.equal(history.answer.context.membershipRecorded, true);
   assert.equal(history.answer.text, planLabel);
   const before = await proof(held);
-  assert.equal(before.engineApplication.length, 1);
-  const [decision] = before.engineApplication;
-  assert.equal(decision.commandId, history.answer.id);
-  assert.equal(decision.interactionId, first.id);
-  assert.equal(decision.contentSha256, first.contentSha256);
-  assert.equal(decision.actorId, history.answer.actorId);
-  assert.equal(decision.application, 'applied');
-  assert.equal(before.effectivePlan.scope, 'express');
-  const gate = before.effectivePlan.stages.find((s) => s.id === held.pendingInput.stage);
-  assert.equal(gate.state, 'awaiting-approval');
+  assert.equal(before.engineApplication, 'not_recorded');
+  assert.equal(history.answer.applicationStatus, 'not_recorded');
+  const gate = { id: stage.stage, state: 'awaiting-approval' };
 
   if (terminalResult) {
     await qualifyExpressResult({
@@ -309,10 +322,9 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
       held,
       pendingFile,
       before,
-      proof,
+
       first,
       history,
-      offer,
     });
     return;
   }
@@ -350,7 +362,6 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
   assert.equal(recovered.response, null);
   const after = await proof(recovered);
   assert.equal(after.context.configurationSha256, before.context.configurationSha256);
-  assert.equal(after.effectivePlan.stages.find((s) => s.id === gate.id).state, gate.state);
   assert.deepEqual(after.engineApplication, before.engineApplication);
   assert.deepEqual(after.gates, before.gates);
   assert.equal(after.workflowCompletion, 'not_verified');
@@ -372,15 +383,14 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
         held,
         history,
         gateEvidence,
-        decision,
-        offer,
+
         retained,
       })
     : null;
   const native = await driver.finish({ expectedSessions: 2 });
   console.log(
     JSON.stringify({
-      probe: 'protected-member-workspace-resume',
+      probe: 'local-member-workspace-resume',
       harness,
       status: 'PASS',
       packageId: after.context.packageId,
@@ -388,17 +398,20 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
       configurationSha256: after.context.configurationSha256,
       originalPublication: first.publicationId,
       originalInteraction: first.id,
-      acceptedOption: decision.commandId,
+      acceptedOption: history.answer.id,
       selectedOption: history.answer.text,
       proposedPlan: proposed,
       contentSha256: first.contentSha256,
-      presentationSha256: decision.presentationSha256,
+      projectDescription: driver.originalPrompt,
+      offeredChoices: offer.choices.length,
+      namedAlternatives: alternate ? offer.scope_commands.length : null,
+      activeIntentBeforeSelection: false,
+      rejectedRequestReason: rejection,
       interruptedPublication: held.publicationId,
       retainedAnswer: retained.answer.id,
       recoveredPublication: recovered.publicationId,
-      decisions: after.engineApplication.length,
+      application: after.engineApplication,
       retainedDelivery: retained.answer.resumeRetention.delivery,
-      predecessorResumeDenied: true,
       predecessorSession: firstSession,
       replacementSession: replacement,
       freshSession: replacement !== firstSession,
@@ -417,7 +430,7 @@ async function qualifyProtectedMember({ harness, driver, provider, project, term
 function* presentExpressStage(directive, project, pendingFile) {
   console.log(
     JSON.stringify({
-      probe: 'protected-express-stage',
+      probe: 'local-express-stage',
       stage: directive.stage,
       gateOnly: directive.gate_only ?? false,
       produces: directive.produces?.length,
@@ -520,18 +533,13 @@ async function qualifyExpressResult({
   held,
   pendingFile,
   before,
-  proof,
+
   first,
   history,
-  offer,
 }) {
   const race = driver.competition();
   assert.equal(race.commandId, history.answer.id);
   assert.equal(history.answer.actorId, respondent.actorId);
-  assert.equal(
-    `aidlc ${(await driver.selectedCommand(held.publicationId, race.commandId)).join(' ')}`,
-    offer.choices[0].command,
-  );
   assert.deepEqual(await readBoth(driver, 'interaction', publicationQuery(first)), history);
   let waiting = held,
     terminal = false;
@@ -546,7 +554,7 @@ async function qualifyExpressResult({
     },
   ];
   const next = 'aidlc engine orchestrate next';
-  for (let gate = 0; !terminal && gate < before.effectivePlan.stages.length; gate++) {
+  for (let gate = 0; !terminal && gate < 16; gate++) {
     const current = waiting,
       query = publicationQuery(current);
     const opened = await readBoth(driver, 'interaction', query);
@@ -562,7 +570,7 @@ async function qualifyExpressResult({
     const actor = gate % 2 ? respondent : initiator;
     console.log(
       JSON.stringify({
-        probe: 'protected-express-gate',
+        probe: 'local-express-gate',
         stage: current.pendingInput.stage,
         publicationId: current.publicationId,
         sequence: current.sequence,
@@ -573,8 +581,10 @@ async function qualifyExpressResult({
     const index = options.findIndex((option) => option.label === 'Approve');
     assert.ok(index >= 0);
     function* advance() {
+      yield* runDirective(
+        `aidlc engine orchestrate report --stage ${current.pendingInput.stage} --result approved --user-input Approve`,
+      );
       let directive = yield* runDirective(next);
-      // Applying a protected approval returns a report before the next stage.
       for (let step = 0; step < 5; step++) {
         if (directive.kind === 'done' && !directive.workflow_continues) {
           terminal = true;
@@ -607,22 +617,13 @@ async function qualifyExpressResult({
     assert.equal(accepted.answer.resultingPublication.publicationSequence, waiting.sequence);
     assert.equal(accepted.answer.context.contentSha256, current.contentSha256);
     assert.equal(accepted.answer.resultingPublication.publicationId, waiting.publicationId);
-    const decision = (await proof(waiting)).engineApplication.filter(
-      (item) => item.commandId === accepted.answer.id,
-    );
-    assert.equal(decision.length, 1);
-    assert.equal(decision[0].effect, 'GATE_APPROVED');
-    assert.equal(decision[0].application, 'applied');
-    assert.equal(decision[0].actorId, actor.actorId);
-    assert.equal(decision[0].stage, current.pendingInput.stage);
-    assert.equal(decision[0].contentSha256, current.contentSha256);
-    assert.equal(decision[0].interactionId, current.id);
+    assert.equal(accepted.answer.applicationStatus, 'not_recorded');
     decisions.push({
       publicationId: current.publicationId,
       interactionId: current.id,
       commandId: accepted.answer.id,
       actorId: actor.actorId,
-      stage: decision[0].stage,
+      stage: current.pendingInput.stage,
       resultingPublicationId: waiting.publicationId,
       contentSha256: current.contentSha256,
     });
@@ -636,22 +637,8 @@ async function qualifyExpressResult({
   const revision = await readBoth(driver, 'publication', publicationQuery(waiting));
   assert.equal(revision.id, verified.publicationId);
   assert.equal(revision.sequence, verified.publicationSequence);
-  assert.equal(verified.workflowCompletion, 'complete');
-  assert.equal(verified.humanApproval, 'applied');
-  assert.equal(verified.requiredChecks, 'not_required');
-  assert.equal(verified.finalReview, 'not_required');
-  assert.deepEqual(
-    verified.engineApplication.map((d) => d.commandId),
-    decisions.map((d) => d.commandId),
-  );
-  assert.deepEqual(
-    verified.gates.map((g) => g.commandId).toSorted(),
-    decisions
-      .slice(1)
-      .map((d) => d.commandId)
-      .toSorted(),
-  );
-  assert.ok(verified.gates.every((g) => g.status === 'applied'));
+  assert.equal(verified.methodReport, 'complete');
+  assert.equal(verified.workflowCompletion, 'not_verified');
   const historical = await readBoth(driver, 'publication', {
     ...publicationQuery(held),
     evidence: '1',
@@ -659,10 +646,25 @@ async function qualifyExpressResult({
   assert.equal(historical.workflowCompletion, 'not_verified');
   assert.deepEqual(historical.gates, before.gates);
   assert.deepEqual(historical.engineApplication, before.engineApplication);
+  const graph = await readBoth(driver, 'graph');
+  assert.equal(graph.publicationId, revision.id);
+  const file = revision.files.find((entry) => entry.path === 'counter.js');
+  assert.ok(file);
+  const artifact = graph.nodes.find((node) => node.id === file.id);
+  assert.equal(artifact.sha256, file.sha256);
+  assert.equal(artifact.publicationId, revision.id);
+  const source = await driver.get(
+    'files/{fileId}',
+    { ...publicationQuery(waiting), sha256: file.sha256 },
+    { fileId: file.id },
+  );
+  assert.equal(source.publicationId, revision.id);
+  assert.equal(source.sha256, file.sha256);
+  assert.match(source.content, /export const increment/);
   const exported = await driver.exportResult(revision);
   console.log(
     JSON.stringify({
-      probe: 'protected-member-terminal-git-result',
+      probe: 'local-member-terminal-git-result',
       harness,
       status: 'PASS',
       packageId: verified.context.packageId,
@@ -671,13 +673,15 @@ async function qualifyExpressResult({
       publicationId: verified.publicationId,
       publicationSequence: verified.publicationSequence,
       filesSha256: verified.filesSha256,
+      graphPublication: graph.publicationId,
+      downloadedFile: { id: file.id, path: source.path, sha256: source.sha256 },
       producer: verified.producer,
       workflowCompletion: verified.workflowCompletion,
       requiredChecks: verified.requiredChecks,
       finalReview: verified.finalReview,
       humanApproval: verified.humanApproval,
       terminalOutcome: verified.terminalOutcome,
-      appliedGates: verified.gates,
+      methodReport: verified.methodReport,
       priorWaitingPublication: historical.publicationId,
       priorCompletion: historical.workflowCompletion,
       competition: race,
@@ -689,11 +693,11 @@ async function qualifyExpressResult({
 
 export async function qualifyClaudeWorkspaceProtocol({
   composed = false,
-  protectedWorkflow = false,
+  memberJourney = false,
 } = {}) {
-  if (protectedWorkflow) {
+  if (memberJourney) {
     assert.ok(composed);
-    return qualifyWorkspaceTransport('claude', { protectedWorkflow });
+    return qualifyWorkspaceTransport('claude', { memberJourney });
   }
   const root = await fs.mkdtemp('/tmp/native-workspace-protocol-');
   const project = join(root, 'project');
@@ -1074,9 +1078,9 @@ export async function qualifyClaudeWorkspaceProtocol({
 // project-type reconciliation, dependency and file-preservation checks.
 export async function qualifyWorkspaceTransport(
   harness,
-  { protectedWorkflow = false, terminalResult = false } = {},
+  { memberJourney = false, terminalResult = false } = {},
 ) {
-  assert.ok(['codex', 'opencode'].includes(harness) || (protectedWorkflow && harness === 'claude'));
+  assert.ok(['codex', 'opencode'].includes(harness) || (memberJourney && harness === 'claude'));
   const root = await fs.mkdtemp('/tmp/native-workspace-transport-');
   const project = join(root, 'project');
   const provider = await qualificationProvider(harness, {
@@ -1097,14 +1101,12 @@ export async function qualifyWorkspaceTransport(
       provider,
       harness,
       dependencyEnv,
-      model: { claude: 'claude-sonnet-4-6', codex: 'fixture-test', opencode: 'fixture/test' }[
-        harness
-      ],
-      protectedWorkflow,
+      model: { claude: 'claude-sonnet-4-6', codex: 'gpt-5.5', opencode: 'fixture/test' }[harness],
+      memberJourney,
       terminalResult,
     });
-    if (protectedWorkflow) {
-      await qualifyProtectedMember({ harness, driver, provider, project, terminalResult });
+    if (memberJourney) {
+      await qualifyLocalMember({ harness, driver, provider, project, terminalResult });
       return;
     }
     let turn = 0;

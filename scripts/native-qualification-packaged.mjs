@@ -13,16 +13,9 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // transitive imports and SDKs from the image. Other control-plane tests still
 // use their separately packaged Lambda dependency closure.
 const installedControl = new Set(
-  [
-    'index.js',
-    'activity-store.js',
-    'result-worker.js',
-    'result-store.js',
-    'result-storage.js',
-    'workflow-engine/service.js',
-    'workflow-engine/store.js',
-    'workflow-engine/proof-reader.js',
-  ].map((path) => join('lambda/native-runtime-control', path)),
+  ['index.js', 'activity-store.js', 'result-worker.js', 'result-store.js', 'result-storage.js'].map(
+    (path) => join('lambda/native-runtime-control', path),
+  ),
 );
 const controllers = [
   'api.js',
@@ -58,7 +51,6 @@ async function bundleControllerAdapter(root, directory) {
   });
   for (const name of [
     'native-qualification-member.mjs',
-    'native-qualification-protected-engine.mjs',
     'native-installed-qualification.mjs',
     'native-workspace-qualification-driver.mjs',
   ]) {
