@@ -360,6 +360,53 @@ describe('useCollaborativeIntentDraft — conversation language (#784)', () => {
     expect(afterPick).toBe(false);
   });
 
+  it('ignores a delayed rejection once a newer language choice supersedes it', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const japanese = { tag: 'ja', englishName: 'Japanese', nativeName: '日本語' };
+    const { a } = bothSeeded({ conversationLanguage: korean });
+    let resolveRejected!: (value: ReturnType<typeof intent>) => void;
+    api.update.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRejected = resolve;
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+    });
+    let pending!: Promise<unknown>;
+    act(() => {
+      pending = a.result.current.flushDraft();
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
+    });
+    // The member picks a valid language while the rejected save is in flight.
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+    });
+    await act(async () => {
+      resolveRejected(
+        intent({
+          draftRevision: 8,
+          conversationLanguage: korean,
+          conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+        }),
+      );
+      await pending;
+    });
+
+    expect(a.result.current.conversationLanguage).toBe('ja');
+    expect(a.result.current.conversationLanguageRejection).toBeNull();
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+
+    api.update.mockResolvedValueOnce(intent({ draftRevision: 9, conversationLanguage: japanese }));
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('ja');
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+  });
+
   it('clearing a draft that never had one writes nothing', async () => {
     const a = member('Alice');
     act(() => {

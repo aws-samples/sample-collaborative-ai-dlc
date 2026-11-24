@@ -475,16 +475,19 @@ export function useCollaborativeIntentDraft(
         });
         const rejected = data.conversationLanguage;
         if (saved?.conversationLanguageDropped && typeof rejected === 'string' && doc) {
-          // Show what the intent will actually run with. Only undo the tag this
-          // save carried: a member may already have picked another one.
+          // Act only while the draft still holds the tag this save carried. A
+          // member may have picked another language while the save was in
+          // flight; that newer choice supersedes this rejection, so neither the
+          // draft nor the Start guard is touched.
           const config = doc.getMap('config');
           if (config.get('conversationLanguage') === rejected) {
+            // Show what the intent will actually run with.
             config.set('conversationLanguage', saved.conversationLanguage?.tag ?? '');
+            setConversationLanguageRejection({
+              tag: rejected,
+              reason: saved.conversationLanguageDropped,
+            });
           }
-          setConversationLanguageRejection({
-            tag: rejected,
-            reason: saved.conversationLanguageDropped,
-          });
         }
       },
     });
