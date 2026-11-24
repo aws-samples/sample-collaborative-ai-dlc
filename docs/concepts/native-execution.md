@@ -12,11 +12,12 @@ each backend retains its own execution commands.
 
 !!! note "Feature status"
 
-    Native execution is under development. Shared interaction, publications,
-    history and workspace recovery are implemented, but the complete deployed
-    journey is not yet qualified. Verified workflow completion and platform Git
-    delivery are unfinished. The single checklist at the end of this page tracks
-    the work needed for an integrated release.
+    On November 24, DEV serves the shared Intent workspace and pins new native
+    runs to engine 14. Claude Code, Codex and OpenCode each completed Express
+    and produced a Git bundle in the installed image with scripted providers.
+    The complete signed-in DEV journey is still open. Hosted branch and pull
+    request publication are unfinished. See the
+    [release status and next member run](#release-status-on-2026-11-24).
 
 ## Working with a native intent
 
@@ -42,7 +43,10 @@ independently verified on 2026-11-11. The dated acceptance records below
 distinguish these scopes. NE-10's repository-file policy and result downloads
 are locally and installed-image qualified, with deployed artifacts independently
 verified on 2026-11-11.
-A fresh live creation journey remains unrun.
+Members have created and started intents in DEV. The November 24 Codex runs
+exposed two defects between Start and the first stage after plan selection.
+The [release status](#release-status-on-2026-11-24) records the affected
+versions and the remaining signed-in check.
 
 The release implementation uses platform-wide native admission controls and
 normal project membership. Existing and newly created spaces require no native
@@ -99,10 +103,10 @@ is shown as uncertain or unavailable.
 If a structured form cannot be captured, the response remains available for
 inspection and an eligible turn can accept a written reply. The platform does not
 invent missing options, answer questions automatically or advance a human gate.
-In a native execution with the protected engine, that acceptance is the
-application's only: the engine applies a reply only to a question it recorded,
-and after any other reply it refuses the workflow commands of the next turn
-until a form is presented and answered (known limit, NE-24).
+The protected engine records a reply with no matching question as unapplied.
+It can continue operations that require no member decision and direct the
+agent to present the open question. NE-24 still needs a signed-in run that
+shows the notice, restores the form and reaches completion in the same attempt.
 Current forms support up to 32 questions and 16 options per question, with written
 answers where required. Unsupported forms must remain explicit rather than lose
 questions or choices.
@@ -195,11 +199,10 @@ document or an accepted approval answer is not sufficient evidence of workflow
 completion, and none of them changes that report.
 
 For the pinned **AI-DLC 2.11.1** package on Claude Code, Codex and OpenCode, a
-protected workflow engine owned by this project is the completion authority
-(NE-11, implemented, qualified locally and in the installed image, and deployed
-to the development stack; the corrected image was redeployed on 2026-11-18 and
-independently verified on 2026-11-19, and the live acceptance on it has not
-run yet, see the dated records below for what is not yet qualified). The pinned engine's own records are not an
+protected workflow engine owned by this project is the completion authority.
+Earlier DEV member runs reached real gates and displayed their incomplete
+verdicts. A signed-in run through required checks, a model-backed review and a
+verified terminal revision remains open under NE-11. The pinned engine's own records are not an
 independent authority, because the coding process can write the state and
 human-presence files its guards read. The protected engine therefore runs the
 same pinned engine code in a separate service with its own workspace and state:
@@ -5889,6 +5892,91 @@ The development-data decision above also removes preservation of those existing
 executions as a prerequisite; it does not authorize automatic replay or weaken
 the current contract for newly created executions.
 
+### Release status on 2026-11-24
+
+**NE-01 through NE-10 are closed.** They cover the release contract, EFS
+recovery through the application, removal of snapshot restore, turn ownership
+and commands, question adapters, normal intent creation, pinned inputs and
+downloadable files. The EFS acceptance included a signed-in member recovering
+unfinished work and receiving the next question. Each checkbox below retains
+its original acceptance condition and the scope of its evidence.
+
+**DEV candidate `497bfa43`, engine 14.** The release readback matched the
+engine, runtime, frontend and pins for new runs. On this exact ARM64 image,
+installed Claude Code, Codex and OpenCode each completed the six-stage Express
+plan with seven recorded decisions and an importable Git bundle. Those runs
+used scripted providers and synthetic members. Kiro stopped at managed
+authentication.
+
+**What members saw in DEV.** An earlier signed-in run reached Requirements
+Analysis and cancelled at the form. On November 24 the engine 12 game request
+stopped before the first question. Engine 13 fixed that command and presented
+the three-option plan offer, then refused the attempt to switch from the
+recommended MVP to Express after a written reply. Engine 14 passed the
+installed Codex reproduction and the Intent form regression for that sequence.
+A read-only check of the reported DEV space at 12:43 UTC found two newer
+engine 14 Codex intents. One had published a first question with three options,
+recommended Classic, offered **Use a different plan** and had received zero
+replies. The other was running turn 1. Browser rendering, switching to Express
+and finishing on this version still need member evidence.
+
+| Item                          | What has been demonstrated                                                                                                                                                                                     | What will close it                                                                                                                                                                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NE-11 · Workflow completion   | The protected engine records decisions and ties its verdict to a publication. Installed Express runs reached completion.                                                                                       | Finish a signed-in DEV plan with required sensors and a model-backed reviewer. Match the displayed verdict, check and review outcomes, and downloaded result to the same revision.                                                      |
+| NE-12 · Git delivery          | Members can prepare a bundle for a publication and inspect its branch reference. Installed imports verified the Start parent and resulting files.                                                              | Implement hosted branch and PR publication, reconciliation after an uncertain write, review and merge observation, and the selected tracker update policy. Verify the resulting remote identities.                                      |
+| NE-13 · Shared Intent         | DEV serves Overview, Work and Graph. Published graph sources open exact file revisions. Local tests cover two members reopening history.                                                                       | Have two signed-in members reopen the same revision and compare their decisions, files, source links and status.                                                                                                                        |
+| NE-14 · Frontend reads        | Tests measured one collection request for 11 intents and one shared in-flight detail request across navigation, refresh and polling.                                                                           | Observe those requests and draft continuity in the signed-in UI, including a change of account or intent.                                                                                                                               |
+| NE-15 · Activity              | Local reconnect tests replayed all 192 outputs after three batch notifications. DEV ships turn timings and scoped review outcomes.                                                                             | Reconnect in DEV, compare the visible history with the committed outputs, and inspect timing and reviewer outcomes.                                                                                                                     |
+| NE-16 · Latency               | In 18 installed-image pairs, median warm finalization fell from 482 ms to 221 ms.                                                                                                                              | Measure cold and warm Start, first useful output and publication-to-display time in DEV against agreed responsiveness targets.                                                                                                          |
+| NE-17 · Lifecycle             | A member cancelled at a live question. Replacement from stopped work and guarded space deletion are deployed, with local tests and DEV inventory checks.                                                       | Exercise signed-in replacement and verify predecessor history and fresh authorization. Finish the permissions and retention policy for archive, restore and cleanup, then verify eligible resources are released.                       |
+| NE-18 · Supported agents      | Three installed agents completed the current Express workflow. Kiro stops before session creation.                                                                                                             | Qualify Kiro’s managed sign-in, instructions and inputs, then record its installed workflow and recovery result.                                                                                                                        |
+| NE-19 · Collaboration         | Two synthetic members competed over a question. The engine applied one choice. Both could trace the result and import the Git bundle.                                                                          | Use two authenticated browser profiles for the full journey, including competing answers, discussion and Quorum, reconnect and access changes, downloads and hosted delivery. The first release combination is Claude Code with GitHub. |
+| NE-20 · Isolation and storage | On engine 12, 47 package storage configuration checks passed. Three workspace bindings across two DEV projects had distinct roles and filesystem roots.                                                        | Exercise live allowed and denied requests through the deployed roles and network, including cross-project mounts, revocation, writer fencing, overwrite/delete and multipart completion.                                                |
+| NE-21 · Operations            | Local repair routed 960 pointers across 12,000 rows and recovered a lost acknowledgement. In one hour in DEV, runtime and package repair each completed 12 sweeps with zero row errors.                        | Assign incident ownership and alarm destinations, demonstrate queue recovery and receipt by the operator, and measure repair, revocation and response times at the intended load. Verify admission shutdown on the candidate.           |
+| NE-22 · Publication           | The feature and its limits are documented on this working page.                                                                                                                                                | Confirm release scope on one candidate, remove obsolete probes and paths, and publish the navigation and member guides.                                                                                                                 |
+| NE-23 · Stuck operation       | Deployed engine support and installed tests cover explicit abandonment and continuation at the open gate.                                                                                                      | Show a current writer recovering an interrupted operation in a live member run, with its history retained and the late writer fenced.                                                                                                   |
+| NE-24 · Unapplied reply       | Installed tests cover continued progress after a reply with no recorded question. In an earlier live run the expected notice and form were missing after recovery.                                             | Observe the notice, re-presented question, explicit answer and verified completion in the same live attempt. Intermediate revisions must retain their incomplete verdicts.                                                              |
+| NE-25 · Retry loop            | Corrected consumers and dead-letter queues are deployed. The November 19 purge and empty-queue measurements passed. A November 24 read found the original engine 1 intent still awaiting its member on turn 1. | Continuation of that specific pre-purge execution is the sole outstanding condition. Its selection remains the member’s.                                                                                                                |
+
+#### Next member run
+
+1. **Start with the reported Codex path on engine 14.** An existing unanswered
+   offer can exercise the switch to Express if that is the member's choice.
+   Record the actual recommended plan. The exact incident began with “Create a
+   3D version of the game” and a recommendation of MVP. Capture the rendered
+   form, request Express, select Express on the resulting form and confirm
+   that Requirements Analysis appears. Use ordinary UI replies throughout.
+   Check that the one explicit plan selection produced one applied
+   decision. A missing form, command denial that blocks progress, or need to
+   paste a shell command is a failed reproduction.
+2. **Carry the run through to a downloadable result.** At each observed gate,
+   match the member-visible question and answer to the recorded revision.
+   Match the final UI verdict and downloaded files to the terminal publication.
+   Capture navigation, reconnect and display timing during the same run where
+   observed. NE-11 also needs a plan that actually runs sensors and a reviewer.
+3. **Record the outcome against the relevant checklist items.** Use the
+   candidate, engine pin, intent, revision, observed UI result and corresponding
+   service evidence. If a step fails, the next work item is that defect and
+   its regression. Recheck the failed user path on the corrected version.
+   Close each item when its own acceptance condition is observed. Continue
+   with the two-member release journey and the distinct recovery, provider and
+   operations checks above.
+
+The release and installed receipts in the delivery worktree are
+`.native-evidence/native-scope-release-497bfa43-02/result.json` and
+`.native-evidence/native-scope-arm64-497bfa43-01/qualification.json`.
+The two incident reproductions are in `.native-evidence/native-intake-20261124-01/`
+and `.native-evidence/native-scope-incident-20261124-01/`.
+The November 24 read-only preflight returned `READY` for engine 14 with zero
+blocking or unknown checks. Its receipt is in
+`.native-evidence/native-v14-readonly-20261124-01/observations/preflight-001.json`.
+The observed first-turn status and question were recorded in
+`.native-evidence/native-v14-readonly-20261124-01/current-member-forms.json`.
+The existing member-run collector is bound to this preflight and the matching
+deployment in `.native-evidence/native-v14-member-acceptance-20261124-01/`.
+
+### Item acceptance records
+
 - [x] **NE-01 — Define the release support contract.** Name the supported packages,
       harness/model combinations, application providers, inputs and settings for
       the serial journey. Select one complete combination for the first end-to-end
@@ -6039,7 +6127,8 @@ the current contract for newly created executions.
       accepted deployed-byte report above records that bounded verification. Final local validation above completes the full backend suite and
       the two formerly excluded offline Terraform fixtures.
       The preceding deployed-byte acceptance remains valid within its scope.
-      A fresh live creation/Start journey remains unrun.
+      At the November 6 milestone, a fresh live creation/Start journey had not
+      run. Subsequent DEV runs reached the agent and member questions.
 - [x] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
       attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings
@@ -6286,14 +6375,13 @@ the current contract for newly created executions.
       discard the predecessor's saved versions and continue from the last committed snapshot.
       Engine v6 (`6389d2dc`) passed all 122 independent dev deployment checks on 2026-11-21.
       Installed Express and POC resumed at their original open gate. Recovery in a live member run remains open.
-- [ ] **NE-24 — Keep a turn usable after a reply the engine cannot bind.** A
-      structured form exists only when the agent writes its question file. When
-      a turn ends without one, the application accepts any written reply, but
-      the protected engine applies a reply only to a question it recorded: in
-      the next turn the deployed image refuses every workflow command with
-      `NATIVE_ENGINE_DECISION_MISMATCH`, including commands that need no member,
-      and every further written reply repeats the refusal. The same refusal
-      follows a structured answer to a form that was not the engine's question,
+- [ ] **NE-24 — Keep a turn usable after a reply the engine cannot bind.** On
+      the November 16 image, a turn could finish without a captured question.
+      The application accepted a written reply. The protected engine then
+      refused every workflow command in the next turn with
+      `NATIVE_ENGINE_DECISION_MISMATCH`, including commands that needed no member,
+      and every further written reply repeated the refusal. The same refusal
+      followed a structured answer to a form that was not the engine's question,
       such as a paraphrased plan offer. Nothing stays pending and no approval is
       implied (NE-11 ships with this behaviour; this is not the NE-23 case), but
       the run continues only if the agent happens to end a turn with a form the
