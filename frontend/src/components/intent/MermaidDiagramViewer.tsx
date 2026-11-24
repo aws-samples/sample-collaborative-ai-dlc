@@ -31,17 +31,31 @@ export function withSvgId(svg: string, fromId: string, toId: string): string {
   return svg.split(fromId).join(toId);
 }
 
-/** A standalone SVG file for the diagram, on the background it was drawn for. */
+/**
+ * A standalone SVG file for the diagram, on the background it was drawn for.
+ *
+ * Mermaid returns markup for HTML, not XML: its HTML labels hold void elements
+ * such as `<br>` and entities such as `&nbsp;`, which an SVG file can't. So
+ * the markup is parsed as the page parsed it and written back out as XML.
+ */
 export function svgFile(svg: string, background: string | null): string {
-  let file = svg.includes('xmlns="http://www.w3.org/2000/svg"')
-    ? svg
-    : svg.replace(/^<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
+  // A template's content is inert: nothing in it loads or runs.
+  const template = document.createElement('template');
+  template.innerHTML = svg;
+  const root = template.content.querySelector('svg');
+  if (!root) throw new Error('The diagram has no SVG element');
+  // The serializer declares each element's namespace itself; a copied xmlns
+  // attribute can come out as a second, duplicate declaration.
+  for (const element of [root, ...root.querySelectorAll('[xmlns]')])
+    element.removeAttribute('xmlns');
   if (background) {
-    file = file.replace(/^<svg\b([^>]*?)style="/, `<svg$1style="background-color: ${background}; `);
-    if (!file.includes(`background-color: ${background}`))
-      file = file.replace(/^<svg\b/, `<svg style="background-color: ${background}"`);
+    const style = root.getAttribute('style')?.trim();
+    root.setAttribute(
+      'style',
+      style ? `background-color: ${background}; ${style}` : `background-color: ${background}`,
+    );
   }
-  return `<?xml version="1.0" encoding="UTF-8"?>\n${file}`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(root)}`;
 }
 
 export function downloadSvg(svg: string, filename: string, background: string | null) {

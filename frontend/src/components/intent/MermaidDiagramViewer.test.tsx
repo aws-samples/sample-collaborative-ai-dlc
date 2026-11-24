@@ -8,7 +8,10 @@ vi.mock('mermaid', () => ({
   default: {
     initialize: vi.fn(),
     render: vi.fn(async (id: string) => {
-      renderedSvg = `<svg id="${id}" role="img" aria-label="diagram" viewBox="0 0 2400 300" style="max-width: 2400px;"><style>#${id} .node{fill:red}</style><text>diagram</text></svg>`;
+      // Includes an HTML label with a line break, as Mermaid draws by default.
+      renderedSvg =
+        `<svg id="${id}" role="img" aria-label="diagram" viewBox="0 0 2400 300" style="max-width: 2400px;"><style>#${id} .node{fill:red}</style><text>diagram</text>` +
+        '<foreignObject width="80" height="40"><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel"><p>Hello<br>World</p></span></div></foreignObject></svg>';
       return { svg: renderedSvg, bindFunctions: vi.fn() };
     }),
   },
@@ -34,6 +37,27 @@ describe('svg helpers', () => {
     expect(file).toMatch(/^<\?xml version="1.0" encoding="UTF-8"\?>\n<svg xmlns=/);
     expect(file).toContain('style="background-color: rgb(1, 2, 3); max-width: 10px;"');
     expect(svgFile('<svg id="m"></svg>', 'white')).toContain('style="background-color: white"');
+  });
+
+  it('makes a well-formed file from HTML labels with line breaks', () => {
+    // As Mermaid draws a node labelled "Hello<br/>World": HTML inside a
+    // foreignObject, with a void <br> and an HTML entity.
+    const svg =
+      '<svg id="m" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40" style="max-width: 80px;">' +
+      '<g class="node"><foreignObject width="80" height="40">' +
+      '<div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell;">' +
+      '<span class="nodeLabel"><p>Hello<br>World&nbsp;!</p></span>' +
+      '</div></foreignObject></g></svg>';
+    const file = svgFile(svg, 'white');
+    const parsed = new DOMParser().parseFromString(file, 'image/svg+xml');
+    expect(parsed.getElementsByTagName('parsererror')).toHaveLength(0);
+    const root = parsed.documentElement;
+    expect(root.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(root.getAttribute('style')).toBe('background-color: white; max-width: 80px;');
+    const label = root.getElementsByTagNameNS('http://www.w3.org/1999/xhtml', 'p')[0];
+    expect(label.childNodes).toHaveLength(3);
+    expect((label.childNodes[1] as Element).localName).toBe('br');
+    expect(label.textContent).toBe('HelloWorld\u00a0!');
   });
 });
 
@@ -130,6 +154,9 @@ describe('Mermaid diagram viewer', () => {
     const text = await blob.text();
     expect(text).toContain('xmlns="http://www.w3.org/2000/svg"');
     expect(text).toContain('<text>diagram</text>');
+    const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
+    expect(parsed.getElementsByTagName('parsererror')).toHaveLength(0);
+    expect(parsed.getElementsByTagNameNS('http://www.w3.org/1999/xhtml', 'br')).toHaveLength(1);
     const link = click.mock.instances[0] as unknown as HTMLAnchorElement;
     expect(link.download).toBe('diagram.svg');
     // The URL outlives the click, so a download that starts late still has it.
