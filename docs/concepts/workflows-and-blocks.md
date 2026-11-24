@@ -68,6 +68,20 @@ Every stage carries three independent safety nets:
 2. **Reviewer** — an LLM-judged reviewer agent that renders a READY / NOT-READY verdict in a clean-room pass, with a bounded iteration count.
 3. **Human validation** — an approval gate, required by default on every non-init stage. The run parks at zero compute until a human answers.
 
+Reviewer criteria follow the intent's resolved scope, including custom grids and
+recorded stage skips. Inputs whose producers are skipped are listed separately
+as not produced in this scope. Their absence may be recorded as an informational
+finding, but does not count toward READY / NOT-READY or require a repair round.
+Missing inputs from producers that execute and defects in required stage outputs
+still count toward the verdict.
+
+When user-story or unit planning is skipped, the corresponding requirement-to-story
+or story-to-unit coverage checks are not applicable. A stage running without units
+because unit planning was skipped does not require unit-scoped `traceability.json`
+evidence edges. The reviewer checks the in-scope requirement IDs cited in the plan
+and summary against the produced artifacts, code, and tests; missing or incorrect
+implementation remains a defect.
+
 Sensors receive explicit changed-file provenance. Known changes are normalized to
 workspace-relative paths once at the Git boundary, including both endpoints of a
 rename. Git paths are repository-relative even when they start with the checkout

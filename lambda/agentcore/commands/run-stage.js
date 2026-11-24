@@ -123,6 +123,7 @@ import { createCliOutputSink, stripTerminalControls } from '../output-normalizer
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
+  UNIT_DAG_ARTIFACT,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../../shared/v2-process-keys.js';
@@ -460,15 +461,109 @@ const renderReviewerReadScope = ({ unit, contracts }) => {
   ].join('\n');
 };
 
+// The resolved plan is the authority for scope shortcuts, including a composed
+// grid and later skip overlays. A missing graph mapping is not a defect when
+// this run deliberately omits the stage that would produce it.
+const renderReviewerScope = ({
+  scope,
+  absentInputs,
+  skippedStageIds,
+  storiesSkipped,
+  unitsSkipped,
+}) => {
+  if (!skippedStageIds.length && !absentInputs.length && !unitsSkipped) return '';
+  return [
+    '## Selected scope and review applicability',
+    '',
+    ...(scope ? [`Selected scope: ${scope}`] : []),
+    `Stages not executed in this scope: ${skippedStageIds.join(', ') || 'none'}`,
+    `Input artifacts not produced in this scope: ${absentInputs.join(', ') || 'none'}`,
+    'These omissions are by design. Do not require artifacts produced only by skipped stages,',
+    'fabricate their content, or treat their absence as a Critical/Major defect.',
+    'You may record scope-only findings as INFO (scope), with no required repair.',
+    'Exclude scope-only findings from the READY / NOT-READY evaluation. Submit READY when',
+    'no applicable defects remain, even when informational scope findings are recorded.',
+    ...(storiesSkipped
+      ? [
+          '',
+          'Story-producing stages are skipped: requirement-to-story coverage from get_coverage',
+          'is not applicable. Requirements reported as uncovered solely because there are no',
+          'stories are informational scope findings, not evidence of missing implementation.',
+          'Story-to-unit mappings that depend on those absent stories are also not applicable.',
+        ]
+      : []),
+    ...(unitsSkipped
+      ? [
+          '',
+          'This scope omits unit planning; this stage runs once for the intent without a unit.',
+          'Story-to-unit coverage and unit-scoped traceability.json evidence edges are not',
+          'applicable. Absence of those mappings and edges, including a typed traceability',
+          'graph with no such edges, must not lower the verdict.',
+        ]
+      : []),
+    ...(storiesSkipped || unitsSkipped
+      ? [
+          '',
+          'Assess traceability using the in-scope requirement IDs cited in the plan and summary,',
+          'and verify those claims against the produced artifacts, code, and tests.',
+        ]
+      : []),
+    '',
+    'Expected in-scope inputs, required stage outputs, and actual correctness, security,',
+    'and requirement-implementation defects still count toward the verdict.',
+    'Only absence caused by skipped producers is exempt; a missing or incorrect implementation',
+    'of an in-scope requirement remains an actionable finding.',
+  ].join('\n');
+};
+
 // Everything the reviewer prompt says EXCEPT the persona/knowledge tail —
 // that tail is generic across persona roles and lives in
 // composePersonaPrompt (persona-dispatch.js). Split out from
 // buildReviewerPrompt so runReviewer can hand this, alone, to dispatchPersona
 // as `brief` — the blindness seam (persona-dispatch.js) — while
 // buildReviewerPrompt keeps rendering the exact same full prompt below.
-const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
+const buildReviewerBrief = ({
+  stage,
+  plan = null,
+  library = null,
+  unit = null,
+  reviewerAgent,
+  round,
+}) => {
   const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
-  const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
+  const skipped = new Set([
+    ...(plan?.outOfScopeStageIds ?? []),
+    ...(plan?.skippedStages ?? []).map((s) => s.stageId),
+  ]);
+  const producedArtifacts = new Set(
+    (plan?.stages ?? []).flatMap((s) => (s.outputArtifacts ?? []).map((o) => o.artifact ?? o)),
+  );
+  // The planner allows optional/gated consumes before annotating expectedAbsent.
+  // Classify their known skipped producers for review; another selected producer
+  // keeps the input applicable.
+  const skippedArtifacts = new Set(
+    [...skipped].flatMap((id) => {
+      const producer = library?.stagesById?.[id];
+      return [...(producer?.produces ?? []), ...(producer?.optionalProduces ?? [])];
+    }),
+  );
+  const absent = (artifact) => skippedArtifacts.has(artifact) && !producedArtifacts.has(artifact);
+  const notProduced = (input) => input.expectedAbsent || absent(input.artifact ?? input);
+  const inputs = (stage.inputArtifacts ?? [])
+    .filter((i) => !notProduced(i))
+    .map((i) => i.artifact ?? i)
+    .filter(Boolean);
+  const absentInputs = (stage.inputArtifacts ?? [])
+    .filter(notProduced)
+    .map((i) => i.artifact ?? i)
+    .filter(Boolean);
+  const scope = renderReviewerScope({
+    scope: plan?.scope,
+    absentInputs,
+    skippedStageIds: [...skipped],
+    storiesSkipped: absent('user-stories'),
+    unitsSkipped: !unit?.slug && (stage.forEachDegraded || absent(UNIT_DAG_ARTIFACT)),
+  });
   // `review_artifact` (≥2.7.0) names the ONE canonical output under review. The
   // other produced artifacts stay listed as context — narrowing the verdict
   // target must not narrow what the reviewer may read to reach it.
@@ -489,7 +584,7 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
     `You are ${reviewerAgent}, the independent reviewer for this stage.`,
     'Do not modify artifacts. Use only read tools to inspect the intent graph, inputs, and produced artifacts.',
     'When done, call submit_review exactly once with verdict READY or NOT-READY and concrete findings.',
-    'Number every finding, starting at 1, and give each one its required action, so the human',
+    'Number every finding, starting at 1, and give each actionable finding its required action, so the human',
     'can refer to findings by number when they ask for changes.',
     // Upstream §12a identity marker: the first finding line names the reviewer
     // verbatim so the audit trail records which reviewer ran. The runtime also
@@ -523,11 +618,14 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
         ]
       : []),
     ...(readScope ? ['', readScope] : []),
+    ...(scope ? ['', scope] : []),
   ].join('\n');
 };
 
 const buildReviewerPrompt = ({
   stage,
+  plan = null,
+  library = null,
   unit = null,
   reviewerAgent,
   reviewerPersona,
@@ -535,7 +633,7 @@ const buildReviewerPrompt = ({
   round,
 }) =>
   composePersonaPrompt({
-    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
+    brief: buildReviewerBrief({ stage, plan, library, unit, reviewerAgent, round }),
     persona: reviewerPersona,
     knowledge,
     role: 'reviewer',
@@ -594,6 +692,8 @@ const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, revi
 // the generic dispatcher.
 const runReviewer = async ({
   stage,
+  plan,
+  library,
   unit = null,
   reviewerAgent,
   reviewerBlock,
@@ -627,7 +727,7 @@ const runReviewer = async ({
   // catalog, where upstream sets it (on the two reviewer agents).
   maxTurns = null,
 }) => {
-  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
+  const brief = buildReviewerBrief({ stage, plan, library, unit, reviewerAgent, round });
   await store
     .appendEvent({
       executionId,
@@ -5058,6 +5158,8 @@ const runStageAttempt = async (
     for (let round = 1; round <= maxIterations; round += 1) {
       verdict = await runReviewer({
         stage,
+        plan,
+        library,
         unit,
         reviewerAgent,
         reviewerBlock,

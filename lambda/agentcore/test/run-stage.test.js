@@ -34,6 +34,7 @@ import { createRemoteProcessStore } from '../engine-data-client.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
+  UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { evaluateGatePreconditions, sensorGateFindings } from '../../shared/gate-preconditions.js';
 import { MAX_SENSOR_REASON_LENGTH } from '../../shared/sensor-verdict.js';
@@ -2836,6 +2837,296 @@ describe('buildReviewerPrompt — read scope + identity marker', () => {
       'unit-of-work',
     ]);
   });
+});
+
+describe('scope-aware reviewer — skipped producers (#753)', () => {
+  const omitted = ['user-stories', 'functional-design', 'units-generation'];
+  const fixture = () => {
+    const lib = unitLibrary();
+    lib.stagesById['units-generation'].execution = 'CONDITIONAL';
+    lib.stagesById['units-generation'].produces.push('unit-of-work');
+    for (const [id, artifact] of [
+      ['user-stories', 'user-stories'],
+      ['functional-design', 'business-logic-model'],
+    ]) {
+      lib.stagesById[id] = {
+        ...lib.stagesById['requirements-analysis'],
+        id,
+        execution: 'CONDITIONAL',
+        produces: [artifact],
+      };
+    }
+    for (const artifact of ['user-stories', 'business-logic-model', 'unit-of-work']) {
+      lib.artifactsById[artifact] = { id: artifact };
+    }
+    const code = lib.stagesById['code-generation'];
+    code.consumes = [
+      'requirements-analysis',
+      'user-stories',
+      'business-logic-model',
+      'unit-of-work',
+    ];
+    code.reviewer = 'aidlc-reviewer-agent';
+    code.reviewerMaxIterations = 3;
+    lib.agentsById[code.reviewer] = { id: code.reviewer };
+    const ids = ['requirements-analysis', ...omitted, 'code-generation'];
+    const wf = {
+      ...workflow(),
+      placements: ids.map((stageId, order) => ({
+        stageId,
+        order,
+        scopeMembership: {
+          feature: 'EXECUTE',
+          bugfix: omitted.includes(stageId) ? 'SKIP' : 'EXECUTE',
+        },
+      })),
+      scopeRefs: [{ scopeId: 'feature' }, { scopeId: 'bugfix' }],
+    };
+    const grid = Object.fromEntries(
+      ids.map((id) => [id, omitted.includes(id) ? 'SKIP' : 'EXECUTE']),
+    );
+    return { lib, wf, grid };
+  };
+  const resolve = (selection) => {
+    const { lib, wf, grid } = fixture();
+    const result = buildExecutionPlan({
+      workflow: wf,
+      library: lib,
+      ...(selection === 'composed'
+        ? { scope: 'feature-custom', composedGrid: grid }
+        : selection === 'overlay'
+          ? { scope: 'feature', skipStageIds: omitted }
+          : { scope: selection }),
+    });
+    expect(result.errors).toEqual([]);
+    return { plan: result.plan, lib };
+  };
+  const promptFor = (plan, unit = null, lib = null) =>
+    __test.buildReviewerPrompt({
+      plan,
+      library: lib,
+      stage: plan.stages.find((s) => s.stageId === 'code-generation'),
+      unit,
+      reviewerAgent: 'aidlc-reviewer-agent',
+      reviewerPersona: 'Reviewer persona',
+      knowledge: '',
+      round: 1,
+    });
+
+  it.each(['composed', 'bugfix', 'overlay'])(
+    'separates scope-skipped inputs and exempts absent coverage for %s selections',
+    (selection) => {
+      const { plan, lib } = resolve(selection);
+      const prompt = promptFor(plan, null, lib);
+      expect(prompt).toContain('Expected input artifacts: requirements-analysis\n');
+      expect(prompt).toContain(
+        'Input artifacts not produced in this scope: user-stories, business-logic-model, unit-of-work',
+      );
+      expect(prompt).toContain(
+        'Stages not executed in this scope: user-stories, functional-design, units-generation',
+      );
+      expect(prompt).toContain(
+        'requirement-to-story coverage from get_coverage\nis not applicable',
+      );
+      expect(prompt).toContain('Story-to-unit coverage and unit-scoped traceability.json');
+      expect(prompt).toContain('INFO (scope), with no required repair');
+      expect(prompt).toContain('Exclude scope-only findings from the READY / NOT-READY evaluation');
+      expect(prompt).toContain('in-scope requirement IDs cited in the plan and summary');
+      expect(prompt).toContain(
+        'verify those claims against the produced artifacts, code, and tests',
+      );
+      expect(prompt).toContain('of an in-scope requirement remains an actionable finding');
+    },
+  );
+
+  it.each([
+    { mode: 'per-unit', forEach: UNIT_FOR_EACH },
+    { mode: 'once-per-workflow', forEach: null },
+  ])('exempts skipped coverage from renamed producers in $mode stages', ({ forEach }) => {
+    const { lib, wf, grid } = fixture();
+    const renamed = {
+      'user-stories': 'story-authoring',
+      'units-generation': 'work-decomposition',
+    };
+    for (const [original, replacement] of Object.entries(renamed)) {
+      lib.stagesById[replacement] = { ...lib.stagesById[original], id: replacement };
+      delete lib.stagesById[original];
+    }
+    wf.placements = wf.placements.map((p) => ({
+      ...p,
+      stageId: renamed[p.stageId] ?? p.stageId,
+    }));
+    lib.stagesById['code-generation'].requires = ['work-decomposition'];
+    lib.stagesById['code-generation'].forEach = forEach;
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: wf,
+      library: lib,
+      scope: 'feature-custom',
+      composedGrid: Object.fromEntries(
+        Object.entries(grid).map(([id, choice]) => [renamed[id] ?? id, choice]),
+      ),
+    });
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
+    const prompt = promptFor(plan, null, lib);
+    expect(prompt).toContain(
+      'Stages not executed in this scope: story-authoring, functional-design, work-decomposition',
+    );
+    expect(prompt).toContain(
+      'Story-producing stages are skipped: requirement-to-story coverage from get_coverage\nis not applicable',
+    );
+    expect(prompt).toContain('Story-to-unit coverage and unit-scoped traceability.json');
+    expect(prompt).toContain('Exclude scope-only findings from the READY / NOT-READY evaluation');
+  });
+
+  it('keeps required inputs and per-unit review criteria when their producers execute', () => {
+    const { plan, lib } = resolve('feature');
+    const prompt = promptFor(plan, { slug: 'billing' }, lib);
+    expect(prompt).toContain(
+      'Expected input artifacts: requirements-analysis, user-stories, business-logic-model, unit-of-work',
+    );
+    expect(prompt).toContain('Unit under review: billing');
+    expect(prompt).toContain('## Reviewer read scope');
+    expect(prompt).not.toContain('## Selected scope and review applicability');
+    expect(prompt).not.toContain('not applicable');
+  });
+
+  it('does not exempt story coverage when only unit planning is skipped', () => {
+    const { lib, wf } = fixture();
+    const { valid, plan } = buildExecutionPlan({
+      workflow: wf,
+      library: lib,
+      scope: 'feature',
+      skipStageIds: ['units-generation'],
+    });
+    expect(valid).toBe(true);
+    const prompt = promptFor(plan, null, lib);
+    expect(prompt).toContain(
+      'Expected input artifacts: requirements-analysis, user-stories, business-logic-model\n',
+    );
+    expect(prompt).toContain('Story-to-unit coverage and unit-scoped traceability.json');
+    expect(prompt).not.toContain('requirement-to-story coverage from get_coverage');
+  });
+
+  it.each([
+    { name: 'optional', consume: { artifact: 'business-logic-model', required: false } },
+    {
+      name: 'conditional',
+      consume: { artifact: 'business-logic-model', conditionalOn: 'brownfield' },
+    },
+  ])('also separates $name inputs whose known producers are skipped', ({ consume }) => {
+    const { lib, wf, grid } = fixture();
+    lib.stagesById['code-generation'].consumes = ['requirements-analysis', consume];
+    const { valid, plan } = buildExecutionPlan({
+      workflow: wf,
+      library: lib,
+      scope: 'feature-custom',
+      composedGrid: grid,
+    });
+    expect(valid).toBe(true);
+    const prompt = promptFor(plan, null, lib);
+    expect(prompt).toContain('Expected input artifacts: requirements-analysis\n');
+    expect(prompt).toContain('Input artifacts not produced in this scope: business-logic-model');
+  });
+
+  it('keeps an input applicable when another selected stage produces it', () => {
+    const { lib, wf, grid } = fixture();
+    lib.stagesById['requirements-analysis'].produces.push('business-logic-model');
+    lib.stagesById['code-generation'].consumes = [
+      'requirements-analysis',
+      { artifact: 'business-logic-model', required: false },
+    ];
+    const { valid, plan } = buildExecutionPlan({
+      workflow: wf,
+      library: lib,
+      scope: 'feature-custom',
+      composedGrid: grid,
+    });
+    expect(valid).toBe(true);
+    const prompt = promptFor(plan, null, lib);
+    expect(prompt).toContain(
+      'Expected input artifacts: requirements-analysis, business-logic-model\n',
+    );
+    expect(prompt).toContain('Input artifacts not produced in this scope: none');
+  });
+
+  it.each([
+    {
+      verdict: 'READY',
+      actionable: '',
+      expectedResult: 'PASS',
+      expectedStage: { ok: true, state: 'SUCCEEDED' },
+      maxIterations: 3,
+    },
+    {
+      verdict: 'NOT-READY',
+      actionable:
+        '\n2. Major: requirement R-01 is implemented incorrectly; fix its error handling.',
+      expectedResult: 'FAIL',
+      expectedStage: { ok: false, reason: 'reviewer_not_ready' },
+      maxIterations: 1,
+    },
+  ])(
+    'passes the composed scope to the live reviewer and preserves $verdict',
+    async ({ verdict, actionable, expectedResult, expectedStage, maxIterations }) => {
+      const { lib, wf, grid } = fixture();
+      lib.stagesById['code-generation'].reviewerMaxIterations = maxIterations;
+      const store = spyStore();
+      const reviewRows = [];
+      const prompts = [];
+      store.recordSensorRun = async (row) => {
+        const recorded = { sensorRunId: 'scope-review', ...row };
+        reviewRows.push(recorded);
+        return recorded;
+      };
+      store.listSensorRuns = async () => reviewRows;
+      const findings =
+        '**Reviewer:** aidlc-reviewer-agent\n1. INFO (scope): design inputs were skipped; no repair required.' +
+        actionable;
+      const bridge = createProcessBridge({
+        store,
+        scope: {
+          executionId: 'e1',
+          intentId: 'i1',
+          stageId: 'code-generation',
+          stageInstanceId: planStageInstanceId('aidlc-v2@1', 'code-generation'),
+          reviewerAgent: 'aidlc-reviewer-agent',
+        },
+      });
+      const result = await runStage(
+        { ...baseArgs, stageId: 'code-generation', scope: 'feature-custom', composedGrid: grid },
+        baseDeps({
+          store,
+          loadLibrary: async () => ({ library: lib, workflow: wf }),
+          spawnFn: () => ({
+            stdin: {
+              end(prompt) {
+                prompts.push(prompt);
+              },
+            },
+            on(event, callback) {
+              if (event !== 'close') return;
+              setImmediate(async () => {
+                if (prompts.length === 2) {
+                  await bridge.submitReview({ verdict, findings, round: 1 });
+                }
+                callback(0);
+              });
+            },
+          }),
+        }),
+      );
+      expect(prompts).toHaveLength(2); // Author + one reviewer, without a repair round.
+      expect(prompts[1]).toContain('Selected scope: feature-custom');
+      expect(prompts[1]).toContain('Expected input artifacts: requirements-analysis\n');
+      expect(prompts[1]).toContain('Input artifacts not produced in this scope: user-stories');
+      expect(reviewRows[0]).toMatchObject({
+        result: expectedResult,
+        detail: { verdict, findings },
+      });
+      expect(result).toMatchObject(expectedStage);
+    },
+  );
 });
 
 describe('runStage — fresh run persists the CLI session + parks on a pending gate', () => {
