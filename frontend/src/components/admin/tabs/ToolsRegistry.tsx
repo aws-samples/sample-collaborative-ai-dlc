@@ -650,16 +650,18 @@ function ToolLifecycle({
           ? 'The image was built. ECR is checking its operating-system packages.'
           : version.status === 'SECURITY_REVIEW' && scanUnsupported
             ? 'ECR could not inspect this image format. This is a scan limitation, not a detected vulnerability.'
-            : version.status === 'SECURITY_REVIEW'
-              ? `ECR found ${critical} Critical and ${high} High package findings. Review them before continuing.`
-              : version.status === 'READY'
-                ? 'Build and checks are complete. Publish this version to make it available.'
-                : version.status === 'PUBLISHED' && !recommended
-                  ? 'Published versions can be selected explicitly. Make this recommended to use it by default.'
-                  : version.status === 'PUBLISHED'
-                    ? 'This is the recommended published version for the tool family.'
-                    : version.failure?.detail ||
-                      'The last attempt needs attention before continuing.';
+            : version.status === 'SECURITY_REVIEW' && version.scanFindings?.incomplete
+              ? `The part of the scan the platform read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings before continuing.`
+              : version.status === 'SECURITY_REVIEW'
+                ? `ECR found ${critical} Critical and ${high} High package findings. Review them before continuing.`
+                : version.status === 'READY'
+                  ? 'Build and checks are complete. Publish this version to make it available.'
+                  : version.status === 'PUBLISHED' && !recommended
+                    ? 'Published versions can be selected explicitly. Make this recommended to use it by default.'
+                    : version.status === 'PUBLISHED'
+                      ? 'This is the recommended published version for the tool family.'
+                      : version.failure?.detail ||
+                        'The last attempt needs attention before continuing.';
 
   return (
     <div className="rounded-xl border bg-card px-3 py-3">
@@ -761,7 +763,10 @@ const SOURCE_TRUST_LABELS = {
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
   const incomplete = version.scanFindings?.incomplete === true;
-  const findingsNote = scanFindingsNote(version.scanFindings);
+  const findingsNote = scanFindingsNote(
+    version.scanFindings,
+    Boolean(version.securityFindingsAcceptedAt),
+  );
   const imageFindingsUrl = ecrImageConsoleUrl(version.imageUri, version.imageDigest);
   const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
   const scanLimitationAccepted =
