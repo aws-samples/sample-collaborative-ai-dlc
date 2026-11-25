@@ -139,9 +139,13 @@ export const readImageScanFindings = async ({
   imageUri,
   imageDigest,
   now = () => new Date().toISOString(),
+  budgetMs = SEEDING_SCAN_BUDGET_MS,
 }) => {
   const repositoryName = repositoryNameFromImageUri(imageUri);
   if (!repositoryName || !imageDigest) return null;
+  // One deadline for every page and retry: when it expires, the ECR call in
+  // flight is cancelled and the pages already read are kept as incomplete.
+  const abortSignal = AbortSignal.timeout(budgetMs);
   const read = (nextToken) =>
     ecrClient.send(
       new DescribeImageScanFindingsCommand({
@@ -149,6 +153,7 @@ export const readImageScanFindings = async ({
         imageId: { imageDigest },
         ...(nextToken ? { nextToken } : {}),
       }),
+      { abortSignal },
     );
   const scan = await read();
   const status = scan.imageScanStatus?.status;
@@ -174,6 +179,11 @@ export const readImageScanFindings = async ({
 // later page fails, is stored as incomplete, which the UI shows as partial
 // counts; the scan gate instead retries a failed read on its next poll.
 const MAX_SEEDING_SCAN_PAGES = 5;
+// API Gateway ends a request after 29 seconds. The whole seeding read,
+// retries included, gets this share of it, so that the rest of the cold start
+// and the request itself still fit. Only an SDK retry backoff already started
+// (under a second, or a Retry-After hint of up to 5 s) runs past it.
+const SEEDING_SCAN_BUDGET_MS = 10_000;
 
 export const isUnsupportedScan = (status, description) =>
   status === 'UNSUPPORTED_IMAGE' || /UnsupportedImageError/i.test(description ?? '');
