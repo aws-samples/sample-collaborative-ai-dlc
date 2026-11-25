@@ -738,7 +738,7 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
         calls
           .filter((c) => c.token === 'NEW')
           .map((c) => c.page)
-          .sort(),
+          .toSorted((a, b) => a - b),
       ).toEqual([2, 3]);
     });
 
