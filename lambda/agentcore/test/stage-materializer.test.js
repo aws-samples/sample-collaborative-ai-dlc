@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import {
+  glob,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -426,6 +436,10 @@ describe('materializeStage (workspace write)', () => {
     const cfg = JSON.parse(await readFile(out.mcpConfigPath, 'utf8'));
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
     expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('RULES');
+    const [nativeRule] = await Array.fromAsync(glob('.claude/rules/**/*.md', { cwd: ws }));
+    const nativePath = path.join(ws, nativeRule);
+    expect((await lstat(nativePath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(nativePath, 'utf8')).toBe('RULES');
   });
 
   it('merges custom servers and writes custom rules into the driver rules dir (claude)', async () => {
@@ -496,6 +510,133 @@ describe('materializeStage (workspace write)', () => {
     ).toBe('REST only.');
     expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('RUNTIME RULES');
     await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
+  });
+
+  it.each([
+    ['claude', '.claude/rules'],
+    ['kiro', '.kiro/steering'],
+  ])('loads current %s methodology alongside repository and uploaded rules', async (cli, dir) => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    const nativeDir = path.join(ws, dir);
+    await mkdir(nativeDir, { recursive: true });
+    const repositoryFile = path.join(nativeDir, 'aidlc-rules.md');
+    await writeFile(repositoryFile, 'Repository rule');
+    const materialize = (rulesDoc) =>
+      materializeStage({
+        workspaceDir: ws,
+        stage: stage(),
+        rulesDoc,
+        cli,
+        scope: { executionId: 'e1' },
+        customRules: [{ filename: 'aidlc-rules.md', body: 'Uploaded rule' }],
+      });
+    const nativeBodies = async () =>
+      Promise.all(
+        (await Array.fromAsync(glob('**/*.md', { cwd: nativeDir }))).map((name) =>
+          readFile(path.join(nativeDir, name), 'utf8'),
+        ),
+      );
+    for (const methodology of ['First stage rule', '第二阶段']) {
+      const out = await materialize(methodology);
+      expect(await readFile(out.rulesPath, 'utf8')).toBe(methodology);
+      expect((await nativeBodies()).toSorted()).toEqual(
+        ['Repository rule', 'Uploaded rule', methodology].toSorted(),
+      );
+      expect(out.prompt).not.toContain(methodology);
+      if (cli === 'kiro') {
+        const config = JSON.parse(
+          await readFile(path.join(ws, '.kiro', 'agents', out.agentName + '.json')),
+        );
+        expect(config.resources).toContain('file://.kiro/steering/**/*.md');
+      }
+    }
+    expect((await materialize('')).rulesPath).toBeNull();
+    expect((await nativeBodies()).toSorted()).toEqual(['Repository rule', 'Uploaded rule']);
+    expect(await readFile(repositoryFile, 'utf8')).toBe('Repository rule');
+  });
+
+  it.each([
+    ['claude', '.claude/rules'],
+    ['kiro', '.kiro/steering'],
+  ])('loads and clears %s methodology in repository-linked rules', async (cli, dir) => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    const target = path.join(ws, 'project-guidelines');
+    await mkdir(target);
+    await writeFile(path.join(target, 'team.md'), 'Team guideline');
+    const nativeDir = path.join(ws, dir);
+    await mkdir(path.dirname(nativeDir));
+    await symlink(target, nativeDir, 'junction');
+    const run = (rulesDoc) =>
+      materializeStage({
+        workspaceDir: ws,
+        stage: stage(),
+        cli,
+        rulesDoc,
+        scope: { executionId: 'e1' },
+      });
+    expect((await run('')).rulesPath).toBeNull();
+    execFileSync('git', ['init', '-q', ws]);
+    await run('Methodology canary');
+    const markdown = await Array.fromAsync(glob('**/*.md', { cwd: nativeDir }));
+    expect(markdown).toContain('team.md');
+    expect(markdown).toHaveLength(2);
+    const generated = markdown.find((name) => name !== 'team.md');
+    expect(await readFile(path.join(nativeDir, generated), 'utf8')).toBe('Methodology canary');
+    execFileSync('git', ['-C', ws, 'add', '--', 'project-guidelines']);
+    expect(
+      execFileSync('git', ['-C', ws, 'diff', '--cached', '--name-only'], {
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe('project-guidelines/team.md');
+    expect((await run('')).rulesPath).toBeNull();
+    expect(await Array.fromAsync(glob('**/*.md', { cwd: nativeDir }))).toEqual(['team.md']);
+    expect(await readFile(path.join(nativeDir, 'team.md'), 'utf8')).toBe('Team guideline');
+  });
+
+  it.each([
+    ['claude', '.claude/rules'],
+    ['kiro', '.kiro/steering'],
+  ])('keeps %s methodology out of a linked directory outside the workspace', async (cli, dir) => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    const external = await mkdtemp(path.join(tmpdir(), 'aidlc-shared-'));
+    const nativeDir = path.join(ws, dir);
+    await mkdir(path.dirname(nativeDir));
+    await symlink(external, nativeDir, 'junction');
+    await expect(
+      materializeStage({
+        workspaceDir: ws,
+        stage: stage(),
+        cli,
+        rulesDoc: 'Methodology canary',
+        scope: { executionId: 'e1' },
+      }),
+    ).rejects.toThrow(/outside the workspace/);
+    expect(await readdir(external)).toEqual([]);
+  });
+
+  it.each(['opencode', 'codex'])('keeps the %s stage rule entry point', async (cli) => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    await writeFile(path.join(ws, 'AGENTS.md'), 'Repository guidance');
+    const out = await materializeStage({
+      workspaceDir: ws,
+      stage: stage(),
+      rulesDoc: 'Methodology canary',
+      cli,
+      scope: { executionId: 'e1' },
+      env: { V2_CODEX_HOME_ROOT: path.join(ws, 'private-home') },
+    });
+    if (cli === 'opencode') {
+      expect(JSON.parse(out.opencodeConfigContent).instructions).toContain('.aidlc/rules.md');
+    } else {
+      expect(await readFile(path.join(out.codexHome, 'config.toml'), 'utf8')).toContain(
+        'project_doc_fallback_filenames = [".aidlc/rules.md"]',
+      );
+      expect(await readFile(path.join(out.codexHome, 'AGENTS.md'), 'utf8')).toContain(
+        'read and follow `.aidlc/rules.md`',
+      );
+    }
+    expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('Methodology canary');
+    expect(await readFile(path.join(ws, 'AGENTS.md'), 'utf8')).toBe('Repository guidance');
   });
 
   it('neutralizes path traversal (basename) and skips non-.md rule filenames', async () => {
