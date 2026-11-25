@@ -5891,6 +5891,14 @@ Local acceptance milestones within the open release items:
 - [x] NE-12/13. Download and import a local terminal bundle against its captured Start parent, verify the result tree, and resolve the graph source and file bytes to the same publication.
 - [x] NE-21/25. Exercise the ordinary and lost-acknowledgement repair scans on 12,000 disposable DynamoDB Local rows, and check the release drain rejects an uncertain writer and unaccounted jobs. DEV queue metrics and alarm configuration are baseline observations on the retiring release.
 
+#### DEV deployment verified on 2026-11-25
+
+The standard Terraform and frontend scripts deployed candidate `c43b36a7`. The `DEFAULT` AgentCore endpoint was `READY` on version **162**. The registry, the endpoint and both workers that choose the image for a fresh intent matched the qualified image. The Git result builder resolved its ARM64 manifest. All nine native Lambda ZIP hashes matched the reviewed packages, and all five authority aliases served version 44. The former workflow Lambda, CodeBuild project, roles, review policy and log group were gone. The execution role and runtime boundary had dropped the forwarding grants. The execution and projection queues and their dead-letter queues reported zero messages at the readback.
+
+CloudFront completed the invalidation and served the local build bytes for the entry page and six assets, including Intent creation and the shared Intent view. At 07:46 UTC, the DEV space used for the game incident had no execution on the new image. The first signed-in check is a fresh Codex intent against `jwthewes/flappy-bird` with the original request, `Create a 3D version of the game`. Capture the first published question and the options shown to the member before submitting the written Express preference or selecting a plan. The signed-in checks in the inventory above remain open.
+
+The service and frontend observations are in `.native-evidence/agentcore-standard-deployed-c43b36a7-20261125-01/readback.json`. The image bindings used at Start and the project-scoped inventory are in `start-readiness.json` in the same directory.
+
 ### Superseded AgentCore package verification on 2026-11-24
 
 Candidate `7bc8cdf7` and its operator files are preserved at `.native-evidence/agentcore-method-candidate-03/`. Its Codex provider wrote the expected alternate-plan form. Independent packaged replay without that write produced no picker. A successful inspection after the initial offer also erased the recommendation. The host replay additionally lost a valid ask on a quoted request containing a semicolon. Those earlier scripted and browser results apply only to the sequences that ran there.
