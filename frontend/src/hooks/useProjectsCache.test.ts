@@ -71,15 +71,17 @@ describe('deriveActivity — dashboard per-project counts', () => {
 });
 
 describe('useProjectsCache — sessionStorage hydration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
     sessionStorage.clear();
+    const { bindUserCache } = await import('@/lib/persistentCache');
+    bindUserCache('u1');
   });
 
   it('re-renders subscribers that mounted before a fresh persisted cache is adopted', async () => {
     sessionStorage.setItem(
-      'aidlc-cache:v1:projects',
+      'aidlc-cache:v2:u1:projects',
       JSON.stringify({
         data: [
           {
@@ -104,7 +106,7 @@ describe('useProjectsCache — sessionStorage hydration', () => {
 
   it('re-renders sprint subscribers after adopting a fresh persisted cache', async () => {
     sessionStorage.setItem(
-      'aidlc-cache:v1:sprints:p1',
+      'aidlc-cache:v2:u1:sprints:p1',
       JSON.stringify({
         data: [{ id: 's1', name: 'Sprint One', createdAt: '2026-08-18T00:00:00.000Z' }],
         fetchedAt: Date.now(),
@@ -135,7 +137,7 @@ describe('useProjectsCache — sessionStorage hydration', () => {
       { id: 'i-2', title: 'Waiting Two', status: 'WAITING' },
     ] as Intent[];
     sessionStorage.setItem(
-      'aidlc-cache:v1:projects',
+      'aidlc-cache:v2:u1:projects',
       JSON.stringify({
         data: [
           {

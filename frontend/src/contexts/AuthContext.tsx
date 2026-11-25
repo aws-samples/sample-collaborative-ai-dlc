@@ -10,7 +10,14 @@ import React, {
 import type { ReactNode } from 'react';
 import { authService } from '../services/auth';
 import type { User } from '../services/auth';
-import { armSessionExpiry, onSessionExpired, resetSessionExpiry } from '../services/sessionExpiry';
+import {
+  armSessionExpiry,
+  currentSessionEpoch,
+  isSessionExpiryNotified,
+  onSessionExpired,
+  resetSessionExpiry,
+} from '../services/sessionExpiry';
+import { bindUserCache, endUserCache } from '@/lib/persistentCache';
 
 interface AuthContextType {
   user: User | null;
@@ -58,18 +65,50 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [needsNewPassword, setNeedsNewPassword] = useState(false);
   const [needsDisplayName, setNeedsDisplayName] = useState(false);
   const userRef = useRef<User | null>(null);
+  const authGenerationRef = useRef(0);
   userRef.current = user;
+
+  const acceptUser = useCallback((next: User) => {
+    const binding = bindUserCache(next.userId);
+    if (binding === 'session-ended' || binding === 'different-user') {
+      if (binding === 'different-user') endUserCache('user-switch');
+      // A new sign-in after logout/expiry gets a clean document, including
+      // lazy pages, query caches, and any pending work from the former session.
+      window.location.reload();
+      return false;
+    }
+    // Authenticated identity data without a stable subject cannot safely
+    // access user-scoped caches. Fail closed without creating a reload loop.
+    if (binding === 'missing-user') {
+      if (userRef.current) {
+        userRef.current = null;
+        endUserCache();
+        setUser(null);
+      }
+      return false;
+    }
+    userRef.current = next;
+    setUser(next);
+    setNeedsDisplayName(!next.displayName);
+    return true;
+  }, []);
 
   useEffect(
     () =>
       onSessionExpired(() => {
+        // Invalidate an initial auth/profile lookup that may still be pending,
+        // including the window where it has found Cognito state but has not
+        // accepted an application user yet.
+        authGenerationRef.current++;
         const wasSignedIn = userRef.current !== null;
+        userRef.current = null;
         setUser(null);
         setNeedsNewPassword(false);
         setNeedsDisplayName(false);
         // Nobody was signed in (e.g. an API call from a public route): there is
         // no Amplify state or persisted cache to tear down.
         if (!wasSignedIn) return;
+        endUserCache('session-expired');
         // Best-effort: the session may already be invalid server-side.
         void authService.logout().catch((error) => {
           console.error('Sign-out after session expiry failed:', error);
@@ -79,61 +118,72 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   );
 
   const checkAuthState = useCallback(async () => {
+    const epoch = currentSessionEpoch();
+    const generation = authGenerationRef.current;
+    const stillCurrent = () =>
+      !isSessionExpiryNotified() &&
+      authGenerationRef.current === generation &&
+      currentSessionEpoch() === epoch;
     try {
+      if (!stillCurrent()) return;
       const isAuth = await authService.isAuthenticated();
+      if (!stillCurrent()) return;
       if (isAuth) {
         // Re-arm without a new epoch: requests fired at mount carry the current
         // one and their 401s must still be able to report an expiry.
         armSessionExpiry();
         const currentUser = await authService.getCurrentUser();
-        setUser(currentUser);
-        setNeedsDisplayName(!currentUser.displayName);
+        if (stillCurrent()) acceptUser(currentUser);
       }
     } catch (error) {
       console.error('Auth state check failed:', error);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [acceptUser]);
 
   useEffect(() => {
     void checkAuthState();
   }, [checkAuthState]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    setIsLoading(true);
-    try {
-      const result = await authService.login(username, password);
-      resetSessionExpiry();
-      if (result.nextStep === 'NEW_PASSWORD_REQUIRED') {
-        setNeedsNewPassword(true);
-      } else if (result.user) {
-        setUser(result.user);
-        setNeedsDisplayName(!result.user.displayName);
+  const login = useCallback(
+    async (username: string, password: string) => {
+      setIsLoading(true);
+      try {
+        const result = await authService.login(username, password);
+        resetSessionExpiry();
+        if (result.nextStep === 'NEW_PASSWORD_REQUIRED') {
+          setNeedsNewPassword(true);
+        } else if (result.user) {
+          acceptUser(result.user);
+        }
+      } catch (error) {
+        console.error('Login failed:', error);
+        throw error;
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Login failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [acceptUser],
+  );
 
-  const completeNewPassword = useCallback(async (newPassword: string) => {
-    setIsLoading(true);
-    try {
-      const authedUser = await authService.completeNewPassword(newPassword);
-      resetSessionExpiry();
-      setNeedsNewPassword(false);
-      setUser(authedUser);
-      setNeedsDisplayName(!authedUser.displayName);
-    } catch (error) {
-      console.error('Password change failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const completeNewPassword = useCallback(
+    async (newPassword: string) => {
+      setIsLoading(true);
+      try {
+        const authedUser = await authService.completeNewPassword(newPassword);
+        resetSessionExpiry();
+        setNeedsNewPassword(false);
+        acceptUser(authedUser);
+      } catch (error) {
+        console.error('Password change failed:', error);
+        throw error;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [acceptUser],
+  );
 
   const loginWithSso = useCallback(async (providerName: string, returnTo: string) => {
     setIsLoading(true);
@@ -149,33 +199,37 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       const authedUser = await authService.completeSsoLogin();
       resetSessionExpiry();
-      setUser(authedUser);
-      setNeedsDisplayName(!authedUser.displayName);
+      if (!acceptUser(authedUser)) return window.location.pathname;
       return authService.consumeReturnTo();
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [acceptUser]);
 
-  const setDisplayName = useCallback(async (name: string) => {
-    setIsLoading(true);
-    try {
-      await authService.updateProfile(name);
-      const updatedUser = await authService.getCurrentUser();
-      setUser(updatedUser);
-      setNeedsDisplayName(false);
-    } catch (error) {
-      console.error('Set display name failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const setDisplayName = useCallback(
+    async (name: string) => {
+      setIsLoading(true);
+      try {
+        await authService.updateProfile(name);
+        const updatedUser = await authService.getCurrentUser();
+        if (acceptUser(updatedUser)) setNeedsDisplayName(false);
+      } catch (error) {
+        console.error('Set display name failed:', error);
+        throw error;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [acceptUser],
+  );
 
   const logout = useCallback(async () => {
+    authGenerationRef.current++;
     setIsLoading(true);
     try {
       await authService.logout();
+      endUserCache();
+      userRef.current = null;
       setUser(null);
       setNeedsNewPassword(false);
       setNeedsDisplayName(false);
