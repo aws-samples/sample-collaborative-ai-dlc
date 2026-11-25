@@ -1230,8 +1230,6 @@ export const createNativeExecutor = ({
             forbiddenBytes,
             onDiagnostic: (d) => timing(turn, 'questionPresentation', d),
           });
-          if (requirements?.fileStep === 'file' && form.pendingInput)
-            form.pendingInput.fileEdit = true;
           const outcome = classifyNativeFirstWait({
             snapshot: files,
             harness: configuration.harness,
@@ -1282,7 +1280,9 @@ export const createNativeExecutor = ({
     if (publication) return { publication };
     if (
       continuing &&
-      (session.fileReady || (session.checkpoint && !directCheckpoint)) &&
+      (session.fileReady ||
+        (session.checkpoint && !directCheckpoint) ||
+        (session.fileStep === 'guide' && !payload.selection)) &&
       binding?.issuedFile
     ) {
       const current = currentQuestionFile(baseline, binding, configuration.harness);
@@ -1345,6 +1345,11 @@ export const createNativeExecutor = ({
       home: owner.home,
       instructions: [
         nativeTransportInstructions(configuration),
+        ...(continuing && turn.session.pendingInput?.fileGuide && !payload.selection
+          ? [
+              'The member chose to discuss the published Guide me questions. Respond to their written question. Leave the file answers and batch receipt open until they submit settled answers. Follow the installed method to return to the current questions.',
+            ]
+          : []),
         ...(recoveredFile?.fileEdit
           ? [
               'The member saved file edits before the session stopped. Use the normal resume entrypoint. Stop at the remaining slots or ask for the file-mode completion signal. The fresh-session request does not supply that signal.',
@@ -1701,7 +1706,6 @@ export const createNativeExecutor = ({
         formDiagnostic(diagnostic);
       },
     });
-    if (requirements?.fileStep === 'file' && pendingInput) pendingInput.fileEdit = true;
     const nativeSessionId = completed.nativeSessionId;
     let outcome = classifyNativeFirstWait({
       snapshot: files,

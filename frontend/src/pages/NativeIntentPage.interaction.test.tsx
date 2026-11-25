@@ -539,6 +539,51 @@ it.each(['invalid_json', 'unbound_question'] as const)(
   },
 );
 
+it('sends a guided discussion as a written question without selecting or filling an answer', async () => {
+  const pendingInput = nativePendingInput({
+    schemaVersion: 2,
+    kind: 'choice',
+    source: 'rendered-question',
+    stage: null,
+    fileGuide: true,
+    questions: [
+      {
+        id: 'q1',
+        header: 'Controls',
+        prompt: 'Which controls?',
+        multiSelect: false,
+        options: [
+          { label: 'Keyboard', description: null },
+          { label: 'Other', description: null },
+        ],
+      },
+    ],
+  });
+  interaction = {
+    ...interaction,
+    pendingInput,
+    contentSha256: createHash('sha256')
+      .update(canonicalJson({ messages, pendingInput }))
+      .digest('hex'),
+  };
+  renderPage();
+  await screen.findByRole('button', { name: 'Discuss a question' });
+  await click('Discuss a question');
+  await click('Back to answers');
+  expect(transport.post).not.toHaveBeenCalled();
+  await click('Discuss a question');
+  const field = await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
+  await userEvent.type(field, 'What does keyboard support include?');
+  await click('Send question');
+  await vi.waitFor(() => expect(transport.post).toHaveBeenCalledTimes(1));
+  expect(transport.post.mock.calls[0][1]).toMatchObject({
+    interactionId: interaction.id,
+    contentSha256: interaction.contentSha256,
+    text: 'What does keyboard support include?',
+  });
+  expect(transport.post.mock.calls[0][1]).not.toHaveProperty('selection');
+});
+
 it('submits one complete grouped form, retries identical bytes after a lost ack and restores the receipt on reload', async () => {
   const pendingInput = nativePendingInput({
     schemaVersion: 2,

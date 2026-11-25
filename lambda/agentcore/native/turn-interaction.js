@@ -541,6 +541,10 @@ export const decodeNativeTurnInteraction = ({
   const pendingInput = supported
     ? buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
     : null;
+  if (pendingInput?.kind === 'choice' && rendered.questionFile?.issuedFile) {
+    if (rendered.fileStep === 'file') pendingInput.fileEdit = true;
+    if (rendered.fileStep === 'guide') pendingInput.fileGuide = true;
+  }
   const presentation = pendingInput
     ? null
     : {

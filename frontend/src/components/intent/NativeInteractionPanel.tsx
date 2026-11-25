@@ -149,12 +149,16 @@ export function useNativeReply({
   // Keep the shared document for the life of this unanswered interaction, so
   // transient status (image policy, refresh) never drops the draft; editing
   // and submission are still gated on awaitingReply.
+  const [discussionId, setDiscussionId] = useState<string | null>(null);
+  const discussing = Boolean(
+    interaction?.pendingInput?.fileGuide && discussionId === interaction.id,
+  );
   const shared = useSharedReplyDraft({
     intent,
     interaction,
     open:
       interaction !== null &&
-      !interaction.pendingInput &&
+      (!interaction.pendingInput || discussing) &&
       interaction.id === intent.execution?.interactionId &&
       !receipt &&
       state !== 'accepted',
@@ -282,6 +286,11 @@ export function useNativeReply({
     error,
     editable,
     canSubmit,
+    discussing,
+    setDiscussing: (enabled: boolean) => {
+      if (state === 'idle' && interaction?.pendingInput?.fileGuide)
+        setDiscussionId(enabled ? interaction.id : null);
+    },
     awaitingReply,
     interactionReady: interaction !== null,
     errorFor: (outcome: string) =>
@@ -355,7 +364,7 @@ export function NativeInteractionPanel({
 }) {
   const bytes = new TextEncoder().encode(reply.text).length;
   const recovery = ['RECOVERY_REQUIRED', 'RECOVERING'].includes(executionStatus);
-  const showQuestionForm = Boolean(reply.structured && !reply.receipt);
+  const showQuestionForm = Boolean(reply.structured && !reply.receipt && !reply.discussing);
   const response = (
     <Card id="native-assistant-response">
       <CardHeader>
@@ -376,9 +385,19 @@ export function NativeInteractionPanel({
   return (
     <section aria-label="Published AI-DLC response" className="space-y-4">
       <NativePresentationNotice interaction={interaction} />
-      {!showQuestionForm && response}
+      {(!showQuestionForm || reply.structured?.fileGuide) && response}
       {showQuestionForm ? (
         <section aria-label="Answer AI-DLC" className="space-y-2">
+          {reply.structured?.fileGuide && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!reply.editable}
+              onClick={() => reply.setDiscussing(true)}
+            >
+              Discuss a question
+            </Button>
+          )}
           {reply.structured?.fileEdit && (
             <p>Save the answers you have. Blank slots stay open until you finish the file.</p>
           )}
@@ -420,7 +439,9 @@ export function NativeInteractionPanel({
           }}
         >
           <div className="flex items-center justify-between gap-2">
-            <Label htmlFor="native-reply">Reply to AI-DLC</Label>
+            <Label htmlFor="native-reply">
+              {reply.discussing ? 'What would you like to discuss?' : 'Reply to AI-DLC'}
+            </Label>
             <ReplyPresence users={reply.shared.remoteUsers} />
           </div>
           {reply.receipt && reply.text !== reply.receipt.text && (
@@ -445,7 +466,9 @@ export function NativeInteractionPanel({
             rows={4}
           />
           <p id="native-reply-help" className="text-xs text-muted-foreground">
-            Members can edit together. Send your reply to continue.
+            {reply.discussing
+              ? 'Send your question to AI-DLC. The answer slots stay open.'
+              : 'Members can edit together. Send your reply to continue.'}
           </p>
           {reply.shared.diverged && (
             <p role="status" className="text-xs text-muted-foreground">
@@ -469,12 +492,27 @@ export function NativeInteractionPanel({
                 : 'Replying is unavailable for this turn. Refresh status to see the current execution.'}
             </p>
           )}
-          <Button type="submit" disabled={!reply.canSubmit}>
+          {reply.discussing && !reply.receipt && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!reply.editable}
+              onClick={() => reply.setDiscussing(false)}
+            >
+              Back to answers
+            </Button>
+          )}
+          <Button
+            type="submit"
+            disabled={!reply.canSubmit || (reply.discussing && !reply.shared.connected)}
+          >
             {reply.state === 'sending'
               ? 'Sending reply…'
               : reply.state === 'uncertain'
                 ? 'Retry same reply'
-                : 'Send reply'}
+                : reply.discussing
+                  ? 'Send question'
+                  : 'Send reply'}
           </Button>
         </form>
       )}

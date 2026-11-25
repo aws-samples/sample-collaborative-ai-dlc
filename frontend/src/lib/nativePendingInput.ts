@@ -20,6 +20,7 @@ export interface NativePendingQuestion {
 export interface NativePendingInput {
   schemaVersion: 2;
   fileEdit?: true;
+  fileGuide?: true;
   kind: 'approval' | 'choice';
   source: 'engine-gate' | 'rendered-question';
   stage: string | null;
@@ -55,6 +56,9 @@ export function nativePendingInput(value: unknown): NativePendingInput {
       'stage',
       'questions',
       ...(value.kind === 'choice' && value.fileEdit === true ? ['fileEdit'] : []),
+      ...(value.kind === 'choice' && value.fileEdit === undefined && value.fileGuide === true
+        ? ['fileGuide']
+        : []),
     ]) ||
     value.schemaVersion !== 2 ||
     !['approval', 'choice'].includes(String(value.kind)) ||
@@ -118,6 +122,7 @@ export function nativePendingInput(value: unknown): NativePendingInput {
   return {
     schemaVersion: value.schemaVersion,
     ...(value.fileEdit === true ? { fileEdit: true as const } : {}),
+    ...(value.fileGuide === true ? { fileGuide: true as const } : {}),
     kind: value.kind as NativePendingInput['kind'],
     source: value.source as NativePendingInput['source'],
     stage: value.stage as string | null,

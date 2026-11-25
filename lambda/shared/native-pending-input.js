@@ -119,7 +119,10 @@ const approvalQuestions = (questions) => {
 /** Validate a stored pending input. Returns a deep copy. */
 export const nativePendingInput = (value) => {
   const fields = ['schemaVersion', 'kind', 'source', 'stage', 'questions'];
-  if (value?.fileEdit === true && value.kind === 'choice') fields.push('fileEdit');
+  if (value?.kind === 'choice') {
+    if (value.fileEdit === true) fields.push('fileEdit');
+    else if (value.fileGuide === true) fields.push('fileGuide');
+  }
   if (!exact(value, fields)) fail();
   if (value.schemaVersion !== 2) fail();
   if (!['approval', 'choice'].includes(value.kind)) fail();
