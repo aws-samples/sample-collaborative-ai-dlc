@@ -576,6 +576,92 @@ describe('MembersTab assignable identity picker', () => {
     );
   });
 
+  it('adds several selected identities with one role in one submit', async () => {
+    const user = userEvent.setup();
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('existing@example.com');
+    await user.click(screen.getByRole('button', { name: 'Add Member' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+    await user.click(within(dialog).getByLabelText('Users'));
+    await user.click(await within(dialog).findByRole('button', { name: /Local User · Cognito/ }));
+    // The list stays open and no longer offers the identity just picked.
+    expect(within(dialog).queryByRole('button', { name: /Local User · Cognito/ })).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: /SSO User · CorporateOIDC/ }));
+    expect(within(dialog).getByText('No matching users')).toBeInTheDocument();
+
+    const selected = within(dialog).getByRole('list', { name: 'Selected users' });
+    expect(within(selected).getAllByRole('listitem')).toHaveLength(2);
+
+    await user.click(within(dialog).getByRole('combobox', { name: 'Role' }));
+    await user.click(screen.getByRole('option', { name: 'Owner' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Add 2 Members' }));
+
+    await waitFor(() => expect(addMember).toHaveBeenCalledTimes(2));
+    expect(addMember).toHaveBeenNthCalledWith(1, 'project-1', {
+      userId: 'local-sub',
+      email: 'shared@example.com',
+      role: 'owner',
+    });
+    expect(addMember).toHaveBeenNthCalledWith(2, 'project-1', {
+      userId: 'sso-sub',
+      email: 'shared@example.com',
+      role: 'owner',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets an Owner drop a selected identity before adding', async () => {
+    const user = userEvent.setup();
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('existing@example.com');
+    await user.click(screen.getByRole('button', { name: 'Add Member' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+    await user.click(within(dialog).getByLabelText('Users'));
+    await user.click(await within(dialog).findByRole('button', { name: /Local User · Cognito/ }));
+    await user.click(within(dialog).getByRole('button', { name: /SSO User · CorporateOIDC/ }));
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove shared@example.com (Cognito account)' }),
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Add Member' }));
+
+    await waitFor(() => expect(addMember).toHaveBeenCalledTimes(1));
+    expect(addMember).toHaveBeenCalledWith('project-1', {
+      userId: 'sso-sub',
+      email: 'shared@example.com',
+      role: 'member',
+    });
+  });
+
+  it('keeps only the identities that failed selected and says why', async () => {
+    const user = userEvent.setup();
+    addMember.mockImplementation(async (_projectId, { userId }) => {
+      if (userId === 'sso-sub') throw new Error('User is already a member of this space');
+      return {};
+    });
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('existing@example.com');
+    await user.click(screen.getByRole('button', { name: 'Add Member' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+    await user.click(within(dialog).getByLabelText('Users'));
+    await user.click(await within(dialog).findByRole('button', { name: /Local User · Cognito/ }));
+    await user.click(within(dialog).getByRole('button', { name: /SSO User · CorporateOIDC/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Add 2 Members' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Could not add 1 of 2: shared@example.com (User is already a member of this space)',
+    );
+    const selected = within(dialog).getByRole('list', { name: 'Selected users' });
+    expect(within(selected).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(selected).getByText('SSO User · CorporateOIDC')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Add Member' })).toBeEnabled();
+    // The member list reloads for the identity that was added.
+    expect(listMembers).toHaveBeenCalledTimes(2);
+  });
+
   it('lets an Owner manage another Owner with the three membership roles', async () => {
     const user = userEvent.setup();
     listMembers.mockResolvedValue([
