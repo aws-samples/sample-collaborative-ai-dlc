@@ -225,6 +225,8 @@ export async function workspaceQualificationDriver({
     cliTurns = 0,
     lastHome,
     latestError;
+  let stopAfterFile = false;
+  let answerPersisted;
   let resumePending = false,
     loseAck = false,
     first = true;
@@ -255,8 +257,19 @@ export async function workspaceQualificationDriver({
           ...input,
           env: { ...input.env, ...dependencyEnv, PATH: `${pkg.tools}:${input.env.PATH}` },
         };
+        if (
+          (stopAfterFile === 'restart' &&
+            input.args.join(' ') === 'engine hook record-human-turn') ||
+          (stopAfterFile === 'restart-recorded' && input.env.NATIVE_APPLIED_QUESTION_FILE)
+        ) {
+          answerPersisted();
+          await new Promise((resolve) =>
+            input.signal.addEventListener('abort', resolve, { once: true }),
+          );
+          return { cleanupComplete: true, exitCode: null, signal: 'SIGTERM' };
+        }
         if (input.timeoutMs !== null) {
-          setups++;
+          if (input.args[0] !== 'engine') setups++;
           const result = await runNativeCommand(input);
           if (result.exitCode !== 0) {
             const space = await fs.statfs(root);
@@ -417,6 +430,8 @@ export async function workspaceQualificationDriver({
     originalPrompt: f.prepared.request.prompt,
     get: (route, query, options) => member.request(route, undefined, { query, ...options }),
     competition: () => competition,
+    acceptedSelection: (interactionId) =>
+      f.store.response(f.row(), interactionId).then((response) => response.selection),
     exportResult: gitResult && ((revision) => gitResult.verify(member, revision)),
     revoke: membership.revoke,
     interaction: () => member.request('interaction'),
@@ -424,6 +439,7 @@ export async function workspaceQualificationDriver({
       prompt,
       {
         interrupt = false,
+        interruptAfterFile = false,
         selection,
         compete = false,
         displayOnly = false,
@@ -432,7 +448,31 @@ export async function workspaceQualificationDriver({
     ) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
+      stopAfterFile = interruptAfterFile;
+      const saved =
+        interruptAfterFile &&
+        new Promise((resolve) => {
+          answerPersisted = resolve;
+        });
       await begin(prompt, selection, compete, token);
+      if (interruptAfterFile) {
+        await supervisor(f.identity);
+        await Promise.race([
+          saved,
+          runtime.settle().then(() => {
+            throw Error('File persistence not reached');
+          }),
+        ]);
+        await runtime.cancel({
+          ...executionIdentity(f.row()),
+          writerGeneration: f.row().writerGeneration,
+        });
+        await runtime.settle();
+        stopAfterFile = false;
+        assert.equal(f.row().publication.sequence, before);
+        await loseSession();
+        return null;
+      }
       if (interrupt) {
         await supervisor(f.identity);
         const marker = join(project, '.native-control/interrupt-ready');

@@ -42,6 +42,7 @@ interface Props {
   userName: string;
   onAnswer: (structuredAnswer: StructuredAnswer) => Promise<void>;
   disabled?: boolean;
+  fileEdit?: boolean;
   onAutoSave?: (draftAnswer: StructuredAnswer) => Promise<void>;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -58,6 +59,7 @@ export default function QuestionEditor({
   userName,
   onAnswer,
   disabled = false,
+  fileEdit = false,
   onAutoSave,
   onFocus,
   onBlur,
@@ -102,10 +104,7 @@ export default function QuestionEditor({
   const handleSubmit = async () => {
     if (disabled || !synced || inFlight.current) return;
     const answer = toStructuredAnswer();
-    const allAnswered = answer.answers.every(
-      (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.trim().length > 0),
-    );
-    if (!allAnswered) return;
+    if (!ready) return;
     const invalid = validateAnswer?.(answer);
     if (invalid) {
       setError(invalid);
@@ -124,14 +123,15 @@ export default function QuestionEditor({
     }
   };
 
-  const allAnswered = question.questions.every((_, i) => {
+  const filled = question.questions.map((_, i) => {
     const sel = selections.get(i) || [];
     const ft = freeTexts.get(i) || '';
     return sel.length > 0 || ft.trim().length > 0;
   });
 
+  const ready = fileEdit ? filled.some(Boolean) : filled.every(Boolean);
   const remoteCount = remoteUsers.size;
-  const validationError = allAnswered
+  const validationError = ready
     ? validateAnswer?.({
         answers: question.questions.map((_, i) => ({
           selectedOptions: selections.get(i) || [],
@@ -214,15 +214,17 @@ export default function QuestionEditor({
         size="sm"
         type={native ? 'submit' : 'button'}
         onClick={native ? undefined : handleSubmit}
-        disabled={disabled || !synced || !allAnswered || submitting || !!validationError}
+        disabled={disabled || !synced || !ready || submitting || !!validationError}
         className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
       >
         {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
         {submitting
           ? 'Submitting...'
-          : question.questions.length > 1
-            ? 'Submit All Answers'
-            : 'Submit Answer'}
+          : fileEdit
+            ? 'Save file answers'
+            : question.questions.length > 1
+              ? 'Submit All Answers'
+              : 'Submit Answer'}
       </Button>
     </Container>
   );

@@ -118,7 +118,9 @@ const approvalQuestions = (questions) => {
 
 /** Validate a stored pending input. Returns a deep copy. */
 export const nativePendingInput = (value) => {
-  if (!exact(value, ['schemaVersion', 'kind', 'source', 'stage', 'questions'])) fail();
+  const fields = ['schemaVersion', 'kind', 'source', 'stage', 'questions'];
+  if (value?.fileEdit === true && value.kind === 'choice') fields.push('fileEdit');
+  if (!exact(value, fields)) fail();
   if (value.schemaVersion !== 2) fail();
   if (!['approval', 'choice'].includes(value.kind)) fail();
   if (value.source !== (value.kind === 'approval' ? 'engine-gate' : 'rendered-question')) fail();
@@ -310,6 +312,11 @@ export const nativeSelection = (pendingInput, selection) => {
   const input = nativePendingInput(pendingInput);
   if (!exact(selection, ['answers']) || !Array.isArray(selection.answers)) fail();
   if (selection.answers.length !== input.questions.length) fail();
+  if (
+    input.fileEdit &&
+    !selection.answers.some((a) => a?.selectedOptions?.length || a?.freeText?.trim())
+  )
+    fail();
   return {
     answers: selection.answers.map((answer, index) => {
       const entry = input.questions[index];
@@ -330,7 +337,7 @@ export const nativeSelection = (pendingInput, selection) => {
       const freeText = answer.freeText === undefined ? undefined : answer.freeText;
       if (freeText !== undefined && !prose(freeText, NATIVE_PENDING_INPUT_LIMITS.freeTextChars))
         fail();
-      if (!selected.length && freeText === undefined) fail();
+      if (!input.fileEdit && !selected.length && freeText === undefined) fail();
       return {
         selectedOptions: [...selected].sort((a, b) => a - b),
         ...(freeText !== undefined ? { freeText } : {}),

@@ -38,6 +38,7 @@ export default defineConfig({
       'lambda/agentcore/test/native-flight-recorder.test.js',
       'lambda/agentcore/test/native-executor*.test.js',
       'lambda/agentcore/test/native-method-output.test.js',
+      'lambda/agentcore/test/native-question-file.test.js',
       'lambda/agentcore/test/native-workflow-launcher.test.js',
       'lambda/agentcore/test/native-execution-files.test.js',
       'lambda/agentcore/test/native-source-baseline.test.js',

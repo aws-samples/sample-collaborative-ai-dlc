@@ -116,3 +116,65 @@ it('renders the exact unanswered members of a guided batch and never mixes in a 
   ])
     expect(nativeRequirementsForm(args)).toBeNull();
 });
+
+it('binds current unit output and the logged subset, withholding a replaced or foreign unit', () => {
+  const slug = 'functional-design',
+    unit = 'checkout';
+  const input = fixture({ prompt: 'Q2, Q5' });
+  input.method = {
+    decision: { stage: slug, unit, prompt: 'Q2, Q5' },
+    stageFile: {
+      stage: slug,
+      unit,
+      mode: 'guide',
+      path: `${intent}/construction/${unit}/${slug}/${slug}-questions.md`,
+    },
+  };
+  input.snapshot.files = input.snapshot.files.map((f) => {
+    const path = f.path === questionPath ? input.method.stageFile.path : f.path;
+    let content = f.content.toString().replaceAll(stage, slug);
+    if (path.includes('/audit/'))
+      content = content.replace(`**Stage**: ${slug}`, `**Stage**: ${slug}\n**Unit**: ${unit}`);
+    if (path.endsWith('active-directive.json'))
+      content = JSON.stringify({ ...JSON.parse(content), unit });
+    return {
+      ...f,
+      path,
+      content: Buffer.from(content),
+      sha256: createHash('sha256').update(content).digest('hex'),
+    };
+  });
+  const result = nativeRequirementsForm(input);
+  expect(result.ids).toEqual(['Q2', 'Q5']);
+  expect(result.questionFile.path).toBe(input.method.stageFile.path);
+  const other = { ...input.method, stageFile: { ...input.method.stageFile, unit: 'billing' } };
+  expect(nativeRequirementsForm({ ...input, method: other })).toBeNull();
+});
+
+it('presents the separately recorded summary only after ordinary slots are filled and the engine names that file', () => {
+  const prompt = 'Does this all look correct before I generate the requirements artifact?',
+    options = 'Looks correct,Request changes';
+  const content =
+    questions.replaceAll('[Answer]:', '[Answer]: B') +
+    `\n## Consolidated Summary Confirmation\n- Camera follows the player.\n\n${prompt}\n- Looks correct\n- Request changes\n\n[Answer]:\n`;
+  const input = fixture({ prompt, options }, content);
+  const file = { path: questionPath, stage, unit: null, mode: 'guide' };
+  input.method.stageFile = file;
+  Object.assign(input.method.decision, { checkpoint: 'summary-confirmation', path: questionPath });
+  const audit = input.snapshot.files.at(-1);
+  audit.content = Buffer.from(
+    audit.content
+      .toString()
+      .replace(
+        '**Options**:',
+        `**Checkpoint**: Consolidated Summary Confirmation\n**Questions File**: ${questionPath}\n**Options**:`,
+      ),
+  );
+  audit.sha256 = createHash('sha256').update(audit.content).digest('hex');
+  const held = nativeRequirementsForm(input);
+  expect(held.checkpoint).toBe('Consolidated Summary Confirmation');
+  expect(held.spec.questions[0].prompt).toContain('Camera follows the player');
+  expect(held.spec.questions[0].options.map((o) => o.label)).toEqual(options.split(','));
+  input.method.decision.path = 'other';
+  expect(nativeRequirementsForm(input)).toBeNull();
+});

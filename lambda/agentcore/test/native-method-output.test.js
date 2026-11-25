@@ -284,3 +284,55 @@ describe('pinned local method reporting', () => {
     );
   });
 });
+
+it('renders the engine-owned plan question only for the published unit targets, including edit mode', () => {
+  const view = snapshot('- **Current Stage**: code-generation');
+  const root = 'aidlc/spaces/space/intents/current';
+  const dir = `${root}/construction/cart/code-generation`;
+  const target = {
+    unit: 'cart',
+    plan_path: dir + '/code-generation-plan.md',
+    instructions_path: dir + '/unit-test-instructions.md',
+    questions_path: dir + '/code-generation-questions.md',
+    summary: ['Test the empty cart.'],
+  };
+  const marker = {
+    version: 2,
+    kind: 'ask',
+    ask_type: 'plan-approval',
+    stage: 'code-generation',
+    unit: 'cart',
+  };
+  view.files.push({
+    path: root + '/.aidlc-engine/active-directive.json',
+    content: Buffer.from(JSON.stringify(marker)),
+  });
+  for (const path of [target.plan_path, target.instructions_path, target.questions_path])
+    view.files.push({ path, content: Buffer.from('fixture') });
+  const choices = ['Approve Plan', 'Request Changes', "I'll edit the files"];
+  const ask = {
+    kind: 'ask',
+    ask_type: 'plan-approval',
+    stage: 'code-generation',
+    response_route: 'next',
+    question: 'Build this plan?',
+    plan_approval: { targets: [target], choices, editing: false },
+  };
+  const render = () => {
+    const observer = observeNativeMethodOutput('codex');
+    observer.write(event('aidlc engine orchestrate next', ask));
+    return observedTurnForm(
+      { method: observer.result() },
+      { spec: null, bytes: 0 },
+      null,
+      null,
+      view,
+    );
+  };
+  expect(render().spec.questions[0].options.map((o) => o.label)).toEqual(choices);
+  expect(render().spec.questions[0].prompt).toContain('Test the empty cart.');
+  ask.plan_approval.editing = true;
+  expect(render().spec.questions[0].options).toEqual([]);
+  view.files.pop();
+  expect(render().spec).toBeNull();
+});

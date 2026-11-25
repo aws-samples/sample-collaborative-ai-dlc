@@ -19,6 +19,7 @@ export interface NativePendingQuestion {
 
 export interface NativePendingInput {
   schemaVersion: 2;
+  fileEdit?: true;
   kind: 'approval' | 'choice';
   source: 'engine-gate' | 'rendered-question';
   stage: string | null;
@@ -47,7 +48,14 @@ const prose = (value: unknown, max: number): value is string =>
 export function nativePendingInput(value: unknown): NativePendingInput {
   if (
     !record(value) ||
-    !keysExactly(value, ['schemaVersion', 'kind', 'source', 'stage', 'questions']) ||
+    !keysExactly(value, [
+      'schemaVersion',
+      'kind',
+      'source',
+      'stage',
+      'questions',
+      ...(value.kind === 'choice' && value.fileEdit === true ? ['fileEdit'] : []),
+    ]) ||
     value.schemaVersion !== 2 ||
     !['approval', 'choice'].includes(String(value.kind)) ||
     value.source !== (value.kind === 'approval' ? 'engine-gate' : 'rendered-question') ||
@@ -109,6 +117,7 @@ export function nativePendingInput(value: unknown): NativePendingInput {
   }
   return {
     schemaVersion: value.schemaVersion,
+    ...(value.fileEdit === true ? { fileEdit: true as const } : {}),
     kind: value.kind as NativePendingInput['kind'],
     source: value.source as NativePendingInput['source'],
     stage: value.stage as string | null,
@@ -155,6 +164,11 @@ export function nativeQuestionForEditor(
 /** The exact reply text for a selection (canonical labels, never numbers). */
 export function nativeAnswerText(input: NativePendingInput, selection: StructuredAnswer): string {
   if (selection.answers.length !== input.questions.length) throw new Error('Invalid answer');
+  if (
+    input.fileEdit &&
+    !selection.answers.some((a) => a.selectedOptions.length || a.freeText?.trim())
+  )
+    throw new Error('Enter at least one file answer.');
   const render = (entry: NativePendingQuestion, answer: StructuredAnswer['answers'][number]) => {
     const selected = [...answer.selectedOptions].sort((a, b) => a - b);
     if (
@@ -174,7 +188,7 @@ export function nativeAnswerText(input: NativePendingInput, selection: Structure
       throw new Error(
         'Each written answer must be at most 4,000 characters without control characters.',
       );
-    if (!labels && !freeText) throw new Error('Invalid answer');
+    if (!input.fileEdit && !labels && !freeText) throw new Error('Invalid answer');
     if (!freeText) return labels;
     return labels ? `${labels}\n\n${freeText}` : freeText;
   };

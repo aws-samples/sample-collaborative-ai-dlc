@@ -1,5 +1,6 @@
 // Decode the current turn's workflow/question evidence for display. This data
 // never admits a writer, records a human answer, or grants workflow approval.
+import { parseQuestionFile, ordinaryFileForm, currentQuestionFile } from './question-file.js';
 import * as fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -206,7 +207,7 @@ export const readNativePendingSpec = async (
  * unanswered-question format. A successful CLI exit is never workflow success.
  * These references describe exact evidence, not an approval or signed state.
  */
-export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] }) => {
+export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [], issuedFile }) => {
   const unknown = { kind: 'stopped_needs_review', code: 'native_wait_format_unrecognized' };
   try {
     const files = new Map(snapshot.files.map((file) => [file.path, file]));
@@ -240,6 +241,10 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] })
     const questions = snapshot.files.filter(
       (file) =>
         file.role === 'question' &&
+        (!issuedFile ||
+          (file.path === issuedFile.path &&
+            stage === issuedFile.stage &&
+            (directive.unit ?? null) === issuedFile.unit)) &&
         file.path.startsWith(`${nativeIntentPath}/`) &&
         file.path.endsWith(`/${stage}/${stage}-questions.md`),
     );
@@ -247,6 +252,7 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] })
     const question = questions[0];
     if (beforeFiles.some((file) => file.path === question.path && file.sha256 === question.sha256))
       return { ...unknown, code: 'native_wait_unchanged_question' };
+    const parsed = parseQuestionFile(question.content);
     const blocks = read(question.path)
       .split(/^## Q\d+[.)][ \t]+/m)
       .slice(1);
@@ -260,6 +266,7 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] })
       // an answered question simply because its answer starts on another line.
       if (!answer[1].trim() && !block.slice(answer.index + answer[0].length).trim()) pending++;
     }
+    if (parsed) pending = parsed.blocks.filter((b) => b.pending).length;
     if (!pending) return unknown;
     return {
       kind: 'waiting_for_input',
@@ -290,8 +297,28 @@ export function nativeRequirementsForm({
   guidedQuestions,
 }) {
   if (!method?.decision && !method?.recordedRequirementsDecision) return null;
-  const { evidence } = classifyNativeFirstWait({ snapshot, harness });
-  if (evidence?.stage !== 'requirements-analysis') return null;
+  const issuedFile = method.stageFile ?? guidedQuestions?.issuedFile;
+  let { evidence } = classifyNativeFirstWait({ snapshot, harness, issuedFile });
+  if (!evidence && issuedFile) {
+    const nativeIntentPath = issuedFile.path.split('/').slice(0, 5).join('/');
+    const state = snapshot.files.find((f) => f.path === `${nativeIntentPath}/aidlc-state.md`);
+    const current =
+      state && currentQuestionFile(snapshot, { issuedFile, state: state.sha256 }, harness);
+    if (current)
+      evidence = {
+        nativeIntentPath,
+        stage: issuedFile.stage,
+        state: fileRef(state),
+        directive: { sha256: current.cursorHash },
+        questions: [fileRef(current.file)],
+      };
+  }
+  if (
+    !evidence ||
+    (!issuedFile && evidence.stage !== 'requirements-analysis') ||
+    (method.recordedStage && method.recordedStage !== evidence.stage)
+  )
+    return null;
   const auditPrefix = `${evidence.nativeIntentPath}/audit/`;
   const additions = snapshot.files.filter(
     (file) =>
@@ -326,8 +353,12 @@ export function nativeRequirementsForm({
   if (
     field('Event') !== 'DECISION_RECORDED' ||
     field('Stage') !== evidence.stage ||
-    field('Checkpoint') ||
-    field('Unit') ||
+    (field('Checkpoint') &&
+      (method.decision?.checkpoint !== 'summary-confirmation' ||
+        field('Checkpoint') !== 'Consolidated Summary Confirmation')) ||
+    (field('Unit') ?? null) !== (issuedFile?.unit ?? null) ||
+    ((method.decision?.unit ?? null) !== (field('Unit') ?? null) &&
+      !method.recordedRequirementsDecision) ||
     field('Workflow')
   )
     return null;
@@ -346,6 +377,56 @@ export function nativeRequirementsForm({
   const file = evidence.questions[0];
   const modeLabels = ['Guide me', "I'll edit the file", 'Chat'];
   let questions;
+  if (issuedFile && !decision.questionKind) {
+    const parsed = parseQuestionFile(snapshot.files.find((f) => f.path === file.path).content);
+    const labels = decision.options?.split(',').map((v) => v.trim());
+    const open = parsed?.checkpoints.filter((c) => !c.value);
+    const block = open?.length === 1 && open[0];
+    if (block && !parsed.blocks.some((b) => b.pending)) {
+      const summary =
+        block.title === 'Consolidated Summary Confirmation' &&
+        method.decision?.checkpoint === 'summary-confirmation' &&
+        field('Questions File') === file.path &&
+        method.decision.path === file.path &&
+        labels?.join(',') === 'Looks correct,Request changes';
+      const assumption =
+        block.title === 'Assumption Confirmation' &&
+        !field('Checkpoint') &&
+        evidence.stage === 'intent-capture' &&
+        labels?.join(',') === 'Accept assumptions,Convert to follow-up questions';
+      const feedback =
+        block.title === 'Requested Changes Feedback' &&
+        !field('Checkpoint') &&
+        decision.prompt === 'What should change?' &&
+        !labels;
+      if (summary || assumption || feedback) {
+        const spec = {
+          version: 2,
+          questions: [
+            {
+              prompt: block.body.includes(decision.prompt)
+                ? block.body
+                : `${block.body}\n\n${decision.prompt}`,
+              options: (labels ?? []).map((label) => ({ label })),
+            },
+          ],
+        };
+        if (buildNativePendingInput({ spec }))
+          return {
+            spec,
+            bytes: Buffer.byteLength(JSON.stringify(spec)),
+            questionFile: {
+              ...file,
+              directive: evidence.directive.sha256,
+              state: evidence.state.sha256,
+              issuedFile,
+            },
+            checkpoint: block.title,
+          };
+      }
+    }
+  }
+  if (method.decision?.checkpoint || field('Checkpoint')) return null;
   if (decision.questionKind === 'answer-mode') {
     const labels = decision.options?.split(',').map((value) => value.trim());
     if (labels?.length !== 3 || !modeLabels.every((label) => labels.includes(label))) return null;
@@ -356,8 +437,9 @@ export function nativeRequirementsForm({
           label,
           ...(label === "I'll edit the file"
             ? {
-                description:
-                  'Published files are read-only here. Choose Guide me or Chat to answer in this UI.',
+                description: issuedFile
+                  ? 'Edit the answer slots here, then tell AI-DLC when you are ready.'
+                  : 'Published files are read-only here. Choose Guide me or Chat to answer in this UI.',
               }
             : {}),
         })),
@@ -367,66 +449,59 @@ export function nativeRequirementsForm({
     if (
       decision.questionKind ||
       (method.guidedStage !== evidence.stage &&
+        method.stageFile?.mode !== 'guide' &&
         (guidedQuestions?.path !== file.path ||
           guidedQuestions.directive !== evidence.directive.sha256))
     )
       return null;
-    const content = snapshot.files.find((entry) => entry.path === file.path).content;
-    if (content.length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return null;
-    const blocks = content
-      .toString('utf8')
-      .replaceAll('\r\n', '\n')
-      .split(/^## (?=Q\d+[.)] )/m)
-      .slice(1);
-    const pending = [];
-    questions = [];
-    for (const block of blocks) {
-      const parts = block.split(/^\[Answer\]:/m);
-      if (parts.length !== 2) return null;
-      if (parts[1].trim()) continue;
-      const lines = parts[0].trim().split('\n');
-      const heading = /^Q(\d+)[.)] (.+)$/.exec(lines.shift());
-      if (!heading || /consolidated summary confirmation/i.test(heading[2])) return null;
-      const firstOption = lines.findIndex((line) => /^(?:[-*] )?[A-Z][.)] /.test(line));
-      if (firstOption < 0) return null;
-      const prompt = lines.slice(0, firstOption).join('\n').trim() || heading[2];
-      const options = [];
-      for (const line of lines.slice(firstOption).filter(Boolean)) {
-        const match = /^(?:[-*] )?[A-Z][.)] (.+)$/.exec(line);
-        if (!match) return null;
-        options.push({ label: match[1] });
-      }
-      pending.push(Number(heading[1]));
-      questions.push({
-        header: heading[2],
-        prompt,
-        options,
-        multiSelect: /\(select all that apply\)/i.test(`${heading[2]} ${prompt}`),
-      });
+    const parsed = parseQuestionFile(
+      snapshot.files.find((entry) => entry.path === file.path).content,
+    );
+    if (!parsed) return null;
+    const range = /^Q(\d+)\s*[-–]\s*Q?(\d+)$/i.exec(decision.prompt);
+    let ids =
+      range &&
+      +range[2] >= +range[1] &&
+      +range[2] - +range[1] < NATIVE_PENDING_INPUT_LIMITS.questions
+        ? Array.from({ length: +range[2] - +range[1] + 1 }, (_, i) => `Q${+range[1] + i}`)
+        : decision.prompt.split(/,\s*/);
+    if (!ids.every((id) => /^Q\d+$/.test(id))) {
+      const matching = parsed.blocks.filter(
+        (b) =>
+          b.pending &&
+          (b.question.prompt === decision.prompt || b.question.header === decision.prompt) &&
+          b.question.options.map((o) => o.label).join(',') ===
+            (decision.options ?? '').split(/,\s*/).join(','),
+      );
+      if (matching.length !== 1) return null;
+      ids = [matching[0].id];
     }
-    // No guessed subset, missing definition, summary checkpoint or answered
-    // question gets included in the batch.
-    const numbers = /^Q(\d+)\s*[-–]\s*Q?(\d+)$/i.exec(decision.prompt);
-    const names = pending.map((n) => `Q${n}`);
-    const allNamed = decision.prompt.split(/,\s*/).join(',') === names.join(',');
-    if (
-      questions.length !== evidence.pendingQuestions ||
-      !(
-        allNamed ||
-        (numbers &&
-          +numbers[1] === pending[0] &&
-          +numbers[2] === pending.at(-1) &&
-          pending.every((n, i) => n === pending[0] + i))
-      )
-    )
-      return null;
+    const form = ordinaryFileForm(parsed, ids);
+    if (!form) return null;
+    questions = form.spec.questions;
+    if (issuedFile)
+      return {
+        ...form,
+        questionFile: {
+          ...file,
+          directive: evidence.directive.sha256,
+          state: evidence.state.sha256,
+          issuedFile,
+        },
+        fileStep: 'guide',
+        decision: decision.prompt,
+      };
   }
   const spec = { version: 2, questions };
   return buildNativePendingInput({ spec })
     ? {
         spec,
         bytes: Buffer.byteLength(JSON.stringify(spec)),
-        questionFile: { ...file, directive: evidence.directive.sha256 },
+        questionFile: {
+          ...file,
+          directive: evidence.directive.sha256,
+          ...(issuedFile ? { state: evidence.state.sha256, issuedFile } : {}),
+        },
         answerMode: decision.questionKind === 'answer-mode',
       }
     : null;

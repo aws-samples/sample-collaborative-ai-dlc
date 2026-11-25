@@ -379,6 +379,9 @@ export function NativeInteractionPanel({
       {!showQuestionForm && response}
       {showQuestionForm ? (
         <section aria-label="Answer AI-DLC" className="space-y-2">
+          {reply.structured?.fileEdit && (
+            <p>Save the answers you have. Blank slots stay open until you finish the file.</p>
+          )}
           {reply.answerEditor ? (
             <QuestionEditor
               key={reply.answerEditor.question.id}
@@ -387,6 +390,7 @@ export function NativeInteractionPanel({
               userName={reply.answerEditor.userName}
               disabled={!['idle', 'uncertain'].includes(reply.state) || !reply.awaitingReply}
               discussable={false}
+              fileEdit={reply.structured?.fileEdit}
               validateAnswer={(selection) => nativeFormError(reply.structured!, selection)}
               onAnswer={async (selection) => {
                 const outcome = await reply.submit(selection);

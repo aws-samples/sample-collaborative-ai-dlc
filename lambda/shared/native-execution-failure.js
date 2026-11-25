@@ -13,6 +13,7 @@ export const NATIVE_RUNTIME_FAILURE_CODES = Object.freeze([
   'native_execution_owner_invalid',
   'native_execution_local_record_unavailable',
   'native_execution_reply_conflict',
+  'native_execution_file_answer_conflict',
   'native_execution_reply_admission_unconfirmed',
   'native_execution_interaction_unconfirmed',
   'native_execution_recovery_unconfirmed',

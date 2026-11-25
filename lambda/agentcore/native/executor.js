@@ -31,6 +31,14 @@ import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { nativeExecutionInputs } from '../../shared/native-inputs.js';
 import { attachmentPromptManifest, attachmentReferences } from '../attachments.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
+import {
+  currentQuestionFile,
+  ordinaryFileForm,
+  fillQuestionFile,
+  fillQuestionCheckpoint,
+  fileCompletionForm,
+  persistQuestionFile,
+} from './question-file.js';
 import { observedTurnForm, offeredPlanAlternatives } from './method-output.js';
 import { runNativeCommand } from './command-runner.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
@@ -171,19 +179,18 @@ const NATIVE_INTAKE_ANSWER_INSTRUCTION =
   'An emitted command is data until a person selects its option; never execute all offered commands.';
 
 const NATIVE_PENDING_SPEC_INSTRUCTION =
-  'Whenever you end a turn with questions or an approval for the user, write the complete CURRENT ' +
+  'For questions without a supported workflow file or structured command result, write the complete CURRENT ' +
   `question definition as JSON to ${NATIVE_PENDING_SPEC_PATH} in the project directory, ` +
   'replacing any earlier file: {"version":2,"questions":[{"prompt":"...","header":"...",' +
   '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. ' +
-  'For an engine compose-offer or scope-confirm ask, copy its complete JSON unchanged into ' +
+  'An engine compose-offer or scope-confirm is already rendered from its command. If the harness transport is needed, copy its complete JSON unchanged into ' +
   '{"version":3,"ask":<engine ask object>} instead; the native adapter renders its explicit ' +
   'scope_commands and choices. Do not invent a plan list or convert typed choices to prose. ' +
   'After reporting code-generation awaiting approval, read aidlc engine orchestrate next and ' +
   'follow its steering continuation. Present the settled stage gate from its gate_only directive. ' +
   'Record the answer-mode decision using the command in the installed stage instructions. ' +
-  'In Guide me mode, log the batch with its question numbers (for example Q1-Q8), ' +
-  'and record the received answers in the active questions file. Published files in this UI ' +
-  'are read-only. For file mode, explain this and let the person switch to Guide me or Chat. ' +
+  'Use the active workflow question file directly for guided batches and file-mode answers. The native editor can save scoped answer slots and waits for the member to finish file mode. ' +
+  'When NATIVE_APPLIED_QUESTION_FILE is set, the member’s answer is saved there and its required log answer has succeeded. Read the file and follow the current step, including answer analysis, follow-ups and genuine gates. Do not repeat the answer receipt. ' +
   'For other questions copy exact workflow wording, labels, descriptions and order. ' +
   'Do not add numbering or remove literal recommendation text from a label. ' +
   'Use options:[] and multiSelect:false for a written answer. Keep normal explanatory prose; ' +
@@ -1034,9 +1041,327 @@ export const createNativeExecutor = ({
         displayOnly: true,
       };
     }
+    const session = turn.session;
+    const binding = continuing ? session.questionFile : null;
+    if (
+      continuing &&
+      session.planApprovalWorkspace &&
+      session.planApprovalWorkspace !== snapshotIdentity(baseline.files)
+    )
+      fail('native_execution_reply_conflict');
+    const selected = payload.selection?.answers[0];
+    const modeLabel =
+      session?.answerMode && selected?.selectedOptions.length === 1 && !selected.freeText
+        ? session.pendingInput.questions[0].options[choice]?.label
+        : null;
+    const fileMode =
+      modeLabel === 'Guide me' ? 'guide' : modeLabel === "I'll edit the file" ? 'file' : null;
+    const assertWriter = async () => {
+      await checkDirectories(owner);
+      if (assertActive)
+        await assertActive({
+          identity: owner.identity,
+          writerGeneration: owner.writerGeneration,
+          signal,
+        });
+      checkCancelled(turn);
+    };
+    const method = async (args, stdin) => {
+      await assertWriter();
+      const result = await run(
+        turn,
+        {
+          command: join(root, 'machine/bin/aidlc'),
+          args: ['engine', ...args],
+          ...(stdin ? { stdin } : {}),
+        },
+        baseEnv,
+      );
+      return result.stdout;
+    };
+    const questionScope = (source) => [
+      '--stage',
+      source.stage,
+      ...(source.unit ? ['--unit', source.unit] : []),
+    ];
+    const recordBatch = async (source, form) => {
+      const batch = JSON.parse(
+        await method([
+          'log',
+          'decision',
+          ...questionScope(source),
+          '--decision',
+          form.ids.join(', '),
+          '--options',
+          form.spec.questions.flatMap((q) => q.options.map((o) => o.label)).join(', '),
+        ]),
+      );
+      if (batch.emitted !== 'DECISION_RECORDED' || batch.stage !== source.stage)
+        fail('native_execution_reply_conflict');
+    };
+    const recordHumanTurn = () =>
+      method(
+        ['hook', 'record-human-turn'],
+        JSON.stringify({
+          cwd: project,
+          hook_event_name: 'UserPromptSubmit',
+          session_id: session.nativeSessionId,
+          prompt: payload.text,
+        }),
+      );
+    const recordAnswer = async (source, details, checkpoint) => {
+      await recordHumanTurn();
+      const summary = checkpoint === 'Consolidated Summary Confirmation';
+      const result = JSON.parse(
+        await method([
+          'log',
+          'answer',
+          ...questionScope(source),
+          ...(summary
+            ? ['--checkpoint', 'summary-confirmation', '--questions-file', source.path]
+            : []),
+          '--details',
+          details,
+        ]),
+      );
+      if (
+        result.emitted !== (summary ? 'SUMMARY_CONFIRMATION_RECORDED' : 'QUESTION_ANSWERED') ||
+        result.stage !== source.stage
+      )
+        fail('native_execution_file_answer_conflict');
+    };
+    const openSavedBatch = async (receipt) => {
+      const ledger = JSON.parse(await method(['log', 'answers', ...questionScope(receipt.source)]));
+      return (
+        ledger.stage === receipt.source.stage &&
+        ledger.open?.length === 1 &&
+        ledger.open[0].question === receipt.decision &&
+        (ledger.open[0].unit ?? null) === receipt.source.unit &&
+        !ledger.open[0].workflow &&
+        ledger.ambiguous?.length === 0
+      );
+    };
+    let appliedFile = null,
+      recoveredFile = null;
+    const directCheckpoint =
+      session?.checkpoint &&
+      selected &&
+      (selected.selectedOptions.length || session.checkpoint === 'Requested Changes Feedback');
+    if (
+      binding?.issuedFile &&
+      (fileMode || (session.fileStep && payload.selection) || directCheckpoint)
+    ) {
+      const nativeSessionId = session.nativeSessionId;
+      const current = currentQuestionFile(baseline, binding, configuration.harness);
+      const display = async (message, requirements = null) => {
+        const files = await snapshotWorkspace('final');
+        const completed = { messages: [{ type: 'text', text: message }] };
+        if (requirements) {
+          const next = currentQuestionFile(files, binding, configuration.harness);
+          if (!next || next.file.sha256 !== requirements.questionFile.sha256)
+            fail('native_execution_reply_conflict');
+          requirements.questionFile.directive = next.cursorHash;
+        }
+        const form = decodeNativeTurnInteraction({
+          interactionContract: pkg.interactionContract,
+          snapshot: files,
+          rendered: requirements ?? { spec: null, reason: 'stale_spec', bytes: 0 },
+          messages: completed.messages,
+          forbiddenBytes,
+          onDiagnostic: (d) => timing(turn, 'questionPresentation', d),
+        });
+        if (requirements?.fileStep === 'file' && form.pendingInput)
+          form.pendingInput.fileEdit = true;
+        const outcome = classifyNativeFirstWait({
+          snapshot: files,
+          harness: configuration.harness,
+          issuedFile: binding.issuedFile,
+        });
+        await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
+        return {
+          ...form,
+          files,
+          completed,
+          nativeSessionId,
+          outcome,
+          requirements,
+          displayOnly: true,
+        };
+      };
+      const changed = () =>
+        display(
+          'The published questions changed before these answers could be applied. Your reply is saved. Review the current published file and ask AI-DLC to show the remaining questions.',
+        );
+      if (
+        binding.workspaceSha256 !== snapshotIdentity(baseline.files) ||
+        !current ||
+        current.cursorHash !== binding.directive ||
+        current.file.sha256 !== binding.sha256 ||
+        !current.parsed
+      )
+        return changed();
+      const form = ordinaryFileForm(current.parsed, fileMode ? null : session.fileQuestionIds);
+      if (!form && !directCheckpoint)
+        return display(
+          'The current file contains a different or unsupported question layout. Your reply is retained. Open the published file and ask AI-DLC to present the current step.',
+        );
+      if (fileMode) {
+        await recordAnswer(binding.issuedFile, modeLabel);
+        if (fileMode === 'guide') await recordBatch(binding.issuedFile, form);
+        return display(
+          fileMode === 'guide'
+            ? 'Answer the questions below. Use Other to answer in your own words.'
+            : `Edit the answer slots in ${binding.path}.`,
+          { ...form, fileStep: fileMode, questionFile: { ...binding } },
+        );
+      }
+      const edit = session.fileStep === 'file';
+      const result = directCheckpoint
+        ? fillQuestionCheckpoint(current.parsed, session.checkpoint, selected)
+        : fillQuestionFile(current.parsed, session.fileQuestionIds, payload.selection, edit);
+      if (!result)
+        return display(
+          'Your reply was saved, but its answer slots could not be applied. Use Other with a written answer. Keep literal workflow question headings and answer markers outside your answer. Review the current file and ask to reopen the questions.',
+        );
+      if (forbiddenBytes.some((secret) => secret && result.bytes.includes(Buffer.from(secret))))
+        fail('native_execution_output_credential');
+      // This receipt records the write intent before the atomic rename, including
+      // the exact accepted reply and original publication. Recovery only compares.
+      const receipt = {
+        identity: owner.identity,
+        writerGeneration: owner.writerGeneration,
+        requestId: payload.requestId,
+        sequence: payload.sequence,
+        priorInteractionId: payload.priorInteractionId,
+        priorPublicationId: payload.priorPublicationId,
+        path: binding.path,
+        before: binding.sha256,
+        after: result.sha256,
+        bytes: result.bytes.length,
+        source: binding.issuedFile,
+        state: binding.state,
+        fileEdit: edit,
+        ...(session.fileStep === 'guide'
+          ? {
+              decision: session.fileDecision ?? session.fileQuestionIds.join(', '),
+              details: result.details,
+            }
+          : {}),
+      };
+      await writeJson(
+        owner,
+        join(owner.directory, `file-answer-${payload.sequence}.json`),
+        receipt,
+      );
+      timing(turn, 'fileAnswerStarted');
+      try {
+        await persistQuestionFile(project, binding, result, assertWriter);
+      } catch (error) {
+        if (error.code === 'native_execution_reply_conflict') return changed();
+        throw error;
+      }
+      timing(turn, 'fileAnswerPersisted');
+      appliedFile = { ...binding, sha256: result.sha256, bytes: result.bytes.length };
+      if (edit) {
+        const saved = await snapshotWorkspace('baseline');
+        const now = currentQuestionFile(saved, binding, configuration.harness);
+        if (!now || now.file.sha256 !== result.sha256) return changed();
+        const remaining = ordinaryFileForm(now.parsed);
+        if (remaining)
+          return display(
+            'Your edits are saved in the question file. Complete the remaining slots.',
+            { ...remaining, fileStep: 'file', questionFile: { ...binding, sha256: result.sha256 } },
+          );
+        const ready = fileCompletionForm({ ...binding, sha256: result.sha256 });
+        return display(ready.spec.questions[0].prompt, ready);
+      }
+      await recordAnswer(binding.issuedFile, result.details, session.checkpoint);
+    }
+    if (
+      continuing &&
+      (session.fileReady || (session.checkpoint && !directCheckpoint)) &&
+      binding?.issuedFile
+    ) {
+      const current = currentQuestionFile(baseline, binding, configuration.harness);
+      if (
+        binding.workspaceSha256 !== snapshotIdentity(baseline.files) ||
+        current?.file.sha256 !== binding.sha256 ||
+        current.cursorHash !== binding.directive
+      )
+        fail('native_execution_file_answer_conflict');
+    }
+    if (payload.command === 'native-resume') {
+      const directory = directoryForGeneration(owner.writerGeneration - 1);
+      const status = await readLocalRecord(join(directory, 'status.json'));
+      if (
+        status.status !== 'publication_ready' &&
+        status.requestId &&
+        sameIdentity(status, owner.identity) &&
+        status.writerGeneration === owner.writerGeneration - 1
+      ) {
+        let receipt;
+        try {
+          receipt = await readLocalRecord(join(directory, `file-answer-${status.sequence}.json`));
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        if (receipt) {
+          const admission = await readLocalRecord(
+            join(directory, `request-${status.requestId}.json`),
+          );
+          const saved = baseline.files.find(
+            (f) => f.path === receipt.path && f.role === 'question',
+          );
+          if (
+            !sameIdentity(receipt.identity, owner.identity) ||
+            receipt.writerGeneration !== status.writerGeneration ||
+            receipt.sequence !== status.sequence ||
+            receipt.requestId !== status.requestId ||
+            admission.ack?.requestId !== receipt.requestId ||
+            status.priorInteractionId !== receipt.priorInteractionId ||
+            status.priorPublicationId !== receipt.priorPublicationId ||
+            !saved ||
+            !Number.isSafeInteger(receipt.bytes) ||
+            receipt.bytes < 1 ||
+            saved.sha256 !== receipt.after ||
+            saved.content.length !== receipt.bytes
+          )
+            fail('native_execution_file_answer_conflict');
+          if (
+            (receipt.decision || receipt.fileEdit) &&
+            currentQuestionFile(
+              baseline,
+              { issuedFile: receipt.source, state: receipt.state },
+              configuration.harness,
+            )
+          )
+            recoveredFile = receipt;
+          timing(turn, 'fileAnswerReconciled');
+        }
+      }
+    }
+    if (
+      continuing &&
+      session.savedBatch &&
+      selected?.selectedOptions.length === 1 &&
+      choice === 0 &&
+      !selected.freeText
+    ) {
+      const receipt = session.savedBatch;
+      if (
+        snapshotIdentity(baseline.files) !== binding.workspaceSha256 ||
+        !(await openSavedBatch(receipt))
+      )
+        fail('native_execution_file_answer_conflict');
+      await recordAnswer(receipt.source, receipt.details);
+      appliedFile = { path: receipt.path, sha256: receipt.after, bytes: receipt.bytes };
+    }
     const modelEnv = {
       ...auth,
       ...baseEnv,
+      ...(appliedFile
+        ? { NATIVE_APPLIED_QUESTION_FILE: appliedFile.path, AIDLC_UNATTENDED: '1' }
+        : {}),
       ...(plan && choice !== undefined
         ? {
             NATIVE_SELECTED_PLAN_LABEL:
@@ -1057,6 +1382,11 @@ export const createNativeExecutor = ({
       home: owner.home,
       instructions: [
         nativeTransportInstructions(configuration),
+        ...(recoveredFile?.fileEdit
+          ? [
+              'The member saved file edits before the session stopped. Use the normal resume entrypoint. Stop at the remaining slots or ask for the file-mode completion signal. The fresh-session request does not supply that signal.',
+            ]
+          : []),
         attachmentPromptManifest(attachmentReferences(configuration.inputs.attachments)),
       ]
         .filter(Boolean)
@@ -1130,18 +1460,22 @@ export const createNativeExecutor = ({
       onDiagnostic: formDiagnostic,
     });
     timing(turn, 'workspaceSnapshotStarted');
-    const files = await snapshotWorkspace('final');
+    let files = await snapshotWorkspace('final');
     timing(turn, 'workspaceSnapshotCompleted', {
       files: files.files.length,
       bytes: files.totalBytes,
     });
-    const session = turn.session;
+    if (appliedFile && !directCheckpoint) {
+      const current = files.files.find((f) => f.path === appliedFile.path && f.role === 'question');
+      if (!current || digest(current.content.subarray(0, appliedFile.bytes)) !== appliedFile.sha256)
+        fail('native_execution_file_answer_conflict');
+    }
     const guidedQuestions = session?.answerMode
       ? session.pendingInput.questions[0].options[choice]?.label === 'Guide me'
         ? session.questionFile
         : null
       : session?.guidedQuestions;
-    const requirements =
+    let requirements =
       pkg.interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT &&
       nativeRequirementsForm({
         snapshot: files,
@@ -1150,7 +1484,107 @@ export const createNativeExecutor = ({
         method: completed.method,
         guidedQuestions,
       });
+    if (
+      recoveredFile?.decision &&
+      completed.method?.printed &&
+      !requirements &&
+      !rendered.spec &&
+      files.files.find((f) => f.path === recoveredFile.path)?.sha256 === recoveredFile.after &&
+      files.files.find(
+        (f) => f.path === recoveredFile.path.split('/').slice(0, 5).join('/') + '/aidlc-state.md',
+      )?.sha256 === recoveredFile.state &&
+      (await openSavedBatch(recoveredFile))
+    ) {
+      const prompt = `Your answers are saved in ${recoveredFile.path}. AI-DLC still has this batch open. Use the saved answers to record the batch and continue, or discuss them first.`;
+      const spec = {
+        version: 2,
+        questions: [
+          { prompt, options: [{ label: 'Use my saved answers' }, { label: 'Discuss my answers' }] },
+        ],
+      };
+      requirements = {
+        spec,
+        bytes: Buffer.byteLength(JSON.stringify(spec)),
+        savedBatch: recoveredFile,
+        questionFile: { path: recoveredFile.path },
+      };
+    }
+    // On a resumed stage the installed directive explicitly names the kept
+    // questions and the earlier recorded mode. The member need not choose it
+    // again. A later ask, rejected command or recovery instruction wins.
+    const issuedFile = completed.method?.stageFile;
+    if (recoveredFile?.fileEdit) {
+      const binding = {
+        issuedFile: recoveredFile.source,
+        state: recoveredFile.state,
+        path: recoveredFile.path,
+        sha256: recoveredFile.after,
+      };
+      const current = currentQuestionFile(files, binding, configuration.harness);
+      if (current?.file.sha256 !== binding.sha256 || !current.parsed)
+        fail('native_execution_file_answer_conflict');
+      if (issuedFile?.path === binding.path && issuedFile.mode === 'file' && !requirements) {
+        binding.directive = current.cursorHash;
+        const remaining = ordinaryFileForm(current.parsed);
+        if (remaining) requirements = { ...remaining, fileStep: 'file', questionFile: binding };
+        else if (
+          !current.parsed.blocks.some((b) => b.pending) &&
+          !current.parsed.checkpoints.some((c) => !c.value)
+        )
+          requirements = fileCompletionForm(binding);
+      }
+    }
+    if (
+      !requirements &&
+      !rendered.spec &&
+      completed.method?.advanced &&
+      issuedFile &&
+      ['file', 'guide'].includes(issuedFile.mode)
+    ) {
+      const { evidence } = classifyNativeFirstWait({
+        snapshot: files,
+        harness: configuration.harness,
+        issuedFile,
+      });
+      if (evidence) {
+        const questionFile = {
+          ...evidence.questions[0],
+          state: evidence.state.sha256,
+          directive: evidence.directive.sha256,
+          issuedFile,
+        };
+        const current = currentQuestionFile(files, questionFile, configuration.harness);
+        const form = ordinaryFileForm(current?.parsed);
+        if (form) {
+          let canPresent = true;
+          if (issuedFile.mode === 'guide') {
+            const ledger = JSON.parse(
+              await method(['log', 'answers', ...questionScope(issuedFile)]),
+            );
+            canPresent =
+              ledger.stage === issuedFile.stage &&
+              ledger.ambiguous?.length === 0 &&
+              (ledger.open?.length === 0 ||
+                (ledger.open?.length === 1 &&
+                  ledger.open[0].question === form.ids.join(', ') &&
+                  (ledger.open[0].unit ?? null) === issuedFile.unit &&
+                  !ledger.open[0].workflow));
+            if (canPresent && !ledger.open.length) {
+              await recordBatch(issuedFile, form);
+              files = await snapshotWorkspace('final');
+              const checked = currentQuestionFile(files, questionFile, configuration.harness);
+              if (checked?.file.sha256 !== questionFile.sha256)
+                fail('native_execution_reply_conflict');
+              questionFile.directive = checked.cursorHash;
+            }
+          }
+          if (canPresent) requirements = { ...form, questionFile, fileStep: issuedFile.mode };
+        }
+      }
+    }
     const currentForm = requirements || observedTurnForm(completed, rendered, plan, null, files);
+    if (currentForm === completed.method?.planApproval)
+      requirements = { planApprovalWorkspace: snapshotIdentity(files.files) };
     const { pendingInput, presentation } = decodeNativeTurnInteraction({
       interactionContract: pkg.interactionContract,
       snapshot: files,
@@ -1162,6 +1596,7 @@ export const createNativeExecutor = ({
         formDiagnostic(diagnostic);
       },
     });
+    if (requirements?.fileStep === 'file' && pendingInput) pendingInput.fileEdit = true;
     const nativeSessionId = completed.nativeSessionId;
     let outcome = classifyNativeFirstWait({
       snapshot: files,
@@ -1308,8 +1743,17 @@ export const createNativeExecutor = ({
     const continuation = {
       pendingInput,
       answerMode: requirements?.answerMode,
-      questionFile: requirements?.questionFile,
+      questionFile: requirements?.questionFile
+        ? { ...requirements.questionFile, workspaceSha256: snapshotIdentity(files.files) }
+        : null,
       guidedQuestions: requirements && !requirements.answerMode ? requirements.questionFile : null,
+      fileStep: requirements?.fileStep,
+      fileQuestionIds: requirements?.ids,
+      fileDecision: requirements?.decision,
+      savedBatch: requirements?.savedBatch,
+      planApprovalWorkspace: requirements?.planApprovalWorkspace,
+      fileReady: requirements?.fileReady,
+      checkpoint: requirements?.checkpoint,
       planAlternatives: planAlternatives
         ? { ...planAlternatives, workspaceSha256: snapshotIdentity(files.files) }
         : null,

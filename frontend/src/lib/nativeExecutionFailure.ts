@@ -1,5 +1,7 @@
 export function nativeExecutionFailureMessage(code: string | undefined): string {
   switch (code) {
+    case 'native_execution_file_answer_conflict':
+      return 'Your reply was accepted, but its saved answer slots could not be verified in the current workflow file. Review the published file and the retained reply before continuing.';
     case 'native_execution_question_spec_unsafe':
       return 'The question file failed a filesystem safety check. Previously admitted work is retained.';
     case 'native_execution_question_spec_invalid':

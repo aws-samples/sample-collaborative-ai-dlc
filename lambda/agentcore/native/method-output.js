@@ -4,6 +4,7 @@ import {
   buildNativePendingInput,
   NATIVE_PENDING_INPUT_LIMITS,
 } from '../../shared/native-pending-input.js';
+import { issuedQuestionFile } from './question-file.js';
 import { nativeGateFromSnapshot } from './turn-interaction.js';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -70,19 +71,31 @@ function methodCommand(text) {
     const flags = new Map();
     for (let i = 4; i < words.length; i += 2) {
       if (
-        !['--stage', '--decision', '--options', '--question-kind'].includes(words[i]) ||
+        ![
+          '--stage',
+          '--decision',
+          '--options',
+          '--question-kind',
+          '--unit',
+          '--checkpoint',
+          '--questions-file',
+        ].includes(words[i]) ||
         !words[i + 1] ||
         flags.has(words[i])
       )
         return 'uncertain';
       flags.set(words[i], words[i + 1]);
     }
-    if (flags.get('--stage') === 'requirements-analysis' && flags.has('--decision'))
+    if (/^[a-z][a-z0-9-]*$/.test(flags.get('--stage') ?? '') && flags.has('--decision'))
       return {
         stage: flags.get('--stage'),
         prompt: flags.get('--decision'),
         options: flags.get('--options'),
         questionKind: flags.get('--question-kind'),
+        ...(flags.has('--unit') ? { unit: flags.get('--unit') } : {}),
+        ...(flags.has('--checkpoint')
+          ? { checkpoint: flags.get('--checkpoint'), path: flags.get('--questions-file') }
+          : {}),
       };
   }
   // This particular utility reads the description, even if no intent exists yet.
@@ -96,13 +109,59 @@ function methodCommand(text) {
       subject === 'log' &&
       operation === 'answers' &&
       words[4] === '--stage' &&
-      words[5] === 'requirements-analysis') ||
+      /^[a-z][a-z0-9-]*$/.test(words[5])) ||
     (words.length === 2 && group === '--version')
   )
     return null;
   return group === 'next' || (group === 'engine' && subject === 'orchestrate')
     ? 'directive'
     : 'uncertain';
+}
+
+// The conductor publishes plan targets and their summaries with this ask.
+// Answering it stays with the engine's protected Plan Approval command.
+function planApprovalForm(ask) {
+  const plan = ask.plan_approval;
+  if (
+    ask.ask_type !== 'plan-approval' ||
+    ask.stage !== 'code-generation' ||
+    ask.response_route !== 'next' ||
+    !plan ||
+    typeof plan.editing !== 'boolean' ||
+    typeof ask.question !== 'string' ||
+    !Array.isArray(plan.targets) ||
+    !plan.targets.length ||
+    plan.targets.length > 32 ||
+    !Array.isArray(plan.choices) ||
+    plan.choices.length !== 3 ||
+    (ask.choices !== undefined &&
+      (!Array.isArray(ask.choices) ||
+        ask.choices.length !== plan.choices.length ||
+        ask.choices.some((c, i) => c.label !== plan.choices[i]))) ||
+    !plan.targets.every(
+      (t) =>
+        t &&
+        (t.unit === null || (typeof t.unit === 'string' && /^[\w][\w.-]*$/.test(t.unit))) &&
+        typeof t.plan_path === 'string' &&
+        Array.isArray(t.summary) &&
+        t.summary.every((l) => typeof l === 'string'),
+    )
+  )
+    return null;
+  const prompt = [
+    plan.note,
+    ask.question,
+    ...plan.targets.map((t) => [t.plan_path, ...t.summary.map((l) => `- ${l}`)].join('\n')),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const spec = {
+    version: 2,
+    questions: [{ prompt, options: plan.editing ? [] : plan.choices.map((label) => ({ label })) }],
+  };
+  return buildNativePendingInput({ spec })
+    ? { spec, bytes: Buffer.byteLength(JSON.stringify(spec)), targets: plan.targets }
+    : null;
 }
 
 const stale = { spec: null, bytes: 0, reason: 'stale_spec' };
@@ -118,10 +177,10 @@ function methodResult(command, output, ok) {
     if (
       ok &&
       directive?.emitted === 'DECISION_RECORDED' &&
-      directive.stage === 'requirements-analysis' &&
+      typeof directive.stage === 'string' &&
       command === 'opaque'
     )
-      return { recordedRequirementsDecision: true };
+      return { recordedRequirementsDecision: true, recordedStage: directive.stage };
     if (typeof command === 'object')
       return ok && directive?.emitted === 'DECISION_RECORDED' && directive.stage === command.stage
         ? { decision: command }
@@ -136,6 +195,8 @@ function methodResult(command, output, ok) {
       return { rejection: directive.message };
     if (!ok || typeof directive?.kind !== 'string') return unknown;
     if (directive.kind === 'ask') {
+      const planApproval = planApprovalForm(directive);
+      if (planApproval) return { otherAsk: true, planApproval };
       const spec = { version: 3, ask: directive };
       return buildNativePendingInput({ spec })
         ? { spec, bytes: Buffer.byteLength(output) }
@@ -148,15 +209,19 @@ function methodResult(command, output, ok) {
       /^Workflow complete\b/i.test(directive.reason)
     )
       return { terminal: 'complete' };
-    if (
-      directive.kind === 'run-stage' &&
-      directive.stage === 'requirements-analysis' &&
-      !directive.gate_only &&
-      directive.answer_mode?.ask === false &&
-      directive.answer_mode.mode === 'guide'
-    )
-      return { advanced: true, guidedStage: directive.stage };
-    return { advanced: true };
+    if (directive.kind === 'run-stage') {
+      const file = issuedQuestionFile(directive);
+      return {
+        advanced: true,
+        ...(file ? { stageFile: file } : {}),
+        ...(!directive.gate_only &&
+        directive.answer_mode?.ask === false &&
+        directive.answer_mode.mode === 'guide'
+          ? { guidedStage: directive.stage }
+          : {}),
+      };
+    }
+    return { advanced: true, ...(directive.kind === 'print' ? { printed: true } : {}) };
   } catch {
     return unknown;
   }
@@ -165,6 +230,7 @@ function methodResult(command, output, ok) {
 export function observeNativeMethodOutput(harness) {
   let latest = null;
   let guidedStage = null;
+  let stageFile = null;
   let offerLabels = null;
   const pending = new Map();
   let overflow = false;
@@ -189,9 +255,18 @@ export function observeNativeMethodOutput(harness) {
     // An indirect shell has no attributable method stdout. Preserve the
     // independent, turn-cleared display transport when there was no earlier
     // observation. It cannot recover a prior ask or synthesize alternatives.
-    if ((started ?? command) === 'opaque' && !pending.size && (!latest || latest.unattributed)) {
+    if (
+      (started ?? command) === 'opaque' &&
+      !pending.size &&
+      (!latest || latest.unattributed || stageFile)
+    ) {
       const result = methodResult('opaque', output, ok);
-      latest = result.recordedRequirementsDecision ? result : { unattributed: true };
+      latest = result.recordedRequirementsDecision
+        ? { ...result, ...(stageFile?.stage === result.recordedStage ? { stageFile } : {}) }
+        : latest && !latest.unattributed
+          ? unknown
+          : { unattributed: true };
+      if (latest.uncertain) stageFile = null;
       return;
     }
     latest = methodResult(
@@ -201,6 +276,20 @@ export function observeNativeMethodOutput(harness) {
       output,
       ok,
     );
+    if (
+      latest.uncertain ||
+      latest.advanced ||
+      latest.otherAsk ||
+      latest.spec ||
+      latest.terminal ||
+      latest.rejection
+    )
+      stageFile = latest.stageFile ?? null;
+    if (
+      stageFile &&
+      (latest.decision?.stage === stageFile.stage || latest.recordedStage === stageFile.stage)
+    )
+      latest.stageFile = stageFile;
     if (latest.decision && latest.decision.stage === guidedStage) latest.guidedStage = guidedStage;
     guidedStage = latest.guidedStage ?? null;
     if (latest.spec) {
@@ -343,6 +432,42 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
   )
     return stale;
   if (method?.spec) return method;
+  if (method?.planApproval && created) {
+    const intents = `aidlc/spaces/${space}/intents`;
+    const intent = snapshot.files
+      .find((f) => f.path === `${intents}/active-intent`)
+      ?.content.toString()
+      .trim();
+    const marker = snapshot.files.find(
+      (f) => f.path === `${intents}/${intent}/.aidlc-engine/active-directive.json`,
+    );
+    try {
+      const cursor = JSON.parse(marker.content);
+      const targets = method.planApproval.targets;
+      const units = targets.map((t) => t.unit).filter((unit) => unit !== null);
+      const root = `${intents}/${intent}/construction`;
+      const paths = new Set(snapshot.files.map((file) => file.path));
+      if (
+        cursor.version === 2 &&
+        cursor.kind === 'ask' &&
+        cursor.ask_type === 'plan-approval' &&
+        cursor.stage === 'code-generation' &&
+        isDeepStrictEqual(cursor.units ?? (cursor.unit ? [cursor.unit] : []), units) &&
+        targets.every((target) => {
+          const dir = [root, target.unit, 'code-generation'].filter(Boolean).join('/');
+          return [
+            [target.plan_path, 'code-generation-plan.md'],
+            [target.instructions_path, 'unit-test-instructions.md'],
+            [target.questions_path, 'code-generation-questions.md'],
+          ].every(([path, name]) => path === `${dir}/${name}` && paths.has(path));
+        })
+      )
+        return method.planApproval;
+    } catch {
+      /* no current method binding */
+    }
+    return stale;
+  }
   if (
     method?.decision &&
     !method.decision.questionKind &&

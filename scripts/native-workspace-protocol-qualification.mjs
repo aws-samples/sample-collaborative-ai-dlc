@@ -3,6 +3,8 @@
 // transitions, review files and approval receipts are real.
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { randomInt, randomUUID, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runNativeCommand } from '../lambda/agentcore/native/command-runner.js';
@@ -25,8 +27,6 @@ import {
   buildNativePendingInput,
   nativeAnswerText,
 } from '../lambda/shared/native-pending-input.js';
-
-const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const requirements =
   '# Counter requirements\n\n## Behavior\nFR-1: Increment an integer counter by one.\n\n' +
@@ -156,7 +156,15 @@ async function qualifyCompetingHistory({
     revokedReadCode: denied.code,
   };
 }
-async function qualifyLocalMember({ harness, driver, provider, project, terminalResult }) {
+async function qualifyLocalMember({
+  harness,
+  driver,
+  provider,
+  project,
+  terminalResult,
+  fileEdit,
+  fileFault,
+}) {
   const gameRequirements =
     '# Catch game requirements\n\nMove the target in depth when the player scores.\n';
   const gameQuestions = await fs.readFile(
@@ -176,7 +184,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
       turn: ++turns,
       script,
       mode: options.interrupt ? 'interrupt' : 'normal',
-      ...(options.selection ? { expectedAnswer: prompt } : {}),
+      ...(options.selection && !options.fileAnswers ? { expectedAnswer: prompt } : {}),
       ...(turns === 1 ? { inputReads: driver.inputReads } : {}),
     });
     try {
@@ -295,32 +303,67 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     assert.equal(logged.emitted, 'DECISION_RECORDED');
     return 'How would you like to answer the questions?';
   }
-  let filledQuestions;
-  function* guide() {
-    const answer = yield* runDirective(
-      'aidlc engine log answer --stage requirements-analysis --details "Guide me"',
-    );
-    assert.equal(answer.emitted, 'QUESTION_ANSWERED');
-    yield* runDirective('aidlc engine log decision --stage requirements-analysis --decision Q1-Q8');
-    return 'Please answer the eight questions.';
-  }
-  function* recordAnswers(text, answers) {
-    const logged = yield* runDirective(
-      `aidlc engine log answer --stage requirements-analysis --details ${shellQuote(text)}`,
-    );
-    assert.equal(logged.emitted, 'QUESTION_ANSWERED');
-    let i = 0;
-    filledQuestions = gameQuestions.replaceAll('[Answer]:', () => `[Answer]: ${answers[i++]}`);
-    yield { filePath: join(project, stage.produces[1]), content: filledQuestions };
-    assert.equal(i, 8);
+  let filledQuestions, resumeMessage;
+  const unexpectedGuideCall = {
+    next() {
+      throw Error('A provider was called for existing file questions');
+    },
+  };
+  function* consumeAnswers(recovered = false) {
+    // The observer reads before yielding ANY tool. The provider has no answer
+    // vector and no action in this script can write the questionnaire.
+    filledQuestions = readFileSync(join(project, stage.produces[1]), 'utf8');
+    const slots = filledQuestions
+      .split(/^## Q\d+[.)]/m)
+      .slice(1)
+      .map((section) => section.split(/^\[Answer\]: /m)[1]?.trimEnd());
+    assert.equal(slots.length, 8);
+    assert.ok(slots.every(Boolean), 'production applied every slot before model invocation');
+    assert.equal(stage.ceremony.summary_confirmation, 'off');
+    let kept = yield* runDirective(recovered ? `${nextCommand} --resume` : nextCommand);
+    if (kept.kind === 'load-steering') kept = yield* runDirective(kept.next);
+    if (recovered)
+      console.log(
+        JSON.stringify({
+          probe: 'restored-method-state',
+          kind: kept.kind,
+          stage: kept.stage ?? null,
+          ask: kept.ask_type ?? null,
+          keys: Object.keys(kept),
+          error: kept.kind === 'error' ? kept.message : null,
+        }),
+      );
+    if (recovered && kept.kind === 'print') {
+      resumeMessage = kept.message;
+      assert.ok(resumeMessage?.trim());
+      return resumeMessage;
+    }
+    assert.equal(kept.questions_answered?.path, stage.produces[1]);
+    assert.equal(kept.answer_mode.mode, fileEdit ? 'file' : 'guide');
+    if (!fileEdit) {
+      const ledger = yield* runDirective('aidlc engine log answers --stage requirements-analysis');
+      const recorded = ledger.answered.filter(
+        (q) => q.question === 'Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8',
+      );
+      assert.equal(recorded.length, 1, 'Exactly one guided answer receipt');
+      // The audit stores one physical line. The file oracle below retains the
+      // submitted line breaks and compares the complete artifact bytes.
+      assert.equal(
+        recorded[0].answer,
+        slots
+          .map((v, i) => `Q${i + 1}: ${v}`)
+          .join('; ')
+          .replace(/\r\n?|\n|\u2028|\u2029/g, '\\n'),
+      );
+      assert.equal(ledger.open.length, 0);
+    }
     yield { filePath: join(project, stage.produces[0]), content: gameRequirements };
     const opened = yield* runDirective(
       `aidlc engine orchestrate report --stage ${stage.stage} --result awaiting-approval`,
     );
     assert.match(opened.message, /Recorded awaiting-approval/);
-    yield* runDirective(
-      `aidlc engine log decision --stage requirements-analysis --decision "${gateQuestion}" --options "Approve,Request Changes"`,
-    );
+    // The stage annex presents the held lifecycle gate. It is never logged as an interview question.
+    yield gateFile;
     return gateQuestion;
   }
   assert.equal(
@@ -337,7 +380,13 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
       afterPlan.pendingInput.questions[0].options.map((o) => o.label),
       ['Guide me', "I'll edit the file", 'Chat'],
     );
-    await turn('Guide me', guide(), { selection });
+    const calls = provider.result().totalRequests;
+    const pickedMode = fileEdit ? 1 : 0;
+    await turn(afterPlan.pendingInput.questions[0].options[pickedMode].label, unexpectedGuideCall, {
+      selection: { answers: [{ selectedOptions: [pickedMode] }] },
+      displayOnly: true,
+    });
+    assert.equal(provider.result().totalRequests, calls);
     const batch = await driver.interaction();
     guidedHistory.push(
       [afterPlan.publicationId, initiator.actorId, batch.sequence],
@@ -348,19 +397,178 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
       batch.pendingInput.questions.map((q) => q.options.length),
       [6, 5, 6, 6, 6, 5, 6, 5],
     );
-    const reply = {
-      answers: batch.pendingInput.questions.map((q, i) => ({ selectedOptions: [i % 3] })),
-    };
-    const text = nativeAnswerText(batch.pendingInput, reply);
-    const answers = batch.pendingInput.questions.map(
-      (q, i) => q.options[reply.answers[i].selectedOptions[0]].label,
+    const formAnswers = new Map();
+    let expected = gameQuestions;
+    const sum = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    let current = batch;
+    do {
+      const partial = fileEdit && current.id === batch.id;
+      const reply = {
+        answers: current.pendingInput.questions.map((q, i) =>
+          partial && i % 2
+            ? { selectedOptions: [] }
+            : i === 2
+              ? {
+                  selectedOptions: [],
+                  freeText: `Use **touch** for ${randomUUID()}.\nKeep keyboard support.`,
+                }
+              : { selectedOptions: [randomInt(q.options.length - 1)] },
+        ),
+      };
+      if (fileFault === 'changed') {
+        const path = join(project, stage.produces[1]),
+          changed = gameQuestions.replace('Source game', 'Source game (updated)');
+        await fs.writeFile(path, changed);
+        const count = provider.result().totalRequests;
+        await turn(nativeAnswerText(current.pendingInput, reply), unexpectedGuideCall, {
+          selection: reply,
+          displayOnly: true,
+          fileAnswers: true,
+        });
+        const conflict = await driver.interaction();
+        assert.equal(conflict.pendingInput, null);
+        assert.match(conflict.messages[0].text, /published questions changed/i);
+        assert.equal(await fs.readFile(path, 'utf8'), changed);
+        assert.equal(provider.result().totalRequests, count);
+        assert.deepEqual(await driver.acceptedSelection(current.id), reply);
+        console.log(
+          JSON.stringify({
+            probe: 'changed-file',
+            accepted: true,
+            applied: false,
+            providerCalls: 0,
+            currentSha256: sum(changed),
+            published: conflict.publicationId,
+          }),
+        );
+        return;
+      }
+      await turn(
+        nativeAnswerText(current.pendingInput, reply),
+        fileEdit ? unexpectedGuideCall : consumeAnswers(),
+        {
+          selection: reply,
+          fileAnswers: true,
+          displayOnly: fileEdit,
+          interruptAfterFile: fileFault?.startsWith('restart') ? fileFault : false,
+        },
+      );
+      const accepted = await driver.get('interaction', publicationQuery(current));
+      const submitted = await driver.acceptedSelection(current.id);
+      assert.equal(accepted.answer.text, nativeAnswerText(current.pendingInput, submitted));
+      for (const [i, a] of submitted.answers.entries())
+        if (a.freeText || a.selectedOptions.length)
+          formAnswers.set(current.pendingInput.questions[i].header, a);
+      // Independent byte oracle from the original artifact and accepted reply.
+      expected = gameQuestions
+        .split(/(?=^## Q\d+[.)])/m)
+        .map((section, i) => {
+          const a = formAnswers.get(batch.pendingInput.questions[i - 1]?.header);
+          if (!a) return section;
+          const letters = [...section.matchAll(/^- ([A-Z])\. /gm)].map((m) => m[1]);
+          const chosen = a.selectedOptions.map((ix) => letters[ix]).join(', ');
+          const value = a.freeText ? `${chosen || 'X'}: ${a.freeText}` : chosen;
+          return section.replace(/^\[Answer\]:$/m, () => `[Answer]: ${value}`);
+        })
+        .join('');
+      assert.equal(await fs.readFile(join(project, stage.produces[1]), 'utf8'), expected);
+      if (fileEdit) {
+        assert.equal(provider.result().totalRequests, calls);
+        current = await driver.interaction();
+        if (partial) {
+          assert.equal(formAnswers.size, 4);
+          assert.equal(current.pendingInput.questions.length, 4);
+        }
+      }
+    } while (fileEdit && formAnswers.size < 8);
+    if (fileEdit) {
+      assert.equal(current.pendingInput.questions[0].options.length, 0);
+      assert.match(current.pendingInput.questions[0].prompt, /done or ready/);
+      await turn('ready', consumeAnswers(), {
+        selection: { answers: [{ selectedOptions: [], freeText: 'ready' }] },
+        fileAnswers: true,
+      });
+    }
+    if (fileFault?.startsWith('restart')) {
+      const stat = await fs.stat(join(project, stage.produces[1]));
+      await turn('Confirmed workspace resume', consumeAnswers(true));
+      const restored = await driver.interaction();
+      if (fileFault === 'restart') {
+        assert.ok(resumeMessage, 'Pinned method re-presented the unsettled guided decision');
+        assert.equal(restored.pendingInput?.kind, 'choice');
+        assert.deepEqual(
+          restored.pendingInput.questions[0].options.map((o) => o.label),
+          ['Use my saved answers', 'Discuss my answers'],
+        );
+        const reopened = await driver.get('interaction', publicationQuery(restored));
+        assert.equal(reopened.interaction.contentSha256, restored.contentSha256);
+        assert.deepEqual(reopened.interaction.pendingInput, restored.pendingInput);
+        console.log(
+          JSON.stringify({
+            probe: 'restored-method-print',
+            message: resumeMessage,
+            recoveryChoice: restored.pendingInput.questions[0].prompt,
+          }),
+        );
+        await turn('Use my saved answers', consumeAnswers(), {
+          selection: { answers: [{ selectedOptions: [0] }] },
+        });
+      } else assert.equal(resumeMessage, undefined);
+      const after = await fs.stat(join(project, stage.produces[1]));
+      assert.equal(stat.ino, after.ino);
+      assert.equal(stat.mtimeMs, after.mtimeMs);
+      console.log(
+        JSON.stringify({
+          probe: 'file-restart',
+          writerReplaced: true,
+          appliedSha256: sum(expected),
+          savedFileUnchanged: true,
+        }),
+      );
+    }
+    assert.equal(filledQuestions, expected);
+    assert.equal(await fs.readFile(join(project, stage.produces[1]), 'utf8'), expected);
+    console.log(
+      JSON.stringify({
+        probe: 'file-backed-answers',
+        mode: fileEdit ? 'file' : 'guide',
+        before: sum(gameQuestions),
+        after: sum(expected),
+        answers: 8,
+        questionsPath: stage.produces[1],
+        guideProviderCalls: 0,
+        source: 'accepted member selection',
+        cliConsumed: true,
+      }),
     );
-    await turn(text, recordAnswers(text, answers), { selection: reply });
-    assert.equal((await driver.get('interaction', publicationQuery(batch))).answer.text, text);
   }
   const held = await driver.interaction();
   assert.equal(held.pendingInput.kind, 'approval');
   assert.equal(held.pendingInput.stage, stage.stage);
+  if (fileFault?.startsWith('restart')) {
+    assert.equal((await proof(held)).engineApplication, 'not_recorded');
+    console.log(
+      JSON.stringify({
+        probe: 'recovered-next-gate',
+        kind: held.pendingInput.kind,
+        stage: held.pendingInput.stage,
+        sequence: held.sequence,
+      }),
+    );
+    return;
+  }
+  if (fileEdit) {
+    console.log(
+      JSON.stringify({
+        probe: 'file-edit-ready-gate',
+        sequence: held.sequence,
+        gate: held.pendingInput.stage,
+        artifactSha256: createHash('sha256').update(filledQuestions).digest('hex'),
+      }),
+    );
+    await driver.get('interaction');
+    return;
+  }
   const history = await driver.get('interaction', publicationQuery(first));
   assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
   assert.equal(history.answer.context.publicationId, first.publicationId);
@@ -1134,7 +1342,7 @@ export async function qualifyClaudeWorkspaceProtocol({
 // project-type reconciliation, dependency and file-preservation checks.
 export async function qualifyWorkspaceTransport(
   harness,
-  { memberJourney = false, terminalResult = false } = {},
+  { memberJourney = false, terminalResult = false, fileEdit = false, fileFault = null } = {},
 ) {
   assert.ok(['codex', 'opencode'].includes(harness) || (memberJourney && harness === 'claude'));
   const root = await fs.mkdtemp('/tmp/native-workspace-transport-');
@@ -1162,7 +1370,15 @@ export async function qualifyWorkspaceTransport(
       terminalResult,
     });
     if (memberJourney) {
-      await qualifyLocalMember({ harness, driver, provider, project, terminalResult });
+      await qualifyLocalMember({
+        harness,
+        driver,
+        provider,
+        project,
+        terminalResult,
+        fileEdit,
+        fileFault,
+      });
       return;
     }
     let turn = 0;
