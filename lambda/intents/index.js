@@ -46,7 +46,12 @@ import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
-import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
+import {
+  previewDelivery,
+  deliveryView,
+  recordedPullRequests,
+  usesLegacyPrRecords,
+} from '../shared/final-delivery.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   GRANT_AUTONOMY_OPTION,
@@ -4658,9 +4663,9 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
 // POST /projects/{projectId}/intents/{intentId}/delivery
 // Publication recovery is independent of stage recovery and always scoped
 // to the current run. Preview performs reads only, including old executions.
-const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, response }) => {
+const handleRetryDelivery = async ({ g, body, projectId, intentId, sub, auth, response }) => {
   if (auth.role !== 'owner')
-    return response(403, { error: 'Only project owners can retry delivery' });
+    return response(403, { error: 'Only project owners can retry opening pull requests' });
   const records = await store.getExecutionRecords(intentId, {
     includeOutputs: false,
     consistentRead: true,
@@ -4671,18 +4676,19 @@ const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, respo
   try {
     const resolved = await intentMethodology.loadPlan(meta);
     if (!resolved.valid || !resolved.plan)
-      return response(409, { error: 'The pinned workflow cannot be verified for delivery' });
+      return response(409, { error: 'Couldn’t check the workflow used for this run.' });
     const preview = await previewDelivery({
       meta,
       records,
       plan: resolved.plan,
+      graphPrs: usesLegacyPrRecords(records) ? await fetchPullRequests(g, intentId) : [],
       operation: sourceControlOperation,
     });
     if (input.preview)
       return response(200, { ...preview, delivery: deliveryView(meta, preview.delivery) });
     if (!input.previewToken || input.previewToken !== preview.previewToken)
       return response(409, {
-        error: 'Delivery state changed. Check delivery again before retrying.',
+        error: 'The branch or pull request changed. Check again.',
         code: 'delivery_preview_changed',
       });
     const claimed = await store.claimDelivery({
@@ -4714,8 +4720,7 @@ const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, respo
       // immediately releasing it could overlap an already running publisher.
       return response(202, {
         delivery: deliveryView(meta, claimed),
-        message:
-          'Delivery launch is uncertain. Refresh status; the attempt lease expires automatically.',
+        message: 'Refresh the page to check whether a pull request was opened.',
       });
     }
     return response(202, { delivery: deliveryView(meta, claimed) });
@@ -4728,7 +4733,7 @@ const handleRetryDelivery = async ({ body, projectId, intentId, sub, auth, respo
         error:
           error.statusCode === 409
             ? error.message
-            : 'Delivery or execution changed. Refresh before retrying.',
+            : 'The run changed. Refresh the page and check for pull requests again.',
         code: error.code ?? 'delivery_changed',
       });
     throw error;
@@ -6350,7 +6355,7 @@ const handleGetIntent = async ({ event, projectId, intentId, g, response }) => {
     // attribute per-unit stage instances. Both null/empty pre-promotion.
     unitCompletion: completion,
     unitPlan: mapUnitPlan(records.unitPlan),
-    delivery: deliveryView(records.meta, currentDelivery(records)),
+    delivery: deliveryView(records.meta, recordedPullRequests(records, pullRequests)),
     units: (records.units ?? []).map(mapUnit),
     unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
     feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
@@ -7443,7 +7448,7 @@ export const handler = async (event, context) => {
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/delivery')) {
-      return await handleRetryDelivery({ body, projectId, intentId, sub, auth, response });
+      return await handleRetryDelivery({ g, body, projectId, intentId, sub, auth, response });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/repair')) {

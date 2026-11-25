@@ -16,7 +16,7 @@ const fail = (code, message) => Object.assign(new Error(message), { code, status
 const safeError = (error) => {
   const code = error?.code;
   if (code === 'PR_LOOKUP_TRUNCATED')
-    return 'Pull-request history exceeds the provider inspection limit. Delivery could not be verified safely; no new pull request will be created.';
+    return 'Pull-request history exceeds the provider inspection limit. Check the branch’s pull requests in the repository.';
   return [
     'UNBOUND',
     'BINDING_INVALID',
@@ -27,8 +27,8 @@ const safeError = (error) => {
     'REPOSITORY_NOT_ON_PROJECT',
     'MISSING_SCOPES',
   ].includes(code)
-    ? 'Source control access needs attention in project settings. Check the repository binding, then retry.'
-    : 'The provider could not be verified. Check source control access and availability, then retry; existing pull requests will be checked first.';
+    ? 'Check access to this repository in project settings, then try again.'
+    : 'Couldn’t reach the repository. Check your connection and repository access, then try again.';
 };
 export const deliveryStatus = (repositories) => {
   if (!repositories.length || repositories.every((r) => r.status === 'no_change'))
@@ -42,19 +42,18 @@ export const deliveryView = (meta, delivery) => {
     return {
       status: 'unknown',
       repositories: [],
-      message:
-        'Delivery has not been assessed for this run. Check delivery to inspect the recorded branches and existing pull requests.',
+      message: 'Couldn’t confirm whether a pull request was opened.',
     };
   const expired =
     delivery.status === 'in_progress' && Date.parse(delivery.leaseUntil) <= Date.now();
   return {
     status: expired ? 'unknown' : delivery.status,
     message: expired
-      ? 'The previous delivery attempt stopped responding. Check delivery before retrying.'
+      ? 'The last attempt stopped responding. Check for an existing pull request.'
       : null,
     leaseUntil: delivery.leaseUntil,
     repositories: (delivery.repositories ?? []).map(
-      ({ repoId, provider, branch, baseBranch, status, reason, retryable, pr, prMatch }) => ({
+      ({
         repoId,
         provider,
         branch,
@@ -62,6 +61,20 @@ export const deliveryView = (meta, delivery) => {
         status,
         reason,
         retryable,
+        pr,
+        prMatch,
+        prState,
+        conflictingPrUrls,
+      }) => ({
+        repoId,
+        provider,
+        branch,
+        baseBranch,
+        status,
+        reason,
+        retryable,
+        ...(prState ? { prState } : {}),
+        ...(conflictingPrUrls ? { conflictingPrUrls } : {}),
         // Only a published or reconciled PR, or one this run's marker proves.
         // Rows from earlier heads may name an earlier run's pull request.
         pr: status === 'succeeded' || prMatch ? pr : undefined,
@@ -78,10 +91,7 @@ export const currentDelivery = (records) =>
 // A missing row is unfinished, including when an entire parallel section is absent.
 export const assertDeliveryComplete = async (meta, records, plan) => {
   if (meta.status !== 'SUCCEEDED' || !meta.orchestratorRunId)
-    throw fail(
-      'delivery_not_complete',
-      'Delivery retry requires a completed run with a recorded owner. Recover unfinished execution first.',
-    );
+    throw fail('delivery_not_complete', 'Finish or recover this run before opening pull requests.');
   if (
     (records.humanTasks ?? []).some(
       (gate) =>
@@ -91,13 +101,13 @@ export const assertDeliveryComplete = async (meta, records, plan) => {
   )
     throw fail(
       'delivery_gate_pending',
-      'A human gate still needs an answer. Review execution recovery before delivery.',
+      'Answer the pending question before opening a pull request.',
     );
   const sections = completionSections(plan);
   if (sections.length && !records.unitPlan?.units?.length)
     throw fail(
       'delivery_missing_plan',
-      'The current unit plan is missing. Review execution recovery before delivery.',
+      'The saved work plan is missing. Review this run before opening a pull request.',
     );
   const receipt = meta.completionValidation;
   let completion;
@@ -113,7 +123,7 @@ export const assertDeliveryComplete = async (meta, records, plan) => {
     )
       throw fail(
         'delivery_completion_changed',
-        'The plan or completion decision changed. Review completion diagnostics before delivery.',
+        'The work plan changed. Review the completed work before opening a pull request.',
       );
     completion = receipt;
   } else {
@@ -136,7 +146,7 @@ export const assertDeliveryComplete = async (meta, records, plan) => {
     if (!row || !['SUCCEEDED', 'SKIPPED'].includes(row.state))
       throw fail(
         'delivery_stage_incomplete',
-        'A workflow stage is unfinished or unverified. Review execution recovery before delivery.',
+        'Some work is unfinished or could not be verified. Review this run before opening a pull request.',
       );
   }
   return completion;
@@ -146,7 +156,7 @@ const targets = (meta) => {
   if (!Array.isArray(meta.repos))
     throw fail(
       'delivery_repositories_unknown',
-      'The captured repositories are unknown. Review the execution before delivery.',
+      'This run has no saved repository list. Check its settings.',
     );
   return meta.repos.map((repo) => {
     const repoId = typeof repo === 'string' ? repo : repo.url;
@@ -158,6 +168,68 @@ const targets = (meta) => {
       status: 'pending',
     };
   });
+};
+export const usesLegacyPrRecords = ({ meta, deliveries }) =>
+  meta?.status === 'SUCCEEDED' &&
+  !meta.deliveryPolicyVersion &&
+  !meta.rewindFromStageId &&
+  !deliveries?.length;
+
+// Legacy tracker and graph records belong to the intent, which keeps its branch
+// across rewinds. Only use these as a substitute on an original legacy run.
+export const recordedPullRequests = (records, graphPrs = []) => {
+  const { meta, trackerSync } = records;
+  const current = currentDelivery(records);
+  const legacy = !current && usesLegacyPrRecords(records);
+  if (!current && (!legacy || !Array.isArray(meta.repos))) return null;
+  const tracked = trackerSync?.pullRequests ?? [];
+  const repositories = (current?.repositories ?? targets(meta)).map((repo) => {
+    const matches = tracked.filter((pr) => pr.repoId === repo.repoId && pr.branch === repo.branch);
+    const graph = graphPrs.filter(
+      (pr) => pr.repository === repo.repoId && pr.branch === repo.branch,
+    );
+    const candidates = [...matches, ...graph].filter((pr) => pr.prUrl && pr.prNumber != null);
+    const urls = new Set(candidates.map((p) => p.prUrl));
+    if (legacy && urls.size > 1)
+      return {
+        ...repo,
+        status: 'uncertain',
+        retryable: false,
+        conflictingPrUrls: [...urls].toSorted(),
+        reason:
+          'Several pull requests were recorded for this branch. Check the requests in the repository.',
+      };
+    const pr = repo.pr ?? (legacy ? candidates[0] : null);
+    if (!pr) return legacy ? { ...repo, status: 'unknown' } : repo;
+    const trackedPr = matches.some((p) => p.prUrl === pr.prUrl);
+    const merged = trackedPr && ['PR_MERGED', 'COMPLETED'].includes(trackerSync.state);
+    // A multi-PR tracker only says that *one* closed, without identifying it.
+    const closed =
+      trackedPr &&
+      tracked.length === 1 &&
+      trackerSync.lastError?.code === 'PR_CLOSED_WITHOUT_MERGE';
+    return {
+      ...repo,
+      ...(legacy
+        ? {
+            status: 'succeeded',
+            retryable: false,
+            pr: {
+              repoId: repo.repoId,
+              provider: repo.provider,
+              prUrl: pr.prUrl,
+              prNumber: pr.prNumber,
+              branch: pr.branch,
+              baseBranch: pr.baseBranch ?? null,
+            },
+          }
+        : {}),
+      ...(merged || closed ? { prState: merged ? 'merged' : 'closed' } : {}),
+    };
+  });
+  if (current) return { ...current, repositories };
+  if (!repositories.some((r) => done(r) || r.conflictingPrUrls)) return null;
+  return { repositories, status: deliveryStatus(repositories) };
 };
 const callFor = (operation, meta, repo, name, args) =>
   operation({
@@ -215,27 +287,27 @@ export const selectDeliveryPr = (pullRequests, { branch, baseBranch, marker, req
 };
 
 const UNCERTAIN_REASON =
-  "A closed or merged pull request from this branch has no matching delivery marker, so it could not be confirmed whether this run's earlier create request opened it. Check the branch's pull requests at the provider: reopen the pull request if it holds this run's work, or start a new run to publish a new one.";
+  'A closed or merged pull request was found, but its connection to this run could not be confirmed. Review the pull request in the repository. Reopen it if it contains your changes, or start a new run.';
 // CodeCommit cannot reopen a closed pull request (closed is terminal there).
 const UNCERTAIN_REASON_NO_REOPEN =
-  "A closed or merged pull request from this branch has no matching delivery marker, so it could not be confirmed whether this run's earlier create request opened it. CodeCommit cannot reopen a closed pull request: check the branch's pull requests at the provider, then start a new run to publish a new one.";
+  "A closed or merged pull request was found, but its connection to this run could not be confirmed. CodeCommit cannot reopen a closed pull request: check the branch's pull requests at the provider, then start a new run to publish a new one.";
 const uncertainReason = (provider) =>
   provider === 'codecommit' ? UNCERTAIN_REASON_NO_REOPEN : UNCERTAIN_REASON;
 const BRANCH_CHANGED_REASON =
-  'The intent branch changed after the delivery attempt. Review the new commits before starting a new execution.';
+  'The branch changed after the last attempt. Review the new commits before starting a new run.';
 
 const inspect = async (meta, repo, operation) => {
   if (done(repo)) return repo; // Publication is complete; merge lifecycle is out of scope.
   // A recorded pull request is re-derived on every inspection: rows written by
   // earlier heads may name one that was never proven to be this run's.
-  const { pr: _recorded, prMatch: _match, ...unproven } = repo;
+  const { pr: _recorded, prMatch: _match, prState: _state, ...unproven } = repo;
   try {
     if (!repo.branch)
       return {
         ...unproven,
         status: 'failed',
         retryable: false,
-        reason: 'The captured intent branch is missing. Review the execution before publishing.',
+        reason: 'This run has no saved branch name. Check the repository for your changes.',
       };
     // Closed and merged pull requests matter only once this run recorded a
     // create request (selectDeliveryPr); without one, only open ones are read.
@@ -276,6 +348,7 @@ const inspect = async (meta, repo, operation) => {
       const proven = {
         ...next,
         prMatch: selected.kind === 'open' ? 'open' : 'marker',
+        prState: pr.state,
         pr: {
           repoId: repo.repoId,
           provider: repo.provider,
@@ -312,12 +385,20 @@ const inspect = async (meta, repo, operation) => {
         reason: 'Existing open pull request reconciled.',
       };
     }
+    if (repo.conflictingPrUrls?.length)
+      return {
+        ...next,
+        status: 'uncertain',
+        retryable: false,
+        reason:
+          'Several pull requests were recorded for this branch. Check the requests in the repository.',
+      };
     if (!snapshot.headSha || !snapshot.baseSha)
       return {
         ...next,
         status: 'failed',
         retryable: false,
-        reason: `The ${!snapshot.headSha ? 'intent' : 'base'} branch does not exist. Restore the captured branch before checking delivery again.`,
+        reason: `The ${!snapshot.headSha ? 'intent' : 'base'} branch does not exist. Restore the branch, then check again.`,
       };
     if (repo.headSha && snapshot.headSha !== repo.headSha)
       return { ...next, status: 'failed', retryable: false, reason: BRANCH_CHANGED_REASON };
@@ -325,7 +406,7 @@ const inspect = async (meta, repo, operation) => {
       ...next,
       status: 'pending',
       retryable: true,
-      reason: 'Ready to publish the captured intent branch. Existing integrated code is preserved.',
+      reason: 'Ready to open a pull request from this branch.',
     };
   } catch (error) {
     return {
@@ -337,16 +418,16 @@ const inspect = async (meta, repo, operation) => {
   }
 };
 
-export const previewDelivery = async ({ meta, records, plan, operation }) => {
+export const previewDelivery = async ({ meta, records, plan, operation, graphPrs }) => {
   await assertDeliveryComplete(meta, records, plan);
   if (meta.deliveryLeaseUntil && Date.parse(meta.deliveryLeaseUntil) > Date.now())
     throw fail(
       'delivery_in_progress',
-      'Delivery is already in progress. Refresh its status; an abandoned attempt can be checked after its lease expires.',
+      'Pull requests are already being opened. Refresh the page to see the result.',
     );
   const previous = currentDelivery(records);
   const repositories = [];
-  for (const repo of previous?.repositories ?? targets(meta))
+  for (const repo of recordedPullRequests(records, graphPrs)?.repositories ?? targets(meta))
     repositories.push(await inspect(meta, repo, operation));
   const delivery = {
     ...previous,
@@ -384,7 +465,7 @@ export const previewDelivery = async ({ meta, records, plan, operation }) => {
 // retry of this run would be refused, so the reason must not offer one.
 const withheldReason = (error) =>
   ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error?.name)
-    ? 'Execution ownership or the unit plan changed before the pull request was created. Review completion diagnostics; publication was withheld.'
+    ? 'The run or its unit plan changed before the pull request was created. Review the changes.'
     : null;
 
 // Called by the orchestrator in one versioned durable step. Retry uses the same
@@ -457,14 +538,11 @@ export const publishFinalDelivery = async ({
     try {
       records = await readRecords();
     } catch {
-      return withhold(
-        'Execution records could not be read. Retry delivery; existing pull requests will be checked first.',
-        true,
-      );
+      return withhold('Couldn’t read the saved changes. Check for pull requests again.', true);
     }
     if (unitPlanIdentity(records.unitPlan) !== delivery.unitPlanIdentity)
       return withhold(
-        'The unit plan changed after delivery was checked. Review completion diagnostics before delivery.',
+        'The work plan changed since the last check. Review the changes before trying again.',
       );
   }
   for (let i = 0; i < delivery.repositories.length; i++) {
@@ -531,7 +609,7 @@ export const publishFinalDelivery = async ({
                     failed: true,
                     reason: 'delivery_record_unavailable',
                     error:
-                      'The delivery record could not be saved. Retry delivery; existing pull requests will be checked first.',
+                      'The pull request details could not be saved. Check for pull requests again.',
                   };
             }
             repo = requested;
