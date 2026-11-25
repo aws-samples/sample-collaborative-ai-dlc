@@ -2,6 +2,7 @@ import { hashKey, QueryCache, QueryClient, type Query, type QueryKey } from '@ta
 import { onUserCacheBound, onUserCacheEnded } from './persistentCache';
 
 export type { FetchQueryOptions as QueryOptions, QueryKey } from '@tanstack/react-query';
+export type FetchMode = { staleTime?: number };
 const usage = new WeakMap<Query, { at: number; bytes: number }>();
 
 export function createQueryClient() {

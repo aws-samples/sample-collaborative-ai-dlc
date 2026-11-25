@@ -1,10 +1,11 @@
 import { Suspense } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
-  BrowserRouter as Router,
+  createBrowserRouter,
   Routes,
   Route,
   Navigate,
+  RouterProvider,
   useLocation,
   useParams,
 } from 'react-router';
@@ -12,6 +13,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './components/theme/ThemeProvider';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { TRACKER_PROVIDERS } from './lib/trackerProviders';
+import { UnsavedChangesGuard } from './components/UnsavedChangesGuard';
 import { RouteFallback } from './components/RouteFallback';
 import { APP_ROUTES, type RouteEntry } from './routes/registry';
 import { AppShell, GitOAuthCallback, JiraCallback, NotFound } from './routes/pages';
@@ -78,7 +80,9 @@ function AppRouteTree() {
           <Route
             element={
               <ProtectedRoute>
-                <AppShell />
+                <UnsavedChangesGuard>
+                  <AppShell />
+                </UnsavedChangesGuard>
               </ProtectedRoute>
             }
           >
@@ -108,13 +112,16 @@ function AppRouteTree() {
   );
 }
 
+// A data router enables useBlocker so authoring pages can protect SPA links,
+// sidebar actions, and browser Back with the same in-product discard dialog.
+// The nested Routes tree preserves the existing path table and lazy page split.
+const router = createBrowserRouter([{ path: '*', element: <AppRouteTree /> }]);
+
 function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <Router>
-          <AppRouteTree />
-        </Router>
+        <RouterProvider router={router} />
       </AuthProvider>
     </ThemeProvider>
   );

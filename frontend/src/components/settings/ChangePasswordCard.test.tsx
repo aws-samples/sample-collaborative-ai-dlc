@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 
 const mocks = vi.hoisted(() => ({ changePassword: vi.fn() }));
@@ -12,6 +12,7 @@ import { ChangePasswordCard } from './ChangePasswordCard';
 
 const fill = async (current: string, next: string, confirm: string) => {
   const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Sign-in password' }));
   if (current) await user.type(screen.getByLabelText('Current password'), current);
   if (next) await user.type(screen.getByLabelText('New password'), next);
   if (confirm) await user.type(screen.getByLabelText('Confirm new password'), confirm);
@@ -23,6 +24,19 @@ beforeEach(() => {
 });
 
 describe('ChangePasswordCard', () => {
+  it('starts collapsed with the form one action away', async () => {
+    const user = userEvent.setup();
+    render(<ChangePasswordCard />);
+
+    const trigger = screen.getByRole('button', { name: 'Sign-in password' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('Current password')).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(screen.getByLabelText('Current password')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument();
+  });
+
   it('changes the password and clears the form', async () => {
     mocks.changePassword.mockResolvedValue(undefined);
     render(<ChangePasswordCard />);

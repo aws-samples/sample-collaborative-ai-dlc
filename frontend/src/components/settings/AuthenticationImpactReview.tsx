@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
 import { cn } from '@/lib/utils';
 import type { AgentAuthImpactReview, AgentAuthModeView } from '@/services/agents';
@@ -75,7 +76,6 @@ export function AuthenticationImpactReview({
 }) {
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   // The panel replaces the button that opened it; move focus so keyboard and
   // screen reader users land on the question instead of losing their place.
   useEffect(() => headingRef.current?.focus(), [review.id]);
@@ -100,7 +100,9 @@ export function AuthenticationImpactReview({
         tabIndex={-1}
         className="flex items-center gap-2 font-medium focus:outline-none"
       >
-        {warn && <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />}
+        {warn && (
+          <AlertTriangle className="h-4 w-4 shrink-0 text-agent-warning-fg" aria-hidden="true" />
+        )}
         {heading ?? 'Confirm this change'}
       </h4>
       <div className="space-y-1">
@@ -134,19 +136,14 @@ export function AuthenticationImpactReview({
       )}
       {/* The server's notes (evidence limits, an interrupted write) stay available. */}
       {(startedWork.length > 0 || review.limitations.length > 0) && (
-        <details className="text-xs" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
-          <summary className="cursor-pointer text-muted-foreground">Show details</summary>
-          {detailsOpen && (
-            <>
-              {startedWork.length > 0 && <AffectedWorkList items={startedWork} />}
-              {review.limitations.map((limitation) => (
-                <p key={limitation} className="mt-2 text-muted-foreground">
-                  {limitation}
-                </p>
-              ))}
-            </>
-          )}
-        </details>
+        <Disclosure variant="inline" title="Show details" className="block text-xs">
+          {startedWork.length > 0 && <AffectedWorkList items={startedWork} />}
+          {review.limitations.map((limitation) => (
+            <p key={limitation} className="mt-2 text-xs text-muted-foreground">
+              {limitation}
+            </p>
+          ))}
+        </Disclosure>
       )}
       <div className="flex gap-2">
         <Button type="button" size="sm" onClick={onApply} disabled={applying}>

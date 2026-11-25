@@ -13,6 +13,7 @@ import type { QueryKey, FetchQueryOptions as QueryOptions } from '@tanstack/reac
 import { knownQueryBytes, queryClient } from '@/lib/queryClient';
 import { intentDetailQuery, intentCompiledQuery } from '@/lib/intentEntry';
 import { projectIntentsQuery } from '@/hooks/useProjectsCache';
+import { personalCredentialsQuery } from '@/lib/settingsQueries';
 import type { IntentDetail } from '@/services/intents';
 import { qk } from '@/lib/queryKeys';
 import * as pages from './pages';
@@ -78,6 +79,7 @@ export const APP_ROUTES: readonly RouteEntry[] = [
   {
     path: '/account/settings',
     page: pages.AccountSettings,
+    critical: () => [personalCredentialsQuery()],
   },
   {
     path: '/admin',

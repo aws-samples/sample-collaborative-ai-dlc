@@ -6,6 +6,16 @@ import {
   type AgentAuthImpactReview,
 } from '@/services/agents';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { displayProvider } from '@/lib/displayNames';
 import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { agentAuthProviderUi } from './agent-auth/registry';
 import { summarizeConfiguration } from './agent-auth/summary';
@@ -122,31 +132,33 @@ export function AgentAuthenticationModeSettings({
     }
   };
   return (
-    <div className="space-y-2 rounded-md bg-muted/40 p-3 text-xs">
+    <div className="space-y-2 text-xs">
       {scope === 'platform' ? (
         <>
-          <label className="block font-medium" htmlFor="agent-authentication-mode">
-            Agent authentication mode
-          </label>
-          <select
-            id="agent-authentication-mode"
-            className="rounded border bg-background p-2"
-            value={mode}
-            disabled={busy}
-            onChange={(event) => {
-              setMode(event.target.value);
-              setReview(null);
-              setSetupOpen(false);
-            }}
-          >
-            {modes.map((option) => (
-              <option key={option.id} value={option.id} disabled={!option.available}>
-                {option.label}
-                {option.available ? '' : ' — provider not yet available'}
-              </option>
-            ))}
-          </select>
-          <p>Mode changes apply to new work. Started runs keep their selected connection.</p>
+          <div className="grid gap-2">
+            <Label htmlFor="agent-authentication-mode">Agent authentication mode</Label>
+            <Select
+              value={mode}
+              disabled={busy}
+              onValueChange={(next) => {
+                setMode(next);
+                setReview(null);
+                setSetupOpen(false);
+              }}
+            >
+              <SelectTrigger id="agent-authentication-mode" className="max-w-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {modes.map((option) => (
+                  <SelectItem key={option.id} value={option.id} disabled={!option.available}>
+                    {option.label}
+                    {option.available ? '' : ' — not available yet'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {!review &&
             (targetUi ? (
               <Button type="button" size="sm" disabled={busy} onClick={() => setSetupOpen(true)}>
@@ -202,7 +214,8 @@ export function AgentAuthenticationModeSettings({
         ))}
       {connection && (
         <p>
-          Connection: {connection.backend} · {connection.state}
+          Connection: {displayProvider(connection.backend)} ·{' '}
+          {connectionStateLabel(connection.state)}
         </p>
       )}
       {summary.length > 0 && (
@@ -215,7 +228,12 @@ export function AgentAuthenticationModeSettings({
         </div>
       )}
       {reconnectNotice}
-      <p>Kiro uses its separate key settings.</p>
+      <Disclosure variant="inline" title="How this works">
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <p>Mode changes apply to new work. Started runs keep their selected connection.</p>
+          <p>Kiro uses its separate key settings.</p>
+        </div>
+      </Disclosure>
       {error && (
         <p role="alert" className="text-destructive">
           {error}

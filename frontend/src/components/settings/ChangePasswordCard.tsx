@@ -1,15 +1,17 @@
 import { useId, useState } from 'react';
 import type React from 'react';
-import { CheckCircle2, Loader2, Lock } from 'lucide-react';
+import { CheckCircle2, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { SettingsCard } from '@/components/settings/SettingsCard';
 import { useAuth } from '@/contexts/AuthContext';
 import { PASSWORD_POLICY_HINT, passwordPolicyError } from '@/lib/passwordPolicy';
 
 // Change the sign-in password of a local Cognito account. Federated users are
 // not offered this: their credentials belong to the external identity provider.
+// Collapsed by default: changing a password is rare, and an open form of empty
+// secret fields is not the account page's first question.
 export function ChangePasswordCard() {
   const { changePassword } = useAuth();
   const [current, setCurrent] = useState('');
@@ -44,10 +46,12 @@ export function ChangePasswordCard() {
   };
 
   return (
-    <SettingsCard
+    <Disclosure
+      variant="card"
       icon={<Lock />}
       title="Sign-in password"
       description="Change the password you use to sign in to AI-DLC."
+      headingLevel={2}
     >
       <form onSubmit={handleSubmit} className="max-w-sm space-y-3">
         {error && (
@@ -56,7 +60,7 @@ export function ChangePasswordCard() {
           </p>
         )}
         {changed && (
-          <p role="status" className="flex items-center gap-1.5 text-sm text-emerald-700">
+          <p role="status" className="flex items-center gap-1.5 text-sm text-agent-success-fg">
             <CheckCircle2 className="h-4 w-4" /> Password changed.
           </p>
         )}
@@ -100,16 +104,10 @@ export function ChangePasswordCard() {
             className="mt-1"
           />
         </div>
-        <Button type="submit" size="sm" disabled={submitting}>
-          {submitting ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Changing...
-            </>
-          ) : (
-            'Change password'
-          )}
+        <Button type="submit" size="sm" loading={submitting}>
+          Change password
         </Button>
       </form>
-    </SettingsCard>
+    </Disclosure>
   );
 }

@@ -17,9 +17,33 @@ Every status word, tone, icon, and help sentence comes from the registry in `lib
 - **Sizes and help.** `size="sm"` (default) shows a dot, `size="md"` shows the registry icon. `hint` adds the registry help sentence as a tooltip that is reachable by keyboard.
 - **Status text outside a pill.** Use `statusLabel` for the words and `TONE_CLASSES` for the color.
 
+## Names
+
+Slugs and identifiers the backend emits are not labels. Use the helpers in `lib/displayNames.ts`:
+
+- `displayProvider` returns the product name, such as "GitHub" and "Amazon Bedrock".
+
+Never use a slug or a UUID as the primary label of a row, badge, heading, or menu item. When the raw value is useful for support, put it in technical details.
+
+## Disclosure
+
+Use `Disclosure` (`components/ui/disclosure.tsx`) for any collapsible content. Do not use the HTML `<details>` element.
+
+- `variant` is `row`, `card`, `section`, or `inline`.
+- `summary` and `status` stay visible while the panel is collapsed. Use them to show the current value, so a reader does not have to open the panel to learn it.
+- `actions` (Retry, Copy) are rendered next to the trigger, never inside it.
+- `count` is appended to the title, as in "Diagnostics (6)".
+- By default, children are not mounted while the panel is closed, so a collapsed panel never fetches. Pass `forceMount` only when the content must keep its state while hidden.
+
+## Page headers
+
+- Every page has one `PageHeader` (`components/ui/page-header.tsx`), which renders the page's single `h1`. Put the `StatusPill` in `status`, short facts and badges in `meta`, and the one primary button in `primaryAction`. Use `backTo` for the link to the parent page.
+- A long title is truncated on one line and exposes the full text as its title; `status` and `meta` wrap under the title on narrow screens.
+
 ## Text size, target size, and color
 
 - **11 px is the floor.** `text-2xs` (11 px on a 16 px line) is the smallest text size. Do not use arbitrary sizes such as `text-[10px]`.
+- **Interactive targets are at least 24 by 24 CSS pixels.** The shared controls already meet this: the smallest button (`size="xs"`) is 28 px high and an icon button is 36 px. Do not shrink a control below the floor with custom classes.
 - **Use status tokens for status colors.** Pair `text-agent-*-fg` with `bg-agent-*/15`, and `text-warning-fg` with `bg-warning/15`. Do not use palette classes such as `text-amber-600` or `indigo-*`; the token pairs are tested for contrast in both themes.
 - **Buttons use sentence case and a specific verb:** "Start intent", "View activity".
 

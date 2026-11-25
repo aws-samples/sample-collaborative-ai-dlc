@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AlertCircle, KeyRound } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { AlertCircle, KeyRound, Loader2, XCircle } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,20 +20,37 @@ import {
 } from './agent-auth/impact';
 import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettings';
 import { SettingsCard } from '@/components/settings/SettingsCard';
+import { SettingsDisclosureCard } from '@/components/settings/SettingsDisclosureCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { agentCredentialFormatWarning } from '@/lib/agentCredentialFormat';
+import { queryClient } from '@/lib/queryClient';
+import { qk } from '@/lib/queryKeys';
 import { bedrockGatewayHost, bedrockKeyFieldCopy } from '@/lib/bedrockGateway';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
 type Scope = 'platform' | 'space' | 'personal';
 type SecretName = 'bedrockBearerToken' | 'kiroApiKey';
+/** Key families a CLI needs: Kiro uses its own key, every other CLI uses Bedrock. */
+export type CredentialProvider = 'bedrock' | 'kiro';
 
 interface Props {
   scope: Scope;
   projectId?: string;
+  /**
+   * `card`: always-open settings card (platform admin, account page).
+   * `disclosure`: collapsed while this scope only inherits; opens when it
+   * overrides a key or when a required key is missing at every level.
+   */
+  presentation?: 'card' | 'disclosure';
+  /**
+   * Space scope only: the key families the CLIs enabled in this space need.
+   * A missing key is a warning only when neither the space nor the platform
+   * holds it; unknown (omitted) never warns.
+   */
+  requiredProviders?: readonly CredentialProvider[];
 }
 
 const COPY: Record<Scope, { title: string; description: string }> = {
@@ -42,7 +59,7 @@ const COPY: Record<Scope, { title: string; description: string }> = {
     description: 'Fallback credentials used when no personal or space credential is configured.',
   },
   space: {
-    title: 'Space Agent Credentials',
+    title: 'Agent credentials',
     description: 'Used for members without a personal credential; overrides the platform fallback.',
   },
   personal: {
@@ -61,6 +78,36 @@ const BEDROCK_ACCESS_COPY: Record<Scope, (mode: string) => string> = {
   platform: (mode) =>
     `Agents get Bedrock access through ${mode}, so a platform Bedrock key is not used.`,
 };
+
+/**
+ * Disclosure header meta for phones: the summary and status pill share the
+ * title row from `sm` up and move under the description below it, so the
+ * title is never truncated while the status stays visible when collapsed.
+ */
+function stackedDisclosureMeta(input: {
+  summary?: ReactNode;
+  status?: ReactNode;
+  description?: ReactNode;
+}) {
+  const hasMeta = Boolean(input.summary || input.status);
+  return {
+    summary: input.summary ? <span className="max-sm:hidden">{input.summary}</span> : undefined,
+    status: input.status ? (
+      <span className="contents max-sm:hidden">{input.status}</span>
+    ) : undefined,
+    description: (
+      <>
+        {input.description}
+        {hasMeta ? (
+          <span className="mt-1.5 flex flex-wrap items-center gap-2 sm:hidden">
+            {input.summary ? <span>{input.summary}</span> : null}
+            {input.status}
+          </span>
+        ) : null}
+      </>
+    ),
+  };
+}
 
 const SOURCE: Record<Scope, 'platform' | 'space' | 'user'> = {
   platform: 'platform',
@@ -86,7 +133,33 @@ const savedNote = (scope: Scope, value: AgentCredentialUpdate, checked: boolean)
   ].join(' ');
 };
 
-export function AgentCredentialScopeCard({ scope, projectId }: Props) {
+// The entry each scope's service read fills (agentsService.getSettings,
+// getPersonalCredentials, getProjectCredentials), peeked for the first frame.
+function cachedCredentials(scope: Scope, projectId?: string): AgentCredentialStatus | undefined {
+  const key =
+    scope === 'platform'
+      ? qk.agentsSettings()
+      : scope === 'personal'
+        ? qk.personalCredentials()
+        : projectId
+          ? qk.projectCredentials(projectId)
+          : null;
+  if (!key) return undefined;
+  const snapshot = queryClient.getQueryState<AgentCredentialStatus>(key);
+  return snapshot?.data;
+}
+
+const fallbackOf = (scope: Scope, status: AgentCredentialStatus | undefined) =>
+  scope === 'space' && status
+    ? ((status as SpaceAgentCredentialStatus).platformFallback ?? null)
+    : null;
+
+export function AgentCredentialScopeCard({
+  scope,
+  projectId,
+  presentation = 'card',
+  requiredProviders,
+}: Props) {
   const identity = `${scope}\0${projectId ?? ''}`;
   const activeIdentityRef = useRef<string | null>(null);
   const isCurrentIdentity = useCallback(() => activeIdentityRef.current === identity, [identity]);
@@ -97,15 +170,22 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     };
   }, [identity]);
 
-  const [settings, setSettings] = useState<AgentCredentialStatus | null>(null);
-  const [platformFallback, setPlatformFallback] = useState<AgentCredentialStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<AgentCredentialStatus | null>(
+    () => cachedCredentials(scope, projectId) ?? null,
+  );
+  const [platformFallback, setPlatformFallback] = useState<AgentCredentialStatus | null>(() =>
+    fallbackOf(scope, cachedCredentials(scope, projectId)),
+  );
+  const [loading, setLoading] = useState(() => cachedCredentials(scope, projectId) === undefined);
   const [pendingReview, setPendingReview] = useState<{
     review: AgentAuthImpactReview;
     update: AgentCredentialUpdate;
   } | null>(null);
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
+  // Fields open for editing. A stored secret is a summary row with Rotate and
+  // Clear; a missing one a row with Add. The input appears on request only.
+  const [editing, setEditing] = useState<Partial<Record<SecretName, boolean>>>({});
   const [saving, setSaving] = useState(false);
   const [clearingSecret, setClearingSecret] = useState<SecretName | null>(null);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
@@ -137,12 +217,15 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   }, [isCurrentIdentity, projectId, scope]);
 
   useEffect(() => {
-    setLoading(true);
-    setSettings(null);
+    // A cached record shows at once; load() then revalidates it in place.
+    const cached = cachedCredentials(scope, projectId);
+    setLoading(cached === undefined);
+    setSettings(cached ?? null);
     setPendingReview(null);
-    setPlatformFallback(null);
+    setPlatformFallback(fallbackOf(scope, cached));
     setBearerToken('');
     setKiroApiKey('');
+    setEditing({});
     setSaving(false);
     setClearingSecret(null);
     setSaveResult(null);
@@ -159,7 +242,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       .finally(() => {
         if (isCurrentIdentity()) setLoading(false);
       });
-  }, [identity, isCurrentIdentity, load, scope]);
+  }, [identity, isCurrentIdentity, load, projectId, scope]);
 
   const write = (value: AgentCredentialUpdate) => {
     if (scope === 'platform') return agentsService.updateSettings(value);
@@ -205,6 +288,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       if (!isCurrentIdentity() || !(await load())) return;
       setBearerToken('');
       setKiroApiKey('');
+      setEditing({});
       setNote(result.note ?? null);
       setSaveResult('saved');
     } catch (error) {
@@ -235,6 +319,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       if (!isCurrentIdentity() || !(await load())) return;
       if (field === 'bedrockBearerToken') setBearerToken('');
       else setKiroApiKey('');
+      setEditing((current) => ({ ...current, [field]: false }));
       setNote(result.note ?? null);
       setSaveResult('saved');
     } catch (error) {
@@ -264,6 +349,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       setPendingReview(null);
       setBearerToken('');
       setKiroApiKey('');
+      setEditing({});
       await load();
       setNote(savedNote(scope, pendingReview.update, false));
       setSaveResult('saved');
@@ -309,7 +395,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   // With a Bedrock gateway the same field holds a gateway key, which only Claude Code can use.
   const gatewayHost = bedrockGatewayHost(settings?.bedrockGatewayUrl);
   const bedrockKeyField = bedrockKeyFieldCopy(gatewayHost);
-  const fallbackText = (provider: 'bedrock' | 'kiro') => {
+  const fallbackText = (provider: CredentialProvider) => {
     if (scope !== 'space') return null;
     const available =
       provider === 'bedrock'
@@ -317,191 +403,331 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         : platformFallback?.kiroApiKeySet;
     return available ? ' A platform fallback is available.' : ' No platform fallback is set.';
   };
+  const keySetAnywhere = (provider: CredentialProvider) =>
+    provider === 'bedrock'
+      ? Boolean(settings?.bedrockBearerTokenSet || platformFallback?.bedrockBearerTokenSet)
+      : Boolean(settings?.kiroApiKeySet || platformFallback?.kiroApiKeySet);
+  const missingProviders =
+    scope === 'space' ? (requiredProviders ?? []).filter((p) => !keySetAnywhere(p)) : [];
+  const missingLabel =
+    missingProviders.length === 2
+      ? 'Keys missing'
+      : missingProviders[0] === 'kiro'
+        ? 'Kiro key missing'
+        : 'Bedrock key missing';
+
+  const statusBadge =
+    !loading &&
+    (connectionMode ? (
+      <ConfigStatusBadge
+        ok={connectionReady}
+        // The personal view only knows the platform default; a space may use its own.
+        okLabel={
+          scope === 'personal'
+            ? 'Platform default ready'
+            : inheritsConnection
+              ? 'Using platform connection'
+              : `${modeLabel} configured`
+        }
+        notOkLabel={
+          scope === 'personal' ? 'Platform default needs attention' : `${modeLabel} needs attention`
+        }
+        notOkTone="warning"
+      />
+    ) : scope === 'personal' ? (
+      <ConfigStatusBadge
+        ok={configuredCount > 0}
+        okLabel={personalKeysLabel}
+        notOkLabel="Not set: shared keys are used"
+      />
+    ) : scope === 'space' ? (
+      <ConfigStatusBadge
+        ok={configuredCount > 0}
+        okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
+        notOkLabel={missingProviders.length ? missingLabel : 'Uses platform keys'}
+        notOkTone={missingProviders.length ? 'warning' : 'neutral'}
+      />
+    ) : (
+      <ConfigStatusBadge
+        ok={configuredCount > 0}
+        okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
+        notOkLabel="No credentials"
+        notOkTone="warning"
+      />
+    ));
+
+  // Open only when this scope deviates from inheritance or something is missing.
+  const needsAttention = connectionMode ? !connectionReady : missingProviders.length > 0;
+  const revealOpen = !loading && (hasOverride || configuredCount > 0 || needsAttention);
+
+  const anyEditing = Boolean(editing.bedrockBearerToken || editing.kiroApiKey);
+  const busy = saving || clearingSecret !== null;
+  const keyRow = (input: {
+    field: SecretName;
+    label: string;
+    shortName: string;
+    isSet: boolean;
+    helpText: ReactNode;
+  }) => (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p className="flex items-center gap-2 text-xs font-medium text-foreground">
+          {input.label}
+          <ConfigStatusBadge ok={input.isSet} okLabel="Set" notOkLabel="Not set" />
+        </p>
+        <p className="text-2xs text-muted-foreground">{input.helpText}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          aria-label={`${input.isSet ? 'Rotate' : 'Add'} ${input.shortName}`}
+          disabled={busy}
+          onClick={() => {
+            setEditing((current) => ({ ...current, [input.field]: true }));
+            setSaveResult(null);
+            setNote(null);
+          }}
+        >
+          {input.isSet ? 'Rotate' : 'Add'}
+        </Button>
+        {input.isSet && (
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="text-muted-foreground hover:text-destructive"
+            aria-label={`Clear ${input.shortName}`}
+            disabled={busy}
+            onClick={() => void clearSecret(input.field)}
+          >
+            {clearingSecret === input.field ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <XCircle className="h-3 w-3" aria-hidden="true" />
+            )}
+            Clear
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+  const bedrockShortName = gatewayHost ? 'gateway key' : 'Bedrock key';
+  const bedrockHelp = `${bedrockKeyField.helpText}${fallbackText('bedrock') ?? ''}`;
+  const kiroHelp = `Enables the Kiro CLI.${fallbackText('kiro') ?? ''}`;
+
+  const body = loading ? (
+    <div className="space-y-3">
+      <Skeleton className="h-4 w-40" />
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="mt-4 h-4 w-40" />
+      <Skeleton className="h-9 w-full" />
+    </div>
+  ) : !settings && errorMessage ? (
+    <div
+      role="alert"
+      className="flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5"
+    >
+      <p className="flex items-center gap-2 text-xs text-destructive">
+        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+        {errorMessage}
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setLoading(true);
+          setErrorMessage(null);
+          load()
+            .catch((error) => {
+              if (!isCurrentIdentity()) return;
+              setErrorMessage(
+                error instanceof Error ? error.message : 'Failed to load agent credentials',
+              );
+            })
+            .finally(() => {
+              if (isCurrentIdentity()) setLoading(false);
+            });
+        }}
+      >
+        Retry
+      </Button>
+    </div>
+  ) : (
+    <div className="space-y-5">
+      {authentication && (
+        <AgentAuthenticationModeSettings
+          key={`${identity}:${authentication.policy.revision}`}
+          authentication={authentication}
+          scope={scope}
+          projectId={projectId}
+          hasOverride={hasOverride}
+          onApplied={load}
+        />
+      )}
+      {connectionMode ? (
+        // The server rejects every Bedrock key write in a connection mode,
+        // clearing included, so offer neither an input nor a Clear button.
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-foreground">Bedrock key</p>
+          <p className="text-2xs text-muted-foreground">
+            {BEDROCK_ACCESS_COPY[scope](modeLabel ?? '')}
+          </p>
+          {settings?.bedrockBearerTokenSet && (
+            <p className="text-2xs text-muted-foreground">
+              A Bedrock key is still saved here, but it is not used while {modeLabel} is active.
+            </p>
+          )}
+        </div>
+      ) : editing.bedrockBearerToken ? (
+        <SecretField
+          id={`${scope}-bedrock-bearer-token`}
+          label={bedrockKeyField.label}
+          isSet={Boolean(settings?.bedrockBearerTokenSet)}
+          value={bearerToken}
+          onChange={(value) => {
+            setBearerToken(value);
+            setPendingReview(null);
+            setNote(null);
+          }}
+          emptyPlaceholder={
+            gatewayHost ? 'Paste your gateway key' : 'Paste your Bedrock bearer token'
+          }
+          rotatePlaceholder={
+            gatewayHost ? 'Paste the new gateway key' : 'Paste the new Bedrock bearer token'
+          }
+          onClear={() => clearSecret('bedrockBearerToken')}
+          clearing={clearingSecret === 'bedrockBearerToken'}
+          disabled={busy}
+          helpText={bedrockHelp}
+          warningText={agentCredentialFormatWarning(
+            'bedrockBearerToken',
+            bearerToken,
+            Boolean(gatewayHost),
+          )}
+        />
+      ) : (
+        keyRow({
+          field: 'bedrockBearerToken',
+          label: bedrockKeyField.label,
+          shortName: bedrockShortName,
+          isSet: Boolean(settings?.bedrockBearerTokenSet),
+          helpText: bedrockHelp,
+        })
+      )}
+      {editing.kiroApiKey ? (
+        <SecretField
+          id={`${scope}-kiro-api-key`}
+          label="Kiro API Key"
+          isSet={Boolean(settings?.kiroApiKeySet)}
+          value={kiroApiKey}
+          onChange={(value) => {
+            setKiroApiKey(value);
+            setPendingReview(null);
+            setNote(null);
+          }}
+          emptyPlaceholder="Paste your Kiro API key"
+          rotatePlaceholder="Paste the new Kiro API key"
+          onClear={() => clearSecret('kiroApiKey')}
+          clearing={clearingSecret === 'kiroApiKey'}
+          disabled={busy}
+          helpText={kiroHelp}
+          warningText={agentCredentialFormatWarning('kiroApiKey', kiroApiKey, Boolean(gatewayHost))}
+        />
+      ) : (
+        keyRow({
+          field: 'kiroApiKey',
+          label: 'Kiro API Key',
+          shortName: 'Kiro key',
+          isSet: Boolean(settings?.kiroApiKeySet),
+          helpText: kiroHelp,
+        })
+      )}
+      {pendingReview ? (
+        <div className="space-y-2">
+          <AuthenticationImpactReview
+            review={pendingReview.review}
+            applying={saving}
+            onApply={() => void applyReview()}
+            onCancel={() => setPendingReview(null)}
+          />
+          {errorMessage && (
+            <p role="alert" className="text-xs text-destructive">
+              {errorMessage}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {anyEditing ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <SaveStatusButton
+                onClick={save}
+                disabled={!hasChanges || clearingSecret !== null}
+                saving={saving}
+                label="Save credentials"
+                result={saveResult}
+                errorMessage={errorMessage}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="mt-1"
+                disabled={busy}
+                onClick={() => {
+                  setEditing({});
+                  setBearerToken('');
+                  setKiroApiKey('');
+                  setPendingReview(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            (saveResult || errorMessage) &&
+            (saveResult === 'error' ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errorMessage || 'Failed to save'}
+              </p>
+            ) : (
+              <p className="text-xs text-agent-success">Saved</p>
+            ))
+          )}
+          {note && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {note}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  if (presentation === 'disclosure') {
+    return (
+      <SettingsDisclosureCard
+        icon={<KeyRound />}
+        title={COPY[scope].title}
+        {...stackedDisclosureMeta({ status: statusBadge, description })}
+        defaultOpen={revealOpen}
+      >
+        {body}
+      </SettingsDisclosureCard>
+    );
+  }
 
   return (
     <SettingsCard
       icon={<KeyRound />}
       title={COPY[scope].title}
       description={description}
-      badge={
-        !loading &&
-        (connectionMode ? (
-          <ConfigStatusBadge
-            ok={connectionReady}
-            // The personal view only knows the platform default; a space may use its own.
-            okLabel={
-              scope === 'personal'
-                ? 'Platform default ready'
-                : inheritsConnection
-                  ? 'Using platform connection'
-                  : `${modeLabel} configured`
-            }
-            notOkLabel={
-              scope === 'personal'
-                ? 'Platform default needs attention'
-                : `${modeLabel} needs attention`
-            }
-            notOkTone="warning"
-          />
-        ) : scope === 'personal' ? (
-          <ConfigStatusBadge
-            ok={configuredCount > 0}
-            okLabel={personalKeysLabel}
-            notOkLabel="Not set: shared keys are used"
-          />
-        ) : (
-          <ConfigStatusBadge
-            ok={configuredCount > 0}
-            okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
-            notOkLabel="No credentials"
-            notOkTone="warning"
-          />
-        ))
-      }
+      badge={statusBadge}
     >
-      {loading ? (
-        <div className="space-y-3">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="mt-4 h-4 w-40" />
-          <Skeleton className="h-9 w-full" />
-        </div>
-      ) : !settings && errorMessage ? (
-        <div
-          role="alert"
-          className="flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5"
-        >
-          <p className="flex items-center gap-2 text-xs text-destructive">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            {errorMessage}
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setLoading(true);
-              setErrorMessage(null);
-              load()
-                .catch((error) => {
-                  if (!isCurrentIdentity()) return;
-                  setErrorMessage(
-                    error instanceof Error ? error.message : 'Failed to load agent credentials',
-                  );
-                })
-                .finally(() => {
-                  if (isCurrentIdentity()) setLoading(false);
-                });
-            }}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-5">
-          {authentication && (
-            <AgentAuthenticationModeSettings
-              key={`${identity}:${authentication.policy.revision}`}
-              authentication={authentication}
-              scope={scope}
-              projectId={projectId}
-              hasOverride={hasOverride}
-              onApplied={load}
-            />
-          )}
-          {connectionMode ? (
-            // The server rejects every Bedrock key write in a connection mode,
-            // clearing included, so offer neither an input nor a Clear button.
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-foreground">Bedrock key</p>
-              <p className="text-[11px] text-muted-foreground">
-                {BEDROCK_ACCESS_COPY[scope](modeLabel ?? '')}
-              </p>
-              {settings?.bedrockBearerTokenSet && (
-                <p className="text-[11px] text-muted-foreground">
-                  A Bedrock key is still saved here, but it is not used while {modeLabel} is active.
-                </p>
-              )}
-            </div>
-          ) : (
-            <SecretField
-              id={`${scope}-bedrock-bearer-token`}
-              label={bedrockKeyField.label}
-              isSet={Boolean(settings?.bedrockBearerTokenSet)}
-              value={bearerToken}
-              onChange={(value) => {
-                setBearerToken(value);
-                setPendingReview(null);
-                setNote(null);
-              }}
-              emptyPlaceholder={bedrockKeyField.emptyPlaceholder}
-              rotatePlaceholder={bedrockKeyField.rotatePlaceholder}
-              onClear={() => clearSecret('bedrockBearerToken')}
-              clearing={clearingSecret === 'bedrockBearerToken'}
-              disabled={saving || clearingSecret !== null}
-              helpText={`${bedrockKeyField.helpText}${fallbackText('bedrock') ?? ''}`}
-              warningText={agentCredentialFormatWarning(
-                'bedrockBearerToken',
-                bearerToken,
-                Boolean(gatewayHost),
-              )}
-            />
-          )}
-          <SecretField
-            id={`${scope}-kiro-api-key`}
-            label="Kiro API Key"
-            isSet={Boolean(settings?.kiroApiKeySet)}
-            value={kiroApiKey}
-            onChange={(value) => {
-              setKiroApiKey(value);
-              setPendingReview(null);
-              setNote(null);
-            }}
-            emptyPlaceholder="Enter KIRO_API_KEY value"
-            rotatePlaceholder="Enter a new key to rotate, or leave blank"
-            onClear={() => clearSecret('kiroApiKey')}
-            clearing={clearingSecret === 'kiroApiKey'}
-            disabled={saving || clearingSecret !== null}
-            helpText={`Enables the Kiro CLI.${fallbackText('kiro') ?? ''}`}
-            warningText={agentCredentialFormatWarning(
-              'kiroApiKey',
-              kiroApiKey,
-              Boolean(gatewayHost),
-            )}
-          />
-          {pendingReview ? (
-            <div className="space-y-2">
-              <AuthenticationImpactReview
-                review={pendingReview.review}
-                applying={saving}
-                onApply={() => void applyReview()}
-                onCancel={() => setPendingReview(null)}
-              />
-              {errorMessage && (
-                <p role="alert" className="text-xs text-destructive">
-                  {errorMessage}
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <SaveStatusButton
-                onClick={save}
-                disabled={!hasChanges || clearingSecret !== null}
-                saving={saving}
-                label="Save Credentials"
-                result={saveResult}
-                errorMessage={errorMessage}
-              />
-              {note && (
-                <p role="status" className="text-xs text-muted-foreground">
-                  {note}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {body}
     </SettingsCard>
   );
 }

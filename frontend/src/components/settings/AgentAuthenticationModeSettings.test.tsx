@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import type {
   AgentAuthenticationView,
@@ -112,8 +112,24 @@ const renderSettings = (
     />,
   );
 
+// Buttons that act, as opposed to the "How this works" help disclosure.
+const actionButtons = () =>
+  screen
+    .queryAllByRole('button')
+    .filter((button) => !/how this works/i.test(button.textContent ?? ''));
+
+const pickMode = async (user: ReturnType<typeof userEvent.setup>, label: string) => {
+  await user.click(screen.getByRole('combobox', { name: 'Agent authentication mode' }));
+  await user.click(screen.getByRole('option', { name: label }));
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
+  // Radix Select uses browser APIs that jsdom does not implement.
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  window.HTMLElement.prototype.setPointerCapture = vi.fn();
+  window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
   preview.mockImplementation(async (request: { kind?: string; projectId?: string }) =>
     reviewOf(
       request.kind === 'connection-draft'
@@ -137,6 +153,58 @@ beforeEach(() => {
 });
 
 describe('AgentAuthenticationModeSettings', () => {
+  it('picks the mode with the design-system select, keeping the stable id and a label', async () => {
+    const user = userEvent.setup();
+    renderSettings({
+      authentication: view({
+        modes: [
+          {
+            id: 'keys',
+            label: 'Keys',
+            available: true,
+            defaultConnectionId: 'keys-platform-default',
+          },
+          { id: 'test-connection', label: 'Test gateway', available: true },
+          { id: 'later', label: 'Later provider', available: false },
+        ],
+      }),
+    });
+
+    const trigger = screen.getByRole('combobox', { name: 'Agent authentication mode' });
+    expect(trigger).toHaveAttribute('id', 'agent-authentication-mode');
+    expect(screen.getByLabelText('Agent authentication mode')).toBe(trigger);
+    expect(trigger).toHaveTextContent('Test gateway');
+    expect(document.querySelector('select')).toBeNull();
+
+    await user.click(trigger);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Keys',
+      'Test gateway',
+      'Later provider — not available yet',
+    ]);
+    expect(screen.getByRole('option', { name: /Later provider/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+  });
+
+  it('keeps one status line visible and the explanation behind "How this works"', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    expect(screen.getByText('Connection: Amazon Bedrock · Ready')).toBeInTheDocument();
+    expect(screen.queryByText(/Started runs keep/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Kiro uses its separate key settings/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'How this works' }));
+    expect(
+      screen.getByText(
+        'Mode changes apply to new work. Started runs keep their selected connection.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Kiro uses its separate key settings.')).toBeInTheDocument();
+  });
+
   it('drafts a platform connection through the provider Setup and applies it after review', async () => {
     const user = userEvent.setup();
     const onApplied = vi.fn(async () => {});
@@ -148,10 +216,9 @@ describe('AgentAuthenticationModeSettings', () => {
       onApplied,
     });
 
-    expect(screen.getByText(/Started runs keep their selected connection/)).toBeInTheDocument();
     // The active mode is never offered as a change, even with a served default.
     expect(screen.queryByRole('button', { name: 'Review mode change' })).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'test-connection');
+    await pickMode(user, 'Test gateway');
     await user.click(screen.getByRole('button', { name: 'Set up Test gateway connection' }));
     expect(screen.getByText('Setup for platform without space')).toBeInTheDocument();
     expect(screen.getByText('Initial: null')).toBeInTheDocument();
@@ -193,7 +260,7 @@ describe('AgentAuthenticationModeSettings', () => {
     const user = userEvent.setup();
     renderSettings();
 
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'keys');
+    await pickMode(user, 'Keys');
     await user.click(screen.getByRole('button', { name: 'Review mode change' }));
 
     expect(preview).toHaveBeenCalledWith({
@@ -215,7 +282,7 @@ describe('AgentAuthenticationModeSettings', () => {
       }),
     });
 
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'keys');
+    await pickMode(user, 'Keys');
 
     expect(screen.queryByRole('button', { name: 'Review mode change' })).not.toBeInTheDocument();
     expect(screen.getByText(/Keys needs a ready platform connection/)).toBeInTheDocument();
@@ -238,20 +305,20 @@ describe('AgentAuthenticationModeSettings', () => {
 
     expect(screen.getByText('Endpoint: https://plain.example')).toBeInTheDocument();
     expect(screen.queryByText(/Scopes|Port/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(actionButtons()).toHaveLength(0);
     expect(screen.queryByText(/needs a ready platform connection/)).not.toBeInTheDocument();
     platform.unmount();
 
     const space = renderSettings({ authentication: plain, scope: 'space', projectId: 'p1' });
     expect(screen.getByText('Platform mode: Plain')).toBeInTheDocument();
     expect(screen.getByText('Endpoint: https://plain.example')).toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(actionButtons()).toHaveLength(0);
     expect(screen.queryByText(/Only platform administrators/)).not.toBeInTheDocument();
     space.unmount();
 
     renderSettings();
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'plain-mode');
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    await pickMode(user, 'Plain');
+    expect(actionButtons()).toHaveLength(0);
     expect(screen.getByText(/Plain needs a ready platform connection/)).toBeInTheDocument();
   });
 
@@ -313,7 +380,7 @@ describe('AgentAuthenticationModeSettings', () => {
       hasOverride: true,
     });
 
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(actionButtons()).toHaveLength(0);
     expect(
       screen.getByText('Only platform administrators can configure space connections.'),
     ).toBeInTheDocument();
@@ -363,5 +430,19 @@ describe('AgentAuthenticationModeSettings', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       "There is no platform Bedrock key. Agents use a space's key where one is set; otherwise add your own key below or ask an administrator.",
     );
+  });
+
+  it('names the connection backend and state for people, never as raw enums', () => {
+    const { unmount } = renderSettings();
+    expect(screen.getByText('Connection: Amazon Bedrock · Ready')).toBeInTheDocument();
+    expect(screen.queryByText(/bedrock · ready/)).not.toBeInTheDocument();
+    unmount();
+
+    renderSettings({
+      authentication: view({ connection: { ...platformConnection, state: 'reconnect-required' } }),
+    });
+    expect(
+      screen.getByText('Connection: Amazon Bedrock · Needs reconnecting by an administrator'),
+    ).toBeInTheDocument();
   });
 });
