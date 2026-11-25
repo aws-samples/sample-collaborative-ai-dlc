@@ -585,6 +585,38 @@ describe('github provider — repo browse + PR + comments', () => {
     ).toBe('conflict');
   });
 
+  it('listBranches reads every page, not just the first 100 branches', async () => {
+    const branch = (n) => ({ name: `b${n}` });
+    const fetchImpl = makeFetch([
+      [
+        '/repos/o/r/branches',
+        githubPages((page) => (page === 1 ? fullPage(1, branch) : [branch(101)]), 2),
+      ],
+    ]);
+    const branches = await gh.listBranches({ token: 't', fetchImpl }, 'o/r');
+    expect(branches).toHaveLength(101);
+    expect(branches.at(-1)).toBe('b101');
+  });
+
+  it('listBranches returns no branches for a missing repo and fails on a failed page', async () => {
+    const missing = makeFetch([['/branches', { status: 404, json: { message: 'Not Found' } }]]);
+    expect(await gh.listBranches({ token: 't', fetchImpl: missing }, 'o/r')).toEqual([]);
+
+    const pages = githubPages((page) => fullPage(page, (n) => ({ name: `b${n}` })), 2);
+    const failing = makeFetch([
+      [
+        '/branches',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 403, json: { message: 'API rate limit exceeded' } }
+            : pages(url),
+      ],
+    ]);
+    await expect(gh.listBranches({ token: 't', fetchImpl: failing }, 'o/r')).rejects.toThrow(
+      'API rate limit exceeded',
+    );
+  });
+
   it('rejects malformed repo references', async () => {
     await expect(
       gh.listBranches({ token: 't', fetchImpl: makeFetch([]) }, 'no-slash'),
