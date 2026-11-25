@@ -21,7 +21,12 @@ import { dependencyInstall } from './native-qualification-dependencies.mjs';
 import { initiator, respondent } from './native-qualification-member.mjs';
 import { workspaceQualificationDriver } from './native-workspace-qualification-driver.mjs';
 import { gameModule, gamePage, gameTest } from './native-qualification-game.mjs';
-import { buildNativePendingInput } from '../lambda/shared/native-pending-input.js';
+import {
+  buildNativePendingInput,
+  nativeAnswerText,
+} from '../lambda/shared/native-pending-input.js';
+
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const requirements =
   '# Counter requirements\n\n## Behavior\nFR-1: Increment an integer counter by one.\n\n' +
@@ -72,10 +77,6 @@ function* loadStage(command) {
   assert.match(steering.next, /^aidlc engine orchestrate continue [A-Za-z0-9_-]{1,64}$/);
   return yield* runDirective(steering.next);
 }
-function* requestPlanNames() {
-  yield { command: 'aidlc --version' };
-  return 'Which plan would you like?';
-}
 async function readBoth(driver, route, parameters) {
   const [original, reopened] = await Promise.all(
     [initiator, respondent].map(({ token }) => driver.get(route, parameters, { token })),
@@ -91,6 +92,7 @@ async function qualifyCompetingHistory({
   first,
   held,
   history,
+  guidedHistory,
   gateEvidence,
 
   retained,
@@ -117,12 +119,15 @@ async function qualifyCompetingHistory({
     acceptedTurns.map((event) => [event.replyToPublicationId, event.actor, event.turnSequence]),
     [
       [first.publicationId, respondent.actorId, history.answer.sequence],
+      ...guidedHistory,
       [held.publicationId, initiator.actorId, retained.answer.sequence],
     ],
   );
   const [accepted] = acceptedTurns;
   const published = events.find(
-    (event) => event.type === 'native.published' && event.publicationId === held.publicationId,
+    (event) =>
+      event.type === 'native.published' &&
+      event.publicationId === history.answer.resultingPublication.publicationId,
   );
   assert.equal(published.turnSequence, accepted.turnSequence);
   assert.equal(published.attemptId, accepted.attemptId);
@@ -154,7 +159,10 @@ async function qualifyCompetingHistory({
 async function qualifyLocalMember({ harness, driver, provider, project, terminalResult }) {
   const gameRequirements =
     '# Catch game requirements\n\nMove the target in depth when the player scores.\n';
-  const gameQuestions = '# Catch game questions\n\nKeep the existing click-to-score controls.\n';
+  const gameQuestions = await fs.readFile(
+    new URL('./test/fixtures/native-game-requirements-questions.md', import.meta.url),
+    'utf8',
+  );
   const pendingFile = join(project, '.native-control/pending-question.json');
   const unfinished = {
     filePath: join(project, 'nested/unfinished-review.txt'),
@@ -223,9 +231,19 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     const recommendation = first;
     const other = { selectedOptions: [], freeText: 'Let’s use Express for this one' };
     const answer = harness === 'codex' ? other : { selectedOptions: [1] };
-    await turn(answer.freeText ?? offer.choices[1].label, requestPlanNames(), {
+    const before = provider.result().totalRequests;
+    function* prematureSelection() {
+      yield* runDirective(expressCommand);
+      yield {
+        command: `aidlc engine intent create --scope express --request ${expressCommand.split(' ').at(-1)} --label premature`,
+      };
+      throw new Error('The provider created a workflow before explicit consent');
+    }
+    await turn(answer.freeText ?? offer.choices[1].label, prematureSelection(), {
       selection: { answers: [answer] },
+      displayOnly: true,
     });
+    assert.equal(provider.result().totalRequests, before);
     first = await driver.interaction();
     assert.notEqual(first.publicationId, recommendation.publicationId);
     assert.equal((await proof(first)).engineApplication, 'not_recorded');
@@ -236,6 +254,8 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     );
     await noSelectedIntent();
     assert.equal(plans.length, 11);
+    const original = await driver.get('interaction', publicationQuery(recommendation));
+    assert.equal(original.answer.text, answer.freeText ?? offer.choices[1].label);
     planLabel = 'express';
     planSelection = { answers: [{ selectedOptions: [plans.indexOf(planLabel)] }] };
   }
@@ -248,7 +268,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
     ],
   };
   const gateFile = { filePath: pendingFile, content: JSON.stringify(gateSpec) };
-  function* selectAndPresentGate() {
+  function* selectPlan() {
     const creation = yield* runDirective(expressCommand);
     const id = expressCommand.match(/--request ([a-f0-9]{8})/)[1];
     assert.match(JSON.stringify(creation), /intent create/);
@@ -267,30 +287,85 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
         path,
         /^aidlc\/spaces\/default\/intents\/[a-z0-9-]+\/inception\/requirements-analysis\/[a-z-]+\.md$/,
       );
-    yield { filePath: join(project, stage.produces[0]), content: gameRequirements };
     yield { filePath: join(project, stage.produces[1]), content: gameQuestions };
+    assert.equal(stage.answer_mode.ask, true);
+    const logged = yield* runDirective(
+      `aidlc engine log decision --stage requirements-analysis --question-kind answer-mode --decision "How would you like to answer the questions?" --options "Guide me,I'll edit the file,Chat"`,
+    );
+    assert.equal(logged.emitted, 'DECISION_RECORDED');
+    return 'How would you like to answer the questions?';
+  }
+  let filledQuestions;
+  function* guide() {
+    const answer = yield* runDirective(
+      'aidlc engine log answer --stage requirements-analysis --details "Guide me"',
+    );
+    assert.equal(answer.emitted, 'QUESTION_ANSWERED');
+    yield* runDirective('aidlc engine log decision --stage requirements-analysis --decision Q1-Q8');
+    return 'Please answer the eight questions.';
+  }
+  function* recordAnswers(text, answers) {
+    const logged = yield* runDirective(
+      `aidlc engine log answer --stage requirements-analysis --details ${shellQuote(text)}`,
+    );
+    assert.equal(logged.emitted, 'QUESTION_ANSWERED');
+    let i = 0;
+    filledQuestions = gameQuestions.replaceAll('[Answer]:', () => `[Answer]: ${answers[i++]}`);
+    yield { filePath: join(project, stage.produces[1]), content: filledQuestions };
+    assert.equal(i, 8);
+    yield { filePath: join(project, stage.produces[0]), content: gameRequirements };
     const opened = yield* runDirective(
       `aidlc engine orchestrate report --stage ${stage.stage} --result awaiting-approval`,
     );
     assert.match(opened.message, /Recorded awaiting-approval/);
-    yield gateFile;
+    yield* runDirective(
+      `aidlc engine log decision --stage requirements-analysis --decision "${gateQuestion}" --options "Approve,Request Changes"`,
+    );
     return gateQuestion;
   }
   assert.equal(
-    await turn(planLabel, selectAndPresentGate(), {
+    await turn(planLabel, selectPlan(), {
       selection: planSelection,
       compete,
     }),
     firstSession,
   );
+  const afterPlan = await driver.interaction();
+  const guidedHistory = [];
+  if (!terminalResult) {
+    assert.deepEqual(
+      afterPlan.pendingInput.questions[0].options.map((o) => o.label),
+      ['Guide me', "I'll edit the file", 'Chat'],
+    );
+    await turn('Guide me', guide(), { selection });
+    const batch = await driver.interaction();
+    guidedHistory.push(
+      [afterPlan.publicationId, initiator.actorId, batch.sequence],
+      [batch.publicationId, initiator.actorId, batch.sequence + 1],
+    );
+    assert.equal(batch.pendingInput.questions.length, 8);
+    assert.deepEqual(
+      batch.pendingInput.questions.map((q) => q.options.length),
+      [6, 5, 6, 6, 6, 5, 6, 5],
+    );
+    const reply = {
+      answers: batch.pendingInput.questions.map((q, i) => ({ selectedOptions: [i % 3] })),
+    };
+    const text = nativeAnswerText(batch.pendingInput, reply);
+    const answers = batch.pendingInput.questions.map(
+      (q, i) => q.options[reply.answers[i].selectedOptions[0]].label,
+    );
+    await turn(text, recordAnswers(text, answers), { selection: reply });
+    assert.equal((await driver.get('interaction', publicationQuery(batch))).answer.text, text);
+  }
   const held = await driver.interaction();
   assert.equal(held.pendingInput.kind, 'approval');
   assert.equal(held.pendingInput.stage, stage.stage);
   const history = await driver.get('interaction', publicationQuery(first));
   assert.deepEqual(history.interaction.pendingInput, first.pendingInput);
   assert.equal(history.answer.context.publicationId, first.publicationId);
-  assert.equal(history.answer.resultingPublication.publicationId, held.publicationId);
-  assert.equal(history.answer.resultingPublication.publicationSequence, held.sequence);
+  assert.equal(history.answer.resultingPublication.publicationId, afterPlan.publicationId);
+  assert.equal(history.answer.resultingPublication.publicationSequence, afterPlan.sequence);
   assert.equal(history.answer.context.membershipRecorded, true);
   assert.equal(history.answer.text, planLabel);
   const before = await proof(held);
@@ -338,7 +413,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
   assert.equal(next.gate, true);
   assert.deepEqual(next.produces, stage.produces);
   assert.equal(await fs.readFile(join(project, next.produces[0]), 'utf8'), gameRequirements);
-  assert.equal(await fs.readFile(join(project, next.produces[1]), 'utf8'), gameQuestions);
+  assert.equal(await fs.readFile(join(project, next.produces[1]), 'utf8'), filledQuestions);
   assert.equal(await fs.readFile(unfinished.filePath, 'utf8'), unfinished.content);
   assert.equal(provider.result().inputReadWitnesses, driver.inputReads.length);
   const recovered = await driver.interaction();
@@ -367,6 +442,7 @@ async function qualifyLocalMember({ harness, driver, provider, project, terminal
         first,
         held,
         history,
+        guidedHistory,
         gateEvidence,
 
         retained,

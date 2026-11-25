@@ -422,7 +422,13 @@ export async function workspaceQualificationDriver({
     interaction: () => member.request('interaction'),
     async turn(
       prompt,
-      { interrupt = false, selection, compete = false, token = initiator.token } = {},
+      {
+        interrupt = false,
+        selection,
+        compete = false,
+        displayOnly = false,
+        token = initiator.token,
+      } = {},
     ) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
@@ -449,7 +455,11 @@ export async function workspaceQualificationDriver({
         return null;
       }
       await settle(['AWAITING_USER', 'STOPPED']);
-      assert.equal(cliTurns, beforeTurns + 1, 'Duplicate/lost ACK does not replay a CLI turn');
+      assert.equal(
+        cliTurns,
+        beforeTurns + (displayOnly ? 0 : 1),
+        'CLI launches for this admitted reply',
+      );
       assert.equal(f.row().publication.sequence, before + 1);
       assert.equal(f.row().recoveryCheckpoint, undefined);
       sessions.add(f.row().publication.nativeSessionId);

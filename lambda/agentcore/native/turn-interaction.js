@@ -279,6 +279,154 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] })
   }
 };
 
+// The installed method logs the mode question before showing it. A guided
+// batch names the presented question numbers in the same log command. Read
+// only the settled active stage's published question file.
+export function nativeRequirementsForm({
+  snapshot,
+  beforeFiles,
+  harness,
+  method,
+  guidedQuestions,
+}) {
+  if (!method?.decision && !method?.recordedRequirementsDecision) return null;
+  const { evidence } = classifyNativeFirstWait({ snapshot, harness });
+  if (evidence?.stage !== 'requirements-analysis') return null;
+  const auditPrefix = `${evidence.nativeIntentPath}/audit/`;
+  const additions = snapshot.files.filter(
+    (file) =>
+      file.path.startsWith(auditPrefix) &&
+      /^[\w.-]+\.md$/.test(file.path.slice(auditPrefix.length)) &&
+      !beforeFiles.some((old) => old.path === file.path && old.sha256 === file.sha256),
+  );
+  if (additions.length !== 1) return null;
+  const audit = additions[0];
+  const previous = beforeFiles.find((old) => old.path === audit.path);
+  if (previous && digest(audit.content.subarray(0, previous.bytes)) !== previous.sha256)
+    return null;
+  const auditBlocks = audit.content
+    .subarray(previous?.bytes ?? 0)
+    .toString('utf8')
+    .trim()
+    .split(/\n---(?:\n|$)/);
+  // Artifact-write hooks can run after the question. A later decision, answer
+  // or state transition supersedes it. Do not pick a row from another shard.
+  const last = auditBlocks
+    .filter((block) => block.trim() && !block.includes('\n**Event**: ARTIFACT_UPDATED\n'))
+    .at(-1);
+  const field = (name) =>
+    last
+      ?.split('\n')
+      .find((line) => line.startsWith(`**${name}**: `))
+      ?.slice(name.length + 6);
+  if (
+    field('Event') !== 'DECISION_RECORDED' ||
+    field('Stage') !== evidence.stage ||
+    field('Checkpoint') ||
+    field('Unit') ||
+    field('Workflow')
+  )
+    return null;
+  const decision = {
+    stage: evidence.stage,
+    prompt: field('Decision'),
+    options: field('Options'),
+    questionKind: field('Question Kind'),
+  };
+  if (
+    !decision.prompt ||
+    (method.decision &&
+      ['prompt', 'options', 'questionKind'].some((k) => method.decision[k] !== decision[k]))
+  )
+    return null;
+  const file = evidence.questions[0];
+  const modeLabels = ['Guide me', "I'll edit the file", 'Chat'];
+  let questions;
+  if (decision.questionKind === 'answer-mode') {
+    const labels = decision.options?.split(',').map((value) => value.trim());
+    if (labels?.length !== 3 || !modeLabels.every((label) => labels.includes(label))) return null;
+    questions = [
+      {
+        prompt: decision.prompt,
+        options: labels.map((label) => ({
+          label,
+          ...(label === "I'll edit the file"
+            ? {
+                description:
+                  'Published files are read-only here. Choose Guide me or Chat to answer in this UI.',
+              }
+            : {}),
+        })),
+      },
+    ];
+  } else {
+    if (
+      decision.questionKind ||
+      guidedQuestions?.path !== file.path ||
+      guidedQuestions.directive !== evidence.directive.sha256
+    )
+      return null;
+    const content = snapshot.files.find((entry) => entry.path === file.path).content;
+    if (content.length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return null;
+    const blocks = content
+      .toString('utf8')
+      .replaceAll('\r\n', '\n')
+      .split(/^## (?=Q\d+[.)] )/m)
+      .slice(1);
+    const pending = [];
+    questions = [];
+    for (const block of blocks) {
+      const parts = block.split(/^\[Answer\]:/m);
+      if (parts.length !== 2) return null;
+      if (parts[1].trim()) continue;
+      const lines = parts[0].trim().split('\n');
+      const heading = /^Q(\d+)[.)] (.+)$/.exec(lines.shift());
+      if (!heading || /consolidated summary confirmation/i.test(heading[2])) return null;
+      const firstOption = lines.findIndex((line) => /^(?:[-*] )?[A-Z][.)] /.test(line));
+      if (firstOption < 0) return null;
+      const prompt = lines.slice(0, firstOption).join('\n').trim() || heading[2];
+      const options = [];
+      for (const line of lines.slice(firstOption).filter(Boolean)) {
+        const match = /^(?:[-*] )?[A-Z][.)] (.+)$/.exec(line);
+        if (!match) return null;
+        options.push({ label: match[1] });
+      }
+      pending.push(Number(heading[1]));
+      questions.push({
+        header: heading[2],
+        prompt,
+        options,
+        multiSelect: /\(select all that apply\)/i.test(`${heading[2]} ${prompt}`),
+      });
+    }
+    // No guessed subset, missing definition, summary checkpoint or answered
+    // question gets included in the batch.
+    const numbers = /^Q(\d+)\s*[-–]\s*Q?(\d+)$/i.exec(decision.prompt);
+    const names = pending.map((n) => `Q${n}`);
+    const allNamed = decision.prompt.split(/,\s*/).join(',') === names.join(',');
+    if (
+      questions.length !== evidence.pendingQuestions ||
+      !(
+        allNamed ||
+        (numbers &&
+          +numbers[1] === pending[0] &&
+          +numbers[2] === pending.at(-1) &&
+          pending.every((n, i) => n === pending[0] + i))
+      )
+    )
+      return null;
+  }
+  const spec = { version: 2, questions };
+  return buildNativePendingInput({ spec })
+    ? {
+        spec,
+        bytes: Buffer.byteLength(JSON.stringify(spec)),
+        questionFile: { ...file, directive: evidence.directive.sha256 },
+        answerMode: decision.questionKind === 'answer-mode',
+      }
+    : null;
+}
+
 export const decodeNativeTurnInteraction = ({
   interactionContract,
   snapshot,

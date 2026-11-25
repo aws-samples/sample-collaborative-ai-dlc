@@ -3,7 +3,10 @@ import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
 import { nativeDiagnosticError, nativeDiagnosticPhase } from './execution-diagnostics.js';
-import { nativeRuntimeCommand } from '../shared/native-runtime-command.js';
+import {
+  nativeRuntimeCommand,
+  NATIVE_SELECTION_CAPABILITY,
+} from '../shared/native-runtime-command.js';
 import { nativePublicationMeasurements } from './execution-history.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
@@ -426,6 +429,7 @@ export const reconcileNativeDispatch = async ({
     else await advance({ status: 'RUNNING' });
     return yieldPending();
   }
+  let acceptsSelection = false;
   if (nativeTurnSequence(state.row) > 1) {
     const observed = await status();
     if (observed.kind === 'retry') return yieldPending();
@@ -433,6 +437,7 @@ export const reconcileNativeDispatch = async ({
     const { report } = observed;
     if (!priorBoundary(state.row, report)) return requireRecovery('DELIVERY_UNCERTAIN');
     if (report.recovered === true) return requireRecovery('SESSION_LOST');
+    acceptsSelection = report.capabilities?.includes(NATIVE_SELECTION_CAPABILITY) === true;
   }
   const material = checkedCredentials(state.row, await credentials(state.row));
   if (
@@ -463,6 +468,7 @@ export const reconcileNativeDispatch = async ({
       response.commandId !== state.row.response.commandId ||
       response.sequence !== nativeTurnSequence(state.row) ||
       response.interactionId !== state.row.interaction.id ||
+      (response.publicationId && response.publicationId !== state.row.publication.id) ||
       response.contentSha256 !== state.row.interactionContentSha256
     )
       fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
@@ -475,6 +481,7 @@ export const reconcileNativeDispatch = async ({
       priorInteractionId: response.interactionId,
       priorPublicationId: state.row.publication.id,
       text: response.text,
+      ...(acceptsSelection && response.selection ? { selection: response.selection } : {}),
       configuration,
       credentials: { model: material.model, git: material.git },
     };

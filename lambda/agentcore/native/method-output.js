@@ -5,6 +5,7 @@ import {
   NATIVE_PENDING_INPUT_LIMITS,
 } from '../../shared/native-pending-input.js';
 import { nativeGateFromSnapshot } from './turn-interaction.js';
+import { isDeepStrictEqual } from 'node:util';
 
 // Decode literal shell words, including the shell -lc envelope printed by Codex.
 // Expansion, control operators and redirection have no attributable stdout.
@@ -65,12 +66,37 @@ function methodCommand(text) {
     return null;
   }
   const [, group, subject, operation] = words;
+  if (group === 'engine' && subject === 'log' && operation === 'decision') {
+    const flags = new Map();
+    for (let i = 4; i < words.length; i += 2) {
+      if (
+        !['--stage', '--decision', '--options', '--question-kind'].includes(words[i]) ||
+        !words[i + 1] ||
+        flags.has(words[i])
+      )
+        return 'uncertain';
+      flags.set(words[i], words[i + 1]);
+    }
+    if (flags.get('--stage') === 'requirements-analysis' && flags.has('--decision'))
+      return {
+        stage: flags.get('--stage'),
+        prompt: flags.get('--decision'),
+        options: flags.get('--options'),
+        questionKind: flags.get('--question-kind'),
+      };
+  }
   // This particular utility reads the description, even if no intent exists yet.
   if (
     (words.length === 4 &&
       group === 'engine' &&
       subject === 'workspace' &&
       operation === 'project-description') ||
+    (words.length === 6 &&
+      group === 'engine' &&
+      subject === 'log' &&
+      operation === 'answers' &&
+      words[4] === '--stage' &&
+      words[5] === 'requirements-analysis') ||
     (words.length === 2 && group === '--version')
   )
     return null;
@@ -83,13 +109,24 @@ const stale = { spec: null, bytes: 0, reason: 'stale_spec' };
 const unknown = { uncertain: true };
 function methodResult(command, output, ok) {
   if (
-    command !== 'directive' ||
     typeof output !== 'string' ||
     Buffer.byteLength(output) > NATIVE_PENDING_INPUT_LIMITS.specBytes
   )
     return unknown;
   try {
     const directive = JSON.parse(output);
+    if (
+      ok &&
+      directive?.emitted === 'DECISION_RECORDED' &&
+      directive.stage === 'requirements-analysis' &&
+      command === 'opaque'
+    )
+      return { recordedRequirementsDecision: true };
+    if (typeof command === 'object')
+      return ok && directive?.emitted === 'DECISION_RECORDED' && directive.stage === command.stage
+        ? { decision: command }
+        : unknown;
+    if (command !== 'directive') return unknown;
     if (
       directive?.kind === 'error' &&
       typeof directive.message === 'string' &&
@@ -144,11 +181,12 @@ export function observeNativeMethodOutput(harness) {
     // independent, turn-cleared display transport when there was no earlier
     // observation. It cannot recover a prior ask or synthesize alternatives.
     if ((started ?? command) === 'opaque' && !pending.size && (!latest || latest.unattributed)) {
-      latest = { unattributed: true };
+      const result = methodResult('opaque', output, ok);
+      latest = result.recordedRequirementsDecision ? result : { unattributed: true };
       return;
     }
     latest = methodResult(
-      pending.size || (started && command && started !== command)
+      pending.size || (started && command && !isDeepStrictEqual(started, command))
         ? 'uncertain'
         : (started ?? command),
       output,
@@ -246,12 +284,23 @@ export function offeredPlanAlternatives(method) {
   if (ask?.ask_type !== 'scope-confirm') return null;
   const choices = ask.choices.filter((choice) => choice.command === undefined);
   if (choices.length !== 1) return null;
+  const options = ask.scope_commands.map(({ scope, stages }) => ({
+    label: scope,
+    description: stages,
+  }));
+  if (
+    !buildNativePendingInput({
+      spec: { version: 2, questions: [{ prompt: 'Choose a plan.', options }] },
+    })
+  )
+    return null;
   return {
+    alternativeIndex: ask.choices.indexOf(choices[0]),
     label: choices[0].label,
     commandLabels: ask.choices
       .filter((choice) => choice.command !== undefined)
       .map((choice) => choice.label),
-    options: ask.scope_commands.map(({ scope, stages }) => ({ label: scope, description: stages })),
+    options,
   };
 }
 
@@ -273,7 +322,19 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
   )
     return stale;
   if (method?.spec) return method;
-  if (method?.rejection || method?.uncertain || method?.terminal) return stale;
+  if (
+    method?.decision &&
+    !method.decision.questionKind &&
+    nativeGateFromSnapshot(snapshot)?.stage === method.decision.stage
+  ) {
+    const options = method.decision.options?.split(',').map((label) => ({ label: label.trim() }));
+    const spec = { version: 2, questions: [{ prompt: method.decision.prompt, options }] };
+    if (
+      buildNativePendingInput({ spec, gate: { stage: method.decision.stage } })?.kind === 'approval'
+    )
+      return { spec, bytes: Buffer.byteLength(JSON.stringify(spec)) };
+  }
+  if (method?.rejection || method?.uncertain || method?.terminal || method?.decision) return stale;
   if (method?.otherAsk || method?.advanced) {
     if (rendered.spec?.version === 3) return stale;
     const potentialGate = buildNativePendingInput({

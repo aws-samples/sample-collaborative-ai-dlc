@@ -20,6 +20,7 @@ import { inspectNativeInitialization } from '../native/initialization-evidence.j
 import { nativePublicationScope } from '../../shared/native-publication.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
 import createdWorkflow from './fixtures/native-created-workflow-2.11.1.json' with { type: 'json' };
+import { capturedPlanAsk } from '../../shared/test/fixtures/native-plan-ask.js';
 
 const projectId = randomUUID();
 const executionId = randomUUID();
@@ -325,6 +326,79 @@ describe('native first-turn executor', () => {
       ...changes,
     };
   };
+
+  it.each(capturedPlanAsk.scope_commands.map(({ scope }, index) => [scope, index]))(
+    'launches a single resumed harness only after an explicit %s selection',
+    async (scope, index) => {
+      const { executor, request, ports } = make();
+      const launches = [];
+      ports.commandRunner.mockImplementation(async (command) => {
+        if (command.timeoutMs !== null) return cleanCommand;
+        launches.push(command.stdin);
+        for (const event of [
+          { type: 'thread.started', thread_id: 'native-session' },
+          { type: 'turn.started' },
+          ...(launches.length === 1
+            ? [
+                {
+                  type: 'item.completed',
+                  item: {
+                    type: 'command_execution',
+                    command: 'aidlc next',
+                    exit_code: 0,
+                    aggregated_output: JSON.stringify(capturedPlanAsk),
+                  },
+                },
+              ]
+            : []),
+          {
+            type: 'item.completed',
+            item: { type: 'agent_message', id: 'm', text: 'Please choose.' },
+          },
+          { type: 'turn.completed' },
+        ])
+          command.onStdoutChunk(Buffer.from(JSON.stringify(event) + '\n'));
+        return cleanCommand;
+      });
+      await executor.start(request);
+      const recommendation = await executor.settle();
+      const text = [
+        capturedPlanAsk.choices[0].label,
+        capturedPlanAsk.choices[2].label,
+        scope,
+        'I am unsure',
+        'Use a different plan',
+      ][index % 5];
+      const answers = [{ selectedOptions: [], freeText: text }];
+      const open = reply(request, recommendation, { text, selection: { answers } });
+      await executor.continue(open);
+      const chooser = await executor.settle();
+      await executor.continue(open);
+      expect(launches).toHaveLength(1);
+      expect(
+        ports.publishInteraction.mock.calls[1][0].pendingInput.questions[0].options.map(
+          (o) => o.label,
+        ),
+      ).toEqual(capturedPlanAsk.scope_commands.map((o) => o.scope));
+      // An identical label typed into Other on the named form is still prose.
+      await executor.continue(
+        reply(request, chooser, {
+          text: scope,
+          selection: { answers: [{ selectedOptions: [], freeText: scope }] },
+        }),
+      );
+      const refreshed = await executor.settle();
+      expect(launches).toHaveLength(1);
+      const selected = reply(request, refreshed, {
+        text: scope,
+        selection: { answers: [{ selectedOptions: [index] }] },
+      });
+      await executor.continue(selected);
+      await executor.settle();
+      await executor.continue(selected);
+      expect(launches.slice(1)).toEqual([scope]);
+    },
+  );
 
   it('captures the admitted request before asynchronous workspace inspection', async () => {
     const entered = Promise.withResolvers();

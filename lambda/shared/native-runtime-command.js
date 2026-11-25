@@ -1,6 +1,7 @@
 // Current engine-to-runtime envelopes. Public member requests never carry
 // these ownership, configuration or credential fields.
 import { nativeExecutionInputs, nativeInputStorageId } from './native-inputs.js';
+export const NATIVE_SELECTION_CAPABILITY = 'member-selection-v1';
 const IDENTITY = [
   'projectId',
   'executionId',
@@ -56,8 +57,11 @@ const turnConfiguration = (value) =>
 export const nativeRuntimeCommand = (value, command = value?.command) => {
   if (!Object.hasOwn(NATIVE_RUNTIME_COMMANDS, command ?? '')) invalid();
   const definition = NATIVE_RUNTIME_COMMANDS[command];
+  const withSelection = command === 'native-continue' && Object.hasOwn(value, 'selection');
   if (
-    !fields(value, definition.fields) ||
+    !fields(value, withSelection ? [...definition.fields, 'selection'] : definition.fields) ||
+    (withSelection &&
+      (!fields(value.selection, ['answers']) || !Array.isArray(value.selection.answers))) ||
     value.command !== command ||
     value.epoch !== 1 ||
     IDENTITY.filter((key) => key !== 'epoch').some(

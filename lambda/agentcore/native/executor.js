@@ -11,14 +11,21 @@ import { nativeInteractionReceipt } from '../../shared/native-interaction.js';
 import {
   classifyNativeFirstWait,
   nativeMethodReport,
+  nativeRequirementsForm,
   clearNativePendingSpec,
   decodeNativeTurnInteraction,
   NATIVE_PENDING_SPEC_PATH,
   readNativePendingSpec,
 } from './turn-interaction.js';
-import { NATIVE_AIDLC_INTERACTION_CONTRACT } from '../../shared/native-pending-input.js';
+import {
+  nativeAnswerText,
+  NATIVE_AIDLC_INTERACTION_CONTRACT,
+} from '../../shared/native-pending-input.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
-import { nativeRuntimeCommand } from '../../shared/native-runtime-command.js';
+import {
+  nativeRuntimeCommand,
+  NATIVE_SELECTION_CAPABILITY,
+} from '../../shared/native-runtime-command.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { nativeExecutionInputs } from '../../shared/native-inputs.js';
@@ -74,6 +81,7 @@ const safeText = (value, max) =>
     (character) => character.codePointAt(0) < 32 || character.codePointAt(0) === 127,
   );
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const snapshotIdentity = (files) => digest(JSON.stringify(files.map(fileRef)));
 const sameNode = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const sameIdentity = (a, b) => IDENTITY.every((key) => a[key] === b[key]);
 const within = (base, path) => path === base || path.startsWith(`${base}/`);
@@ -169,6 +177,10 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'scope_commands and choices. Do not invent a plan list or convert typed choices to prose. ' +
   'After reporting code-generation awaiting approval, read aidlc engine orchestrate next and ' +
   'follow its steering continuation. Present the settled stage gate from its gate_only directive. ' +
+  'Record the answer-mode decision using the command in the installed stage instructions. ' +
+  'In Guide me mode, log the batch with its question numbers (for example Q1-Q8), ' +
+  'and record the received answers in the active questions file. Published files in this UI ' +
+  'are read-only. For file mode, explain this and let the person switch to Guide me or Chat. ' +
   'For other questions copy exact workflow wording, labels, descriptions and order. ' +
   'Do not add numbering or remove literal recommendation text from a label. ' +
   'Use options:[] and multiSelect:false for a written answer. Keep normal explanatory prose; ' +
@@ -535,7 +547,7 @@ const report = (turn) =>
   structuredClone({
     ...turn.report,
     recovered: false,
-    capabilities: [NATIVE_ACTIVITY_CAPABILITY],
+    capabilities: [NATIVE_ACTIVITY_CAPABILITY, NATIVE_SELECTION_CAPABILITY],
   });
 
 const persist = (turn) =>
@@ -965,14 +977,49 @@ export const createNativeExecutor = ({
           timing(turn, 'snapshotRejected', turn.report.snapshotDiagnostic);
         },
       });
-    let beforeFiles;
-    {
-      const baseline = await snapshotWorkspace('baseline');
-      beforeFiles = baseline.files.map(fileRef);
-      timing(turn, 'workspaceBaselineCompleted', {
-        files: baseline.files.length,
-        bytes: baseline.totalBytes,
+    const plan = continuing ? turn.session.planAlternatives : null;
+    const choice = payload.selection?.answers[0]?.selectedOptions[0];
+    const showPlans =
+      plan && (choice === undefined || (!plan.named && choice === plan.alternativeIndex));
+    // A chooser has no child process. Publish the same quiescent workspace at
+    // the new admitted sequence and leave the installed thread and request intact.
+    const baseline = await snapshotWorkspace(showPlans ? 'final' : 'baseline');
+    const beforeFiles = baseline.files.map((file) => ({
+      ...fileRef(file),
+      bytes: file.content.length,
+    }));
+    timing(turn, 'workspaceBaselineCompleted', {
+      files: baseline.files.length,
+      bytes: baseline.totalBytes,
+    });
+    if (plan && snapshotIdentity(baseline.files) !== plan.workspaceSha256)
+      fail('native_execution_reply_conflict');
+    if (showPlans) {
+      const spec = { version: 2, questions: [{ prompt: 'Choose a plan.', options: plan.options }] };
+      const completed = { messages: [{ type: 'text', text: spec.questions[0].prompt }] };
+      const form = decodeNativeTurnInteraction({
+        interactionContract: pkg.interactionContract,
+        snapshot: baseline,
+        rendered: { spec, bytes: Buffer.byteLength(JSON.stringify(spec)) },
+        messages: completed.messages,
+        forbiddenBytes,
+        onDiagnostic: (details) => timing(turn, 'questionPresentation', details),
       });
+      if (!form.pendingInput) fail('native_execution_reply_conflict');
+      const nativeSessionId = turn.session.nativeSessionId;
+      await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
+      return {
+        ...form,
+        completed,
+        nativeSessionId,
+        files: baseline,
+        outcome: {
+          kind: 'stopped_needs_review',
+          code: 'native_wait_format_unrecognized',
+          methodReport: null,
+        },
+        planAlternatives: { ...plan, named: true },
+      };
     }
     const modelEnv = {
       ...auth,
@@ -1069,16 +1116,26 @@ export const createNativeExecutor = ({
       files: files.files.length,
       bytes: files.totalBytes,
     });
+    const session = turn.session;
+    const guidedQuestions = session?.answerMode
+      ? session.pendingInput.questions[0].options[choice]?.label === 'Guide me'
+        ? session.questionFile
+        : null
+      : session?.guidedQuestions;
+    const requirements =
+      pkg.interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT &&
+      nativeRequirementsForm({
+        snapshot: files,
+        beforeFiles,
+        harness: configuration.harness,
+        method: completed.method,
+        guidedQuestions,
+      });
+    const currentForm = requirements || observedTurnForm(completed, rendered, plan, null, files);
     const { pendingInput, presentation } = decodeNativeTurnInteraction({
       interactionContract: pkg.interactionContract,
       snapshot: files,
-      rendered: observedTurnForm(
-        completed,
-        rendered,
-        turn.session?.planAlternatives,
-        continuing ? payload.text : null,
-        files,
-      ),
+      rendered: currentForm,
       messages: completed.messages,
       forbiddenBytes,
       onDiagnostic: (diagnostic) => {
@@ -1090,7 +1147,7 @@ export const createNativeExecutor = ({
     let outcome = classifyNativeFirstWait({
       snapshot: files,
       harness: configuration.harness,
-      beforeFiles,
+      beforeFiles: requirements ? [] : beforeFiles,
     });
     outcome = {
       ...outcome,
@@ -1113,6 +1170,8 @@ export const createNativeExecutor = ({
       nativeSessionId,
       outcome,
       nextPromptEvidence,
+      planAlternatives: pendingInput && offeredPlanAlternatives(currentForm),
+      requirements,
     };
   };
 
@@ -1120,7 +1179,17 @@ export const createNativeExecutor = ({
   const publishNativeTurn = async (
     turn,
     { pkg },
-    { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
+    {
+      completed,
+      files,
+      pendingInput,
+      presentation,
+      nativeSessionId,
+      outcome,
+      nextPromptEvidence,
+      planAlternatives,
+      requirements,
+    },
   ) => {
     const { owner, signal, activity: activityTurn } = turn;
     const configuration = turn.payload.configuration;
@@ -1217,11 +1286,19 @@ export const createNativeExecutor = ({
     const interaction = await saveInteraction(pendingInput, presentation);
     timing(turn, 'interactionUploadCompleted');
     const continuation = {
-      planAlternatives: pendingInput ? offeredPlanAlternatives(completed.method) : null,
-      promptEvidence: nextPromptEvidence ?? null,
-      priorAssistantSha256: kiroAssistantHash(
-        completed.messages.map((message) => message.text).join(''),
-      ),
+      pendingInput,
+      answerMode: requirements?.answerMode,
+      questionFile: requirements?.questionFile,
+      guidedQuestions: requirements && !requirements.answerMode ? requirements.questionFile : null,
+      planAlternatives: planAlternatives
+        ? { ...planAlternatives, workspaceSha256: snapshotIdentity(files.files) }
+        : null,
+      promptEvidence: planAlternatives?.named
+        ? turn.session.promptEvidence
+        : (nextPromptEvidence ?? null),
+      priorAssistantSha256: planAlternatives?.named
+        ? turn.session.priorAssistantSha256
+        : kiroAssistantHash(completed.messages.map((message) => message.text).join('')),
     };
     await setStatus(turn, 'publication_ready', {
       activityMeasurements: turn.activity.measurements(),
@@ -1666,6 +1743,7 @@ export const createNativeExecutor = ({
         priorInteractionId: input.priorInteractionId,
         priorPublicationId: input.priorPublicationId,
         textSha256: digest(input.text),
+        ...(input.selection ? { selection: input.selection } : {}),
       }),
     );
     const requestPath = join(activeOwner.directory, `request-${input.requestId}.json`);
@@ -1702,6 +1780,14 @@ export const createNativeExecutor = ({
         previous.report.interaction?.id !== input.priorInteractionId
       )
         fail('native_execution_reply_conflict');
+      if (input.selection) {
+        try {
+          if (nativeAnswerText(previous.nextSession.pendingInput, input.selection) !== input.text)
+            fail('native_execution_reply_conflict');
+        } catch {
+          fail('native_execution_reply_conflict');
+        }
+      }
       turn = createTurn(
         activeOwner,
         { ...input, configuration },
