@@ -382,16 +382,17 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
 
 const listIssueComments = async (ctx, repoId, issueNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(
-    ctx,
-    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
-  );
-  if (res.status === 404) return [];
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
+  // Comments come oldest first, so reading only page 1 dropped the newest.
+  try {
+    const comments = await listPaginated(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    );
+    return comments.map(mapIssueDiscussionComment);
+  } catch (error) {
+    if (error instanceof ProviderError && error.status === 404) return [];
+    throw error;
   }
-  return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
 };
 
 // App installation tokens can read a private issue but receive 404 for its raw
