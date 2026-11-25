@@ -1,523 +1,341 @@
-import { isGitProvider } from '@/services/gitProvider';
-import { useEffect, useState, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
-import { projectsService } from '@/services/projects';
-import { useProjectsCache, projectLastActivityAt } from '@/hooks/useProjectsCache';
-import { CreateProjectModal } from '@/components/CreateProjectModal';
-import { GitRepoLink } from '@/components/GitRepoLink';
-import type { GitProvider } from '@/services/gitProvider';
-import { Card, CardContent } from '@/components/ui/card';
+import { Inbox } from 'lucide-react';
+import { Link } from 'react-router';
+import { useMemo, useState } from 'react';
+import {
+  useProjectsCache,
+  type ProjectIntentSummary,
+  type ProjectWithSprint,
+} from '@/hooks/useProjectsCache';
+import type { Intent, IntentDetail } from '@/services/intents';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
-  Plus,
-  Trash2,
-  FolderGit2,
-  Search,
-  LayoutGrid,
-  List,
-  RefreshCw,
-  ArrowUpDown,
-  AlertTriangle,
-  Loader2,
-} from 'lucide-react';
+import { EmptyState, ErrorState } from '@/components/ui/empty-state';
+import { StatusPill } from '@/components/ui/status-pill';
 import { cn } from '@/lib/utils';
 import { getBranding } from '@/lib/branding';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import {
-  useProjectSort,
-  projectComparator,
-  PROJECT_SORT_LABELS,
-  type ProjectSort,
-} from '@/hooks/useProjectSort';
+import { deriveIntentStatus, useIntentStatus } from '@/lib/statusModel';
+import { intentAttention } from '@/lib/sprintStatus';
+import { intentEntryPath } from '@/lib/intentEntry';
+import { qk } from '@/lib/queryKeys';
+import { intentSectionPath } from '@/lib/intentSectionPreference';
+import { intentRowMetaText } from '@/components/space/intentRowMeta';
+import { useQueryData } from '@/hooks/useQueryData';
+import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
+import { spacesHomePath, usePanelsInline } from '@/hooks/usePanelsInline';
 
-function formatRelativeTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return '—';
-  const ms = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
+const INBOX_CAP = 5;
+const INBOX_CAP_NARROW = 3;
+const INBOX_EXPANDED_KEY = 'aidlc.spaces.inboxExpanded';
+
+type InboxKind = 'input' | 'resume' | 'failed' | 'stalled';
+
+interface InboxItem {
+  kind: InboxKind;
+  project: ProjectWithSprint['project'];
+  intent: ProjectIntentSummary;
+  status: ReturnType<typeof deriveIntentStatus>;
+  since: string | null;
 }
 
-// UX-002: a single per-project lifecycle badge. Shows green in-progress count
-// only — Space-level attention (amber) indicators are removed per UX decision;
-// attention signals are surfaced at the individual Intent level instead.
-function ProjectSignals({ activity }: { activity: { inProgress: number; attention: number } }) {
-  if (activity.inProgress === 0) return null;
+function inboxSince(intent: ProjectIntentSummary, derived: ReturnType<typeof deriveIntentStatus>) {
+  return derived.since ?? intent.updatedAt ?? intent.completedAt ?? intent.createdAt ?? null;
+}
 
+const sinceMs = (t: string | null) => (t ? new Date(t).getTime() : Number.POSITIVE_INFINITY);
+
+// What the reader can act on comes first, whatever its age: answer or resume,
+// then failures to deal with, then stalled runs to look at.
+const INBOX_KIND_RANK: Record<InboxKind, number> = {
+  input: 0,
+  resume: 0,
+  failed: 1,
+  stalled: 2,
+};
+const isAnswerable = (item: InboxItem) => INBOX_KIND_RANK[item.kind] === 0;
+
+function inboxKind(
+  intent: ProjectIntentSummary,
+  derived: ReturnType<typeof deriveIntentStatus>,
+): InboxKind | null {
+  const attention = intentAttention(intent);
+  if (attention) return attention;
+  return derived.stalled ? 'stalled' : null;
+}
+
+function deriveInbox(projects: readonly ProjectWithSprint[], now: number): InboxItem[] {
+  const items: InboxItem[] = [];
+  for (const p of projects) {
+    for (const intent of p.intents) {
+      const status = deriveIntentStatus(intent, { now });
+      const kind = inboxKind(intent, status);
+      if (!kind) continue;
+      items.push({
+        kind,
+        project: p.project,
+        intent,
+        status,
+        since: inboxSince(intent, status),
+      });
+    }
+  }
+  return items.toSorted(
+    (a, b) =>
+      INBOX_KIND_RANK[a.kind] - INBOX_KIND_RANK[b.kind] || sinceMs(a.since) - sinceMs(b.since),
+  );
+}
+
+// Same line as the Space row (one builder), then the space the intent belongs
+// to. The stage and failure reason come from the space's intent list the shell
+// already loaded; the gate kinds from the detail, once a hover prefetch or a
+// Space visit cached it. The inbox itself never reads one detail per row.
+function inboxMeta(
+  item: InboxItem,
+  listed: Intent | undefined,
+  detail: IntentDetail | undefined,
+  now: number,
+): string[] {
+  const known = detail?.intent ?? listed;
+  const parts = intentRowMetaText(
+    {
+      ...item.intent,
+      currentStage: known?.currentStage ?? null,
+      failureReason: known?.failureReason ?? null,
+      failure: known?.failure,
+    },
+    // The derived `since` only: `item.since` also carries the updatedAt
+    // fallback that orders the list, which is not the wait's age.
+    { now, gates: detail?.gates, since: item.status.since },
+  );
+  return [...parts, item.project.name];
+}
+
+// Status only: the age is part of the meta line (R5-8).
+function InboxPill({ item }: { item: InboxItem }) {
+  switch (item.kind) {
+    case 'resume':
+      return <StatusPill kind="gate" status="resume_required" className="shrink-0" />;
+    case 'failed':
+      return <StatusPill kind="intent" status="FAILED" className="shrink-0" />;
+    default:
+      return (
+        <StatusPill
+          kind="intent"
+          status={item.status.key}
+          stalled={item.status.stalled}
+          className="shrink-0"
+        />
+      );
+  }
+}
+
+function InboxRow({ item, now, className }: { item: InboxItem; now: number; className?: string }) {
+  const href = intentEntryPath(item.project.id, item.intent);
+  const listed = useQueryData<Intent[]>(qk.projectIntents(item.project.id))?.find(
+    (intent) => intent.id === item.intent.id,
+  );
+  const detail = useQueryData<IntentDetail>(qk.intentDetail(item.project.id, item.intent.id));
+  // Same derivation as the intent header once its detail is cached (oldest open gate).
+  const status = useIntentStatus(item.project.id, item.intent, {
+    now,
+    fallback: item.status,
+  });
+  const shown: InboxItem =
+    status === item.status ? item : { ...item, status, since: inboxSince(item.intent, status) };
+  const meta = inboxMeta(shown, listed, detail, now);
   return (
-    <span
+    <li
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium',
-        'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+        'group relative flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 hover:bg-accent/50 focus-within:bg-accent/50 sm:flex-nowrap',
+        className ?? 'flex',
       )}
     >
-      <Loader2 className="h-3 w-3 animate-spin" />
-      <span>{activity.inProgress} in progress</span>
-    </span>
+      <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+        <Link
+          to={href}
+          className="line-clamp-2 text-sm font-medium after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring"
+        >
+          {item.intent.title || 'Untitled intent'}
+        </Link>
+        <span data-testid="inbox-row-meta" className="block truncate text-xs text-muted-foreground">
+          {meta.map((part, index) => (
+            <span key={part}>
+              {index > 0 ? <span aria-hidden="true"> · </span> : null}
+              {part}
+            </span>
+          ))}
+        </span>
+      </div>
+      <InboxPill item={shown} />
+      {item.kind === 'stalled' && (
+        <Button asChild variant="link" size="xs" className="relative z-10 shrink-0 px-0">
+          <Link to={intentSectionPath(item.project.id, item.intent.id, 'work')}>View activity</Link>
+        </Button>
+      )}
+    </li>
   );
 }
 
-export default function Dashboard() {
-  const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { projects: projectsWithSprints, loading, error, refresh, invalidate } = useProjectsCache();
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createInitialInstance, setCreateInitialInstance] = useState<string>();
-  const [createInitialProvider, setCreateInitialProvider] = useState<GitProvider | ''>('');
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  // Shared with the sidebar project list (useProjectSort store) — changing the
-  // sort here re-orders both views.
-  const [sortBy, changeSort] = useProjectSort();
+function readInboxExpanded(): boolean {
+  try {
+    return localStorage.getItem(INBOX_EXPANDED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
-  // Enrich each project with its derived "last activity" (own updatedAt +
-  // latest intent/sprint activity) so both display and sorting can use it.
-  const projects = useMemo(
-    () =>
-      projectsWithSprints.map((p) => ({
-        ...p.project,
-        lastActivityAt: projectLastActivityAt(p),
-        // pickIntent surfaces a RUNNING (else WAITING) intent first, so this
-        // flags a project with live/parked work — the delete dialog warns that
-        // deleting will cancel it (the backend force-retires it).
-        hasActiveWork: p.latestIntent?.status === 'RUNNING' || p.latestIntent?.status === 'WAITING',
-        // UX-002: per-project activity counts aggregated across all intents.
-        activity: p.activity,
-      })),
-    [projectsWithSprints],
-  );
-
-  useEffect(() => {
-    if (searchParams.get('reopenCreateSpace') === '1') {
-      setCreateInitialInstance(searchParams.get('gitlabInstance') || undefined);
-      const provider = searchParams.get('gitProvider');
-      if (isGitProvider(provider)) {
-        setCreateInitialProvider(provider);
-      }
-      setShowCreateModal(true);
-      setSearchParams({}, { replace: true });
-    }
-  }, [searchParams, setSearchParams]);
-
-  const handleDeleteConfirm = async () => {
-    if (!confirmDelete) return;
-    setDeleting(confirmDelete);
+function WaitingForYou({ items, now }: { items: InboxItem[]; now: number }) {
+  const [showAll, setShowAll] = useState(readInboxExpanded);
+  if (items.length === 0) return null;
+  const toggle = (next: boolean) => {
+    setShowAll(next);
     try {
-      await projectsService.delete(confirmDelete);
-      invalidate();
-    } catch (err) {
-      console.error('Failed to delete project:', err);
-    } finally {
-      setDeleting(null);
-      setConfirmDelete(null);
+      if (next) localStorage.setItem(INBOX_EXPANDED_KEY, '1');
+      else localStorage.removeItem(INBOX_EXPANDED_KEY);
+    } catch {
+      // The current visit still honors the choice when storage is unavailable.
     }
   };
-
-  const filteredProjects = useMemo(() => {
-    const q = searchQuery.toLowerCase();
-    const filtered = projects.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.gitRepo?.toLowerCase().includes(q),
-    );
-    return filtered.toSorted(projectComparator(sortBy));
-  }, [projects, searchQuery, sortBy]);
-
-  // Whether the project pending delete confirmation has live/parked work, so the
-  // dialog can warn that deleting will cancel it.
-  const confirmDeleteHasActiveWork = useMemo(
-    () => !!confirmDelete && !!projects.find((p) => p.id === confirmDelete)?.hasActiveWork,
-    [confirmDelete, projects],
+  // The caps only ever hide failures and stalled runs: every answerable item
+  // (sorted first) stays on the first screen, on a phone too.
+  const answerable = items.filter(isAnswerable).length;
+  const cap = Math.max(INBOX_CAP, answerable);
+  const capNarrow = Math.max(INBOX_CAP_NARROW, answerable);
+  const visible = showAll ? items : items.slice(0, cap);
+  const collapsible = items.length > capNarrow;
+  return (
+    <section aria-labelledby="waiting-for-you" className="mb-8">
+      <div className="mb-2 flex items-baseline gap-2">
+        <h2 id="waiting-for-you" className="text-base font-semibold">
+          Needs your attention
+        </h2>
+        <span className="text-sm tabular-nums text-muted-foreground">{items.length}</span>
+      </div>
+      <ul className="divide-y overflow-hidden rounded-lg border bg-card text-card-foreground">
+        {visible.map((item, index) => (
+          <InboxRow
+            key={`${item.project.id}:${item.intent.id}`}
+            item={item}
+            now={now}
+            className={!showAll && index >= capNarrow ? 'hidden sm:flex' : undefined}
+          />
+        ))}
+      </ul>
+      {collapsible && !showAll && (
+        <Button
+          variant="link"
+          size="sm"
+          className={cn('mt-1 px-0', items.length <= cap && 'sm:hidden')}
+          onClick={() => toggle(true)}
+        >
+          Show all ({items.length})
+        </Button>
+      )}
+      {collapsible && showAll && (
+        <Button variant="link" size="sm" className="mt-1 px-0" onClick={() => toggle(false)}>
+          Show less
+        </Button>
+      )}
+    </section>
   );
+}
 
-  const roleColors: Record<string, string> = {
-    owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-    admin: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
-    member: 'bg-muted text-muted-foreground',
-  };
+function InboxSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="Loading your work"
+      className="overflow-hidden rounded-lg border bg-card"
+    >
+      <span className="sr-only">Loading your work</span>
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
+          <div className="flex-1 space-y-1.5">
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-3 w-1/3" />
+          </div>
+          <Skeleton className="h-5 w-24 rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// My work: everything that needs the reader across their spaces. The spaces
+// themselves are in the sidebar on large screens and on /spaces otherwise; a
+// `?reopenCreateSpace=1` link is the shell's to handle.
+export default function Dashboard() {
+  const panelsInline = usePanelsInline();
+  const { projects: portfolio, loading, error, refresh } = useProjectsCache();
+
+  // The portfolio re-renders on every 30 s poll, so one clock per render is
+  // enough for ages and the stall rule.
+  const now = Date.now();
+  const inbox = useMemo(() => deriveInbox(portfolio, now), [portfolio, now]);
+  useOfferIdleCandidates(
+    'page',
+    inbox
+      .filter(isAnswerable)
+      .slice(0, 2)
+      .map((item) => intentEntryPath(item.project.id, item.intent)),
+  );
 
   return (
     <div className="h-full">
-      <div>
-        {/* Header */}
-        <div className="flex items-end justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <img src={getBranding().logo} alt={getBranding().name} className="h-14 w-14 shrink-0" />
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">Spaces</h1>
-              <p className="text-sm text-muted-foreground mt-0.5">
-                Shared workspaces where people and AI agents build together
-              </p>
-            </div>
-          </div>
-          <Button
-            onClick={() => {
-              setCreateInitialInstance(undefined);
-              setCreateInitialProvider('');
-              setShowCreateModal(true);
-            }}
-            className="gap-2"
-          >
-            <Plus className="h-4 w-4" />
-            New Space
-          </Button>
-        </div>
-
-        {/* Search & view controls */}
-        <div className="flex items-center gap-3 mb-6 -mt-1">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search spaces..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9"
-            />
-          </div>
-          <Select value={sortBy} onValueChange={(v) => changeSort(v as ProjectSort)}>
-            <SelectTrigger className="h-9 w-[180px] gap-1.5">
-              <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="activity">{PROJECT_SORT_LABELS.activity}</SelectItem>
-              <SelectItem value="created">{PROJECT_SORT_LABELS.created}</SelectItem>
-              <SelectItem value="name">{PROJECT_SORT_LABELS.name}</SelectItem>
-            </SelectContent>
-          </Select>
-          <div className="flex items-center border rounded-md">
-            <Button
-              variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8 rounded-r-none"
-              onClick={() => setViewMode('grid')}
-            >
-              <LayoutGrid className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant={viewMode === 'list' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8 rounded-l-none"
-              onClick={() => setViewMode('list')}
-            >
-              <List className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-
-        {/* Content */}
-        {loading ? (
-          <div
-            className={cn(
-              viewMode === 'grid' ? 'grid gap-4 md:grid-cols-2 lg:grid-cols-3' : 'space-y-2',
-            )}
-          >
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-5">
-                  <Skeleton className="h-5 w-2/3 mb-3" />
-                  <Skeleton className="h-4 w-1/3 mb-4" />
-                  <Skeleton className="h-3 w-1/2" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : error && projects.length === 0 ? (
-          <Card className="border-destructive/40 bg-destructive/5">
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <h3 className="text-lg font-semibold mb-1">Couldn't load spaces</h3>
-              <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">{error}</p>
-              <Button variant="outline" onClick={() => refresh()} className="gap-2">
-                <RefreshCw className="h-4 w-4" />
-                Retry
-              </Button>
-            </CardContent>
-          </Card>
-        ) : filteredProjects.length === 0 && projects.length === 0 ? (
-          /* Empty state */
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center mb-4">
-                <FolderGit2 className="h-7 w-7 text-muted-foreground" />
-              </div>
-              <h3 className="text-lg font-semibold mb-1">No spaces yet</h3>
-              <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
-                Create your first space to start building with AI-powered collaborative development.
-              </p>
-              <Button
-                onClick={() => {
-                  setCreateInitialInstance(undefined);
-                  setCreateInitialProvider('');
-                  setShowCreateModal(true);
-                }}
-                className="gap-2"
-              >
-                <Plus className="h-4 w-4" />
-                Create Your First Space
-              </Button>
-            </CardContent>
-          </Card>
-        ) : filteredProjects.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground">No spaces match "{searchQuery}"</p>
-          </div>
-        ) : viewMode === 'grid' ? (
-          /* Grid view */
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {filteredProjects.map((project) => {
-              const isDeleting = deleting === project.id;
-              return (
-                <Card
-                  key={project.id}
-                  aria-busy={isDeleting}
-                  className={cn(
-                    'group transition-all',
-                    isDeleting
-                      ? 'pointer-events-none opacity-50'
-                      : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
-                  )}
-                  onClick={() => {
-                    if (!isDeleting) navigate(`/space/${project.id}`);
-                  }}
-                >
-                  <CardContent className="p-5">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                          <FolderGit2 className="h-4.5 w-4.5 text-primary" />
-                        </div>
-                        <div className="min-w-0">
-                          <h3 className="font-semibold text-sm truncate">{project.name}</h3>
-                          <div className="flex items-center gap-1 mt-0.5">
-                            {project.userRole && (
-                              <Badge
-                                variant="outline"
-                                className={cn(
-                                  'h-4 px-1.5 text-[9px]',
-                                  roleColors[project.userRole],
-                                )}
-                              >
-                                {project.userRole}
-                              </Badge>
-                            )}
-                            {project.kind !== 'v2' && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Badge
-                                    variant="outline"
-                                    className="h-4 px-1.5 text-[9px] text-muted-foreground"
-                                  >
-                                    Legacy
-                                  </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  Created with v1 — this space is view-only. New work uses v2
-                                  intents.
-                                </TooltipContent>
-                              </Tooltip>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      {isDeleting ? (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
-                      ) : (
-                        project.userRole === 'owner' && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setConfirmDelete(project.id);
-                            }}
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                          </Button>
-                        )
-                      )}
-                    </div>
-
-                    {project.gitRepo && (
-                      <div className="text-xs text-muted-foreground mb-2">
-                        <GitRepoLink
-                          gitRepo={project.gitRepo}
-                          gitProvider={project.gitProvider}
-                          noLink
-                        />
-                      </div>
-                    )}
-
-                    {project.activity.inProgress > 0 && (
-                      <div className="mb-2.5">
-                        <ProjectSignals activity={project.activity} />
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
-                      <span>Created on {new Date(project.createdAt).toLocaleDateString()}</span>
-                      <span>Last activity {formatRelativeTime(project.lastActivityAt)}</span>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        ) : (
-          /* List view */
-          <div className="space-y-1">
-            {filteredProjects.map((project) => {
-              const isDeleting = deleting === project.id;
-              return (
-                <Card
-                  key={project.id}
-                  aria-busy={isDeleting}
-                  className={cn(
-                    'group transition-all',
-                    isDeleting
-                      ? 'pointer-events-none opacity-50'
-                      : 'cursor-pointer hover:bg-accent/50',
-                  )}
-                  onClick={() => {
-                    if (!isDeleting) navigate(`/space/${project.id}`);
-                  }}
-                >
-                  <CardContent className="flex items-center gap-4 p-3 px-4">
-                    <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
-                      <FolderGit2 className="h-4 w-4 text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="font-medium text-sm">{project.name}</span>
-                    </div>
-                    {project.activity.inProgress > 0 && (
-                      <div className="hidden md:block shrink-0">
-                        <ProjectSignals activity={project.activity} />
-                      </div>
-                    )}
-                    {project.gitRepo && (
-                      <GitRepoLink
-                        gitRepo={project.gitRepo}
-                        gitProvider={project.gitProvider}
-                        className="text-xs text-muted-foreground"
-                        noLink
-                      />
-                    )}
-                    {project.userRole && (
-                      <Badge
-                        variant="outline"
-                        className={cn('text-[10px]', roleColors[project.userRole])}
-                      >
-                        {project.userRole}
-                      </Badge>
-                    )}
-                    <span className="text-[11px] text-muted-foreground/60 shrink-0 hidden sm:inline">
-                      Last activity {formatRelativeTime(project.lastActivityAt)}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                      Created on {new Date(project.createdAt).toLocaleDateString()}
-                    </span>
-                    {isDeleting ? (
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
-                    ) : (
-                      project.userRole === 'owner' && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirmDelete(project.id);
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                        </Button>
-                      )
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Create modal */}
-      {showCreateModal && (
-        <CreateProjectModal
-          initialProvider={createInitialProvider}
-          initialInstance={createInitialInstance}
-          onClose={() => setShowCreateModal(false)}
-          onCreated={refresh}
+      <header className="mb-6 flex items-center gap-3 sm:mb-8 sm:gap-4">
+        <img
+          src={getBranding().logo}
+          alt={getBranding().name}
+          className="h-10 w-10 shrink-0 sm:h-14 sm:w-14"
         />
-      )}
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">My work</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Questions, resumes, failures and stalled runs across your spaces.
+          </p>
+        </div>
+      </header>
 
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={!!confirmDelete}
-        onOpenChange={() => (deleting ? null : setConfirmDelete(null))}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Space</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this space? This action cannot be undone. Every intent
-              — with all of its artifacts, questions, discussions, run history and usage metrics —
-              will be permanently removed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {confirmDeleteHasActiveWork && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>
-                This space has running or waiting work. Deleting it will cancel that work before
-                removing everything.
-              </span>
-            </div>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={!!deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              disabled={!!deleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleting ? (
-                <span className="flex items-center gap-1.5">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Deleting…
-                </span>
-              ) : (
-                'Delete Space'
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {loading ? (
+        <InboxSkeleton />
+      ) : error && portfolio.length === 0 ? (
+        <ErrorState
+          headingLevel={2}
+          title="Couldn't load your work"
+          description={error}
+          onRetry={() => refresh()}
+        />
+      ) : portfolio.length === 0 ? (
+        <EmptyState
+          headingLevel={2}
+          icon={Inbox}
+          title="No spaces yet"
+          description="A space connects a repository to a workflow so your team can run intents on it."
+          action={
+            <Button asChild className="gap-2">
+              <Link to={`${spacesHomePath(panelsInline)}?reopenCreateSpace=1`}>
+                Create your first space
+              </Link>
+            </Button>
+          }
+        />
+      ) : inbox.length === 0 ? (
+        <EmptyState
+          headingLevel={2}
+          icon={Inbox}
+          title="Nothing needs you right now"
+          description="Intents waiting for an answer or a resume, failed runs and stalled runs show up here."
+          action={
+            panelsInline ? undefined : (
+              <Button asChild variant="outline">
+                <Link to="/spaces">Browse spaces</Link>
+              </Button>
+            )
+          }
+        />
+      ) : (
+        <WaitingForYou items={inbox} now={now} />
+      )}
     </div>
   );
 }

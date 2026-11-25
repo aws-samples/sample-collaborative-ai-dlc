@@ -22,7 +22,7 @@ export default function NotFound() {
         }
         action={
           <Button asChild>
-            <Link to="/dashboard">Go to Spaces</Link>
+            <Link to="/dashboard">Go to My work</Link>
           </Button>
         }
       />

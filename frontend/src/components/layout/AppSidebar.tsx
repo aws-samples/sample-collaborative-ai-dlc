@@ -1,38 +1,44 @@
 import { Link, useLocation, useParams } from 'react-router';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   ArrowUpDown,
   Blocks,
+  ChevronDown,
   Eye,
+  Inbox,
   LayoutDashboard,
-  ListFilter,
   Network,
+  Pin,
+  PinOff,
   Plus,
   Settings,
   Workflow,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIntentOptional } from '@/contexts/IntentContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { StatusPill } from '@/components/ui/status-pill';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
+import { useSidebarSpaces } from '@/hooks/useSidebarSpaces';
 import { intentEntryPath } from '@/lib/intentEntry';
+import { formatRelative } from '@/lib/timeAgo';
 import {
-  getStatus,
+  isTerminalIntentStatus,
   statusFromDetail,
   useIntentStatus,
-  useIntentStatusReader,
   type DerivedIntentStatus,
-  type ResolvedIntentStatus,
 } from '@/lib/statusModel';
 import {
   getCachedIntentSummary,
   useProjectsCache,
   projectLastActivityAt,
   type ProjectIntentSummary,
+  type ProjectWithSprint,
 } from '@/hooks/useProjectsCache';
 import {
   useProjectSort,
@@ -40,7 +46,12 @@ import {
   PROJECT_SORT_LABELS,
   type ProjectSort,
 } from '@/hooks/useProjectSort';
-import { effectiveIntentStatus, isActiveStatus, needsAttention } from '@/lib/sprintStatus';
+import { needsAttention } from '@/lib/sprintStatus';
+import {
+  deriveSpaceSignals,
+  spaceSignalParts,
+  type SpaceSignals,
+} from '@/components/space/spaceSignals';
 import {
   setLastIntentSection,
   intentSectionPath,
@@ -54,50 +65,14 @@ import {
   DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu';
 
-type IntentFilter = 'attention' | 'active';
-
-const FILTER_LABELS: Record<IntentFilter, string> = {
-  attention: 'Needs your attention',
-  active: 'Active intents',
-};
-
-const FILTER_EMPTY: Record<IntentFilter, string> = {
-  attention: 'No intents need attention',
-  active: 'No active intents',
-};
-
-const STORAGE_KEY = 'aidlc-sidebar-iterations-filter';
-const MAX_INTENTS_PER_PROJECT = 5;
+export const INTENTS_PAGE_SIZE = 5;
+// The drawer lists intents across spaces: those needing a person, then the
+// rest of the active ones by activity.
+const DRAWER_INTENT_LIMIT = 10;
 // A waiting intent's age is its oldest open gate, which only the detail knows.
 // The sidebar offers a few visible waiting rows to the idle next-page pass so
-// its pill, the ⌘K palette and the Spaces inbox read the intent header's age.
+// its pill, the ⌘K palette and the My work inbox read the intent header's age.
 const WARM_WAITING_LIMIT = 3;
-
-const VALID_FILTERS: ReadonlySet<IntentFilter> = new Set(['attention', 'active']);
-
-function readStoredFilter(): IntentFilter {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  // Migrate the old, broader filter to the closest current meaning. The
-  // sidebar now describes v2 intents only, so "in progress" maps to active.
-  if (stored === 'in-progress') return 'active';
-  return stored && VALID_FILTERS.has(stored as IntentFilter)
-    ? (stored as IntentFilter)
-    : 'attention';
-}
-
-type ResolvedSummary = ResolvedIntentStatus<ProjectIntentSummary>;
-
-// "Needs your attention" is the Spaces inbox rule (`needsAttention`), so the
-// sidebar count and the inbox count are the same number. Both filters read the
-// status the row's pill shows, never the list timestamps alone.
-function matchesFilter({ intent, status }: ResolvedSummary, filter: IntentFilter): boolean {
-  switch (filter) {
-    case 'attention':
-      return needsAttention(intent, Date.now(), status);
-    case 'active':
-      return isActiveStatus(effectiveIntentStatus({ status: status.key }));
-  }
-}
 
 function intentActivityTime(intent: ProjectIntentSummary): number {
   const timestamp = intent.updatedAt ?? intent.createdAt;
@@ -105,6 +80,13 @@ function intentActivityTime(intent: ProjectIntentSummary): number {
   const parsed = new Date(timestamp).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
 }
+
+const byActivity = (a: ProjectIntentSummary, b: ProjectIntentSummary) =>
+  intentActivityTime(b) - intentActivityTime(a);
+
+// Finished work (succeeded, failed, cancelled) lives on the space page and in
+// My work; the sidebar only lists what is still moving or waiting.
+const isActiveIntent = (intent: ProjectIntentSummary) => !isTerminalIntentStatus(intent.status);
 
 interface IterationItem {
   key: string;
@@ -122,9 +104,21 @@ interface IterationItem {
 
 const LIVE_LABEL = 'Agent running';
 
-function isLive(derived: DerivedIntentStatus): boolean {
-  return Boolean(getStatus('intent', derived.key).live) && !derived.stalled;
-}
+// One row style for My work, Pinned and Spaces: the desktop sidebar reads as
+// one list of sections, each with an icon and a label.
+const SECTION_ROW_CLASS =
+  'flex min-w-0 items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium transition-colors';
+
+// Row-level actions (pin a space, sort or add spaces) show on hover of their
+// row or when focus is inside it; always on coarse pointers, where there is
+// no hover. The row sets the matching `group/<name>`. Literal strings: the
+// Tailwind scanner cannot see interpolated class names.
+const REVEAL_ON_HOVER = {
+  space:
+    'transition-opacity focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/space:opacity-100 group-focus-within/space:opacity-100',
+  section:
+    'transition-opacity focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/section:opacity-100 group-focus-within/section:opacity-100',
+} as const;
 
 function projectIntentList({
   latestIntent,
@@ -143,14 +137,21 @@ export interface AppSidebarProps {
    * went with it mid-form (review R3-8). Without it the sidebar hosts its own.
    */
   onCreateSpace?: () => void;
+  /**
+   * `drawer` (narrow screens): My work, a link to the Spaces page and the
+   * intents that need the reader or are active. Inline (large screens) the
+   * sidebar is the list of spaces, so there is no Spaces page link.
+   */
+  variant?: 'inline' | 'drawer';
 }
 
-export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
+export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProps = {}) {
   const location = useLocation();
   const params = useParams<{ projectId?: string; intentId?: string }>();
   const { projects, loading, error, refresh } = useProjectsCache();
-  const { isPlatformAdmin } = useAuth();
+  const { user, isPlatformAdmin } = useAuth();
   const [projectSort, setProjectSort] = useProjectSort();
+  const sidebarSpaces = useSidebarSpaces(user?.userId);
   const intentCtx = useIntentOptional();
 
   const projectId = params.projectId ?? null;
@@ -189,102 +190,71 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
 
   const [showCreateProject, setShowCreateProject] = useState(false);
 
-  const [intentFilter, setIntentFilter] = useState<IntentFilter>(readStoredFilter);
+  // The feed is the portfolio's intent lists: one failed list means rows may be missing.
+  const feedFailed =
+    Boolean(error) || projects.some((entry) => entry.project.kind === 'v2' && entry.activityError);
 
-  const handleFilterChange = (value: string) => {
-    const filter = value as IntentFilter;
-    setIntentFilter(filter);
-    localStorage.setItem(STORAGE_KEY, filter);
-  };
+  const isOnMyWork = location.pathname === '/dashboard';
+  const isOnSpaces = location.pathname === '/spaces';
+  // The space page itself (not an intent under it): its row's title then
+  // folds the space instead of reloading the page the reader is on.
+  const onSpacePage = (id: string) => location.pathname === `/space/${id}`;
+  const isOnAdmin = location.pathname === '/admin';
+  const isOnWorkflows = location.pathname.startsWith('/workflows');
+  const isOnBlocks = location.pathname.startsWith('/blocks');
 
   // The open intent's status comes from the page's own detail (same
   // derivation as its header); every other row reads the shared cache.
   const ctxDetail = intentCtx?.detail;
   const currentDerived: DerivedIntentStatus | undefined =
     intentId && ctxDetail?.intent && ctxDetail.intent.id === intentId
-      ? statusFromDetail(ctxDetail, { lastActivityAt: intentCtx?.lastActivityAt })
+      ? statusFromDetail(ctxDetail, {
+          lastActivityAt: intentCtx?.lastActivityAt,
+        })
       : undefined;
-
-  // One status per intent behind the filters, their counts, the space badges
-  // and the pills.
-  const readStatus = useIntentStatusReader();
-  const resolve = (spaceId: string, intent: ProjectIntentSummary): ResolvedSummary =>
-    currentDerived && ctxDetail && spaceId === projectId && intent.id === intentId
-      ? { status: currentDerived, intent: { ...intent, ...ctxDetail.intent } }
-      : readStatus(spaceId, intent);
-  const matches = (spaceId: string, intent: ProjectIntentSummary) =>
-    matchesFilter(resolve(spaceId, intent), intentFilter);
-
-  const matchingCount = projects.reduce((count, entry) => {
-    if (entry.project.kind !== 'v2') return count;
-    return (
-      count + projectIntentList(entry).filter((intent) => matches(entry.project.id, intent)).length
-    );
-  }, 0);
-
-  // The feed is the portfolio's intent lists: one failed list means rows may be missing.
-  const feedFailed =
-    Boolean(error) || projects.some((entry) => entry.project.kind === 'v2' && entry.activityError);
-
-  const isOnDashboard = location.pathname === '/dashboard';
-  const isOnAdmin = location.pathname === '/admin';
-  const isOnWorkflows = location.pathname.startsWith('/workflows');
-  const isOnBlocks = location.pathname.startsWith('/blocks');
 
   // The detail request said the open intent is gone: a stale list entry must
   // not keep it on screen, and no row is synthesised for it.
   const openIntentGone = Boolean(intentId && intentCtx?.notFound && !ctxDetail);
 
-  const filteredIterations: IterationItem[] = sortedProjects.flatMap((entry) => {
-    const { project } = entry;
-    if (project.kind !== 'v2') return [];
-    const matchingIntents = projectIntentList(entry)
-      .filter((intent) => matches(project.id, intent))
-      .filter((intent) => !(openIntentGone && project.id === projectId && intent.id === intentId))
-      .toSorted((a, b) => intentActivityTime(b) - intentActivityTime(a));
-    let visibleIntents = matchingIntents.slice(0, MAX_INTENTS_PER_PROJECT);
-
-    // If the URL-selected Intent matches the current filter but falls
-    // beyond the cap, keep it visible instead of pinning it as historical.
-    const selectedIntent = matchingIntents.find(
-      (intent) => project.id === projectId && intent.id === intentId,
-    );
-    if (
-      selectedIntent &&
-      !visibleIntents.some((intent) => intent.id === selectedIntent.id) &&
-      visibleIntents.length === MAX_INTENTS_PER_PROJECT
-    ) {
-      visibleIntents = [...visibleIntents.slice(0, -1), selectedIntent];
-    }
-
-    return visibleIntents.map((intent) => ({
-      key: `intent-${intent.id}`,
-      title: intent.title ?? 'Intent',
-      subtitle: project.name,
-      intent,
-      derived: project.id === projectId && intent.id === intentId ? currentDerived : undefined,
-      path: intentEntryPath(project.id, intent),
-      intentMeta: { projectId: project.id, intentId: intent.id },
-    }));
-  });
-  const overflowIntents = sortedProjects.flatMap((entry) => {
-    const { project } = entry;
-    if (project.kind !== 'v2') return [];
-    const count = projectIntentList(entry).filter((intent) => matches(project.id, intent)).length;
-    const hiddenCount = count - MAX_INTENTS_PER_PROJECT;
-    return hiddenCount > 0
-      ? [{ projectId: project.id, projectName: project.name, count: hiddenCount }]
-      : [];
+  const toItem = (project: ProjectWithSprint['project'], intent: ProjectIntentSummary) => ({
+    key: `intent-${intent.id}`,
+    title: intent.title ?? 'Intent',
+    subtitle: project.name,
+    intent,
+    derived: project.id === projectId && intent.id === intentId ? currentDerived : undefined,
+    path: intentEntryPath(project.id, intent),
+    intentMeta: { projectId: project.id, intentId: intent.id },
   });
 
-  // The open intent outside the current filter is listed first, like any
-  // other row (highlighted as current), so its section tabs stay reachable.
-  // Before the detail answers, the row shows what the shared list cache knows
-  // (title and status) or a loading placeholder — never a made-up status.
-  const currentOutsideFilter: IterationItem | null = useMemo(() => {
+  // Every active intent of every space, by activity: the per-space lists and
+  // the drawer slice it.
+  const activeByProject = useMemo(
+    () =>
+      new Map(
+        sortedProjects.map((entry) => [
+          entry.project.id,
+          entry.project.kind === 'v2'
+            ? projectIntentList(entry)
+                .filter(isActiveIntent)
+                .filter(
+                  (intent) =>
+                    !(openIntentGone && entry.project.id === projectId && intent.id === intentId),
+                )
+                .toSorted(byActivity)
+            : [],
+        ]),
+      ),
+    [sortedProjects, openIntentGone, projectId, intentId],
+  );
+
+  // The open intent is listed first in its space (highlighted as current) even
+  // when finished or beyond the visible rows, so its section tabs stay
+  // reachable. Before the detail answers, the row shows what the shared list
+  // cache knows (title and status) or a loading placeholder — never a made-up
+  // status.
+  const currentItem: IterationItem | null = useMemo(() => {
     if (!showIntentTabs || !projectId || !intentId || openIntentGone) return null;
-    const alreadyInList = filteredIterations.some((item) => item.intentMeta.intentId === intentId);
-    if (alreadyInList) return null;
     const intent =
       ctxDetail?.intent?.id === intentId
         ? ctxDetail.intent
@@ -302,281 +272,557 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
         : intentSectionPath(projectId, intentId, 'overview'),
       intentMeta: { projectId, intentId },
     };
-  }, [
-    showIntentTabs,
-    projectId,
-    intentId,
-    openIntentGone,
-    filteredIterations,
-    ctxDetail,
-    currentDerived,
-    projects,
-  ]);
+  }, [showIntentTabs, projectId, intentId, openIntentGone, ctxDetail, currentDerived, projects]);
 
-  useOfferIdleCandidates(
-    'shell',
-    filteredIterations
-      .filter((item) => item.intent?.status === 'WAITING' && item.intentMeta.intentId !== intentId)
-      .slice(0, WARM_WAITING_LIMIT)
-      .map((item) => item.path),
-  );
+  // Expanded spaces: the one the reader is in opens by itself when they
+  // arrive; a chevron toggles any other. Collapsing resets its rows to the
+  // first page.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [pages, setPages] = useState<Readonly<Record<string, number>>>({});
+  useEffect(() => {
+    if (!projectId) return;
+    setExpanded((prev) => (prev.has(projectId) ? prev : new Set([...prev, projectId])));
+  }, [projectId]);
+  const toggleSpace = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        setPages(({ [id]: _reset, ...rest }) => rest);
+      } else next.add(id);
+      return next;
+    });
+  };
+  const showMore = (id: string) => setPages((prev) => ({ ...prev, [id]: (prev[id] ?? 1) + 1 }));
+
+  const visibleRowsOf = (id: string): IterationItem[] => {
+    const entry = sortedProjects.find((p) => p.project.id === id);
+    if (!entry) return [];
+    const active = activeByProject.get(id) ?? [];
+    const limit = (pages[id] ?? 1) * INTENTS_PAGE_SIZE;
+    const rows = active.slice(0, limit).map((intent) => toItem(entry.project, intent));
+    if (currentItem && currentItem.intentMeta.projectId === id) {
+      const inRows = rows.some(
+        (row) => row.intentMeta.intentId === currentItem.intentMeta.intentId,
+      );
+      if (!inRows) return [currentItem, ...rows];
+      return rows.map((row) =>
+        row.intentMeta.intentId === currentItem.intentMeta.intentId
+          ? { ...row, derived: currentDerived }
+          : row,
+      );
+    }
+    return rows;
+  };
+
+  const drawerItems: IterationItem[] = [];
+  if (variant === 'drawer') {
+    const all = sortedProjects.flatMap((entry) =>
+      (activeByProject.get(entry.project.id) ?? []).map((intent) => ({
+        entry,
+        intent,
+        attention: needsAttention(intent) ? 0 : 1,
+      })),
+    );
+    drawerItems.push(
+      ...all
+        .toSorted((a, b) => a.attention - b.attention || byActivity(a.intent, b.intent))
+        .slice(0, DRAWER_INTENT_LIMIT)
+        .map(({ entry, intent }) => toItem(entry.project, intent)),
+    );
+    if (
+      currentItem &&
+      !drawerItems.some((row) => row.intentMeta.intentId === currentItem.intentMeta.intentId)
+    )
+      drawerItems.unshift(currentItem);
+  }
+
+  const visibleWaiting = (
+    variant === 'drawer'
+      ? drawerItems
+      : sortedProjects.flatMap((entry) =>
+          expanded.has(entry.project.id) ? visibleRowsOf(entry.project.id) : [],
+        )
+  )
+    .filter((item) => item.intent?.status === 'WAITING' && item.intentMeta.intentId !== intentId)
+    .slice(0, WARM_WAITING_LIMIT)
+    .map((item) => item.path);
+  useOfferIdleCandidates('shell', visibleWaiting);
+
+  const now = Date.now();
+  const pinnedEntries = sortedProjects.filter((entry) => sidebarSpaces.isPinned(entry.project.id));
+  const otherEntries = sortedProjects.filter((entry) => !sidebarSpaces.isPinned(entry.project.id));
+
+  const renderSpace = (entry: ProjectWithSprint) => {
+    const id = entry.project.id;
+    const isExpanded = expanded.has(id);
+    const active = activeByProject.get(id) ?? [];
+    const rows = isExpanded ? visibleRowsOf(id) : [];
+    const shownActive = rows.filter((row) => row.key !== currentItem?.key).length;
+    const hidden = Math.max(0, active.length - shownActive);
+    return (
+      <SpaceRow
+        key={id}
+        entry={entry}
+        now={now}
+        selected={projectId === id}
+        onSpacePage={onSpacePage(id)}
+        expanded={isExpanded}
+        onToggle={() => toggleSpace(id)}
+        pinned={sidebarSpaces.isPinned(id)}
+        onPin={(pinned) => sidebarSpaces.setPinned(id, pinned)}
+        summary={deriveSpaceSignals(projectIntentList(entry), now)}
+      >
+        {isExpanded && (
+          <div className="flex flex-col gap-0.5 pb-1 pl-5">
+            {rows.length === 0 && (
+              <span className="px-3 py-1.5 text-2xs text-sidebar-foreground/60">
+                No active intents
+              </span>
+            )}
+            {rows.map((item) => (
+              <IntentRowWithTabs
+                key={item.key}
+                item={item}
+                current={showIntentTabs && item.intentMeta.intentId === intentId}
+                currentSection={currentSection}
+              />
+            ))}
+            {hidden > 0 && (
+              <button
+                type="button"
+                onClick={() => showMore(id)}
+                className="rounded-sm px-3 py-1.5 text-left text-2xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+              >
+                Show more ({Math.min(hidden, INTENTS_PAGE_SIZE)})
+              </button>
+            )}
+          </div>
+        )}
+      </SpaceRow>
+    );
+  };
 
   return (
-    <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-1 px-3 pt-3 pb-1">
-        <Link
-          to="/dashboard"
-          className={cn(
-            'flex flex-1 items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left min-w-0',
-            isOnDashboard
-              ? 'bg-sidebar-accent text-sidebar-foreground'
-              : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+    <TooltipProvider delayDuration={300}>
+      <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
+        <nav aria-label="Primary" className="flex flex-col gap-0.5 px-3 pt-3 pb-0.5">
+          <PrimaryLink to="/dashboard" icon={Inbox} label="My work" current={isOnMyWork} />
+          {variant === 'drawer' && (
+            <PrimaryLink to="/spaces" icon={LayoutDashboard} label="Spaces" current={isOnSpaces} />
           )}
-        >
-          <LayoutDashboard className="h-4 w-4 shrink-0" />
-          <span className="flex-1 truncate">Spaces</span>
-        </Link>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              title={`Sort: ${PROJECT_SORT_LABELS[projectSort]}`}
-              aria-label="Sort spaces"
-              className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
-            >
-              <ArrowUpDown className="h-3.5 w-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuRadioGroup
-              value={projectSort}
-              onValueChange={(v) => setProjectSort(v as ProjectSort)}
-            >
-              <DropdownMenuRadioItem value="activity">
-                {PROJECT_SORT_LABELS.activity}
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="created">
-                {PROJECT_SORT_LABELS.created}
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="name">{PROJECT_SORT_LABELS.name}</DropdownMenuRadioItem>
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <button
-          onClick={() => (onCreateSpace ? onCreateSpace() : setShowCreateProject(true))}
-          title="New space"
-          aria-label="New space"
-          className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      </div>
+        </nav>
 
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="flex flex-col gap-0.5 px-3 pb-3">
-          {loading && projects.length === 0 && (
-            <div className="flex flex-col gap-1.5 px-3 py-1" aria-hidden="true">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="h-6 rounded-md bg-sidebar-accent/40 animate-pulse" />
-              ))}
-            </div>
-          )}
-          {sortedProjects.map((entry) => {
-            const { project } = entry;
-            const live =
-              project.kind === 'v2' &&
-              projectIntentList(entry).some((intent) => isLive(resolve(project.id, intent).status));
-            const attention =
-              project.kind !== 'v2'
-                ? 0
-                : entry.intents
-                  ? entry.intents.filter((intent) =>
-                      matchesFilter(resolve(project.id, intent), 'attention'),
-                    ).length
-                  : entry.activity.attention;
-            const isSelected = projectId === project.id;
-
-            return (
-              <Link
-                key={project.id}
-                to={`/space/${project.id}`}
-                title={live ? `${project.name} — ${LIVE_LABEL}` : project.name}
-                className={cn(
-                  'flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors rounded-md text-left w-full min-w-0',
-                  isSelected
-                    ? 'bg-sidebar-accent text-sidebar-foreground'
-                    : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-                )}
-              >
-                <span className="flex-1 truncate">{project.name}</span>
-                {attention > 0 && (
-                  <span
-                    aria-label={`${project.name}, ${attention} need${attention === 1 ? 's' : ''} attention`}
-                    title={`${attention} need${attention === 1 ? 's' : ''} attention`}
-                    className="shrink-0 rounded-full bg-agent-waiting/15 px-1.5 text-2xs font-medium tabular-nums text-agent-waiting-fg"
-                  >
-                    {attention}
+        <ScrollArea className="flex-1 min-h-0">
+          {variant === 'drawer' ? (
+            <div className="px-3 pb-3 pt-1.5">
+              <div className="px-3 pb-1 text-2xs font-medium text-sidebar-foreground/60">
+                Intents
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {loading && projects.length === 0 && <RowsSkeleton />}
+                {feedFailed && <FeedFailed onRetry={() => void refresh()} />}
+                {!feedFailed && !loading && drawerItems.length === 0 && (
+                  <span className="px-3 py-2 text-2xs text-sidebar-foreground/70">
+                    No active intents
                   </span>
                 )}
-                {live && (
-                  <span
-                    role="img"
-                    aria-label={LIVE_LABEL}
-                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-agent-running motion-safe:animate-pulse"
+                {drawerItems.map((item) => (
+                  <IntentRowWithTabs
+                    key={item.key}
+                    item={item}
+                    current={showIntentTabs && item.intentMeta.intentId === intentId}
+                    currentSection={currentSection}
                   />
-                )}
-              </Link>
-            );
-          })}
-        </div>
-
-        <div className="px-3 pb-3">
-          <div className="flex items-center gap-1 pt-0.5 pb-0.5">
-            <div
-              className="flex flex-1 items-center gap-2 px-3 py-1.5 text-2xs min-w-0"
-              aria-label={`Intent activity filter: ${FILTER_LABELS[intentFilter]}`}
-            >
-              <Activity
-                className="h-3.5 w-3.5 shrink-0 text-sidebar-foreground/70"
-                aria-hidden="true"
-              />
-              <span className="flex-1 truncate text-sidebar-foreground/70">
-                <span className="font-medium text-sidebar-foreground/90">
-                  {FILTER_LABELS[intentFilter]}
-                </span>
-                {matchingCount > 0 && <span className="tabular-nums"> · {matchingCount}</span>}
-              </span>
-            </div>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  title={`Filter: ${FILTER_LABELS[intentFilter]}`}
-                  aria-label="Filter intents"
-                  className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
-                >
-                  <ListFilter className="h-3.5 w-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuRadioGroup value={intentFilter} onValueChange={handleFilterChange}>
-                  <DropdownMenuRadioItem value="attention">
-                    {FILTER_LABELS.attention}
-                  </DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="active">
-                    {FILTER_LABELS.active}
-                  </DropdownMenuRadioItem>
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          <div className="flex flex-col gap-0.5">
-            {feedFailed && (
-              <span className="flex items-center gap-1 px-3 py-2 text-2xs text-sidebar-foreground/70">
-                Couldn&apos;t load intents.
-                <button
-                  type="button"
-                  onClick={() => void refresh()}
-                  className="rounded-sm font-medium text-sidebar-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
-                >
-                  Retry
-                </button>
-              </span>
-            )}
-            {!feedFailed && filteredIterations.length === 0 && !currentOutsideFilter && (
-              <span className="px-3 py-2 text-2xs text-sidebar-foreground/70">
-                {FILTER_EMPTY[intentFilter]}
-              </span>
-            )}
-            {currentOutsideFilter && (
-              <div data-testid="current-intent-outside-filter">
-                <SidebarIntentRow item={currentOutsideFilter} current />
-                <IntentSectionTabs
-                  projectId={currentOutsideFilter.intentMeta.projectId}
-                  intentId={currentOutsideFilter.intentMeta.intentId}
-                  currentSection={currentSection}
-                />
+                ))}
               </div>
-            )}
-            {filteredIterations.map((item) => {
-              const isSelectedIntent = showIntentTabs && item.intentMeta.intentId === intentId;
-
-              return (
-                <div key={item.key}>
-                  <SidebarIntentRow item={item} current={isSelectedIntent} />
-                  {isSelectedIntent && (
-                    <IntentSectionTabs
-                      projectId={item.intentMeta.projectId}
-                      intentId={item.intentMeta.intentId}
-                      currentSection={currentSection}
-                    />
-                  )}
-                </div>
-              );
-            })}
-            {overflowIntents.map((overflow) => (
-              <Link
-                key={`more-${overflow.projectId}`}
-                to={`/space/${overflow.projectId}`}
-                className="px-3 py-1.5 text-left text-2xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring rounded-sm"
-              >
-                Show {overflow.count} more {overflow.count === 1 ? 'intent' : 'intents'} in{' '}
-                {overflow.projectName}
-              </Link>
-            ))}
-          </div>
-        </div>
-      </ScrollArea>
-
-      <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
-        {isPlatformAdmin && (
-          <>
-            <div className="px-3 pb-1 pt-1 text-2xs font-medium text-sidebar-foreground/60">
-              Authoring
             </div>
-            <Link
-              to="/workflows"
-              className={cn(
-                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-                isOnWorkflows
-                  ? 'bg-sidebar-accent text-sidebar-foreground'
-                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+          ) : (
+            <div className="flex flex-col gap-3 px-3 pt-2.5 pb-3">
+              {pinnedEntries.length > 0 && (
+                <section aria-labelledby="sidebar-pinned" className="flex flex-col gap-0.5">
+                  <div className="group/section flex">
+                    <SectionHeader
+                      id="sidebar-pinned"
+                      icon={Pin}
+                      label="Pinned"
+                      collapsed={sidebarSpaces.pinnedCollapsed}
+                      onToggle={() =>
+                        sidebarSpaces.setPinnedCollapsed(!sidebarSpaces.pinnedCollapsed)
+                      }
+                    />
+                  </div>
+                  {!sidebarSpaces.pinnedCollapsed && (
+                    <div id="sidebar-pinned-list" className="flex flex-col gap-0.5">
+                      {pinnedEntries.map(renderSpace)}
+                    </div>
+                  )}
+                </section>
               )}
-            >
-              <Workflow className="h-3.5 w-3.5 shrink-0" />
-              Workflows
-            </Link>
-            <Link
-              to="/blocks/stage"
-              className={cn(
-                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-                isOnBlocks
-                  ? 'bg-sidebar-accent text-sidebar-foreground'
-                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-              )}
-            >
-              <Blocks className="h-3.5 w-3.5 shrink-0" />
-              Block Library
-            </Link>
-            <div className="my-1 h-px bg-sidebar-border" />
-            <Link
-              to="/admin"
-              className={cn(
-                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-                isOnAdmin
-                  ? 'bg-sidebar-accent text-sidebar-foreground'
-                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-              )}
-            >
-              <Settings className="h-3.5 w-3.5 shrink-0" />
-              Admin & Settings
-            </Link>
-          </>
+
+              <section aria-labelledby="sidebar-spaces" className="flex flex-col gap-0.5">
+                <div className="group/section flex items-center gap-0.5">
+                  <SectionHeader
+                    id="sidebar-spaces"
+                    icon={LayoutDashboard}
+                    label="Spaces"
+                    collapsed={sidebarSpaces.spacesCollapsed}
+                    onToggle={() =>
+                      sidebarSpaces.setSpacesCollapsed(!sidebarSpaces.spacesCollapsed)
+                    }
+                  />
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        title={`Sort: ${PROJECT_SORT_LABELS[projectSort]}`}
+                        aria-label="Sort spaces"
+                        className={cn(
+                          'flex h-6 w-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/40 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+                          REVEAL_ON_HOVER.section,
+                        )}
+                      >
+                        <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuRadioGroup
+                        value={projectSort}
+                        onValueChange={(v) => setProjectSort(v as ProjectSort)}
+                      >
+                        {(Object.keys(PROJECT_SORT_LABELS) as ProjectSort[]).map((key) => (
+                          <DropdownMenuRadioItem key={key} value={key}>
+                            {PROJECT_SORT_LABELS[key]}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <button
+                    onClick={() => (onCreateSpace ? onCreateSpace() : setShowCreateProject(true))}
+                    title="New space"
+                    aria-label="New space"
+                    className={cn(
+                      'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+                      REVEAL_ON_HOVER.section,
+                    )}
+                  >
+                    <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+                  </button>
+                </div>
+                {!sidebarSpaces.spacesCollapsed && (
+                  <div id="sidebar-spaces-list" className="flex flex-col gap-0.5">
+                    {loading && projects.length === 0 && <RowsSkeleton />}
+                    {feedFailed && <FeedFailed onRetry={() => void refresh()} />}
+                    {!loading && projects.length === 0 && !feedFailed && (
+                      <span className="px-3 py-2 text-2xs text-sidebar-foreground/70">
+                        No spaces yet
+                      </span>
+                    )}
+                    {otherEntries.map(renderSpace)}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+        </ScrollArea>
+
+        <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
+          {isPlatformAdmin && (
+            <>
+              <div className="px-3 pb-1 pt-1 text-2xs font-medium text-sidebar-foreground/60">
+                Authoring
+              </div>
+              <Link
+                to="/workflows"
+                className={cn(
+                  'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                  isOnWorkflows
+                    ? 'bg-sidebar-accent text-sidebar-foreground'
+                    : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+                )}
+              >
+                <Workflow className="h-3.5 w-3.5 shrink-0" />
+                Workflows
+              </Link>
+              <Link
+                to="/blocks/stage"
+                className={cn(
+                  'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                  isOnBlocks
+                    ? 'bg-sidebar-accent text-sidebar-foreground'
+                    : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+                )}
+              >
+                <Blocks className="h-3.5 w-3.5 shrink-0" />
+                Block Library
+              </Link>
+              <div className="my-1 h-px bg-sidebar-border" />
+              <Link
+                to="/admin"
+                className={cn(
+                  'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                  isOnAdmin
+                    ? 'bg-sidebar-accent text-sidebar-foreground'
+                    : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+                )}
+              >
+                <Settings className="h-3.5 w-3.5 shrink-0" />
+                Admin & Settings
+              </Link>
+            </>
+          )}
+        </div>
+
+        {showCreateProject && !onCreateSpace && (
+          <CreateProjectModal onClose={() => setShowCreateProject(false)} onCreated={refresh} />
         )}
       </div>
+    </TooltipProvider>
+  );
+}
 
-      {showCreateProject && !onCreateSpace && (
-        <CreateProjectModal onClose={() => setShowCreateProject(false)} onCreated={refresh} />
+function PrimaryLink({
+  to,
+  icon: Icon,
+  label,
+  current,
+}: {
+  to: string;
+  icon: LucideIcon;
+  label: string;
+  current: boolean;
+}) {
+  return (
+    <Link
+      to={to}
+      aria-current={current ? 'page' : undefined}
+      className={cn(
+        SECTION_ROW_CLASS,
+        current
+          ? 'bg-sidebar-accent text-sidebar-foreground'
+          : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      <span className="flex-1 truncate">{label}</span>
+    </Link>
+  );
+}
+
+// Pinned and Spaces: the row toggles its list; the chevron sits by the label.
+function SectionHeader({
+  id,
+  icon: Icon,
+  label,
+  collapsed,
+  onToggle,
+}: {
+  id: string;
+  icon: LucideIcon;
+  label: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={id}
+      aria-expanded={!collapsed}
+      aria-controls={`${id}-list`}
+      onClick={onToggle}
+      className={cn(
+        SECTION_ROW_CLASS,
+        'flex-1 text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+      <ChevronDown
+        aria-hidden="true"
+        className={cn(
+          '-ml-1 h-3.5 w-3.5 shrink-0 text-sidebar-foreground/50 transition-transform',
+          // Open sections hide their chevron until hovered, like the row actions;
+          // a folded section keeps it as the cue that there is more.
+          collapsed ? '-rotate-90' : REVEAL_ON_HOVER.section,
+        )}
+      />
+    </button>
+  );
+}
+
+function RowsSkeleton() {
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-1" aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="h-6 rounded-md bg-sidebar-accent/40 animate-pulse" />
+      ))}
+    </div>
+  );
+}
+
+function FeedFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <span className="flex items-center gap-1 px-3 py-2 text-2xs text-sidebar-foreground/70">
+      Couldn&apos;t load intents.
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded-sm font-medium text-sidebar-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+      >
+        Retry
+      </button>
+    </span>
+  );
+}
+
+interface SpaceRowProps {
+  entry: ProjectWithSprint;
+  now: number;
+  selected: boolean;
+  onSpacePage: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  pinned: boolean;
+  onPin: (pinned: boolean) => void;
+  summary: SpaceSignals;
+  children?: React.ReactNode;
+}
+
+function SpaceRow({
+  entry,
+  now,
+  selected,
+  onSpacePage,
+  expanded,
+  onToggle,
+  pinned,
+  onPin,
+  summary,
+  children,
+}: SpaceRowProps) {
+  const { project } = entry;
+  const isV2 = project.kind === 'v2';
+  const live = isV2 && summary.running > 0;
+  const lastActivity = projectLastActivityAt(entry);
+  // The age line earns its row only when the space has work to date it.
+  const activityText =
+    isV2 && lastActivity && projectIntentList(entry).length > 0
+      ? formatRelative(lastActivity, { now })
+      : null;
+  const parts = isV2 ? spaceSignalParts(summary) : ['Legacy · read-only'];
+  const hint = [
+    project.name,
+    parts.length > 0 ? parts.join(' · ') : isV2 ? 'No open work' : null,
+    lastActivity ? `Last activity ${formatRelative(lastActivity, { now })}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    <div>
+      <div
+        className={cn(
+          'group/space flex items-center rounded-md transition-colors',
+          selected ? 'bg-sidebar-accent' : 'hover:bg-muted',
+        )}
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              to={`/space/${project.id}`}
+              aria-current={selected ? 'page' : undefined}
+              onClick={(event) => {
+                if (!onSpacePage) return;
+                event.preventDefault();
+                onToggle();
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring rounded-md"
+            >
+              <span className="min-w-0 flex-1">
+                <span
+                  className={cn(
+                    'block truncate text-[13px] font-medium',
+                    selected ? 'text-sidebar-foreground' : 'text-sidebar-foreground/85',
+                  )}
+                >
+                  {project.name}
+                </span>
+                {activityText && (
+                  <span className="block truncate text-2xs text-sidebar-foreground/55">
+                    {activityText}
+                  </span>
+                )}
+              </span>
+              {live && (
+                <span
+                  role="img"
+                  aria-label={LIVE_LABEL}
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-agent-running motion-safe:animate-pulse"
+                />
+              )}
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="whitespace-pre-line text-left">
+            {hint}
+          </TooltipContent>
+        </Tooltip>
+        <button
+          type="button"
+          aria-pressed={pinned}
+          aria-label={`${pinned ? 'Unpin' : 'Pin'} ${project.name}`}
+          onClick={() => onPin(!pinned)}
+          className={cn(
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/40 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+            REVEAL_ON_HOVER.space,
+            pinned && 'text-sidebar-foreground/60',
+          )}
+        >
+          {pinned ? (
+            <PinOff aria-hidden="true" className="h-3 w-3" />
+          ) : (
+            <Pin aria-hidden="true" className="h-3 w-3" />
+          )}
+        </button>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`}
+          onClick={onToggle}
+          className="flex h-8 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/40 hover:text-sidebar-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={cn('h-3.5 w-3.5 transition-transform', !expanded && '-rotate-90')}
+          />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function IntentRowWithTabs({
+  item,
+  current,
+  currentSection,
+}: {
+  item: IterationItem;
+  current: boolean;
+  currentSection: IntentSection | null;
+}) {
+  return (
+    <div
+      data-testid={
+        item.key.startsWith('current-intent-') ? 'current-intent-outside-filter' : undefined
+      }
+    >
+      <SidebarIntentRow item={item} current={current} />
+      {current && (
+        <IntentSectionTabs
+          projectId={item.intentMeta.projectId}
+          intentId={item.intentMeta.intentId}
+          currentSection={currentSection}
+        />
       )}
     </div>
   );

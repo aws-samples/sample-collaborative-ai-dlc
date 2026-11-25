@@ -6,12 +6,18 @@ import { Card } from '@/components/ui/card';
 
 type Status = 'loading' | 'success' | 'error' | 'custom';
 
+const BACK_LABELS: Record<string, string> = {
+  '/dashboard': 'Back to My work',
+  '/spaces': 'Back to spaces',
+};
+
 interface Props {
   status: Status;
   providerLabel: string;
   loadingMessage?: string;
   successMessage?: string;
   errorMessage?: string | null;
+  /** For `error`, from `useOAuthReturnPath`: the space settings, or where the spaces are in the reader's layout. */
   backTo?: string;
   // For multi-step callbacks (e.g. Jira's site picker) callers render their
   // own UI alongside the standard shell. Provide it as `children` and pass
@@ -28,7 +34,7 @@ export function OAuthCallbackShell({
   loadingMessage,
   successMessage,
   errorMessage,
-  backTo = '/dashboard',
+  backTo,
   children,
 }: Props) {
   return (
@@ -56,11 +62,13 @@ export function OAuthCallbackShell({
             {errorMessage && (
               <p className="break-words text-sm text-muted-foreground">{errorMessage}</p>
             )}
-            <Button asChild variant="outline">
-              <Link to={backTo} replace>
-                {backTo === '/dashboard' ? 'Back to spaces' : 'Back to space settings'}
-              </Link>
-            </Button>
+            {backTo && (
+              <Button asChild variant="outline">
+                <Link to={backTo} replace>
+                  {BACK_LABELS[backTo] ?? 'Back to space settings'}
+                </Link>
+              </Button>
+            )}
           </>
         )}
         {status === 'custom' && children}

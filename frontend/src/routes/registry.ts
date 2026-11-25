@@ -14,6 +14,7 @@ import { knownQueryBytes, queryClient } from '@/lib/queryClient';
 import { intentDetailQuery, intentCompiledQuery } from '@/lib/intentEntry';
 import { projectIntentsQuery } from '@/hooks/useProjectsCache';
 import { personalCredentialsQuery } from '@/lib/settingsQueries';
+import { idleCandidates } from '@/lib/idleCandidates';
 import type { IntentDetail } from '@/services/intents';
 import { qk } from '@/lib/queryKeys';
 import * as pages from './pages';
@@ -72,9 +73,15 @@ const intentSections = (ctx: RouteCtx) => {
 
 export const APP_ROUTES: readonly RouteEntry[] = [
   {
+    // My work: the default page after login. Portfolio lists are shell-owned
+    // and always warm; the inbox offers its first answerable rows.
     path: '/dashboard',
     page: pages.Dashboard,
-    // Portfolio lists are shell-owned and always warm.
+    idleNext: () => idleCandidates('page').slice(0, 2),
+  },
+  {
+    path: '/spaces',
+    page: pages.Spaces,
   },
   {
     path: '/account/settings',

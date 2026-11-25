@@ -17,6 +17,7 @@ import {
   Container,
   FolderGit2,
   GitBranch,
+  Inbox,
   Layers,
   LayoutDashboard,
   ListTodo,
@@ -29,6 +30,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useProjectsCache, type ProjectIntentSummary } from '@/hooks/useProjectsCache';
+import { usePanelsInline } from '@/hooks/usePanelsInline';
 import { useAuth } from '@/contexts/AuthContext';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { StatusPill } from '@/components/ui/status-pill';
@@ -39,6 +41,8 @@ import { intentStatusLabel, useIntentStatus } from '@/lib/statusModel';
 interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Opens the shell's Create space dialog on the current page. */
+  onCreateSpace: () => void;
 }
 
 interface PageEntry {
@@ -47,10 +51,24 @@ interface PageEntry {
   icon: LucideIcon;
   keywords: string[];
   adminOnly?: boolean;
+  /** A page that only exists where the sidebar does not already serve its purpose. */
+  narrowOnly?: boolean;
 }
 
 const PAGES: PageEntry[] = [
-  { label: 'Spaces', path: '/dashboard', icon: LayoutDashboard, keywords: ['dashboard', 'home'] },
+  {
+    label: 'My work',
+    path: '/dashboard',
+    icon: Inbox,
+    keywords: ['dashboard', 'home', 'inbox', 'attention', 'questions'],
+  },
+  {
+    label: 'Spaces',
+    path: '/spaces',
+    icon: LayoutDashboard,
+    keywords: ['projects', 'list'],
+    narrowOnly: true,
+  },
   {
     label: 'Workflows',
     path: '/workflows',
@@ -183,10 +201,14 @@ function activityTime(intent: ProjectIntentSummary): number {
 }
 
 // Open work ranks above finished runs at equal match quality (R5-28).
-const STATUS_RANK: Partial<Record<string, number>> = { WAITING: 0, RUNNING: 1, CREATED: 1 };
+const STATUS_RANK: Partial<Record<string, number>> = {
+  WAITING: 0,
+  RUNNING: 1,
+  CREATED: 1,
+};
 const statusRank = (intent: ProjectIntentSummary) => STATUS_RANK[intent.status] ?? 2;
 
-export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+export function CommandPalette({ open, onOpenChange, onCreateSpace }: CommandPaletteProps) {
   const navigate = useNavigate();
   const { projects } = useProjectsCache();
   const { isPlatformAdmin } = useAuth();
@@ -230,7 +252,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     [projects],
   );
 
-  const pages = PAGES.filter((page) => !page.adminOnly || isPlatformAdmin);
+  const panelsInline = usePanelsInline();
+  const pages = PAGES.filter(
+    (page) => (!page.adminOnly || isPlatformAdmin) && (!page.narrowOnly || !panelsInline),
+  );
 
   // Pointer hover is covered by the shell's delegated listener (each item
   // carries data-prefetch-href). Arrow keys move cmdk's selection without
@@ -338,7 +363,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               <CommandItem
                 value="action:create-space"
                 keywords={['new space', 'create space', 'project']}
-                onSelect={() => runCommand(() => navigate('/dashboard?reopenCreateSpace=1'))}
+                onSelect={() => runCommand(onCreateSpace)}
               >
                 <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
                 Create new space

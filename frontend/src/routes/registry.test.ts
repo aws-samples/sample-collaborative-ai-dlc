@@ -5,6 +5,7 @@ const pages = vi.hoisted(() => {
     'AppShell',
     'SprintLayout',
     'Dashboard',
+    'Spaces',
     'Project',
     'ProjectSettings',
     'IntentView',
@@ -77,6 +78,7 @@ describe('APP_ROUTES', () => {
       ]),
     ).toEqual([
       ['/dashboard', 'Dashboard', null, null],
+      ['/spaces', 'Spaces', null, null],
       ['/account/settings', 'AccountSettings', null, null],
       ['/admin', 'PlatformAdmin', 'platformAdmin', null],
       ['/observability', 'ObservabilityLayout', null, null],

@@ -21,6 +21,8 @@ Every status word, tone, icon, and help sentence comes from the registry in `lib
 
 Slugs and identifiers the backend emits are not labels. Use the helpers in `lib/displayNames.ts`:
 
+- `displayStageName(slug, compiled)` returns the compiled stage name when there is one, otherwise the humanized slug.
+- `displayPhase` humanizes phase slugs: `02-construction` becomes "Construction".
 - `displayProvider` returns the product name, such as "GitHub" and "Amazon Bedrock".
 
 Never use a slug or a UUID as the primary label of a row, badge, heading, or menu item. When the raw value is useful for support, put it in technical details.
@@ -35,6 +37,27 @@ Use `Disclosure` (`components/ui/disclosure.tsx`) for any collapsible content. D
 - `count` is appended to the title, as in "Diagnostics (6)".
 - By default, children are not mounted while the panel is closed, so a collapsed panel never fetches. Pass `forceMount` only when the content must keep its state while hidden.
 
+## Dates and times
+
+- Render a timestamp with `RelativeTime` (`components/ui/relative-time.tsx`). It outputs a `<time dateTime>` element with a relative age ("3h ago") for the first 30 days and an absolute date ("5 Aug 2026") after that. The exact timestamp appears in a tooltip on hover and on focus. A missing or invalid value renders as "—".
+- When plain text is needed, use the helpers in `lib/timeAgo.ts`: `formatAbsolute` for an exact timestamp ("5 Aug 2026, 15:08"), `formatRelative` for the same text `RelativeTime` shows, and `formatAge` for a duration ("3 hours").
+- Never show a raw ISO string or a locale-dependent date such as "5/22/2026", and never mix formats within one list.
+- State durations with their verb: an active state shows elapsed time ("Waiting for input · 109 days"); a finished state shows time since ("Failed 137 days ago").
+
+## Failures
+
+`describeFailure(code, message)` in `lib/failureReasons.ts` turns a failure code, or the legacy `stage_failed: …` string, into `{ sentence, technical, code, stageId }`.
+
+- Show `sentence` to the user, for example "This stage uses a mode this platform version does not support yet."
+- When the orchestrator or the agent runtime gains a failure code, add its sentence to `FAILURE_SENTENCES`. An unknown code falls back to "The run stopped because of an internal error."
+
+## Navigation
+
+- **My work** (`/dashboard`, the default after login) lists what needs the reader across spaces. Register a new top-level page in `routes/registry.ts`, add its breadcrumb in `AppHeader`, and its entry in the command palette's `PAGES`.
+- The layout breakpoint is `hooks/usePanelsInline.ts` (Tailwind `lg`), shared by the shell and the pages. At and above it the sidebar is the list of spaces: three rows in one style — **My work**, **Pinned** (only with pins; `useSidebarSpaces`, persisted per user) and **Spaces**, which toggles the list and carries the sort menu and **New space**. The `/spaces` page exists for narrow screens (the drawer links to it); on large screens the route redirects to `/dashboard` with its query, the breadcrumb root "Spaces" is plain text, the palette hides the page (`narrowOnly`) and return paths use `spacesHomePath`. `?reopenCreateSpace=1` (with an optional `gitProvider`) is handled by `AppShell`, which owns the Create space dialog, on whatever page the reader lands.
+- Expanding a space lists only active intents (`isTerminalIntentStatus` false), most recent first, `INTENTS_PAGE_SIZE` at a time; finished intents belong to the space page. Work status counts come from `components/space/spaceSignals.ts`, the same helper the Spaces table uses for its pills.
+- Rows are plain links: hover warming is the shell's delegated listener (`navIntent`); a sidebar row never fetches on its own.
+
 ## Page headers
 
 - Every page has one `PageHeader` (`components/ui/page-header.tsx`), which renders the page's single `h1`. Put the `StatusPill` in `status`, short facts and badges in `meta`, and the one primary button in `primaryAction`. Use `backTo` for the link to the parent page.
@@ -46,6 +69,15 @@ Use `Disclosure` (`components/ui/disclosure.tsx`) for any collapsible content. D
 - **Interactive targets are at least 24 by 24 CSS pixels.** The shared controls already meet this: the smallest button (`size="xs"`) is 28 px high and an icon button is 36 px. Do not shrink a control below the floor with custom classes.
 - **Use status tokens for status colors.** Pair `text-agent-*-fg` with `bg-agent-*/15`, and `text-warning-fg` with `bg-warning/15`. Do not use palette classes such as `text-amber-600` or `indigo-*`; the token pairs are tested for contrast in both themes.
 - **Buttons use sentence case and a specific verb:** "Start intent", "View activity".
+
+## Row actions
+
+Use `RowActions` (`components/RowActions.tsx`) for the secondary actions of a list row, next to the row's primary link.
+
+- The trigger is always visible on touch devices, where it is 40 px square on narrow screens.
+- On devices with a pointer that can hover, it appears when the row is hovered, when keyboard focus is inside the row, and while its menu is open. The row element needs the `group` class for this.
+- `label` is required and names the menu for assistive technology, for example "Actions for Checkout redesign".
+- Offer the same set of actions on every row where the action is allowed. Do not remove the menu for one status.
 
 ## Before opening a pull request
 

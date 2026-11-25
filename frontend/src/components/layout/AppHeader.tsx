@@ -38,6 +38,7 @@ import { BrandMark } from '@/components/layout/BrandMark';
 import { getBranding } from '@/lib/branding';
 import { intentRowTitle } from '@/components/space/IntentRow';
 import { prefetchHref, preloadHref } from '@/lib/routePrefetch';
+import { usePanelsInline } from '@/hooks/usePanelsInline';
 
 const ACCOUNT_SETTINGS = '/account/settings';
 const ADMIN = '/admin';
@@ -90,7 +91,10 @@ export function AppHeader({
         ? (getCachedIntentSummary(params.projectId, params.intentId)?.title ?? null)
         : null;
 
-  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle);
+  const panelsInline = usePanelsInline();
+  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle, {
+    spacesHref: panelsInline ? undefined : '/spaces',
+  });
   // Small screens cannot fit the trail: one back link, to the space when the
   // page belongs to one (the intent's own pages are siblings, not parents),
   // otherwise to the nearest parent.
@@ -311,6 +315,8 @@ function buildBreadcrumbs(
   project: Project | null,
   sprint: Sprint | null,
   intentTitle: string | null,
+  // The spaces list is a page only where the sidebar does not list them.
+  { spacesHref }: { spacesHref?: string },
 ): Breadcrumb[] {
   // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
@@ -321,8 +327,11 @@ function buildBreadcrumbs(
     return [{ label: 'Account Settings' }];
   }
 
-  // Dashboard - just "Projects"
   if (pathname === '/dashboard') {
+    return [{ label: 'My work' }];
+  }
+
+  if (pathname === '/spaces') {
     return [{ label: 'Spaces' }];
   }
 
@@ -346,7 +355,7 @@ function buildBreadcrumbs(
     return [{ label: 'Page not found' }];
   }
 
-  const crumbs: Breadcrumb[] = [{ label: 'Spaces', href: '/dashboard' }];
+  const crumbs: Breadcrumb[] = [{ label: 'Spaces', href: spacesHref }];
 
   // Add project name if available
   if (params.projectId && project) {

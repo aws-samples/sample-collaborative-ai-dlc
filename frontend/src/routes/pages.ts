@@ -15,6 +15,7 @@ export const SprintLayout = lazyWithPreload(() =>
   import('@/components/layout/SprintLayout').then((m) => ({ default: m.SprintLayout })),
 );
 export const Dashboard = lazyWithPreload(() => import('@/pages/Dashboard'));
+export const Spaces = lazyWithPreload(() => import('@/pages/Spaces'));
 export const Project = lazyWithPreload(() => import('@/pages/Project'));
 export const ProjectSettings = lazyWithPreload(() => import('@/pages/ProjectSettings'));
 export const IntentView = lazyWithPreload(() => import('@/pages/IntentView'));

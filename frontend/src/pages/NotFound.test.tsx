@@ -8,7 +8,7 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/dashboard" element={<p>Spaces page</p>} />
+        <Route path="/dashboard" element={<p>My work page</p>} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </MemoryRouter>,
@@ -16,13 +16,13 @@ function renderAt(path: string) {
 }
 
 describe('NotFound', () => {
-  it('says the page does not exist and offers one way back to Spaces', () => {
+  it('says the page does not exist and offers one way back to My work', () => {
     renderAt('/this-does-not-exist');
 
     expect(
       screen.getByRole('heading', { level: 1, name: "This page doesn't exist" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Go to Spaces' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Go to My work' })).toHaveAttribute(
       'href',
       '/dashboard',
     );

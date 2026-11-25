@@ -1,6 +1,6 @@
-// Human display names for slugs and ids the backend emits (providers). Raw
-// values stay available to callers for "Technical details"; these are the
-// primary labels.
+// Human display names for slugs and ids the backend emits (stages, phases,
+// providers). Raw values stay available to callers for "Technical details";
+// these are the primary labels.
 
 const ACRONYMS = new Set(
   `adr ai api aws bdd cd cdk ci cli css cve ddd dns ec2 ecs eks faq html http https iam id
@@ -43,7 +43,7 @@ const acronymForm = (lower: string): string | null => {
 };
 
 /** 'reverse-engineering' → 'Reverse Engineering'; 'api_design' → 'API Design'. */
-function humanizeSlug(slug: string): string {
+export function humanizeSlug(slug: string): string {
   const words = slug
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -65,6 +65,18 @@ function humanizeSlug(slug: string): string {
   }
   return out.join(' ');
 }
+
+type NamedNode = { name?: string | null } | string | null | undefined;
+
+/** Compiled node name when it is a real name, else the humanized slug. */
+export function displayStageName(slug: string, compiled?: NamedNode): string {
+  const name = (typeof compiled === 'string' ? compiled : compiled?.name)?.trim();
+  if (name && name !== slug) return name;
+  return humanizeSlug(slug);
+}
+
+/** 'inception' → 'Inception'; ordered paths like '02-construction' drop the prefix. */
+export const displayPhase = (slug: string): string => humanizeSlug(slug.replace(/^\d+[-_.]/, ''));
 
 // Matches services/gitProvider.ts terminology and lib/trackerProviders.tsx.
 const PROVIDER_NAMES: Record<string, string> = {

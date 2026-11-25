@@ -2,7 +2,7 @@ import {
   SpacePermissionsProvider,
   SpacePermissionsNotice,
 } from '@/contexts/SpacePermissionsContext';
-import { Outlet, useParams, useLocation } from 'react-router';
+import { Outlet, useParams, useLocation, useSearchParams } from 'react-router';
 import { cn } from '@/lib/utils';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -14,7 +14,9 @@ import { detectSection } from '@/components/layout/IntentPipelineBar';
 // that don't belong in the eager main chunk — they only render when a side
 // panel is open on sprint/intent routes.
 const ActivityPanel = lazy(() =>
-  import('@/components/layout/ActivityPanel').then((m) => ({ default: m.ActivityPanel })),
+  import('@/components/layout/ActivityPanel').then((m) => ({
+    default: m.ActivityPanel,
+  })),
 );
 const IntentActivityPanel = lazy(() =>
   import('@/components/layout/IntentActivityPanel').then((m) => ({
@@ -24,7 +26,9 @@ const IntentActivityPanel = lazy(() =>
 // Lazy: the v1 sprint bar (and its v1 services/hooks) only renders on sprint
 // routes; v2 pages must not pay for it in the shell chunk.
 const SprintPipelineBar = lazyWithPreload(() =>
-  import('@/components/layout/SprintPipelineBar').then((m) => ({ default: m.SprintPipelineBar })),
+  import('@/components/layout/SprintPipelineBar').then((m) => ({
+    default: m.SprintPipelineBar,
+  })),
 );
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
@@ -33,7 +37,8 @@ import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache, useProjectsCache } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
-import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { PANELS_INLINE_MIN_WIDTH, usePanelsInline } from '@/hooks/usePanelsInline';
+import { isGitProvider, type GitProvider } from '@/services/gitProvider';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
 import { lazyWithPreload } from '@/lib/lazyWithPreload';
 import { setLastIntentSection } from '@/lib/intentSectionPreference';
@@ -65,12 +70,11 @@ export function shouldDefaultOpen(pathname: string): boolean {
   return false;
 }
 
-// Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
-// overlays above the content instead of grid columns. One shared breakpoint
-// keeps the two panels' behavior consistent, and the activity overlay never
-// opens by itself there — it would cover the page (W1).
-export const PANELS_INLINE_MIN_WIDTH = 1024;
-const PANELS_INLINE_QUERY = `(min-width: ${PANELS_INLINE_MIN_WIDTH}px)`;
+// Below PANELS_INLINE_MIN_WIDTH (hooks/usePanelsInline) BOTH side panels
+// render as NON-modal overlays above the content instead of grid columns. One
+// shared breakpoint keeps the two panels' behavior consistent, and the
+// activity overlay never opens by itself there — it would cover the page (W1).
+export { PANELS_INLINE_MIN_WIDTH };
 
 export const ACTIVITY_PANEL_OPEN_STORAGE_KEY = 'aidlc-activity-panel-open';
 
@@ -175,12 +179,37 @@ export function AppShell() {
     if (intentId) setLastIntentSection(intentId, detectSection(location.pathname));
   }, [intentId, location.pathname]);
 
-  const panelsInline = useMediaQuery(PANELS_INLINE_QUERY);
-  // The sidebar's Create space dialog lives here so it survives the sidebar
-  // unmounting when the viewport crosses the inline breakpoint (R3-8).
+  const panelsInline = usePanelsInline();
+  // The Create space dialog lives here so it survives the sidebar unmounting
+  // when the viewport crosses the inline breakpoint (R3-8), and so a
+  // `?reopenCreateSpace=1` link (OAuth return, command palette, empty states)
+  // opens it on whatever page the reader lands.
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
-  const openCreateSpace = useCallback(() => setCreateSpaceOpen(true), []);
+  const [createSpaceProvider, setCreateSpaceProvider] = useState<GitProvider | ''>('');
+  const [createSpaceInstance, setCreateSpaceInstance] = useState<string>();
+  const openCreateSpace = useCallback(() => {
+    setCreateSpaceProvider('');
+    setCreateSpaceInstance(undefined);
+    setCreateSpaceOpen(true);
+  }, []);
   const { refresh: refreshProjects } = useProjectsCache();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const onSpacesList = location.pathname === '/spaces';
+  useEffect(() => {
+    if (searchParams.get('reopenCreateSpace') !== '1') return;
+    // On large screens /spaces redirects to My work with its query intact: let
+    // the flag travel with it instead of stripping it here first.
+    if (panelsInline && onSpacesList) return;
+    const provider = searchParams.get('gitProvider');
+    setCreateSpaceProvider(isGitProvider(provider) ? provider : '');
+    setCreateSpaceInstance(searchParams.get('gitlabInstance') || undefined);
+    setCreateSpaceOpen(true);
+    const rest = new URLSearchParams(searchParams);
+    rest.delete('reopenCreateSpace');
+    rest.delete('gitProvider');
+    rest.delete('gitlabInstance');
+    setSearchParams(rest, { replace: true });
+  }, [searchParams, setSearchParams, panelsInline, onSpacesList]);
 
   // On a project page (not in a sprint) the activity panel surfaces the
   // latest active sprint so it stays useful outside a sprint context.
@@ -461,7 +490,7 @@ export function AppShell() {
                     className="flex w-72 max-w-[85vw] overflow-hidden p-0 [&>button]:hidden"
                   >
                     <SheetTitle className="sr-only">Main navigation</SheetTitle>
-                    <AppSidebar onCreateSpace={openCreateSpace} />
+                    <AppSidebar variant="drawer" onCreateSpace={openCreateSpace} />
                   </SheetContent>
                 </Sheet>
                 {/* The activity overlay stays NON-modal: the content behind it
@@ -497,6 +526,8 @@ export function AppShell() {
 
               {createSpaceOpen && (
                 <CreateProjectModal
+                  initialProvider={createSpaceProvider}
+                  initialInstance={createSpaceInstance}
                   onClose={() => setCreateSpaceOpen(false)}
                   onCreated={refreshProjects}
                 />
@@ -506,7 +537,11 @@ export function AppShell() {
               <StatusBar />
 
               {/* Command palette */}
-              <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+              <CommandPalette
+                open={commandOpen}
+                onOpenChange={setCommandOpen}
+                onCreateSpace={openCreateSpace}
+              />
             </div>
           </IntentProvider>
         </DiscussionProvider>
