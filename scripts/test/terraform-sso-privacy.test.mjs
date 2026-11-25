@@ -30,6 +30,11 @@ test(
     const moduleDir = join(dir, 'terraform');
     mkdirSync(moduleDir);
     mkdirSync(join(dir, 'config'));
+    mkdirSync(join(dir, 'lambda/shared'), { recursive: true });
+    writeFileSync(
+      join(dir, 'lambda/shared/business-role-catalog.json'),
+      readFileSync(join(root, 'lambda/shared/business-role-catalog.json')),
+    );
     const run = (args) => {
       const result = spawnSync('terraform', args, { cwd: moduleDir, encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
@@ -70,7 +75,12 @@ ${block(main, 'resource "terraform_data" "sso_preconditions" {')}
           'arn:aws:secretsmanager:eu-central-1:111122223333:secret:private-secret-sentinel',
         email_claim: 'email',
         role_claim: 'groups',
-        role_mappings: { 'platform-admin': ['private-admin-group-sentinel'] },
+        role_mappings: {
+          'platform-admin': ['private-admin-group-sentinel'],
+          developer: ['private-developer-group-sentinel'],
+          architect: ['private-developer-group-sentinel'],
+          'qa-tester': [],
+        },
       };
       writeFileSync(
         join(moduleDir, 'test.tfvars.json'),
@@ -85,6 +95,7 @@ ${block(main, 'resource "terraform_data" "sso_preconditions" {')}
         provider.client_id,
         provider.client_secret_arn,
         provider.role_mappings['platform-admin'][0],
+        provider.role_mappings.developer[0],
       ]) {
         assert.ok(!output.includes(value), 'Terraform printed private provider configuration');
       }

@@ -471,6 +471,11 @@ Its `by-user` GSI uses `userId` / `pk`, projecting all attributes. Space member
 queries and access checks use consistent base-table reads; the user-space list
 index is eventually consistent and cannot authorize protected content.
 
+The same table records each federated user's SSO claims from their latest
+sign-in at `pk = USER#<sub>`, `sk = SSO` (provider and raw claim values, never
+calculated roles). Business roles are calculated from it with the current
+mappings; the item has no `userId`, so the `by-user` GSI skips it.
+
 A separate audit table stores append-only permission changes under the same space
 partition, keyed by `AUDIT#<ISO-time>#<changeId>`. It records actor, action,
 target user, before/after membership, timestamp, and change ID. Membership and

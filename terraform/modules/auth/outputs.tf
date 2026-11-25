@@ -67,3 +67,8 @@ output "group_names" {
     owner    = aws_cognito_user_group.owner.name
   }
 }
+
+output "sso_token_lambda_arn" {
+  description = "SSO sign-in trigger that records federated claims; empty without SSO"
+  value       = local.sso_enabled ? module.sso_token_lambda[0].lambda_function_arn : ""
+}

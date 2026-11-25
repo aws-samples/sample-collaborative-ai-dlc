@@ -3,17 +3,31 @@
 // after cutover to log source/destination differences. Copy is safe to retry;
 // report is read-only and failures produce warnings. Both retain the graph edges
 // for rollback; their cleanup is deferred to a later release.
+//
+// `backfill-sso-claims` copies federated users' SSO claims from Cognito once,
+// before the users Lambda starts reading the recorded claims. It needs no graph.
 
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
 import { membershipStore } from '../shared/space-membership.js';
 import { migrateMemberships, reportMembershipDifferences } from './migration.js';
+import { backfillSsoClaims } from './sso-claims.js';
 
 const logger = new Logger({ persistentKeys: { component: 'migrate-memberships' } });
 
 export const handler = async (event) => {
+  if (event?.action === 'backfill-sso-claims') {
+    const result = await backfillSsoClaims({
+      cognito: new CognitoIdentityProviderClient({}),
+      userPoolId: process.env.COGNITO_USER_POOL_ID,
+      store: membershipStore,
+    });
+    logger.info('SSO claims backfilled', result);
+    return result;
+  }
   let conn;
   try {
     const credentials = await fromNodeProviderChain()();
@@ -33,7 +47,7 @@ export const handler = async (event) => {
       logger.info('Membership differences reported; graph edges retained', result);
       return result;
     }
-    if (event?.action !== 'copy') throw new Error('Expected copy or report');
+    if (event?.action !== 'copy') throw new Error('Expected copy, report or backfill-sso-claims');
     const result = await migrateMemberships(g, membershipStore, options);
     logger.info('Membership migration verified', result);
     return result;
