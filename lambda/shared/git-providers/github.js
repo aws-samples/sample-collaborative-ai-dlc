@@ -150,7 +150,7 @@ const listPages = async (ctx, url, readPage) => {
     const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`, {
       signal: AbortSignal.timeout(ctx.listPageTimeoutMs ?? LIST_PAGE_TIMEOUT_MS),
     });
-    return { rows: await readPage(res), lastPage: lastPageFromLink(res) };
+    return { rows: await readPage(res, page), lastPage: lastPageFromLink(res) };
   };
   const first = await fetchPage(1);
   const lastPage = Math.min(first.lastPage, MAX_LIST_PAGES);
@@ -203,8 +203,9 @@ const listInstallationRepos = async (ctx) => {
 
 const listBranches = async (ctx, repoId) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  return listPages(ctx, `${API_BASE}/repos/${owner}/${repo}/branches`, async (res) => {
-    if (res.status === 404) return [];
+  return listPages(ctx, `${API_BASE}/repos/${owner}/${repo}/branches`, async (res, page) => {
+    // A missing repo has no branches; a 404 after page 1 cut the list short.
+    if (res.status === 404 && page === 1) return [];
     const data = await res.json();
     if (!Array.isArray(data)) {
       throw new ProviderError(400, data?.message || 'Failed to fetch branches');
@@ -388,16 +389,12 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
 const listIssueComments = async (ctx, repoId, issueNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   // Comments come oldest first, so reading only page 1 dropped the newest.
-  try {
-    const comments = await listPaginated(
-      ctx,
-      `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-    );
-    return comments.map(mapIssueDiscussionComment);
-  } catch (error) {
-    if (error instanceof ProviderError && error.status === 404) return [];
-    throw error;
-  }
+  const comments = await listPaginated(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    { emptyWhenMissing: true },
+  );
+  return comments.map(mapIssueDiscussionComment);
 };
 
 // App installation tokens can read a private issue but receive 404 for its raw
@@ -560,12 +557,15 @@ const mapIssueComment = (c) => ({
   version: c.updated_at || c.created_at,
 });
 
-const listPaginated = async (ctx, url) => {
+// `emptyWhenMissing`: a 404 on page 1 means no rows; on a later page the
+// listing was cut short, so it still fails.
+const listPaginated = async (ctx, url, { emptyWhenMissing = false } = {}) => {
   const rows = [];
   for (let page = 1; page <= 100; page += 1) {
     const separator = url.includes('?') ? '&' : '?';
     const res = await ghFetch(ctx, `${url}${separator}per_page=100&page=${page}`);
-    const data = await res.json();
+    if (emptyWhenMissing && page === 1 && res.status === 404) return [];
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
       throw new ProviderError(res.status || 400, data?.message || 'Failed to list comments');
     }
