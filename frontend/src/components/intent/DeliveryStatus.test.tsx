@@ -13,6 +13,7 @@ const repo = {
   baseBranch: 'develop',
   status: 'failed',
   reason: 'Provider unavailable',
+  retryable: true,
 };
 const preview = {
   previewToken: 'checked-head',
@@ -40,9 +41,7 @@ it('shows the affected repository and checks delivery before retrying only publi
   render(<DeliveryStatus {...props} />);
   const user = userEvent.setup();
   expect(screen.getByText('Provider unavailable')).toBeInTheDocument();
-  expect(screen.getByText(/does not regenerate code/)).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Check delivery' }));
-  await user.click(await screen.findByRole('button', { name: 'Retry delivery' }));
+  await user.click(await screen.findByRole('button', { name: 'Retry opening pull request' }));
   await waitFor(() =>
     expect(intentsService.retryDelivery).toHaveBeenCalledWith('project', 'intent', 'checked-head'),
   );
@@ -50,14 +49,14 @@ it('shows the affected repository and checks delivery before retrying only publi
 });
 it('requires a fresh check after a stale confirmation and displays its explanation', async () => {
   vi.mocked(intentsService.retryDelivery).mockRejectedValue(
-    new Error('Delivery state changed. Check again.'),
+    new Error('The branch or pull request changed. Check again.'),
   );
   render(<DeliveryStatus {...props} />);
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: 'Check delivery' }));
-  await user.click(await screen.findByRole('button', { name: 'Retry delivery' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Delivery state changed');
-  expect(screen.queryByRole('button', { name: 'Retry delivery' })).not.toBeInTheDocument();
+  await user.click(await screen.findByRole('button', { name: 'Retry opening pull request' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('The branch or pull request changed');
+  await user.click(screen.getByRole('button', { name: 'Retry opening pull request' }));
+  expect(intentsService.previewDelivery).toHaveBeenCalledTimes(2);
 });
 it('keeps completed links visible and hides retry for nonowners or active publication', () => {
   const { rerender } = render(<DeliveryStatus {...props} canRetry={false} />);
@@ -86,7 +85,7 @@ it('keeps completed links visible and hides retry for nonowners or active public
       }}
     />,
   );
-  expect(screen.getByRole('link', { name: 'View pull request #7' })).toHaveAttribute(
+  expect(screen.getByRole('link', { name: 'Pull request #7' })).toHaveAttribute(
     'href',
     'https://example.test/pr/7',
   );
@@ -109,11 +108,14 @@ it('explains historical unknown status and a read-only assessment of closed work
     },
   });
   render(<DeliveryStatus {...props} delivery={undefined} />);
-  expect(screen.getByText('Delivery not yet verified')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: 'Check delivery' }));
-  expect(await screen.findByText(/This older run/)).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Retry delivery' })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Save delivery assessment' })).toBeInTheDocument();
+  expect(screen.getByText('Pull request status unknown')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Check for pull requests' }));
+  expect(await screen.findByText(/existing pull request is closed/)).toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'Retry opening pull request' }),
+  ).not.toBeInTheDocument();
+  expect(intentsService.retryDelivery).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Save check result' })).toBeNull();
 });
 it('shows an unconfirmed pull request as needing review without offering a retry', async () => {
   const uncertain = {
@@ -130,9 +132,56 @@ it('shows an unconfirmed pull request as needing review without offering a retry
   });
   render(<DeliveryStatus {...props} delivery={{ status: 'failed', repositories: [uncertain] }} />);
   const user = userEvent.setup();
-  expect(screen.getByText(/Pull request ownership unconfirmed/)).toBeInTheDocument();
+  expect(screen.getByText(/Couldn’t identify the pull request/)).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /View pull request/ })).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Check delivery' }));
+  await user.click(screen.getByRole('button', { name: 'Check for pull requests' }));
   await waitFor(() => expect(intentsService.previewDelivery).toHaveBeenCalled());
-  expect(screen.queryByRole('button', { name: 'Retry delivery' })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'Retry opening pull request' }),
+  ).not.toBeInTheDocument();
+});
+
+it('shows a recorded closed pull request as a result without a recovery action', () => {
+  render(
+    <DeliveryStatus
+      {...props}
+      delivery={{
+        status: 'succeeded',
+        repositories: [
+          {
+            ...repo,
+            status: 'succeeded',
+            prState: 'closed',
+            pr: {
+              prNumber: 8,
+              prUrl: 'https://example.test/pr/8',
+              branch: repo.branch,
+              baseBranch: repo.baseBranch,
+            },
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByRole('link', { name: 'Pull request #8' })).toHaveAttribute(
+    'href',
+    'https://example.test/pr/8',
+  );
+  expect(screen.getByText(/was closed without merging/)).toBeVisible();
+  expect(screen.queryByRole('button')).toBeNull();
+});
+
+it('shows a newly eligible repository before opening requests there', async () => {
+  const additional = { ...repo, repoId: 'owner/api', status: 'pending' };
+  vi.mocked(intentsService.previewDelivery).mockResolvedValue({
+    ...preview,
+    delivery: { status: 'pending', repositories: [additional] },
+  });
+  render(<DeliveryStatus {...props} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Retry opening pull request' }));
+  expect(await screen.findByText(/owner\/api · Ready/)).toBeVisible();
+  expect(intentsService.retryDelivery).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Check for pull requests' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Open pull request' }));
+  expect(intentsService.retryDelivery).toHaveBeenCalledTimes(1);
 });

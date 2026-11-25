@@ -946,6 +946,8 @@ export interface IntentDelivery {
     status: string;
     reason?: string;
     retryable?: boolean;
+    prState?: string;
+    conflictingPrUrls?: string[];
     pr?: { prUrl: string; prNumber: string | number; branch: string; baseBranch: string | null };
   }[];
 }

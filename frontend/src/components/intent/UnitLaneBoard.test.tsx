@@ -80,6 +80,38 @@ const renderView = (over: Partial<React.ComponentProps<typeof UnitLaneBoardView>
   );
 
 describe('UnitLaneBoardView', () => {
+  it.each(['partial', 'incomplete', 'unknown'] as const)(
+    'shows the %s unit result in context',
+    (state) => {
+      renderView({
+        completion: {
+          state,
+          total: 4,
+          integrated: 3,
+          skipped: state === 'partial' ? 1 : 0,
+          legacyPartial: false,
+          unresolved:
+            state === 'partial'
+              ? []
+              : [
+                  {
+                    sectionIndex: 1,
+                    slug: 'billing',
+                    state: 'BLOCKED',
+                    reason: 'repository_evidence_missing',
+                  },
+                ],
+        },
+        units: units.map((u) => ({ ...u, sectionIndex: 1 })),
+      });
+      if (state === 'partial') expect(screen.getByText('1 unit skipped by decision')).toBeVisible();
+      else expect(screen.getByText(/changes reached every repository/)).toBeVisible();
+      if (state === 'incomplete')
+        expect(screen.getByText('1 unfinished unit: billing')).toBeVisible();
+      expect(Boolean(screen.queryByText(/Integrated units are on/))).toBe(state === 'unknown');
+    },
+  );
+
   it('renders one column per wave with wave labels', () => {
     renderView();
     expect(screen.getByText('Wave 1')).toBeInTheDocument();

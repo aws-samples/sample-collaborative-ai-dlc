@@ -556,11 +556,11 @@ function CodeItemRow({ item }: { item: CodeItem }) {
           href={item.prUrl}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label={`Open PR${item.prNumber ? ` #${item.prNumber}` : ''} for ${item.repo}`}
+          aria-label={`PR${item.prNumber ? ` #${item.prNumber}` : ''} for ${item.repo}`}
           className="inline-flex shrink-0 items-center gap-1 text-xs text-primary hover:underline"
         >
           <GitProviderIcon provider={item.provider} className="h-3 w-3" />
-          Open PR{item.prNumber ? ` #${item.prNumber}` : ''}
+          PR{item.prNumber ? ` #${item.prNumber}` : ''}
         </a>
       )}
     </div>

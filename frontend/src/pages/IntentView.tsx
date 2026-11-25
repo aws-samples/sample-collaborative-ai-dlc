@@ -14,6 +14,7 @@ import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurati
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
+import { completionExplanation } from '@/lib/completionExplanation';
 import { ApiError } from '@/services/api';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
@@ -434,17 +435,32 @@ export default function IntentView() {
           <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
             {intent.title || 'Intent'}
           </h1>
-          {TERMINAL_STATUSES.has(intent.status) && (
-            <Badge variant="outline" className="text-[10px] shrink-0">
-              {terminalCompletion === 'incomplete'
-                ? 'Incomplete work'
-                : terminalCompletion === 'unknown'
-                  ? 'Completion unverified'
-                  : terminalCompletion === 'partial'
-                    ? 'Partial delivery'
-                    : intent.status}
-            </Badge>
-          )}
+          {TERMINAL_STATUSES.has(intent.status) &&
+            (terminalCompletion === 'unknown' || terminalCompletion === 'incomplete' ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="rounded-full border border-amber-400/50 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300"
+                    >
+                      {terminalCompletion === 'unknown'
+                        ? 'Completion unverified'
+                        : 'Incomplete work'}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {terminalCompletion === 'unknown'
+                      ? completionExplanation(completion?.reason)
+                      : `Unfinished units: ${completion?.unresolved.map((unit) => unit.slug).join(', ') || 'details unavailable'}.`}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              <Badge variant="outline" className="text-[10px] shrink-0">
+                {terminalCompletion === 'partial' ? 'Partial delivery' : intent.status}
+              </Badge>
+            ))}
           <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
           {intent.constructionGateAutonomy === 'autonomous' && (
             <Badge
@@ -613,34 +629,7 @@ export default function IntentView() {
         </div>
       )}
 
-      {terminalCompletion && terminalCompletion !== 'complete' && (
-        <div className="rounded border border-agent-error/30 px-3 py-3 text-sm" role="status">
-          <p>
-            {terminalCompletion === 'partial'
-              ? 'Partial delivery was explicitly accepted. Integrated work and the recorded omissions are preserved.'
-              : terminalCompletion === 'unknown'
-                ? 'Completion could not be verified. Review the recorded work and available evidence before publishing.'
-                : 'The recorded success has unfinished current-plan work. Review the remaining units before publishing.'}
-          </p>
-          <p>
-            {completion?.integrated} of {completion?.total} units verified integrated;{' '}
-            {completion?.skipped} explicitly omitted.
-          </p>
-          {completion?.unresolved.slice(0, 12).map((unit) => (
-            <p key={`${unit.sectionIndex}/${unit.slug}`}>
-              Section {unit.sectionIndex}/{unit.slug}: {unit.reason ?? unit.state}
-            </p>
-          ))}
-          {terminalCompletion !== 'partial' && (
-            <p>
-              Automatic continuation of finished incomplete intents is not supported. Ordinary
-              rewind reruns the affected work.
-            </p>
-          )}
-        </div>
-      )}
-
-      {intent.status === 'SUCCEEDED' && (
+      {intent.status === 'SUCCEEDED' && intent.repos?.length !== 0 && (
         <DeliveryStatus
           key={intentId}
           projectId={projectId}
