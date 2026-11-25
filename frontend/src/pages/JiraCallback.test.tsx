@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@/test/query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { trackersService } from '@/services/trackers';
@@ -64,6 +64,29 @@ describe('Jira authorization return', () => {
     expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
   });
 
+  it('never preselects a site and keeps Connect disabled until one is chosen', async () => {
+    sessionStorage.setItem('oauth_return_to', returnPath);
+    await showCallback({
+      pendingChoice: {
+        ticket: 'example-ticket',
+        resources: [
+          { cloudId: 'site-1', name: 'Career Compass', host: 'example.atlassian.net' },
+          { cloudId: 'site-2', name: 'Other site', host: 'other.atlassian.net' },
+        ],
+      },
+    });
+    const radios = screen.getAllByRole('radio');
+    expect(radios).toHaveLength(2);
+    for (const radio of radios) expect(radio).not.toBeChecked();
+    const connect = screen.getByRole('button', { name: 'Connect' });
+    expect(connect).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Other site/ }));
+    expect(connect).toBeEnabled();
+    await act(async () => fireEvent.click(connect));
+    expect(trackersService.finalizeJiraConnection).toHaveBeenCalledWith('example-ticket', 'site-2');
+  });
+
   it.each([returnPath, null, '//example.com', 'https://example.com', '/account'])(
     'cancels site selection and clears the saved return path: %s',
     async (path) => {
@@ -79,7 +102,7 @@ describe('Jira authorization return', () => {
       });
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       expect(navigate).toHaveBeenCalledExactlyOnceWith(
-        path === returnPath ? returnPath : '/dashboard',
+        path === returnPath ? '/space/project-1/settings?tab=trackers' : '/dashboard',
         { replace: true },
       );
       expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
@@ -115,7 +138,7 @@ describe('Jira authorization return', () => {
         </MemoryRouter>,
       );
     });
-    expect(screen.getByText('Missing authorization code')).toBeInTheDocument();
+    expect(screen.getByText('Authorization was not granted.')).toBeInTheDocument();
     expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
   });
 });

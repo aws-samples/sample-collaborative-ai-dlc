@@ -9,6 +9,23 @@
       content="AI-DLC — a collaborative platform where humans and AI agents build software together through a structured, graph-connected workflow."
     />
     <title>AI-DLC — Collaborative AI Development Lifecycle</title>
+    <script>
+      (function () {
+        var theme = 'system';
+        try {
+          theme = localStorage.getItem('aidlc-theme') || 'system';
+        } catch (_) {}
+        var resolved =
+          theme === 'system'
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+            : theme;
+        var root = document.documentElement;
+        root.classList.remove('light', 'dark');
+        root.classList.add(resolved);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

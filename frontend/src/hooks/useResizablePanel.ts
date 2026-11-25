@@ -97,5 +97,8 @@ export function useResizablePanel({
 
   const resetWidth = useCallback(() => setWidth(defaultWidth), [defaultWidth]);
 
-  return { width, handleResizeStart, handleResizeKey, resetWidth };
+  // The widest the panel can currently get, for the separator's aria-valuemax.
+  const effectiveMaxWidth = clamp(Number.POSITIVE_INFINITY);
+
+  return { width, effectiveMaxWidth, handleResizeStart, handleResizeKey, resetWidth };
 }

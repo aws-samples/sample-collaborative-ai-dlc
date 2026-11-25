@@ -11,7 +11,7 @@ const PRESENCE_COLORS = [
   'bg-amber-500',
   'bg-cyan-500',
   'bg-rose-500',
-  'bg-indigo-500',
+  'bg-ring',
 ];
 
 interface PresenceUser {
@@ -47,7 +47,7 @@ export function PresenceAvatars({ users = [], maxVisible = 4 }: PresenceAvatarsP
             <TooltipTrigger>
               <Avatar className="h-6 w-6 border-2 border-background">
                 <AvatarFallback
-                  className={cn('text-[9px] text-white font-medium', PRESENCE_COLORS[colorIndex])}
+                  className={cn('text-2xs text-white font-medium', PRESENCE_COLORS[colorIndex])}
                 >
                   {initials}
                 </AvatarFallback>
@@ -64,7 +64,7 @@ export function PresenceAvatars({ users = [], maxVisible = 4 }: PresenceAvatarsP
         <Tooltip>
           <TooltipTrigger>
             <Avatar className="h-6 w-6 border-2 border-background">
-              <AvatarFallback className="text-[9px] bg-muted text-muted-foreground">
+              <AvatarFallback className="text-2xs bg-muted text-muted-foreground">
                 +{overflow}
               </AvatarFallback>
             </Avatar>

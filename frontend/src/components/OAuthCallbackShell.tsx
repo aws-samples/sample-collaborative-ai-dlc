@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router';
+import { Link } from 'react-router';
+import { CheckCircle2, CircleAlert, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 
 type Status = 'loading' | 'success' | 'error' | 'custom';
 
@@ -9,6 +12,7 @@ interface Props {
   loadingMessage?: string;
   successMessage?: string;
   errorMessage?: string | null;
+  backTo?: string;
   // For multi-step callbacks (e.g. Jira's site picker) callers render their
   // own UI alongside the standard shell. Provide it as `children` and pass
   // status='custom' to suppress the built-in spinner/check/error blocks.
@@ -24,41 +28,43 @@ export function OAuthCallbackShell({
   loadingMessage,
   successMessage,
   errorMessage,
+  backTo = '/dashboard',
   children,
 }: Props) {
-  const navigate = useNavigate();
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="bg-white p-8 rounded-lg shadow text-center max-w-md w-full">
+    <main className="min-h-screen flex items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-md space-y-3 p-6 text-center" aria-live="polite">
         {status === 'loading' && (
           <>
-            <div className="animate-spin w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4" />
-            <p>{loadingMessage ?? `Connecting ${providerLabel}...`}</p>
+            <Loader2
+              aria-hidden="true"
+              className="mx-auto h-5 w-5 text-muted-foreground motion-safe:animate-spin"
+            />
+            <h1 className="font-semibold">{loadingMessage ?? `Connecting ${providerLabel}…`}</h1>
           </>
         )}
         {status === 'success' && (
           <>
-            <div className="text-green-600 text-4xl mb-4">✓</div>
-            <p>{successMessage ?? `${providerLabel} connected! Redirecting...`}</p>
+            <CheckCircle2 aria-hidden="true" className="mx-auto h-6 w-6 text-primary" />
+            <h1 className="font-semibold">{successMessage ?? `${providerLabel} connected`}</h1>
           </>
         )}
         {status === 'error' && (
           <>
-            <div className="text-red-600 text-4xl mb-4">✗</div>
-            <p className="text-red-600 mb-4">
-              {errorMessage ?? `Failed to connect ${providerLabel}`}
-            </p>
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-            >
-              Back to Dashboard
-            </button>
+            <CircleAlert aria-hidden="true" className="mx-auto h-6 w-6 text-destructive" />
+            <h1 className="font-semibold">{providerLabel} connection incomplete</h1>
+            {errorMessage && (
+              <p className="break-words text-sm text-muted-foreground">{errorMessage}</p>
+            )}
+            <Button asChild variant="outline">
+              <Link to={backTo} replace>
+                {backTo === '/dashboard' ? 'Back to spaces' : 'Back to space settings'}
+              </Link>
+            </Button>
           </>
         )}
         {status === 'custom' && children}
-      </div>
-    </div>
+      </Card>
+    </main>
   );
 }

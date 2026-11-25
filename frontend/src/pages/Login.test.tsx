@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import type { AuthMode, SsoProvider } from '@/services/auth';
@@ -50,7 +50,7 @@ const setMode = (mode: AuthMode) => {
   );
 };
 
-const renderLogin = (state?: { from: { pathname: string } }) =>
+const renderLogin = (state?: { from: { pathname: string; search?: string; hash?: string } }) =>
   render(
     <MemoryRouter initialEntries={[{ pathname: '/login', state }]}>
       <Login />
@@ -68,6 +68,20 @@ describe('Login authentication modes', () => {
     renderLogin();
     expect(screen.getByLabelText('Username')).toBeInTheDocument();
     expect(screen.queryByText('Enterprise SSO')).not.toBeInTheDocument();
+  });
+
+  it('names the page with one h1 and a document title, and restores the title on unmount', () => {
+    document.title = 'AI-DLC — Collaborative AI Development Lifecycle';
+    const view = renderLogin();
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in to AI-DLC' })).toBeVisible();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    // The h1 and the tagline live inside the page's one main landmark.
+    const main = screen.getByRole('main');
+    expect(main).toContainElement(screen.getByRole('heading', { level: 1 }));
+    expect(main).toContainElement(screen.getByText('Collaborative AI-Driven Development'));
+    expect(document.title).toBe('Sign in · AI-DLC');
+    view.unmount();
+    expect(document.title).toBe('AI-DLC — Collaborative AI Development Lifecycle');
   });
 
   it('clearly separates enterprise SSO from Cognito credentials in hybrid mode', () => {
@@ -92,11 +106,14 @@ describe('Login authentication modes', () => {
   it('starts the selected provider flow and preserves the protected return path', async () => {
     setMode('hybrid');
     const user = userEvent.setup();
-    renderLogin({ from: { pathname: '/admin' } });
+    renderLogin({ from: { pathname: '/admin', search: '?tab=agents', hash: '#credentials' } });
 
     await user.click(screen.getByRole('button', { name: 'Continue with Corporate identity' }));
 
-    expect(mocks.loginWithSso).toHaveBeenCalledWith('CorporateOIDC', '/admin');
+    expect(mocks.loginWithSso).toHaveBeenCalledWith(
+      'CorporateOIDC',
+      '/admin?tab=agents#credentials',
+    );
   });
 
   it('re-enables provider actions when the redirect cannot be started', async () => {
@@ -241,12 +258,24 @@ describe('Login password reset', () => {
     const user = userEvent.setup();
     renderLogin();
 
-    await user.type(screen.getByLabelText('New Password'), 'nouppercase-123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'nouppercase-123');
-    await user.click(screen.getByRole('button', { name: 'Set Password' }));
+    await user.type(screen.getByLabelText('New password'), 'nouppercase-123');
+    await user.type(screen.getByLabelText('Confirm new password'), 'nouppercase-123');
+    await user.click(screen.getByRole('button', { name: 'Set password' }));
 
-    expect(screen.getByText(/uppercase/)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/uppercase/);
     expect(mocks.completeNewPassword).not.toHaveBeenCalled();
+  });
+
+  it('states the password rules on the first-sign-in prompt, like the reset form does', () => {
+    mocks.needsNewPassword = true;
+    renderLogin();
+
+    expect(screen.getByText('Set a new password')).toBeInTheDocument();
+    const field = screen.getByLabelText('New password');
+    expect(field).toHaveAccessibleDescription(
+      'At least 12 characters, with lowercase and uppercase letters, a number, and a symbol.',
+    );
+    expect(field).toHaveAttribute('autocomplete', 'new-password');
   });
 
   it('returns to sign-in without resetting', async () => {

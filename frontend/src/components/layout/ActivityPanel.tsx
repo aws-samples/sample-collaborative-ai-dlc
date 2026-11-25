@@ -6,7 +6,7 @@ import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import { SeqDeduplicator } from '@/lib/seqDeduplicator';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { realtimeService } from '@/services/realtime';
@@ -14,6 +14,8 @@ import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuestionLink } from '@/hooks/useQuestionAnchor';
+import { useQuery } from '@tanstack/react-query';
+import { queryClient } from '@/lib/queryClient';
 import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import { MessageSquare } from 'lucide-react';
@@ -46,6 +48,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [activeTab, setActiveTab] = useState('agent');
+  const [tabChosen, setTabChosen] = useState(false);
   const discussionsCtx = useDiscussions();
   const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
     (sum, d) => sum + (d.unreadCount ?? 0),
@@ -72,35 +75,31 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const toolUpdateDedup = useRef(new SeqDeduplicator());
   const toolCounter = useRef(0);
 
-  // -- Timeline state --
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
-  const [timelineLoading, setTimelineLoading] = useState(false);
-
-  // Fetch timeline events
-  const fetchTimeline = useCallback(async () => {
-    if (!sprintId) return;
-    setTimelineLoading(true);
-    try {
-      const events = await timelineEventsService.list(sprintId);
-      setTimelineEvents(events);
-    } catch {
-      /* ignore */
-    } finally {
-      setTimelineLoading(false);
-    }
-  }, [sprintId]);
-
-  useEffect(() => {
-    fetchTimeline();
-    const interval = setInterval(fetchTimeline, 15000);
-    return () => clearInterval(interval);
-  }, [fetchTimeline]);
+  const timeline = useQuery({
+    queryKey: ['sprint', sprintId, 'timelineEvents'],
+    queryFn: ({ signal }) => timelineEventsService.list(sprintId!, { signal }),
+    enabled: Boolean(sprintId),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
+  const timelineEvents = timeline.data ?? [];
+  const timelineLoading = Boolean(sprintId) && timeline.isFetching;
+  const { refetch: refetchTimeline } = timeline;
+  const fetchTimeline = useCallback(
+    () => (sprintId ? refetchTimeline({ cancelRefetch: false }) : Promise.resolve()),
+    [sprintId, refetchTimeline],
+  );
 
   // Hydrate agent running state on mount/reload by checking current execution
   useEffect(() => {
     if (!projectId || !sprintId) return;
-    agentsService
-      .getCurrentExecution(projectId, sprintId)
+    queryClient
+      .fetchQuery({
+        queryKey: ['sprint', sprintId, 'currentExecution'],
+        queryFn: () => agentsService.getCurrentExecution(projectId, sprintId),
+        staleTime: 0,
+      })
       .then((res) => {
         if (res.status === 'RUNNING') {
           setAgentRunning(true);
@@ -202,6 +201,15 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
     return () => unsubs.forEach((u) => u());
   }, [sprintId, fetchTimeline, userName]);
 
+  // An empty Agent tab is nothing to read; until the person picks a tab, the
+  // panel opens on the Timeline when the agent has no output and the sprint
+  // has recorded events (the usual case for a read-only v1 space).
+  const agentIdle = !agentRunning && !agentStatus && !streamingText && toolCalls.length === 0;
+  useEffect(() => {
+    if (tabChosen || activeTab !== 'agent' || !agentIdle || timelineEvents.length === 0) return;
+    setActiveTab('timeline');
+  }, [activeTab, agentIdle, tabChosen, timelineEvents.length]);
+
   // Reset state when sprint changes
   useEffect(() => {
     streamBuffer.current = '';
@@ -213,47 +221,57 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
     setToolCalls([]);
     setAgentRunning(false);
     setAgentStatus(null);
-    setTimelineEvents([]);
   }, [sprintId]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-sidebar border-l border-border">
+    <Tabs
+      value={activeTab}
+      onValueChange={(tab) => {
+        setTabChosen(true);
+        setActiveTab(tab);
+      }}
+      className="flex h-full w-full flex-col bg-sidebar border-l border-border"
+    >
       {/* Header */}
       <div className="flex h-10 items-center justify-between px-3 border-b border-border bg-background/60 shrink-0">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="h-7 p-0.5">
-            <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
-              <Bot className="h-3 w-3" />
-              Agent
-              {agentRunning && (
-                <span className="relative flex h-1.5 w-1.5 ml-0.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
-              <Clock className="h-3 w-3" />
-              Timeline
-              {timelineEvents.length > 0 && (
-                <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
-                  {timelineEvents.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
-              <MessageSquare className="h-3 w-3" />
-              Discuss
-              {totalUnread > 0 && (
-                <Badge className="h-4 px-1 text-[9px] ml-0.5">
-                  {totalUnread > 99 ? '99+' : totalUnread}
-                </Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
-          <X className="h-3 w-3" />
+        <TabsList className="h-7 p-0.5">
+          <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
+            <Bot className="h-3 w-3" />
+            Agent
+            {agentRunning && (
+              <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
+            <Clock className="h-3 w-3" />
+            Timeline
+            {timelineEvents.length > 0 && (
+              <Badge variant="secondary" className="h-4 px-1 text-2xs ml-0.5">
+                {timelineEvents.length}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
+            <MessageSquare className="h-3 w-3" />
+            Discuss
+            {totalUnread > 0 && (
+              <Badge className="h-4 px-1 text-2xs ml-0.5">
+                {totalUnread > 99 ? '99+' : totalUnread}
+              </Badge>
+            )}
+          </TabsTrigger>
+        </TabsList>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={onClose}
+          aria-label="Close activity panel"
+        >
+          <X aria-hidden="true" className="h-3 w-3" />
         </Button>
       </div>
 
@@ -261,25 +279,30 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
           thread (non-modal — the rest of the app stays interactive). The
           thread manages its own scrolling + input footer, so it renders
           outside the shared ScrollArea. */}
-      {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
-        <DiscussionPanel />
-      ) : (
-        <ScrollArea className="flex-1">
-          {activeTab === 'agent' ? (
-            <AgentTab
-              streamingText={streamingText}
-              toolCalls={toolCalls}
-              agentRunning={agentRunning}
-              agentStatus={agentStatus}
-            />
-          ) : activeTab === 'discussions' ? (
-            <DiscussionsTab />
-          ) : (
-            <TimelineTab events={timelineEvents} loading={timelineLoading} />
-          )}
-        </ScrollArea>
-      )}
-    </div>
+      <TabsContent
+        value={activeTab}
+        className="mt-0 flex min-h-0 flex-1 flex-col focus-visible:ring-inset focus-visible:ring-offset-0"
+      >
+        {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
+          <DiscussionPanel />
+        ) : (
+          <ScrollArea className="flex-1">
+            {activeTab === 'agent' ? (
+              <AgentTab
+                streamingText={streamingText}
+                toolCalls={toolCalls}
+                agentRunning={agentRunning}
+                agentStatus={agentStatus}
+              />
+            ) : activeTab === 'discussions' ? (
+              <DiscussionsTab />
+            ) : (
+              <TimelineTab events={timelineEvents} loading={timelineLoading} />
+            )}
+          </ScrollArea>
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -325,9 +348,9 @@ function AgentIdleState() {
       <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mb-3">
         <Bot className="h-5 w-5 text-muted-foreground" />
       </div>
-      <p className="text-sm text-muted-foreground">No agent running</p>
-      <p className="text-xs text-muted-foreground/60 mt-1">
-        Launch an agent from the main view to see activity here
+      <p className="text-sm text-muted-foreground">No agent output recorded</p>
+      <p className="text-xs text-muted-foreground mt-1">
+        This v1 space is read-only — agent activity is shown when available.
       </p>
     </div>
   );
@@ -392,7 +415,7 @@ export function AgentStreamView({
                   : 'Idle'}
           </span>
           {toolCalls.length > 0 && (
-            <Badge variant="secondary" className="h-4 px-1 text-[9px]">
+            <Badge variant="secondary" className="h-4 px-1 text-2xs">
               {completedTools.length}/{toolCalls.length} tools
             </Badge>
           )}
@@ -416,7 +439,7 @@ export function AgentStreamView({
           <span className="text-xs font-mono text-agent-running truncate">{activeTool.name}</span>
           <Badge
             variant="outline"
-            className="ml-auto h-4 px-1 text-[9px] border-agent-running/30 text-agent-running shrink-0"
+            className="ml-auto h-4 px-1 text-2xs border-agent-running/30 text-agent-running shrink-0"
           >
             running
           </Badge>
@@ -463,7 +486,7 @@ export function AgentStreamView({
         <>
           <Separator />
           <div ref={outputRef} className="rounded-md bg-zinc-950 p-3 max-h-[600px] overflow-y-auto">
-            <div className="prose prose-invert prose-xs max-w-none [&_p]:text-xs [&_p]:leading-relaxed [&_li]:text-xs [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_pre]:text-[10px] [&_code]:text-[10px]">
+            <div className="prose prose-invert prose-xs max-w-none [&_p]:text-xs [&_p]:leading-relaxed [&_li]:text-xs [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_pre]:text-2xs [&_code]:text-2xs">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
               {isStreaming && (
                 <span className="inline-block w-1.5 h-3.5 bg-zinc-400 animate-pulse ml-0.5 align-middle" />
@@ -563,9 +586,9 @@ export function TimelineEventItem({ event }: { event: TimelineEvent }) {
         )}
         <div className="flex items-center gap-2 mt-0.5">
           {event.userName && (
-            <span className="text-[10px] text-muted-foreground">{event.userName}</span>
+            <span className="text-2xs text-muted-foreground">{event.userName}</span>
           )}
-          <span className="text-[10px] text-muted-foreground/60">{timeAgo}</span>
+          <span className="text-2xs text-muted-foreground/60">{timeAgo}</span>
         </div>
         {event.detail && (
           <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{event.detail}</p>

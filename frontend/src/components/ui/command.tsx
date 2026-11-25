@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Command as CommandPrimitive } from 'cmdk';
+import { Command as CommandPrimitive, useCommandState } from 'cmdk';
 import { Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
@@ -88,17 +88,26 @@ const CommandGroup = React.forwardRef<
 ));
 CommandGroup.displayName = CommandPrimitive.Group.displayName;
 
-const CommandSeparator = React.forwardRef<
-  React.ComponentRef<typeof CommandPrimitive.Separator>,
-  React.ComponentPropsWithoutRef<typeof CommandPrimitive.Separator>
->(({ className, ...props }, ref) => (
-  <CommandPrimitive.Separator
-    ref={ref}
-    className={cn('-mx-1 h-px bg-border', className)}
-    {...props}
-  />
-));
-CommandSeparator.displayName = CommandPrimitive.Separator.displayName;
+// Not `CommandPrimitive.Separator`: that forces `role="separator"`, which is
+// not an allowed child of the `role="listbox"` list (axe
+// `aria-required-children`). The rule is purely visual, so it is presentational,
+// and hidden while filtering like cmdk's own.
+const CommandSeparator = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => {
+    const filtering = useCommandState((state) => state.search !== '');
+    if (filtering) return null;
+    return (
+      <div
+        ref={ref}
+        role="none"
+        cmdk-separator=""
+        className={cn('-mx-1 h-px bg-border', className)}
+        {...props}
+      />
+    );
+  },
+);
+CommandSeparator.displayName = 'CommandSeparator';
 
 const CommandItem = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive.Item>,

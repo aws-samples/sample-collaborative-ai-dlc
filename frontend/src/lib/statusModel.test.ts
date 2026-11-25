@@ -4,6 +4,8 @@ import {
   ageLabel,
   deriveIntentStatus,
   getStatus,
+  intentStatusLabel,
+  isTerminalIntentStatus,
   latestActivityAt,
   statusFromDetail,
   statusLabel,
@@ -174,6 +176,28 @@ describe('waiting since: the oldest open decision, on every surface', () => {
 
 describe('status labels', () => {
   it.each([
+    [{ key: 'RUNNING', stalled: true, since: daysAgo(123) }, 'Stalled · no activity for 4 months'],
+    [{ key: 'CREATED', stalled: true }, 'Stalled'],
+    [{ key: 'WAITING', stalled: false, since: daysAgo(108) }, 'Waiting for input · 108 days'],
+    [{ key: 'SUCCEEDED', stalled: false }, 'Completed'],
+    [{ key: 'FAILED', stalled: false, since: daysAgo(59) }, 'Failed 59 days ago'],
+    [{ key: 'SUCCEEDED', stalled: false, since: minutesAgo(5) }, 'Completed 5 min ago'],
+  ] as const)('intent %o → %s', (derived, expected) => {
+    expect(intentStatusLabel(derived, { now: NOW })).toBe(expected);
+  });
+
+  it.each([
+    [{ key: 'WAITING', stalled: false, since: daysAgo(108) }, 'Waiting · 108 d'],
+    [{ key: 'WAITING', stalled: false, since: minutesAgo(180) }, 'Waiting · 3 h'],
+    [{ key: 'RUNNING', stalled: true, since: daysAgo(123) }, 'Stalled · 4 mo'],
+    [{ key: 'RUNNING', stalled: true, since: daysAgo(400) }, 'Stalled · 1 y'],
+    [{ key: 'RUNNING', stalled: false }, 'Running'],
+    [{ key: 'FAILED', stalled: false, since: daysAgo(59) }, 'Failed 59 d ago'],
+  ] as const)('compact intent %o → %s', (derived, expected) => {
+    expect(intentStatusLabel(derived, { now: NOW, compact: true })).toBe(expected);
+  });
+
+  it.each([
     ['stage', 'FAILED', 'Failed 2 days ago'],
     ['stage', 'SUCCEEDED', 'Completed 2 days ago'],
     ['gate', 'answered', 'Answered 2 days ago'],
@@ -186,6 +210,15 @@ describe('status labels', () => {
     ['connection', 'connected', 'Live updates · 2 days'],
   ] as const)('%s %s: ended states read "ago", open ones a duration → %s', (kind, status, out) => {
     expect(statusLabel(kind, status, { since: daysAgo(2), now: NOW })).toBe(out);
+  });
+
+  it.each([
+    ['FAILED', true],
+    ['CANCELLED', true],
+    ['RUNNING', false],
+    [undefined, false],
+  ] as const)('isTerminalIntentStatus(%s) → %s', (status, expected) => {
+    expect(isTerminalIntentStatus(status)).toBe(expected);
   });
 });
 

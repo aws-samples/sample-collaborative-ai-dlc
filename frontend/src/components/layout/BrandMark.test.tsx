@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import { BrandMark } from './BrandMark';
 
 describe('BrandMark', () => {
@@ -22,6 +22,16 @@ describe('BrandMark', () => {
     expect(dark).toHaveAttribute('src', '/branding/wordmark-dark.svg');
     expect(dark).toHaveClass('hidden', 'dark:block');
     expect(screen.queryByText('default logo')).not.toBeInTheDocument();
+  });
+
+  it('drops the alt text when the brand name is already visible as text (decorative)', () => {
+    vi.stubEnv('VITE_BRAND_NAME', 'Example Corp');
+    vi.stubEnv('VITE_BRAND_WORDMARK', '/branding/wordmark.svg');
+    render(<BrandMark wordmarkClassName="h-5" fallback={null} decorative />);
+    expect(screen.queryByRole('img', { name: 'Example Corp' })).not.toBeInTheDocument();
+    const images = document.querySelectorAll('img');
+    expect(images).toHaveLength(2);
+    images.forEach((img) => expect(img).toHaveAttribute('alt', ''));
   });
 
   it('uses the light wordmark in dark mode when there is no dark one', () => {
