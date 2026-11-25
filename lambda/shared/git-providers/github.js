@@ -128,8 +128,11 @@ const mapRepo = (r) => ({
 });
 
 const PAGE_SIZE = 100;
-// Bounds a very large account inside the API Gateway 29s limit.
+// Bounds a very large account inside the API Gateway 29s limit: page 1, then
+// the rest in parallel, each given up after LIST_PAGE_TIMEOUT_MS, so a listing
+// takes at most two page timeouts.
 const MAX_LIST_PAGES = 10;
+const LIST_PAGE_TIMEOUT_MS = 8_000;
 
 // The page count from the Link header's rel="last"; 1 when there is none.
 const lastPageFromLink = (res) => {
@@ -144,7 +147,9 @@ const lastPageFromLink = (res) => {
 const listPages = async (ctx, url, readPage) => {
   const separator = url.includes('?') ? '&' : '?';
   const fetchPage = async (page) => {
-    const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`);
+    const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`, {
+      signal: AbortSignal.timeout(ctx.listPageTimeoutMs ?? LIST_PAGE_TIMEOUT_MS),
+    });
     return { rows: await readPage(res), lastPage: lastPageFromLink(res) };
   };
   const first = await fetchPage(1);

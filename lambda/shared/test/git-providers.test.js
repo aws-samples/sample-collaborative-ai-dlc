@@ -585,6 +585,22 @@ describe('github provider — repo browse + PR + comments', () => {
     ).toBe('conflict');
   });
 
+  it('listRepos gives up on a page that never answers, within two page timeouts', async () => {
+    const pages = makeFetch([['/user/repos', githubPages((page) => fullPage(page, ghRepo), 3)]]);
+    // Page 3 hangs until its abort signal fires, like a stalled connection.
+    const fetchImpl = (url, options) =>
+      pageOf(url) === 3
+        ? new Promise((_, reject) =>
+            options.signal.addEventListener('abort', () => reject(options.signal.reason)),
+          )
+        : pages(url, options);
+    const started = Date.now();
+    await expect(
+      gh.listRepos({ token: 't', fetchImpl, listPageTimeoutMs: 50 }),
+    ).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it('listBranches reads every page, not just the first 100 branches', async () => {
     const branch = (n) => ({ name: `b${n}` });
     const fetchImpl = makeFetch([
