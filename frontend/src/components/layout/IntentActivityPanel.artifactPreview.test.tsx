@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IntentArtifact } from '@/services/intents';
@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(),
 }));
 
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: null }) }));
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
@@ -98,5 +99,13 @@ describe('IntentActivityPanel artifact preview body states', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("couldn't be loaded");
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(mocks.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels the document type in sentence case, not as an uppercase slug', () => {
+    mocks.artifact = { ...artifact, artifactType: 'intent-statement', content: 'x' };
+    render(<IntentActivityPanel onClose={() => {}} />);
+    const eyebrow = screen.getByText('Intent statement');
+    expect(eyebrow).not.toHaveClass('uppercase');
+    expect(screen.queryByText('intent-statement')).not.toBeInTheDocument();
   });
 });

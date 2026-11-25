@@ -1,13 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 
 const mocks = vi.hoisted(() => ({
   ensureOutputs: vi.fn(),
   setPaneVisible: vi.fn(),
-  hasEarlierOutput: vi.fn(() => false),
+  hasEarlierOutput: vi.fn((_key: string) => false),
+  hasLoadedEarlierOutput: vi.fn((_key: string) => false),
+  loadEarlierOutput: vi.fn(),
+  outputPaneStatus: vi.fn((_key: string) => 'seeded'),
 }));
 
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: null }) }));
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
@@ -166,9 +170,11 @@ vi.mock('@/contexts/IntentContext', () => ({
     outputVersion: 1,
     stageNameOf: (key: string) => (key === 'si-1' ? 'Requirements Analysis' : key),
     ensureOutputs: mocks.ensureOutputs,
+    outputPaneStatus: mocks.outputPaneStatus,
     setPaneVisible: mocks.setPaneVisible,
     hasEarlierOutput: mocks.hasEarlierOutput,
-    outputPaneStatus: () => 'seeded',
+    hasLoadedEarlierOutput: mocks.hasLoadedEarlierOutput,
+    loadEarlierOutput: mocks.loadEarlierOutput,
   }),
 }));
 
@@ -186,27 +192,60 @@ describe('IntentActivityPanel Agent tab', () => {
   beforeEach(() => {
     mocks.ensureOutputs.mockClear();
     mocks.setPaneVisible.mockClear();
-    mocks.hasEarlierOutput.mockReturnValue(false);
+    mocks.loadEarlierOutput.mockClear();
+    mocks.hasEarlierOutput.mockReset().mockReturnValue(false);
+    mocks.hasLoadedEarlierOutput.mockReset().mockReturnValue(false);
+    mocks.outputPaneStatus.mockReset().mockReturnValue('seeded');
   });
 
-  it('keeps the shown pane declared visible until the tab closes', async () => {
+  it('declares the displayed transcript visible, and hidden when the tab is left', async () => {
     const user = userEvent.setup();
-    const { unmount } = render(<IntentActivityPanel onClose={() => {}} />);
+    render(<IntentActivityPanel onClose={() => {}} />);
+
     await user.click(screen.getByRole('tab', { name: /Agent/i }));
     expect(mocks.setPaneVisible).toHaveBeenLastCalledWith('si-1', true);
-    unmount();
+
+    await user.click(screen.getByRole('tab', { name: /Timeline/i }));
     expect(mocks.setPaneVisible).toHaveBeenLastCalledWith('si-1', false);
   });
 
-  it('says when older output was trimmed from the transcript', async () => {
+  it('offers trimmed earlier output', async () => {
     mocks.hasEarlierOutput.mockReturnValue(true);
     const user = userEvent.setup();
     render(<IntentActivityPanel onClose={() => {}} />);
+
     await user.click(screen.getByRole('tab', { name: /Agent/i }));
-    expect(mocks.hasEarlierOutput).toHaveBeenCalledWith('si-1');
     expect(
       screen.getByText('Earlier output was trimmed to keep this page fast'),
     ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Load earlier output' }));
+    expect(mocks.loadEarlierOutput).toHaveBeenCalledWith('si-1');
+  });
+
+  it('keeps offering earlier output while a loaded beginning still leaves a gap', async () => {
+    mocks.hasEarlierOutput.mockReturnValue(true);
+    mocks.hasLoadedEarlierOutput.mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<IntentActivityPanel onClose={() => {}} />);
+
+    await user.click(screen.getByRole('tab', { name: /Agent/i }));
+    expect(
+      screen.getByText('Part of the earlier output is still hidden to keep this page fast'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Load more earlier output' }));
+    expect(mocks.loadEarlierOutput).toHaveBeenCalledWith('si-1');
+  });
+
+  it('shows a retryable error when the transcript failed to load', async () => {
+    mocks.outputPaneStatus.mockReturnValue('error');
+    const user = userEvent.setup();
+    render(<IntentActivityPanel onClose={() => {}} />);
+
+    await user.click(screen.getByRole('tab', { name: /Agent/i }));
+    expect(screen.getByText('Agent output could not be loaded')).toBeInTheDocument();
+    mocks.ensureOutputs.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(mocks.ensureOutputs).toHaveBeenCalledWith('si-1');
   });
 
   it('defaults to Progress, hides routine tool chatter, and shows Raw transcript on toggle', async () => {
@@ -254,6 +293,31 @@ describe('IntentActivityPanel Timeline tab', () => {
 
     const blocked = screen.getByText('Tracker synchronization stopped').closest('.flex.gap-3.py-2');
     expect(blocked?.querySelector('.bg-agent-waiting')).not.toBeNull();
+  });
+});
+
+// A Radix tab's aria-controls must name a tabpanel that is in the DOM (axe
+// aria-valid-attr-value): the active content renders inside TabsContent.
+function expectSelectedTabControlsItsPanel(tab: HTMLElement, content: RegExp | string) {
+  expect(tab).toHaveAttribute('aria-selected', 'true');
+  const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
+  expect(panel).not.toBeNull();
+  expect(panel).toHaveAttribute('role', 'tabpanel');
+  expect(panel).toHaveAttribute('aria-labelledby', tab.id);
+  expect(panel).toHaveTextContent(content);
+}
+
+describe('IntentActivityPanel tabs', () => {
+  it('points each selected tab at a real tabpanel holding its content', async () => {
+    const user = userEvent.setup();
+    render(<IntentActivityPanel onClose={() => {}} />);
+    expectSelectedTabControlsItsPanel(
+      screen.getByRole('tab', { name: 'Timeline' }),
+      /Closed Issue #42/,
+    );
+    await user.click(screen.getByRole('tab', { name: 'Agent' }));
+    expectSelectedTabControlsItsPanel(screen.getByRole('tab', { name: /^Agent/ }), /Progress|Raw/);
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
   });
 });
 
