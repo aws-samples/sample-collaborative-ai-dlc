@@ -137,6 +137,8 @@ export const APP_ROUTES: readonly RouteEntry[] = [
     path: '/space/:projectId',
     page: pages.Project,
     critical: (ctx) => [projectIntentsQuery(param(ctx, 'projectId'))],
+    // Up to two visible rows waiting for a person (IntentList offers them).
+    idleNext: () => idleCandidates('page').slice(0, 2),
   },
   {
     path: '/space/:projectId/settings',

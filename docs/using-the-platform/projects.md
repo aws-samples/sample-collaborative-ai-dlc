@@ -25,6 +25,8 @@ On large screens the sidebar has a **My work** entry and two sections:
 
 On narrow screens the drawer offers **My work**, **Spaces**, and the intents that need you or are running.
 
+Open a space to see its intents grouped by what to do next: decisions and runs that need resuming come first, then failures, then running work; finished intents are collapsed. Select anywhere on an intent row to open it. Use the filters and the sort control for a narrower or chronological list; the choice is kept in the address so it can be shared. An intent in an automatic wait does not ask for your input.
+
 ## Creating a space
 
 Choose **New space** on the Spaces dashboard or at the end of the sidebar's **Spaces** row. Enter a name, pick the code host (**GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**), connect your account if prompted, and select the repository. CodeCommit needs no connection step: once a platform admin has set the CodeCommit connection, you pick repositories from the usual list; if it is not configured yet, you can still select it, but a note asks you to contact a platform admin and **Next** stays disabled. You can optionally enable the provider's issue tracker in the same step. See [Git and Tracker Integration](git-integration.md) for details on connections and auth modes.
