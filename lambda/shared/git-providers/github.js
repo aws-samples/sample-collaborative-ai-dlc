@@ -198,13 +198,14 @@ const listInstallationRepos = async (ctx) => {
 
 const listBranches = async (ctx, repoId) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/branches?per_page=100`);
-  if (res.status === 404) return [];
-  const data = await res.json();
-  if (!Array.isArray(data)) {
-    throw new ProviderError(400, data.message || 'Failed to fetch branches');
-  }
-  return data.map((b) => b.name);
+  return listPages(ctx, `${API_BASE}/repos/${owner}/${repo}/branches`, async (res) => {
+    if (res.status === 404) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) {
+      throw new ProviderError(400, data?.message || 'Failed to fetch branches');
+    }
+    return data.map((b) => b.name);
+  });
 };
 
 // The repo's real default branch (`main`, `master`, or whatever HEAD points at).
