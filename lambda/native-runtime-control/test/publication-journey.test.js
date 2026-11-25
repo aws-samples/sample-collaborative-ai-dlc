@@ -75,7 +75,7 @@ it.each([
       if(rows[0].sessionId!==id || rows[0].cwd!==process.cwd() ||
          rows.filter(x=>x.type==='fixture_turn').length!==turn-1) throw Error('session history changed');
       const expected=form
-        ? turn===2 ? scope ? kind==='scope-proposed' ? 'Use a different plan' : 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : ['form-invalid','form-absent','form-oversized','form-schema','form-unsupported'].includes(kind) ? 'answer-2' : 'Looks correct'
+        ? turn===2 ? scope ? kind==='scope-proposed' ? 'bugfix' : 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : ['form-invalid','form-absent','form-oversized','form-schema','form-unsupported'].includes(kind) ? 'answer-2' : 'Looks correct'
         : 'answer-'+(turn-1);
       if(prompt!==expected) throw Error('answer changed or replayed');
       // Layout and shape observed in pinned Claude 2.1.257 persistAgentMetadata.
@@ -99,14 +99,14 @@ it.each([
       const dir='aidlc/spaces/default/intents/fixture';
       await fs.mkdir(dir,{recursive:true});
       await fs.writeFile('aidlc/active-space','default\\n');
-      await fs.writeFile('aidlc/spaces/default/intents/active-intent','fixture\\n');
-      await fs.writeFile(dir+'/aidlc-state.md','- **Current Stage**: requirements-analysis\\n- ['+(turn===3?'?':'-')+'] requirements-analysis — EXECUTE\\n');
+      if (kind!=='scope-proposed' || turn>1) await fs.writeFile('aidlc/spaces/default/intents/active-intent','fixture\\n');
+      await fs.writeFile(dir+'/aidlc-state.md','- **Current Stage**: requirements-analysis\\n- ['+(turn===3 || (kind==='scope-proposed' && turn===2)?'?':'-')+'] requirements-analysis — EXECUTE\\n');
       const plans=['compose','bugfix','classic','enterprise','express','feature','infra','mvp','poc','refactor','security-patch','workshop'];
       const questions=turn===1 && scope ? [{prompt:'Choose the plan for this task.',header:'Plan',options:plans.map(label=>({label}))}] : turn===1 ? [
         ...Array.from({length:5},(_,i)=>({prompt:'Current question '+(i+1)+'?',header:'Q'+(i+1),
           multiSelect:i===1,options:[{label:'Small'},{label:'Large'}]})),
         {prompt:'What constraints apply?',header:'Constraints',options:[]},
-      ] : turn===2 ? [{
+      ] : turn===2 && kind!=='scope-proposed' ? [{
         prompt:'All six answers recorded. Confirm the summary before generation?',header:'Confirm',
         options:[{label:'Looks correct'},{label:'Request changes'}],
       }] : [{
@@ -453,7 +453,7 @@ it.each([
             recheck,
           ),
         ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_INVALID' });
-        expect(turns).toBe(turn - 1);
+        expect(turns).toBe(turn - 1 - (scenario.kind === 'scope-proposed' && turn > 2 ? 1 : 0));
       }
       const answer = await api.respond(f.prepared, ACTOR, latestAnswer, recheck);
       expect(answer.response.deliveryStatus).toBe('pending');
@@ -482,6 +482,10 @@ it.each([
       expect(setupCommands).toBe(3); // Progress reporting never repeats installation or a model turn.
       expect(completed.timings.packageInstallationStarted).toBeUndefined();
       expect(completed.timings.workspaceBaselineCompleted).toBeTypeOf('number');
+      if (scenario.kind === 'scope-proposed' && turn === 2) {
+        expect(turns).toBe(1);
+        expect(completed.timings.harnessLaunched).toBeUndefined();
+      }
       if (completed.status === 'publication_ready') {
         for (const [before, after] of [
           ['workspaceSnapshotStarted', 'workspaceSnapshotCompleted'],
@@ -572,7 +576,7 @@ it.each([
       }
     }
     const final = f.row();
-    expect(turns).toBe(scenario.turns);
+    expect(turns).toBe(scenario.turns - (scenario.kind === 'scope-proposed' ? 1 : 0));
     expect(final.attemptId).toBe(first.attemptId);
     expect(final.runtimeSessionId).toBe(first.runtimeSessionId);
     expect(final.writerGeneration).toBe(1);
@@ -602,7 +606,7 @@ it.each([
     const saved = visible.files.find((file) => file.path === 'work.txt');
     expect(await api.file(f.prepared, saved.id, recheck)).toMatchObject({
       encoding: 'utf8',
-      content: `saved turn ${final.publication.sequence}\n`,
+      content: `saved turn ${final.publication.sequence - (scenario.kind === 'scope-proposed' ? 1 : 0)}\n`,
     });
     if (scenario.kind === 'cancel')
       await expect(api.respond(f.prepared, ACTOR, latestAnswer, recheck)).rejects.toMatchObject({
@@ -610,7 +614,7 @@ it.each([
       });
     else await api.respond(f.prepared, ACTOR, latestAnswer, recheck);
     await supervisor(f.identity);
-    expect(turns).toBe(scenario.turns); // Neither duplicate answer nor queue pointer replays work.
+    expect(turns).toBe(scenario.turns - (scenario.kind === 'scope-proposed' ? 1 : 0)); // Neither duplicate answer nor queue pointer replays work.
     expect(final.publication.sequence).toBe(
       scenario.code || scenario.kind === 'cancel' ? scenario.turns - 1 : scenario.turns,
     );

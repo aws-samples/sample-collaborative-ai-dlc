@@ -75,6 +75,21 @@ it('uses only the fresh mode decision from the settled active intent, even for i
   ])
     expect(nativeRequirementsForm({ ...input, ...patch })).toBeNull();
 });
+it('retains an open decision across the installed Claude session-end hook but suppresses an answered decision', () => {
+  const input = fixture(mode);
+  const audit = input.snapshot.files.at(-1);
+  const append = (event) => {
+    audit.content = Buffer.concat([
+      audit.content,
+      Buffer.from(`\n## Session event\n**Event**: ${event}\n\n---\n`),
+    ]);
+    audit.sha256 = createHash('sha256').update(audit.content).digest('hex');
+  };
+  append('SESSION_ENDED');
+  expect(nativeRequirementsForm(input)?.answerMode).toBe(true);
+  append('QUESTION_ANSWERED');
+  expect(nativeRequirementsForm(input)).toBeNull();
+});
 it('renders the exact unanswered members of a guided batch and never mixes in a held summary or approval', () => {
   const prior = nativeRequirementsForm(fixture(mode));
   const guidedQuestions = prior.questionFile;

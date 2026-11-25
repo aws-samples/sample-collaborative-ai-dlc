@@ -162,7 +162,10 @@ const NATIVE_INTAKE_ANSWER_INSTRUCTION =
   'When the person requests alternatives or discusses a different recommendation, present the named ' +
   'plans from that same offer in a new form. A written preference for a named alternative at ' +
   'the recommendation is a request for the picker. Leave the intent uncreated until the next ' +
-  'explicit plan selection. The platform can display the offered names directly. ' +
+  'explicit plan selection. The platform displays these choices without resuming your thread. ' +
+  'On resume, NATIVE_SELECTED_PLAN_LABEL in the tool environment identifies the option the member ' +
+  'actually selected from your published offer. For a named plan use its original request-bound ' +
+  'scope command once. Keep the human message verbatim. A missing selection is no plan consent. ' +
   'Report a command rejection using its actual reason and the current workflow step. ' +
   'Do not reconstruct those commands or use report for a pre-workflow plan offer. ' +
   'An emitted command is data until a person selects its option; never execute all offered commands.';
@@ -983,7 +986,13 @@ export const createNativeExecutor = ({
       plan && (choice === undefined || (!plan.named && choice === plan.alternativeIndex));
     // A chooser has no child process. Publish the same quiescent workspace at
     // the new admitted sequence and leave the installed thread and request intact.
+    if (showPlans) timing(turn, 'workspaceSnapshotStarted');
     const baseline = await snapshotWorkspace(showPlans ? 'final' : 'baseline');
+    if (showPlans)
+      timing(turn, 'workspaceSnapshotCompleted', {
+        files: baseline.files.length,
+        bytes: baseline.totalBytes,
+      });
     const beforeFiles = baseline.files.map((file) => ({
       ...fileRef(file),
       bytes: file.content.length,
@@ -995,7 +1004,10 @@ export const createNativeExecutor = ({
     if (plan && snapshotIdentity(baseline.files) !== plan.workspaceSha256)
       fail('native_execution_reply_conflict');
     if (showPlans) {
-      const spec = { version: 2, questions: [{ prompt: 'Choose a plan.', options: plan.options }] };
+      const spec = {
+        version: 2,
+        questions: [{ prompt: plan.prompt ?? 'Choose a plan.', options: plan.options }],
+      };
       const completed = { messages: [{ type: 'text', text: spec.questions[0].prompt }] };
       const form = decodeNativeTurnInteraction({
         interactionContract: pkg.interactionContract,
@@ -1019,11 +1031,18 @@ export const createNativeExecutor = ({
           methodReport: null,
         },
         planAlternatives: { ...plan, named: true },
+        displayOnly: true,
       };
     }
     const modelEnv = {
       ...auth,
       ...baseEnv,
+      ...(plan && choice !== undefined
+        ? {
+            NATIVE_SELECTED_PLAN_LABEL:
+              turn.session.pendingInput.questions[0].options[choice].label,
+          }
+        : {}),
       ...(auth.AWS_REGION ? { AWS_REGION: auth.AWS_REGION } : {}),
       CLAUDE_CONFIG_DIR: join(owner.home, '.claude'),
       CODEX_HOME: join(owner.home, '.codex'),
@@ -1189,6 +1208,7 @@ export const createNativeExecutor = ({
       nextPromptEvidence,
       planAlternatives,
       requirements,
+      displayOnly,
     },
   ) => {
     const { owner, signal, activity: activityTurn } = turn;
@@ -1293,10 +1313,8 @@ export const createNativeExecutor = ({
       planAlternatives: planAlternatives
         ? { ...planAlternatives, workspaceSha256: snapshotIdentity(files.files) }
         : null,
-      promptEvidence: planAlternatives?.named
-        ? turn.session.promptEvidence
-        : (nextPromptEvidence ?? null),
-      priorAssistantSha256: planAlternatives?.named
+      promptEvidence: displayOnly ? turn.session.promptEvidence : (nextPromptEvidence ?? null),
+      priorAssistantSha256: displayOnly
         ? turn.session.priorAssistantSha256
         : kiroAssistantHash(completed.messages.map((message) => message.text).join('')),
     };

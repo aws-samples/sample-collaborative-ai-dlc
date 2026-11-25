@@ -148,6 +148,14 @@ function methodResult(command, output, ok) {
       /^Workflow complete\b/i.test(directive.reason)
     )
       return { terminal: 'complete' };
+    if (
+      directive.kind === 'run-stage' &&
+      directive.stage === 'requirements-analysis' &&
+      !directive.gate_only &&
+      directive.answer_mode?.ask === false &&
+      directive.answer_mode.mode === 'guide'
+    )
+      return { advanced: true, guidedStage: directive.stage };
     return { advanced: true };
   } catch {
     return unknown;
@@ -156,6 +164,7 @@ function methodResult(command, output, ok) {
 
 export function observeNativeMethodOutput(harness) {
   let latest = null;
+  let guidedStage = null;
   let offerLabels = null;
   const pending = new Map();
   let overflow = false;
@@ -192,6 +201,8 @@ export function observeNativeMethodOutput(harness) {
       output,
       ok,
     );
+    if (latest.decision && latest.decision.stage === guidedStage) latest.guidedStage = guidedStage;
+    guidedStage = latest.guidedStage ?? null;
     if (latest.spec) {
       const ask = latest.spec.ask;
       offerLabels = new Set([
@@ -281,6 +292,16 @@ export function observeNativeMethodOutput(harness) {
 // response to the recommendation cannot authorize a named plan from the picker.
 export function offeredPlanAlternatives(method) {
   const ask = method?.spec?.ask;
+  if (ask?.ask_type === 'compose-offer') {
+    const form = buildNativePendingInput({ spec: method.spec });
+    if (!form) return null;
+    return {
+      named: true,
+      prompt: ask.question,
+      options: form.questions[0].options,
+      commandLabels: [],
+    };
+  }
   if (ask?.ask_type !== 'scope-confirm') return null;
   const choices = ask.choices.filter((choice) => choice.command === undefined);
   if (choices.length !== 1) return null;
@@ -334,7 +355,14 @@ export function observedTurnForm({ method }, rendered, alternatives, reply, snap
     )
       return { spec, bytes: Buffer.byteLength(JSON.stringify(spec)) };
   }
-  if (method?.rejection || method?.uncertain || method?.terminal || method?.decision) return stale;
+  if (
+    method?.rejection ||
+    method?.uncertain ||
+    method?.terminal ||
+    method?.decision ||
+    method?.recordedRequirementsDecision
+  )
+    return stale;
   if (method?.otherAsk || method?.advanced) {
     if (rendered.spec?.version === 3) return stale;
     const potentialGate = buildNativePendingInput({

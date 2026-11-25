@@ -312,7 +312,11 @@ export function nativeRequirementsForm({
   // Artifact-write hooks can run after the question. A later decision, answer
   // or state transition supersedes it. Do not pick a row from another shard.
   const last = auditBlocks
-    .filter((block) => block.trim() && !block.includes('\n**Event**: ARTIFACT_UPDATED\n'))
+    .filter(
+      (block) =>
+        block.trim() &&
+        !/^\*\*Event\*\*: (?:ARTIFACT_CREATED|ARTIFACT_UPDATED|SESSION_ENDED)$/m.test(block),
+    )
     .at(-1);
   const field = (name) =>
     last
@@ -362,8 +366,9 @@ export function nativeRequirementsForm({
   } else {
     if (
       decision.questionKind ||
-      guidedQuestions?.path !== file.path ||
-      guidedQuestions.directive !== evidence.directive.sha256
+      (method.guidedStage !== evidence.stage &&
+        (guidedQuestions?.path !== file.path ||
+          guidedQuestions.directive !== evidence.directive.sha256))
     )
       return null;
     const content = snapshot.files.find((entry) => entry.path === file.path).content;

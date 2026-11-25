@@ -397,6 +397,7 @@ describe('native first-turn executor', () => {
       await executor.settle();
       await executor.continue(selected);
       expect(launches.slice(1)).toEqual([scope]);
+      expect(ports.commandRunner.mock.calls.at(-1)[0].env.NATIVE_SELECTED_PLAN_LABEL).toBe(scope);
     },
   );
 
