@@ -602,6 +602,12 @@ const checkCancelled = (turn) => {
  * local tests. Default paths are EFS /mnt/native and local /home/node/.native-homes.
  * Caller must authenticate every method and keep the host alive while isBusy().
  */
+const questionScope = (source) => [
+  '--stage',
+  source.stage,
+  ...(source.unit ? ['--unit', source.unit] : []),
+];
+
 export const createNativeExecutor = ({
   env = process.env,
   prepare,
@@ -963,99 +969,8 @@ export const createNativeExecutor = ({
   };
 
   // One turn returns quiescent output. No publication or recovery head is admitted here.
-  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv }) => {
-    const { owner, payload, signal, activity: activityTurn } = turn;
-    const configuration = payload.configuration;
-    const continuing = payload.command === 'native-continue';
-    // A spec from an earlier turn must never describe this turn's question.
-    await clearNativePendingSpec(project);
-    activityTurn.lifecycle({ title: 'Inspecting workspace' });
-    timing(turn, 'workspaceBaselineStarted');
-    const snapshotWorkspace = (phase) =>
-      snapshot({
-        project,
-        signal,
-        forbiddenBytes,
-        ...(phase === 'final' && owner.sourceBaseline?.receipt
-          ? { identity: owner.identity, sourceBaseline: owner.sourceBaseline }
-          : {}),
-        filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
-        onDiagnostic: (details) => {
-          const safe = nativeSnapshotDiagnostic(details);
-          if (!safe) return;
-          turn.report.snapshotDiagnostic = { ...safe, phase };
-          timing(turn, 'snapshotRejected', turn.report.snapshotDiagnostic);
-        },
-      });
-    const plan = continuing ? turn.session.planAlternatives : null;
-    const choice = payload.selection?.answers[0]?.selectedOptions[0];
-    const showPlans =
-      plan && (choice === undefined || (!plan.named && choice === plan.alternativeIndex));
-    // A chooser has no child process. Publish the same quiescent workspace at
-    // the new admitted sequence and leave the installed thread and request intact.
-    if (showPlans) timing(turn, 'workspaceSnapshotStarted');
-    const baseline = await snapshotWorkspace(showPlans ? 'final' : 'baseline');
-    if (showPlans)
-      timing(turn, 'workspaceSnapshotCompleted', {
-        files: baseline.files.length,
-        bytes: baseline.totalBytes,
-      });
-    const beforeFiles = baseline.files.map((file) => ({
-      ...fileRef(file),
-      bytes: file.content.length,
-    }));
-    timing(turn, 'workspaceBaselineCompleted', {
-      files: baseline.files.length,
-      bytes: baseline.totalBytes,
-    });
-    if (plan && snapshotIdentity(baseline.files) !== plan.workspaceSha256)
-      fail('native_execution_reply_conflict');
-    if (showPlans) {
-      const spec = {
-        version: 2,
-        questions: [{ prompt: plan.prompt ?? 'Choose a plan.', options: plan.options }],
-      };
-      const completed = { messages: [{ type: 'text', text: spec.questions[0].prompt }] };
-      const form = decodeNativeTurnInteraction({
-        interactionContract: pkg.interactionContract,
-        snapshot: baseline,
-        rendered: { spec, bytes: Buffer.byteLength(JSON.stringify(spec)) },
-        messages: completed.messages,
-        forbiddenBytes,
-        onDiagnostic: (details) => timing(turn, 'questionPresentation', details),
-      });
-      if (!form.pendingInput) fail('native_execution_reply_conflict');
-      const nativeSessionId = turn.session.nativeSessionId;
-      await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
-      return {
-        ...form,
-        completed,
-        nativeSessionId,
-        files: baseline,
-        outcome: {
-          kind: 'stopped_needs_review',
-          code: 'native_wait_format_unrecognized',
-          methodReport: null,
-        },
-        planAlternatives: { ...plan, named: true },
-        displayOnly: true,
-      };
-    }
-    const session = turn.session;
-    const binding = continuing ? session.questionFile : null;
-    if (
-      continuing &&
-      session.planApprovalWorkspace &&
-      session.planApprovalWorkspace !== snapshotIdentity(baseline.files)
-    )
-      fail('native_execution_reply_conflict');
-    const selected = payload.selection?.answers[0];
-    const modeLabel =
-      session?.answerMode && selected?.selectedOptions.length === 1 && !selected.freeText
-        ? session.pendingInput.questions[0].options[choice]?.label
-        : null;
-    const fileMode =
-      modeLabel === 'Guide me' ? 'guide' : modeLabel === "I'll edit the file" ? 'file' : null;
+  const questionCommands = (turn, baseEnv) => {
+    const { owner, payload, session, signal } = turn;
     const assertWriter = async () => {
       await checkDirectories(owner);
       if (assertActive)
@@ -1079,11 +994,6 @@ export const createNativeExecutor = ({
       );
       return result.stdout;
     };
-    const questionScope = (source) => [
-      '--stage',
-      source.stage,
-      ...(source.unit ? ['--unit', source.unit] : []),
-    ];
     const recordBatch = async (source, form) => {
       const batch = JSON.parse(
         await method([
@@ -1141,80 +1051,95 @@ export const createNativeExecutor = ({
         ledger.ambiguous?.length === 0
       );
     };
-    let appliedFile = null,
-      recoveredFile = null;
+    return { assertWriter, method, recordBatch, recordAnswer, openSavedBatch };
+  };
+
+  const reconciledQuestionFile = async (turn, baseline) => {
+    const { owner, payload } = turn;
+    const configuration = payload.configuration;
+    let recoveredFile = null;
+    if (payload.command === 'native-resume') {
+      const directory = directoryForGeneration(owner.writerGeneration - 1);
+      const status = await readLocalRecord(join(directory, 'status.json'));
+      if (
+        status.status !== 'publication_ready' &&
+        status.requestId &&
+        sameIdentity(status, owner.identity) &&
+        status.writerGeneration === owner.writerGeneration - 1
+      ) {
+        let receipt;
+        try {
+          receipt = await readLocalRecord(join(directory, `file-answer-${status.sequence}.json`));
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        if (receipt) {
+          const admission = await readLocalRecord(
+            join(directory, `request-${status.requestId}.json`),
+          );
+          const saved = baseline.files.find(
+            (f) => f.path === receipt.path && f.role === 'question',
+          );
+          if (
+            !sameIdentity(receipt.identity, owner.identity) ||
+            receipt.writerGeneration !== status.writerGeneration ||
+            receipt.sequence !== status.sequence ||
+            receipt.requestId !== status.requestId ||
+            admission.ack?.requestId !== receipt.requestId ||
+            status.priorInteractionId !== receipt.priorInteractionId ||
+            status.priorPublicationId !== receipt.priorPublicationId ||
+            !saved ||
+            !Number.isSafeInteger(receipt.bytes) ||
+            receipt.bytes < 1 ||
+            saved.sha256 !== receipt.after ||
+            saved.content.length !== receipt.bytes
+          )
+            fail('native_execution_file_answer_conflict');
+          if (
+            (receipt.decision || receipt.fileEdit) &&
+            currentQuestionFile(
+              baseline,
+              { issuedFile: receipt.source, state: receipt.state },
+              configuration.harness,
+            )
+          )
+            recoveredFile = receipt;
+          timing(turn, 'fileAnswerReconciled');
+        }
+      }
+    }
+    return recoveredFile;
+  };
+
+  const prepareQuestionReply = async (
+    turn,
+    { baseline, snapshotWorkspace, pkg, forbiddenBytes, commands, choice },
+  ) => {
+    const { owner, payload } = turn;
+    const configuration = payload.configuration;
+    const continuing = payload.command === 'native-continue';
+    const { assertWriter, recordAnswer, recordBatch, openSavedBatch } = commands;
+    const session = turn.session;
+    const binding = continuing ? session.questionFile : null;
+    if (
+      continuing &&
+      session.planApprovalWorkspace &&
+      session.planApprovalWorkspace !== snapshotIdentity(baseline.files)
+    )
+      fail('native_execution_reply_conflict');
+    const selected = payload.selection?.answers[0];
+    const modeLabel =
+      session?.answerMode && selected?.selectedOptions.length === 1 && !selected.freeText
+        ? session.pendingInput.questions[0].options[choice]?.label
+        : null;
+    const fileMode =
+      modeLabel === 'Guide me' ? 'guide' : modeLabel === "I'll edit the file" ? 'file' : null;
+    let appliedFile = null;
     const directCheckpoint =
       session?.checkpoint &&
       selected &&
       (selected.selectedOptions.length || session.checkpoint === 'Requested Changes Feedback');
-    if (
-      binding?.issuedFile &&
-      (fileMode || (session.fileStep && payload.selection) || directCheckpoint)
-    ) {
-      const nativeSessionId = session.nativeSessionId;
-      const current = currentQuestionFile(baseline, binding, configuration.harness);
-      const display = async (message, requirements = null) => {
-        const files = await snapshotWorkspace('final');
-        const completed = { messages: [{ type: 'text', text: message }] };
-        if (requirements) {
-          const next = currentQuestionFile(files, binding, configuration.harness);
-          if (!next || next.file.sha256 !== requirements.questionFile.sha256)
-            fail('native_execution_reply_conflict');
-          requirements.questionFile.directive = next.cursorHash;
-        }
-        const form = decodeNativeTurnInteraction({
-          interactionContract: pkg.interactionContract,
-          snapshot: files,
-          rendered: requirements ?? { spec: null, reason: 'stale_spec', bytes: 0 },
-          messages: completed.messages,
-          forbiddenBytes,
-          onDiagnostic: (d) => timing(turn, 'questionPresentation', d),
-        });
-        if (requirements?.fileStep === 'file' && form.pendingInput)
-          form.pendingInput.fileEdit = true;
-        const outcome = classifyNativeFirstWait({
-          snapshot: files,
-          harness: configuration.harness,
-          issuedFile: binding.issuedFile,
-        });
-        await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
-        return {
-          ...form,
-          files,
-          completed,
-          nativeSessionId,
-          outcome,
-          requirements,
-          displayOnly: true,
-        };
-      };
-      const changed = () =>
-        display(
-          'The published questions changed before these answers could be applied. Your reply is saved. Review the current published file and ask AI-DLC to show the remaining questions.',
-        );
-      if (
-        binding.workspaceSha256 !== snapshotIdentity(baseline.files) ||
-        !current ||
-        current.cursorHash !== binding.directive ||
-        current.file.sha256 !== binding.sha256 ||
-        !current.parsed
-      )
-        return changed();
-      const form = ordinaryFileForm(current.parsed, fileMode ? null : session.fileQuestionIds);
-      if (!form && !directCheckpoint)
-        return display(
-          'The current file contains a different or unsupported question layout. Your reply is retained. Open the published file and ask AI-DLC to present the current step.',
-        );
-      if (fileMode) {
-        await recordAnswer(binding.issuedFile, modeLabel);
-        if (fileMode === 'guide') await recordBatch(binding.issuedFile, form);
-        return display(
-          fileMode === 'guide'
-            ? 'Answer the questions below. Use Other to answer in your own words.'
-            : `Edit the answer slots in ${binding.path}.`,
-          { ...form, fileStep: fileMode, questionFile: { ...binding } },
-        );
-      }
+    const applySlots = async (current, display, changed) => {
       const edit = session.fileStep === 'file';
       const result = directCheckpoint
         ? fillQuestionCheckpoint(current.parsed, session.checkpoint, selected)
@@ -1270,13 +1195,91 @@ export const createNativeExecutor = ({
         if (remaining)
           return display(
             'Your edits are saved in the question file. Complete the remaining slots.',
-            { ...remaining, fileStep: 'file', questionFile: { ...binding, sha256: result.sha256 } },
+            {
+              ...remaining,
+              fileStep: 'file',
+              questionFile: { ...binding, sha256: result.sha256 },
+            },
           );
         const ready = fileCompletionForm({ ...binding, sha256: result.sha256 });
         return display(ready.spec.questions[0].prompt, ready);
       }
       await recordAnswer(binding.issuedFile, result.details, session.checkpoint);
-    }
+    };
+    const applyFileReply = async () => {
+      if (
+        binding?.issuedFile &&
+        (fileMode || (session.fileStep && payload.selection) || directCheckpoint)
+      ) {
+        const nativeSessionId = session.nativeSessionId;
+        const current = currentQuestionFile(baseline, binding, configuration.harness);
+        const display = async (message, requirements = null) => {
+          const files = await snapshotWorkspace('final');
+          const completed = { messages: [{ type: 'text', text: message }] };
+          if (requirements) {
+            const next = currentQuestionFile(files, binding, configuration.harness);
+            if (!next || next.file.sha256 !== requirements.questionFile.sha256)
+              fail('native_execution_reply_conflict');
+            requirements.questionFile.directive = next.cursorHash;
+          }
+          const form = decodeNativeTurnInteraction({
+            interactionContract: pkg.interactionContract,
+            snapshot: files,
+            rendered: requirements ?? { spec: null, reason: 'stale_spec', bytes: 0 },
+            messages: completed.messages,
+            forbiddenBytes,
+            onDiagnostic: (d) => timing(turn, 'questionPresentation', d),
+          });
+          if (requirements?.fileStep === 'file' && form.pendingInput)
+            form.pendingInput.fileEdit = true;
+          const outcome = classifyNativeFirstWait({
+            snapshot: files,
+            harness: configuration.harness,
+            issuedFile: binding.issuedFile,
+          });
+          await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
+          return {
+            ...form,
+            files,
+            completed,
+            nativeSessionId,
+            outcome,
+            requirements,
+            displayOnly: true,
+          };
+        };
+        const changed = () =>
+          display(
+            'The published questions changed before these answers could be applied. Your reply is saved. Review the current published file and ask AI-DLC to show the remaining questions.',
+          );
+        if (
+          binding.workspaceSha256 !== snapshotIdentity(baseline.files) ||
+          !current ||
+          current.cursorHash !== binding.directive ||
+          current.file.sha256 !== binding.sha256 ||
+          !current.parsed
+        )
+          return changed();
+        const form = ordinaryFileForm(current.parsed, fileMode ? null : session.fileQuestionIds);
+        if (!form && !directCheckpoint)
+          return display(
+            'The current file contains a different or unsupported question layout. Your reply is retained. Open the published file and ask AI-DLC to present the current step.',
+          );
+        if (fileMode) {
+          await recordAnswer(binding.issuedFile, modeLabel);
+          if (fileMode === 'guide') await recordBatch(binding.issuedFile, form);
+          return display(
+            fileMode === 'guide'
+              ? 'Answer the questions below. Use Other to answer in your own words.'
+              : `Edit the answer slots in ${binding.path}.`,
+            { ...form, fileStep: fileMode, questionFile: { ...binding } },
+          );
+        }
+        return applySlots(current, display, changed);
+      }
+    };
+    const publication = await applyFileReply();
+    if (publication) return { publication };
     if (
       continuing &&
       (session.fileReady || (session.checkpoint && !directCheckpoint)) &&
@@ -1289,56 +1292,6 @@ export const createNativeExecutor = ({
         current.cursorHash !== binding.directive
       )
         fail('native_execution_file_answer_conflict');
-    }
-    if (payload.command === 'native-resume') {
-      const directory = directoryForGeneration(owner.writerGeneration - 1);
-      const status = await readLocalRecord(join(directory, 'status.json'));
-      if (
-        status.status !== 'publication_ready' &&
-        status.requestId &&
-        sameIdentity(status, owner.identity) &&
-        status.writerGeneration === owner.writerGeneration - 1
-      ) {
-        let receipt;
-        try {
-          receipt = await readLocalRecord(join(directory, `file-answer-${status.sequence}.json`));
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-        }
-        if (receipt) {
-          const admission = await readLocalRecord(
-            join(directory, `request-${status.requestId}.json`),
-          );
-          const saved = baseline.files.find(
-            (f) => f.path === receipt.path && f.role === 'question',
-          );
-          if (
-            !sameIdentity(receipt.identity, owner.identity) ||
-            receipt.writerGeneration !== status.writerGeneration ||
-            receipt.sequence !== status.sequence ||
-            receipt.requestId !== status.requestId ||
-            admission.ack?.requestId !== receipt.requestId ||
-            status.priorInteractionId !== receipt.priorInteractionId ||
-            status.priorPublicationId !== receipt.priorPublicationId ||
-            !saved ||
-            !Number.isSafeInteger(receipt.bytes) ||
-            receipt.bytes < 1 ||
-            saved.sha256 !== receipt.after ||
-            saved.content.length !== receipt.bytes
-          )
-            fail('native_execution_file_answer_conflict');
-          if (
-            (receipt.decision || receipt.fileEdit) &&
-            currentQuestionFile(
-              baseline,
-              { issuedFile: receipt.source, state: receipt.state },
-              configuration.harness,
-            )
-          )
-            recoveredFile = receipt;
-          timing(turn, 'fileAnswerReconciled');
-        }
-      }
     }
     if (
       continuing &&
@@ -1356,6 +1309,16 @@ export const createNativeExecutor = ({
       await recordAnswer(receipt.source, receipt.details);
       appliedFile = { path: receipt.path, sha256: receipt.after, bytes: receipt.bytes };
     }
+    return { appliedFile, directCheckpoint };
+  };
+
+  const invokeInstalledHarness = async (
+    turn,
+    { auth, baseEnv, forbiddenBytes, pkg, recoveredFile, appliedFile, plan, choice },
+  ) => {
+    const { owner, payload, activity: activityTurn } = turn;
+    const configuration = payload.configuration;
+    const continuing = payload.command === 'native-continue';
     const modelEnv = {
       ...auth,
       ...baseEnv,
@@ -1446,25 +1409,25 @@ export const createNativeExecutor = ({
     timing(turn, 'harnessCompleted');
     activityTurn.finishOutput();
     const completed = output.finish();
-    activityTurn.lifecycle({ title: 'Checking completed workspace' });
-    await checkDirectories(owner);
-    const formDiagnostic = (details) => {
-      recordNativeBoundary(owner.identity, 'questionPresentation', Date.now(), {
-        sequence: turn.report.sequence,
-        writerGeneration: owner.writerGeneration,
-        ...details,
-      });
-    };
-    const rendered = await readNativePendingSpec(project, {
-      forbiddenBytes,
-      onDiagnostic: formDiagnostic,
-    });
-    timing(turn, 'workspaceSnapshotStarted');
-    let files = await snapshotWorkspace('final');
-    timing(turn, 'workspaceSnapshotCompleted', {
-      files: files.files.length,
-      bytes: files.totalBytes,
-    });
+    return { result, completed, nextPromptEvidence };
+  };
+
+  const nextQuestionFileForm = async ({
+    files,
+    snapshotWorkspace,
+    configuration,
+    session,
+    choice,
+    pkg,
+    beforeFiles,
+    completed,
+    rendered,
+    appliedFile,
+    directCheckpoint,
+    recoveredFile,
+    commands,
+  }) => {
+    const { method, recordBatch, openSavedBatch } = commands;
     if (appliedFile && !directCheckpoint) {
       const current = files.files.find((f) => f.path === appliedFile.path && f.role === 'question');
       if (!current || digest(current.content.subarray(0, appliedFile.bytes)) !== appliedFile.sha256)
@@ -1534,54 +1497,196 @@ export const createNativeExecutor = ({
           requirements = fileCompletionForm(binding);
       }
     }
-    if (
-      !requirements &&
-      !rendered.spec &&
-      completed.method?.advanced &&
-      issuedFile &&
-      ['file', 'guide'].includes(issuedFile.mode)
-    ) {
-      const { evidence } = classifyNativeFirstWait({
-        snapshot: files,
-        harness: configuration.harness,
-        issuedFile,
-      });
-      if (evidence) {
-        const questionFile = {
-          ...evidence.questions[0],
-          state: evidence.state.sha256,
-          directive: evidence.directive.sha256,
+    await presentIssuedFile();
+    return { files, requirements };
+    async function presentIssuedFile() {
+      if (
+        !requirements &&
+        !rendered.spec &&
+        completed.method?.advanced &&
+        issuedFile &&
+        ['file', 'guide'].includes(issuedFile.mode)
+      ) {
+        const { evidence } = classifyNativeFirstWait({
+          snapshot: files,
+          harness: configuration.harness,
           issuedFile,
-        };
-        const current = currentQuestionFile(files, questionFile, configuration.harness);
-        const form = ordinaryFileForm(current?.parsed);
-        if (form) {
-          let canPresent = true;
-          if (issuedFile.mode === 'guide') {
-            const ledger = JSON.parse(
-              await method(['log', 'answers', ...questionScope(issuedFile)]),
-            );
-            canPresent =
-              ledger.stage === issuedFile.stage &&
-              ledger.ambiguous?.length === 0 &&
-              (ledger.open?.length === 0 ||
-                (ledger.open?.length === 1 &&
-                  ledger.open[0].question === form.ids.join(', ') &&
-                  (ledger.open[0].unit ?? null) === issuedFile.unit &&
-                  !ledger.open[0].workflow));
-            if (canPresent && !ledger.open.length) {
-              await recordBatch(issuedFile, form);
-              files = await snapshotWorkspace('final');
-              const checked = currentQuestionFile(files, questionFile, configuration.harness);
-              if (checked?.file.sha256 !== questionFile.sha256)
-                fail('native_execution_reply_conflict');
-              questionFile.directive = checked.cursorHash;
+        });
+        if (evidence) {
+          const questionFile = {
+            ...evidence.questions[0],
+            state: evidence.state.sha256,
+            directive: evidence.directive.sha256,
+            issuedFile,
+          };
+          const current = currentQuestionFile(files, questionFile, configuration.harness);
+          const form = ordinaryFileForm(current?.parsed);
+          if (form) {
+            let canPresent = true;
+            if (issuedFile.mode === 'guide') {
+              const ledger = JSON.parse(
+                await method(['log', 'answers', ...questionScope(issuedFile)]),
+              );
+              canPresent =
+                ledger.stage === issuedFile.stage &&
+                ledger.ambiguous?.length === 0 &&
+                (ledger.open?.length === 0 ||
+                  (ledger.open?.length === 1 &&
+                    ledger.open[0].question === form.ids.join(', ') &&
+                    (ledger.open[0].unit ?? null) === issuedFile.unit &&
+                    !ledger.open[0].workflow));
+              if (canPresent && !ledger.open.length) {
+                await recordBatch(issuedFile, form);
+                files = await snapshotWorkspace('final');
+                const checked = currentQuestionFile(files, questionFile, configuration.harness);
+                if (checked?.file.sha256 !== questionFile.sha256)
+                  fail('native_execution_reply_conflict');
+                questionFile.directive = checked.cursorHash;
+              }
             }
+            if (canPresent) requirements = { ...form, questionFile, fileStep: issuedFile.mode };
           }
-          if (canPresent) requirements = { ...form, questionFile, fileStep: issuedFile.mode };
         }
       }
     }
+  };
+
+  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv }) => {
+    const { owner, payload, signal, activity: activityTurn } = turn;
+    const configuration = payload.configuration;
+    const continuing = payload.command === 'native-continue';
+    // A spec from an earlier turn must never describe this turn's question.
+    await clearNativePendingSpec(project);
+    activityTurn.lifecycle({ title: 'Inspecting workspace' });
+    timing(turn, 'workspaceBaselineStarted');
+    const snapshotWorkspace = (phase) =>
+      snapshot({
+        project,
+        signal,
+        forbiddenBytes,
+        ...(phase === 'final' && owner.sourceBaseline?.receipt
+          ? { identity: owner.identity, sourceBaseline: owner.sourceBaseline }
+          : {}),
+        filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
+        onDiagnostic: (details) => {
+          const safe = nativeSnapshotDiagnostic(details);
+          if (!safe) return;
+          turn.report.snapshotDiagnostic = { ...safe, phase };
+          timing(turn, 'snapshotRejected', turn.report.snapshotDiagnostic);
+        },
+      });
+    const plan = continuing ? turn.session.planAlternatives : null;
+    const choice = payload.selection?.answers[0]?.selectedOptions[0];
+    const showPlans =
+      plan && (choice === undefined || (!plan.named && choice === plan.alternativeIndex));
+    // A chooser has no child process. Publish the same quiescent workspace at
+    // the new admitted sequence and leave the installed thread and request intact.
+    if (showPlans) timing(turn, 'workspaceSnapshotStarted');
+    const baseline = await snapshotWorkspace(showPlans ? 'final' : 'baseline');
+    if (showPlans)
+      timing(turn, 'workspaceSnapshotCompleted', {
+        files: baseline.files.length,
+        bytes: baseline.totalBytes,
+      });
+    const beforeFiles = baseline.files.map((file) => ({
+      ...fileRef(file),
+      bytes: file.content.length,
+    }));
+    timing(turn, 'workspaceBaselineCompleted', {
+      files: baseline.files.length,
+      bytes: baseline.totalBytes,
+    });
+    if (plan && snapshotIdentity(baseline.files) !== plan.workspaceSha256)
+      fail('native_execution_reply_conflict');
+    if (showPlans) {
+      const spec = {
+        version: 2,
+        questions: [{ prompt: plan.prompt ?? 'Choose a plan.', options: plan.options }],
+      };
+      const completed = { messages: [{ type: 'text', text: spec.questions[0].prompt }] };
+      const form = decodeNativeTurnInteraction({
+        interactionContract: pkg.interactionContract,
+        snapshot: baseline,
+        rendered: { spec, bytes: Buffer.byteLength(JSON.stringify(spec)) },
+        messages: completed.messages,
+        forbiddenBytes,
+        onDiagnostic: (details) => timing(turn, 'questionPresentation', details),
+      });
+      if (!form.pendingInput) fail('native_execution_reply_conflict');
+      const nativeSessionId = turn.session.nativeSessionId;
+      await setStatus(turn, 'publishing', { nativeSessionId, outputTruncated: false });
+      return {
+        ...form,
+        completed,
+        nativeSessionId,
+        files: baseline,
+        outcome: {
+          kind: 'stopped_needs_review',
+          code: 'native_wait_format_unrecognized',
+          methodReport: null,
+        },
+        planAlternatives: { ...plan, named: true },
+        displayOnly: true,
+      };
+    }
+    const session = turn.session;
+    const commands = questionCommands(turn, baseEnv);
+    const { publication, appliedFile, directCheckpoint } = await prepareQuestionReply(turn, {
+      baseline,
+      snapshotWorkspace,
+      pkg,
+      forbiddenBytes,
+      commands,
+      choice,
+    });
+    if (publication) return publication;
+    const recoveredFile = await reconciledQuestionFile(turn, baseline);
+    const { result, completed, nextPromptEvidence } = await invokeInstalledHarness(turn, {
+      auth,
+      baseEnv,
+      forbiddenBytes,
+      pkg,
+      recoveredFile,
+      appliedFile,
+      plan,
+      choice,
+    });
+    activityTurn.lifecycle({ title: 'Checking completed workspace' });
+    await checkDirectories(owner);
+    const formDiagnostic = (details) => {
+      recordNativeBoundary(owner.identity, 'questionPresentation', Date.now(), {
+        sequence: turn.report.sequence,
+        writerGeneration: owner.writerGeneration,
+        ...details,
+      });
+    };
+    const rendered = await readNativePendingSpec(project, {
+      forbiddenBytes,
+      onDiagnostic: formDiagnostic,
+    });
+    timing(turn, 'workspaceSnapshotStarted');
+    let files = await snapshotWorkspace('final');
+    timing(turn, 'workspaceSnapshotCompleted', {
+      files: files.files.length,
+      bytes: files.totalBytes,
+    });
+    const nextFile = await nextQuestionFileForm({
+      files,
+      snapshotWorkspace,
+      configuration,
+      session,
+      choice,
+      pkg,
+      beforeFiles,
+      completed,
+      rendered,
+      appliedFile,
+      directCheckpoint,
+      recoveredFile,
+      commands,
+    });
+    files = nextFile.files;
+    let requirements = nextFile.requirements;
     const currentForm = requirements || observedTurnForm(completed, rendered, plan, null, files);
     if (currentForm === completed.method?.planApproval)
       requirements = { planApprovalWorkspace: snapshotIdentity(files.files) };

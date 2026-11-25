@@ -92,14 +92,7 @@ export function issuedQuestionFile(d) {
   };
 }
 
-export function parseQuestionFile(bytes) {
-  if (bytes.length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return null;
-  let text;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return null;
-  }
+function hasAmbiguousMarkup(text) {
   // Embedded examples and hidden markup do not identify editable slots. A
   // structural marker inside one makes the bounded normal form ambiguous.
   let fence = null,
@@ -112,9 +105,21 @@ export function parseQuestionFile(bytes) {
       continue;
     }
     if (line.includes('<!--')) comment = true;
-    if ((fence || comment) && /^(?:## |\[Answer\]:)/.test(line)) return null;
+    if ((fence || comment) && /^(?:## |\[Answer\]:)/.test(line)) return true;
     if (line.includes('-->')) comment = false;
   }
+  return false;
+}
+
+export function parseQuestionFile(bytes) {
+  if (bytes.length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return null;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  if (hasAmbiguousMarkup(text)) return null;
   const headings = [...text.matchAll(/^## (.+?)\r?$/gm)];
   const blocks = [],
     checkpoints = [],

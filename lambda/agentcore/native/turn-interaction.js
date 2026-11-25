@@ -286,39 +286,7 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [], i
   }
 };
 
-// The installed method logs the mode question before showing it. A guided
-// batch names the presented question numbers in the same log command. Read
-// only the settled active stage's published question file.
-export function nativeRequirementsForm({
-  snapshot,
-  beforeFiles,
-  harness,
-  method,
-  guidedQuestions,
-}) {
-  if (!method?.decision && !method?.recordedRequirementsDecision) return null;
-  const issuedFile = method.stageFile ?? guidedQuestions?.issuedFile;
-  let { evidence } = classifyNativeFirstWait({ snapshot, harness, issuedFile });
-  if (!evidence && issuedFile) {
-    const nativeIntentPath = issuedFile.path.split('/').slice(0, 5).join('/');
-    const state = snapshot.files.find((f) => f.path === `${nativeIntentPath}/aidlc-state.md`);
-    const current =
-      state && currentQuestionFile(snapshot, { issuedFile, state: state.sha256 }, harness);
-    if (current)
-      evidence = {
-        nativeIntentPath,
-        stage: issuedFile.stage,
-        state: fileRef(state),
-        directive: { sha256: current.cursorHash },
-        questions: [fileRef(current.file)],
-      };
-  }
-  if (
-    !evidence ||
-    (!issuedFile && evidence.stage !== 'requirements-analysis') ||
-    (method.recordedStage && method.recordedStage !== evidence.stage)
-  )
-    return null;
+function fileDecisionFromAudit({ snapshot, beforeFiles, evidence, issuedFile, method }) {
   const auditPrefix = `${evidence.nativeIntentPath}/audit/`;
   const additions = snapshot.files.filter(
     (file) =>
@@ -374,9 +342,10 @@ export function nativeRequirementsForm({
       ['prompt', 'options', 'questionKind'].some((k) => method.decision[k] !== decision[k]))
   )
     return null;
-  const file = evidence.questions[0];
-  const modeLabels = ['Guide me', "I'll edit the file", 'Chat'];
-  let questions;
+  return { decision, field };
+}
+
+function checkpointQuestion({ issuedFile, decision, snapshot, file, method, field, evidence }) {
   if (issuedFile && !decision.questionKind) {
     const parsed = parseQuestionFile(snapshot.files.find((f) => f.path === file.path).content);
     const labels = decision.options?.split(',').map((v) => v.trim());
@@ -426,6 +395,58 @@ export function nativeRequirementsForm({
       }
     }
   }
+  return null;
+}
+
+// The installed method logs the mode question before showing it. A guided
+// batch names the presented question numbers in the same log command. Read
+// only the settled active stage's published question file.
+export function nativeRequirementsForm({
+  snapshot,
+  beforeFiles,
+  harness,
+  method,
+  guidedQuestions,
+}) {
+  if (!method?.decision && !method?.recordedRequirementsDecision) return null;
+  const issuedFile = method.stageFile ?? guidedQuestions?.issuedFile;
+  let { evidence } = classifyNativeFirstWait({ snapshot, harness, issuedFile });
+  if (!evidence && issuedFile) {
+    const nativeIntentPath = issuedFile.path.split('/').slice(0, 5).join('/');
+    const state = snapshot.files.find((f) => f.path === `${nativeIntentPath}/aidlc-state.md`);
+    const current =
+      state && currentQuestionFile(snapshot, { issuedFile, state: state.sha256 }, harness);
+    if (current)
+      evidence = {
+        nativeIntentPath,
+        stage: issuedFile.stage,
+        state: fileRef(state),
+        directive: { sha256: current.cursorHash },
+        questions: [fileRef(current.file)],
+      };
+  }
+  if (
+    !evidence ||
+    (!issuedFile && evidence.stage !== 'requirements-analysis') ||
+    (method.recordedStage && method.recordedStage !== evidence.stage)
+  )
+    return null;
+  const recorded = fileDecisionFromAudit({ snapshot, beforeFiles, evidence, issuedFile, method });
+  if (!recorded) return null;
+  const { decision, field } = recorded;
+  const file = evidence.questions[0];
+  const modeLabels = ['Guide me', "I'll edit the file", 'Chat'];
+  let questions;
+  const checkpoint = checkpointQuestion({
+    issuedFile,
+    decision,
+    snapshot,
+    file,
+    method,
+    field,
+    evidence,
+  });
+  if (checkpoint) return checkpoint;
   if (method.decision?.checkpoint || field('Checkpoint')) return null;
   if (decision.questionKind === 'answer-mode') {
     const labels = decision.options?.split(',').map((value) => value.trim());
