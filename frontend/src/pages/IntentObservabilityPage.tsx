@@ -1,48 +1,42 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
-import type { StageState } from '@/services/intents';
+import {
+  intentsService,
+  type Intent,
+  type IntentDetail,
+  type IntentGate,
+  type StageState,
+} from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';
+import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
+import { displayStageName } from '@/lib/displayNames';
+import { formatDuration } from '@/components/intent/stageStyle';
+import { deriveIntentStatus } from '@/lib/statusModel';
 import { WorkflowScopeGraph, UnitLaneGraph, type UnitLanesInput } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
 import { IntentStageList } from '@/components/intent/IntentStageList';
-import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { StageDetail } from '@/components/intent/StageDetail';
-import { useProjectCache } from '@/hooks/useProjectsCache';
+import { IntentOutcomeCallout } from '@/components/intent/IntentOutcomeCallout';
+import { IntentPageHeader } from '@/components/intent/IntentPageHeader';
+import { reshapeDisabledReason } from '@/lib/intentActions';
+import { IntentActionsMenu } from '@/components/intent/IntentActionsMenu';
+import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
+import { RecomposePanel } from '@/components/intent/RecomposePanel';
+import { useWorkspaceExport } from '@/components/intent/useWorkspaceExport';
+import { DiscussButton } from '@/components/discussion/DiscussButton';
+import { getCachedIntentSummary, useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { EmptyState, ErrorState } from '@/components/ui/empty-state';
+import { IntentNotFoundState } from '@/components/intent/IntentNotFoundState';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  ArrowLeft,
-  Check,
-  Copy,
-  Loader2,
-  MoreHorizontal,
-  ScrollText,
-  Trash2,
-  X,
-  XCircle,
-} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Check, Copy, Milestone, X } from 'lucide-react';
 
 type ObsView = 'diagram' | 'graph' | 'list';
 const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
@@ -55,24 +49,6 @@ function readStoredView(): ObsView {
   } catch {
     return 'diagram';
   }
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  SUCCEEDED: 'Completed',
-  CANCELLED: 'Cancelled',
-  FAILED: 'Failed',
-  CREATED: 'Created',
-};
-
-function humanizeStatus(raw: string): string {
-  return (
-    STATUS_LABELS[raw] ??
-    raw
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase())
-      .toLowerCase()
-      .replace(/^\w/, (c) => c.toUpperCase())
-  );
 }
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
@@ -118,33 +94,236 @@ function filterCompiledToScope(
   };
 }
 
+// Two clamped lines are the summary; the toggle appears only when they clip.
+// Without layout (jsdom) the length decides.
+const PROMPT_SUMMARY_CHARS = 200;
+
+function usePromptClipped(prompt: string, expanded: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState<boolean | null>(null);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || expanded) return;
+    const measure = () => {
+      if (node.clientHeight === 0) return setClipped(null);
+      setClipped(node.scrollHeight > node.clientHeight + 1);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [prompt, expanded]);
+  return {
+    ref,
+    clipped: clipped ?? (prompt.length > PROMPT_SUMMARY_CHARS || prompt.includes('\n')),
+  };
+}
+
+// Display-only rewrite of `prompt`: the Overview announces the decision, the
+// review screen carries the gate's full text and artifact list.
+function summarizeReviewGates(detail: IntentDetail, gates: IntentGate[]): IntentGate[] {
+  let changed = false;
+  const next = gates.map((gate) => {
+    if (gate.kind !== 'validation' || gate.status !== 'pending') return gate;
+    const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId);
+    const artifacts = gate.stageInstanceId
+      ? detail.artifacts.filter(
+          (a) => a.createdByStageInstanceId === gate.stageInstanceId && !a.supersededAt,
+        ).length
+      : 0;
+    const summary = [
+      stage?.stageId ? `Review ${displayStageName(stage.stageId)}` : 'Review required',
+      artifacts > 0 ? `${artifacts} artifact${artifacts === 1 ? '' : 's'}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    changed = true;
+    return { ...gate, prompt: summary };
+  });
+  return changed ? next : gates;
+}
+
+// Legacy `failureReason` ("stage_failed: <stage>: <code>: <detail>") is the only
+// place some runs name the failed stage; `failure.message` alone loses it.
+function withStageFailure(detail: IntentDetail): IntentDetail {
+  const { failure, failureReason } = detail.intent;
+  if (!failureReason?.startsWith('stage_failed: ')) return detail;
+  if (failure?.message?.startsWith('stage_failed: ')) return detail;
+  return {
+    ...detail,
+    intent: {
+      ...detail.intent,
+      failure: { code: failure?.code ?? 'stage_failed', message: failureReason },
+    },
+  };
+}
+
+const TERMINAL: ReadonlySet<Intent['status']> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
+
+function InitialPromptCard({
+  prompt,
+  expanded,
+  onToggle,
+  copied,
+  onCopy,
+}: {
+  prompt: string;
+  expanded: boolean;
+  onToggle: () => void;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const { ref, clipped } = usePromptClipped(prompt, expanded);
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-sm">Initial prompt</CardTitle>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            aria-label={copied ? 'Initial prompt copied' : 'Copy initial prompt'}
+            title={copied ? 'Copied' : 'Copy initial prompt'}
+            disabled={!prompt}
+            onClick={onCopy}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-agent-success-fg" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {prompt ? (
+          <>
+            <div
+              ref={ref}
+              className={cn(
+                'break-words text-sm leading-6 text-foreground select-text',
+                expanded ? 'max-h-72 overflow-y-auto whitespace-pre-wrap' : 'line-clamp-2',
+              )}
+            >
+              {prompt}
+            </div>
+            {(clipped || expanded) && (
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="mt-2 h-auto min-h-6 px-0"
+                aria-expanded={expanded}
+                onClick={onToggle}
+              >
+                {expanded ? 'Show less' : 'Show full request'}
+              </Button>
+            )}
+          </>
+        ) : (
+          <span className="text-xs text-muted-foreground">No initial prompt recorded</span>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BodySkeleton() {
+  return (
+    <div className="space-y-6">
+      <Skeleton label="Loading intent" className="h-28 rounded-lg" />
+      <Skeleton className="h-16 rounded-lg" />
+      <Skeleton className="h-64 rounded-lg" />
+    </div>
+  );
+}
+
+// The route element survives a switch to another intent: keyed by intentId, the
+// page starts clean, and a pending action or error of the previous intent never
+// lands on the next one.
 export default function IntentObservabilityPage() {
+  const { intentId } = useIntent();
+  return <IntentOverview key={intentId} />;
+}
+
+function IntentOverview() {
   const {
     projectId,
     intentId,
     detail,
     compiled,
     stageRows,
+    gates,
     loading,
     error,
-    workflowPhases,
-    phaseNameOf,
-    initializationPhasePaths,
-    selectedStageId,
-    setSelectedStageId,
+    notFound,
+    reload,
     cancelIntent,
     deleteIntent,
+    rewindIntent,
+    resumeIntent,
+    lastActivityAt,
+    initializationPhasePaths,
+    workflowPhases,
+    phaseNameOf,
+    selectedStageId,
+    setSelectedStageId,
   } = useIntent();
   const navigate = useNavigate();
+  const [retryingLoad, setRetryingLoad] = useState(false);
   const { project } = useProjectCache(projectId);
   const [view, setView] = useState<ObsView>(readStoredView);
 
   const canDelete = project?.userRole === 'owner';
-  const [cancelling, setCancelling] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [reshapeOpen, setReshapeOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'restart' | 'resume' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
+  const [promptExpansion, setPromptExpansion] = useState<{
+    intentId: string;
+    expanded: boolean;
+  } | null>(null);
+
+  const spacePath = `/space/${projectId}`;
+  const workPath = `/space/${projectId}/intent/${intentId}`;
+  const newVersionPath = `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`;
+  const [pinningEnabled, setPinningEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    aidlcReleasesService
+      .sharedChannels()
+      .then((channels) => {
+        if (!cancelled) setPinningEnabled(channels.pinningEnabled === true);
+      })
+      .catch(() => {
+        if (!cancelled) setPinningEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const workspaceExport = useWorkspaceExport({
+    projectId,
+    intentId,
+    intent: detail?.intent ?? { status: 'CREATED', agentCli: null },
+    projectName: project?.name,
+    onError: setActionError,
+  });
+
+  const retryLoad = async () => {
+    setRetryingLoad(true);
+    try {
+      await reload();
+    } finally {
+      setRetryingLoad(false);
+    }
+  };
 
   useEffect(() => {
     if (!promptCopied) return;
@@ -164,37 +343,90 @@ export default function IntentObservabilityPage() {
     }
   };
 
+  const reportFailure = (err: unknown, fallback: string) => {
+    setActionError(err instanceof Error ? err.message : fallback);
+  };
+
   const handleCancel = async () => {
-    const message =
-      detail?.intent.status === 'FAILED'
-        ? 'Cancel this run? The failed run will be closed and any pending questions retired. History and artifacts are preserved.'
-        : 'Cancel this run? The run will stop and pending questions will be retired. History and artifacts are preserved.';
-    if (!window.confirm(message)) {
-      return;
-    }
-    setCancelling(true);
     setActionError(null);
     try {
       await cancelIntent();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
-    } finally {
-      setCancelling(false);
+      reportFailure(err, 'Failed to cancel intent');
+      throw err;
     }
   };
 
   const handleDelete = async () => {
-    setDeleting(true);
     setActionError(null);
     try {
       await deleteIntent();
-      navigate(`/space/${projectId}`);
+      navigate(spacePath);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
-      setConfirmDelete(false);
-      setDeleting(false);
+      reportFailure(err, 'Failed to delete intent');
+      throw err;
     }
   };
+
+  const runAction = async (kind: 'restart' | 'resume', action: () => Promise<void>) => {
+    setPendingAction(kind);
+    setActionError(null);
+    try {
+      await action();
+    } catch (err) {
+      reportFailure(err, kind === 'resume' ? 'Failed to resume the run' : 'Failed to restart');
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const failedStage = useMemo(
+    () =>
+      detail?.intent.status === 'FAILED'
+        ? (stageRows.find((row) => row.planned && row.state === 'FAILED') ?? null)
+        : null,
+    [detail?.intent.status, stageRows],
+  );
+
+  const calloutDetail = useMemo(() => {
+    if (!detail) return null;
+    const shown = summarizeReviewGates(detail, gates);
+    const base = shown === detail.gates ? detail : { ...detail, gates: shown };
+    return detail.intent.status === 'FAILED' ? withStageFailure(base) : base;
+  }, [detail, gates]);
+
+  const { totals, cost, stageTokens } = useMemo(() => {
+    if (!detail || detail.metrics.length === 0) {
+      return { totals: {}, cost: null, stageTokens: null };
+    }
+    const perStage = aggregateMetrics(detail.metrics.filter((m) => m.stageInstanceId));
+    const attributed = ['tokensInput', 'tokensOutput', 'tokensCacheRead', 'tokensCacheWrite']
+      .map((key) => perStage[key])
+      .filter((value): value is number => typeof value === 'number');
+    return {
+      totals: aggregateMetrics(detail.metrics),
+      cost: summarizeCost(detail.metrics),
+      stageTokens: attributed.length ? attributed.reduce((sum, v) => sum + v, 0) : null,
+    };
+  }, [detail]);
+
+  const wallTime = useMemo(() => {
+    if (!detail) return null;
+    const started = detail.intent.orchestratorStartedAt ?? detail.stages[0]?.startedAt ?? null;
+    const ended = TERMINAL.has(detail.intent.status) ? detail.intent.completedAt : null;
+    return formatDuration(started, ended);
+  }, [detail]);
+
+  const stagesRun = useMemo(() => {
+    // A skipped stage did not run: it counts in neither figure.
+    const planned = stageRows.filter(
+      (row) =>
+        row.planned && row.state !== 'SKIPPED' && !initializationPhasePaths.has(row.phase ?? ''),
+    );
+    if (planned.length === 0) return null;
+    const done = planned.filter((row) => row.state === 'SUCCEEDED');
+    return { done: done.length, total: planned.length };
+  }, [initializationPhasePaths, stageRows]);
 
   const handleViewChange = useCallback(
     (v: string) => {
@@ -322,177 +554,182 @@ export default function IntentObservabilityPage() {
     return { units, sectionStageIds };
   }, [scopeCompiled, detail?.unitPlan, detail?.units, stageRows]);
 
-  const { totals, cost } = useMemo(() => {
-    if (!detail || detail.metrics.length === 0) return { totals: {}, cost: null };
-    return { totals: aggregateMetrics(detail.metrics), cost: summarizeCost(detail.metrics) };
-  }, [detail]);
-
-  const runningCount = useMemo(
-    () => stageRows.filter((r) => r.state === 'RUNNING').length,
-    [stageRows],
-  );
-
   if (loading && !detail) {
+    const cached = getCachedIntentSummary(projectId, intentId);
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-12 rounded-lg" />
-        <Skeleton className="h-[300px] rounded-lg" />
-        <Skeleton className="h-40 rounded-lg" />
+      <div className="h-full overflow-y-auto">
+        <div className="flex flex-col gap-6">
+          {cached ? (
+            <IntentPageHeader intent={cached} />
+          ) : (
+            <Skeleton label="Loading intent" className="h-9 w-72 rounded-md" />
+          )}
+          <BodySkeleton />
+        </div>
       </div>
     );
   }
 
-  if (error || !detail) {
-    return <div className="text-sm text-destructive">{error ?? 'Intent not found'}</div>;
+  if (notFound && !detail) {
+    return <IntentNotFoundState spacePath={spacePath} />;
+  }
+
+  const backToSpace = (
+    <Button asChild variant="outline" size="sm">
+      <Link to={spacePath}>Back to space</Link>
+    </Button>
+  );
+
+  if (error && !detail) {
+    return (
+      <ErrorState
+        headingLevel={1}
+        className="mx-auto mt-8 w-full max-w-lg"
+        title="Couldn't load this intent"
+        description="The intent could not be retrieved. Check your connection and try again."
+        onRetry={() => void retryLoad()}
+        retrying={retryingLoad}
+        secondaryAction={backToSpace}
+      />
+    );
+  }
+
+  if (!detail || !calloutDetail) {
+    return (
+      <EmptyState
+        headingLevel={1}
+        className="mx-auto mt-8 w-full max-w-lg"
+        title="Intent not found"
+        description="This intent may have been removed, or you may no longer have access to it."
+        action={backToSpace}
+      />
+    );
   }
 
   const intent = detail.intent;
-  const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
-  const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
-  const isDeletable = canDelete && intent.status !== 'RUNNING';
+  const prompt = intent.prompt?.trim() ?? '';
+  const promptExpanded = promptExpansion?.intentId === intentId && promptExpansion.expanded;
+  // "What waits for me?" beats "what did I ask?" while someone has to act or
+  // look: the decision callout leads and the prompt follows, summarized.
+  const derived = deriveIntentStatus(intent, { lastActivityAt, gates });
+  const answerFirst = intent.status === 'WAITING' || intent.status === 'FAILED' || derived.stalled;
+  const canReshape = reshapeDisabledReason(intent) === undefined;
+  const promptCard = (
+    <InitialPromptCard
+      prompt={prompt}
+      expanded={promptExpanded}
+      onToggle={() => setPromptExpansion({ intentId, expanded: !promptExpanded })}
+      copied={promptCopied}
+      onCopy={() => void handleCopyPrompt()}
+    />
+  );
+
+  const outcomeActions = {
+    restartFromStage: failedStage
+      ? {
+          pending: pendingAction === 'restart',
+          disabled: pendingAction !== null,
+          onClick: () => void runAction('restart', () => rewindIntent(failedStage.stageId)),
+        }
+      : undefined,
+    startAgain:
+      intent.status === 'FAILED' && !failedStage
+        ? {
+            pending: pendingAction === 'restart',
+            disabled: pendingAction !== null,
+            onClick: () =>
+              void runAction('restart', async () => {
+                await intentsService.start(projectId, intentId);
+                await reload();
+              }),
+          }
+        : undefined,
+    resume: {
+      pending: pendingAction === 'resume',
+      disabled: pendingAction !== null,
+      onClick: () => void runAction('resume', resumeIntent),
+    },
+    checkDelivery: { onClick: () => navigate(workPath) },
+  };
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="space-y-6">
-        {/* ── HEADER ─────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 min-w-0 flex-1">
-            <button
-              onClick={() => navigate(`/space/${projectId}`)}
-              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              aria-label="Back to space"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-            <h1 className="text-xl font-bold tracking-tight text-foreground truncate min-w-0">
-              {intent.title}
-            </h1>
-
-            {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
-
-            {isActive ? (
-              <Badge
+      <div className="flex flex-col gap-6">
+        {error && (
+          <Alert
+            tone="danger"
+            live
+            title="Couldn't refresh this intent"
+            action={
+              <Button
+                size="sm"
                 variant="outline"
-                className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30 shrink-0"
+                onClick={() => void retryLoad()}
+                loading={retryingLoad}
               >
-                <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
-                Live
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="text-[10px] text-muted-foreground shrink-0">
-                {humanizeStatus(intent.status)}
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => navigate(`/space/${projectId}/intent/${intentId}/audit`)}
-                >
-                  <ScrollText className="mr-2 h-4 w-4" />
-                  Audit
-                </DropdownMenuItem>
-                {isCancellable && (
-                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
-                    <XCircle className="mr-2 h-4 w-4" />
-                    {cancelling ? 'Cancelling…' : 'Cancel run'}
-                  </DropdownMenuItem>
-                )}
-                {isDeletable && (
-                  <DropdownMenuItem
-                    disabled={deleting}
-                    onClick={() => setConfirmDelete(true)}
-                    className="text-destructive"
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    {deleting ? 'Deleting…' : 'Delete'}
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        {actionError && (
-          <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {actionError}
-          </div>
+                Retry
+              </Button>
+            }
+          >
+            <AlertDescription>The information shown may be out of date.</AlertDescription>
+          </Alert>
         )}
 
-        {/* ── INITIAL USER PROMPT ───────────────────────────────────── */}
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-sm">Initial prompt</CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                aria-label={promptCopied ? 'Initial prompt copied' : 'Copy initial prompt'}
-                title={promptCopied ? 'Copied' : 'Copy initial prompt'}
-                disabled={!intent.prompt?.trim()}
-                onClick={() => void handleCopyPrompt()}
-              >
-                {promptCopied ? (
-                  <Check className="h-3.5 w-3.5 text-agent-success" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {intent.prompt?.trim() ? (
-              <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-foreground select-text">
-                {intent.prompt}
-              </div>
-            ) : (
-              <span className="text-xs text-muted-foreground">No initial prompt recorded</span>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ── USAGE & COST + RUNNING AGENTS ──────────────────────────── */}
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm">Usage &amp; activity</CardTitle>
-              {runningCount > 0 ? (
-                <Badge
-                  variant="outline"
-                  className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
-                  {runningCount} active
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="gap-1 text-[10px] text-muted-foreground">
-                  0 active
-                </Badge>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {Object.keys(totals).length > 0 ? (
-              <UsageMetrics
-                metrics={totals}
-                cost={cost}
-                contextLabel="Peak context window"
-                collapsibleAdvanced
+        <IntentPageHeader
+          intent={intent}
+          lastActivityAt={lastActivityAt}
+          gates={gates}
+          stages={detail.stages}
+          actions={
+            // Same arrangement and items as the Work header.
+            <>
+              <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+              <IntentActionsMenu
+                intent={intent}
+                onConfiguration={() => setConfigurationOpen(true)}
+                onReshape={() => setReshapeOpen(true)}
+                reshapeDisabledReason={reshapeDisabledReason(intent)}
+                onExport={workspaceExport.open}
+                exportDisabledReason={workspaceExport.disabledReason}
+                onAudit={() => navigate(`${workPath}/audit`)}
+                onCancel={handleCancel}
+                onDelete={canDelete ? handleDelete : undefined}
+                extraItems={
+                  // Same opt-in item as the Work header: opens the create page
+                  // prefilled from this intent; nothing is migrated.
+                  pinningEnabled ? (
+                    <IntentActionsMenu.Item onSelect={() => navigate(newVersionPath)}>
+                      <Milestone aria-hidden="true" />
+                      Start a new intent on another AI-DLC version
+                    </IntentActionsMenu.Item>
+                  ) : null
+                }
               />
-            ) : (
-              <span className="text-xs text-muted-foreground">No usage yet</span>
-            )}
-          </CardContent>
-        </Card>
+            </>
+          }
+        />
+
+        {actionError && <Alert tone="danger" live title={actionError} />}
+
+        {answerFirst ? null : promptCard}
+
+        <IntentOutcomeCallout
+          detail={calloutDetail}
+          lastActivityAt={lastActivityAt}
+          links={{
+            details: workPath,
+            documents: `${workPath}#intent-work-products`,
+            compose: `${workPath}/compose`,
+            newVersion: pinningEnabled && intent.status === 'FAILED' ? newVersionPath : undefined,
+            gate: (gate) =>
+              gate.kind === 'validation' ? `${workPath}/review/${gate.humanTaskId}` : workPath,
+          }}
+          actions={outcomeActions}
+          // The question is the main content of a waiting intent: show all of it.
+          className="[&_ul[aria-label]_.line-clamp-2]:line-clamp-none"
+        />
+
+        {answerFirst ? promptCard : null}
 
         {/* ── EXECUTION PROGRESS (toggle: Diagram / Graph / List) ──── */}
         <Card>
@@ -570,41 +807,43 @@ export default function IntentObservabilityPage() {
           )}
         </Card>
 
-        <AlertDialog
-          open={confirmDelete}
-          onOpenChange={(open) => !deleting && setConfirmDelete(open)}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete Intent</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete "{intent.title || 'this intent'}"? All of its
-                artifacts, questions, discussions and run history will be permanently removed. This
-                action cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={(e) => {
-                  e.preventDefault();
-                  void handleDelete();
-                }}
-                disabled={deleting}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              >
-                {deleting ? (
-                  <span className="flex items-center gap-1.5">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Deleting…
-                  </span>
-                ) : (
-                  'Delete Intent'
-                )}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {detail.metrics.length > 0 && (
+          <Card className="w-full">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Run cost and usage</CardTitle>
+            </CardHeader>
+            <CardContent className="w-full">
+              <UsageMetrics
+                key={intentId}
+                metrics={totals}
+                cost={cost}
+                wallTime={wallTime}
+                stagesRun={stagesRun}
+                stageTokens={stageTokens}
+                compact
+              />
+            </CardContent>
+          </Card>
+        )}
+
+        <IntentConfigurationDialog
+          open={configurationOpen}
+          onOpenChange={setConfigurationOpen}
+          onOpenReshape={canReshape ? () => setReshapeOpen(true) : undefined}
+        />
+        {canReshape && (
+          <RecomposePanel
+            open={reshapeOpen}
+            onOpenChange={setReshapeOpen}
+            projectId={projectId}
+            intentId={intentId}
+            intent={intent}
+            stageRows={detail.stages}
+            workflowVersion={intent.workflowVersion ?? undefined}
+            onRelaunched={reload}
+          />
+        )}
+        {workspaceExport.dialogs}
       </div>
     </div>
   );

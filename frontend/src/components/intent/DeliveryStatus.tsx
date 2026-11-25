@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { intentsService, type DeliveryPreview, type IntentDelivery } from '@/services/intents';
+import { useIntentOptional } from '@/contexts/IntentContext';
+import {
+  intentsService,
+  type DeliveryPreview,
+  type IntentDelivery,
+  type IntentPullRequest,
+} from '@/services/intents';
+import { gitRepoSlug } from '@/services/gitProvider';
 import { LoaderCircle, TriangleAlert } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { TONE_CLASSES } from '@/lib/statusModel';
 
 const spinner = (
   <LoaderCircle aria-hidden className="inline size-4 animate-spin motion-reduce:animate-none" />
@@ -18,19 +26,29 @@ const labels: Record<string, string> = {
   no_change: 'No changes to merge',
   uncertain: 'Couldn’t identify the pull request for these changes',
 };
+const repoShortName = (repository: string | null | undefined) =>
+  repository ? (gitRepoSlug(repository).split('/').pop() ?? repository) : null;
+
 export function DeliveryStatus({
   projectId,
   intentId,
   delivery,
+  pullRequests,
   canRetry,
   reload,
 }: {
   projectId: string;
   intentId: string;
   delivery?: IntentDelivery;
+  /** Run-level pull requests the engine already recorded (fan-in). */
+  pullRequests?: IntentPullRequest[];
   canRetry: boolean;
   reload: () => Promise<unknown>;
 }) {
+  const intentContext = useIntentOptional();
+  const recordedPrs = (pullRequests ?? intentContext?.detail?.pullRequests ?? []).filter(
+    (pr) => pr.prUrl,
+  );
   const [preview, setPreview] = useState<DeliveryPreview | null>(null);
   const [busy, setBusy] = useState<'check' | 'retry' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +111,9 @@ export function DeliveryStatus({
     }
   };
   const rows = shown?.repositories ?? [];
+  // No delivery record yet, but the engine recorded the pull requests: say so
+  // instead of "status unknown".
+  const recordedOnly = status === 'unknown' && rows.length === 0 && recordedPrs.length > 0;
   const settled =
     status === 'succeeded' ||
     status === 'no_change' ||
@@ -121,19 +142,42 @@ export function DeliveryStatus({
         <CardTitle className="text-sm">Pull requests</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
-        {(rows.length === 0 ||
-          status === 'in_progress' ||
-          (status === 'unknown' && shown?.leaseUntil)) && (
-          <p role="status" className="flex items-center gap-2">
-            {status === 'in_progress' && spinner}
-            {status === 'unknown' && (
-              <TriangleAlert aria-hidden className="size-4 text-amber-600" />
-            )}
-            {shown?.leaseUntil && status === 'unknown'
-              ? 'Opening pull requests timed out. Status unknown.'
-              : labels[status]}
-          </p>
-        )}
+        {recordedOnly &&
+          recordedPrs.map((pr) => (
+            <div key={pr.id}>
+              <p>
+                <a
+                  className="underline"
+                  href={pr.prUrl ?? undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Pull request{pr.prNumber ? ` #${pr.prNumber}` : ''}
+                </a>{' '}
+                was created in {repoShortName(pr.repository) ?? 'the repository'}.
+              </p>
+              {pr.branch && (
+                <p>
+                  Branch: {pr.branch}
+                  {pr.baseBranch && ` → ${pr.baseBranch}`}
+                </p>
+              )}
+            </div>
+          ))}
+        {!recordedOnly &&
+          (rows.length === 0 ||
+            status === 'in_progress' ||
+            (status === 'unknown' && shown?.leaseUntil)) && (
+            <p role="status" className="flex items-center gap-2">
+              {status === 'in_progress' && spinner}
+              {status === 'unknown' && (
+                <TriangleAlert aria-hidden className={`size-4 ${TONE_CLASSES.warning.text}`} />
+              )}
+              {shown?.leaseUntil && status === 'unknown'
+                ? 'Opening pull requests timed out. Status unknown.'
+                : labels[status]}
+            </p>
+          )}
         {rows.map((repo) => {
           const terminalPr = repo.pr && ['closed', 'merged'].includes(repo.prState ?? '');
           return (

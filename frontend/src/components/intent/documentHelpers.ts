@@ -22,6 +22,12 @@ export function isDocumentArtifact(a: IntentArtifact): boolean {
   return content.length > 600 && MD_HEADING_RE.test(content);
 }
 
+/** Current (not superseded) documents — the one count shown for "N documents" on every surface. */
+export function countWorkProductDocuments(artifacts: readonly IntentArtifact[]): number {
+  return artifacts.filter((artifact) => !artifact.supersededAt && isDocumentArtifact(artifact))
+    .length;
+}
+
 export function humanizeStageId(stageId: string): string {
   return stageId.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
