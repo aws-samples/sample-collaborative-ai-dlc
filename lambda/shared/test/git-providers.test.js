@@ -617,6 +617,42 @@ describe('github provider — repo browse + PR + comments', () => {
     );
   });
 
+  it('listIssueComments reads every page, so the newest comments are present', async () => {
+    const comment = (n) => ({
+      id: n,
+      body: `c${n}`,
+      user: { login: 'alice' },
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    const fetchImpl = makeFetch([
+      [
+        '/issues/7/comments',
+        githubPages((page) => (page === 1 ? fullPage(1, comment) : [comment(101)]), 2),
+      ],
+    ]);
+    const comments = await gh.listIssueComments({ token: 't', fetchImpl }, 'o/r', 7);
+    expect(comments).toHaveLength(101);
+    expect(comments.at(-1).body).toBe('c101');
+  });
+
+  it('listIssueComments returns none for a missing issue and fails on a failed page', async () => {
+    const missing = makeFetch([['/comments', { status: 404, json: { message: 'Not Found' } }]]);
+    expect(await gh.listIssueComments({ token: 't', fetchImpl: missing }, 'o/r', 7)).toEqual([]);
+
+    const failing = makeFetch([
+      [
+        '/comments',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 403, json: { message: 'API rate limit exceeded' } }
+            : { json: fullPage(1, (n) => ({ id: n, body: '', user: { login: 'a' } })) },
+      ],
+    ]);
+    await expect(
+      gh.listIssueComments({ token: 't', fetchImpl: failing }, 'o/r', 7),
+    ).rejects.toThrow('API rate limit exceeded');
+  });
+
   it('rejects malformed repo references', async () => {
     await expect(
       gh.listBranches({ token: 't', fetchImpl: makeFetch([]) }, 'no-slash'),
