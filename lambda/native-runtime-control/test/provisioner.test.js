@@ -34,6 +34,14 @@ const roleValidationError = (roleArn) =>
     { name: 'ValidationException' },
   );
 
+const filesystemValidationError = () =>
+  Object.assign(
+    new Error(
+      'Execution role is missing required filesystem permissions. Ensure the role has elasticfilesystem:DescribeAccessPoints and elasticfilesystem:DescribeMountTargets',
+    ),
+    { name: 'ValidationException' },
+  );
+
 const fixture = async ({
   deployedImage,
   rowImage = IMAGE,
@@ -464,7 +472,9 @@ describe('bounded AgentCore role propagation', () => {
   it('retries through SQS and reaches READY with the same AP, role and runtime client token', async () => {
     const f = await fixture();
     const roleArn = resources(f.read()).executionRoleArn;
-    f.services.control.createAgentRuntime.mockRejectedValueOnce(roleValidationError(roleArn));
+    f.services.control.createAgentRuntime
+      .mockRejectedValueOnce(roleValidationError(roleArn))
+      .mockRejectedValueOnce(filesystemValidationError());
     const worker = createNativeRuntimeWorker({
       reconcile: f.reconcile,
       env: {
@@ -491,6 +501,13 @@ describe('bounded AgentCore role propagation', () => {
 
     expect(pendingRow).not.toHaveProperty('leaseToken');
     f.retry(5000);
+    expect(await worker(event)).toEqual({
+      batchItemFailures: [{ itemIdentifier: 'propagating-role' }],
+    });
+    expect(f.read().status).toBe('PREPARING');
+    expect(f.read()).not.toHaveProperty('leaseToken');
+    expect(f.services.runtime.invokeAgentRuntime).not.toHaveBeenCalled();
+    f.retry(5000);
     expect(await worker(event)).toEqual({ batchItemFailures: [] });
     expect(f.read()).toMatchObject({
       status: 'READY',
@@ -503,14 +520,28 @@ describe('bounded AgentCore role propagation', () => {
     expect(f.services.efs.createAccessPoint).toHaveBeenCalledTimes(1);
     expect(f.services.iam.createRole).toHaveBeenCalledTimes(1);
     expect(f.services.iam.putRolePolicy).toHaveBeenCalledTimes(1);
-    expect(f.services.control.createAgentRuntime).toHaveBeenCalledTimes(2);
-    const [first, second] = f.services.control.createAgentRuntime.mock.calls.map(
+    expect(f.services.control.createAgentRuntime).toHaveBeenCalledTimes(3);
+    const [first, second, third] = f.services.control.createAgentRuntime.mock.calls.map(
       ([input]) => input,
     );
     expect(first.clientToken).toMatch(/^[0-9a-f]{64}$/);
     expect(second).toEqual(first);
+    expect(third).toEqual(first);
     expect(f.services.runtime.invokeAgentRuntime).toHaveBeenCalledTimes(1);
     expect(f.services.runtime.stopRuntimeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a persistent filesystem permission rejection when the role propagation window expires', async () => {
+    const f = await fixture();
+    f.services.control.createAgentRuntime.mockRejectedValue(filesystemValidationError());
+    expect(await f.reconcile(IDENTITY)).toEqual({ status: 'waiting', phase: 'iam_propagation' });
+    f.retry(600000);
+    expect(await f.reconcile(IDENTITY)).toEqual({
+      status: 'FAILED',
+      code: 'native_provisioning_access_denied',
+    });
+    expect(f.read().status).toBe('FAILED');
+    expect(f.services.runtime.invokeAgentRuntime).not.toHaveBeenCalled();
   });
 
   it('stops persistent propagation failures at ten minutes without resetting role age on retry', async () => {

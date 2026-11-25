@@ -15,6 +15,8 @@ import {
 
 const POLICY_NAME = 'native-runtime';
 const ROLE_PROPAGATION_WINDOW_MS = 10 * 60_000;
+const MISSING_FILESYSTEM_PERMISSIONS =
+  'Execution role is missing required filesystem permissions. Ensure the role has elasticfilesystem:DescribeAccessPoints and elasticfilesystem:DescribeMountTargets';
 // Fresh runtime invocations measured 50–52 seconds in dev. This ceiling fits
 // inside the 90-second preparation worker; remaining time and lease still win.
 export const NATIVE_WORKSPACE_CHECK_TIMEOUT_MS = 80_000;
@@ -38,6 +40,25 @@ class ReadinessWait extends Error {
     this.phase = phase;
   }
 }
+
+// AgentCore can see the new role's trust before it sees its EFS permissions.
+// Each redelivery verifies the exact role and policy before creating a runtime.
+const handleRuntimeCreateError = (error, roleArn, roleAge) => {
+  if (error?.name !== 'ValidationException') throw error;
+  const missingFilesystemPermissions = error.message === MISSING_FILESYSTEM_PERMISSIONS;
+  const missingRoleTrust =
+    error.message ===
+    `Role validation failed for '${roleArn}'. Please verify that the role exists and its trust policy allows assumption by this service`;
+  if (
+    (missingRoleTrust || missingFilesystemPermissions) &&
+    roleAge >= 0 &&
+    roleAge < ROLE_PROPAGATION_WINDOW_MS
+  )
+    throw new ReadinessWait('iam_propagation');
+  if (missingFilesystemPermissions) throw controlError('native_provisioning_access_denied');
+  throw error;
+};
+
 const requireEqual = (a, b) => {
   if (canonicalJson(a) !== canonicalJson(b)) mismatch();
 };
@@ -65,6 +86,7 @@ const transient = (error) =>
 const accessDenied = (error) =>
   ['AccessDenied', 'AccessDeniedException', 'UnauthorizedOperation'].includes(error?.name);
 const terminalCodes = new Set([
+  'native_provisioning_access_denied',
   'native_provisioning_resource_mismatch',
   'native_provisioning_verification_failed',
   'native_provisioning_source_changed',
@@ -114,7 +136,6 @@ const diagnosticErrorNames = new Set([
 const diagnosticErrorCodes = new Set([
   ...diagnosticErrorNames,
   ...terminalCodes,
-  'native_provisioning_access_denied',
   'native_provisioning_failed',
   'native_provisioning_pending',
   'native_deployment_invalid',
@@ -631,20 +652,7 @@ export const createNativeRuntimeProvisioner = ({
             tags: tags(),
           });
         } catch (error) {
-          // AgentCore can lag IAM's readback for a newly created, fully verified
-          // role. Retry this observed same-role validation error for a bounded
-          // propagation window; each attempt revalidates all authority.
-          const roleAge = now() - verifiedRoleCreatedAt;
-          if (
-            error?.name === 'ValidationException' &&
-            error.message ===
-              `Role validation failed for '${documents.roleArn}'. Please verify that the role exists and its trust policy allows assumption by this service` &&
-            Number.isFinite(roleAge) &&
-            roleAge >= 0 &&
-            roleAge < ROLE_PROPAGATION_WINDOW_MS
-          )
-            throw new ReadinessWait('iam_propagation');
-          throw error;
+          handleRuntimeCreateError(error, documents.roleArn, now() - verifiedRoleCreatedAt);
         }
         if (
           !new RegExp(`^${names.runtimeName}-[A-Za-z0-9]+$`).test(runtime.agentRuntimeId ?? '') ||
