@@ -92,7 +92,7 @@
     "components/observability/TaskStatusRow.tsx": 1,
     "components/project-settings/AgentTab.tsx": 3,
     "components/project-settings/EnvironmentTab.tsx": 3,
-    "components/project-settings/MembersTab.tsx": 2,
+    "components/project-settings/MembersTab.tsx": 4,
     "components/project-settings/RepositoriesTab.tsx": 2,
     "components/project-settings/SourceControlBindingSection.tsx": 5,
     "components/project-settings/TrackersTab.tsx": 1,
