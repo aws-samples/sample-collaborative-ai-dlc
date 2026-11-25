@@ -5,6 +5,7 @@ import {
   NATIVE_PENDING_INPUT_LIMITS,
 } from '../../shared/native-pending-input.js';
 import { issuedQuestionFile } from './question-file.js';
+import { createHash } from 'node:crypto';
 import { nativeGateFromSnapshot } from './turn-interaction.js';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -166,6 +167,23 @@ function planApprovalForm(ask) {
 
 const stale = { spec: null, bytes: 0, reason: 'stale_spec' };
 const unknown = { uncertain: true };
+// A discussion can appear in kept_replies on the next real run-stage. Preserve
+// that distinction until the executor verifies the exact accepted written turn.
+function retainedGuideReply(directive) {
+  const replies = directive.kept_replies?.replies;
+  if (
+    directive.answer_mode?.mode !== 'guide' ||
+    directive.answer_mode.ask !== false ||
+    !Array.isArray(replies) ||
+    replies.length !== 1 ||
+    typeof replies[0] !== 'string'
+  )
+    return null;
+  const source = issuedQuestionFile({ ...directive, kept_replies: undefined });
+  if (!source || directive.questions_answered?.path !== source.path) return null;
+  return { source, replySha256: createHash('sha256').update(replies[0]).digest('hex') };
+}
+
 function methodResult(command, output, ok) {
   if (
     typeof output !== 'string' ||
@@ -211,7 +229,9 @@ function methodResult(command, output, ok) {
       return { terminal: 'complete' };
     if (directive.kind === 'run-stage') {
       const file = issuedQuestionFile(directive);
+      const keptGuideReply = retainedGuideReply(directive);
       return {
+        ...(keptGuideReply ? { keptGuideReply } : {}),
         advanced: true,
         ...(file ? { stageFile: file } : {}),
         ...(!directive.gate_only &&

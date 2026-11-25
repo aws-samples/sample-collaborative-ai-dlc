@@ -65,6 +65,33 @@ describe('pinned local method reporting', () => {
     for (const entry of events) observer.write(entry);
     return observer.result();
   };
+  it('identifies a single retained guided reply only on its issued answered-question path', () => {
+    const path =
+      'aidlc/spaces/default/intents/game/inception/requirements-analysis/requirements-analysis-questions.md';
+    const directive = {
+      kind: 'run-stage',
+      phase: 'inception',
+      stage: 'requirements-analysis',
+      produces: [path],
+      answer_mode: { mode: 'guide', ask: false },
+      questions_answered: { path },
+      kept_replies: { replies: ['hello'] },
+    };
+    const result = (d) => observation(event('aidlc engine orchestrate next', d));
+    expect(result(directive).keptGuideReply).toMatchObject({
+      source: { path, stage: directive.stage, unit: null },
+      replySha256: '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+    });
+    expect(result(directive).stageFile).toBeUndefined();
+    for (const change of [
+      { questions_answered: {} },
+      { questions_answered: { path: 'elsewhere' } },
+      { kept_replies: { replies: ['hello', 'another reply'] } },
+      { answer_mode: { mode: 'file', ask: false } },
+      { gate_only: true },
+    ])
+      expect(result({ ...directive, ...change }).keptGuideReply).toBeUndefined();
+  });
   it('retains a newer direct ask across inspection and quoted punctuation', () => {
     const next = { ...capturedPlanAsk, question: 'The next recommendation?' };
     const method = observation(

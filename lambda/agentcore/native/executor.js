@@ -190,6 +190,8 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'follow its steering continuation. Present the settled stage gate from its gate_only directive. ' +
   'Record the answer-mode decision using the command in the installed stage instructions. ' +
   'Use the active workflow question file directly for guided batches and file-mode answers. The native editor can save scoped answer slots and waits for the member to finish file mode. ' +
+  'When NATIVE_DISCUSSION_QUESTION_FILE is set, respond to the member’s written clarification. Leave its answer slots and batch decision open until the member submits settled answers. Follow the method to return to the current questions. ' +
+  'When NATIVE_RECOVERED_EDIT_FILE is set, use the normal fresh-session resume entrypoint and show the remaining slots or request the file-mode completion signal. The resume request supplies no completion signal. ' +
   'When NATIVE_APPLIED_QUESTION_FILE is set, the member’s answer is saved there and its required log answer has succeeded. Read the file and follow the current step, including answer analysis, follow-ups and genuine gates. Do not repeat the answer receipt. ' +
   'For other questions copy exact workflow wording, labels, descriptions and order. ' +
   'Do not add numbering or remove literal recommendation text from a label. ' +
@@ -1322,6 +1324,10 @@ export const createNativeExecutor = ({
     const modelEnv = {
       ...auth,
       ...baseEnv,
+      ...(continuing && turn.session.pendingInput?.fileGuide && !payload.selection
+        ? { NATIVE_DISCUSSION_QUESTION_FILE: turn.session.questionFile.path }
+        : {}),
+      ...(recoveredFile?.fileEdit ? { NATIVE_RECOVERED_EDIT_FILE: recoveredFile.path } : {}),
       ...(appliedFile
         ? { NATIVE_APPLIED_QUESTION_FILE: appliedFile.path, AIDLC_UNATTENDED: '1' }
         : {}),
@@ -1345,16 +1351,6 @@ export const createNativeExecutor = ({
       home: owner.home,
       instructions: [
         nativeTransportInstructions(configuration),
-        ...(continuing && turn.session.pendingInput?.fileGuide && !payload.selection
-          ? [
-              'The member chose to discuss the published Guide me questions. Respond to their written question. Leave the file answers and batch receipt open until they submit settled answers. Follow the installed method to return to the current questions.',
-            ]
-          : []),
-        ...(recoveredFile?.fileEdit
-          ? [
-              'The member saved file edits before the session stopped. Use the normal resume entrypoint. Stop at the remaining slots or ask for the file-mode completion signal. The fresh-session request does not supply that signal.',
-            ]
-          : []),
         attachmentPromptManifest(attachmentReferences(configuration.inputs.attachments)),
       ]
         .filter(Boolean)
@@ -1417,6 +1413,39 @@ export const createNativeExecutor = ({
     return { result, completed, nextPromptEvidence };
   };
 
+  const openGuideAfterDiscussion = async ({
+    files,
+    session,
+    harness,
+    kept,
+    words,
+    openSavedBatch,
+  }) => {
+    const binding = session?.questionFile;
+    if (
+      !words ||
+      !binding ||
+      !kept ||
+      kept.replySha256 !== digest(words) ||
+      kept.source.path !== binding.path ||
+      kept.source.stage !== binding.issuedFile?.stage ||
+      kept.source.unit !== binding.issuedFile.unit
+    )
+      return null;
+    const current = currentQuestionFile(files, binding, harness);
+    if (!current || current.file.sha256 !== binding.sha256) return null;
+    const form = ordinaryFileForm(current.parsed, session.fileQuestionIds);
+    if (!form) return null;
+    const decision = session.fileDecision ?? form.ids.join(', ');
+    if (!(await openSavedBatch({ source: binding.issuedFile, decision }))) return null;
+    return {
+      ...form,
+      fileStep: 'guide',
+      decision,
+      questionFile: { ...binding, directive: current.cursorHash },
+    };
+  };
+
   const nextQuestionFileForm = async ({
     files,
     snapshotWorkspace,
@@ -1429,6 +1458,7 @@ export const createNativeExecutor = ({
     rendered,
     appliedFile,
     directCheckpoint,
+    discussionWords,
     recoveredFile,
     commands,
   }) => {
@@ -1452,6 +1482,16 @@ export const createNativeExecutor = ({
         method: completed.method,
         guidedQuestions,
       });
+    if (!requirements && !rendered.spec && completed.method?.keptGuideReply) {
+      requirements = await openGuideAfterDiscussion({
+        files,
+        session,
+        harness: configuration.harness,
+        kept: completed.method.keptGuideReply,
+        words: discussionWords,
+        openSavedBatch,
+      });
+    }
     if (
       recoveredFile?.decision &&
       completed.method?.printed &&
@@ -1687,6 +1727,8 @@ export const createNativeExecutor = ({
       rendered,
       appliedFile,
       directCheckpoint,
+      discussionWords:
+        continuing && session.pendingInput?.fileGuide && !payload.selection ? payload.text : null,
       recoveredFile,
       commands,
     });
