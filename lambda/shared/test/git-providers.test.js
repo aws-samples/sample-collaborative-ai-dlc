@@ -94,6 +94,75 @@ describe('github provider — repo browse + PR + comments', () => {
     ]);
   });
 
+  // GitHub list endpoints page with a Link header; rel="last" carries the
+  // page count, and the last page has no rel="last".
+  const ghRepo = (n) => ({ id: n, name: `r${n}`, full_name: `o/r${n}`, default_branch: 'main' });
+  const pageOf = (url) => Number(new URL(url).searchParams.get('page'));
+  const githubPages = (rowsForPage, lastPage) => (url) => {
+    const page = pageOf(url);
+    const next = (p) => url.replace(/([?&])page=\d+/, `$1page=${p}`);
+    const links = [];
+    if (page < lastPage) links.push(`<${next(page + 1)}>; rel="next"`);
+    if (page < lastPage) links.push(`<${next(lastPage)}>; rel="last"`);
+    return { json: rowsForPage(page), headers: links.length ? { link: links.join(', ') } : {} };
+  };
+  const fullPage = (page, make) =>
+    Array.from({ length: 100 }, (_, i) => make((page - 1) * 100 + i + 1));
+
+  it('listRepos reads every page the Link header announces, in order', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/user/repos',
+        githubPages((page) => (page < 3 ? fullPage(page, ghRepo) : [ghRepo(201)]), 3),
+      ],
+    ]);
+    const repos = await gh.listRepos({ token: 't', fetchImpl });
+    expect(repos.map((r) => r.id)).toEqual(Array.from({ length: 201 }, (_, i) => i + 1));
+    expect(fetchImpl.calls.map((c) => pageOf(c.url)).toSorted((a, b) => a - b)).toEqual([1, 2, 3]);
+  });
+
+  it('listRepos makes one call when there is no next page, even with exactly 100 repos', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => fullPage(page, ghRepo), 1)],
+    ]);
+    const repos = await gh.listRepos({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(100);
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it('listRepos stops at the page cap', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => fullPage(page, ghRepo), 12)],
+    ]);
+    const repos = await gh.listRepos({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(1000);
+    expect(fetchImpl.calls).toHaveLength(10);
+  });
+
+  it('listRepos drops a repo that moves between pages while they are read', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => (page === 1 ? fullPage(1, ghRepo) : [ghRepo(100)]), 2)],
+    ]);
+    const repos = await gh.listRepos({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(100);
+  });
+
+  it('listRepos fails instead of returning part of the list when a later page fails', async () => {
+    const pages = githubPages((page) => fullPage(page, ghRepo), 2);
+    const fetchImpl = makeFetch([
+      [
+        '/user/repos',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 403, json: { message: 'API rate limit exceeded' } }
+            : pages(url),
+      ],
+    ]);
+    await expect(gh.listRepos({ token: 't', fetchImpl })).rejects.toThrow(
+      'API rate limit exceeded',
+    );
+  });
+
   it('getAuthenticatedUser uses the PUBLIC email when present', async () => {
     const fetchImpl = makeFetch([
       ['/user', { json: { login: 'janedev', id: 123, name: 'Jane Dev', email: 'jane@corp.com' } }],
