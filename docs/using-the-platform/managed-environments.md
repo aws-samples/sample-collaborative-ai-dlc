@@ -17,7 +17,9 @@ Its **Image check** shows that image's ECR scan, read when the environments
 service starts, on the published revision and on a core update that is waiting
 to be published. Basic scanning scans the image once, on push; with ECR enhanced
 scanning, later rescans show up as well, with the counts of up to five pages of
-the scan result. A larger result is shown as partial counts.
+the scan result. A larger result, or one whose later pages are not read within
+about ten seconds, is shown as partial counts; if the first page is not read in
+that time, the check shows no scan.
 
 Java, Go, Rust, Maven, and Gradle are shipped as tool definitions, not as
 predefined JVM, Go, Rust, or Polyglot environments. Administrators can add other
