@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Compass, FileQuestion } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
@@ -24,8 +25,6 @@ export function HistorySection({
   steering,
   influencedArtifactsByQuestion,
 }: HistorySectionProps) {
-  const [expanded, setExpanded] = useState(false);
-
   // Exclude currently pending gates — those are shown in PendingQuestionsTabs.
   const historicalGates = useMemo(
     () => questionGates.filter((g) => g.status !== 'pending'),
@@ -35,36 +34,25 @@ export function HistorySection({
   if (historicalGates.length === 0 && steering.length === 0) return null;
 
   return (
-    <div className="space-y-1" data-testid="history-section">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
+    <div data-testid="history-section">
+      <Disclosure
+        variant="inline"
+        title={
+          <span className="inline-flex items-center gap-1.5">
+            <FileQuestion aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+            Past questions & corrections
+          </span>
+        }
+        count={historicalGates.length + steering.length}
+        className="block"
+        contentClassName="space-y-2"
       >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <FileQuestion className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">
-          Past questions & corrections
-        </span>
-        <Badge variant="secondary" className="h-4 px-1 text-[9px]">
-          {historicalGates.length + steering.length}
-        </Badge>
-      </button>
-
-      {expanded && (
-        <div className="space-y-2 pl-5">
-          <QuestionHistoryCompact
-            gates={historicalGates}
-            influencedArtifactsByQuestion={influencedArtifactsByQuestion}
-          />
-          {steering.length > 0 && <SteeringCompact steering={steering} />}
-        </div>
-      )}
+        <QuestionHistoryCompact
+          gates={historicalGates}
+          influencedArtifactsByQuestion={influencedArtifactsByQuestion}
+        />
+        {steering.length > 0 && <SteeringCompact steering={steering} />}
+      </Disclosure>
     </div>
   );
 }
@@ -129,10 +117,8 @@ function QuestionHistoryCompact({
         <div key={group.key} className="space-y-0.5">
           {groupedByStage.length > 1 && (
             <div className="flex items-center gap-1.5 px-2 pt-1">
-              <span className="text-[10px] uppercase font-medium tracking-wider text-muted-foreground">
-                {group.label}
-              </span>
-              <Badge variant="secondary" className="h-4 px-1 text-[9px]">
+              <span className="text-xs font-medium text-muted-foreground">{group.label}</span>
+              <Badge variant="secondary" size="sm">
                 {group.gates.length}
               </Badge>
             </div>
@@ -228,11 +214,9 @@ function CompactQuestionRow({
           )}
           <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', statusDotClass(gate))} />
           <span className="min-w-0 flex-1 truncate text-xs">{preview}</span>
-          {superseded && (
-            <span className="shrink-0 text-[10px] text-muted-foreground/60">retired</span>
-          )}
+          {superseded && <span className="shrink-0 text-2xs text-muted-foreground">retired</span>}
           {answered && (gate.answeredByName || gate.answeredAt) && (
-            <span className="shrink-0 text-[10px] text-muted-foreground/70">
+            <span className="shrink-0 text-2xs text-muted-foreground">
               {[
                 gate.answeredByName,
                 gate.answeredAt ? formatTimelineTimestamp(gate.answeredAt) : null,
@@ -263,11 +247,9 @@ function CompactQuestionRow({
           {answered && answer && (
             <div className="rounded border border-agent-success/20 bg-agent-success/[0.04] px-2 py-1.5">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Answer
-                </p>
+                <p className="text-xs font-medium text-muted-foreground">Answer</p>
                 {(gate.answeredByName || gate.answeredAt) && (
-                  <span className="text-[10px] text-muted-foreground/70">
+                  <span className="text-2xs text-muted-foreground">
                     {[
                       gate.answeredByName ? `by ${gate.answeredByName}` : null,
                       gate.answeredAt ? formatTimelineTimestamp(gate.answeredAt) : null,
@@ -281,11 +263,11 @@ function CompactQuestionRow({
             </div>
           )}
 
-          {superseded && <p className="text-[11px] text-muted-foreground">Retired unanswered.</p>}
+          {superseded && <p className="text-xs text-muted-foreground">Retired unanswered.</p>}
 
           {revisionSteer && (
             <div className="rounded border border-agent-waiting/30 bg-agent-waiting/[0.05] px-2 py-1.5">
-              <p className="text-[11px] font-medium text-muted-foreground">
+              <p className="text-2xs font-medium text-muted-foreground">
                 Correction ({revisionSteer.status === 'consumed' ? 'delivered' : 'queued'})
               </p>
               <p className="mt-0.5 text-xs">{revisionSteer.message}</p>
@@ -293,12 +275,7 @@ function CompactQuestionRow({
           )}
 
           {canRevise && !reviseOpen && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 gap-1 px-2 text-[11px]"
-              onClick={() => setReviseOpen(true)}
-            >
+            <Button size="xs" variant="outline" onClick={() => setReviseOpen(true)}>
               <Compass className="h-3 w-3" />
               Revise answer
             </Button>
@@ -313,20 +290,14 @@ function CompactQuestionRow({
                 rows={2}
                 className="text-xs"
               />
-              {reviseError && <p className="text-[11px] text-agent-error">{reviseError}</p>}
+              {reviseError && <p className="text-xs text-agent-error-fg">{reviseError}</p>}
               <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  className="h-6 px-2 text-[11px]"
-                  disabled={!revision.trim() || revising}
-                  onClick={handleRevise}
-                >
+                <Button size="xs" disabled={!revision.trim() || revising} onClick={handleRevise}>
                   {revising ? 'Sending…' : 'Send correction'}
                 </Button>
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="ghost"
-                  className="h-6 px-2 text-[11px]"
                   disabled={revising}
                   onClick={() => {
                     setReviseOpen(false);
@@ -341,16 +312,16 @@ function CompactQuestionRow({
 
           {influencedArtifacts.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">Influenced:</span>
+              <span className="text-xs text-muted-foreground">Influenced:</span>
               {influencedArtifacts.map((a) => (
-                <button
+                <Button
                   key={a.id}
-                  type="button"
-                  className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  size="xs"
+                  variant="outline"
                   onClick={() => focusWorkProduct({ kind: 'artifact', id: a.id })}
                 >
-                  {a.title || a.id}
-                </button>
+                  {a.title || 'Document'}
+                </Button>
               ))}
             </div>
           )}
@@ -378,7 +349,7 @@ function SteeringCompact({ steering }: { steering: IntentSteering[] }) {
         )}
         <Compass className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium text-muted-foreground">Course corrections</span>
-        <Badge variant="secondary" className="h-4 px-1 text-[9px]">
+        <Badge variant="secondary" size="sm">
           {steering.length}
         </Badge>
       </button>
@@ -389,10 +360,10 @@ function SteeringCompact({ steering }: { steering: IntentSteering[] }) {
               <div className="flex items-center gap-1.5">
                 <Badge
                   variant="outline"
+                  size="sm"
                   className={cn(
-                    'px-1 py-0 text-[9px]',
-                    s.status === 'consumed' && 'bg-agent-success/10 text-agent-success',
-                    s.status === 'pending' && 'bg-agent-waiting/10 text-agent-waiting',
+                    s.status === 'consumed' && 'bg-agent-success/10 text-agent-success-fg',
+                    s.status === 'pending' && 'bg-agent-waiting/10 text-agent-waiting-fg',
                     s.status !== 'consumed' &&
                       s.status !== 'pending' &&
                       'bg-muted text-muted-foreground',
@@ -405,10 +376,10 @@ function SteeringCompact({ steering }: { steering: IntentSteering[] }) {
                       : 'superseded'}
                 </Badge>
                 {s.createdByName && (
-                  <span className="text-[10px] text-muted-foreground">{s.createdByName}</span>
+                  <span className="text-2xs text-muted-foreground">{s.createdByName}</span>
                 )}
                 {s.createdAt && (
-                  <span className="ml-auto text-[10px] text-muted-foreground/70">
+                  <span className="ml-auto text-2xs text-muted-foreground">
                     {formatTimelineTimestamp(s.createdAt)}
                   </span>
                 )}

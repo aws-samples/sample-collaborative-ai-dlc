@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@/test/query';
 import { ProvenanceTree } from './ProvenanceTree';
 import { focusWorkProduct } from './workProductsFocus';
 import type { IntentArtifact, IntentDetail, IntentGraphNode } from '@/services/intents';
@@ -140,11 +140,10 @@ describe('ProvenanceTree — cross-phase stage collision (CHANGE 1)', () => {
     expect(screen.getByText('Construction')).toBeInTheDocument();
     expect(screen.getByText('Inception')).toBeInTheDocument();
 
-    const phases = screen.getAllByRole('treeitem');
-    const inceptionPhase = phases.find((el) => el.id === 'provenance-phase-01');
-    const constructionPhase = phases.find((el) => el.id === 'provenance-phase-02');
-    expect(inceptionPhase).toBeDefined();
-    expect(constructionPhase).toBeDefined();
+    const inceptionPhase = document.getElementById('provenance-phase-01');
+    const constructionPhase = document.getElementById('provenance-phase-02');
+    expect(inceptionPhase).not.toBeNull();
+    expect(constructionPhase).not.toBeNull();
 
     // Each phase owns exactly its own stage node — under the pre-fix flat
     // lookup, phase 02's doc was filed into phase 01's 'design' node and
@@ -180,10 +179,9 @@ describe('ProvenanceTree — phase ordering', () => {
       phaseNameOf: (path: string) => `Phase ${path}`,
     });
 
-    const phaseIds = screen
-      .getAllByRole('treeitem')
-      .map((el) => el.id)
-      .filter((id) => id.startsWith('provenance-phase-'));
+    const phaseIds = [...document.querySelectorAll('section[id^="provenance-phase-"]')].map(
+      (el) => el.id,
+    );
     expect(phaseIds).toEqual(['provenance-phase-01', 'provenance-phase-02', 'provenance-phase-10']);
   });
 });
@@ -204,7 +202,21 @@ describe('ProvenanceTree — document ordering', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it('reverses phases, stages, and documents together', () => {
+  it('reverses documents within a stage', () => {
+    renderTree({
+      detail: { artifacts } as IntentDetail,
+      stageRows: [row()],
+      documentOrder: 'newest-first',
+    });
+
+    expect(
+      screen
+        .getByText('Newer document')
+        .compareDocumentPosition(screen.getByText('Older document')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('reverses phases and stages together', () => {
     const reversedArtifacts = [
       doc({
         id: 'inception-first',
@@ -250,13 +262,8 @@ describe('ProvenanceTree — document ordering', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(
       screen
-        .getByText('Requirements Analysis')
-        .compareDocumentPosition(screen.getByText('Research')),
-    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(
-      screen
-        .getByText('Inception last')
-        .compareDocumentPosition(screen.getByText('Inception first')),
+        .getByRole('button', { name: 'Requirements Analysis (1)' })
+        .compareDocumentPosition(screen.getByRole('button', { name: 'Research (1)' })),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
@@ -326,26 +333,28 @@ describe('ProvenanceTree — focus navigation', () => {
     });
 
     const stage = document.getElementById('provenance-stage-01/design/s1:auth')!;
-    fireEvent.click(stage.querySelector('button')!);
-    expect(stage).toHaveAttribute('aria-expanded', 'false');
-    return stage;
+    const trigger = stage.querySelector('button')!;
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Sectioned design')).not.toBeInTheDocument();
+    return trigger;
   };
 
   it('re-expands a collapsed sectioned unit stage when focusing its artifact', () => {
-    const stage = renderSectionedTree();
+    const trigger = renderSectionedTree();
 
     act(() => focusWorkProduct({ kind: 'artifact', id: artifactId }));
 
-    expect(stage).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Sectioned design')).toBeInTheDocument();
   });
 
   it('re-expands a collapsed sectioned unit stage when focusing its derived item', () => {
-    const stage = renderSectionedTree();
+    const trigger = renderSectionedTree();
 
     act(() => focusWorkProduct({ kind: 'item', id: item.id }));
 
-    expect(stage).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText(item.label)).toBeInTheDocument();
   });
 });
@@ -395,9 +404,9 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
       stageRows,
     });
 
-    const badges = screen.getAllByText(/^(backend|frontend)$/);
+    const badges = screen.getAllByText(/^(Backend|Frontend)$/);
     expect(badges).toHaveLength(2);
-    expect(badges.map((b) => b.textContent).toSorted()).toEqual(['backend', 'frontend']);
+    expect(badges.map((b) => b.textContent).toSorted()).toEqual(['Backend', 'Frontend']);
 
     const stageLabels = screen.getAllByText('Code Generation');
     expect(stageLabels).toHaveLength(2);
@@ -612,14 +621,157 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
       stageRows,
     });
 
-    const treeItems = screen.getAllByRole('treeitem');
-    const backendStage = treeItems.find(
-      (el) => el.id === 'provenance-stage-02/code-generation/backend',
+    const backendStage = document.getElementById('provenance-stage-02/code-generation/backend');
+    const frontendStage = document.getElementById('provenance-stage-02/code-generation/frontend');
+    expect(backendStage).not.toBeNull();
+    expect(frontendStage).not.toBeNull();
+    // The newest document's lane is the one open by default.
+    expect(frontendStage!.textContent).toContain('Frontend Doc');
+    expect(frontendStage!.textContent).not.toContain('Backend Doc');
+    fireEvent.click(backendStage!.querySelector('button')!);
+    expect(backendStage!.textContent).toContain('Backend Doc');
+    expect(backendStage!.textContent).not.toContain('Frontend Doc');
+  });
+});
+
+describe('ProvenanceTree — progressive disclosure (W2/P8)', () => {
+  const twoStages = () => ({
+    artifacts: [
+      doc({
+        id: 'early',
+        title: 'Market research',
+        createdByStageInstanceId: 'si-research',
+        createdAt: '2026-01-01T10:00:00Z',
+      }),
+      doc({
+        id: 'early-2',
+        title: 'Competitive analysis',
+        createdByStageInstanceId: 'si-research',
+        createdAt: '2026-01-01T10:30:00Z',
+      }),
+      doc({
+        id: 'late',
+        title: 'Business logic model',
+        createdByStageInstanceId: 'si-design',
+        createdAt: '2026-01-02T10:00:00Z',
+      }),
+    ],
+    stageRows: [
+      row({ stageId: 'research', stageInstanceId: 'si-research', phase: '01', order: 1 }),
+      row({ stageId: 'functional-design', stageInstanceId: 'si-design', phase: '02', order: 2 }),
+    ],
+  });
+
+  it('renders phases as headings and one disclosure per stage with a document count', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows });
+
+    expect(screen.getByRole('heading', { name: /Inception/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Construction/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Research (2)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toBeInTheDocument();
+    // Phase headings are plain group headings, not collapsible controls.
+    expect(screen.queryByRole('button', { name: /Inception/ })).not.toBeInTheDocument();
+  });
+
+  it('opens only the stage holding the newest document; closed stages are not mounted', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows });
+
+    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
     );
-    const frontendStage = treeItems.find(
-      (el) => el.id === 'provenance-stage-02/code-generation/frontend',
+    expect(screen.getByText('Business logic model')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Research (2)' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
     );
-    expect(backendStage).toBeDefined();
-    expect(frontendStage).toBeDefined();
+    expect(screen.queryByText('Market research')).not.toBeInTheDocument();
+  });
+
+  it('prefers the stage that is running or waiting over the newest document', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({
+      detail: { artifacts } as IntentDetail,
+      stageRows: [
+        { ...stageRows[0], state: 'WAITING_FOR_HUMAN' },
+        { ...stageRows[1], state: 'SUCCEEDED' },
+      ],
+    });
+
+    expect(screen.getByRole('button', { name: 'Research (2)' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('shows the date once per stage, not once per document', () => {
+    const { artifacts, stageRows } = twoStages();
+    const { container } = renderTree({
+      detail: { artifacts } as IntentDetail,
+      stageRows,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Research (2)' }));
+    // Two stage summaries, each carrying one <time>; no per-document ages.
+    expect(container.querySelectorAll('time')).toHaveLength(2);
+  });
+
+  it('a text filter finds documents in closed stages and opens them, hiding the rest', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows, filter: 'competitive' });
+
+    expect(screen.getByRole('button', { name: 'Research (1)' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByText('Competitive analysis')).toBeInTheDocument();
+    expect(screen.queryByText('Market research')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Functional Design/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Construction/ })).not.toBeInTheDocument();
+  });
+
+  it('a filter with no match says so instead of showing an empty tree', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows, filter: 'zzz-nothing' });
+
+    expect(screen.getByText(/No documents match/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Research/ })).not.toBeInTheDocument();
+  });
+
+  it('never uses the artifact id as a label when the title is missing', () => {
+    renderTree({
+      detail: {
+        artifacts: [doc({ id: 'f3a9c1d2-uuid', title: null, artifactType: 'requirements' })],
+      } as IntentDetail,
+      stageRows: [row()],
+    });
+
+    expect(screen.getByRole('button', { name: 'Requirements' })).toBeInTheDocument();
+    expect(screen.queryByText(/f3a9c1d2/)).not.toBeInTheDocument();
+  });
+
+  it('shows the unit as a readable name rather than its slug', () => {
+    renderTree({
+      detail: {
+        artifacts: [doc({ id: 'u', title: 'Code summary', createdByStageInstanceId: 'si-u' })],
+      } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'code-generation',
+          stageInstanceId: 'si-u',
+          phase: '02',
+          unitSlug: 'cart-badge-template',
+        }),
+      ],
+    });
+
+    expect(screen.getByText('Cart Badge Template')).toBeInTheDocument();
+    expect(screen.queryByText('cart-badge-template')).not.toBeInTheDocument();
   });
 });

@@ -1,15 +1,16 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useId, useState, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   useCollaborativeStructuredAnswer,
   type CollabScope,
 } from '../hooks/useCollaborativeStructuredAnswer';
+import type { YjsConnection } from '../hooks/useYjsDocument';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
+import { CollaborationStatusAlert } from '@/components/collab/CollaborationStatusAlert';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Loader2 } from 'lucide-react';
 import { DiscussButton } from '@/components/discussion';
 import {
   ArtifactMarkdown,
@@ -47,6 +48,15 @@ interface Props {
   onAutoSave?: (draftAnswer: StructuredAnswer) => Promise<void>;
   onFocus?: () => void;
   onBlur?: () => void;
+  /** Rendered inside the card, between the questions and the submit bar. */
+  extra?: React.ReactNode;
+  /**
+   * A parent that owns the live-collaboration state (one alert for several
+   * editors) passes it here; otherwise the editor reads its own document.
+   */
+  connection?: YjsConnection;
+  onRetry?: () => void;
+  hideConnectionAlert?: boolean;
 }
 
 export default function QuestionEditor({
@@ -60,6 +70,10 @@ export default function QuestionEditor({
   canSubmit = true,
   onFocus,
   onBlur,
+  extra,
+  connection: connectionProp,
+  onRetry,
+  hideConnectionAlert = false,
 }: Props) {
   const { readOnly } = useSpacePermissions();
   const {
@@ -71,6 +85,8 @@ export default function QuestionEditor({
     getFreeText,
     addContributor,
     synced,
+    connection: ownConnection,
+    retryNow,
     awareness,
     remoteUsers,
     documentReadOnly,
@@ -83,9 +99,15 @@ export default function QuestionEditor({
     userName,
     readOnly || !canEdit ? undefined : onAutoSave,
   );
+  const connection = connectionProp ?? ownConnection;
+  const retry = onRetry ?? retryNow;
+  // Selections live in the shared Yjs document: nothing can be chosen or
+  // submitted before its first sync. The alert above explains the lock.
+  const locked = !synced;
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const groupName = useId();
 
   const seededDoc = useRef<typeof doc | null>(null);
   useEffect(() => {
@@ -113,33 +135,54 @@ export default function QuestionEditor({
     }
   };
 
-  const allAnswered = question.questions.every((_, i) => {
+  const total = question.questions.length;
+  const answeredCount = question.questions.filter((_, i) => {
     const sel = selections.get(i) || [];
     const ft = freeTexts.get(i) || '';
     return sel.length > 0 || ft.trim().length > 0;
-  });
+  }).length;
+  const allAnswered = answeredCount === total;
 
   const remoteCount = remoteUsers.size;
+  const blocked = documentReadOnly || readOnly || submitting || locked;
 
   return (
-    <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
+    <div
+      data-slot="question-editor"
+      className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3"
+    >
+      {!hideConnectionAlert && (
+        <CollaborationStatusAlert
+          connection={connection}
+          onRetry={retry}
+          context="answers"
+          className="mb-3"
+        />
+      )}
+
       {remoteCount > 0 && (
-        <div className="flex items-center gap-1 mb-3">
+        <div className="mb-3 flex items-center gap-1">
           {Array.from(remoteUsers.values()).map((u, i) => (
-            <div
+            <span
               key={i}
-              className="w-5 h-5 rounded-full text-white text-[10px] flex items-center justify-center"
+              aria-hidden="true"
+              className="flex h-5 w-5 items-center justify-center rounded-full text-2xs font-medium text-white"
               style={{ backgroundColor: u.color }}
             >
               {u.name?.charAt(0)}
-            </div>
+            </span>
           ))}
-          <span className="text-xs text-primary">collaborating...</span>
+          <span className="text-xs text-primary">
+            {remoteCount === 1 ? '1 person is' : `${remoteCount} people are`} answering with you
+          </span>
         </div>
       )}
 
       {error && (
-        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-2 py-1 mb-3">
+        <div
+          role="alert"
+          className="mb-3 rounded border border-destructive/20 bg-destructive/10 px-2 py-1 text-xs text-destructive"
+        >
           {error}
         </div>
       )}
@@ -151,14 +194,15 @@ export default function QuestionEditor({
             question={q}
             references={references}
             questionIndex={qIdx}
-            totalQuestions={question.questions.length}
+            totalQuestions={total}
+            groupName={`${groupName}-${qIdx}`}
             selectedOptions={selections.get(qIdx) || []}
             freeText={freeTexts.get(qIdx) || ''}
             freeTextDoc={getFreeText(qIdx)}
             awareness={awareness}
             onSelectionChange={(indices) => setSelection(qIdx, indices)}
             onFreeTextChange={(text, cursor) => setFreeText(qIdx, text, cursor)}
-            disabled={documentReadOnly || readOnly || !canEdit || submitting || !synced}
+            disabled={blocked || !canEdit}
             onFocus={() => {
               addContributor();
               onFocus?.();
@@ -177,19 +221,31 @@ export default function QuestionEditor({
         ))}
       </div>
 
-      <Button
-        size="sm"
-        onClick={handleSubmit}
-        disabled={documentReadOnly || readOnly || !canSubmit || !allAnswered || submitting}
-        className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
+      {extra && <div className="mt-3">{extra}</div>}
+
+      {/* `-bottom-6` matches the page scroller's `pb-6` (AppShell): sticky
+          offsets are measured from the scroller's content box, so `bottom-0`
+          would float the bar 24 px above the edge with text showing below it. */}
+      <div
+        data-slot="question-editor-submit-bar"
+        className="sticky -bottom-6 z-10 -mx-3 -mb-3 mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-b-lg border-t border-agent-waiting/30 bg-card px-3 py-2"
       >
-        {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
-        {submitting
-          ? 'Submitting...'
-          : question.questions.length > 1
-            ? 'Submit All Answers'
-            : 'Submit Answer'}
-      </Button>
+        {total > 1 ? (
+          <span role="status" className="text-xs tabular-nums text-muted-foreground">
+            {answeredCount} of {total} answered
+          </span>
+        ) : (
+          <span />
+        )}
+        <Button
+          size="sm"
+          onClick={handleSubmit}
+          disabled={!allAnswered || blocked || !canSubmit}
+          loading={submitting}
+        >
+          {submitting ? 'Submitting…' : total > 1 ? 'Submit all answers' : 'Submit answer'}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -225,6 +281,14 @@ function QuestionOptionText({
   );
 }
 
+function plainText(markdown: string): string {
+  return markdown
+    .replace(/\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g, '$1')
+    .replace(/[*_`#>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function splitLeadingBlock(text: string): [string, string | null] {
   const idx = text.indexOf('\n\n');
   if (idx === -1) return [text, null];
@@ -248,12 +312,51 @@ function requiresFreeTextOption(opt: QuestionOption): boolean {
   );
 }
 
+function OptionIndicator({ single, checked }: { single: boolean; checked: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'flex h-4 w-4 items-center justify-center border-2',
+        single ? 'rounded-full' : 'rounded',
+        checked ? 'border-primary bg-primary' : 'border-muted-foreground/40',
+      )}
+    >
+      {checked &&
+        (single ? (
+          <span className="h-2 w-2 rounded-full bg-white" />
+        ) : (
+          <svg
+            className="h-2.5 w-2.5 text-white"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={3}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ))}
+    </span>
+  );
+}
+
+const optionRowClass = (selected: boolean, disabled?: boolean) =>
+  cn(
+    'flex cursor-pointer items-start gap-2 rounded-md border p-2 transition-colors',
+    'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-1',
+    selected
+      ? 'border-primary/30 bg-primary/10'
+      : 'border-border bg-card hover:border-foreground/20 hover:bg-accent/50',
+    disabled && 'cursor-not-allowed opacity-50',
+  );
+
 /** Renders a single structured question with options + free text */
 function StructuredQuestionBlock({
   question,
   references,
   questionIndex,
   totalQuestions,
+  groupName,
   selectedOptions,
   freeText,
   freeTextDoc,
@@ -269,6 +372,7 @@ function StructuredQuestionBlock({
   references?: QuestionReferences;
   questionIndex: number;
   totalQuestions: number;
+  groupName: string;
   selectedOptions: number[];
   freeText: string;
   freeTextDoc: import('yjs').Text;
@@ -287,6 +391,7 @@ function StructuredQuestionBlock({
   // Title row = the markdown's leading block; the rest renders full-width so
   // body paragraphs stay left-aligned with the option rows below.
   const [titleMd, bodyMd] = splitLeadingBlock(question.text);
+  const answerLabel = `Answer for: ${plainText(titleMd)}`;
 
   useEffect(() => {
     if (freeText.length > 0) setOtherOpen(true);
@@ -327,86 +432,69 @@ function StructuredQuestionBlock({
   }, [disabled, isSingle, otherOpen, onSelectionChange, onFreeTextChange]);
 
   const showTextarea = isOtherActive || (isSingle && selectedOptions.length === 0);
+  const otherChecked = isSingle ? isOtherActive && selectedOptions.length === 0 : isOtherActive;
+  const inputType = isSingle ? 'radio' : 'checkbox';
 
   return (
-    <div className={cn(itemized && 'rounded-md border bg-background/60 p-3')}>
+    <div
+      data-slot="structured-question"
+      className={cn('scroll-mb-24', itemized && 'rounded-md border bg-background/60 p-3')}
+    >
       <div className="mb-2 space-y-2">
         <div className="flex items-center gap-2">
           {itemized && (
-            <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/10 px-1.5 text-[11px] font-semibold text-primary">
+            <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/10 px-1.5 text-2xs font-semibold text-primary">
               Q{questionIndex + 1}
-              <span className="ml-1 font-normal text-primary/60">/ {totalQuestions}</span>
+              <span className="ml-1 font-normal text-muted-foreground-on-tint">
+                / {totalQuestions}
+              </span>
             </span>
           )}
-          <div className="min-w-0 flex-1 text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+          <div className="prose prose-sm min-w-0 flex-1 max-w-none text-sm text-foreground dark:prose-invert">
             <QuestionMarkdown content={titleMd} references={references} />
           </div>
           {trailing && <div className="shrink-0">{trailing}</div>}
         </div>
         {bodyMd && (
-          <div className="text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+          <div className="prose prose-sm max-w-none text-sm text-foreground dark:prose-invert">
             <QuestionMarkdown content={bodyMd} references={references} />
           </div>
         )}
       </div>
 
       {question.type === 'multi' && (
-        <p className="text-xs text-muted-foreground mb-1">Select all that apply</p>
+        <p className="mb-1 text-xs text-muted-foreground">Select all that apply</p>
       )}
 
-      <div className="space-y-1.5 mb-2">
+      <div className="mb-2 space-y-1.5">
         {question.options.map((opt, optIdx) => {
           const isSelected = selectedOptions.includes(optIdx);
           const requiresFreeText = requiresFreeTextOption(opt);
           return (
             <div key={optIdx}>
-              <label
-                className={cn(
-                  'flex items-start gap-2 p-2 rounded-md border cursor-pointer transition-colors',
-                  isSelected
-                    ? 'bg-primary/10 border-primary/30'
-                    : 'bg-card border-border hover:border-foreground/20 hover:bg-accent/50',
-                  disabled && 'opacity-50 cursor-not-allowed',
-                )}
-                onClick={() => handleOptionToggle(optIdx)}
-              >
+              <label className={optionRowClass(isSelected, disabled)}>
+                <input
+                  type={inputType}
+                  name={groupName}
+                  className="sr-only"
+                  checked={isSelected}
+                  disabled={disabled}
+                  onChange={() => handleOptionToggle(optIdx)}
+                />
                 <span className="mt-0.5 flex-shrink-0">
-                  {isSingle ? (
-                    <span
-                      className={cn(
-                        'w-4 h-4 rounded-full border-2 flex items-center justify-center',
-                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/30',
-                      )}
-                    >
-                      {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
-                    </span>
-                  ) : (
-                    <span
-                      className={cn(
-                        'w-4 h-4 rounded border-2 flex items-center justify-center',
-                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/30',
-                      )}
-                    >
-                      {isSelected && (
-                        <svg
-                          className="w-2.5 h-2.5 text-white"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={3}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
-                  )}
+                  <OptionIndicator single={isSingle} checked={isSelected} />
                 </span>
                 <span className="text-sm">
                   <span className="font-medium text-foreground">
                     <QuestionOptionText text={opt.label} references={references} />
                   </span>
                   {opt.description && (
-                    <span className="text-muted-foreground ml-1">
+                    <span
+                      className={cn(
+                        'ml-1',
+                        isSelected ? 'text-muted-foreground-on-tint' : 'text-muted-foreground',
+                      )}
+                    >
                       &mdash; <QuestionOptionText text={opt.description} references={references} />
                     </span>
                   )}
@@ -418,12 +506,13 @@ function StructuredQuestionBlock({
                     yText={freeTextDoc}
                     awareness={awareness}
                     value={freeText}
+                    aria-label={answerLabel}
                     placeholder={
                       opt.label.toLowerCase().includes('request changes')
                         ? 'Describe what needs to change...'
                         : 'Type your answer...'
                     }
-                    className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
                     rows={2}
                     disabled={disabled}
                     onFocus={onFocus}
@@ -440,47 +529,36 @@ function StructuredQuestionBlock({
         {!question.options.some((opt) => requiresFreeTextOption(opt)) && (
           <div
             className={cn(
-              'p-2 rounded-md border transition-colors',
-              isOtherActive ? 'bg-primary/10 border-primary/30' : 'bg-card border-border',
+              'rounded-md border p-2 transition-colors',
+              'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-1',
+              isOtherActive ? 'border-primary/30 bg-primary/10' : 'border-border bg-card',
             )}
           >
-            <label className="flex items-start gap-2 cursor-pointer" onClick={handleOtherToggle}>
+            <label
+              className={cn(
+                'flex cursor-pointer items-start gap-2',
+                disabled && 'cursor-not-allowed opacity-50',
+              )}
+            >
+              <input
+                type={inputType}
+                name={groupName}
+                className="sr-only"
+                checked={otherChecked}
+                disabled={disabled}
+                onChange={handleOtherToggle}
+              />
               <span className="mt-0.5 flex-shrink-0">
-                {isSingle ? (
-                  <span
-                    className={cn(
-                      'w-4 h-4 rounded-full border-2 flex items-center justify-center',
-                      isOtherActive && selectedOptions.length === 0
-                        ? 'border-primary bg-primary'
-                        : 'border-muted-foreground/30',
-                    )}
-                  >
-                    {isOtherActive && selectedOptions.length === 0 && (
-                      <span className="w-2 h-2 rounded-full bg-white" />
-                    )}
-                  </span>
-                ) : (
-                  <span
-                    className={cn(
-                      'w-4 h-4 rounded border-2 flex items-center justify-center',
-                      isOtherActive ? 'border-primary bg-primary' : 'border-muted-foreground/30',
-                    )}
-                  >
-                    {isOtherActive && (
-                      <svg
-                        className="w-2.5 h-2.5 text-white"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={3}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </span>
-                )}
+                <OptionIndicator single={isSingle} checked={otherChecked} />
               </span>
-              <span className="text-sm font-medium text-muted-foreground">Other (free text)</span>
+              <span
+                className={cn(
+                  'text-sm font-medium',
+                  isOtherActive ? 'text-muted-foreground-on-tint' : 'text-muted-foreground',
+                )}
+              >
+                Other (free text)
+              </span>
             </label>
             {showTextarea && (
               <div className="mt-1.5 ml-6">
@@ -488,8 +566,9 @@ function StructuredQuestionBlock({
                   yText={freeTextDoc}
                   awareness={awareness}
                   value={freeText}
+                  aria-label={answerLabel}
                   placeholder="Type your answer..."
-                  className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
                   rows={2}
                   disabled={disabled}
                   onFocus={onFocus}

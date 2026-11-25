@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 
 const listMembers = vi.hoisted(() => vi.fn());
 const listDiscussions = vi.hoisted(() => vi.fn());

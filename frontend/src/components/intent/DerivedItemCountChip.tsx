@@ -19,17 +19,18 @@ export function DerivedItemCountChip({ artifactId, count, className }: DerivedIt
     <button
       type="button"
       className={cn(
-        'inline-flex h-5 shrink-0 items-center gap-1 rounded-full border bg-secondary px-1.5',
-        'text-[10px] text-secondary-foreground hover:bg-secondary/70 transition-colors',
+        'inline-flex h-6 shrink-0 items-center gap-1 rounded-full border bg-secondary px-2',
+        'text-2xs tabular-nums text-secondary-foreground hover:bg-secondary/70 transition-colors',
         className,
       )}
+      aria-label={`Show ${count} item${count !== 1 ? 's' : ''} derived from this document`}
       title={`${count} item${count !== 1 ? 's' : ''} derived from this document — click to reveal`}
       onClick={(e) => {
         e.stopPropagation();
         focusWorkProduct({ kind: 'item', id: '', filterArtifactId: artifactId });
       }}
     >
-      <Layers className="h-2.5 w-2.5" />
+      <Layers aria-hidden="true" className="h-3 w-3" />
       {count}
     </button>
   );

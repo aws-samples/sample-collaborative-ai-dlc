@@ -131,7 +131,7 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
     <div className="relative border-t">
       {suggestions.length > 0 && (
         <div className="absolute bottom-full left-3 mb-1 w-64 rounded-md border bg-popover shadow-md z-10 py-1">
-          <p className="px-2 py-0.5 text-[10px] text-muted-foreground flex items-center gap-1">
+          <p className="px-2 py-0.5 text-2xs text-muted-foreground flex items-center gap-1">
             <AtSign className="h-2.5 w-2.5" /> Mention a member
           </p>
           {suggestions.map((suggestion, i) => (
@@ -154,14 +154,14 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
                 </span>
               ) : (
                 <span
-                  className="h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-semibold text-white shrink-0"
+                  className="h-4 w-4 rounded-full flex items-center justify-center text-2xs font-semibold text-white shrink-0"
                   style={{ backgroundColor: generateColor(suggestion.member.userId) }}
                 >
                   {suggestionLabel(suggestion).slice(0, 1).toUpperCase()}
                 </span>
               )}
               <span className="truncate">{suggestionLabel(suggestion)}</span>
-              <span className="ml-auto text-[9px] text-muted-foreground">
+              <span className="ml-auto text-2xs text-muted-foreground">
                 {suggestionRole(suggestion)}
               </span>
             </button>

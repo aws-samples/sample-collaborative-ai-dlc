@@ -385,7 +385,7 @@ describe('StageDetail', () => {
     expect(screen.getByText('1 question waiting for you')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Answer' })).toHaveAttribute(
       'href',
-      '/space/p1/intent/i1',
+      '/space/p1/intent/i1/review/q-4',
     );
     for (const pill of ['Answered', 'Withdrawn', 'Waiting for answer', 'Question']) {
       expect(screen.queryByText(pill)).not.toBeInTheDocument();
@@ -400,6 +400,34 @@ describe('StageDetail', () => {
     await userEvent.click(details);
     expect(screen.getByText('2 answered · 1 withdrawn')).toBeInTheDocument();
     expect(screen.getByText(/1m 36s active, 110d \d+h waiting on answers/)).toBeInTheDocument();
+  });
+
+  // Two lanes parked at once: each lane's Answer opens its own question, not
+  // the one the Work page would select first.
+  it("opens this lane's question when two lanes wait at once", () => {
+    const gate = (humanTaskId: string, stageInstanceId: string) => ({
+      humanTaskId,
+      stageInstanceId,
+      kind: 'question',
+      status: 'pending',
+      prompt: null,
+      options: null,
+    });
+    g.stageGates = [gate('q-a', 'si-lane-a'), gate('q-b', 'si-lane-b')];
+    g.intentDetail = { intent: { status: 'WAITING', pendingHumanTaskId: 'q-a' }, metrics: [] };
+
+    render(
+      <MemoryRouter>
+        <StageDetail
+          row={{ ...row, state: 'WAITING_FOR_HUMAN', stageInstanceId: 'si-lane-b', unitSlug: 'b' }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: 'Answer' })).toHaveAttribute(
+      'href',
+      '/space/p1/intent/i1/review/q-b',
+    );
   });
 
   it('sends a pending review to its review page', () => {

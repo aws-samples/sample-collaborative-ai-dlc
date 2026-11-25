@@ -7,15 +7,29 @@ import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
 import { HistorySection } from '@/components/intent/HistorySection';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
+import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { isDocumentArtifact } from '@/components/intent/documentHelpers';
+import { countWorkProductDocuments } from '@/components/intent/documentHelpers';
 import { getDocumentOrder, setDocumentOrder } from '@/lib/workProductsPreference';
-import { ArrowDownUp, Info } from 'lucide-react';
+import { humanizeSlug } from '@/lib/displayNames';
+import { ArrowDownUp, Info, Search, X } from 'lucide-react';
 
 export interface WorkProductsSectionProps {
   detail: IntentDetail;
   gates: IntentGate[];
 }
+
+const FILTER_FROM_DOCUMENTS = 6;
+
+/** The "N documents" every intent surface shows: current (not superseded) documents. */
+export { countWorkProductDocuments };
+
+const NO_DOCUMENTS_COPY: Partial<Record<IntentDetail['intent']['status'], string>> = {
+  FAILED: 'No documents were produced before the run failed.',
+  CANCELLED: 'No documents were produced before the run was cancelled.',
+  SUCCEEDED: 'This run produced no documents.',
+};
 
 export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps) {
   const { openArtifactPreview, openItemPreview, projectId, intentId, stageRows, phaseNameOf } =
@@ -25,11 +39,10 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   const questionGates = useMemo(() => gates.filter((g) => g.kind === 'question'), [gates]);
   const steering = detail.steering ?? [];
   const [documentOrder, setDocumentOrderState] = useState(getDocumentOrder);
+  const [filter, setFilter] = useState('');
   const newestFirst = documentOrder === 'newest-first';
   const documentCount = useMemo(
-    () =>
-      detail.artifacts.filter((artifact) => !artifact.supersededAt && isDocumentArtifact(artifact))
-        .length,
+    () => countWorkProductDocuments(detail.artifacts),
     [detail.artifacts],
   );
 
@@ -46,75 +59,119 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   const codeItems = useMemo(() => buildCodeItems(detail), [detail]);
   const unitBranchItems = useMemo(() => buildUnitBranchItems(detail), [detail]);
 
-  if (
+  const nothingToShow =
     detail.artifacts.length === 0 &&
     questionGates.length === 0 &&
     steering.length === 0 &&
-    codeItems.length === 0
-  ) {
-    // Terminal runs with nothing to show render nothing; an in-flight run gets
-    // a placeholder so the pane below the progress card doesn't look broken.
-    if (!['CREATED', 'RUNNING', 'WAITING'].includes(detail.intent.status)) {
-      return null;
-    }
-  }
+    codeItems.length === 0;
+  // A run that ended with nothing says so (the page must not just stop after
+  // the pipeline, review R3-16); a draft has nothing to say yet.
+  if (nothingToShow && detail.intent.status === 'DRAFT') return null;
+
+  const planWarnings = detail.intent.planWarnings ?? [];
+  const showPlanWarnings = planWarnings.length > 0 && detail.intent.status !== 'SUCCEEDED';
+  const showFilter = documentCount >= FILTER_FROM_DOCUMENTS;
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm">Work products</CardTitle>
-          <div className="flex items-center gap-1">
-            {documentCount > 1 && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      aria-label={
-                        newestFirst
-                          ? 'Sort work products by oldest first'
-                          : 'Sort work products by newest first'
-                      }
-                      onClick={() => {
-                        const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
-                        setDocumentOrderState(nextOrder);
-                        setDocumentOrder(nextOrder);
-                      }}
-                    >
-                      <ArrowDownUp className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {newestFirst
-                      ? 'Show oldest work products first'
-                      : 'Show newest work products first'}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle className="mr-auto flex items-baseline gap-2 text-sm">
+            Work products
+            {documentCount > 0 && (
+              <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                {documentCount} document{documentCount === 1 ? '' : 's'}
+              </span>
             )}
-          </div>
-        </div>
-        {detail.intent.planWarnings &&
-          detail.intent.planWarnings.length > 0 &&
-          detail.intent.status !== 'SUCCEEDED' && (
-            <details className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
-                <Info className="h-4 w-4 shrink-0" />
-                Some stages are intentionally excluded from this scope ({detail.intent.scope}) and
-                their artifacts won't be generated
-              </summary>
-              <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
-                {detail.intent.planWarnings.map((w, i) => (
-                  <li key={`${w.code}-${i}`} className="list-disc">
-                    {w.message}
-                  </li>
-                ))}
-              </ul>
-            </details>
+          </CardTitle>
+          {documentCount > 1 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 sm:order-last"
+                    aria-label={
+                      newestFirst
+                        ? 'Sort work products by oldest first'
+                        : 'Sort work products by newest first'
+                    }
+                    onClick={() => {
+                      const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
+                      setDocumentOrderState(nextOrder);
+                      setDocumentOrder(nextOrder);
+                    }}
+                  >
+                    <ArrowDownUp className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {newestFirst
+                    ? 'Show oldest work products first'
+                    : 'Show newest work products first'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
+          {showFilter && (
+            <div className="relative basis-full sm:w-56 sm:basis-auto">
+              <Search
+                aria-hidden="true"
+                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                type="search"
+                aria-label="Filter documents"
+                placeholder="Filter documents"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && filter) {
+                    event.preventDefault();
+                    setFilter('');
+                  }
+                }}
+                className="h-8 pl-8 pr-8 text-sm [&::-webkit-search-cancel-button]:hidden"
+              />
+              {filter && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Clear filter"
+                  className="absolute right-0.5 top-1/2 h-7 w-7 -translate-y-1/2"
+                  onClick={() => setFilter('')}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+        {showPlanWarnings && (
+          <Disclosure
+            variant="inline"
+            className="mt-2"
+            title={
+              <span className="inline-flex items-center gap-1.5 text-primary">
+                <Info aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                {detail.intent.scope
+                  ? `Some stages are intentionally excluded from the ${humanizeSlug(detail.intent.scope)} scope`
+                  : 'Some stages are intentionally excluded from this scope'}
+              </span>
+            }
+            count={planWarnings.length}
+          >
+            <ul className="space-y-1 pl-5 text-xs text-muted-foreground">
+              {planWarnings.map((w, i) => (
+                <li key={`${w.code}-${i}`} className="list-disc">
+                  {w.message}
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        )}
       </CardHeader>
       <CardContent className="space-y-3">
         {detail.artifacts.length > 0 || codeItems.length > 0 ? (
@@ -130,14 +187,16 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
             openArtifactPreview={openArtifactPreview}
             openItemPreview={openItemPreview}
             documentOrder={documentOrder}
+            filter={filter}
           />
         ) : (
           <p className="py-4 text-center text-sm text-muted-foreground">
-            No work products yet — documents, items and code will appear here as the run progresses.
+            {NO_DOCUMENTS_COPY[detail.intent.status] ??
+              'No work products yet — documents, items and code will appear here as the run progresses.'}
           </p>
         )}
 
-        {(questionGates.length > 0 || steering.length > 0) && (
+        {(questionGates.length > 0 || steering.length > 0) && !filter.trim() && (
           <HistorySection
             questionGates={questionGates}
             steering={steering}

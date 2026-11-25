@@ -46,6 +46,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'P', userRole: 'owner' } }),
+  getCachedIntentSummary: () => undefined,
 }));
 
 vi.mock('@/services/stageResponsibilities', () => ({
@@ -293,7 +294,7 @@ const reviewDetail = (gateOver: Record<string, unknown>) => ({
 const openReview = async () => {
   renderAt();
   await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
-  expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+  expect(await screen.findByText('Review: Stage a')).toBeInTheDocument();
 };
 
 describe('validation gate findings and override', () => {
@@ -368,19 +369,27 @@ describe('validation gate findings and override', () => {
     expect(screen.getByText('25/300')).toBeInTheDocument();
 
     // Declining the confirmation sends nothing.
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     await userEvent.click(overrideButton);
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Accept 1 blocking finding and approve?',
+    });
+    expect(dialog).toHaveTextContent(
+      'Your name and the finding codes are recorded with this approval',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(answerGate).not.toHaveBeenCalled();
 
-    confirmSpy.mockReturnValue(true);
     await userEvent.click(overrideButton);
-    expect(confirmSpy).toHaveBeenCalledWith(
-      'Accept 1 blocking finding(s) and approve? Your name and the finding codes are recorded with this approval.',
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Accept findings and approve' }),
     );
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
       answer: { decision: 'override-and-approve', reason: 'Sourced in the linked ADR' },
       status: 'approved',
     });
+    expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 

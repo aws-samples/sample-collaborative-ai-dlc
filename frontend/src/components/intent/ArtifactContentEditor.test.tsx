@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@/test/query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IntentArtifact } from '@/services/intents';
 

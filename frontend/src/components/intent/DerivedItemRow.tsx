@@ -23,7 +23,7 @@ export function DerivedItemRow({
       id={`item-${item.id}`}
       role="button"
       tabIndex={0}
-      className="group/item flex items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 cursor-pointer hover:bg-muted/50 transition-colors"
+      className="group/item flex min-h-8 items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 cursor-pointer hover:bg-muted/50 transition-colors"
       onClick={onPreview}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -38,7 +38,7 @@ export function DerivedItemRow({
       />
       <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
       {item.priority && (
-        <Badge variant="secondary" className="h-4 px-1 text-[9px] shrink-0">
+        <Badge variant="secondary" size="sm" className="shrink-0">
           {item.priority}
         </Badge>
       )}

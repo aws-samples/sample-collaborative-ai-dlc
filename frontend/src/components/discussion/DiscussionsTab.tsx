@@ -95,7 +95,7 @@ export function DiscussionsTab() {
               type="button"
               onClick={() => setStatusFilter(s)}
               className={cn(
-                'px-2 py-0.5 rounded text-[10px] capitalize border',
+                'px-2 py-0.5 rounded text-2xs capitalize border',
                 statusFilter === s
                   ? 'bg-primary text-primary-foreground border-primary'
                   : 'text-muted-foreground hover:bg-muted',
@@ -121,7 +121,7 @@ export function DiscussionsTab() {
               onClick={() => ctx.openDiscussionById(r.discussion.id)}
             >
               <div className="flex items-center gap-1.5">
-                <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">
+                <Badge variant="outline" className="text-2xs h-4 px-1 shrink-0">
                   {ENTITY_LABELS[r.discussion.entityType] || r.discussion.entityType}
                 </Badge>
                 <span className="text-xs font-medium truncate">
@@ -144,7 +144,7 @@ export function DiscussionsTab() {
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <MessageSquare className="h-5 w-5 text-muted-foreground mb-2" />
               <p className="text-xs text-muted-foreground">No discussions yet</p>
-              <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+              <p className="text-2xs text-muted-foreground/60 mt-0.5">
                 {scope?.kind === 'sprint'
                   ? 'v1 discussions are read-only.'
                   : 'Open one from any question, artifact or the sprint'}
@@ -172,7 +172,7 @@ function DiscussionRow({ d, onOpen }: { d: Discussion; onOpen: () => void }) {
       )}
     >
       <div className="flex items-center gap-1.5">
-        <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">
+        <Badge variant="outline" className="text-2xs h-4 px-1 shrink-0">
           {ENTITY_LABELS[d.entityType] || d.entityType}
         </Badge>
         <span className={cn('text-xs truncate flex-1', unread > 0 && 'font-semibold')}>
@@ -189,12 +189,12 @@ function DiscussionRow({ d, onOpen }: { d: Discussion; onOpen: () => void }) {
           </Tooltip>
         ) : null}
         {unread > 0 && (
-          <span className="min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold flex items-center justify-center shrink-0">
+          <span className="min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-2xs font-semibold flex items-center justify-center shrink-0">
             {unread > 99 ? '99+' : unread}
           </span>
         )}
       </div>
-      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-2 mt-1 text-2xs text-muted-foreground">
         <span>
           {d.messageCount ?? 0} message{(d.messageCount ?? 0) === 1 ? '' : 's'}
         </span>

@@ -1,7 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, FileText, GitPullRequest, Layers, Package } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, GitPullRequest, Search } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Disclosure } from '@/components/ui/disclosure';
+import { EmptyState } from '@/components/ui/empty-state';
+import { RelativeTime } from '@/components/ui/relative-time';
 import { cn } from '@/lib/utils';
+import { displayStageName, humanizeSlug } from '@/lib/displayNames';
 import type { IntentArtifact, IntentDetail, IntentGraphNode } from '@/services/intents';
 import type { IntentStageRow } from '@/contexts/IntentContext';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
@@ -20,7 +24,6 @@ import {
   type DocProvenance,
 } from '@/components/intent/documentHelpers';
 import { AlertTriangle } from 'lucide-react';
-import { getTimeAgo } from '@/lib/timeAgo';
 import { nodeTypeTextColor, shortNodeType } from '@/components/graph/nodeStyles';
 import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
 import {
@@ -41,6 +44,8 @@ interface ProvenanceTreeProps {
   openArtifactPreview: (id: string) => void;
   openItemPreview: (id: string) => void;
   documentOrder?: 'oldest-first' | 'newest-first';
+  /** Case-insensitive text matched against document titles and stage names. */
+  filter?: string;
 }
 
 interface PhaseNode {
@@ -50,15 +55,19 @@ interface PhaseNode {
 }
 
 interface StageNode {
+  key: string;
   stageId: string;
   stageLabel: string;
   unitSlug: string | null;
   sectionIndex: number | null;
   documents: IntentArtifact[];
   order: number;
+  active: boolean;
+  latestCreatedAt: string | null;
 }
 
 const HIDDEN_ITEM_TYPES = new Set(['StoryMapEntry']);
+const ACTIVE_STAGE_STATES = new Set(['RUNNING', 'WAITING_FOR_HUMAN']);
 
 function stageBranchKey(
   phasePath: string,
@@ -69,6 +78,12 @@ function stageBranchKey(
   const laneKey =
     unitSlug && sectionIndex != null ? `s${sectionIndex}:${unitSlug}` : (unitSlug ?? '__common__');
   return `${phasePath || '__other__'}/${stageId ?? '__none__'}/${laneKey}`;
+}
+
+function documentLabel(doc: IntentArtifact, commonSuffix: string | null = null): string {
+  if (doc.title) return stripDocSuffix(doc.title, commonSuffix);
+  if (doc.artifactType) return humanizeSlug(doc.artifactType);
+  return 'Untitled document';
 }
 
 export function ProvenanceTree({
@@ -83,6 +98,7 @@ export function ProvenanceTree({
   openArtifactPreview,
   openItemPreview,
   documentOrder = 'oldest-first',
+  filter = '',
 }: ProvenanceTreeProps) {
   const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
   const documents = activeArtifacts.filter(isDocumentArtifact);
@@ -100,11 +116,20 @@ export function ProvenanceTree({
   );
 
   const tree = useMemo(
-    () => buildPhaseTree(documents, getProvenance, documentOrder),
-    [documents, getProvenance, documentOrder],
+    () => buildPhaseTree(documents, getProvenance, stageRows, documentOrder),
+    [documents, getProvenance, stageRows, documentOrder],
   );
 
-  // Derived items keep the standardized graph node palette (nodeStyles).
+  const query = filter.trim().toLowerCase();
+  const filtering = query.length > 0;
+
+  const visibleTree = useMemo(
+    () => (filtering ? filterPhaseTree(tree, query, commonSuffix) : tree),
+    [tree, filtering, query, commonSuffix],
+  );
+
+  const defaultOpenStageKey = useMemo(() => pickDefaultOpenStage(tree), [tree]);
+
   const itemTypeLegend = useMemo(() => {
     const types = new Set<string>();
     for (const item of derivedItems) {
@@ -123,30 +148,24 @@ export function ProvenanceTree({
     [derivedItems, documentIdSet],
   );
 
-  // Inverted expansion state: phases and stages render expanded by default
-  // (newly streamed ones included) — users opt OUT per branch. Docs' item
-  // lists stay opt-in.
-  const [collapsedPhases, setCollapsedPhases] = useState<Set<string>>(new Set());
-  const [collapsedStages, setCollapsedStages] = useState<Set<string>>(new Set());
+  // Stages follow the computed default (current stage, or the newest work)
+  // until the user toggles one; a text filter resets those overrides so every
+  // matching stage opens.
+  const [stageOverrides, setStageOverrides] = useState<Map<string, boolean>>(new Map());
   const [expandedDocs, setExpandedDocs] = useState<Set<string>>(new Set());
   const [codeExpanded, setCodeExpanded] = useState(false);
   const [otherItemsExpanded, setOtherItemsExpanded] = useState(false);
+  const lastQuery = useRef(query);
+  if (lastQuery.current !== query) {
+    lastQuery.current = query;
+    if (stageOverrides.size > 0) setStageOverrides(new Map());
+  }
 
-  const togglePhase = (path: string) =>
-    setCollapsedPhases((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+  const isStageOpen = (stageKey: string) =>
+    stageOverrides.get(stageKey) ?? (filtering || stageKey === defaultOpenStageKey);
 
-  const toggleStage = (stageKey: string) =>
-    setCollapsedStages((prev) => {
-      const next = new Set(prev);
-      if (next.has(stageKey)) next.delete(stageKey);
-      else next.add(stageKey);
-      return next;
-    });
+  const setStageOpen = (stageKey: string, open: boolean) =>
+    setStageOverrides((prev) => new Map(prev).set(stageKey, open));
 
   const toggleDoc = (docId: string) =>
     setExpandedDocs((prev) => {
@@ -161,20 +180,15 @@ export function ProvenanceTree({
       const doc = documents.find((d) => d.id === artifactId);
       if (!doc) return;
       const prov = getProvenance(doc);
-      const phasePath = prov.phasePath || '__other__';
-      setCollapsedPhases((p) => {
-        if (!p.has(phasePath)) return p;
-        const next = new Set(p);
-        next.delete(phasePath);
-        return next;
-      });
-      const stageKey = stageBranchKey(phasePath, prov.stageId, prov.unitSlug, prov.sectionIndex);
-      setCollapsedStages((p) => {
-        if (!p.has(stageKey)) return p;
-        const next = new Set(p);
-        next.delete(stageKey);
-        return next;
-      });
+      const stageKey = stageBranchKey(
+        prov.phasePath || '__other__',
+        prov.stageId,
+        prov.unitSlug,
+        prov.sectionIndex,
+      );
+      setStageOverrides((prev) =>
+        prev.get(stageKey) === true ? prev : new Map(prev).set(stageKey, true),
+      );
     },
     [documents, getProvenance],
   );
@@ -225,167 +239,120 @@ export function ProvenanceTree({
   }
 
   const codeBranch =
-    codeItems.length > 0 ? (
-      <TreeBranch
-        icon={<GitPullRequest className="h-3.5 w-3.5 text-muted-foreground" />}
-        label="Code"
-        count={codeItems.length}
-        expanded={codeExpanded}
-        onToggle={() => setCodeExpanded(!codeExpanded)}
-        id="provenance-code"
-      >
-        <div className="space-y-1 pl-5">
-          {codeItems.map((item) => (
-            <CodeItemRow key={item.repo} item={item} />
-          ))}
-        </div>
-      </TreeBranch>
+    codeItems.length > 0 && !filtering ? (
+      <div id="provenance-code">
+        <Disclosure
+          title="Code"
+          count={codeItems.length}
+          open={codeExpanded}
+          onOpenChange={setCodeExpanded}
+          headingLevel={3}
+        >
+          <div className="space-y-1">
+            {codeItems.map((item) => (
+              <CodeItemRow key={item.repo} item={item} />
+            ))}
+          </div>
+        </Disclosure>
+      </div>
     ) : null;
 
+  const matchCount = filtering
+    ? visibleTree.reduce(
+        (sum, phase) => sum + phase.stages.reduce((s, st) => s + st.documents.length, 0),
+        0,
+      )
+    : 0;
+
   return (
-    <div className="space-y-1" role="tree" aria-label="Work products">
+    <div className="space-y-4">
+      {filtering && matchCount === 0 && (
+        <EmptyState
+          size="section"
+          icon={Search}
+          title={`No documents match “${filter.trim()}”`}
+          description="Try a shorter word, or a stage name such as “design”."
+        />
+      )}
+      {filtering && matchCount > 0 && (
+        <p className="text-xs text-muted-foreground" role="status">
+          {matchCount === 1 ? '1 document matches' : `${matchCount} documents match`} “
+          {filter.trim()}”
+        </p>
+      )}
+
       {documentOrder === 'newest-first' && codeBranch}
 
-      {tree.map((phase) => (
-        <TreeBranch
-          key={phase.phasePath}
-          icon={<Package className="h-3.5 w-3.5 text-muted-foreground" />}
-          label={phase.phaseLabel}
-          count={phase.stages.reduce((s, st) => s + st.documents.length, 0)}
-          expanded={!collapsedPhases.has(phase.phasePath)}
-          onToggle={() => togglePhase(phase.phasePath)}
-          id={`provenance-phase-${phase.phasePath}`}
-        >
-          <div className="space-y-0.5 pl-5">
-            {phase.stages.map((stage) => {
-              const stageKey = stageBranchKey(
-                phase.phasePath,
-                stage.stageId,
-                stage.unitSlug,
-                stage.sectionIndex,
-              );
-              const unitBranchItem = stage.unitSlug
-                ? unitBranchItems.find(
-                    (item) =>
-                      item.unitSlug === stage.unitSlug &&
-                      (stage.sectionIndex == null || item.sectionIndex === stage.sectionIndex),
-                  )
-                : null;
-              const planIndex = stage.documents.findIndex(isCodeGenerationPlan);
-              const summaryIndex = stage.documents.findIndex(isCodeSummary);
-              const renderedBranchItem =
-                (planIndex >= 0 || summaryIndex >= 0) && unitBranchItem?.branch
-                  ? unitBranchItem
-                  : null;
-              const branchBeforeIndex =
-                renderedBranchItem && summaryIndex >= 0
-                  ? planIndex >= 0
-                    ? Math.max(planIndex, summaryIndex)
-                    : summaryIndex
-                  : -1;
-              const branchAfterIndex =
-                renderedBranchItem && summaryIndex < 0 && planIndex >= 0 ? planIndex : -1;
-              return (
-                <TreeBranch
-                  key={stageKey}
-                  icon={<Layers className="h-3 w-3 text-muted-foreground" />}
-                  label={stage.stageLabel}
-                  count={stage.documents.length + (renderedBranchItem ? 1 : 0)}
-                  expanded={!collapsedStages.has(stageKey)}
-                  onToggle={() => toggleStage(stageKey)}
-                  id={`provenance-stage-${stageKey}`}
-                  compact
-                  unitSlug={stage.unitSlug}
-                >
-                  <div className="space-y-0.5 pl-5">
-                    {stage.documents.map((doc, documentIndex) => {
-                      const docItems = itemsByArtifact.get(doc.id) ?? [];
-                      const visibleItems = docItems.filter((i) => !HIDDEN_ITEM_TYPES.has(i.type));
-                      const hasItems = visibleItems.length > 0;
-                      const isExpanded = expandedDocs.has(doc.id);
-
-                      return (
-                        <Fragment key={doc.id}>
-                          {documentIndex === branchBeforeIndex && renderedBranchItem && (
-                            <UnitBranchEntry
-                              item={renderedBranchItem}
-                              alignWithDocuments
-                              showPullRequests
-                            />
-                          )}
-                          <DocumentRow
-                            doc={doc}
-                            commonSuffix={commonSuffix}
-                            getNeighbors={getNeighbors}
-                            itemCount={visibleItems.length}
-                            hasItems={hasItems}
-                            expanded={isExpanded}
-                            onToggle={() => toggleDoc(doc.id)}
-                            onPreview={() => openArtifactPreview(doc.id)}
-                          />
-                          {isExpanded && hasItems && (
-                            <div className="space-y-0.5 pl-5">
-                              {visibleItems.map((item) => (
-                                <DerivedItemRow
-                                  key={item.id}
-                                  item={item}
-                                  getNeighbors={getNeighbors}
-                                  onPreview={() => openItemPreview(item.id)}
-                                />
-                              ))}
-                            </div>
-                          )}
-                          {documentIndex === branchAfterIndex && renderedBranchItem && (
-                            <UnitBranchEntry
-                              item={renderedBranchItem}
-                              alignWithDocuments
-                              showPullRequests
-                            />
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </div>
-                </TreeBranch>
-              );
-            })}
-          </div>
-        </TreeBranch>
-      ))}
+      {visibleTree.map((phase) => {
+        const phaseDocCount = phase.stages.reduce((s, st) => s + st.documents.length, 0);
+        const headingId = `provenance-phase-heading-${phase.phasePath}`;
+        return (
+          <section
+            key={phase.phasePath}
+            id={`provenance-phase-${phase.phasePath}`}
+            aria-labelledby={headingId}
+            className="space-y-1"
+          >
+            <h3
+              id={headingId}
+              className="flex items-baseline gap-2 border-b px-2 pb-1.5 text-sm font-semibold"
+            >
+              {phase.phaseLabel}
+              <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                {phaseDocCount} document{phaseDocCount === 1 ? '' : 's'}
+              </span>
+            </h3>
+            <div className="space-y-0.5">
+              {phase.stages.map((stage) => (
+                <StageBranch
+                  key={stage.key}
+                  stage={stage}
+                  open={isStageOpen(stage.key)}
+                  onOpenChange={(open) => setStageOpen(stage.key, open)}
+                  commonSuffix={commonSuffix}
+                  getNeighbors={getNeighbors}
+                  itemsByArtifact={itemsByArtifact}
+                  unitBranchItems={unitBranchItems}
+                  expandedDocs={expandedDocs}
+                  toggleDoc={toggleDoc}
+                  openArtifactPreview={openArtifactPreview}
+                  openItemPreview={openItemPreview}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
 
       {documentOrder === 'oldest-first' && codeBranch}
 
-      {unlinkedItems.length > 0 && (
-        <TreeBranch
-          icon={<Layers className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="Other items"
-          count={unlinkedItems.length}
-          expanded={otherItemsExpanded}
-          onToggle={() => setOtherItemsExpanded(!otherItemsExpanded)}
-          id="provenance-other-items"
-        >
-          <div className="space-y-0.5 pl-5">
-            {unlinkedItems.map((item) => (
-              <DerivedItemRow
-                key={item.id}
-                item={item}
-                getNeighbors={getNeighbors}
-                onPreview={() => openItemPreview(item.id)}
-              />
-            ))}
-          </div>
-        </TreeBranch>
+      {unlinkedItems.length > 0 && !filtering && (
+        <div id="provenance-other-items">
+          <Disclosure
+            title="Other items"
+            count={unlinkedItems.length}
+            open={otherItemsExpanded}
+            onOpenChange={setOtherItemsExpanded}
+            headingLevel={3}
+          >
+            <div className="space-y-0.5">
+              {unlinkedItems.map((item) => (
+                <DerivedItemRow
+                  key={item.id}
+                  item={item}
+                  getNeighbors={getNeighbors}
+                  onPreview={() => openItemPreview(item.id)}
+                />
+              ))}
+            </div>
+          </Disclosure>
+        </div>
       )}
 
-      {/* Legend for the item chevron colors — only types present, ≥2 (a
-          single-entry legend is noise). */}
-      {itemTypeLegend.length > 1 && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 px-2 pt-2">
+      {itemTypeLegend.length > 1 && !filtering && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 px-2 pt-2">
           {itemTypeLegend.map((t) => (
-            <span
-              key={t}
-              className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80"
-            >
+            <span key={t} className="inline-flex items-center gap-1 text-2xs text-muted-foreground">
               <ChevronRight className={cn('h-3 w-3', nodeTypeTextColor(t))} strokeWidth={3} />
               {shortNodeType(t)}
             </span>
@@ -396,58 +363,111 @@ export function ProvenanceTree({
   );
 }
 
-function TreeBranch({
-  icon,
-  label,
-  count,
-  expanded,
-  onToggle,
-  children,
-  id,
-  compact,
-  unitSlug,
+function StageBranch({
+  stage,
+  open,
+  onOpenChange,
+  commonSuffix,
+  getNeighbors,
+  itemsByArtifact,
+  unitBranchItems,
+  expandedDocs,
+  toggleDoc,
+  openArtifactPreview,
+  openItemPreview,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-  expanded: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-  id?: string;
-  compact?: boolean;
-  unitSlug?: string | null;
+  stage: StageNode;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  commonSuffix: string | null;
+  getNeighbors: (id: string) => GraphNeighbor[];
+  itemsByArtifact: Map<string, IntentGraphNode[]>;
+  unitBranchItems: UnitBranchItem[];
+  expandedDocs: Set<string>;
+  toggleDoc: (docId: string) => void;
+  openArtifactPreview: (id: string) => void;
+  openItemPreview: (id: string) => void;
 }) {
+  const unitBranchItem = stage.unitSlug
+    ? unitBranchItems.find(
+        (item) =>
+          item.unitSlug === stage.unitSlug &&
+          (stage.sectionIndex == null || item.sectionIndex === stage.sectionIndex),
+      )
+    : null;
+  const planIndex = stage.documents.findIndex(isCodeGenerationPlan);
+  const summaryIndex = stage.documents.findIndex(isCodeSummary);
+  const renderedBranchItem =
+    (planIndex >= 0 || summaryIndex >= 0) && unitBranchItem?.branch ? unitBranchItem : null;
+  const branchBeforeIndex =
+    renderedBranchItem && summaryIndex >= 0
+      ? planIndex >= 0
+        ? Math.max(planIndex, summaryIndex)
+        : summaryIndex
+      : -1;
+  const branchAfterIndex =
+    renderedBranchItem && summaryIndex < 0 && planIndex >= 0 ? planIndex : -1;
+
   return (
-    <div id={id} role="treeitem" aria-expanded={expanded}>
-      <button
-        type="button"
-        className={cn(
-          'flex w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-muted/50',
-          compact ? 'py-1' : 'py-1.5',
-        )}
-        onClick={onToggle}
-        aria-expanded={expanded}
+    <div id={`provenance-stage-${stage.key}`}>
+      <Disclosure
+        title={stage.stageLabel}
+        count={stage.documents.length + (renderedBranchItem ? 1 : 0)}
+        headingLevel={4}
+        open={open}
+        onOpenChange={onOpenChange}
+        summary={stage.latestCreatedAt ? <RelativeTime value={stage.latestCreatedAt} /> : undefined}
+        description={
+          stage.unitSlug ? (
+            <Badge variant="outline" size="sm" className="font-normal text-muted-foreground">
+              {humanizeSlug(stage.unitSlug)}
+            </Badge>
+          ) : undefined
+        }
+        contentClassName="px-0 pb-2 pt-0"
       >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-        )}
-        {icon}
-        <span className={cn('text-sm font-medium', compact && 'text-xs')}>{label}</span>
-        {unitSlug && (
-          <Badge
-            variant="outline"
-            className="h-4 px-1 text-[9px] font-normal text-muted-foreground"
-          >
-            {unitSlug}
-          </Badge>
-        )}
-        <Badge variant="secondary" className="h-4 px-1 text-[9px]">
-          {count}
-        </Badge>
-      </button>
-      {expanded && <div role="group">{children}</div>}
+        <div className="space-y-0.5 pl-3">
+          {stage.documents.map((doc, documentIndex) => {
+            const docItems = itemsByArtifact.get(doc.id) ?? [];
+            const visibleItems = docItems.filter((i) => !HIDDEN_ITEM_TYPES.has(i.type));
+            const hasItems = visibleItems.length > 0;
+            const isExpanded = expandedDocs.has(doc.id);
+
+            return (
+              <Fragment key={doc.id}>
+                {documentIndex === branchBeforeIndex && renderedBranchItem && (
+                  <UnitBranchEntry item={renderedBranchItem} alignWithDocuments showPullRequests />
+                )}
+                <DocumentRow
+                  doc={doc}
+                  commonSuffix={commonSuffix}
+                  getNeighbors={getNeighbors}
+                  itemCount={visibleItems.length}
+                  hasItems={hasItems}
+                  expanded={isExpanded}
+                  onToggle={() => toggleDoc(doc.id)}
+                  onPreview={() => openArtifactPreview(doc.id)}
+                />
+                {isExpanded && hasItems && (
+                  <div className="space-y-0.5 pl-5">
+                    {visibleItems.map((item) => (
+                      <DerivedItemRow
+                        key={item.id}
+                        item={item}
+                        getNeighbors={getNeighbors}
+                        onPreview={() => openItemPreview(item.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {documentIndex === branchAfterIndex && renderedBranchItem && (
+                  <UnitBranchEntry item={renderedBranchItem} alignWithDocuments showPullRequests />
+                )}
+              </Fragment>
+            );
+          })}
+        </div>
+      </Disclosure>
     </div>
   );
 }
@@ -471,18 +491,19 @@ function DocumentRow({
   onToggle: () => void;
   onPreview: () => void;
 }) {
+  const label = documentLabel(doc, commonSuffix);
   return (
     <div
       id={`artifact-${doc.id}`}
-      className="group/doc flex items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 hover:bg-muted/50 transition-colors"
+      className="group/doc flex min-h-8 items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 hover:bg-muted/50 transition-colors"
     >
       {hasItems ? (
         <button
           type="button"
           onClick={onToggle}
-          className="shrink-0 p-0.5"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
           aria-expanded={expanded}
-          aria-label={`Expand items for ${doc.title || doc.id}`}
+          aria-label={`Expand items for ${label}`}
         >
           {expanded ? (
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -491,7 +512,7 @@ function DocumentRow({
           )}
         </button>
       ) : (
-        <span className="w-4 shrink-0" />
+        <span className="w-6 shrink-0" />
       )}
       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <button
@@ -499,23 +520,18 @@ function DocumentRow({
         className="min-w-0 flex-1 truncate text-left text-sm hover:underline"
         onClick={onPreview}
       >
-        {doc.title ? stripDocSuffix(doc.title, commonSuffix) : doc.id}
+        {label}
       </button>
       {doc.staleSince && (
         <AlertTriangle
           aria-label="Possibly stale"
-          className="h-3 w-3 shrink-0 text-agent-waiting"
+          className="h-3 w-3 shrink-0 text-agent-waiting-fg"
         />
-      )}
-      {doc.createdAt && (
-        <span className="shrink-0 text-[11px] text-muted-foreground/60">
-          {getTimeAgo(doc.createdAt)}
-        </span>
       )}
       <DerivedItemCountChip artifactId={doc.id} count={itemCount} />
       <ArtifactHistoryDrawer artifact={doc} />
       <IntentGraphPopover neighbors={getNeighbors(doc.id)} className="shrink-0" />
-      <DiscussButton entityType="artifact" entityId={doc.id} entityTitle={doc.title || doc.id} />
+      <DiscussButton entityType="artifact" entityId={doc.id} entityTitle={label} />
     </div>
   );
 }
@@ -581,10 +597,14 @@ const isCodeSummary = (artifact: IntentArtifact) =>
 function buildPhaseTree(
   documents: IntentArtifact[],
   getProvenance: (a: IntentArtifact) => DocProvenance,
+  stageRows: IntentStageRow[],
   documentOrder: 'oldest-first' | 'newest-first',
 ): PhaseNode[] {
   const phases = new Map<string, PhaseNode>();
   const stageNodeMap = new Map<string, StageNode>();
+  const rowByInstance = new Map(
+    stageRows.filter((r) => r.stageInstanceId).map((r) => [r.stageInstanceId as string, r]),
+  );
 
   for (const doc of documents) {
     const prov = getProvenance(doc);
@@ -598,18 +618,31 @@ function buildPhaseTree(
     const stageKey = stageBranchKey(phasePath, prov.stageId, prov.unitSlug, prov.sectionIndex);
     let stageNode = stageNodeMap.get(stageKey);
     if (!stageNode) {
+      const row = doc.createdByStageInstanceId
+        ? rowByInstance.get(doc.createdByStageInstanceId)
+        : undefined;
       stageNode = {
+        key: stageKey,
         stageId: prov.stageId ?? '__none__',
-        stageLabel: prov.stageLabel ?? 'General',
+        stageLabel: prov.stageId ? displayStageName(prov.stageId) : 'General',
         unitSlug: prov.unitSlug,
         sectionIndex: prov.sectionIndex,
         documents: [],
         order: prov.stageOrder,
+        active: row ? ACTIVE_STAGE_STATES.has(row.state) : false,
+        latestCreatedAt: null,
       };
       stageNodeMap.set(stageKey, stageNode);
       phases.get(phasePath)!.stages.push(stageNode);
     }
     stageNode.documents.push(doc);
+    if (
+      doc.createdAt &&
+      artifactTs(doc) >
+        (stageNode.latestCreatedAt ? new Date(stageNode.latestCreatedAt).getTime() : 0)
+    ) {
+      stageNode.latestCreatedAt = doc.createdAt;
+    }
   }
 
   for (const phase of phases.values()) {
@@ -638,6 +671,44 @@ function buildPhaseTree(
     const phaseOrder = codepointCompare(a.phasePath, b.phasePath);
     return documentOrder === 'newest-first' ? -phaseOrder : phaseOrder;
   });
+}
+
+// The stage a reader most likely came for: the one still running or waiting
+// on them; otherwise the one holding the newest document (the latest work).
+// Phases/stages are never all open at once — closed stages stay unmounted.
+function pickDefaultOpenStage(tree: PhaseNode[]): string | null {
+  const stages = tree.flatMap((phase) => phase.stages);
+  if (stages.length === 0) return null;
+  const active = stages.filter((stage) => stage.active);
+  const candidates = active.length > 0 ? active : stages;
+  let best: StageNode | null = null;
+  let bestTs = -1;
+  for (const stage of candidates) {
+    const ts = stage.latestCreatedAt ? new Date(stage.latestCreatedAt).getTime() : 0;
+    if (ts > bestTs || (ts === bestTs && best && stage.order >= best.order)) {
+      best = stage;
+      bestTs = ts;
+    }
+  }
+  return (best ?? candidates[candidates.length - 1]).key;
+}
+
+function filterPhaseTree(tree: PhaseNode[], query: string, commonSuffix: string | null) {
+  const matches = (doc: IntentArtifact, stage: StageNode) =>
+    documentLabel(doc, commonSuffix).toLowerCase().includes(query) ||
+    (doc.title ?? '').toLowerCase().includes(query) ||
+    stage.stageLabel.toLowerCase().includes(query);
+  return tree
+    .map((phase) => ({
+      ...phase,
+      stages: phase.stages
+        .map((stage) => ({
+          ...stage,
+          documents: stage.documents.filter((doc) => matches(doc, stage)),
+        }))
+        .filter((stage) => stage.documents.length > 0),
+    }))
+    .filter((phase) => phase.stages.length > 0);
 }
 
 function codepointCompare(a: string, b: string): number {

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { IntentArtifact } from '@/services/intents';
@@ -62,5 +62,11 @@ describe('ArtifactViewer body states', () => {
     render(<ArtifactViewer artifact={{ ...artifact, content: null }} />);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('labels the document type in sentence case, not as an uppercase slug', () => {
+    render(<ArtifactViewer artifact={{ ...artifact, artifactType: 'intent-statement' }} />);
+    expect(screen.getByText('Intent statement')).not.toHaveClass('uppercase');
+    expect(screen.queryByText('intent-statement')).not.toBeInTheDocument();
   });
 });

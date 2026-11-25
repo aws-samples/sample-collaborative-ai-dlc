@@ -156,7 +156,7 @@ export function ArtifactContentEditor({
           </span>
         )}
         {saveError && <span className="text-[11px] text-destructive">{saveError}</span>}
-        <span className="ml-auto text-[10px] text-muted-foreground/60">
+        <span className="ml-auto text-2xs text-muted-foreground/60">
           Auto-saves as you type · downstream artifacts get a “possibly stale” marker
         </span>
       </div>

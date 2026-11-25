@@ -3,12 +3,13 @@ import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
+  type IntentDetail,
   type NativeExportHarness,
   type NativeWorkflowExport,
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { useProjectCache } from '@/hooks/useProjectsCache';
+import { getCachedIntentSummary, useProjectCache } from '@/hooks/useProjectsCache';
 import { DeliveryStatus } from '@/components/intent/DeliveryStatus';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
@@ -17,12 +18,19 @@ import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { completionExplanation } from '@/lib/completionExplanation';
 import { resumeOrExplain, type ResumeNotice } from '@/lib/intentActions';
-import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
+import {
+  PendingQuestionsTabs,
+  gateCardId,
+  gateQuestionCount,
+} from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
-import { MethodologyReleaseBadge } from '@/components/intent/MethodologyReleaseBadge';
+import { IntentOutcomeCallout, openDecisions } from '@/components/intent/IntentOutcomeCallout';
+import { IntentPageHeader } from '@/components/intent/IntentPageHeader';
+import { reshapeDisabledReason, VIEW_ONLY_REASON } from '@/lib/intentActions';
+import { IntentActionsMenu } from '@/components/intent/IntentActionsMenu';
 import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { GateCard } from '@/components/intent/GateCard';
 import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
@@ -30,9 +38,24 @@ import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
 import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
 import { nativeExportErrorMessage } from '@/components/intent/nativeExportError';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/ui/empty-state';
+import { IntentNotFoundState } from '@/components/intent/IntentNotFoundState';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { TechnicalDetails } from '@/components/ui/technical-details';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { displayStageName } from '@/lib/displayNames';
+import { useReturnFocus } from '@/components/intent/useReturnFocus';
+import { deriveIntentStatus } from '@/lib/statusModel';
+import { cn } from '@/lib/utils';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,26 +67,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import {
-  Check,
-  ChevronDown,
-  Download,
-  GitBranch,
   KeyRound,
   Loader2,
   Milestone,
-  MoreHorizontal,
   Play,
-  RotateCcw,
-  Settings2,
-  Trash2,
   TriangleAlert,
   Wrench,
   X,
@@ -74,20 +81,12 @@ import {
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
 // IntentActivityPanel where output/timeline/discussions render).
 
-const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
 const CREDENTIAL_FAILURE_CODES = new Set([
   'credential_unavailable',
   'credential_invalid',
   'credential_quota_exhausted',
 ]);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
-// A CREATED run no orchestrator has claimed should leave CREATED within
-// seconds of the hand-off.
-const UNCLAIMED_STALL_AFTER_MS = 2 * 60_000;
-// A claimed run in CREATED is initializing its workspace. The orchestrator's
-// init callback times out after 2 h (v2-orchestrator INIT_WS_CALLBACK_TIMEOUT)
-// and fails the run; the slack covers that failure write.
-const CLAIMED_INIT_STALL_AFTER_MS = 2 * 60 * 60_000 + 10 * 60_000;
 const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
@@ -95,6 +94,60 @@ const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'kiro-ide', label: 'Kiro IDE' },
   { value: 'opencode', label: 'OpenCode' },
 ];
+
+// Review-route title ("Feasibility — questions") and the one-line reason. No
+// count: the card below numbers its questions ("Q1 / 2").
+const GATE_REVIEW_INTRO: Record<string, { noun: (count: number) => string; needs: string }> = {
+  question: {
+    noun: (count) => (count === 1 ? 'question' : 'questions'),
+    needs: 'The agent needs an answer before this stage can continue.',
+  },
+  approval: { noun: () => 'approval', needs: 'This stage needs your approval to continue.' },
+  'review-verdict': {
+    noun: () => 'reviewer verdict',
+    needs: 'A reviewer verdict is needed before this stage can continue.',
+  },
+};
+
+const COMPLETION_NOTICE = {
+  incomplete: {
+    title: 'Incomplete work',
+    body: 'The recorded success has unfinished current-plan work. Review the remaining units before publishing.',
+  },
+  unknown: {
+    title: 'Completion unverified',
+    body: 'Completion could not be verified. Review the recorded work and available evidence before publishing.',
+  },
+  partial: {
+    title: 'Partial delivery',
+    body: 'Partial delivery was explicitly accepted. Integrated work and the recorded omissions are preserved.',
+  },
+} as const;
+
+const completionNotice = (state: string) =>
+  state === 'unknown' || state === 'partial'
+    ? COMPLETION_NOTICE[state]
+    : COMPLETION_NOTICE.incomplete;
+
+// Legacy `failureReason` ("stage_failed: <stage>: <code>: <detail>") is the only
+// place some runs name the failed stage; `failure.message` alone loses it. A
+// message that says more than the reason is kept after it for the details.
+function withStageFailure(detail: IntentDetail): IntentDetail {
+  const { failure, failureReason } = detail.intent;
+  if (detail.intent.status !== 'FAILED') return detail;
+  if (!failureReason?.startsWith('stage_failed: ')) return detail;
+  const message = failure?.message?.trim();
+  if (message?.startsWith('stage_failed: ')) return detail;
+  const merged =
+    message && !failureReason.includes(message) ? `${failureReason} — ${message}` : failureReason;
+  return {
+    ...detail,
+    intent: {
+      ...detail.intent,
+      failure: { code: failure?.code ?? 'stage_failed', message: merged },
+    },
+  };
+}
 
 const errorMessage = (value: string) => {
   try {
@@ -117,6 +170,7 @@ export default function IntentView() {
     detail,
     loading,
     error: loadError,
+    notFound,
     gates,
     pendingGates,
     reload,
@@ -131,6 +185,7 @@ export default function IntentView() {
     mayControlStage,
     firstNonAutomaticStageId,
     stageNameOf,
+    lastActivityAt,
   } = useIntent();
   const navigate = useNavigate();
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
@@ -144,9 +199,6 @@ export default function IntentView() {
   const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [resuming, setResuming] = useState(false);
@@ -154,13 +206,13 @@ export default function IntentView() {
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [reshapeOpen, setReshapeOpen] = useState(false);
   const [confirmExport, setConfirmExport] = useState(false);
+  const returnFocusAfterExport = useReturnFocus(confirmExport);
+  const returnFocusAfterRepair = useReturnFocus(confirmRepair);
   const [selectedExportHarness, setSelectedExportHarness] = useState<
     NativeExportHarness | undefined
   >();
-  const [requestedExportHarness, setRequestedExportHarness] = useState<
-    NativeExportHarness | undefined
-  >();
   const [exporting, setExporting] = useState(false);
+  const [focusedGateId, setFocusedGateId] = useState<string | null>(null);
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
@@ -188,17 +240,12 @@ export default function IntentView() {
     detail?.intent.status === 'FAILED'
       ? (stageRows.find((stage) => stage.planned && stage.state === 'FAILED') ?? null)
       : null;
-  const handleRecovery = async () => {
+  const recover = async (action: () => Promise<void>) => {
     if (!projectId || !intentId) return;
     setStarting(true);
     setActionError(null);
     try {
-      if (failedStage) {
-        await rewindIntent(failedStage.stageId);
-      } else {
-        await intentsService.start(projectId, intentId);
-        await reload();
-      }
+      await action();
     } catch (err) {
       setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to recover intent');
@@ -206,6 +253,13 @@ export default function IntentView() {
       setStarting(false);
     }
   };
+  const handleRestartFromStage = () =>
+    failedStage ? recover(() => rewindIntent(failedStage.stageId)) : Promise.resolve();
+  const handleStartAgain = () =>
+    recover(async () => {
+      await intentsService.start(projectId, intentId);
+      await reload();
+    });
 
   // Cancel (steering): retire a parked (WAITING), stranded (CREATED) or FAILED
   // run — supersedes pending gates and flips the run to CANCELLED. RUNNING
@@ -229,27 +283,23 @@ export default function IntentView() {
     }
   };
 
+  // Confirmed by IntentActionsMenu's AlertDialog; rethrow so the dialog
+  // knows the action failed while this page reports the error.
   const handleCancel = async () => {
-    if (!window.confirm('Cancel this run? Pending questions are retired and the run stops.')) {
-      return;
-    }
-    setCancelling(true);
     setActionError(null);
     try {
       await cancelIntent();
     } catch (err) {
       setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
-    } finally {
-      setCancelling(false);
+      throw err;
     }
   };
 
   // Permanent delete (owner): removes the intent's graph data, run
   // history and realtime docs, then returns to the project page. Refused by
-  // the API while RUNNING — the button hides for it.
+  // the API while RUNNING — the menu hides it for that status.
   const handleDelete = async () => {
-    setDeleting(true);
     setActionError(null);
     try {
       await deleteIntent();
@@ -257,8 +307,7 @@ export default function IntentView() {
     } catch (err) {
       setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
-      setConfirmDelete(false);
-      setDeleting(false);
+      throw err;
     }
   };
 
@@ -301,35 +350,40 @@ export default function IntentView() {
     }
   };
 
-  const requestExport = (harness?: NativeExportHarness) => {
-    setRequestedExportHarness(harness);
-    setConfirmExport(true);
-  };
-
-  if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
+  if (!projectId || !intentId) return <IntentNotFoundState spacePath="/dashboard" />;
+  const spacePath = `/space/${projectId}`;
   if (loading && !detail) {
+    const cached = getCachedIntentSummary(projectId, intentId);
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-40 rounded-lg" />
+      <div className="space-y-6">
+        {cached ? (
+          <IntentPageHeader intent={cached} />
+        ) : (
+          <Skeleton label="Loading intent" className="h-9 w-72 rounded-md" />
+        )}
+        <Skeleton label={cached ? 'Loading intent' : 'Loading work'} className="h-28 rounded-lg" />
+        <Skeleton className="h-16 rounded-lg" />
+        <Skeleton className="h-64 rounded-lg" />
       </div>
     );
   }
+  if (!detail && notFound) {
+    return <IntentNotFoundState spacePath={spacePath} />;
+  }
   if (!detail) {
     return (
-      <div className="p-6 space-y-3">
-        <p className="text-sm text-muted-foreground">
-          {loadError ?? 'Intent not found — it may have been deleted.'}
-        </p>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => reload()}>
-            Retry
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => navigate(`/space/${projectId}`)}>
+      <ErrorState
+        className="mx-auto mt-8 w-full max-w-lg"
+        title="Couldn't load this intent"
+        description="The intent could not be retrieved. Check your connection and try again."
+        headingLevel={1}
+        onRetry={() => void reload()}
+        secondaryAction={
+          <Button variant="outline" size="sm" onClick={() => navigate(`/space/${projectId}`)}>
             Back to space
           </Button>
-        </div>
-      </div>
+        }
+      />
     );
   }
 
@@ -367,27 +421,18 @@ export default function IntentView() {
   const canCancel = activeStages.length
     ? activeStages.every((r) => mayControlStage(r.stageId))
     : mayControlStage(intent.currentStage ?? firstNonAutomaticStageId);
-  const canReshape =
-    !readOnly &&
-    (intent.status === 'WAITING' || isFailed) &&
-    intent.constructionAutonomyMode !== 'autonomous';
-  // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
-  const isCancellable =
-    canCancel && !readOnly && ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
-  // Deletable (destructive): owner, any status except mid-RUNNING.
-  const isDeletable = canDelete && intent.status !== 'RUNNING';
+  const mayRecover = !recoveryStageId || mayControlStage(recoveryStageId);
+  // A Viewer reads the run but changes nothing (the API refuses it too).
+  const viewOnlyReason = readOnly ? VIEW_ONLY_REASON : undefined;
+  const reshapeBlockedReason = viewOnlyReason ?? reshapeDisabledReason(intent);
+  const canReshape = reshapeBlockedReason === undefined;
   const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
   const exportUnavailableReason = 'Not available before the workflow starts';
-  const exportDisabled = readOnly || exporting || !isExportable;
+  const exportDisabledReason =
+    viewOnlyReason ??
+    (!isExportable ? exportUnavailableReason : exporting ? 'Preparing workspace…' : undefined);
   const defaultExportHarness = intent.agentCli ?? undefined;
   const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
-  const exportCli =
-    EXPORT_HARNESSES.find((option) => option.value === activeExportHarness)?.label ??
-    'native AI-DLC';
-  const exportButtonLabel =
-    intent.status === 'RUNNING'
-      ? `Download ${exportCli} workspace from latest completed checkpoint`
-      : `Download ${exportCli} workspace`;
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -397,20 +442,11 @@ export default function IntentView() {
   // one lane's stream). The Running card returns after fan-in.
   const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
-  // Stalled detection: a CREATED run whose hand-off never reached a live
-  // orchestrator strands here. After >2 min untouched, offer a restart instead
-  // of spinning. Once an orchestrator has claimed the run, CREATED means the
-  // workspace is still initializing — a large clone legitimately takes many
-  // minutes, and the orchestrator fails the run itself if the init job dies —
-  // so only flag it after the init callback window has clearly passed.
-  const lastTouch = intent.updatedAt ?? intent.createdAt;
-  const stallAfterMs = intent.orchestratorStartedAt
-    ? CLAIMED_INIT_STALL_AFTER_MS
-    : UNCLAIMED_STALL_AFTER_MS;
-  const isStalled =
-    intent.status === 'CREATED' &&
-    !!lastTouch &&
-    Date.now() - new Date(lastTouch).getTime() > stallAfterMs;
+  // One stall rule for every surface (statusModel): a CREATED hand-off nobody
+  // picked up gets "Restart workflow"; a stalled RUNNING run cannot be restarted or
+  // cancelled until the engine parks or fails it, so the callout offers nothing.
+  const derived = deriveIntentStatus(intent, { lastActivityAt, gates });
+  const canStartAgain = isFailed || (intent.status === 'CREATED' && derived.stalled);
   const isCredentialFailure =
     isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
   const credentialSettingsPath = isCredentialFailure
@@ -420,190 +456,138 @@ export default function IntentView() {
         ? `/space/${projectId}/settings?tab=agent`
         : null
     : null;
-  const failureMessage = intent.failure?.message ?? intent.failureReason;
+  const workPath = `/space/${projectId}/intent/${intentId}`;
+  const newVersionPath = `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`;
+  // Every decision the stage list paints yellow — pending gates AND stages
+  // still parked without one. The callout lists them when there is more than
+  // one, so a parked stage without a card is announced, never silently hidden.
+  const openDecisionCount = openDecisions({ gates, stages: detail.stages }).length;
+  const outcomeActions = {
+    restartFromStage: failedStage
+      ? {
+          stageId: failedStage.stageId,
+          pending: starting,
+          disabled: readOnly || starting || !mayRecover,
+          onClick: () => void handleRestartFromStage(),
+        }
+      : undefined,
+    startAgain: canStartAgain
+      ? {
+          pending: starting,
+          disabled: readOnly || starting || !mayRecover,
+          onClick: () => void handleStartAgain(),
+        }
+      : undefined,
+    resume: {
+      pending: resuming,
+      disabled: readOnly || resuming || !canResume,
+      onClick: () => void handleResume(),
+    },
+  };
+  // A validation gate has its own review screen; a question is answered in
+  // the tabs below, so "Answer" selects that tab and brings it into view.
+  const focusGate = (gateId: string) => {
+    const gate = gates.find((g) => g.humanTaskId === gateId);
+    if (gate?.kind === 'validation') {
+      navigate(`${workPath}/review/${gateId}`);
+      return;
+    }
+    setFocusedGateId(gateId);
+    // The tabs re-seed on the next render; the card's anchor exists once it
+    // is the selected one, so the scroll waits for that frame.
+    requestAnimationFrame(() => {
+      const anchor =
+        document.getElementById(gateCardId(gateId)) ??
+        document.getElementById('pending-human-gates');
+      anchor?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    });
+  };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
-            {intent.title || 'Intent'}
-          </h1>
-          {TERMINAL_STATUSES.has(intent.status) &&
-            (terminalCompletion === 'unknown' || terminalCompletion === 'incomplete' ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="rounded-full border border-amber-400/50 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300"
-                    >
-                      {terminalCompletion === 'unknown'
-                        ? 'Completion unverified'
-                        : 'Incomplete work'}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {terminalCompletion === 'unknown'
-                      ? completionExplanation(completion?.reason)
-                      : `Unfinished units: ${completion?.unresolved.map((unit) => unit.slug).join(', ') || 'details unavailable'}.`}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            ) : (
-              <Badge variant="outline" className="text-[10px] shrink-0">
-                {terminalCompletion === 'partial' ? 'Partial delivery' : intent.status}
-              </Badge>
-            ))}
-          <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
-          {intent.constructionGateAutonomy === 'autonomous' && (
-            <Badge
-              variant="outline"
-              className="text-[10px] shrink-0"
-              data-testid="construction-autonomy-badge"
-            >
-              Autonomous construction
-            </Badge>
-          )}
-          {isActive && (
-            <span
-              className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"
-              aria-label="live"
+    <div className="flex flex-col gap-6">
+      <IntentPageHeader
+        intent={intent}
+        lastActivityAt={lastActivityAt}
+        gates={gates}
+        stages={detail.stages}
+        actions={
+          <>
+            <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+            <IntentActionsMenu
+              intent={intent}
+              onConfiguration={() => setConfigurationOpen(true)}
+              onReshape={() => setReshapeOpen(true)}
+              reshapeDisabledReason={reshapeBlockedReason}
+              onExport={() => setConfirmExport(true)}
+              exportDisabledReason={exportDisabledReason}
+              onAudit={() => navigate(`${workPath}/audit`)}
+              onCancel={readOnly || !canCancel ? undefined : handleCancel}
+              onDelete={canDelete ? handleDelete : undefined}
+              extraItems={
+                // Opt-in migration (issue #482): never migrates this intent —
+                // it opens the create page prefilled from it, and the new
+                // intent recomputes its plan on the version chosen there.
+                pinningEnabled ? (
+                  <IntentActionsMenu.Item onSelect={() => navigate(newVersionPath)}>
+                    <Milestone aria-hidden="true" />
+                    Start a new intent on another AI-DLC version
+                  </IntentActionsMenu.Item>
+                ) : null
+              }
             />
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
-          <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex" data-testid="workspace-export-harness">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-7 w-5 rounded-none border-r border-border/60 px-0"
-                          disabled={exportDisabled}
-                          aria-label="Choose workspace harness"
-                        >
-                          <ChevronDown className="h-3 w-3" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        {EXPORT_HARNESSES.map((option) => (
-                          <DropdownMenuItem
-                            key={option.value}
-                            disabled={exporting}
-                            onClick={() => setSelectedExportHarness(option.value)}
-                          >
-                            <span>{option.label}</span>
-                            {option.value === activeExportHarness && (
-                              <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
-                            )}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {exporting
-                    ? 'Preparing workspace…'
-                    : isExportable
-                      ? 'Choose workspace harness'
-                      : exportUnavailableReason}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex" data-testid="workspace-export-download">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 rounded-none"
-                      disabled={exportDisabled}
-                      onClick={() => requestExport(activeExportHarness)}
-                      aria-label={exportButtonLabel}
-                    >
-                      {exporting ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {exporting
-                    ? 'Preparing workspace…'
-                    : isExportable
-                      ? exportButtonLabel
-                      : exportUnavailableReason}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
-                <Settings2 className="mr-2 h-4 w-4" />
-                Intent configuration
-              </DropdownMenuItem>
-              {canReshape && (
-                <DropdownMenuItem onSelect={() => setReshapeOpen(true)}>
-                  <GitBranch className="mr-2 h-4 w-4" />
-                  Reshape remaining stages
-                </DropdownMenuItem>
-              )}
-              {/* Opt-in migration (issue #482): never migrates this intent —
-                  it opens the create page prefilled from it, and the new
-                  intent recomputes its plan on the version chosen there. */}
-              {pinningEnabled && (
-                <DropdownMenuItem
-                  onSelect={() =>
-                    navigate(
-                      `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`,
-                    )
-                  }
-                >
-                  <Milestone className="mr-2 h-4 w-4" />
-                  Start a new intent on another AI-DLC version
-                </DropdownMenuItem>
-              )}
-              {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
-              {isCancellable && (
-                <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
-                  <XCircle className="mr-2 h-4 w-4" />
-                  {cancelling ? 'Cancelling…' : 'Cancel run'}
-                </DropdownMenuItem>
-              )}
-              {isDeletable && (
-                <DropdownMenuItem
-                  disabled={deleting}
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-destructive"
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  {deleting ? 'Deleting…' : 'Delete'}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-
-      <IntentPhaseBreadcrumb
-        onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
+          </>
+        }
       />
+
+      {!reviewGateId && (
+        <IntentOutcomeCallout
+          detail={withStageFailure(detail)}
+          lastActivityAt={lastActivityAt}
+          onAnswer={focusGate}
+          actions={outcomeActions}
+          // One open decision: its full card follows right below, so the
+          // callout keeps only the headline. Several decisions: the list stays
+          // on desktop — each gate row selects its card, a parked stage without
+          // a card opens its output. On a phone the cards are the next thing
+          // on screen, so the list is skipped there too.
+          className={
+            openDecisionCount === 1
+              ? '[&_ul[aria-label]]:hidden'
+              : '[&_ul[aria-label]]:max-md:hidden'
+          }
+        />
+      )}
+
+      {!reviewGateId && isCredentialFailure && credentialSettingsPath && (
+        <Alert
+          tone="neutral"
+          icon={<KeyRound />}
+          title="Fix the agent credential before restarting"
+          action={
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(credentialSettingsPath)}
+            >
+              Credential settings
+            </Button>
+          }
+        >
+          <AlertDescription>
+            {intent.credentialSource === 'user'
+              ? 'This run used your personal credential.'
+              : 'This run used the credential configured for this space.'}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* On a phone an open question outranks the pipeline: the bar moves below the work. */}
+      <div className={cn('empty:hidden', pendingGates.length > 0 && 'max-md:order-last')}>
+        <IntentPhaseBreadcrumb
+          onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
+        />
+      </div>
 
       {visibleError && (
         <div
@@ -624,6 +608,26 @@ export default function IntentView() {
         </div>
       )}
 
+      {terminalCompletion && terminalCompletion !== 'complete' && (
+        <Alert tone="warning" title={completionNotice(terminalCompletion).title}>
+          <AlertDescription>
+            <p>
+              {terminalCompletion === 'unknown'
+                ? completionExplanation(completion?.reason)
+                : terminalCompletion === 'incomplete'
+                  ? `Unfinished units: ${completion?.unresolved.map((unit) => unit.slug).join(', ') || 'details unavailable'}.`
+                  : completionNotice(terminalCompletion).body}
+            </p>
+            {terminalCompletion !== 'partial' && (
+              <p>
+                Automatic continuation of finished incomplete intents is not supported. Ordinary
+                rewind reruns the affected work.
+              </p>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {intent.status === 'SUCCEEDED' && intent.repos?.length !== 0 && (
         <DeliveryStatus
           key={intentId}
@@ -641,16 +645,36 @@ export default function IntentView() {
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 font-medium text-agent-error">
                 <TriangleAlert className="h-4 w-4" />
-                Parallel execution needs recovery
+                {recoveryWaits.length === 1
+                  ? 'One parallel unit is stuck'
+                  : `${recoveryWaits.length} parallel units are stuck`}
               </div>
               <p className="mt-1 text-[12px] text-muted-foreground">
-                {recoveryWaits.length} lane
-                {recoveryWaits.length === 1 ? ' is' : 's are'} parked without an answerable
-                question. Merged units are safe; active lanes must be replayed from the section
-                boundary.
+                {recoveryWaits.length === 1
+                  ? 'It stopped without a question you could answer. '
+                  : 'They stopped without a question you could answer. '}
+                Repairing keeps the units that already finished, discards the draft pull requests of
+                the unfinished ones and restarts them.
                 {lanesResuming &&
-                  ' Another lane is resuming after an answer; repair is available once it restarts.'}
+                  ' Another unit is restarting after an answer; repair is available once it is running again.'}
               </p>
+              <TechnicalDetails
+                className="mt-2"
+                items={[
+                  {
+                    label: 'Engine state',
+                    value: `${recoveryWaits.length} lane${recoveryWaits.length === 1 ? ' is' : 's are'} parked without an answerable question. Merged units are safe; active lanes must be replayed from the section boundary.`,
+                  },
+                  {
+                    label: 'Units',
+                    value: Object.entries(laneWaits)
+                      .filter(([, wait]) => wait.kind === 'recovery')
+                      .map(([slug]) => slug)
+                      .join(', '),
+                    copy: true,
+                  },
+                ]}
+              />
             </div>
             {canRepair && (
               <Button
@@ -666,143 +690,96 @@ export default function IntentView() {
                 ) : (
                   <Wrench className="h-3.5 w-3.5" />
                 )}
-                Repair execution
+                Repair units
               </Button>
             )}
           </div>
         </div>
       )}
 
-      {/* The answer is already recorded; only its durable callback failed, so one
-          click re-sends it. Shown until the resume succeeds or the callback
-          expires (which fails the run, recoverable by rewind). */}
-      {resumeRequired && (
-        <div className="rounded border border-agent-waiting/40 bg-agent-waiting/10 px-3 py-3 text-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 font-medium">
-                <TriangleAlert className="h-4 w-4 text-agent-waiting" />
-                Your answer was saved but the run did not continue
-              </div>
-              <p className="mt-1 text-[12px] text-muted-foreground">
-                Resume re-sends the recorded answer. No decision is asked again.
-              </p>
-            </div>
+      {/* The outcome callout carries the resume while the run is parked; a lane
+          question whose callback failed while the intent keeps RUNNING is the
+          one case it cannot show, so it gets its own notice here. */}
+      {resumeRequired && intent.status !== 'WAITING' && (
+        <Alert
+          tone="warning"
+          title="Your answer was saved but the run did not continue"
+          action={
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="shrink-0 gap-1.5"
-              disabled={readOnly || !canResume || resuming}
-              onClick={handleResume}
+              loading={resuming}
+              disabled={readOnly || !canResume}
+              onClick={() => void handleResume()}
             >
-              {resuming ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Play className="h-3.5 w-3.5" />
-              )}
-              {resuming ? 'Resuming…' : 'Resume run'}
+              <Play aria-hidden="true" />
+              Resume run
             </Button>
-          </div>
-        </div>
+          }
+        >
+          <AlertDescription>
+            Resume re-sends the recorded answer. No decision is asked again.
+          </AlertDescription>
+        </Alert>
       )}
 
       {resumeNotice && (
-        <div
-          className={
-            resumeNotice.kind === 'expired'
-              ? 'rounded border border-agent-error/30 bg-agent-error/10 px-3 py-3 text-sm'
-              : 'rounded border border-agent-waiting/40 bg-agent-waiting/10 px-3 py-3 text-sm'
-          }
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 font-medium">
-                {resumeNotice.kind === 'expired' ? (
-                  <XCircle className="h-4 w-4 text-agent-error" />
-                ) : (
-                  <TriangleAlert className="h-4 w-4 text-agent-waiting" />
-                )}
-                {resumeNotice.title}
-              </div>
-              <p className="mt-1 text-[12px] text-muted-foreground">{resumeNotice.message}</p>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="shrink-0"
-              onClick={() => setResumeNotice(null)}
-            >
+        <Alert
+          tone={resumeNotice.kind === 'expired' ? 'danger' : 'warning'}
+          icon={resumeNotice.kind === 'expired' ? <XCircle /> : <TriangleAlert />}
+          title={resumeNotice.title}
+          action={
+            <Button type="button" size="sm" variant="ghost" onClick={() => setResumeNotice(null)}>
               Dismiss
             </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Stage failures resume from the first failed stage. Pre-stage failures and
-          stalled CREATED hand-offs have no rewind target and restart the plan. */}
-      {(isFailed || isStalled) && (
-        <div className="rounded border border-agent-error/30 bg-agent-error/10 px-3 py-3 text-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 font-medium text-agent-error">
-                <XCircle className="h-4 w-4" />
-                {isFailed ? 'Run failed' : 'Run stalled — never started'}
-              </div>
-              {isFailed && failureMessage && (
-                <p className="mt-1 break-words text-[12px] text-agent-error/90">{failureMessage}</p>
-              )}
-              {isStalled && (
-                <p className="mt-1 text-[12px] text-agent-error/90">
-                  Workspace setup never completed. Restart to re-run it.
-                </p>
-              )}
-            </div>
-            <div className="flex shrink-0 gap-2">
-              {credentialSettingsPath && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5"
-                  onClick={() => navigate(credentialSettingsPath)}
-                >
-                  <KeyRound className="h-3.5 w-3.5" />
-                  Credential settings
-                </Button>
-              )}
-              <Button
-                onClick={handleRecovery}
-                disabled={
-                  readOnly || starting || (!!recoveryStageId && !mayControlStage(recoveryStageId))
-                }
-                size="sm"
-                variant="outline"
-                className="shrink-0 gap-1.5"
-              >
-                {starting ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : failedStage ? (
-                  <RotateCcw className="h-3.5 w-3.5" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                {starting
-                  ? failedStage
-                    ? 'Retrying…'
-                    : 'Restarting…'
-                  : failedStage
-                    ? `Retry ${humanizeStageId(failedStage.stageId)}`
-                    : 'Restart workflow'}
-              </Button>
-            </div>
-          </div>
-        </div>
+          }
+        >
+          <AlertDescription>{resumeNotice.message}</AlertDescription>
+        </Alert>
       )}
 
       {/* DRAFT never renders here — it redirects to the compose page above. */}
-      {reviewGate ? (
+      {reviewGate && reviewGate.status === 'pending' && reviewGate.kind !== 'validation' ? (
+        // A question (or approval) gate reached through a /review link: the
+        // stage is parked on a question, not on an approval, so it gets the
+        // same gate card as the Work page — never the approve form.
+        <Card className="border-agent-waiting/30">
+          <CardContent className="space-y-3 py-4">
+            <div>
+              {/* The question text itself belongs to the card below, once. */}
+              <h2 className="text-base font-semibold">
+                {displayStageName(
+                  reviewGate.stageInstanceId
+                    ? stageNameOf(reviewGate.stageInstanceId)
+                    : reviewGate.humanTaskId,
+                )}
+                {reviewGate.unitSlug ? ` · ${reviewGate.unitSlug}` : ''} —{' '}
+                {(GATE_REVIEW_INTRO[reviewGate.kind] ?? GATE_REVIEW_INTRO.question).noun(
+                  gateQuestionCount(reviewGate),
+                )}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {(GATE_REVIEW_INTRO[reviewGate.kind] ?? GATE_REVIEW_INTRO.question).needs}
+              </p>
+            </div>
+            <GateCard
+              gate={reviewGate}
+              projectId={projectId}
+              intentId={intentId}
+              userName={userName}
+              onAnswer={answerGate}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
+            >
+              Back to intent
+            </Button>
+          </CardContent>
+        </Card>
+      ) : reviewGate && reviewGate.status === 'pending' ? (
         <StageReviewPanel
           gate={reviewGate}
           detail={detail}
@@ -813,12 +790,15 @@ export default function IntentView() {
           onBack={() => navigate(`/space/${projectId}/intent/${intentId}`)}
         />
       ) : reviewGateId ? (
-        <Card>
-          <CardContent className="space-y-3 py-4">
-            <p className="text-sm font-medium">Review gate not found</p>
-            <p className="text-sm text-muted-foreground">
-              This review may have been retired or belongs to another intent run.
-            </p>
+        <ErrorState
+          size="section"
+          title="This review is no longer pending"
+          description={
+            reviewGate
+              ? `It was answered${reviewGate.answeredByName || reviewGate.answeredBy ? ` by ${reviewGate.answeredByName || reviewGate.answeredBy}` : ''}. The intent page shows where the work stands now.`
+              : 'It may have been retired by a cancel or rewind, or it belongs to another intent run.'
+          }
+          secondaryAction={
             <Button
               variant="outline"
               size="sm"
@@ -826,42 +806,53 @@ export default function IntentView() {
             >
               Back to intent
             </Button>
-          </CardContent>
-        </Card>
+          }
+        />
       ) : (
         <>
           {/* Pending human gates — tabs: one GateCard at a time */}
           {pendingGates.length > 0 && (
-            <PendingQuestionsTabs
-              gates={pendingGates}
-              activeGateId={intent.pendingHumanTaskId}
-              gateContext={(gate) => {
-                // stageNameOf falls back to the raw instance id when the stage
-                // row is unknown — no prefix beats an opaque id on the tab.
-                const resolved = gate.stageInstanceId ? stageNameOf(gate.stageInstanceId) : null;
-                const stagePart =
-                  resolved && resolved !== gate.stageInstanceId ? humanizeStageId(resolved) : null;
-                return [stagePart, gate.unitSlug ?? null].filter(Boolean).join(' · ') || null;
-              }}
-              renderGateCard={(gate) => (
-                <GateCard
-                  gate={gate}
-                  projectId={projectId}
-                  intentId={intentId}
-                  userName={userName}
-                  onAnswer={answerGate}
-                />
-              )}
-            />
+            <div id="pending-human-gates">
+              {/* The tabs keep their own selection once mounted; a new key
+                  re-seeds it with the gate chosen in the outcome callout. */}
+              <PendingQuestionsTabs
+                key={focusedGateId ?? 'default'}
+                gates={pendingGates}
+                activeGateId={focusedGateId ?? intent.pendingHumanTaskId}
+                gateContext={(gate) => {
+                  // stageNameOf falls back to the raw instance id when the stage
+                  // row is unknown — no prefix beats an opaque id on the tab.
+                  const resolved = gate.stageInstanceId ? stageNameOf(gate.stageInstanceId) : null;
+                  const stagePart =
+                    resolved && resolved !== gate.stageInstanceId
+                      ? humanizeStageId(resolved)
+                      : null;
+                  return [stagePart, gate.unitSlug ?? null].filter(Boolean).join(' · ') || null;
+                }}
+                renderGateCard={(gate) => (
+                  <GateCard
+                    gate={gate}
+                    projectId={projectId}
+                    intentId={intentId}
+                    userName={userName}
+                    onAnswer={answerGate}
+                  />
+                )}
+              />
+            </div>
           )}
 
-          {pendingGates.length === 0 && !noStageRowsYet && isActive && !fanoutActive && (
-            <AgentProgressCard />
-          )}
+          {/* A stalled run must not look live: the callout above already says
+              what is known, so the pulsing progress card stays out. */}
+          {pendingGates.length === 0 &&
+            !noStageRowsYet &&
+            isActive &&
+            !fanoutActive &&
+            !derived.stalled && <AgentProgressCard />}
 
           {/* Workspace setup indicator — init-ws creates no stage row, so without
               this the screen looks idle while repos clone + the anchor is created. */}
-          {noStageRowsYet && isActive && (
+          {noStageRowsYet && isActive && !derived.stalled && (
             <div className="flex items-center gap-2 rounded-md border border-agent-running/30 bg-agent-running/[0.06] px-3 py-2 text-sm text-agent-running">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Setting up workspace (cloning repositories, preparing the run)…
@@ -875,7 +866,9 @@ export default function IntentView() {
 
           <QuorumEditPanel />
 
-          <WorkProductsSection detail={detail} gates={gates} />
+          <div id="intent-work-products">
+            <WorkProductsSection detail={detail} gates={gates} />
+          </div>
         </>
       )}
 
@@ -884,10 +877,9 @@ export default function IntentView() {
         onOpenChange={(open) => {
           if (exporting) return;
           setConfirmExport(open);
-          if (!open) setRequestedExportHarness(undefined);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent onCloseAutoFocus={returnFocusAfterExport}>
           <AlertDialogHeader>
             <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
             <AlertDialogDescription className="break-words">
@@ -898,13 +890,32 @@ export default function IntentView() {
               will not be synchronized back to this intent or included in its traceability history.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="workspace-export-harness">Agent tool for the workspace</Label>
+            <Select
+              value={activeExportHarness ?? ''}
+              onValueChange={(value) => setSelectedExportHarness(value as NativeExportHarness)}
+              disabled={exporting}
+            >
+              <SelectTrigger id="workspace-export-harness" className="w-full sm:w-64">
+                <SelectValue placeholder="Choose an agent tool" />
+              </SelectTrigger>
+              <SelectContent>
+                {EXPORT_HARNESSES.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={exporting}
               onClick={(event) => {
                 event.preventDefault();
-                void handleExport(requestedExportHarness);
+                void handleExport(activeExportHarness);
               }}
             >
               {exporting ? 'Preparing workspace…' : 'Download workspace'}
@@ -919,54 +930,17 @@ export default function IntentView() {
         onClose={() => setConstructionExport(null)}
       />
 
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={confirmDelete}
-        onOpenChange={(open) => !deleting && setConfirmDelete(open)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Intent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete "{intent.title || 'this intent'}"? All of its
-              artifacts, questions, discussions and run history will be permanently removed. This
-              action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                void handleDelete();
-              }}
-              disabled={deleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleting ? (
-                <span className="flex items-center gap-1.5">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Deleting…
-                </span>
-              ) : (
-                'Delete Intent'
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <AlertDialog
         open={confirmRepair}
         onOpenChange={(open) => !repairing && setConfirmRepair(open)}
       >
-        <AlertDialogContent>
+        <AlertDialogContent onCloseAutoFocus={returnFocusAfterRepair}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Repair parallel execution</AlertDialogTitle>
+            <AlertDialogTitle>Repair the stuck units?</AlertDialogTitle>
             <AlertDialogDescription>
-              This stops the orphaned execution, preserves merged units, archives active lane
-              artifacts, resets active lanes and their draft pull requests, then relaunches the
-              affected section.
+              Finished units are kept. The unfinished units stop, their draft pull requests and
+              in-progress documents are discarded, and they start again from the beginning of this
+              round.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -978,7 +952,7 @@ export default function IntentView() {
                 void handleRepair();
               }}
             >
-              {repairing ? 'Repairing…' : 'Repair execution'}
+              {repairing ? 'Repairing…' : 'Repair units'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

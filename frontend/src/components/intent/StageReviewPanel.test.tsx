@@ -3,7 +3,7 @@ vi.mock('@/contexts/SpacePermissionsContext', () => ({
 }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { StageReviewPanel, orderReviewerRuns, reviewerRunVerdict } from './StageReviewPanel';
 import type { GateAnswer, IntentDetail, IntentGate, IntentSensorRun } from '@/services/intents';
@@ -86,21 +86,22 @@ const gate = (over: Partial<IntentGate> = {}): IntentGate =>
     ...over,
   }) as IntentGate;
 
-const detail = (): IntentDetail =>
+const detail = (over: Partial<IntentDetail> = {}): IntentDetail =>
   ({
     stages: [{ stageInstanceId: 'si-1', stageId: 'requirements-analysis' }],
     artifacts: [],
     sensorRuns: [],
+    ...over,
   }) as unknown as IntentDetail;
 
 let onAnswer: Mock<(gate: IntentGate, input: GateAnswer) => Promise<void>>;
 
-const renderPanel = (g: IntentGate) => {
+const renderPanel = (g: IntentGate, d: IntentDetail = detail()) => {
   onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(async () => {});
   render(
     <StageReviewPanel
       gate={g}
-      detail={detail()}
+      detail={d}
       projectId="p1"
       intentId="i1"
       userName="Ada"
@@ -125,6 +126,46 @@ it('lets a Contributor write shared feedback while reserving submission for a De
   expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled();
   expect(screen.getByRole('button', { name: /Request changes/i })).toBeDisabled();
   expect(onAnswer).not.toHaveBeenCalled();
+});
+
+describe('StageReviewPanel — review summary and approve label (W1)', () => {
+  it('stat tiles read in sentence case and say "Not reviewed yet" instead of "None"', () => {
+    renderPanel(
+      gate({ nextStageId: 'requirements-analysis' }),
+      detail({
+        artifacts: [
+          {
+            id: 'a1',
+            artifactType: 'requirements',
+            title: 'Requirements',
+            content: '# Requirements',
+            createdByStageInstanceId: 'si-1',
+            createdByExecutionId: 'exec-1',
+            createdAt: null,
+          },
+        ] as unknown as IntentDetail['artifacts'],
+      }),
+    );
+    for (const label of ['Artifacts', 'Identified items', 'Reviewer verdict', 'Status']) {
+      const tile = screen.getAllByText(label).find((el) => el.classList.contains('text-2xs'));
+      expect(tile).toBeDefined();
+      expect(tile).not.toHaveClass('uppercase');
+      expect(tile).not.toHaveClass('tracking-wide');
+    }
+    expect(screen.getByText('Not reviewed yet')).toBeInTheDocument();
+    expect(screen.queryByText('None')).toBeNull();
+    // The section below the tiles does not repeat their count (D6).
+    const section = screen.getByRole('button', { name: 'Artifacts' });
+    expect(section).toHaveTextContent(/^Artifacts$/);
+  });
+
+  it('names the next stage in display form on the approve button, never a slug', () => {
+    renderPanel(gate({ nextStageId: 'requirements-analysis' }));
+    expect(
+      screen.getByRole('button', { name: 'Approve — continue to Requirements Analysis' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/requirements-analysis$/)).toBeNull();
+  });
 });
 
 describe('StageReviewPanel — learnings ritual', () => {
@@ -218,8 +259,10 @@ describe('StageReviewPanel — learnings ritual', () => {
     expect(screen.queryByText(/recommends revising the generated code/)).not.toBeInTheDocument();
   });
 
-  it('sends the feedback with a loop-back, recorded as rejected', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  // Audit X7: every consequential decision confirms through the design-system
+  // AlertDialog (consequence sentence, Cancel focused), never window.confirm.
+  it('sends the feedback with a loop-back, recorded as rejected, once confirmed in the dialog', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
     renderPanel(
       gate({
         options: ['approve', 'request-changes', 'loop-back'],
@@ -228,43 +271,107 @@ describe('StageReviewPanel — learnings ritual', () => {
     );
     await userEvent.type(screen.getByLabelText(/Feedback for the agent/i), 'check the refund path');
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
-    expect(confirm.mock.calls[0][0]).toContain('code-generation and this stage re-run');
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Send this work back to code-generation?',
+    });
+    expect(dialog).toHaveTextContent('code-generation and this stage re-run from scratch');
+    expect(dialog).toHaveTextContent('earlier plan approvals and reviews will be invalidated');
+    expect(onAnswer).not.toHaveBeenCalled();
+    // Irreversible: Cancel takes focus, the action is the destructive one.
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    const action = screen.getByRole('button', { name: 'Send back and re-run' });
+    expect(action).toHaveClass('bg-destructive');
+
+    await userEvent.click(action);
     expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
       status: 'rejected',
       answer: { decision: 'loop-back', feedback: 'check the refund path' },
     });
+    expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 
-  it('records grant-autonomy as an approval and asks for confirmation first', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('sends nothing when the loop-back dialog is cancelled', async () => {
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes', 'loop-back'],
+        loopBackTarget: 'code-generation',
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
+    await screen.findByRole('alertdialog');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('records grant-autonomy as an approval after the dialog states the consequence', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
     renderPanel(gate({ options: ['approve', 'request-changes', 'grant-autonomy'] }));
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Approve and continue autonomously' }),
     );
 
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(String(confirm.mock.calls[0][0])).toContain('without stopping');
-    expect(String(confirm.mock.calls[0][0])).toContain(
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent('without stopping');
+    expect(dialog).toHaveTextContent(
       'This applies for the rest of the intent, rewinds included, until the intent is cancelled.',
     );
+    expect(onAnswer).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve and run autonomously' }));
     expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
       status: 'approved',
       answer: { decision: 'grant-autonomy' },
     });
+    expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 
-  it('sends nothing when the autonomy confirmation is dismissed', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('sends nothing when the autonomy dialog is dismissed', async () => {
     renderPanel(gate({ options: ['approve', 'request-changes', 'grant-autonomy'] }));
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Approve and continue autonomously' }),
     );
+    await screen.findByRole('alertdialog');
+    await userEvent.keyboard('{Escape}');
 
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('names the blocking findings waived in the override dialog and records the reason', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes', 'override-and-approve'],
+        findings: [
+          { code: 'F1', title: 'Unsourced claim', severity: 'blocking', overridable: true },
+          { code: 'F2', title: 'Missing NFR', severity: 'blocking', overridable: true },
+        ],
+      }),
+    );
+    const trigger = screen.getByRole('button', { name: /Accept 2 blocking finding/ });
+    expect(trigger).toBeDisabled();
+    await userEvent.type(
+      screen.getByLabelText(/Why are you accepting the blocking finding/i),
+      'Sourced in ADR-7',
+    );
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Accept 2 blocking findings and approve?',
+    });
+    expect(dialog).toHaveTextContent('Your name and the finding codes are recorded');
+    expect(onAnswer).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Accept findings and approve' }));
+    expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
+      status: 'approved',
+      answer: { decision: 'override-and-approve', reason: 'Sourced in ADR-7' },
+    });
+    expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 

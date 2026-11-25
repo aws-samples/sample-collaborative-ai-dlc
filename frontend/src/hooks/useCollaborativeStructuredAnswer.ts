@@ -53,6 +53,8 @@ export function useCollaborativeStructuredAnswer(
     flushDocument,
     beforeDisconnect,
     documentReadOnly,
+    connection,
+    retryNow,
   } = useYjsDocument(docId, userName, generateColor(userName), scopeTargetFor(scope));
 
   const [selections, setSelections] = useState<Map<number, number[]>>(new Map());
@@ -237,6 +239,8 @@ export function useCollaborativeStructuredAnswer(
     getFreeText,
     addContributor,
     synced,
+    connection,
+    retryNow,
     awareness,
     remoteUsers,
     setCursor,

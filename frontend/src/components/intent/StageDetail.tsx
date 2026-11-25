@@ -438,13 +438,9 @@ export function StageDetail({
             {openGateLine(openGates)}
           </p>
           <Button asChild size="xs">
-            <Link
-              to={
-                nextGate.kind === 'validation'
-                  ? `${workPath}/review/${nextGate.humanTaskId}`
-                  : workPath
-              }
-            >
+            {/* This stage's own gate: with two lanes waiting, the bare Work
+                page would open whichever question it selects first. */}
+            <Link to={`${workPath}/review/${nextGate.humanTaskId}`}>
               {GATE_VERB[nextGate.kind]}
             </Link>
           </Button>

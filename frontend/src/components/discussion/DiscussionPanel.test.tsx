@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render } from '@/test/query';
 
 const useDiscussion = vi.hoisted(() =>
   vi.fn((_args: unknown) => ({

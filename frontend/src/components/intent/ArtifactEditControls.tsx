@@ -11,11 +11,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { TechnicalDetails } from '@/components/ui/technical-details';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { displayStageName, humanizeSlug } from '@/lib/displayNames';
 import { useIntent } from '@/contexts/IntentContext';
-import { intentsService, type ArtifactImpact, type IntentArtifact } from '@/services/intents';
+import {
+  intentsService,
+  type ArtifactImpact,
+  type ArtifactImpactDownstream,
+  type ArtifactImpactStage,
+  type IntentArtifact,
+} from '@/services/intents';
 
 // Post-hoc artifact editing affordances, shared by the ArtifactViewer card and
 // the document Preview tab:
@@ -88,9 +96,10 @@ export function ArtifactStaleBadge({
           <TooltipTrigger asChild>
             <Badge
               variant="outline"
-              className="gap-1 border-agent-waiting/50 bg-agent-waiting/10 px-1.5 py-0 text-[10px] text-agent-waiting"
+              size="sm"
+              className="border-agent-waiting/50 bg-agent-waiting/10 font-normal text-agent-waiting-fg"
             >
-              <TriangleAlert className="h-2.5 w-2.5" />
+              <TriangleAlert aria-hidden="true" />
               possibly stale
             </Badge>
           </TooltipTrigger>
@@ -104,19 +113,16 @@ export function ArtifactStaleBadge({
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
-              size="sm"
-              className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+              size="xs"
+              className="text-muted-foreground"
+              loading={verifying}
               disabled={readOnly || verifying}
               onClick={(e) => {
                 e.stopPropagation();
                 verify();
               }}
             >
-              {verifying ? (
-                <Loader2 className="h-2.5 w-2.5 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-2.5 w-2.5" />
-              )}
+              {!verifying && <ShieldCheck aria-hidden="true" />}
               Mark verified
             </Button>
           </TooltipTrigger>
@@ -251,64 +257,82 @@ export function ArtifactEditControls({
             {blocked ?? 'Edit with Quorum — it plans and applies the downstream updates too'}
           </TooltipContent>
         </Tooltip>
-        {error && <span className="text-[10px] text-destructive">{error}</span>}
+        {error && (
+          <span role="alert" className="text-2xs text-destructive">
+            {error}
+          </span>
+        )}
 
         {/* Drift warning before a simple edit */}
         <Dialog open={warningOpen} onOpenChange={setWarningOpen}>
           <DialogContent className="max-w-lg" onClick={(e) => e.stopPropagation()}>
-            <DialogHeader>
+            <DialogHeader className="text-left">
               <DialogTitle className="flex items-center gap-2 text-base">
                 <TriangleAlert className="h-4 w-4 text-agent-waiting" />
                 This document has been consumed downstream
               </DialogTitle>
               <DialogDescription asChild>
-                <div className="space-y-3 pt-1 text-left text-xs">
-                  {consumedBy.length > 0 ? (
-                    <div>
-                      <p className="font-medium text-foreground">
-                        Consumed by {consumedBy.length} stage{consumedBy.length > 1 ? 's' : ''}:
-                      </p>
-                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                        {consumedBy.map((s) => (
-                          <li key={s.stageId}>
-                            {s.stageId}{' '}
-                            <span className="text-muted-foreground">({s.via.join(' + ')})</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                <div className="space-y-3 pt-1 text-left text-sm">
+                  {consumedBy.length === 0 && downstream.length === 0 ? (
+                    <p>
+                      No other work depends on this document yet. You can edit it directly; later
+                      stages will read the new version.
+                    </p>
                   ) : (
-                    <p>No stage is recorded as having consumed this document.</p>
-                  )}
-                  {downstream.length > 0 && (
-                    <div>
-                      <p className="font-medium text-foreground">
-                        {downstream.length} artifact{downstream.length > 1 ? 's were' : ' was'}{' '}
-                        derived from it (transitively):
+                    <>
+                      {consumedBy.length > 0 && (
+                        <ImpactList
+                          title={
+                            consumedBy.length === 1
+                              ? 'One stage used it as input'
+                              : `${consumedBy.length} stages used it as input`
+                          }
+                          lines={consumedBy.map(describeConsumer)}
+                        />
+                      )}
+                      {downstream.length > 0 && (
+                        <ImpactList
+                          title={
+                            downstream.length === 1
+                              ? 'One document was built from it'
+                              : `${downstream.length} documents were built from it`
+                          }
+                          lines={downstream.map(describeDownstream)}
+                        />
+                      )}
+                      <p className="text-muted-foreground">
+                        Editing it directly leaves those documents behind: they will be marked{' '}
+                        <span className="font-medium text-foreground">possibly stale</span> until
+                        someone updates or verifies them. Quorum plans and applies the follow-up
+                        changes for you.
                       </p>
-                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                        {downstream.map((d) => (
-                          <li key={d.id}>
-                            {d.title || d.id}
-                            <span className="text-muted-foreground">
-                              {' '}
-                              ({d.via.join(', ').toLowerCase()}, depth {d.depth})
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                    </>
                   )}
-                  <p>
-                    Editing may cause drift: verify the output of these stages afterwards or update
-                    the derived artifacts. Downstream artifacts will be marked{' '}
-                    <span className="font-medium">possibly stale</span> until they are updated or
-                    verified — or let Quorum plan and apply the updates for you.
-                  </p>
+                  <TechnicalDetails
+                    items={[
+                      { label: 'Document id', value: artifact.id, copy: true },
+                      {
+                        label: 'Consuming stages',
+                        value: consumedBy
+                          .map((s) => `${s.stageId} (${s.via.join(' + ')})`)
+                          .join(', '),
+                        copy: consumedBy.length > 0,
+                      },
+                      {
+                        label: 'Downstream artifacts',
+                        value: downstream
+                          .map(
+                            (d) => `${d.id} (${d.via.join(', ').toLowerCase()}, depth ${d.depth})`,
+                          )
+                          .join(', '),
+                        copy: downstream.length > 0,
+                      },
+                    ]}
+                  />
                 </div>
               </DialogDescription>
             </DialogHeader>
-            <DialogFooter className="gap-2 sm:gap-0">
+            <DialogFooter className="gap-2 sm:gap-2">
               <Button variant="ghost" size="sm" onClick={() => setWarningOpen(false)}>
                 Cancel
               </Button>
@@ -319,11 +343,11 @@ export function ArtifactEditControls({
                 className="gap-1.5"
                 onClick={() => {
                   setWarningOpen(false);
-                  setQuorumOpen(true);
+                  onStartEdit();
                 }}
               >
-                <Sparkles className="h-3 w-3" />
-                Edit with Quorum
+                <Pencil className="h-3 w-3" />
+                Edit anyway
               </Button>
               <Button
                 disabled={Boolean(blocked)}
@@ -331,11 +355,11 @@ export function ArtifactEditControls({
                 className="gap-1.5"
                 onClick={() => {
                   setWarningOpen(false);
-                  onStartEdit();
+                  setQuorumOpen(true);
                 }}
               >
-                <Pencil className="h-3 w-3" />
-                Edit anyway
+                <Sparkles className="h-3 w-3" />
+                Edit with Quorum
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -386,5 +410,34 @@ export function ArtifactEditControls({
         </Dialog>
       </span>
     </TooltipProvider>
+  );
+}
+
+function describeConsumer(stage: ArtifactImpactStage): string {
+  const name = displayStageName(stage.stageId);
+  return stage.via.includes('read') ? `Read by ${name}` : `Listed as an input of ${name}`;
+}
+
+function describeDownstream(item: ArtifactImpactDownstream): string {
+  const name = item.title || humanizeSlug(item.artifactType ?? 'document');
+  const onlyCites = item.via.length > 0 && item.via.every((v) => v.toUpperCase() === 'CITES');
+  const qualifiers = [
+    onlyCites ? 'cites it' : null,
+    item.depth > 1 ? 'indirectly' : null,
+    item.stale ? 'already marked possibly stale' : null,
+  ].filter(Boolean);
+  return qualifiers.length ? `${name} · ${qualifiers.join(' · ')}` : name;
+}
+
+function ImpactList({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div>
+      <p className="font-medium text-foreground">{title}</p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-foreground">
+        {lines.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
