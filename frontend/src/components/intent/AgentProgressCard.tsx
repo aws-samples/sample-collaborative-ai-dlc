@@ -3,6 +3,8 @@ import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { WaitingCard } from '@/components/intent/WaitingCard';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { latestProgressLine } from '@/components/agent-output/AgentOutputTranscript';
+import { displayStageName } from '@/lib/displayNames';
 
 // ---------------------------------------------------------------------------
 // Live progress card — calm "agent working" presence while running with no
@@ -16,7 +18,7 @@ export function AgentProgressCard() {
     stageNameOf,
     phaseNameOf,
     gates,
-    outputBuffers,
+    outputRows,
     outputVersion,
     focusOutput,
     rewindIntent,
@@ -34,7 +36,7 @@ export function AgentProgressCard() {
     null;
   const lifecycleStageInstanceId =
     runningRow?.stageInstanceId ?? parkedRow?.stageInstanceId ?? null;
-  const lifecycleSummary =
+  const lifecycleEvent =
     detail?.events
       .toReversed()
       .find(
@@ -49,7 +51,13 @@ export function AgentProgressCard() {
           (!lifecycleStageInstanceId ||
             !ev.stageInstanceId ||
             ev.stageInstanceId === lifecycleStageInstanceId),
-      )?.summary ?? null;
+      ) ?? null;
+  // Engine summaries name the stage by id ("Stage requirements-analysis running").
+  const lifecycleSummary =
+    lifecycleEvent?.summary?.replace(
+      /^Stage ([\w.-]+)/,
+      (_match, stageId: string) => `Stage ${displayStageName(stageId)}`,
+    ) ?? null;
   const bufferKey = runningRow?.stageInstanceId ?? INTENT_OUTPUT_KEY;
 
   useTick(isRunning ?? false);
@@ -58,16 +66,12 @@ export function AgentProgressCard() {
 
   void outputVersion;
 
-  const content = outputBuffers.get(bufferKey) ?? '';
-  const lastLines = content
-    .trim()
-    .split('\n')
-    .filter((l) => l.trim())
-    .slice(-2)
-    .join('\n');
+  const lastLine = latestProgressLine(outputRows.get(bufferKey) ?? []);
 
   const elapsed = runningRow?.startedAt ? formatDuration(runningRow.startedAt) : null;
-  const stageName = runningRow?.stageInstanceId ? stageNameOf(runningRow.stageInstanceId) : null;
+  const stageName = runningRow?.stageInstanceId
+    ? displayStageName(stageNameOf(runningRow.stageInstanceId))
+    : null;
   const phaseName = runningRow?.phase ? phaseNameOf(runningRow.phase) : null;
   const statusLabel = isWaiting && !activePendingGate ? 'Resuming' : 'Running';
   const statusSummary =
@@ -101,18 +105,18 @@ export function AgentProgressCard() {
             <span className="text-sm font-medium">{statusLabel}</span>
             {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
             {phaseName && (
-              <Badge variant="outline" className="h-4 text-[10px]">
+              <Badge variant="outline" size="sm">
                 {phaseName}
               </Badge>
             )}
             {elapsed && <span className="text-xs text-muted-foreground/70">{elapsed}</span>}
           </div>
-          {lastLines && (
-            <pre className="mt-2 line-clamp-2 whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
-              {lastLines}
-            </pre>
+          {lastLine && (
+            <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+              {lastLine}
+            </p>
           )}
-          {!lastLines && statusSummary && (
+          {!lastLine && statusSummary && (
             <p className="mt-1 text-xs text-muted-foreground">{statusSummary}</p>
           )}
         </div>

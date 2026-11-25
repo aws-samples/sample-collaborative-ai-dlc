@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { AgentOutputTranscript } from './AgentOutputTranscript';
+import { render, screen } from '@/test/query';
+import userEvent from '@testing-library/user-event';
+import { AgentOutputTranscript, latestProgressLine } from './AgentOutputTranscript';
 import type { IntentOutput } from '@/services/intents';
 
 const row = (
@@ -108,5 +109,55 @@ describe('AgentOutputTranscript', () => {
 
     expect(screen.getByText('Stage complete - all artifacts recorded.')).toBeInTheDocument();
     expect(container.querySelector('[data-output-level="success"]')).not.toBeNull();
+  });
+
+  it('keeps problem details open and puts other details one action away without <details>', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <AgentOutputTranscript
+        rows={[
+          row(1, 'Running tool fs_read\n ... { "path": "missing.txt" }\n - Failed in 0.01s\n', {
+            type: 'tool',
+            level: 'error',
+            title: 'Fs Read failed',
+            details: 'Running tool fs_read\n ... { "path": "missing.txt" }\n - Failed in 0.01s',
+          }),
+          row(2, '+    1: hello\n', {
+            type: 'edit',
+            title: 'Updated (+1 line)',
+            details: '+    1: hello',
+          }),
+        ]}
+      />,
+    );
+
+    expect(container.querySelector('details')).toBeNull();
+    expect(screen.getByText(/"path": "missing.txt"/)).toBeInTheDocument();
+    expect(screen.queryByText(/1: hello/)).not.toBeInTheDocument();
+    const toggles = screen.getAllByRole('button', { name: 'Details' });
+    expect(toggles).toHaveLength(2);
+    await user.click(toggles[1]);
+    expect(screen.getByText(/1: hello/)).toBeInTheDocument();
+  });
+});
+
+describe('latestProgressLine', () => {
+  it('returns the last readable progress line, never raw tool JSON', () => {
+    const rows = [
+      row(1, 'Running tool get_artifact with the param\n ... { "id": "intent-statement" }\n', {
+        type: 'artifact',
+        title: 'Loaded artifact: intent-statement',
+      }),
+      row(2, '> Drafting the requirements document now.', {
+        type: 'message',
+        summary: '> Drafting the requirements document now.',
+      }),
+      row(3, ': "label": "No enforcement - trust the developer",\n'),
+      row(4, '- Completed in 12.76s\n'),
+      row(5, 'stdout\n'),
+    ];
+    expect(latestProgressLine(rows)).toBe('Drafting the requirements document now.');
+    expect(latestProgressLine([])).toBeNull();
+    expect(latestProgressLine([row(1, 'stdout\n')])).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { contextGaugeTone, formatCost, formatMillis, formatTokens } from '@/lib/
 import { formatBytes, formatUsageBreakdown, type UsagePart } from '@/lib/format';
 import { Disclosure } from '@/components/ui/disclosure';
 import { MetricRow, Stat } from '@/components/ui/stat';
+import { displayModels } from '@/lib/displayNames';
 import { useIntentOptional, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration } from '@/components/intent/stageStyle';
 import { BarChart3, ChevronDown } from 'lucide-react';
@@ -174,6 +175,33 @@ function tokenParts(metrics: Record<string, number>): UsagePart[] {
     return parts.filter((p) => p.key !== 'total');
   }
   return parts;
+}
+
+export function StageUsage({
+  models,
+  metrics,
+  cost,
+}: Pick<UsageMetricsProps, 'metrics' | 'cost'> & { models: string[] }) {
+  const parts = tokenParts(metrics);
+  const hasOutput = parts.some((p) => p.key === 'output');
+  return (
+    <div
+      data-testid="usage-metrics"
+      className="flex flex-wrap gap-x-5 gap-y-2 [&>*+*]:border-l [&>*+*]:border-border [&>*+*]:pl-4"
+    >
+      <Stat
+        label="Model"
+        value={models.length ? displayModels(models) : undefined}
+        state={models.length ? 'ok' : 'missing'}
+        className="basis-full sm:basis-auto"
+      />
+      {parts.map((part) => (
+        <Stat key={part.key} label={part.label} value={part.text} />
+      ))}
+      {!hasOutput && <Stat label="Output" value={undefined} state="missing" />}
+      {cost ? <CostStat cost={cost} /> : <Stat label="Cost" value={undefined} state="missing" />}
+    </div>
+  );
 }
 
 type ActiveTimeRow = Pick<IntentStageRow, 'startedAt' | 'completedAt' | 'waitMs' | 'parkedAt'>;

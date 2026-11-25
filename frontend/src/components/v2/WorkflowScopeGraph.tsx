@@ -40,6 +40,16 @@ export interface WorkflowScopeGraphProps {
   activeScope?: string | null;
   onActiveScopeChange?: (scope: string) => void;
   hideScopeSelector?: boolean;
+  /** The host renders its own legend (e.g. a Sheet header). */
+  hideLegend?: boolean;
+  /** The host renders its own "n of m stages run" sentence. */
+  hideSummary?: boolean;
+  /**
+   * Draw a stage's dependency edges only while it is hovered, focused or
+   * selected, instead of every edge at once. Needs `onStageClick` so the
+   * nodes are focusable. Default: every edge, always.
+   */
+  edgesOnFocus?: boolean;
   stageMeta?: Record<string, { number: string; name: string; phase: string }>;
   scopeDescriptions?: Record<string, string>;
   readOnly?: boolean;
@@ -119,6 +129,9 @@ export function WorkflowScopeGraph({
   activeScope: activeScopeProp,
   onActiveScopeChange,
   hideScopeSelector,
+  hideLegend,
+  hideSummary,
+  edgesOnFocus = false,
   stageMeta: stageMetaProp,
   scopeDescriptions: scopeDescProp,
   readOnly,
@@ -175,6 +188,58 @@ export function WorkflowScopeGraph({
     [compiled.graph.edges, executeSet],
   );
   const totalStages = compiled.graph.nodes.length;
+  const hasBoltRounds = compiled.graph.nodes.some((n) => n.forEach === 'unit-of-work');
+
+  // Dependency edges are drawn for one stage at a time — the hovered one, or
+  // the one pinned by a click/tap — instead of the whole graph at once.
+  const [hoverStage, setHoverStage] = useState<string | null>(null);
+  const [pinnedStage, setPinnedStage] = useState<string | null>(null);
+  const focusStage = edgesOnFocus ? (hoverStage ?? pinnedStage) : null;
+  const focusEdges = useMemo(
+    () =>
+      !edgesOnFocus
+        ? compiled.graph.edges
+        : focusStage
+          ? compiled.graph.edges.filter((e) => e.from === focusStage || e.to === focusStage)
+          : [],
+    [compiled.graph.edges, edgesOnFocus, focusStage],
+  );
+
+  // Edges under the nodes (all of them, as always), or above them for the
+  // focused stage only.
+  const edgeLayer = (() => {
+    const pairSeen = new Map<string, number>();
+    const pairTotal = new Map<string, number>();
+    for (const edge of focusEdges) {
+      const pk = `${edge.from}->${edge.to}`;
+      pairTotal.set(pk, (pairTotal.get(pk) ?? 0) + 1);
+    }
+    return focusEdges.map((edge) => {
+      const from = layout.positions.get(edge.from);
+      const to = layout.positions.get(edge.to);
+      if (!from || !to) return null;
+      const live = executeSet.has(edge.from) && executeSet.has(edge.to);
+      const style = EDGE_STYLES[edge.kind] ?? EDGE_STYLES.requires;
+      const pk = `${edge.from}->${edge.to}`;
+      const total = pairTotal.get(pk) ?? 1;
+      const idx = pairSeen.get(pk) ?? 0;
+      pairSeen.set(pk, idx + 1);
+      const offset = total > 1 ? (idx - (total - 1) / 2) * 14 : 0;
+      return (
+        <path
+          key={`${pk}:${edge.kind}:${edge.artifact ?? ''}:${idx}`}
+          data-edge={pk}
+          d={cubicEdgePath(from, to, offset)}
+          fill="none"
+          stroke={live ? style.color : style.dimColor}
+          strokeWidth={style.width}
+          strokeDasharray={style.dash}
+          opacity={live ? 0.85 : edgesOnFocus ? 0.5 : 0.18}
+          className="pointer-events-none"
+        />
+      );
+    });
+  })();
 
   const handleNodeKeyDown = useCallback(
     (e: React.KeyboardEvent, stageId: string) => {
@@ -213,6 +278,8 @@ export function WorkflowScopeGraph({
       <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${layout.width} ${layout.height}`}
+          // Natural width as a floor: a narrow host scrolls instead of shrinking the labels.
+          style={{ minWidth: layout.width }}
           className="w-full rounded border border-border bg-card/50 block"
         >
           {layout.phaseColumns.map(({ phasePath, name: colName, x, colWidth }) => (
@@ -238,37 +305,7 @@ export function WorkflowScopeGraph({
             </g>
           ))}
 
-          {(() => {
-            const pairSeen = new Map<string, number>();
-            const pairTotal = new Map<string, number>();
-            for (const edge of compiled.graph.edges) {
-              const pk = `${edge.from}->${edge.to}`;
-              pairTotal.set(pk, (pairTotal.get(pk) ?? 0) + 1);
-            }
-            return compiled.graph.edges.map((edge) => {
-              const from = layout.positions.get(edge.from);
-              const to = layout.positions.get(edge.to);
-              if (!from || !to) return null;
-              const live = executeSet.has(edge.from) && executeSet.has(edge.to);
-              const style = EDGE_STYLES[edge.kind] ?? EDGE_STYLES.requires;
-              const pk = `${edge.from}->${edge.to}`;
-              const total = pairTotal.get(pk) ?? 1;
-              const idx = pairSeen.get(pk) ?? 0;
-              pairSeen.set(pk, idx + 1);
-              const offset = total > 1 ? (idx - (total - 1) / 2) * 14 : 0;
-              return (
-                <path
-                  key={`${pk}:${edge.kind}:${edge.artifact ?? ''}:${idx}`}
-                  d={cubicEdgePath(from, to, offset)}
-                  fill="none"
-                  stroke={live ? style.color : style.dimColor}
-                  strokeWidth={style.width}
-                  strokeDasharray={style.dash}
-                  opacity={live ? 0.85 : 0.18}
-                />
-              );
-            });
-          })()}
+          {!edgesOnFocus && edgeLayer}
 
           {compiled.graph.nodes.map((node) => {
             const pos = layout.positions.get(node.stageId);
@@ -303,13 +340,27 @@ export function WorkflowScopeGraph({
                     'focus-visible:[outline:2px_solid_var(--ring)] [outline-offset:2px]',
                 )}
                 data-stage-status={statusEntry ?? undefined}
+                data-focused={focusStage === node.stageId || undefined}
+                {...(edgesOnFocus
+                  ? {
+                      onMouseEnter: () => setHoverStage(node.stageId),
+                      onMouseLeave: () =>
+                        setHoverStage((cur) => (cur === node.stageId ? null : cur)),
+                      onFocus: () => setHoverStage(node.stageId),
+                      onBlur: () => setHoverStage((cur) => (cur === node.stageId ? null : cur)),
+                    }
+                  : {})}
+                onClick={() => {
+                  if (edgesOnFocus)
+                    setPinnedStage((cur) => (cur === node.stageId ? null : node.stageId));
+                  onStageClick?.(node.stageId);
+                }}
                 {...(onStageClick
                   ? {
                       role: 'button',
                       tabIndex: 0,
                       'aria-label': stageInfo?.name || node.stageId,
                       style: { cursor: 'pointer' },
-                      onClick: () => onStageClick(node.stageId),
                       onKeyDown: (e: React.KeyboardEvent) => handleNodeKeyDown(e, node.stageId),
                     }
                   : {})}
@@ -319,9 +370,13 @@ export function WorkflowScopeGraph({
                   height={NODE_H}
                   rx={6}
                   fill={fill}
-                  stroke={statusStyle?.stroke ?? 'none'}
-                  strokeWidth={statusStyle?.stroke ? 1.5 : 0}
-                  strokeDasharray={statusStyle?.strokeDash ?? undefined}
+                  stroke={
+                    focusStage === node.stageId ? 'var(--ring)' : (statusStyle?.stroke ?? 'none')
+                  }
+                  strokeWidth={focusStage === node.stageId ? 2 : statusStyle?.stroke ? 1.5 : 0}
+                  strokeDasharray={
+                    focusStage === node.stageId ? undefined : (statusStyle?.strokeDash ?? undefined)
+                  }
                 />
                 <text
                   x={10}
@@ -360,30 +415,43 @@ export function WorkflowScopeGraph({
                       y={13}
                       textAnchor="middle"
                       fill={inScope ? '#ffffff' : '#e2e8f0'}
-                      className="text-[8px] font-semibold"
+                      className="text-[11px] font-semibold"
                     >
                       {inScope ? 'EXEC' : 'SKIP'}
                     </text>
                   </g>
                 )}
                 {node.forEach && (
-                  <g transform="translate(8, 6)">
+                  <g
+                    transform="translate(8, 6)"
+                    role="img"
+                    aria-label={
+                      node.forEach === 'unit-of-work'
+                        ? `Round${node.section ? ` ${node.section}` : ''} — runs once per unit of work`
+                        : 'Unsupported repetition mode'
+                    }
+                  >
+                    <title>
+                      {node.forEach === 'unit-of-work'
+                        ? `Round${node.section ? ` ${node.section}` : ''} — runs once per unit of work`
+                        : 'Unsupported repetition mode'}
+                    </title>
                     <rect
-                      width={node.forEach === 'unit-of-work' ? 42 : 54}
-                      height={15}
-                      rx={7.5}
+                      width={node.forEach === 'unit-of-work' ? 58 : 92}
+                      height={16}
+                      rx={8}
                       fill={node.forEach === 'unit-of-work' ? '#0f766e' : '#92400e'}
                       opacity={0.92}
                     />
                     <text
-                      x={node.forEach === 'unit-of-work' ? 21 : 27}
-                      y={11}
+                      x={node.forEach === 'unit-of-work' ? 29 : 46}
+                      y={12}
                       textAnchor="middle"
                       fill="#ffffff"
-                      className="text-[8px] font-semibold"
+                      className="text-[11px] font-semibold"
                     >
                       {node.forEach === 'unit-of-work'
-                        ? `BR${node.section ? ` ${node.section}` : ''}`
+                        ? `Round${node.section ? ` ${node.section}` : ''}`
                         : 'UNSUPPORTED'}
                     </text>
                   </g>
@@ -391,64 +459,98 @@ export function WorkflowScopeGraph({
               </g>
             );
           })}
+          {edgesOnFocus && edgeLayer}
         </svg>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        <span className="font-semibold text-foreground">{activeScope}</span>
-        {' · '}
-        <em>{descriptions[activeScope] ?? ''}</em>
-        {'. '}
-        {executeSet.size} of {totalStages} stages run; {liveEdges} edges live within scope.
-        {editable && ' · Toggle the EXEC/SKIP switch on a stage to include it in this scope.'}
-      </p>
+      {edgesOnFocus && compiled.graph.edges.length > 0 && (
+        <p className="text-2xs text-muted-foreground" data-testid="scope-graph-edge-hint">
+          {focusStage
+            ? `Showing the ${focusEdges.length === 1 ? 'dependency' : 'dependencies'} of ${meta[focusStage]?.name ?? focusStage}${pinnedStage === focusStage ? ' · select it again to clear' : ''}`
+            : 'Hover or select a stage to see its dependencies.'}
+        </p>
+      )}
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-        {layout.phaseColumns
-          .filter((c) => c.phasePath !== '__other__')
-          .map((col) => (
-            <span key={col.phasePath} className="flex items-center gap-1">
-              <span
-                className="inline-block h-2.5 w-4 rounded-sm"
-                style={{ background: colorByPath[col.phasePath] }}
-              />
-              {col.name}
-            </span>
-          ))}
-        <span className="flex items-center gap-1">
-          <span
-            className="inline-block h-2.5 w-4 rounded-sm"
-            style={{ background: '#cbd5e1', opacity: 0.6 }}
-          />
-          SKIP
-        </span>
-        <span className="flex items-center gap-1">
-          <svg width={16} height={8}>
-            <line
-              x1={0}
-              y1={4}
-              x2={16}
-              y2={4}
-              stroke="var(--border)"
-              strokeWidth={1.5}
-              strokeDasharray="4 3"
+      {!hideSummary && (
+        <p className="text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">{activeScope}</span>
+          {descriptions[activeScope] ? (
+            <>
+              {' · '}
+              <em>{descriptions[activeScope]}</em>
+            </>
+          ) : null}
+          {'. '}
+          {executeSet.size} of {totalStages} stages run; {liveEdges} edges live within scope.
+          {editable && ' · Toggle the EXEC/SKIP switch on a stage to include it in this scope.'}
+        </p>
+      )}
+
+      {!hideLegend && (
+        <ul
+          aria-label="Legend"
+          className="flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-muted-foreground"
+        >
+          {layout.phaseColumns
+            .filter((c) => c.phasePath !== '__other__')
+            .map((col) => (
+              <li key={col.phasePath} className="flex items-center gap-1">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-2.5 w-4 rounded-sm"
+                  style={{ background: colorByPath[col.phasePath] }}
+                />
+                {col.name}
+              </li>
+            ))}
+          <li className="flex items-center gap-1">
+            <span
+              aria-hidden="true"
+              className="inline-block h-2.5 w-4 rounded-sm"
+              style={{ background: '#cbd5e1', opacity: 0.6 }}
             />
-          </svg>
-          data
-        </span>
-        <span className="flex items-center gap-1">
-          <svg width={16} height={8}>
-            <line x1={0} y1={4} x2={16} y2={4} stroke="var(--border)" strokeWidth={2} />
-          </svg>
-          requires
-        </span>
-        <span className="flex items-center gap-1">
-          <svg width={16} height={8}>
-            <line x1={0} y1={4} x2={16} y2={4} stroke="var(--destructive)" strokeWidth={3} />
-          </svg>
-          blocks
-        </span>
-      </div>
+            Skipped in scope
+          </li>
+          {hasBoltRounds && (
+            <li className="flex items-center gap-1">
+              <span
+                aria-hidden="true"
+                className="inline-block rounded-full px-1.5 text-2xs font-semibold text-white"
+                style={{ background: '#0f766e' }}
+              >
+                Round n
+              </span>
+              Round n — runs once per unit of work (one pass per unit, in parallel)
+            </li>
+          )}
+          <li className="flex items-center gap-1">
+            <svg width={16} height={8} aria-hidden="true">
+              <line
+                x1={0}
+                y1={4}
+                x2={16}
+                y2={4}
+                stroke="var(--border)"
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+              />
+            </svg>
+            Data flow
+          </li>
+          <li className="flex items-center gap-1">
+            <svg width={16} height={8} aria-hidden="true">
+              <line x1={0} y1={4} x2={16} y2={4} stroke="var(--border)" strokeWidth={2} />
+            </svg>
+            Requires
+          </li>
+          <li className="flex items-center gap-1">
+            <svg width={16} height={8} aria-hidden="true">
+              <line x1={0} y1={4} x2={16} y2={4} stroke="var(--destructive)" strokeWidth={3} />
+            </svg>
+            Blocks
+          </li>
+        </ul>
+      )}
     </div>
   );
 }

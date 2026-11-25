@@ -1,8 +1,8 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Disclosure } from '@/components/ui/disclosure';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Sheet,
@@ -12,24 +12,36 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { StatusPill } from '@/components/ui/status-pill';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { completionExplanation } from '@/lib/completionExplanation';
 import { cn } from '@/lib/utils';
+import { humanizeSlug } from '@/lib/displayNames';
+import {
+  getStatus,
+  isTerminalIntentStatus,
+  TONE_CLASSES,
+  type StatusTone,
+  type UnitStatusKey,
+} from '@/lib/statusModel';
 import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
 import { useIntent, useVisibleOutputPanes, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import { gitRepoSlug } from '@/services/gitProvider';
 import type { PhaseNode } from '@/services/workflows';
 import {
   intentsService,
-  type IntentFeedbackBatch,
   type IntentDetail,
+  type IntentFeedbackBatch,
+  type IntentPullRequest,
   type IntentUnit,
   type IntentUnitPlan,
   type IntentUnitPr,
+  type UnitPrState,
   type UnitReviewComment,
   type UnitState,
 } from '@/services/intents';
 import {
-  CheckCircle2,
   ExternalLink,
   GitPullRequest,
   Hammer,
@@ -48,97 +60,26 @@ import {
 // (section.js:940). Card colour/state is therefore driven by unit.state, never
 // inferred from the wave index.
 
-// ── State presentation ──────────────────────────────────────────────────────
-type DisplayState = UnitState | 'WAITING_INPUT' | 'NEEDS_RECOVERY';
+type DisplayState = UnitStatusKey;
 
-const STATE_LABEL: Record<DisplayState, string> = {
-  PENDING: 'Pending',
-  READY: 'Ready',
-  RUNNING: 'Building',
-  PR_DRAFT: 'Draft review',
-  RECONCILING: 'Reconciling',
-  PR_READY: 'Ready to merge',
-  ADDRESSING_FEEDBACK: 'Fixing feedback',
-  MERGING: 'Merging',
-  MERGED: 'Integrated',
-  BLOCKED: 'Blocked',
-  FAILED: 'Failed',
-  WAITING_INPUT: 'Waiting for input',
-  NEEDS_RECOVERY: 'Needs recovery',
+const displayStateOf = (unit: IntentUnit, laneWait?: LaneWaitStatus | null): DisplayState =>
+  laneWait?.kind === 'recovery'
+    ? 'NEEDS_RECOVERY'
+    : laneWait?.kind === 'input'
+      ? 'WAITING_INPUT'
+      : unit.state;
+
+const CARD_TONE: Record<StatusTone, string> = {
+  neutral: 'border-border',
+  info: 'border-border',
+  running: 'border-agent-running/50 bg-agent-running/[0.06]',
+  waiting: 'border-agent-waiting/50 bg-agent-waiting/[0.06]',
+  success: 'border-agent-success/40',
+  danger: 'border-agent-error/50 bg-agent-error/[0.06]',
+  warning: 'border-warning/50 bg-warning/[0.08]',
 };
 
-// Tailwind classes per state. MERGING is active work but merge-back rather than
-// agent construction, so it gets a distinct, subdued treatment (construction
-// palette) rather than the running purple.
-const STATE_STYLES: Record<DisplayState, { card: string; badge: string; dot: string }> = {
-  RUNNING: {
-    card: 'border-agent-running/50 bg-agent-running/[0.06] ring-1 ring-agent-running/30',
-    badge: 'text-agent-running bg-agent-running/10',
-    dot: 'bg-agent-running',
-  },
-  PR_DRAFT: {
-    card: 'border-sky-400/50 bg-sky-400/[0.05]',
-    badge: 'text-sky-700 dark:text-sky-300 bg-sky-400/10',
-    dot: 'bg-sky-400',
-  },
-  RECONCILING: {
-    card: 'border-amber-400/50 bg-amber-400/[0.05]',
-    badge: 'text-amber-700 dark:text-amber-300 bg-amber-400/10',
-    dot: 'bg-amber-400',
-  },
-  PR_READY: {
-    card: 'border-emerald-400/50 bg-emerald-400/[0.05]',
-    badge: 'text-emerald-700 dark:text-emerald-300 bg-emerald-400/10',
-    dot: 'bg-emerald-400',
-  },
-  ADDRESSING_FEEDBACK: {
-    card: 'border-fuchsia-400/50 bg-fuchsia-400/[0.05]',
-    badge: 'text-fuchsia-700 dark:text-fuchsia-300 bg-fuchsia-400/10',
-    dot: 'bg-fuchsia-400',
-  },
-  MERGING: {
-    card: 'border-phase-construction/50 bg-phase-construction/[0.06]',
-    badge: 'text-phase-construction bg-phase-construction/15',
-    dot: 'bg-phase-construction',
-  },
-  MERGED: {
-    card: 'border-agent-success/40',
-    badge: 'text-agent-success bg-agent-success/10',
-    dot: 'bg-agent-success',
-  },
-  FAILED: {
-    card: 'border-agent-error/50 bg-agent-error/[0.06]',
-    badge: 'text-agent-error bg-agent-error/10',
-    dot: 'bg-agent-error',
-  },
-  BLOCKED: {
-    card: 'border-amber-400/50',
-    badge: 'text-amber-600 dark:text-amber-400 bg-amber-400/10',
-    dot: 'bg-amber-400',
-  },
-  READY: {
-    card: 'border-border',
-    badge: 'text-muted-foreground bg-muted',
-    dot: 'bg-muted-foreground/50',
-  },
-  PENDING: {
-    card: 'border-border opacity-60',
-    badge: 'text-muted-foreground bg-muted',
-    dot: 'bg-muted-foreground/40',
-  },
-  WAITING_INPUT: {
-    card: 'border-agent-waiting/50 bg-agent-waiting/[0.05]',
-    badge: 'text-agent-waiting bg-agent-waiting/10',
-    dot: 'bg-agent-waiting',
-  },
-  NEEDS_RECOVERY: {
-    card: 'border-agent-error/50 bg-agent-error/[0.06] ring-1 ring-agent-error/20',
-    badge: 'text-agent-error bg-agent-error/10',
-    dot: 'bg-agent-error',
-  },
-};
-
-// Order used for the header state-count chips (only present states rendered).
+// Order used for the one-line summary (only present states rendered).
 const STATE_ORDER: DisplayState[] = [
   'MERGED',
   'NEEDS_RECOVERY',
@@ -154,9 +95,19 @@ const STATE_ORDER: DisplayState[] = [
   'READY',
   'PENDING',
 ];
+const PR_NEEDS_ATTENTION: ReadonlySet<UnitPrState> = new Set([
+  'CONFLICTED',
+  'FAILED',
+  'CLOSED',
+  'PARTIALLY_MERGED',
+]);
 const unitLaneKey = laneWaitKey;
+const unitName = (slug: string) => humanizeSlug(slug);
+const repoShortName = (repository: string | null | undefined) =>
+  repository ? (gitRepoSlug(repository).split('/').pop() ?? repository) : null;
 const reviewCommentSelectionKey = (comment: UnitReviewComment) =>
   `${comment.repository}:${comment.id}`;
+const isAutomated = (comment: UnitReviewComment) => comment.bot || comment.system;
 // The unit states in which the feedback API accepts a batch. The drawer
 // loads the comments itself, so the stored commentCount (written only by
 // that load) must not decide whether the drawer can be opened.
@@ -169,6 +120,8 @@ const FEEDBACK_UNIT_STATES: ReadonlySet<UnitState> = new Set([
 const canReviewFeedback = (unit: IntentUnit, prs: IntentUnitPr[]) =>
   FEEDBACK_UNIT_STATES.has(unit.state) &&
   prs.some((pr) => pr.number != null && pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED');
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // ── Card ─────────────────────────────────────────────────────────────────────
 interface UnitCardProps {
@@ -200,13 +153,8 @@ function UnitCard({
   completionNote,
 }: UnitCardProps) {
   useTick((unit.state === 'RUNNING' && !laneWait) || unit.state === 'MERGING');
-  const displayState: DisplayState =
-    laneWait?.kind === 'recovery'
-      ? 'NEEDS_RECOVERY'
-      : laneWait?.kind === 'input'
-        ? 'WAITING_INPUT'
-        : unit.state;
-  const styles = STATE_STYLES[displayState];
+  const displayState = displayStateOf(unit, laneWait);
+  const entry = getStatus('unit', displayState);
   const elapsed =
     unit.startedAt && (unit.state === 'RUNNING' || unit.state === 'MERGING')
       ? formatDuration(unit.startedAt, laneWait?.since ?? null)
@@ -214,214 +162,242 @@ function UnitCard({
   const showStream = runningStageInstanceId !== null && stream;
 
   return (
-    <div className={cn('rounded-lg border p-3 transition-colors', styles.card)}>
-      <div className="flex items-center gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className={cn('h-2 w-2 shrink-0 rounded-full', styles.dot)} />
-          <span className="truncate font-mono text-sm font-semibold">{unit.slug}</span>
+    <div
+      className={cn(
+        'rounded-lg border p-3 transition-colors',
+        CARD_TONE[entry.tone],
+        displayState === 'PENDING' && 'opacity-70',
+      )}
+      data-unit-slug={unit.slug}
+      data-unit-state={displayState}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-snug">{unitName(unit.slug)}</p>
           {isWalkingSkeleton && (
-            <Badge
-              variant="outline"
-              className="shrink-0 gap-1 px-1.5 py-0 text-[9px] font-normal text-phase-construction"
-              title="Walking skeleton — built solo first to validate the plan"
-            >
-              <Hammer className="h-2.5 w-2.5" />
-              skeleton
-            </Badge>
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    size="sm"
+                    tabIndex={0}
+                    className="mt-1 gap-1 font-normal text-phase-construction"
+                  >
+                    <Hammer aria-hidden="true" />
+                    Walking skeleton
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>Built on its own first to validate the plan.</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
         </div>
-        <span
-          className={cn(
-            'shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider',
-            styles.badge,
-          )}
-        >
-          {STATE_LABEL[displayState]}
-        </span>
+        <StatusPill kind="unit" status={displayState} hint className="shrink-0" />
       </div>
 
       {(unit.dependsOn.length > 0 || elapsed) && (
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
           {unit.dependsOn.length > 0 && (
-            <span className="min-w-0 truncate">
-              &#8627; depends on{' '}
+            <span className="min-w-0 flex-1">
+              Depends on{' '}
               {unit.dependsOn.map((dep, i) => (
                 <span key={dep}>
                   {i > 0 && ', '}
-                  <code className="font-mono text-foreground/80">{dep}</code>
+                  <span className="text-foreground/80">{unitName(dep)}</span>
                 </span>
               ))}
             </span>
           )}
-          {elapsed && (
-            <span className="ml-auto shrink-0 font-mono tabular-nums text-[10px]">{elapsed}</span>
-          )}
+          {elapsed && <span className="ml-auto shrink-0 tabular-nums">{elapsed}</span>}
         </div>
       )}
 
       {unit.state === 'BLOCKED' && unit.blockedOn && (
-        <p className="mt-1.5 text-[10px] text-amber-600 dark:text-amber-400">
-          &#9203; {unit.blockedOn}
-        </p>
+        <p className="mt-1.5 text-xs text-warning-fg">Waiting: {unit.blockedOn}</p>
       )}
       {completionNote && <p className="mt-1 text-xs text-muted-foreground">{completionNote}</p>}
       {unit.integrationOwner && (
-        <p className="mt-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
-          Integration turn
-        </p>
+        <p className="mt-1.5 text-xs font-medium text-warning-fg">Integration turn</p>
       )}
       {unit.blockedReason && (
-        <p className="mt-1 text-[10px] text-muted-foreground">{unit.blockedReason}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{unit.blockedReason}</p>
       )}
       {laneWait && (
         <p
           className={cn(
-            'mt-1.5 text-[10px]',
-            laneWait.kind === 'recovery' ? 'font-medium text-agent-error' : 'text-agent-waiting',
+            'mt-1.5 text-xs',
+            laneWait.kind === 'recovery'
+              ? 'font-medium text-agent-error-fg'
+              : 'text-agent-waiting-fg',
           )}
         >
           {laneWait.blocker}
         </p>
       )}
       {unit.state === 'MERGING' && (
-        <p className="mt-1.5 text-[10px] text-phase-construction">Merging back&hellip;</p>
+        <p className="mt-1.5 text-xs text-agent-running-fg">Merging back&hellip;</p>
       )}
       {unit.state === 'FAILED' && unit.failureReason && (
-        <p className="mt-1.5 text-[10px] text-agent-error">&#10005; {unit.failureReason}</p>
+        <p className="mt-1.5 text-xs text-agent-error-fg">{unit.failureReason}</p>
       )}
 
       {prs.length > 0 && (
-        <div className="mt-2 space-y-1 border-t pt-2">
-          {prs.map((pr) => (
-            <div
-              key={`${pr.repository}:${pr.number ?? 'unchanged'}`}
-              className="flex min-w-0 items-center gap-2 text-[10px]"
-            >
-              <GitPullRequest className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate" title={pr.repository}>
-                {pr.repository}
-              </span>
-              <span
-                className={cn(
-                  'shrink-0 font-medium',
-                  pr.state === 'MERGED'
-                    ? 'text-agent-success'
-                    : pr.state === 'CONFLICTED' ||
-                        pr.state === 'FAILED' ||
-                        pr.state === 'CLOSED' ||
-                        pr.state === 'PARTIALLY_MERGED'
-                      ? 'text-agent-error'
-                      : 'text-muted-foreground',
-                )}
+        <ul className="mt-2 space-y-1 border-t pt-2">
+          {prs.map((pr) => {
+            const prEntry = getStatus('unit', pr.state);
+            return (
+              <li
+                key={`${pr.repository}:${pr.number ?? 'unchanged'}`}
+                className="flex min-w-0 items-center gap-2 text-xs"
               >
-                {pr.state.toLowerCase().replaceAll('_', ' ')}
-              </span>
-              {pr.commentCount > 0 && (
-                <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
-                  <MessageSquare className="h-3 w-3" />
-                  {pr.commentCount}
-                </span>
-              )}
-              {pr.url && (
-                <a
-                  href={pr.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open ${pr.repository} pull request`}
-                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                <GitPullRequest
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                />
+                <span className="min-w-0 flex-1 truncate">{pr.repository}</span>
+                <span
+                  className={cn(
+                    'shrink-0 font-medium',
+                    PR_NEEDS_ATTENTION.has(pr.state)
+                      ? 'text-agent-error-fg'
+                      : TONE_CLASSES[prEntry.tone].text,
+                  )}
                 >
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </div>
-          ))}
-        </div>
+                  {prEntry.label}
+                </span>
+                {pr.commentCount > 0 && (
+                  <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
+                    <MessageSquare aria-hidden="true" className="h-3.5 w-3.5" />
+                    {pr.commentCount}
+                    <span className="sr-only"> comments</span>
+                  </span>
+                )}
+                {pr.url && (
+                  <a
+                    href={pr.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open ${pr.repository} pull request`}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                  >
+                    <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
 
       {feedbackBatches.length > 0 && (
-        <div className="mt-2 space-y-1 border-t pt-2 text-[10px]">
-          {feedbackBatches.slice(-2).map((batch) => (
-            <details key={batch.batchId} className="group">
-              <summary className="flex cursor-pointer list-none items-start gap-1.5">
-                {batch.state === 'SUCCEEDED' ? (
-                  <CheckCircle2 className="mt-px h-3 w-3 shrink-0 text-agent-success" />
-                ) : batch.state === 'FAILED' ? (
-                  <TriangleAlert className="mt-px h-3 w-3 shrink-0 text-agent-error" />
+        <div className="mt-2 space-y-1 border-t pt-2">
+          {feedbackBatches.slice(-2).map((batch) => {
+            const batchEntry = getStatus('stage', batch.state);
+            const hasDetail = Boolean(
+              batch.output ||
+              batch.changedFiles?.length ||
+              batch.verification ||
+              batch.failureReason,
+            );
+            return (
+              <Disclosure
+                key={batch.batchId}
+                variant="inline"
+                title={`${plural(batch.comments.length, 'comment')} · ${batchEntry.label}`}
+                status={
+                  <StatusPill
+                    kind="stage"
+                    status={batch.state}
+                    className="[&>span:last-child]:sr-only"
+                  />
+                }
+              >
+                {hasDetail ? (
+                  <div className="space-y-1 border-l pl-2 text-xs text-muted-foreground">
+                    {batch.output && (
+                      <p className="whitespace-pre-wrap break-words">{batch.output}</p>
+                    )}
+                    {batch.changedFiles && batch.changedFiles.length > 0 && (
+                      <p>
+                        <span className="font-medium text-foreground/80">Changed:</span>{' '}
+                        {batch.changedFiles.join(', ')}
+                      </p>
+                    )}
+                    {batch.verification && (
+                      <p>
+                        <span className="font-medium text-foreground/80">Verification:</span>{' '}
+                        {batch.verification}
+                      </p>
+                    )}
+                    {batch.failureReason && (
+                      <p className="text-agent-error-fg">{batch.failureReason}</p>
+                    )}
+                    {batch.commitSha && (
+                      <p>
+                        Commit <code className="font-mono">{batch.commitSha.slice(0, 8)}</code>
+                      </p>
+                    )}
+                  </div>
                 ) : (
-                  <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin text-agent-running" />
+                  <p className="text-xs text-muted-foreground">No output recorded yet.</p>
                 )}
-                <span className="min-w-0 text-muted-foreground">
-                  {batch.comments.length} comment{batch.comments.length === 1 ? '' : 's'} ·{' '}
-                  {batch.state.toLowerCase()}
-                  {batch.commitSha ? ` · ${batch.commitSha.slice(0, 8)}` : ''}
-                </span>
-              </summary>
-              {(batch.output ||
-                batch.changedFiles?.length ||
-                batch.verification ||
-                batch.failureReason) && (
-                <div className="ml-4 mt-1 space-y-1 border-l pl-2 text-muted-foreground">
-                  {batch.output && (
-                    <p className="whitespace-pre-wrap break-words">{batch.output}</p>
-                  )}
-                  {batch.changedFiles && batch.changedFiles.length > 0 && (
-                    <p>
-                      <span className="font-medium text-foreground/80">Changed:</span>{' '}
-                      {batch.changedFiles.join(', ')}
-                    </p>
-                  )}
-                  {batch.verification && (
-                    <p>
-                      <span className="font-medium text-foreground/80">Verification:</span>{' '}
-                      {batch.verification}
-                    </p>
-                  )}
-                  {batch.failureReason && <p className="text-agent-error">{batch.failureReason}</p>}
-                </div>
-              )}
-            </details>
-          ))}
+              </Disclosure>
+            );
+          })}
         </div>
       )}
 
       {showStream && (
         <div className="mt-2 flex h-20 flex-col justify-end overflow-hidden rounded-md bg-zinc-950 p-2">
-          <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-zinc-300">
+          <pre className="whitespace-pre-wrap break-words font-mono text-2xs leading-relaxed text-zinc-300">
             {stream}
-            <span className="ml-0.5 inline-block h-2.5 w-1 animate-pulse bg-zinc-500 align-middle" />
+            <span className="ml-0.5 inline-block h-2.5 w-1 bg-zinc-500 align-middle motion-safe:animate-pulse" />
           </pre>
         </div>
       )}
 
-      {runningStageInstanceId && onViewLiveOutput && (
-        <button
-          type="button"
-          onClick={() => onViewLiveOutput(runningStageInstanceId)}
-          className="mt-1.5 text-[10px] font-medium text-agent-running hover:underline"
-        >
-          View live output
-        </button>
-      )}
-      {canReviewFeedback(unit, prs) && onAddressFeedback && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => onAddressFeedback(unit)}
-          className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
-        >
-          <MessageSquare className="h-3 w-3" />
-          Address feedback
-        </Button>
-      )}
+      {(runningStageInstanceId && onViewLiveOutput) ||
+      (canReviewFeedback(unit, prs) && onAddressFeedback) ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {runningStageInstanceId && onViewLiveOutput && (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => onViewLiveOutput(runningStageInstanceId)}
+            >
+              View live output
+            </Button>
+          )}
+          {canReviewFeedback(unit, prs) && onAddressFeedback && (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => onAddressFeedback(unit)}
+            >
+              <MessageSquare aria-hidden="true" />
+              Address feedback
+            </Button>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 // ── Presentational board (pure — tested in isolation) ────────────────────────
 export interface UnitLaneBoardViewProps {
+  /** How a finished run's units ended (unfinished or skipped units). */
   completion?: IntentDetail['unitCompletion'];
   intentBranch?: string | null;
+  /**
+   * Name the intent branch in the summary line. Off once the run has finished:
+   * the outcome callout above the board already states the branch, and one
+   * screen names it once.
+   */
+  branchInSummary?: boolean;
   unitPlan: IntentUnitPlan;
   units: IntentUnit[];
   /** Live transcript tail per unit slug (only running units need an entry). */
@@ -430,6 +406,8 @@ export interface UnitLaneBoardViewProps {
   runningStageBySlug: Record<string, string | null>;
   unitPrs?: IntentUnitPr[];
   feedbackBatches?: IntentFeedbackBatch[];
+  /** The run-level pull requests (intent branch → base), one per repository. */
+  pullRequests?: IntentPullRequest[];
   /** Open a building lane's full output in the sidebar (per-unit, keyed by
    *  that lane's stageInstanceId — during fan-out each lane streams separately). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
@@ -437,15 +415,33 @@ export interface UnitLaneBoardViewProps {
   laneWaitBySlug?: Record<string, LaneWaitStatus>;
 }
 
+interface UnitSummary {
+  total: number;
+  integrated: number;
+  segments: { state: DisplayState; label: string }[];
+}
+
+function integratedLabel({ total, integrated }: UnitSummary): string | null {
+  if (integrated === 0) return null;
+  if (integrated === total) {
+    if (total === 1) return 'integrated';
+    if (total === 2) return 'both integrated';
+    return `all ${total} integrated`;
+  }
+  return `${integrated} of ${total} integrated`;
+}
+
 export function UnitLaneBoardView({
   completion,
   intentBranch,
+  branchInSummary = true,
   unitPlan,
   units,
   streamsBySlug,
   runningStageBySlug,
   unitPrs = [],
   feedbackBatches = [],
+  pullRequests = [],
   onViewLiveOutput,
   onAddressFeedback,
   laneWaitBySlug = {},
@@ -474,171 +470,182 @@ export function UnitLaneBoardView({
     return new Set((unitPlan.units ?? []).map((u) => u.slug));
   }, [unitPlan.units]);
 
-  // State-count chips — only states actually present among plan units, in a
-  // stable order.
-  const stateCounts = useMemo(() => {
+  const summary = useMemo<UnitSummary>(() => {
     const counts = new Map<DisplayState, number>();
+    let total = 0;
     for (const u of units) {
       if (!planSlugs.has(u.slug)) continue;
-      const wait = laneWaitBySlug[unitLaneKey(u.sectionIndex, u.slug)];
-      const displayState: DisplayState =
-        wait?.kind === 'recovery'
-          ? 'NEEDS_RECOVERY'
-          : wait?.kind === 'input'
-            ? 'WAITING_INPUT'
-            : u.state;
-      counts.set(displayState, (counts.get(displayState) ?? 0) + 1);
+      total += 1;
+      const state = displayStateOf(u, laneWaitBySlug[unitLaneKey(u.sectionIndex, u.slug)]);
+      counts.set(state, (counts.get(state) ?? 0) + 1);
     }
-    return STATE_ORDER.filter((s) => counts.has(s)).map((s) => ({
+    const integrated = counts.get('MERGED') ?? 0;
+    const segments = STATE_ORDER.filter((s) => s !== 'MERGED' && counts.has(s)).map((s) => ({
       state: s,
-      count: counts.get(s) as number,
+      label: `${counts.get(s)} ${getStatus('unit', s).label.toLowerCase()}`,
     }));
+    return { total, integrated, segments };
   }, [units, planSlugs, laneWaitBySlug]);
 
+  const allIntegrated = summary.total > 0 && summary.integrated === summary.total;
   const waves = unitPlan.batches ?? [];
+  const finalPrs = pullRequests.filter((pr) => pr.prUrl);
+  const integrated = integratedLabel(summary);
+
+  const description = (
+    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+      <span className="text-foreground">{plural(summary.total, 'unit')}</span>
+      {integrated && (
+        <span>
+          <span aria-hidden="true">· </span>
+          {integrated}
+          {intentBranch && branchInSummary && (
+            <>
+              {' '}
+              into <code className="break-all font-mono text-foreground">{intentBranch}</code>
+            </>
+          )}
+        </span>
+      )}
+      {summary.segments.map(({ state, label }) => (
+        <span key={state} className={cn(TONE_CLASSES[getStatus('unit', state).tone].text)}>
+          <span aria-hidden="true" className="text-muted-foreground">
+            ·{' '}
+          </span>
+          {label}
+        </span>
+      ))}
+    </span>
+  );
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="text-sm">Units</CardTitle>
-          <Badge variant="outline" className="text-[10px] text-muted-foreground">
-            {unitPlan.unitCount} unit{unitPlan.unitCount === 1 ? '' : 's'} &middot; {waves.length}{' '}
-            wave{waves.length === 1 ? '' : 's'}
-          </Badge>
-          {unitPlan.autonomyMode && (
-            <Badge variant="outline" className="text-[10px] text-muted-foreground">
-              {unitPlan.autonomyMode}
-            </Badge>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            {stateCounts.map(({ state, count }) => (
-              <span
-                key={state}
-                className={cn(
-                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]',
-                  STATE_STYLES[state].badge,
-                )}
-              >
-                <span className={cn('h-1.5 w-1.5 rounded-full', STATE_STYLES[state].dot)} />
-                {count} {STATE_LABEL[state].toLowerCase()}
-              </span>
+    <Disclosure
+      variant="card"
+      title="Units"
+      headingLevel={2}
+      defaultOpen={!allIntegrated}
+      description={description}
+      actions={
+        finalPrs.length > 0 ? (
+          <span className="flex flex-wrap items-center gap-1">
+            {finalPrs.map((pr) => (
+              <Button key={pr.id} asChild size="xs" variant="outline">
+                <a href={pr.prUrl ?? undefined} target="_blank" rel="noreferrer">
+                  <GitPullRequest aria-hidden="true" />
+                  PR{pr.prNumber ? ` #${pr.prNumber}` : ''}
+                  {finalPrs.length > 1 && repoShortName(pr.repository)
+                    ? ` · ${repoShortName(pr.repository)}`
+                    : ''}
+                  <ExternalLink aria-hidden="true" />
+                </a>
+              </Button>
             ))}
-          </div>
-        </div>
-        {completion?.state === 'incomplete' ? (
-          <p className="flex items-center gap-2 text-xs">
-            <TriangleAlert
-              aria-hidden
-              className="size-4 shrink-0 text-amber-600 dark:text-amber-400"
-            />
-            {completion.unresolved.length} unfinished unit
-            {completion.unresolved.length === 1 ? '' : 's'}:{' '}
-            {completion.unresolved.map((unit) => unit.slug).join(', ')}
-          </p>
-        ) : completion?.state === 'partial' ? (
-          <p className="text-xs text-muted-foreground">
-            {completion.skipped} unit{completion.skipped === 1 ? '' : 's'} skipped by decision
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            Integrated units are on the intent branch
-            {intentBranch ? (
-              <>
-                {' '}
-                <code>{intentBranch}</code>
-              </>
-            ) : null}
-            . The final pull request is reviewed and merged separately.
-          </p>
-        )}
-      </CardHeader>
-      <CardContent>
-        {/* Horizontal scroll so many waves (or narrow/mobile widths) keep each
-            column readable instead of collapsing. */}
-        <div className="space-y-5">
-          {sections.map((sectionIndex) => (
-            <section key={sectionIndex ?? 'legacy'}>
-              {sections.length > 1 && (
-                <h3 className="mb-2 text-xs font-semibold">
-                  {sectionIndex === null ? 'Legacy section' : `Section ${sectionIndex}`}
-                </h3>
-              )}
-              <div className="overflow-x-auto">
-                <div
-                  className="grid gap-4"
-                  style={{
-                    gridTemplateColumns: `repeat(${Math.max(waves.length, 1)}, minmax(14rem, 1fr))`,
-                  }}
-                >
-                  {waves.map((slugs, waveIdx) => {
-                    const label =
-                      waveIdx === 0
-                        ? '· runs first'
-                        : waveIdx === waves.length - 1
-                          ? '· last'
-                          : '· parallel';
-                    return (
-                      <div key={waveIdx}>
-                        <div className="mb-2 flex items-center gap-2">
-                          <span className="text-[11px] font-semibold">Wave {waveIdx + 1}</span>
-                          <span className="rounded-full border px-1.5 text-[9px] text-muted-foreground">
-                            {slugs.length}
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">{label}</span>
-                        </div>
-                        <div className="flex flex-col gap-2">
-                          {slugs.map((slug) => {
-                            const key = unitLaneKey(sectionIndex, slug);
-                            const unit = unitByLane.get(key);
-                            if (!unit) return null;
-                            const unresolved = completion?.unresolved.find(
-                              (entry) => entry.sectionIndex === sectionIndex && entry.slug === slug,
-                            );
-
-                            return (
-                              <UnitCard
-                                key={key}
-                                unit={unit}
-                                completionNote={
-                                  unresolved && unresolved.reason !== 'unit_unfinished'
-                                    ? completionExplanation(unresolved.reason)
-                                    : undefined
-                                }
-                                prs={unitPrs.filter(
-                                  (pr) =>
-                                    pr.sectionIndex === sectionIndex && pr.unitSlug === unit.slug,
-                                )}
-                                feedbackBatches={feedbackBatches.filter(
-                                  (batch) =>
-                                    batch.sectionIndex === sectionIndex &&
-                                    batch.unitSlug === unit.slug,
-                                )}
-                                isWalkingSkeleton={unitPlan.walkingSkeleton === slug}
-                                runningStageInstanceId={
-                                  runningStageBySlug[key] ?? runningStageBySlug[slug] ?? null
-                                }
-                                stream={streamsBySlug[key] ?? streamsBySlug[slug] ?? null}
-                                onViewLiveOutput={onViewLiveOutput}
-                                onAddressFeedback={onAddressFeedback}
-                                laneWait={laneWaitBySlug[key] ?? null}
-                              />
-                            );
-                          })}
-                          {slugs.length === 0 && (
-                            <p className="py-2 text-[11px] text-muted-foreground">No units</p>
-                          )}
-                        </div>
+          </span>
+        ) : undefined
+      }
+    >
+      {completion?.state === 'incomplete' ? (
+        <p className="mb-3 flex items-center gap-2 text-xs text-warning-fg">
+          <TriangleAlert aria-hidden="true" className="size-4 shrink-0" />
+          {plural(completion.unresolved.length, 'unfinished unit')}:{' '}
+          {completion.unresolved.map((unit) => unit.slug).join(', ')}
+        </p>
+      ) : completion?.state === 'partial' ? (
+        <p className="mb-3 text-xs text-muted-foreground">
+          {plural(completion.skipped, 'unit')} skipped by decision
+        </p>
+      ) : (
+        <p className="mb-3 text-xs text-muted-foreground">
+          {plural(waves.length, 'wave')}
+          {unitPlan.autonomyMode ? ` · ${humanizeSlug(unitPlan.autonomyMode)} mode` : ''}
+          {intentBranch
+            ? '. Integrated units land on the intent branch; the final pull request is reviewed and merged separately.'
+            : '.'}
+        </p>
+      )}
+      <div className="space-y-5">
+        {sections.map((sectionIndex) => (
+          <section key={sectionIndex ?? 'legacy'}>
+            {sections.length > 1 && (
+              <h3 className="mb-2 text-xs font-semibold">
+                {sectionIndex === null ? 'Legacy section' : `Section ${sectionIndex}`}
+              </h3>
+            )}
+            {/* Horizontal scroll so many waves (or narrow/mobile widths) keep each
+                column readable instead of collapsing. */}
+            <div className="overflow-x-auto">
+              <div
+                className="grid gap-4"
+                style={{
+                  gridTemplateColumns: `repeat(${Math.max(waves.length, 1)}, minmax(14rem, 1fr))`,
+                }}
+              >
+                {waves.map((slugs, waveIdx) => {
+                  const label =
+                    waveIdx === 0
+                      ? '· runs first'
+                      : waveIdx === waves.length - 1
+                        ? '· last'
+                        : '· parallel';
+                  return (
+                    <div key={waveIdx}>
+                      <div className="mb-2 flex items-center gap-2 text-xs">
+                        <span className="font-semibold">Wave {waveIdx + 1}</span>
+                        <span className="rounded-full border px-1.5 text-2xs tabular-nums text-muted-foreground">
+                          {slugs.length}
+                        </span>
+                        <span className="text-muted-foreground">{label}</span>
                       </div>
-                    );
-                  })}
-                </div>
+                      <div className="flex flex-col gap-2">
+                        {slugs.map((slug) => {
+                          const key = unitLaneKey(sectionIndex, slug);
+                          const unit = unitByLane.get(key);
+                          if (!unit) return null;
+                          const unresolved = completion?.unresolved.find(
+                            (entry) => entry.sectionIndex === sectionIndex && entry.slug === slug,
+                          );
+                          return (
+                            <UnitCard
+                              key={key}
+                              unit={unit}
+                              completionNote={
+                                unresolved && unresolved.reason !== 'unit_unfinished'
+                                  ? completionExplanation(unresolved.reason)
+                                  : undefined
+                              }
+                              prs={unitPrs.filter(
+                                (pr) =>
+                                  pr.sectionIndex === sectionIndex && pr.unitSlug === unit.slug,
+                              )}
+                              feedbackBatches={feedbackBatches.filter(
+                                (batch) =>
+                                  batch.sectionIndex === sectionIndex &&
+                                  batch.unitSlug === unit.slug,
+                              )}
+                              isWalkingSkeleton={unitPlan.walkingSkeleton === slug}
+                              runningStageInstanceId={
+                                runningStageBySlug[key] ?? runningStageBySlug[slug] ?? null
+                              }
+                              stream={streamsBySlug[key] ?? streamsBySlug[slug] ?? null}
+                              onViewLiveOutput={onViewLiveOutput}
+                              onAddressFeedback={onAddressFeedback}
+                              laneWait={laneWaitBySlug[key] ?? null}
+                            />
+                          );
+                        })}
+                        {slugs.length === 0 && (
+                          <p className="py-2 text-xs text-muted-foreground">No units</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </section>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+            </div>
+          </section>
+        ))}
+      </div>
+    </Disclosure>
   );
 }
 
@@ -705,6 +712,7 @@ export function UnitLaneBoard({
   const units = useMemo(() => detail?.units ?? [], [detail?.units]);
   const unitPrs = useMemo(() => detail?.unitPrs ?? [], [detail?.unitPrs]);
   const feedbackBatches = useMemo(() => detail?.feedbackBatches ?? [], [detail?.feedbackBatches]);
+  const pullRequests = useMemo(() => detail?.pullRequests ?? [], [detail?.pullRequests]);
   const [reviewUnit, setReviewUnit] = useState<IntentUnit | null>(null);
   const laneWaitBySlug = useMemo(
     () => deriveLaneWaits(detail?.stages ?? [], gates),
@@ -760,18 +768,79 @@ export function UnitLaneBoard({
       <UnitLaneBoardView
         completion={detail?.intent.status === 'SUCCEEDED' ? detail.unitCompletion : null}
         intentBranch={detail?.intent.branch}
+        branchInSummary={!isTerminalIntentStatus(detail?.intent.status)}
         unitPlan={unitPlan}
         units={units}
         streamsBySlug={streamsBySlug}
         runningStageBySlug={runningStageBySlug}
         unitPrs={unitPrs}
         feedbackBatches={feedbackBatches}
+        pullRequests={pullRequests}
         laneWaitBySlug={laneWaitBySlug}
         onViewLiveOutput={onViewLiveOutput}
         onAddressFeedback={setReviewUnit}
       />
       <UnitReviewDrawer unit={reviewUnit} onClose={() => setReviewUnit(null)} />
     </>
+  );
+}
+
+// ── Review feedback drawer ───────────────────────────────────────────────────
+const MAX_SELECTED_COMMENTS = 20;
+
+function ReviewCommentRow({
+  comment,
+  checked,
+  readOnly,
+  onChange,
+}: {
+  comment: UnitReviewComment;
+  checked: boolean;
+  /** The drawer's rule: space read-only, or no decision on the producing stage. */
+  readOnly: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const key = reviewCommentSelectionKey(comment);
+  return (
+    <label
+      className={cn(
+        'flex cursor-pointer gap-3 rounded-md border p-3 hover:bg-muted/40',
+        comment.previouslySelected && 'cursor-default opacity-60 hover:bg-transparent',
+      )}
+    >
+      <input
+        type="checkbox"
+        className="mt-0.5 h-4 w-4 shrink-0"
+        checked={checked}
+        disabled={readOnly || comment.previouslySelected}
+        aria-label={comment.body}
+        onChange={(event) => onChange(event.target.checked)}
+        data-comment-key={key}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{comment.user.login ?? 'Unknown'}</span>
+          {isAutomated(comment) && (
+            <Badge variant="outline" size="sm" className="font-normal text-muted-foreground">
+              Automated
+            </Badge>
+          )}
+          <span className="truncate">{repoShortName(comment.repository)}</span>
+          {comment.path && (
+            <code className="break-all font-mono">
+              {comment.path}
+              {comment.line ? `:${comment.line}` : ''}
+            </code>
+          )}
+          {comment.previouslySelected && (
+            <Badge variant="outline" size="sm" className="font-normal text-muted-foreground">
+              Already handled
+            </Badge>
+          )}
+        </span>
+        <span className="mt-1 block whitespace-pre-wrap break-words text-sm">{comment.body}</span>
+      </span>
+    </label>
   );
 }
 
@@ -837,6 +906,26 @@ export function UnitReviewDrawer({
     };
   }, [projectId, intentId, unit, reloads]);
 
+  const humanComments = comments.filter((comment) => !isAutomated(comment));
+  const automatedComments = comments.filter(isAutomated);
+  const selectableHuman = humanComments.filter((comment) => !comment.previouslySelected);
+  const selectableTotal = comments.filter((comment) => !comment.previouslySelected).length;
+  const allHumanSelected =
+    selectableHuman.length > 0 &&
+    selectableHuman.every((comment) => selected.has(reviewCommentSelectionKey(comment)));
+
+  const toggle = (comment: UnitReviewComment, checked: boolean) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      const key = reviewCommentSelectionKey(comment);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+
+  const selectAllHuman = () =>
+    setSelected(new Set(selectableHuman.map((comment) => reviewCommentSelectionKey(comment))));
+
   const submit = async () => {
     if (!unit || unit.sectionIndex == null || selected.size === 0) return;
     setSubmitting(true);
@@ -862,96 +951,113 @@ export function UnitReviewDrawer({
     }
   };
 
+  const tooMany = selected.size > MAX_SELECTED_COMMENTS;
+
   return (
     <Sheet open={Boolean(unit)} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="flex w-full flex-col sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>Review feedback</SheetTitle>
           <SheetDescription>
-            {unit ? `Section ${unit.sectionIndex} · ${unit.slug}` : ''}
+            {unit ? `${unitName(unit.slug)} · Section ${unit.sectionIndex}` : ''}
           </SheetDescription>
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1 pr-3">
           {loading && (
-            <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+            <div
+              role="status"
+              className="flex items-center gap-2 py-8 text-sm text-muted-foreground"
+            >
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
               Loading comments
             </div>
           )}
           {!loading && comments.length === 0 && !error && (
             <p className="py-8 text-sm text-muted-foreground">No review comments yet.</p>
           )}
-          <div className="space-y-2 py-2">
-            {comments.map((comment) => {
-              const key = reviewCommentSelectionKey(comment);
-              return (
-                <label
-                  key={`${key}:${comment.version}`}
-                  className={cn(
-                    'flex cursor-pointer gap-3 rounded-md border p-3',
-                    comment.previouslySelected && 'cursor-default opacity-55',
+          {!loading && comments.length > 0 && (
+            <div className="space-y-2 py-2">
+              {humanComments.length > 0 && (
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    {plural(humanComments.length, 'reviewer comment')}
+                  </p>
+                  {!readOnly && selectableHuman.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={allHumanSelected ? () => setSelected(new Set()) : selectAllHuman}
+                    >
+                      {allHumanSelected ? 'Clear selection' : 'Select all'}
+                    </Button>
                   )}
+                </div>
+              )}
+              {humanComments.map((comment) => (
+                <ReviewCommentRow
+                  key={`${reviewCommentSelectionKey(comment)}:${comment.version}`}
+                  comment={comment}
+                  checked={selected.has(reviewCommentSelectionKey(comment))}
+                  readOnly={readOnly}
+                  onChange={(checked) => toggle(comment, checked)}
+                />
+              ))}
+              {automatedComments.length > 0 && (
+                <Disclosure
+                  variant="row"
+                  title={plural(automatedComments.length, 'automated comment')}
+                  description="From bots and CI; usually nothing for the agent to address."
+                  contentClassName="space-y-2"
                 >
-                  <input
-                    type="checkbox"
-                    className="mt-1 h-4 w-4 shrink-0"
-                    checked={selected.has(key)}
-                    disabled={readOnly || comment.previouslySelected}
-                    onChange={(event) =>
-                      setSelected((current) => {
-                        const next = new Set(current);
-                        if (event.target.checked) next.add(key);
-                        else next.delete(key);
-                        return next;
-                      })
-                    }
-                  />
-                  <span className="min-w-0">
-                    <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <span className="font-medium text-foreground">
-                        {comment.user.login ?? 'Unknown'}
-                      </span>
-                      <span>{comment.repository}</span>
-                      {comment.path && (
-                        <code>
-                          {comment.path}
-                          {comment.line ? `:${comment.line}` : ''}
-                        </code>
-                      )}
-                      {comment.previouslySelected && <span>handled</span>}
-                    </span>
-                    <span className="mt-1 block whitespace-pre-wrap break-words text-sm">
-                      {comment.body}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-          {error && <p className="py-2 text-sm text-agent-error">{error}</p>}
+                  {automatedComments.map((comment) => (
+                    <ReviewCommentRow
+                      key={`${reviewCommentSelectionKey(comment)}:${comment.version}`}
+                      comment={comment}
+                      checked={selected.has(reviewCommentSelectionKey(comment))}
+                      readOnly={readOnly}
+                      onChange={(checked) => toggle(comment, checked)}
+                    />
+                  ))}
+                </Disclosure>
+              )}
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="py-2 text-sm text-agent-error-fg">
+              {error}
+            </p>
+          )}
         </ScrollArea>
-        <SheetFooter className="gap-2 pt-3">
+        <SheetFooter className="gap-2 border-t pt-3 sm:items-center">
+          <p
+            className={cn(
+              'mr-auto text-xs tabular-nums',
+              tooMany ? 'text-agent-error-fg' : 'text-muted-foreground',
+            )}
+          >
+            {comments.length > 0
+              ? tooMany
+                ? `Select at most ${MAX_SELECTED_COMMENTS} comments per batch`
+                : `${selected.size} of ${selectableTotal} selected`
+              : ''}
+          </p>
           <Button
             type="button"
             variant="outline"
             onClick={() => setReloads((count) => count + 1)}
             disabled={loading || submitting}
-            className="gap-2"
           >
-            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            <RefreshCw aria-hidden="true" className={cn(loading && 'animate-spin')} />
             Refresh
           </Button>
           <Button
             type="button"
             onClick={submit}
-            disabled={readOnly || submitting || selected.size === 0 || selected.size > 20}
-            className="gap-2"
+            loading={submitting}
+            disabled={readOnly || submitting || selected.size === 0 || tooMany}
           >
-            {submitting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <MessageSquare className="h-4 w-4" />
-            )}
+            {!submitting && <MessageSquare aria-hidden="true" />}
             Address feedback
           </Button>
         </SheetFooter>

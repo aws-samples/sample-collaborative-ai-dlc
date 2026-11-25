@@ -18,7 +18,7 @@ const RELAUNCH_EVENT_TYPES = new Set([
 
 // A row the server already settled is authoritative; only rows still waiting
 // for a state can take an inferred failure.
-const SETTLED_STATES: ReadonlySet<string> = new Set(['SUCCEEDED', 'SKIPPED', 'FAILED']);
+export const SETTLED_STATES: ReadonlySet<string> = new Set(['SUCCEEDED', 'SKIPPED', 'FAILED']);
 
 type FailureEvidence = {
   stageId: string;

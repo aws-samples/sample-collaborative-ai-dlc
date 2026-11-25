@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { render, fireEvent } from '@/test/query';
 import { WorkflowScopeGraph } from './WorkflowScopeGraph';
 import type { CompiledWorkflow } from '@/services/workflows';
 import type { StageState } from '@/services/intents';
@@ -139,7 +139,109 @@ describe('WorkflowScopeGraph', () => {
       <WorkflowScopeGraph compiled={branched} scopes={['feature']} readOnly />,
     );
     const labels = Array.from(container.querySelectorAll('text')).map((node) => node.textContent);
-    expect(labels).toContain('BR 1');
+    expect(labels).toContain('Round 1');
+  });
+
+  // N15 (design review r2a): "BR 2/4/1" badges had no legend, and every
+  // dependency edge was drawn at once — unreadable spaghetti.
+  it('spells a repeated stage as "Round n" (no "BR" code), in a tooltip and in the legend (R3-9)', () => {
+    const branched = {
+      ...compiled,
+      graph: {
+        ...compiled.graph,
+        nodes: [
+          { ...compiled.graph.nodes[0], forEach: 'unit-of-work', section: 2 },
+          ...compiled.graph.nodes.slice(1),
+        ],
+      },
+    } as CompiledWorkflow;
+    const { container, getByRole, getByLabelText } = render(
+      <WorkflowScopeGraph compiled={branched} scopes={['feature']} readOnly />,
+    );
+    const badge = getByRole('img', { name: 'Round 2 — runs once per unit of work' });
+    expect(badge.querySelector('title')).toHaveTextContent('Round 2 — runs once per unit of work');
+    expect(getByLabelText('Legend')).toHaveTextContent('Round n — runs once per unit of work');
+    expect(getByLabelText('Legend')).not.toHaveTextContent(/\bBR\b/);
+    expect(container.querySelectorAll('text')).not.toHaveLength(0);
+  });
+
+  it('leaves the legend without a bolt-round entry when no stage repeats per unit', () => {
+    const { getByLabelText } = render(
+      <WorkflowScopeGraph compiled={compiled} scopes={['feature']} readOnly />,
+    );
+    expect(getByLabelText('Legend')).not.toHaveTextContent('Round n');
+  });
+
+  // The workflow composer's Validate view: every edge, always, no hover state.
+  it('draws every dependency edge by default, without the hover hint', () => {
+    const { container, queryByTestId } = render(
+      <WorkflowScopeGraph compiled={compiled} scopes={['feature']} readOnly />,
+    );
+    expect(
+      Array.from(container.querySelectorAll('path[data-edge]')).map((p) =>
+        p.getAttribute('data-edge'),
+      ),
+    ).toEqual(['s1->s2', 's2->s3']);
+    expect(queryByTestId('scope-graph-edge-hint')).toBeNull();
+    const node = container.querySelector('g[transform]:not([role])');
+    if (node) fireEvent.mouseEnter(node);
+    expect(container.querySelectorAll('path[data-edge]')).toHaveLength(2);
+  });
+
+  it('with edgesOnFocus, draws dependency edges only for the hovered or selected stage', () => {
+    const handler = vi.fn();
+    const { container, getByTestId } = render(
+      <WorkflowScopeGraph
+        compiled={compiled}
+        scopes={['feature']}
+        readOnly
+        edgesOnFocus
+        onStageClick={handler}
+        stageMeta={{
+          s1: { number: '1', name: 'Intent Capture', phase: '01' },
+          s2: { number: '2', name: 'Scope Definition', phase: '02' },
+          s3: { number: '3', name: 'Build', phase: '03' },
+        }}
+      />,
+    );
+    const edges = () =>
+      Array.from(container.querySelectorAll('path[data-edge]')).map((p) =>
+        p.getAttribute('data-edge'),
+      );
+    expect(edges()).toEqual([]);
+    expect(getByTestId('scope-graph-edge-hint')).toHaveTextContent(
+      'Hover or select a stage to see its dependencies.',
+    );
+
+    const [s1, s2] = Array.from(container.querySelectorAll('g[role="button"]'));
+    fireEvent.mouseEnter(s2);
+    expect(edges()).toEqual(['s1->s2', 's2->s3']);
+    expect(getByTestId('scope-graph-edge-hint')).toHaveTextContent(
+      'Showing the dependencies of Scope Definition',
+    );
+    expect(s2.querySelector('rect')).toHaveAttribute('stroke', 'var(--ring)');
+    fireEvent.mouseLeave(s2);
+    expect(edges()).toEqual([]);
+
+    // A click pins the stage (and still reaches the host) until clicked again.
+    fireEvent.click(s1);
+    expect(handler).toHaveBeenCalledWith('s1');
+    expect(edges()).toEqual(['s1->s2']);
+    expect(getByTestId('scope-graph-edge-hint')).toHaveTextContent(
+      'Showing the dependency of Intent Capture · select it again to clear',
+    );
+    fireEvent.mouseEnter(s2);
+    expect(edges()).toEqual(['s1->s2', 's2->s3']);
+    fireEvent.mouseLeave(s2);
+    expect(edges()).toEqual(['s1->s2']);
+    fireEvent.click(s1);
+    expect(edges()).toEqual([]);
+
+    // Keyboard focus works like hover.
+    fireEvent.focus(s2);
+    expect(edges()).toEqual(['s1->s2', 's2->s3']);
+    fireEvent.blur(s2);
+    expect(edges()).toEqual([]);
   });
 
   it('SKIPPED status renders dashed stroke and reduced opacity', () => {
@@ -177,6 +279,39 @@ describe('WorkflowScopeGraph', () => {
     expect(node).toHaveAttribute('role', 'button');
     fireEvent.click(node!);
     expect(handler).toHaveBeenCalledWith('s1');
+  });
+
+  it('renders its legend and summary by default, and hides them on request', () => {
+    const { container, rerender } = render(
+      <WorkflowScopeGraph compiled={compiled} scopes={['feature']} readOnly />,
+    );
+    expect(container.querySelector('[aria-label="Legend"]')).toBeInTheDocument();
+    expect(container.textContent).toContain('2 of 3 stages run');
+
+    rerender(
+      <WorkflowScopeGraph
+        compiled={compiled}
+        scopes={['feature']}
+        readOnly
+        hideLegend
+        hideSummary
+      />,
+    );
+    expect(container.querySelector('[aria-label="Legend"]')).not.toBeInTheDocument();
+    expect(container.textContent).not.toContain('stages run');
+  });
+
+  it('keeps every text at or above the 11 px floor', () => {
+    const { container } = render(
+      <WorkflowScopeGraph compiled={compiled} scopes={['feature', 'lite']} readOnly />,
+    );
+    const tiny = [...container.querySelectorAll('[class*="text-["]')].filter((el) => {
+      const match = /text-\[(\d+(?:\.\d+)?)px\]/.exec(el.getAttribute('class') ?? '');
+      return match && Number(match[1]) < 11;
+    });
+    expect(tiny).toHaveLength(0);
+    expect(container.querySelector('[class*="text-[10px]"]')).toBeNull();
+    expect(container.querySelector('[class*="text-[8px]"]')).toBeNull();
   });
 
   it('does not add interactive attributes when onStageClick is absent', () => {

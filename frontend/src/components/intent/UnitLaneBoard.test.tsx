@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent } from '@/test/query';
 import { UnitLaneBoardView, isBeforeConstructionPhase, isFanoutActive } from './UnitLaneBoard';
 import type { IntentUnit, IntentUnitPlan, IntentUnitPr, UnitState } from '@/services/intents';
 import type { PhaseNode } from '@/services/workflows';
@@ -108,7 +108,8 @@ describe('UnitLaneBoardView', () => {
       else expect(screen.getByText(/changes reached every repository/)).toBeVisible();
       if (state === 'incomplete')
         expect(screen.getByText('1 unfinished unit: billing')).toBeVisible();
-      expect(Boolean(screen.queryByText(/Integrated units are on/))).toBe(state === 'unknown');
+      // The wave summary gives way to the completion line once units ended unresolved.
+      expect(Boolean(screen.queryByText(/^\d+ waves?\b/))).toBe(state === 'unknown');
     },
   );
 
@@ -121,44 +122,118 @@ describe('UnitLaneBoardView', () => {
     expect(screen.getByText('· last')).toBeInTheDocument();
   });
 
-  it('renders every unit slug and its state label', () => {
+  it('renders every unit with a human name and its state label', () => {
     renderView();
-    // `auth`/`billing`/`ui` also appear as dependency refs, so assert presence
+    // `Auth`/`Billing`/`UI` also appear as dependency refs, so assert presence
     // (>=1) rather than uniqueness; state labels are unique per fixture.
-    expect(screen.getAllByText('auth').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('reporting')).toBeInTheDocument();
+    expect(screen.getAllByText('Auth').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Reporting')).toBeInTheDocument();
     expect(screen.getByText('Integrated')).toBeInTheDocument();
     expect(screen.getByText('Building')).toBeInTheDocument();
     expect(screen.getByText('Blocked')).toBeInTheDocument();
     expect(screen.getByText('Pending')).toBeInTheDocument();
+    // raw slugs never appear as labels
+    expect(screen.queryByText('reporting')).not.toBeInTheDocument();
   });
 
   it('marks the walking skeleton', () => {
     renderView();
-    expect(screen.getByText('skeleton')).toBeInTheDocument();
+    expect(screen.getByText('Walking skeleton')).toBeInTheDocument();
   });
 
   it('shows dependencies and a blocked note', () => {
     renderView();
-    // dependency chips
-    expect(screen.getAllByText('auth').length).toBeGreaterThan(1); // unit + dep refs
+    // dependency refs
+    expect(screen.getAllByText('Auth').length).toBeGreaterThan(1); // unit + dep refs
     expect(screen.getByText(/waiting for merge slot/)).toBeInTheDocument();
   });
 
-  it('summarizes only the states that are present', () => {
+  it('summarizes only the states that are present, in one line', () => {
     renderView();
-    expect(screen.getByText('1 integrated')).toBeInTheDocument();
+    expect(screen.getByText('4 units')).toBeInTheDocument();
+    expect(screen.getByText('1 of 4 integrated')).toBeInTheDocument();
     expect(screen.getByText('1 building')).toBeInTheDocument();
     expect(screen.getByText('1 blocked')).toBeInTheDocument();
     expect(screen.getByText('1 pending')).toBeInTheDocument();
-    // no failed unit in the fixture → no failed chip
+    // no failed unit in the fixture → no failed segment
     expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
   });
 
-  it('renders the autonomy mode and unit/wave counts', () => {
+  // W36 §1 P2: on a finished run the outcome callout already names the branch;
+  // the Units line then says "both integrated" without repeating it.
+  it('leaves the branch out of the summary when the callout above already names it', () => {
+    renderView({
+      intentBranch: 'aidlc/show-cart-badge',
+      branchInSummary: false,
+      units: [unit('auth', 'MERGED'), unit('billing', 'MERGED', { dependsOn: ['auth'] })],
+      unitPlan: plan({
+        units: [
+          { slug: 'auth', dependsOn: [] },
+          { slug: 'billing', dependsOn: ['auth'] },
+        ],
+        batches: [['auth'], ['billing']],
+        unitCount: 2,
+      }),
+    });
+    expect(screen.getByText('both integrated')).toBeInTheDocument();
+    expect(screen.queryByText(/into/)).not.toBeInTheDocument();
+    expect(screen.queryByText('aidlc/show-cart-badge')).not.toBeInTheDocument();
+  });
+
+  it('says "both integrated into <branch>" and links the final PR when everything is merged', () => {
+    renderView({
+      intentBranch: 'aidlc/show-cart-badge',
+      units: [unit('auth', 'MERGED'), unit('billing', 'MERGED', { dependsOn: ['auth'] })],
+      unitPlan: plan({
+        units: [
+          { slug: 'auth', dependsOn: [] },
+          { slug: 'billing', dependsOn: ['auth'] },
+        ],
+        batches: [['auth'], ['billing']],
+        unitCount: 2,
+      }),
+      pullRequests: [
+        {
+          id: 'pr-1',
+          repository: 'eipasteur/retail-store-cart',
+          prUrl: 'https://example.test/pull/57',
+          prNumber: '57',
+          branch: 'aidlc/show-cart-badge',
+          baseBranch: 'main',
+          createdAt: null,
+        },
+      ],
+    });
+    expect(screen.getByText('2 units')).toBeInTheDocument();
+    expect(screen.getByText(/both integrated into/)).toBeInTheDocument();
+    expect(screen.getByText('aidlc/show-cart-badge')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /PR #57/ })).toHaveAttribute(
+      'href',
+      'https://example.test/pull/57',
+    );
+    // Details are on demand once every unit is integrated.
+    expect(screen.queryByText('Wave 1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Units/ }));
+    expect(screen.getByText('Wave 1')).toBeInTheDocument();
+    expect(screen.getByText('Wave 2')).toBeInTheDocument();
+  });
+
+  it('keeps the details open while any unit is still active', () => {
     renderView();
-    expect(screen.getByText('autonomous')).toBeInTheDocument();
-    expect(screen.getByText(/4 units · 3 waves/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Units/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Wave 1')).toBeInTheDocument();
+  });
+
+  it('renders the autonomy mode and wave count in the details', () => {
+    renderView();
+    expect(screen.getByText(/Autonomous/)).toBeInTheDocument();
+    expect(screen.getByText(/3 waves/)).toBeInTheDocument();
+  });
+
+  it('uses no text below 11 px', () => {
+    const { container } = renderView();
+    expect(container.innerHTML).not.toMatch(/text-\[(?:[0-9]|10)px\]/);
+    expect(container.querySelector('details')).toBeNull();
   });
 
   it('excludes orphaned units (not in the plan) from the state counts', () => {
@@ -167,9 +242,9 @@ describe('UnitLaneBoardView', () => {
     const orphan = unit('legacy', 'FAILED', { failureReason: 'stale run' });
     renderView({ units: [...units, orphan] });
     expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
-    expect(screen.queryByText('legacy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
     // real units still counted
-    expect(screen.getByText('1 integrated')).toBeInTheDocument();
+    expect(screen.getByText('1 of 4 integrated')).toBeInTheDocument();
   });
 
   it('renders the live stream only when a running stage instance is provided', () => {
@@ -385,8 +460,9 @@ describe('UnitLaneBoardView', () => {
     });
     expect(screen.getByText('Section 1')).toBeInTheDocument();
     expect(screen.getByText('Section 2')).toBeInTheDocument();
-    expect(screen.getAllByText('auth')).toHaveLength(2);
+    expect(screen.getAllByText('Auth')).toHaveLength(2);
     expect(screen.getByText('owner/api')).toBeInTheDocument();
+    expect(screen.getByText('Draft')).toBeInTheDocument();
     expect(screen.getByText('Integration turn')).toBeInTheDocument();
   });
 
@@ -415,7 +491,7 @@ describe('UnitLaneBoardView', () => {
         },
       ],
     });
-    fireEvent.click(screen.getByText(/1 comment · succeeded/));
+    fireEvent.click(screen.getByRole('button', { name: /1 comment · Completed/ }));
     expect(screen.getByText('Handled the empty-token case.')).toBeInTheDocument();
     expect(screen.getByText(/src\/auth.ts/)).toBeInTheDocument();
     expect(screen.getByText(/npm test passed/)).toBeInTheDocument();
