@@ -156,9 +156,8 @@ export function CodeCommitSourceControlCard() {
         setConfig(next);
         setRoleArn(next.roleArn ?? '');
         setRegion(next.region ?? '');
-        // No connection yet → open the form (and its guide) straight away.
+        // No connection yet → open the form straight away.
         setEditing(next.roleArn === null);
-        setGuideOpen(next.roleArn === null);
       })
       .catch((error) => {
         setLoadError(error instanceof Error ? error.message : 'Failed to load configuration');

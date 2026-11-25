@@ -1,6 +1,6 @@
 // Collapsed "Setup guide" toggle and panel shared by the admin source-control
-// cards. The caller owns the open state, so a card can open its guide on first
-// setup or close it after a save.
+// cards. The caller owns the open state, so a card can close its guide after a
+// save.
 
 import type { ReactNode } from 'react';
 import { BookOpen, ChevronDown, ChevronUp } from 'lucide-react';
