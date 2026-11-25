@@ -669,6 +669,56 @@ describe('github provider — repo browse + PR + comments', () => {
     ).rejects.toThrow('API rate limit exceeded');
   });
 
+  it('listRepos reads one page when the Link header has no rel="last"', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/user/repos',
+        (url) => ({
+          json: fullPage(1, ghRepo),
+          headers: { link: `<${url.replace('page=1', 'page=2')}>; rel="next"` },
+        }),
+      ],
+    ]);
+    expect(await gh.listRepos({ token: 't', fetchImpl })).toHaveLength(100);
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it('listBranches fails when a later page is gone instead of returning part of the list', async () => {
+    const pages = githubPages((page) => fullPage(page, (n) => ({ name: `b${n}` })), 2);
+    const fetchImpl = makeFetch([
+      [
+        '/branches',
+        (url) => (pageOf(url) === 2 ? { status: 404, json: { message: 'Not Found' } } : pages(url)),
+      ],
+    ]);
+    await expect(gh.listBranches({ token: 't', fetchImpl }, 'o/r')).rejects.toThrow('Not Found');
+  });
+
+  it('listIssueComments treats only a first-page 404 as no comments, whatever its body', async () => {
+    const htmlNotFound = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => JSON.parse('<html>'),
+      headers: { get: () => null },
+    });
+    expect(await gh.listIssueComments({ token: 't', fetchImpl: htmlNotFound }, 'o/r', 7)).toEqual(
+      [],
+    );
+
+    const gone = makeFetch([
+      [
+        '/comments',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 404, json: { message: 'Not Found' } }
+            : { json: fullPage(1, (n) => ({ id: n, body: '', user: { login: 'a' } })) },
+      ],
+    ]);
+    await expect(gh.listIssueComments({ token: 't', fetchImpl: gone }, 'o/r', 7)).rejects.toThrow(
+      'Not Found',
+    );
+  });
+
   it('rejects malformed repo references', async () => {
     await expect(
       gh.listBranches({ token: 't', fetchImpl: makeFetch([]) }, 'no-slash'),
