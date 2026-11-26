@@ -187,11 +187,6 @@ const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
 // Prefix intent pull request titles with the intent's Jira issue key.
 const PR_TITLE_TRACKER_KEY = () => process.env.PR_TITLE_TRACKER_KEY === 'true';
-// What a unit lane does when one of its stages fails: 'halt' (end the lane; the
-// section's halt-and-ask gate decides once every lane has settled) or 'ask'
-// (ask straight away whether to retry that stage). Snapshotted into the run's
-// load-meta checkpoint, so a run in progress keeps the behaviour it started with.
-const LANE_FAILURE_POLICY = () => (process.env.LANE_FAILURE_POLICY === 'ask' ? 'ask' : 'halt');
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -661,8 +656,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // steps (section.js waitForIntegrationTurn).
     // unusedBranchCleanup: the run ends with a branch-cleanup step; older
     // histories have none and replay without it.
-    // laneFailurePolicy: the platform setting when this history began; older
-    // histories have none and keep halting (section.js runLaneBody).
+    // laneFailurePolicy 'ask': a failed lane stage asks at once whether to retry
+    // it; older histories have none and keep halting (section.js runLaneBody).
     return loaded
       ? {
           ...loaded,
@@ -671,7 +666,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           autonomousLoopBackVersion: 1,
           deliveryPolicyVersion: 1,
           ...(typeof deleteUnusedBranches === 'function' ? { unusedBranchCleanup: true } : {}),
-          laneFailurePolicy: LANE_FAILURE_POLICY(),
+          laneFailurePolicy: 'ask',
         }
       : null;
   });

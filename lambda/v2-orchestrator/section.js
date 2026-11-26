@@ -35,6 +35,10 @@
 //                       --no-ff merge-back into the intent branch (in-process
 //                       merge lock; merge-lane is idempotent) → MERGED →
 //                       lane session released.
+//   lane retry gate   — a failed lane stage first asks, on a gate owned by
+//                       the unit, retry / request-changes / leave-failed;
+//                       the lane's dependents wait. leave-failed falls
+//                       through to halt-and-ask.
 //   halt-and-ask      — a failed lane BLOCKS its dependents, independents
 //                       finish (allSettled join), then ONE gate: retry (same
 //                       branch/worktree, fresh durable round) / skip (audited;
@@ -550,7 +554,7 @@ export const runParallelSection = async (segment, toolkit) => {
     laneWaitPolicyVersion = 1,
     // 'ask': a failed lane stage asks at once whether to retry it, instead of
     // ending the lane for the section's halt-and-ask. Rides the load-meta
-    // checkpoint; histories without it halt.
+    // checkpoint; histories recorded before it halt, as they did.
     laneFailurePolicy = 'halt',
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
@@ -2034,12 +2038,12 @@ export const runParallelSection = async (segment, toolkit) => {
           );
           continue;
         }
-        // A failed stage ends the lane (halt-and-ask decides once every lane has
-        // settled), unless laneFailurePolicy is 'ask': then the lane asks at once
-        // whether to retry the stage. Each retry is a fresh attempt with its own
-        // durable identities (-a<n>); attempt 0 keeps the original sequence.
-        // A retry tells the agent why the last attempt failed, with any
-        // guidance from the gate.
+        // A failed stage asks at once whether to retry it (laneFailurePolicy
+        // 'ask'); leaving it failed, or a history recorded before the gate,
+        // ends the lane and halt-and-ask decides once every lane has settled.
+        // Each retry is a fresh attempt with its own durable identities
+        // (-a<n>); attempt 0 keeps the original sequence. A retry tells the
+        // agent why the last attempt failed, with any guidance from the gate.
         let outcome;
         let retry = null;
         for (let attempt = 0; ; attempt += 1) {
@@ -2361,8 +2365,8 @@ export const runParallelSection = async (segment, toolkit) => {
     }
   };
 
-  // laneFailurePolicy 'ask': a lane stage failed — ask, on a gate owned by the
-  // unit, whether to retry that stage now. The lane keeps its branch and its
+  // A lane stage failed — ask, on a gate owned by the unit, whether to retry
+  // that stage now. The lane keeps its branch and its
   // completed stages, and its dependents keep waiting on its promise rather than
   // being blocked. While the gate is open the lane frees its concurrency permit
   // and its runtime session (the stage self-heals the checkout on retry).

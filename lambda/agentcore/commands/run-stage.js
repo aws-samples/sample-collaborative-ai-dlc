@@ -1236,11 +1236,11 @@ const reviewerRepairMessage = ({ reviewerAgent, round, reviewerFindings }) =>
     'say plainly in the output what you did not change and why.',
   ].join('\n');
 
+const multiRepo = (results) => new Set(results.map((r) => r.repo)).size > 1;
+
 // The WP2 durability rule as data: the failure a git result must turn into when
 // new work is at risk, or null. Shared by the stage commit and the repair-turn
 // commits so a repair cannot finish the stage with unpushed work.
-const multiRepo = (results) => new Set(results.map((r) => r.repo)).size > 1;
-
 const workAtRiskFailure = (gitResult) => {
   const atRiskRepos = gitResult?.ok
     ? []

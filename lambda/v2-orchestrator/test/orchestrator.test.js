@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StepError } from '@aws/durable-execution-sdk-js';
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { promoteUnits } from '../../agentcore/commands/promote-units.js';
@@ -2314,15 +2314,23 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
       return { ok: true, state: 'SUCCEEDED' };
     });
     const res = await start();
-    // Halt gate auto-answers with NO parseable choice → the gate RE-ASKS a
-    // bounded number of times (abort must be explicit), then the deterministic
-    // fallback is ABORT (never silent continuation).
+    // Gates auto-answer with NO parseable choice. The lane retry gate re-asks,
+    // then leaves the unit failed; the halt gate RE-ASKS a bounded number of
+    // times (abort must be explicit), then the deterministic fallback is ABORT
+    // (never silent continuation).
     expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
     expect(res.detail).toContain('auth');
     const eventCallsHalt = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCallsHalt.some((e) => e.type === 'v2.unit.retry_declined')).toBe(true);
     expect(eventCallsHalt.some((e) => e.type === 'v2.units.halt_reask')).toBe(true);
-    // Lane bookkeeping: auth FAILED with the failing stage recorded.
-    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual(['auth:RUNNING', 'auth:FAILED']);
+    // Lane bookkeeping: auth FAILED with the failing stage recorded (waiting on
+    // its retry gate, left failed, ended).
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
+      'auth:RUNNING',
+      'auth:FAILED',
+      'auth:FAILED',
+      'auth:FAILED',
+    ]);
     expect(unitStates[1].fields.failureReason).toContain('cg');
     // billing's lane never started (skeleton failed before fan-out widened).
     expect(stageStarts().some((p) => p.unitSlug === 'billing')).toBe(false);
@@ -2349,7 +2357,12 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     const res = await start();
 
     expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
-    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual(['auth:RUNNING', 'auth:FAILED']);
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
+      'auth:RUNNING',
+      'auth:FAILED',
+      'auth:FAILED',
+      'auth:FAILED',
+    ]);
     expect(unitStates[1].fields.failureReason).toContain('plan_approval_missing');
     expect(stageStarts().some((p) => p.command === 'merge-lane' && p.unitSlug === 'auth')).toBe(
       false,
@@ -3469,7 +3482,10 @@ describe('WP5 — engine-gate decisions', () => {
 
   it('halt-and-ask RETRY re-runs the failed lane under fresh round identities and completes the run', async () => {
     let cgBillingAttempts = 0;
-    deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'retry' } } });
+    deps.store.getHumanTask = gateReads({
+      'eg-lane-retry': { answer: { decision: 'leave-failed' } },
+      'eg-halt': { answer: { decision: 'retry' } },
+    });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
       if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
@@ -3493,18 +3509,29 @@ describe('WP5 — engine-gate decisions', () => {
     const billingSessionStops = deps.stopSession.mock.calls.filter(
       ([sessionId]) => sessionId === billingSessionId,
     );
-    expect(billingSessionStops).toHaveLength(2);
-    const retryReleaseOrder = deps.stopSession.mock.invocationCallOrder.find(
+    // Stops: while the lane retry gate is open, before the halt-and-ask retry,
+    // and after the merge.
+    expect(billingSessionStops).toHaveLength(3);
+    const retryReleaseOrder = deps.stopSession.mock.invocationCallOrder.filter(
       (_, index) => deps.stopSession.mock.calls[index][0] === billingSessionId,
-    );
+    )[1];
     const retryStageOrder = deps.invokeRuntime.mock.invocationCallOrder.filter((_, index) => {
       const payload = deps.invokeRuntime.mock.calls[index][0];
       return payload.stageId === 'cg' && payload.unitSlug === 'billing';
     })[1];
     expect(retryReleaseOrder).toBeLessThan(retryStageOrder);
-    // Lane states: billing FAILED (round 0) then revived RUNNING → MERGED.
+    // Lane states: billing FAILED (round 0: retry gate, left failed, ended) then
+    // revived RUNNING → MERGED.
     const billing = unitStates.filter((u) => u.slug === 'billing').map((u) => u.state);
-    expect(billing).toEqual(['RUNNING', 'FAILED', 'RUNNING', 'MERGING', 'MERGED']);
+    expect(billing).toEqual([
+      'RUNNING',
+      'FAILED',
+      'FAILED',
+      'FAILED',
+      'RUNNING',
+      'MERGING',
+      'MERGED',
+    ]);
     // The retry-round revive CAS accepts FAILED/BLOCKED lanes.
     const revive = unitStates.filter((u) => u.slug === 'billing' && u.state === 'RUNNING')[1];
     expect(revive.fromStates).toContain('FAILED');
@@ -3512,15 +3539,7 @@ describe('WP5 — engine-gate decisions', () => {
     expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('retry');
   });
 
-  describe('LANE_FAILURE_POLICY=ask: retry a failed lane stage straight away', () => {
-    const previous = process.env.LANE_FAILURE_POLICY;
-    beforeEach(() => {
-      process.env.LANE_FAILURE_POLICY = 'ask';
-    });
-    afterEach(() => {
-      if (previous === undefined) delete process.env.LANE_FAILURE_POLICY;
-      else process.env.LANE_FAILURE_POLICY = previous;
-    });
+  describe('lane retry gate: retry a failed lane stage straight away', () => {
     // billing's cg fails `failures` times, then succeeds.
     const failingBilling = (failures) => {
       let attempts = 0;
@@ -3762,8 +3781,15 @@ describe('WP5 — engine-gate decisions', () => {
       expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(false);
     });
 
-    it('is off by default: a failed stage goes straight to halt-and-ask', async () => {
-      delete process.env.LANE_FAILURE_POLICY;
+    it('keeps halting for a run whose load-meta checkpoint predates the gate', async () => {
+      // Replay a load-meta result recorded before laneFailurePolicy existed.
+      const step = ctx.step;
+      ctx.step = async (name, fn) => {
+        const result = await step(name, fn);
+        if (name !== 'load-meta' || !result) return result;
+        const { laneFailurePolicy: _marker, ...before } = result;
+        return before;
+      };
       deps.store.getHumanTask = answers({ 'eg-halt': { answer: { decision: 'abort' } } });
       deps.invokeRuntime = failingBilling(1);
       const res = await start();

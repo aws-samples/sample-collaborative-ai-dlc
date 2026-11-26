@@ -93,7 +93,7 @@ Construction stages that are marked to run **per unit of work** form a parallel 
 - A lane starts only when the lanes it depends on have merged.
 - The first lane is the **walking skeleton**: it runs solo, with a mandatory approval gate, before the rest fan out. Requesting changes at that gate re-runs the skeleton lane with your feedback and asks again — it never kills the run.
 - After the skeleton, you choose the autonomy level once: continue fully autonomously, or gate every batch. Batch gates work the same way: approve, or request changes to revise the batch (after three revision cycles an accept-as-is option appears, mirroring the upstream methodology's escape hatch).
-- Completed lanes are merged back into the intent branch by the engine — serialized, deterministic, in dependency-safe order. Merge conflicts trigger a scoped conflict-resolution stage; a failed lane blocks only its dependents and surfaces a retry / skip / abort gate.
+- Completed lanes are merged back into the intent branch by the engine — serialized, deterministic, in dependency-safe order. Merge conflicts trigger a scoped conflict-resolution stage; a failed lane stage first asks whether to retry it, and a lane left failed blocks only its dependents and surfaces a retry / skip / abort gate.
 
 The scheduling is entirely deterministic — no LLM decides what runs when. Concurrency is capped by the space's `maxParallelUnits` setting.
 
