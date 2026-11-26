@@ -82,6 +82,28 @@ describe('readImageScanFindings', () => {
     expect(second).toEqual(first);
   });
 
+  it('orders the IDs of one severity by number, not as text', async () => {
+    const finding = (name) => ({ name, severity: 'HIGH', attributes: [] });
+    const result = await readImageScanFindings({
+      ecrClient: client({
+        imageScanStatus: { status: 'ACTIVE' },
+        imageScanFindings: {
+          findingSeverityCounts: { HIGH: 3 },
+          findings: [finding('CVE-2026-58055'), finding('CVE-2025-9999'), finding('CVE-2026-6238')],
+        },
+      }),
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core',
+      imageDigest: digest,
+      now: () => '2026-11-20T00:00:00.000Z',
+    });
+
+    expect(result.findings.map((entry) => entry.id)).toEqual([
+      'CVE-2025-9999',
+      'CVE-2026-6238',
+      'CVE-2026-58055',
+    ]);
+  });
+
   it('lists the findings of an enhanced scan, which ECR returns in their own shape', async () => {
     const result = await readImageScanFindings({
       ecrClient: client({
@@ -227,6 +249,24 @@ describe('readImageScanFindings', () => {
         imageId: { imageDigest: digest },
         nextToken: 'p2',
       });
+    });
+
+    it('orders the IDs and package versions of every page by number', async () => {
+      const affected = (id, versions) => ({
+        severity: 'HIGH',
+        packageVulnerabilityDetails: {
+          vulnerabilityId: id,
+          vulnerablePackages: versions.map((version) => ({ name: 'glibc', version })),
+        },
+      });
+      const { result } = read(
+        page([affected('CVE-2026-58055', ['2.10', '2.9'])], 'p2'),
+        page([affected('CVE-2026-6238', ['2.41'])]),
+      );
+
+      expect(
+        (await result).findings.map((finding) => `${finding.id} ${finding.packageVersion}`),
+      ).toEqual(['CVE-2026-6238 2.41', 'CVE-2026-58055 2.9', 'CVE-2026-58055 2.10']);
     });
 
     it('does not call a complete list truncated when ECR returns a token on its last page', async () => {
