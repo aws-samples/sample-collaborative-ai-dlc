@@ -194,6 +194,8 @@ function MembersTabContent({ projectId, userRole }: Props) {
     const q = userSearch.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
+  // Nothing typed and nothing left to offer: every available identity is selected.
+  const allUsersSelected = !userSearch && assignableUsers.length > 0 && filteredUsers.length === 0;
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -770,7 +772,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
                     placeholder={loadingUsers ? 'Loading users...' : 'Search by email or name...'}
                     disabled={addingMember || loadingUsers}
                   />
-                  {showUserDropdown && !loadingUsers && (
+                  {showUserDropdown && !loadingUsers && !addingMember && !allUsersSelected && (
                     <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
                       {filteredUsers.length === 0 ? (
                         <div className="px-3 py-2 text-sm text-muted-foreground">

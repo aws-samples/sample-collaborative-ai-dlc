@@ -588,7 +588,13 @@ describe('MembersTab assignable identity picker', () => {
     // The list stays open and no longer offers the identity just picked.
     expect(within(dialog).queryByRole('button', { name: /Local User · Cognito/ })).toBeNull();
     await user.click(within(dialog).getByRole('button', { name: /SSO User · CorporateOIDC/ }));
+    // Everyone available is selected: with nothing typed there is no list to show.
+    expect(within(dialog).queryByText('No matching users')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('No users available')).not.toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText('Users'), 'nobody');
     expect(within(dialog).getByText('No matching users')).toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText('Users'));
+    expect(within(dialog).queryByText('No matching users')).not.toBeInTheDocument();
 
     const selected = within(dialog).getByRole('list', { name: 'Selected users' });
     expect(within(selected).getAllByRole('listitem')).toHaveLength(2);
@@ -630,6 +636,42 @@ describe('MembersTab assignable identity picker', () => {
     await waitFor(() => expect(addMember).toHaveBeenCalledTimes(1));
     expect(addMember).toHaveBeenCalledWith('project-1', {
       userId: 'sso-sub',
+      email: 'shared@example.com',
+      role: 'member',
+    });
+  });
+
+  it('offers no identities to pick while an add is in progress', async () => {
+    const user = userEvent.setup();
+    let finishAdd!: (value: unknown) => void;
+    addMember.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishAdd = resolve;
+        }),
+    );
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('existing@example.com');
+    await user.click(screen.getByRole('button', { name: 'Add Member' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+    const search = within(dialog).getByLabelText('Users');
+    await user.click(search);
+    await user.click(await within(dialog).findByRole('button', { name: /Local User · Cognito/ }));
+    // Submit with Enter from the search field; the results list was open.
+    await user.type(search, '{Enter}');
+
+    await waitFor(() => expect(addMember).toHaveBeenCalledTimes(1));
+    expect(within(dialog).getByRole('button', { name: 'Adding...' })).toBeDisabled();
+    expect(
+      within(dialog).queryByRole('button', { name: /SSO User · CorporateOIDC/ }),
+    ).not.toBeInTheDocument();
+    expect(search).toBeDisabled();
+
+    finishAdd({});
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(addMember).toHaveBeenCalledWith('project-1', {
+      userId: 'local-sub',
       email: 'shared@example.com',
       role: 'member',
     });
