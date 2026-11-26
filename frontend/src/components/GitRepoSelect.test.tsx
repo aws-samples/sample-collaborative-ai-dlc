@@ -5,6 +5,7 @@ import { GitRepoSelect } from './GitRepoSelect';
 
 const listRepos = vi.hoisted(() => vi.fn());
 const searchRepos = vi.hoisted(() => vi.fn());
+const listReposPage = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/gitProvider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/gitProvider')>();
@@ -12,9 +13,14 @@ vi.mock('@/services/gitProvider', async (importOriginal) => {
     ...actual,
     getGitProviderService: (provider: GitProvider) => {
       const service = actual.getGitProviderService(provider);
-      // Only mock searchRepos where the real service offers it, so the tests
-      // also cover which providers search server-side.
-      return { ...service, listRepos, ...(service.searchRepos ? { searchRepos } : {}) };
+      // Only mock searchRepos and listReposPage where the real service offers
+      // them, so the tests also cover which providers search or page.
+      return {
+        ...service,
+        listRepos,
+        ...(service.searchRepos ? { searchRepos } : {}),
+        ...(service.listReposPage ? { listReposPage } : {}),
+      };
     },
   };
 });
@@ -36,6 +42,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   listRepos.mockReset();
   searchRepos.mockReset();
+  listReposPage.mockReset();
 });
 
 afterEach(() => {
@@ -81,15 +88,98 @@ describe('GitRepoSelect server-side search', () => {
   });
 
   it('keeps filtering locally for providers without server-side search', async () => {
-    listRepos.mockResolvedValue([recent, deep]);
+    listReposPage.mockResolvedValue({ repos: [recent, deep], nextPage: null });
     await renderPicker('github');
 
     await typeSearch('steering');
 
     expect(screen.queryByTitle(recent.fullName)).not.toBeInTheDocument();
     expect(screen.getByTitle(deep.fullName)).toBeInTheDocument();
-    expect(listRepos).toHaveBeenCalledTimes(1);
+    expect(listReposPage).toHaveBeenCalledTimes(1);
+    expect(listRepos).not.toHaveBeenCalled();
     expect(searchRepos).not.toHaveBeenCalled();
+  });
+});
+
+describe('GitRepoSelect, GitHub repositories page by page', () => {
+  const older = repo(101, 'org/older-service');
+
+  it('shows page 1 while page 2 loads, then finds a repository from page 2', async () => {
+    let releasePage2: (value: unknown) => void = () => {};
+    listReposPage
+      .mockResolvedValueOnce({ repos: [recent], nextPage: 2 })
+      .mockReturnValueOnce(new Promise((resolve) => (releasePage2 = resolve)));
+    const onChange = await renderPicker('github');
+
+    expect(screen.getByTitle(recent.fullName)).toBeInTheDocument();
+    expect(screen.getByText('Loading more repositories...')).toBeInTheDocument();
+
+    // A repo updated while the pages are read comes back on page 2: listed once.
+    await act(async () => releasePage2({ repos: [older, recent], nextPage: null }));
+    await typeSearch('older');
+
+    expect(listReposPage.mock.calls).toEqual([[1], [2]]);
+    expect(screen.queryByText('Loading more repositories...')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle(older.fullName));
+    expect(onChange).toHaveBeenCalledWith([older]);
+    await typeSearch('');
+    expect(screen.getAllByTitle(recent.fullName)).toHaveLength(1);
+  });
+
+  it('keeps the pages already read when a later page fails', async () => {
+    listReposPage
+      .mockResolvedValueOnce({ repos: [recent], nextPage: 2 })
+      .mockRejectedValueOnce(new Error('API rate limit exceeded'));
+    await renderPicker('github');
+    await act(async () => {});
+
+    expect(screen.getByTitle(recent.fullName)).toBeInTheDocument();
+    expect(
+      screen.getByText('Some repositories could not be loaded. Reopen the picker to try again.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the error when page 1 fails', async () => {
+    listReposPage.mockRejectedValueOnce(new Error('GitHub not connected'));
+    await renderPicker('github');
+
+    expect(screen.getByText('GitHub not connected')).toBeInTheDocument();
+  });
+
+  it('stops at the page cap and says so', async () => {
+    listReposPage.mockImplementation(async (page: number) => ({
+      repos: [repo(page, `org/r${page}`)],
+      nextPage: page + 1,
+    }));
+    await renderPicker('github');
+    await act(async () => {});
+
+    expect(listReposPage).toHaveBeenCalledTimes(10);
+    expect(
+      screen.getByText('Showing the 1,000 most recently updated repositories.'),
+    ).toBeInTheDocument();
+  });
+
+  it('lists the GitHub App repositories in one request, without paging', async () => {
+    const appRepos = vi.spyOn(
+      (await import('@/services/gitProvider')).githubAppService,
+      'listRepos',
+    );
+    appRepos.mockResolvedValue([recent]);
+    render(
+      <GitRepoSelect
+        provider="github"
+        repoSource="github-app"
+        multiple
+        value={[]}
+        onChange={() => {}}
+      />,
+    );
+    await act(async () => {});
+
+    expect(screen.getByTitle(recent.fullName)).toBeInTheDocument();
+    expect(listReposPage).not.toHaveBeenCalled();
+    appRepos.mockRestore();
   });
 });
 

@@ -45,10 +45,22 @@ vi.mock('@/services/gitProvider', async (importOriginal) => {
   return {
     ...actual,
     githubAppService: { ...actual.githubAppService, listRepos: appListRepos },
-    getGitProviderService: (provider: GitProvider) => ({
-      ...actual.getGitProviderService(provider),
-      listRepos: githubOauthListRepos,
-    }),
+    getGitProviderService: (provider: GitProvider) => {
+      const service = actual.getGitProviderService(provider);
+      return {
+        ...service,
+        listRepos: githubOauthListRepos,
+        // GitHub pages its OAuth list: serve it as a single page.
+        ...(service.listReposPage
+          ? {
+              listReposPage: async () => ({
+                repos: await githubOauthListRepos(),
+                nextPage: null,
+              }),
+            }
+          : {}),
+      };
+    },
   };
 });
 

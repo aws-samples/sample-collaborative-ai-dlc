@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { TrackerBinding } from './projects';
+import { collectListPages } from './pagination';
 
 // Provider-agnostic tracker resources. The polymorphic shapes here mirror
 // the backend's normalized DTOs (lambda/trackers/providers/*). GitHub-specific
@@ -284,8 +285,16 @@ export const trackersService = {
   getIssue: (projectId: string, bindingId: string, resourceId: string) =>
     api.get<TrackerIssue>(`/projects/${projectId}/trackers/${bindingId}/issues/${resourceId}`),
 
-  listComments: (projectId: string, bindingId: string, resourceId: string) =>
-    api.get<TrackerComment[]>(
-      `/projects/${projectId}/trackers/${bindingId}/issues/${resourceId}/comments`,
-    ),
+  // One request per page of the discussion, so a long or slow one does not
+  // wait behind the API Gateway timeout; a page after the first that fails
+  // keeps the comments already read.
+  listComments: async (projectId: string, bindingId: string, resourceId: string) =>
+    (
+      await collectListPages(async (page) => {
+        const result = await api.get<{ comments: TrackerComment[]; nextPage: number | null }>(
+          `/projects/${projectId}/trackers/${bindingId}/issues/${resourceId}/comments?page=${page}`,
+        );
+        return { rows: result.comments, nextPage: result.nextPage };
+      })
+    ).rows,
 };
