@@ -2340,6 +2340,12 @@ const REAL_211_RELEASES = Object.freeze([
     VERSION: '2.11.4',
     ADDED: ['engine intent add-checkout', 'engine intent add-repo', 'engine sensor-<id> --stage'],
   },
+  {
+    PROFILE: 'v2.11.5',
+    SHA: '30d674ed196c7051222130ce344bf513c82eff2b',
+    VERSION: '2.11.5',
+    ADDED: ['engine intent add-checkout', 'engine intent add-repo', 'engine sensor-<id> --stage'],
+  },
 ]);
 for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
   describe(`a deployment admitting the real AI-DLC ${VERSION}`, () => {
@@ -2348,7 +2354,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     // answered. Listed verbatim: a command that stopped being answered, or a new
     // one that started being honoured without an answer, must fail here.
     const REMOVED_ENGINE_COMMANDS =
-      PROFILE === 'v2.11.3' || PROFILE === 'v2.11.4'
+      PROFILE === 'v2.11.3' || PROFILE === 'v2.11.4' || PROFILE === 'v2.11.5'
         ? ['engine recompose', 'engine testing-posture restore']
         : [];
     const ANSWERED_ENGINE_COMMANDS = Object.freeze(

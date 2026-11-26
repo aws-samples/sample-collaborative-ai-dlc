@@ -63,23 +63,33 @@ const LEGACY_PLAN_DIGESTS = Object.freeze({
 // Loop-back is offered only from build-and-test, back to the code-generation
 // stage immediately before it. Scopes that run code generation per unit (a
 // parallel section) have no linear target and are absent here. 2.11.4 adds
-// code generation and build-and-test to the infra scope.
+// code generation and build-and-test to the infra scope, which 2.11.5 keeps.
+const INFRA_LOOP_BACK_RELEASES = new Set(['v2.11.4', 'v2.11.5']);
 const EXPECTED_LOOP_BACK_TUPLES = Object.freeze(
-  ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0', 'v2.11.0', 'v2.11.1', 'v2.11.3', 'v2.11.4'].flatMap(
-    (profileId) =>
-      [
-        'bugfix',
-        'express',
-        ...(profileId === 'v2.11.4' ? ['infra'] : []),
-        'poc',
-        'refactor',
-        'security-patch',
-      ].map((scope) => ({
-        profileId,
-        scope,
-        recommendingStageId: 'build-and-test',
-        targetStageId: 'code-generation',
-      })),
+  [
+    'v2.6.18',
+    'v2.7.0',
+    'v2.8.2',
+    'v2.9.0',
+    'v2.11.0',
+    'v2.11.1',
+    'v2.11.3',
+    'v2.11.4',
+    'v2.11.5',
+  ].flatMap((profileId) =>
+    [
+      'bugfix',
+      'express',
+      ...(INFRA_LOOP_BACK_RELEASES.has(profileId) ? ['infra'] : []),
+      'poc',
+      'refactor',
+      'security-patch',
+    ].map((scope) => ({
+      profileId,
+      scope,
+      recommendingStageId: 'build-and-test',
+      targetStageId: 'code-generation',
+    })),
   ),
 );
 
@@ -554,11 +564,20 @@ describe('release coexistence matrix', () => {
     // Every other scope that runs build-and-test runs code generation per unit,
     // so its gate shows the recommendation as a note instead of the option.
     expect(loopBackUnavailable.filter((cell) => cell.endsWith('/build-and-test'))).toEqual(
-      ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0', 'v2.11.0', 'v2.11.1', 'v2.11.3', 'v2.11.4'].flatMap(
-        (profileId) =>
-          ['classic', 'enterprise', 'feature', 'mvp', 'workshop'].map(
-            (scope) => `${profileId}/${scope}/build-and-test`,
-          ),
+      [
+        'v2.6.18',
+        'v2.7.0',
+        'v2.8.2',
+        'v2.9.0',
+        'v2.11.0',
+        'v2.11.1',
+        'v2.11.3',
+        'v2.11.4',
+        'v2.11.5',
+      ].flatMap((profileId) =>
+        ['classic', 'enterprise', 'feature', 'mvp', 'workshop'].map(
+          (scope) => `${profileId}/${scope}/build-and-test`,
+        ),
       ),
     );
     expect(
@@ -621,7 +640,7 @@ describe('release coexistence matrix', () => {
   // keeps it), so a
   // one-line timestamp record passes there at the heading floor, and keeps
   // reporting two missing headings on every earlier pin.
-  const RUN_RECORD_RELEASES = new Set(['v2.11.0', 'v2.11.1', 'v2.11.3', 'v2.11.4']);
+  const RUN_RECORD_RELEASES = new Set(['v2.11.0', 'v2.11.1', 'v2.11.3', 'v2.11.4', 'v2.11.5']);
   it('turns the run-record exemption on only for a release whose record sensor covers run records', async () => {
     const TIMESTAMP_BODY = 'Discovered: 2026-10-08T00:00:00Z\n';
     const exemptBySensor = {};
@@ -716,7 +735,7 @@ describe('release coexistence matrix', () => {
       'linter --file-path 30000 authored',
       'type-check --file-path 60000 authored',
     ];
-    // 2.11.1, 2.11.3 and 2.11.4 author the same sensors and budgets as 2.11.0.
+    // 2.11.1, 2.11.3, 2.11.4 and 2.11.5 author the same sensors and budgets as 2.11.0.
     const release211Sensors = [
       'claim-sources --output-path 300000 authored',
       'linter --file-path 600000 ceiling',
@@ -733,6 +752,7 @@ describe('release coexistence matrix', () => {
       'v2.11.1': release211Sensors,
       'v2.11.3': release211Sensors,
       'v2.11.4': release211Sensors,
+      'v2.11.5': release211Sensors,
     });
   });
 });

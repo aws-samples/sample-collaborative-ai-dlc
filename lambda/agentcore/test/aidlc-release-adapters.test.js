@@ -685,7 +685,7 @@ describe('annex reach, against the prompts the runtime really builds', () => {
 // 2.11.1 carries every 2.11.0 command plus a sensor run-on-request. 2.11.3 adds
 // explicit refusals for dynamic repository/checkout changes and one-off plan review,
 // and 2.11.4 invokes the same commands.
-const LATER_211_RELEASES = new Set(['v2.11.3', 'v2.11.4']);
+const LATER_211_RELEASES = new Set(['v2.11.3', 'v2.11.4', 'v2.11.5']);
 const RELEASE_211_ADDED_REFUSED = Object.freeze({
   'v2.11.0': [],
   'v2.11.1': ['engine sensor-traceability --stage'],
@@ -695,6 +695,11 @@ const RELEASE_211_ADDED_REFUSED = Object.freeze({
     'engine sensor-traceability --stage',
   ],
   'v2.11.4': [
+    'engine intent add-checkout',
+    'engine intent add-repo',
+    'engine sensor-traceability --stage',
+  ],
+  'v2.11.5': [
     'engine intent add-checkout',
     'engine intent add-repo',
     'engine sensor-traceability --stage',
