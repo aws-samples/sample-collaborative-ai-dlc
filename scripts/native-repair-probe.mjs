@@ -121,7 +121,7 @@ const observe = ({ deliver, onScan, recordLookups } = {}) => {
             const cost = (lookups[digest] ??= { reads: 0, localCapacityUnits: 0, elapsedMsSum: 0 });
             cost.reads++;
             cost.localCapacityUnits += result.ConsumedCapacity.CapacityUnits;
-            cost.elapsedMsSum += Math.round(performance.now() - started);
+            cost.elapsedMsSum += performance.now() - started;
           }
           return result;
         });
@@ -302,7 +302,10 @@ try {
     packages.uniqueHints,
     Math.floor(packageCount / 4) * 2 + Math.min(packageCount % 4, 2),
   );
-  if (recovery) packages.targets = jobReceipts.verify();
+  if (recovery) {
+    packages.targets = jobReceipts.verify();
+    packages.expectedJobIds = expectedJobs;
+  }
   console.log(
     JSON.stringify(
       {
