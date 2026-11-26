@@ -519,11 +519,15 @@ variable "runtime_mcp_credentials" {
 }
 
 variable "mcp_gateway_custom_targets" {
-  description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway as remote MCP targets, keyed by an immutable target name. The Gateway injects each target's credential from an AgentCore Identity credential provider created out of band; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
+  description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway, keyed by an immutable target name: a remote MCP server (endpoint), whose credential the Gateway injects from an AgentCore Identity credential provider created out of band, or a Lambda function (lambda) the Gateway invokes with its own role; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
   type = map(object({
-    endpoint    = string
+    endpoint    = optional(string)
     description = optional(string)
-    auth = object({
+    lambda = optional(object({
+      function_arn = string
+      tool_schema  = string
+    }))
+    auth = optional(object({
       type                    = string
       credential_provider_arn = string
       secret_arn              = string
@@ -532,7 +536,7 @@ variable "mcp_gateway_custom_targets" {
       credential_location     = optional(string)
       parameter_name          = optional(string)
       prefix                  = optional(string)
-    })
+    }))
     private_endpoint = optional(object({
       managed_vpc_resource = optional(object({
         vpc_identifier           = string
