@@ -29,8 +29,8 @@ const editedBlocksMessage = (blocks: unknown) => {
   const more = labels.length - MAX_LISTED_BLOCKS;
   const list = labels.length ? `: ${listed}${more > 0 ? ` and ${more} more` : ''}` : '';
   return (
-    `This workspace can't be downloaded because the workflow uses edited methodology blocks${list}. ` +
-    'To download it, start a new intent on a workflow without edited blocks, or ship the changes as a custom fork release of AI-DLC.'
+    `This workspace can't be downloaded because it uses methodology blocks customized in Collaborative AI-DLC${list}. ` +
+    'Exporting these customizations is not yet supported.'
   );
 };
 

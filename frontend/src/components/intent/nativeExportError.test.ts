@@ -6,7 +6,7 @@ const refusal = (body: Record<string, unknown>) =>
   new ApiError(409, String(body.error ?? 'Request failed'), body);
 
 describe('nativeExportErrorMessage', () => {
-  it('lists a few edited blocks, counts the rest and offers the alternatives', () => {
+  it('lists a few customized blocks, counts the rest and says export does not support them', () => {
     const message = nativeExportErrorMessage(
       refusal({
         error: 'The workflow uses edited methodology blocks that cannot yet be exported',
@@ -27,8 +27,9 @@ describe('nativeExportErrorMessage', () => {
       'stage acme-requirements, agent acme-architect, sensor acme-lint, rule acme-naming, knowledge acme-glossary and 2 more.',
     );
     expect(message).not.toContain('acme-security');
-    expect(message).toContain('start a new intent on a workflow without edited blocks');
-    expect(message).toContain('custom fork release');
+    expect(message).toContain('methodology blocks customized in Collaborative AI-DLC: stage');
+    expect(message).toContain('Exporting these customizations is not yet supported.');
+    expect(message).not.toContain('fork');
   });
 
   it('still explains the refusal when the block list is missing or malformed', () => {
@@ -36,7 +37,9 @@ describe('nativeExportErrorMessage', () => {
       const message = nativeExportErrorMessage(
         refusal({ error: 'edited', code: 'export_edited_blocks', incompatibleBlocks }),
       );
-      expect(message).toMatch(/uses edited methodology blocks\. To download it/);
+      expect(message).toMatch(
+        /customized in Collaborative AI-DLC\. Exporting these customizations is not yet supported\.$/,
+      );
     }
   });
 

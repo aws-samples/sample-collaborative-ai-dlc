@@ -93,6 +93,6 @@ An export may be unavailable when:
 - The intent runs a custom fork release that ships no distribution for the selected harness, and its base AI-DLC release cannot be determined or a stage only the fork defines already has recorded work.
 - The intent changed while a parked-state export was being prepared. Retry to export a consistent snapshot.
 
-When an export is refused, the intent page shows the reason. For edited methodology blocks it names them, and the alternatives are to start a new intent on a workflow without edited blocks or to ship the changes as a [custom fork release](../concepts/aidlc-release-compatibility.md). Refusals also carry a stable `code` in the API response, for example `export_edited_blocks` (with `incompatibleBlocks`), `export_checkpoint_unavailable`, `export_mixed_aidlc_refs`, `export_custom_release_base_unknown` or `export_snapshot_incompatible` (with `detail`).
+When an export is refused, the intent page shows the reason. For edited methodology blocks it names them. To get a downloadable workspace, start a new intent on a workflow without edited blocks, or ship the changes as a [custom fork release](../concepts/aidlc-release-compatibility.md) of the AI-DLC repository. Refusals also carry a stable `code` in the API response, for example `export_edited_blocks` (with `incompatibleBlocks`), `export_checkpoint_unavailable`, `export_mixed_aidlc_refs`, `export_custom_release_base_unknown` or `export_snapshot_incompatible` (with `detail`).
 
 Exporting does not stop, cancel, or otherwise modify the collaborative intent.

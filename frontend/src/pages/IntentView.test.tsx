@@ -672,7 +672,7 @@ describe('IntentView', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('names the edited blocks and the alternative when the export is refused', async () => {
+  it('names the customized blocks and says export does not support them when refused', async () => {
     get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
     exportWorkflow.mockRejectedValue(
       new ApiError(409, 'The workflow uses edited methodology blocks that cannot yet be exported', {
@@ -688,7 +688,7 @@ describe('IntentView', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('agent acme-architect, rule acme-naming');
-    expect(alert).toHaveTextContent('start a new intent on a workflow without edited blocks');
+    expect(alert).toHaveTextContent('Exporting these customizations is not yet supported.');
   });
 
   it('shows the legacy-ref warning even when no workspace setup is required', async () => {
