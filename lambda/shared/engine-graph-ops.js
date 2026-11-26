@@ -16,7 +16,6 @@ import gremlin from 'gremlin';
 import { createGraphWriter, DERIVED_ITEM_LABELS } from './mcp/graph-writer.js';
 import { extractArtifactStructure } from './artifact-extractors.js';
 import { contributionArtifactId } from './ensemble-contribution.js';
-import { flattenVertexMap } from './graph-rows.js';
 import { parseCliModels } from './cli-models.js';
 import { parseTierModels } from './tier-models.js';
 import {
@@ -29,6 +28,7 @@ import {
   archiveArtifactsForStages,
   artifactAliases,
   artifactLogicalKeyFromRow,
+  readArtifactHead,
   readCurrentArtifactHeadHashes,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
@@ -161,18 +161,12 @@ export const fetchProjectCliConfig = async (g, projectId) => {
   };
 };
 
-// Exact-id read for an edit: the current row, or null when absent or
+// Logical-head read for an edit: the current row, or null when absent or
 // superseded (an edit must never target a rewound-away artifact).
 export const fetchArtifactForEdit = async (g, intentId, artifactId) => {
-  const res = await g
-    .V()
-    .has('Artifact', 'id', artifactId)
-    .has('intent_id', intentId)
-    .valueMap(true)
-    .next();
-  if (res.done || !res.value) return null;
-  const row = flattenVertexMap(res.value);
-  if (row.superseded_at) return null;
+  const head = await readArtifactHead(g, intentId, artifactId);
+  if (!head || head.superseded_at) return null;
+  const { vertexId: _vertexId, ...row } = head;
   return row;
 };
 
@@ -331,7 +325,7 @@ export const createEngineGraphOps = ({
   };
 
   const requireArtifact = async (artifactId) => {
-    if (!(await g.V().has('Artifact', 'id', artifactId).has('intent_id', intentId).hasNext())) {
+    if (!(await readArtifactHead(g, intentId, artifactId, { withContent: false }))) {
       throw new EngineGraphScopeError('artifact_not_in_scope');
     }
   };

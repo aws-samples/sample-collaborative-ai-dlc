@@ -69,6 +69,25 @@ describe('ArtifactMarkdown', () => {
     expect(onOpenArtifact).toHaveBeenCalledWith('reverse-engineering-timestamp');
   });
 
+  it('links a known document by logical address and leaves ambiguous wiki ids as text', () => {
+    const onOpenArtifact = vi.fn();
+    render(
+      <ArtifactMarkdown
+        content="See [[design]] and [[requirements]]."
+        artifacts={[
+          { id: 'design', title: 'Design', contentKey: 'design-key' },
+          { id: 'requirements', title: 'Alpha', contentKey: 'alpha-key' },
+          { id: 'requirements', title: 'Beta', contentKey: 'beta-key' },
+        ]}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+    screen.getByRole('link', { name: 'Design' }).click();
+    expect(onOpenArtifact).toHaveBeenCalledWith('design-key');
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.getByText(/\[\[requirements\]\]/)).toBeInTheDocument();
+  });
+
   it('links known derived-item slugs in ordinary Markdown text', () => {
     const onOpenItem = vi.fn();
     render(

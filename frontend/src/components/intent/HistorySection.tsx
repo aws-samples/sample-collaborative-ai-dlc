@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Compass, FileQuestion } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -341,10 +342,10 @@ function CompactQuestionRow({
               <span className="text-[11px] text-muted-foreground">Influenced:</span>
               {influencedArtifacts.map((a) => (
                 <button
-                  key={a.id}
+                  key={artifactReference(a)}
                   type="button"
                   className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-                  onClick={() => focusWorkProduct({ kind: 'artifact', id: a.id })}
+                  onClick={() => focusWorkProduct({ kind: 'artifact', id: artifactReference(a) })}
                 >
                   {a.title || a.id}
                 </button>

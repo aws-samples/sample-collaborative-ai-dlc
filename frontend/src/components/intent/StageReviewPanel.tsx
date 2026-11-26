@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useCallback, useEffect, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import type {
@@ -442,7 +443,10 @@ export function StageReviewPanel({
               {artifactSummaries.length > 0 ? (
                 <div className="grid gap-3 md:grid-cols-2">
                   {artifactSummaries.map((artifact) => (
-                    <div key={artifact.id} className="rounded-md border bg-background p-3">
+                    <div
+                      key={artifactReference(artifact)}
+                      className="rounded-md border bg-background p-3"
+                    >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium">
@@ -587,7 +591,7 @@ export function StageReviewPanel({
               <AccordionContent className="space-y-3">
                 {artifacts.map((artifact) => (
                   <ArtifactViewer
-                    key={artifact.id}
+                    key={artifactReference(artifact)}
                     artifact={artifact}
                     onRetryContent={reload ? () => void reload() : undefined}
                   />

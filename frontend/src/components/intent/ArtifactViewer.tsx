@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -58,7 +59,7 @@ export function ArtifactViewer({
 
   return (
     <Card
-      id={`artifact-${artifact.id}`}
+      id={`artifact-${artifactReference(artifact)}`}
       className={cn(
         'border-l-[3px] scroll-mt-4',
         artifactAccent(artifact.artifactType).borderL,

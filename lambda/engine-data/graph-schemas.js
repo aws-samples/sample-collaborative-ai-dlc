@@ -108,7 +108,7 @@ const listing = {
 export const GRAPH_OPS = Object.freeze({
   getIntentGraph: read(strict(listing)),
   lookupArtifacts: read(strict({ artifactType: id, ...listing })),
-  getArtifactToc: read(strict({ id })),
+  getArtifactToc: read(strict({ id: logicalKey })),
   getItems: read(
     strict({
       itemType: z.enum(ITEM_TYPES).nullable().optional(),
@@ -119,7 +119,9 @@ export const GRAPH_OPS = Object.freeze({
   getCoverage: read(strict({ unitSlug: id.nullable().optional() })),
   getTeamKnowledge: read(strict({ agentRef: id.nullable().optional() })),
   getLearningRules: read(empty),
-  updateArtifact: op({ input: strict({ id, props: strict({ content: text(CONTENT_MAX) }) }) }),
+  updateArtifact: op({
+    input: strict({ id: logicalKey, props: strict({ content: text(CONTENT_MAX) }) }),
+  }),
   recordPullRequest: op({
     input: strict({
       repoId: id,
@@ -253,17 +255,17 @@ export const GRAPH_OPS = Object.freeze({
     modes: 'discussion',
     meta: 'optional',
   }),
-  getArtifactForEdit: read(strict({ artifactId: id })),
+  getArtifactForEdit: read(strict({ artifactId: logicalKey })),
   fetchDownstreamClosure: read(
     strict({
-      artifactId: id,
+      artifactId: logicalKey,
       maxDepth: z.number().int().positive().max(CLOSURE_MAX_DEPTH).optional(),
       maxNodes: z.number().int().positive().max(CLOSURE_MAX_NODES).optional(),
     }),
   ),
   applyArtifactEdit: op({
     input: strict({
-      artifactId: id,
+      artifactId: logicalKey,
       editId: id,
       content: text(CONTENT_MAX),
       ifEditRevision: id.nullable().optional(),
@@ -271,9 +273,13 @@ export const GRAPH_OPS = Object.freeze({
     }),
     quorumEditIds: (input) => [input.editId],
   }),
-  verifyArtifact: op({ input: strict({ artifactId: id, note: text().optional() }) }),
+  verifyArtifact: op({ input: strict({ artifactId: logicalKey, note: text().optional() }) }),
   markArtifactsStale: op({
-    input: strict({ sourceArtifactId: id, artifactIds: ids(CLOSURE_MAX_NODES), editId: id }),
+    input: strict({
+      sourceArtifactId: logicalKey,
+      artifactIds: z.array(logicalKey).max(CLOSURE_MAX_NODES),
+      editId: id,
+    }),
     quorumEditIds: (input) => [input.editId],
   }),
   archiveArtifactsForStages: op({

@@ -5,19 +5,25 @@ import type { IntentArtifact } from '@/services/intents';
 
 const mocks = vi.hoisted(() => ({
   artifact: null as IntentArtifact | null,
+  otherArtifacts: [] as IntentArtifact[],
+  previewArtifactId: 'design',
   reload: vi.fn(),
 }));
 
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
-    detail: { intent: { id: 'i1' }, events: [], artifacts: mocks.artifact ? [mocks.artifact] : [] },
+    detail: {
+      intent: { id: 'i1' },
+      events: [],
+      artifacts: [...mocks.otherArtifacts, ...(mocks.artifact ? [mocks.artifact] : [])],
+    },
     projectId: 'p1',
     intentId: 'i1',
     stageRows: [],
     agentFocus: null,
     previewSeq: 1,
-    previewArtifactId: 'design',
+    previewArtifactId: mocks.previewArtifactId,
     previewItemId: null,
     previewAnchor: null,
     clearPreviewAnchor: vi.fn(),
@@ -73,6 +79,17 @@ describe('IntentActivityPanel artifact preview body states', () => {
 
   beforeEach(() => {
     mocks.reload.mockReset();
+    mocks.otherArtifacts = [];
+    mocks.previewArtifactId = 'design';
+  });
+
+  it('opens the selected lane when two artifacts share an authored id', () => {
+    mocks.otherArtifacts = [{ ...artifact, contentKey: 'alpha-key', content: '# Alpha' }];
+    mocks.artifact = { ...artifact, contentKey: 'beta-key', content: '# Beta' };
+    mocks.previewArtifactId = 'beta-key';
+    render(<IntentActivityPanel onClose={() => {}} />);
+    expect(screen.getByText('# Beta')).toBeInTheDocument();
+    expect(screen.queryByText('# Alpha')).not.toBeInTheDocument();
   });
 
   it('says the body is loading, then shows it', () => {

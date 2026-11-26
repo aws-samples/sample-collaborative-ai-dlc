@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useMemo, useState } from 'react';
 import { Loader2, Pencil, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -65,7 +66,7 @@ export function ArtifactStaleBadge({
   const verify = async () => {
     setVerifying(true);
     try {
-      await intentsService.verifyArtifact(projectId, intentId, artifact.id);
+      await intentsService.verifyArtifact(projectId, intentId, artifactReference(artifact));
       await reload();
     } catch (err) {
       console.error('Verify failed:', err);
@@ -148,7 +149,11 @@ export function ArtifactEditControls({
   const loadImpact = async (): Promise<ArtifactImpact | null> => {
     setImpactLoading(true);
     try {
-      const data = await intentsService.artifactImpact(projectId, intentId, artifact.id);
+      const data = await intentsService.artifactImpact(
+        projectId,
+        intentId,
+        artifactReference(artifact),
+      );
       setImpact(data);
       return data;
     } catch (err) {
@@ -179,7 +184,7 @@ export function ArtifactEditControls({
       await intentsService.startQuorumEdit(
         projectId,
         intentId,
-        artifact.id,
+        artifactReference(artifact),
         changeDescription.trim(),
       );
       setQuorumOpen(false);

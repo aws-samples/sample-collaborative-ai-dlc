@@ -4,7 +4,25 @@ import type { IntentArtifact, IntentArtifactContent, IntentDetail } from '@/serv
 // a body attached only to the artifact revision it was read for. Heads are
 // matched on `contentKey`: ids can repeat across unit lanes.
 
-/** The key pairing a head with its body; `id` when the server sends none. */
+/** Public address for previews, requests and collaboration; legacy servers accept the bare id. */
+export function artifactReference(artifact: Pick<IntentArtifact, 'id' | 'contentKey'>): string {
+  return artifact.contentKey ?? artifact.id;
+}
+
+/** Old id links are usable only when they select one document. */
+export function findArtifactByReference(
+  artifacts: readonly IntentArtifact[],
+  reference: string | null,
+): IntentArtifact | null {
+  const exact = artifacts.find((artifact) => artifact.contentKey === reference);
+  if (exact) return exact;
+  const matches = artifacts.filter(
+    (artifact) => artifact.id === reference || artifact.aliases?.includes(reference ?? ''),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Internal body-cache key; the `id:` fallback is a namespace, not an API address. */
 export function artifactContentKey(artifact: Pick<IntentArtifact, 'id' | 'contentKey'>): string {
   return artifact.contentKey ?? `id:${artifact.id}`;
 }

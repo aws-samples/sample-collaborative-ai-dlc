@@ -1,9 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IntentArtifact } from '@/services/intents';
+import type { useCollaborativeArtifactContent } from '@/hooks/useCollaborativeArtifactContent';
 
 const initContent = vi.fn();
 const reload = vi.fn();
+const readState = vi.fn();
+const saveContent = vi.fn();
+let editorOptions: Parameters<typeof useCollaborativeArtifactContent>[0];
 
 vi.mock('@/contexts/IntentContext', () => ({
   useIntent: () => ({ projectId: 'p1', intentId: 'i1', reload }),
@@ -11,17 +15,25 @@ vi.mock('@/contexts/IntentContext', () => ({
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'Ada' } }),
 }));
-vi.mock('@/services/intents', () => ({ intentsService: {} }));
+vi.mock('@/services/intents', () => ({
+  intentsService: {
+    artifactEditState: (...args: unknown[]) => readState(...args),
+    updateArtifactContent: (...args: unknown[]) => saveContent(...args),
+  },
+}));
 vi.mock('@/hooks/useCollaborativeArtifactContent', () => ({
-  useCollaborativeArtifactContent: () => ({
-    content: '',
-    contentText: null,
-    initContent,
-    synced: true,
-    awareness: null,
-    remoteUsers: new Map(),
-    flush: vi.fn(),
-  }),
+  useCollaborativeArtifactContent: (options: typeof editorOptions) => {
+    editorOptions = options;
+    return {
+      content: '',
+      contentText: null,
+      initContent,
+      synced: true,
+      awareness: null,
+      remoteUsers: new Map(),
+      flush: vi.fn(),
+    };
+  },
 }));
 vi.mock('@/components/CollaborativeTextarea', () => ({
   CollaborativeTextarea: ({
@@ -48,6 +60,30 @@ describe('ArtifactContentEditor', () => {
   beforeEach(() => {
     initContent.mockReset();
     reload.mockReset();
+    readState.mockReset().mockResolvedValue({ editRevision: null, collaborationEpoch: null });
+    saveContent.mockReset().mockResolvedValue({});
+  });
+
+  it('uses the selected lane for collaboration, edit-state reads and saves', async () => {
+    const { rerender } = render(
+      <ArtifactContentEditor
+        artifact={{ ...artifact, contentKey: 'alpha-key', content: '# Alpha' }}
+        onDone={vi.fn()}
+      />,
+    );
+    expect(editorOptions.artifactId).toBe('alpha-key');
+    rerender(
+      <ArtifactContentEditor
+        artifact={{ ...artifact, contentKey: 'beta-key', content: '# Beta' }}
+        onDone={vi.fn()}
+      />,
+    );
+    expect(editorOptions.artifactId).toBe('beta-key');
+    await editorOptions.readSaveVersion!();
+    await editorOptions.onAutoSave!('# Edited beta', null);
+    expect(readState).toHaveBeenCalledWith('p1', 'i1', 'beta-key');
+    expect(saveContent).toHaveBeenCalledWith('p1', 'i1', 'beta-key', '# Edited beta', null, null);
+    expect(initContent).toHaveBeenLastCalledWith('# Beta');
   });
 
   it('waits for the artifact body before seeding the shared document', () => {

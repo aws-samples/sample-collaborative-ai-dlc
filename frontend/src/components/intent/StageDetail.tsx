@@ -1,3 +1,4 @@
+import { artifactReference } from '@/contexts/artifactContent';
 import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -111,7 +112,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     const map = new Map<string, { id: string; originalName: string }>();
     for (const a of detail?.artifacts ?? []) {
       if (a.supersededAt || !a.artifactType) continue;
-      map.set(norm(a.artifactType), { id: a.id, originalName: a.artifactType });
+      map.set(norm(a.artifactType), { id: artifactReference(a), originalName: a.artifactType });
     }
     return map;
   }, [detail]);
@@ -157,7 +158,10 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
       const key = norm(a.artifactType ?? a.title ?? '');
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      items.push({ label: a.artifactType ?? a.title ?? 'artifact', exists: { id: a.id } });
+      items.push({
+        label: a.artifactType ?? a.title ?? 'artifact',
+        exists: { id: artifactReference(a) },
+      });
     }
 
     return items;
@@ -414,12 +418,12 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
         )}
         {artifacts.map((a) => (
           <Button
-            key={a.id}
+            key={artifactReference(a)}
             size="sm"
             variant="outline"
             className="h-6 gap-1 px-2 text-[11px]"
             title="Open in preview"
-            onClick={() => openArtifactPreview(a.id)}
+            onClick={() => openArtifactPreview(artifactReference(a))}
           >
             <FileText className="h-3 w-3" />
             {a.title || a.artifactType || a.id}

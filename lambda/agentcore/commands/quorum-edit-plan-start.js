@@ -63,7 +63,7 @@ export const buildPlanPrompt = ({ artifact, changeDescription, downstream, reque
   for (const d of downstream) {
     lines.push(
       '',
-      `- artifactId: ${d.id}`,
+      `- artifactId: ${JSON.stringify(d.id)}`,
       `  type: ${d.artifactType ?? 'unknown'} · title: ${d.title ?? d.id} · relation: ${(d.via ?? []).join(', ')} · depth: ${d.depth}`,
       `  content (bounded):`,
       bounded(d.content ?? '', PLAN_CONTEXT_DOC_LIMIT),
