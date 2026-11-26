@@ -27,6 +27,7 @@ import {
 import type {
   EnvironmentDetail,
   EnvironmentRevision,
+  EnvironmentScanFinding,
   ManagedEnvironment,
 } from '@/services/environments';
 import { environmentsService } from '@/services/environments';
@@ -198,8 +199,48 @@ const revisionRole = (environment: ManagedEnvironment, revision: EnvironmentRevi
   return 'Previous revision';
 };
 
+const SEVERITIES = [
+  ['CRITICAL', 'Critical'],
+  ['HIGH', 'High'],
+  ['MEDIUM', 'Medium'],
+  ['LOW', 'Low'],
+  ['INFORMATIONAL', 'Informational'],
+  ['UNTRIAGED', 'Untriaged'],
+  ['UNDEFINED', 'Undefined'],
+] as const;
+const severityRank = (severity: string) => {
+  const rank = SEVERITIES.findIndex(([key]) => key === severity);
+  return rank === -1 ? SEVERITIES.length : rank;
+};
+const findingCollator = new Intl.Collator('en', { numeric: true });
+
+// The severity and ID rule of compareScanFindings in the API, for revisions
+// scanned before it ordered IDs by number (CVE-2026-58055 before
+// CVE-2026-6238). The sort is stable, so the stored package order stays.
+const sortedFindings = (findings: EnvironmentScanFinding[]) =>
+  findings.toSorted(
+    (left, right) =>
+      severityRank(left.severity) - severityRank(right.severity) ||
+      findingCollator.compare(left.id, right.id),
+  );
+
 function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
-  const findings = revision.scanFindings?.findings ?? [];
+  const findings = sortedFindings(revision.scanFindings?.findings ?? []);
+  const severityCounts = revision.scanFindings?.severityCounts ?? {};
+  // ECR counts each vulnerability once; the list has a row per affected package.
+  const countedFindings = Object.values(severityCounts).reduce(
+    (sum, count) => sum + Number(count ?? 0),
+    0,
+  );
+  const findingsTotal = countedFindings || findings.length;
+  const severitySummary = Object.entries(severityCounts)
+    .filter(([, count]) => Number(count ?? 0) > 0)
+    .toSorted(([left], [right]) => severityRank(left) - severityRank(right))
+    .map(
+      ([key, count]) =>
+        `${Number(count)} ${SEVERITIES.find(([known]) => known === key)?.[1] ?? key}`,
+    )
+    .join(' · ');
   const acceptedAt = securityFindingsAcceptedAt(revision);
   const acceptedBy = securityFindingsAcceptedBy(revision);
   const critical = Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0);
@@ -305,7 +346,15 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
       {findings.length > 0 && (
         <div className="overflow-hidden rounded-xl border">
           <div className="border-b bg-muted/20 px-3 py-2">
-            <h4 className="text-xs font-semibold">Security findings</h4>
+            <h4 className="text-xs font-semibold">
+              Security findings ({incomplete ? `at least ${findingsTotal}` : findingsTotal})
+            </h4>
+            {severitySummary && (
+              <p className="mt-0.5 text-[10px] text-muted-foreground">{severitySummary}</p>
+            )}
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              {findingsNote ? '' : 'All findings shown. '}One row per affected package.
+            </p>
           </div>
           <div className="divide-y">
             {findings.map((finding, index) => (

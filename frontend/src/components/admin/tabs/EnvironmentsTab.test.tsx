@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -899,6 +899,93 @@ describe('EnvironmentsTab', () => {
     expect(screen.getByText(/Accepted by admin@example.com/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /CVE-2026-42010/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review findings' })).not.toBeInTheDocument();
+  });
+
+  const findingsRevision = (scan: {
+    severityCounts?: Record<string, number>;
+    findingsTruncated?: boolean;
+    incomplete?: boolean;
+  }) => {
+    const finding = (id: string, severity: string) => ({
+      id,
+      severity,
+      packageName: 'glibc',
+      packageVersion: '2.41',
+      uri: null,
+    });
+    return {
+      ...revision,
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: scanFindings.imageDigest,
+      // Stored before the API ordered IDs by number.
+      scanFindings: {
+        ...scanFindings,
+        severityCounts: { CRITICAL: 1, HIGH: 2, LOW: 1 },
+        findings: [
+          finding('CVE-2026-9', 'LOW'),
+          finding('CVE-2026-58055', 'HIGH'),
+          finding('CVE-2026-6238', 'HIGH'),
+          finding('CVE-2026-1', 'CRITICAL'),
+        ],
+        ...scan,
+      },
+    };
+  };
+  const renderFindings = async (publishedRevision: ReturnType<typeof findingsRevision>) => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : { environment: publishedEnvironment, revisions: [publishedRevision], publishedRevision },
+    );
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+  };
+
+  it('shows the findings total and says when the list is complete', async () => {
+    await renderFindings(findingsRevision({}));
+
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).toHaveTextContent('1 Critical · 2 High · 1 Low');
+    expect(header).toHaveTextContent('All findings shown. One row per affected package.');
+    expect(screen.getAllByText(/^CVE-2026-/).map((element) => element.textContent)).toEqual([
+      'CVE-2026-1',
+      'CVE-2026-6238',
+      'CVE-2026-58055',
+      'CVE-2026-9',
+    ]);
+  });
+
+  it('keeps the truncated-list warning and the ECR link', async () => {
+    await renderFindings(findingsRevision({ findingsTruncated: true }));
+
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).not.toHaveTextContent('All findings shown');
+    expect(header).toHaveTextContent('One row per affected package.');
+    expect(screen.getByText(/may not hold every finding/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View all findings in ECR/ })).toBeInTheDocument();
+  });
+
+  it('says the total of an incomplete scan is a minimum', async () => {
+    await renderFindings(findingsRevision({ findingsTruncated: true, incomplete: true }));
+
+    expect(
+      screen.getByRole('heading', { name: 'Security findings (at least 4)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/these counts are partial/)).toBeInTheDocument();
+  });
+
+  it('counts the rows when the scan has no severity counts, and names unknown severities', async () => {
+    await renderFindings(findingsRevision({ severityCounts: {} }));
+    expect(screen.getByRole('heading', { name: 'Security findings (4)' })).toBeInTheDocument();
+    cleanup();
+
+    await renderFindings(findingsRevision({ severityCounts: { HIGH: 3, NEGLIGIBLE: 1 } }));
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).toHaveTextContent('3 High · 1 NEGLIGIBLE');
   });
 
   it('keeps the evidence open while the revisions refresh', async () => {
