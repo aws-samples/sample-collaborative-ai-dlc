@@ -262,7 +262,7 @@ describe('WorkflowComposer release plan check', () => {
     expect(await screen.findByTestId('composer-library-release')).toHaveTextContent(
       'Checked against AI-DLC 2.9.0 (selected version)',
     );
-    expect(catalog).toHaveBeenCalledWith(selected, ['scope', 'stage']);
+    expect(catalog).toHaveBeenCalledWith(selected, ['scope', 'stage', 'rule']);
     expect(stableCatalog).not.toHaveBeenCalled();
     expect(compiled).toHaveBeenCalledWith(
       'my-flow',

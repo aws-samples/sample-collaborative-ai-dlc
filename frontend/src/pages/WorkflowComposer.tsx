@@ -6,6 +6,7 @@ import {
   type PhaseNodeInput,
   type CompiledWorkflow,
   type ExecutionPreview,
+  type RuleLayer,
 } from '@/services/workflows';
 import { blocksService, type Block } from '@/services/blocks';
 import { WorkflowInsights } from '@/components/blocks/WorkflowInsights';
@@ -31,6 +32,7 @@ import { PhaseLanes } from './composer/PhaseLanes';
 import { StageEditModal } from './composer/StageEditModal';
 import { DEFAULT_PHASE_NODES } from './composer/defaultPhases';
 import { ScopeBuilder } from './composer/ScopeBuilder';
+import { RuleStack } from './composer/RuleStack';
 import { displayPhasePathForPlacement, visibleWorkflowPhases } from './composer/phaseDisplay';
 import { mergeReleaseLibraryBlocks } from '@/components/blocks/stageReferenceOptions';
 import { loadWorkflowLibraryRelease } from './composer/workflowLibraryRelease';
@@ -59,14 +61,22 @@ const releaseOrigin = (block: Block | undefined): string | null =>
   block?.source === 'release' && typeof block.releaseId === 'string' ? block.releaseId : null;
 
 async function loadComposerState(workflowId: string, requestedLibraryRelease: string | null) {
-  const [workflow, stages, scopes] = await Promise.all([
+  const [workflow, stages, scopes, rules] = await Promise.all([
     workflowsService.get(workflowId),
     blocksService.list('stage'),
     blocksService.list('scope'),
+    blocksService.list('rule'),
   ]);
   const release = await loadWorkflowLibraryRelease(workflow.readOnly, requestedLibraryRelease);
   const compiled = await compiledOver(workflowId, release?.releaseId ?? null, !release?.explicit);
-  return { workflow, stages: stages.blocks, scopes: scopes.blocks, release, compiled };
+  return {
+    workflow,
+    stages: stages.blocks,
+    scopes: scopes.blocks,
+    rules: rules.blocks,
+    release,
+    compiled,
+  };
 }
 
 function WorkflowReleaseStatus({
@@ -135,6 +145,7 @@ export default function WorkflowComposer() {
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [stageLib, setStageLib] = useState<Block[]>([]);
   const [scopeLib, setScopeLib] = useState<Block[]>([]);
+  const [ruleLib, setRuleLib] = useState<Block[]>([]);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [preview, setPreview] = useState<ExecutionPreview | null>(null);
   const [previewSettled, setPreviewSettled] = useState(false);
@@ -142,7 +153,9 @@ export default function WorkflowComposer() {
   // The selected version's plan check failed. Kept apart from load and save
   // errors so the next check, failed or not, replaces it.
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'validate'>('compose');
+  const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'rules' | 'validate'>(
+    'compose',
+  );
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -164,6 +177,7 @@ export default function WorkflowComposer() {
   // The release's scope blocks from the last load, merged under the library's
   // own scopes on every refresh.
   const releaseScopesRef = useRef<ReleaseBlock[] | null>(null);
+  const releaseRulesRef = useRef<ReleaseBlock[] | null>(null);
 
   const readOnly = workflow?.readOnly ?? false;
 
@@ -186,7 +200,9 @@ export default function WorkflowComposer() {
     setLibraryRelease(null);
     setStageLib([]);
     setScopeLib([]);
+    setRuleLib([]);
     releaseScopesRef.current = null;
+    releaseRulesRef.current = null;
     if (!workflowId) return;
     setLoading(true);
     setError(null);
@@ -199,6 +215,8 @@ export default function WorkflowComposer() {
       setStageLib(mergeReleaseLibraryBlocks(result.stages, release?.stages ?? null));
       releaseScopesRef.current = release?.scopes ?? null;
       setScopeLib(mergeReleaseLibraryBlocks(result.scopes, release?.scopes ?? null));
+      releaseRulesRef.current = release?.rules ?? null;
+      setRuleLib(mergeReleaseLibraryBlocks(result.rules, release?.rules ?? null));
       setCompiled(result.compiled);
       loadedKeyRef.current = requestKey;
       setLoadedKey(requestKey);
@@ -216,10 +234,11 @@ export default function WorkflowComposer() {
     const generation = loadGeneration.current;
     if (!workflowId || loadedKeyRef.current !== requestKey) return;
     try {
-      const [wf, comp, scopes] = await Promise.all([
+      const [wf, comp, scopes, rules] = await Promise.all([
         workflowsService.get(workflowId),
         compiledOver(workflowId, libraryRelease?.releaseId ?? null, !libraryRelease?.explicit),
         blocksService.list('scope'),
+        blocksService.list('rule'),
       ]);
       if (generation !== loadGeneration.current || loadedKeyRef.current !== requestKey) return;
       setWorkflow(wf);
@@ -228,6 +247,7 @@ export default function WorkflowComposer() {
       // release's. A scope created since the load is in the library now, so a
       // later add reuses it instead of creating it again.
       setScopeLib(mergeReleaseLibraryBlocks(scopes.blocks, releaseScopesRef.current));
+      setRuleLib(mergeReleaseLibraryBlocks(rules.blocks, releaseRulesRef.current));
     } catch {
       // silent — the optimistic state is good enough for now
     }
@@ -548,6 +568,51 @@ export default function WorkflowComposer() {
     setSaving(true);
     try {
       await workflowsService.removeScopeRef(workflowId, scopeId);
+      await refresh();
+    } catch (e) {
+      fail(e);
+      await refresh();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Rules ──
+  const addRule = async (ruleId: string, layer: RuleLayer, ruleTenant: string) => {
+    if (!workflowId) return;
+    setSaving(true);
+    try {
+      await workflowsService.addRuleRef(
+        workflowId,
+        ruleId,
+        layer,
+        ruleTenant,
+        libraryRelease?.releaseId ?? null,
+      );
+      flash('Rule attached.');
+      await refresh();
+    } catch (e) {
+      fail(e);
+      await refresh();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeRule = async (layer: RuleLayer, ruleId: string) => {
+    if (!workflowId) return;
+    // Optimistic: remove locally
+    setWorkflow((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ruleRefs: prev.ruleRefs.filter((r) => !(r.layer === layer && r.ruleId === ruleId)),
+      };
+    });
+    setSaving(true);
+    try {
+      await workflowsService.removeRuleRef(workflowId, layer, ruleId);
+      flash('Rule removed.');
       await refresh();
     } catch (e) {
       fail(e);
@@ -958,11 +1023,14 @@ export default function WorkflowComposer() {
         <div className="flex flex-wrap items-center gap-3">
           <Tabs
             value={workbenchMode}
-            onValueChange={(value) => setWorkbenchMode(value as 'compose' | 'scopes' | 'validate')}
+            onValueChange={(value) =>
+              setWorkbenchMode(value as 'compose' | 'scopes' | 'rules' | 'validate')
+            }
           >
             <TabsList className="h-9">
               <TabsTrigger value="compose">Compose</TabsTrigger>
               <TabsTrigger value="scopes">Scopes</TabsTrigger>
+              <TabsTrigger value="rules">Rules</TabsTrigger>
               <TabsTrigger value="validate">Validate</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -1035,6 +1103,17 @@ export default function WorkflowComposer() {
               onSelectScope={setActiveScope}
               onRemoveScope={removeScope}
               onSaveScope={saveScopeMembership}
+            />
+          )}
+
+          {workbenchMode === 'rules' && (
+            <RuleStack
+              workflow={workflow}
+              ruleLib={ruleLib}
+              unresolved={compiled?.rules.unresolved ?? []}
+              readOnly={readOnly}
+              onAddRule={addRule}
+              onRemoveRule={removeRule}
             />
           )}
 

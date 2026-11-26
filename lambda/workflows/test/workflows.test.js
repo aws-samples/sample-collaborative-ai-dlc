@@ -634,6 +634,14 @@ describe('workflows handler', () => {
   });
 
   it('adds and removes rule refs, exposed in the composition and rejecting bad layers', async () => {
+    store.set('BLOCK#SYSTEM#RULE#aidlc-org|V#latest', {
+      pk: 'BLOCK#SYSTEM#RULE#aidlc-org',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'RULE',
+      blockId: 'aidlc-org',
+      layer: 'org',
+    });
     await createWorkflow({ id: 'wf', name: 'WF' });
 
     const bad = parse(
@@ -676,6 +684,134 @@ describe('workflows handler', () => {
     expect(removed.statusCode).toBe(204);
     const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
     expect(after.body.ruleRefs).toEqual([]);
+  });
+
+  it('resolves rule refs the way runs do and rejects refs that would not apply', async () => {
+    const seedRule = (tenant, id, layer) => {
+      store.set(`BLOCK#${tenant}#RULE#${id}|V#latest`, {
+        pk: `BLOCK#${tenant}#RULE#${id}`,
+        sk: 'V#latest',
+        tenantId: tenant,
+        blockType: 'RULE',
+        blockId: id,
+        ...(layer ? { layer } : {}),
+      });
+    };
+    seedRule('default', 'team-language', 'team');
+    seedRule('SYSTEM', 'no-layer-rule', null);
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const addRule = (body) =>
+      handler(event({ method: 'POST', workflowId: 'wf', path: 'rules', body }));
+
+    const missing = parse(await addRule({ ruleId: 'ghost-rule', layer: 'team' }));
+    expect(missing.status).toBe(400);
+    expect(missing.body.code).toBe('rule_not_found');
+
+    const foreignTenant = parse(
+      await addRule({ ruleId: 'team-language', layer: 'team', ruleTenant: 'other-tenant' }),
+    );
+    expect(foreignTenant.status).toBe(400);
+    expect(foreignTenant.body.code).toBe('invalid_rule_tenant');
+
+    const stageLayer = parse(await addRule({ ruleId: 'team-language', layer: 'stage' }));
+    expect(stageLayer.status).toBe(400);
+    expect(stageLayer.body.code).toBe('rule_layer_unsupported');
+    const mismatch = parse(await addRule({ ruleId: 'team-language', layer: 'project' }));
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.code).toBe('rule_layer_mismatch');
+    const layerless = parse(await addRule({ ruleId: 'no-layer-rule', layer: 'org' }));
+    expect(layerless.status).toBe(400);
+    expect(layerless.body.code).toBe('rule_layer_unset');
+
+    // Runs find a user-library rule by id whatever ruleTenant says, so a ref
+    // without ruleTenant (or with SYSTEM) is accepted and records where the
+    // rule actually resolves.
+    const ok = parse(
+      await addRule({ ruleId: 'team-language', layer: 'team', ruleTenant: 'SYSTEM' }),
+    );
+    expect(ok.status).toBe(201);
+    expect(ok.body).toMatchObject({
+      ruleId: 'team-language',
+      layer: 'team',
+      ruleTenant: 'default',
+    });
+
+    const again = parse(await addRule({ ruleId: 'team-language', layer: 'team' }));
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe('rule_already_attached');
+
+    // None of the rejected calls persisted a ref or bumped the version.
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(after.body.ruleRefs).toEqual([
+      { ruleId: 'team-language', layer: 'team', ruleTenant: 'default' },
+    ]);
+    expect(after.body.version).toBe(2);
+  });
+
+  it('compiles a rule ref the way runs resolve it: by id, the user copy first', async () => {
+    store.set('BLOCK#default#RULE#team-language|V#latest', {
+      pk: 'BLOCK#default#RULE#team-language',
+      sk: 'V#latest',
+      tenantId: 'default',
+      blockType: 'RULE',
+      blockId: 'team-language',
+      layer: 'team',
+    });
+    store.set('BLOCK#SYSTEM#RULE#aidlc-org|V#latest', {
+      pk: 'BLOCK#SYSTEM#RULE#aidlc-org',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'RULE',
+      blockId: 'aidlc-org',
+      layer: 'org',
+    });
+    store.set('BLOCK#default#RULE#aidlc-org|V#latest', {
+      pk: 'BLOCK#default#RULE#aidlc-org',
+      sk: 'V#latest',
+      tenantId: 'default',
+      blockType: 'RULE',
+      blockId: 'aidlc-org',
+      layer: 'team',
+    });
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    // Stored before this change with the tenant defaulted to SYSTEM (issue #783).
+    for (const [layer, ruleId] of [
+      ['team', 'team-language'],
+      ['org', 'aidlc-org'],
+    ]) {
+      store.set(`WF#default#wf|RULEREF#${layer}#${ruleId}`, {
+        pk: 'WF#default#wf',
+        sk: `RULEREF#${layer}#${ruleId}`,
+        type: 'RuleRef',
+        ruleId,
+        layer,
+        ruleTenant: 'SYSTEM',
+      });
+    }
+    const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
+    expect(res.body.rules.unresolved).toEqual([]);
+    // The user copy of aidlc-org shadows SYSTEM's, at the user copy's layer.
+    expect(res.body.rules.universal.toSorted((a, b) => a.ruleId.localeCompare(b.ruleId))).toEqual([
+      { ruleId: 'aidlc-org', layer: 'team' },
+      { ruleId: 'team-language', layer: 'team' },
+    ]);
+  });
+
+  it('still compiles pre-existing unresolved rule refs into rules.unresolved', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    // Written directly to the table (as seed-blocks does), bypassing the API
+    // validation: the compiled view must keep reporting it, not fail.
+    store.set('WF#default#wf|RULEREF#team#ghost-rule', {
+      pk: 'WF#default#wf',
+      sk: 'RULEREF#team#ghost-rule',
+      type: 'RuleRef',
+      ruleId: 'ghost-rule',
+      layer: 'team',
+      ruleTenant: 'SYSTEM',
+    });
+    const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
+    expect(res.status).toBe(200);
+    expect(res.body.rules.unresolved).toEqual(['ghost-rule']);
   });
 
   it('compiles the rule view: universal layers everywhere, phase rules by phase match', async () => {

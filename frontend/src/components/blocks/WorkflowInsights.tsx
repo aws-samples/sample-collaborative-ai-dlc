@@ -18,13 +18,15 @@ export function WorkflowInsights({ compiled }: Props) {
   const terminalOutputs = orphans.filter((o) => o.terminal === true);
   const unwiredProduces = orphans.filter((o) => o.terminal !== true);
   const unknownArtifacts = graph?.unknownArtifacts ?? [];
+  const unresolvedRules = compiled?.rules.unresolved ?? [];
 
   const isClean =
     graph != null &&
     graph.acyclic &&
     graph.danglingConsumes.length === 0 &&
     unknownArtifacts.length === 0 &&
-    unwiredProduces.length === 0;
+    unwiredProduces.length === 0 &&
+    unresolvedRules.length === 0;
 
   return (
     <>
@@ -89,6 +91,13 @@ export function WorkflowInsights({ compiled }: Props) {
                     <AlertTriangle className="h-3.5 w-3.5" />
                     <strong>{d.stageId}</strong> consumes <strong>{d.artifact}</strong> — no
                     producer.
+                  </li>
+                ))}
+                {unresolvedRules.map((ruleId) => (
+                  <li key={`rule-${ruleId}`} className="flex items-center gap-2 text-rose-600">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    Rule ref <strong>{ruleId}</strong> matches no rule block, so runs skip it.
+                    Remove it in the Rules tab.
                   </li>
                 ))}
                 {unknownArtifacts.map((u) => (
