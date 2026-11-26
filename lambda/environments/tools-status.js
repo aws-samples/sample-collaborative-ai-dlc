@@ -51,6 +51,59 @@ const readContextJson = async (version, name, s3Client) => {
 const readBuildResult = (version, s3Client) =>
   readContextJson(version, 'tool-result.json', s3Client);
 
+// ECR could not scan the image: the version waits for an administrator, who
+// can continue without a scan (UNSUPPORTED) or rebuild it
+// (SCAN_ELIGIBILITY_EXPIRED: ECR no longer scans an image this old).
+const scanUnavailablePatch = (version, status, description, imageDigest) => ({
+  status: 'SECURITY_REVIEW',
+  scanFindings: {
+    status,
+    description,
+    severityCounts: {},
+    findings: [],
+    findingsTruncated: false,
+    evaluatedAt: new Date().toISOString(),
+    imageDigest,
+  },
+  verification: {
+    ...version.verification,
+    securityScan: status,
+  },
+  failure: null,
+});
+
+// The gate on a scan ECR could run: Critical, High or a partial read go to
+// review, anything else is ready to publish.
+const scanResultPatch = (version, gateScan, imageDigest) => {
+  const { severityCounts, findings, findingsTruncated, incomplete } = gateScan;
+  const scanFindings = {
+    status: gateScan.scan.imageScanStatus?.status,
+    severityCounts,
+    findings,
+    findingsTruncated,
+    ...(incomplete ? { incomplete: true } : {}),
+    evaluatedAt: new Date().toISOString(),
+    imageDigest,
+  };
+  if (
+    Number(severityCounts.CRITICAL ?? 0) > 0 ||
+    Number(severityCounts.HIGH ?? 0) > 0 ||
+    incomplete
+  ) {
+    return { status: 'SECURITY_REVIEW', scanFindings, failure: null };
+  }
+  return {
+    status: 'READY',
+    scanFindings,
+    verification: {
+      ...version.verification,
+      securityScan: 'PASSED',
+      completedAt: scanFindings.evaluatedAt,
+    },
+    failure: null,
+  };
+};
+
 const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3 }) => {
   if (!['BUILDING', 'SCANNING'].includes(version.status)) {
     return { version, ignored: true };
@@ -107,32 +160,14 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
       imageDigest: image.imageDigest,
     });
     if (gateScan.pending) return { version: scanning, pending: true };
-    const { scan } = gateScan;
-    const scanStatus = scan.imageScanStatus?.status;
-    const scanDescription = scan.imageScanStatus?.description ?? null;
+    const scanStatus = gateScan.scan.imageScanStatus?.status;
+    const scanDescription = gateScan.scan.imageScanStatus?.description ?? null;
     if (isUnsupportedScan(scanStatus, scanDescription)) {
-      const evaluatedAt = new Date().toISOString();
       return {
         version: await store.updateVersion(
           scanning.toolId,
           scanning.versionId,
-          {
-            status: 'SECURITY_REVIEW',
-            scanFindings: {
-              status: 'UNSUPPORTED',
-              description: scanDescription,
-              severityCounts: {},
-              findings: [],
-              findingsTruncated: false,
-              evaluatedAt,
-              imageDigest: image.imageDigest,
-            },
-            verification: {
-              ...scanning.verification,
-              securityScan: 'UNSUPPORTED',
-            },
-            failure: null,
-          },
+          scanUnavailablePatch(scanning, 'UNSUPPORTED', scanDescription, image.imageDigest),
           { fromStatus: 'SCANNING' },
         ),
       };
@@ -147,43 +182,11 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
         ),
       };
     }
-    const { severityCounts, findings, findingsTruncated, incomplete } = gateScan;
-    const critical = Number(severityCounts.CRITICAL ?? 0);
-    const high = Number(severityCounts.HIGH ?? 0);
-    const scanFindings = {
-      status: scanStatus,
-      severityCounts,
-      findings,
-      findingsTruncated,
-      ...(incomplete ? { incomplete: true } : {}),
-      evaluatedAt: new Date().toISOString(),
-      imageDigest: image.imageDigest,
-    };
-    if (critical > 0 || high > 0 || incomplete) {
-      return {
-        version: await store.updateVersion(
-          scanning.toolId,
-          scanning.versionId,
-          { status: 'SECURITY_REVIEW', scanFindings, failure: null },
-          { fromStatus: 'SCANNING' },
-        ),
-      };
-    }
-    const completedAt = new Date().toISOString();
     return {
       version: await store.updateVersion(
         scanning.toolId,
         scanning.versionId,
-        {
-          status: 'READY',
-          scanFindings,
-          verification: {
-            ...scanning.verification,
-            securityScan: 'PASSED',
-            completedAt,
-          },
-          failure: null,
-        },
+        scanResultPatch(scanning, gateScan, image.imageDigest),
         { fromStatus: 'SCANNING' },
       ),
     };
