@@ -59,7 +59,10 @@ const verifyOAuthBinding = async ({
       code: 'DELEGATION_CONFIRMATION_REQUIRED',
     });
   }
-  const connection = await getGitConnection(ddb, userId, provider);
+  const adapter = getProvider(provider);
+  const instance = adapter.instanceFor(repo);
+  if (instance) adapter.oauth.secretNameFor(instance);
+  const connection = await getGitConnection(ddb, userId, provider, instance);
   if (!connection?.parameterName) {
     throw Object.assign(new Error(`${provider} is not connected for this user`), {
       code: 'CONNECTION_REQUIRED',
@@ -79,10 +82,9 @@ const verifyOAuthBinding = async ({
     item: connection,
     gitProvider: provider,
   });
-  const adapter = getProvider(provider);
   const [access, identity] = await Promise.all([
-    adapter.getRepositoryAccess({ token }, repo),
-    adapter.getAuthenticatedUser({ token }),
+    adapter.getRepositoryAccess({ token, instance }, repo),
+    adapter.getAuthenticatedUser({ token, instance }),
   ]);
   if (!access.canWrite) {
     throw Object.assign(
@@ -96,7 +98,7 @@ const verifyOAuthBinding = async ({
   }
   return {
     authType: `${provider}-oauth`,
-    credentialRef: oauthCredentialRef(provider, userId),
+    credentialRef: oauthCredentialRef(provider, userId, instance),
     connectionUserId: userId,
     connectionDisplayName: actorName,
     actorLogin: identity.login,
@@ -375,10 +377,19 @@ const resolveBindingCredential = async ({
     });
     username = 'x-access-token';
   } else {
-    const connection = await getGitConnection(ddb, binding.connectionUserId, binding.provider);
+    const adapter = getProvider(binding.provider);
+    const instance = adapter.instanceFor(binding.repo);
+    if (instance) adapter.oauth.secretNameFor(instance);
+    const connection = await getGitConnection(
+      ddb,
+      binding.connectionUserId,
+      binding.provider,
+      instance,
+    );
     if (
       !connection?.parameterName ||
-      binding.credentialRef !== oauthCredentialRef(binding.provider, binding.connectionUserId)
+      binding.credentialRef !==
+        oauthCredentialRef(binding.provider, binding.connectionUserId, instance)
     ) {
       throw Object.assign(new Error('Delegated OAuth connection is unavailable'), {
         code: 'CONNECTION_REQUIRED',

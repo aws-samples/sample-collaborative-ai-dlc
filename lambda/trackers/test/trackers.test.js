@@ -395,6 +395,27 @@ describe('GET /trackers (unified listing)', () => {
     ]);
   });
 
+  it('keeps healthy GitLab connections when one instance read fails', async () => {
+    const host = 'private.example.org';
+    const previousRegistry = process.env.GITLAB_INSTANCE_SECRETS;
+    const previousTable = process.env.GIT_PROVIDER_CONNECTIONS_TABLE;
+    vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ [host]: 'private-app' }));
+    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'git-by-instance');
+    try {
+      ddbMock.on(GetCommand, { TableName: 'git-by-instance' }).callsFake(({ Key }) => {
+        if (Key.providerInstance === 'gitlab#public') throw new Error('Read failed');
+        return Key.providerInstance === `gitlab#${host}` ? { Item: { instance: host } } : {};
+      });
+      const res = await handler(baseEvent());
+      expect(JSON.parse(res.body)).toContainEqual(
+        expect.objectContaining({ provider: 'gitlab-issues', instance: host }),
+      );
+    } finally {
+      vi.stubEnv('GITLAB_INSTANCE_SECRETS', previousRegistry);
+      vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', previousTable);
+    }
+  });
+
   it('returns empty list when nothing is connected', async () => {
     ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({});
     ddbMock.on(ScanCommand, { TableName: TRACKER_TABLE }).resolves({ Items: [] });

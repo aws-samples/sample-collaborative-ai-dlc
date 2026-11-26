@@ -1,3 +1,4 @@
+import { buildResponse } from '../shared/response.js';
 import { createGitHandler } from '../shared/git-handler.js';
 import gitlabProvider from '../shared/git-providers/gitlab.js';
 
@@ -27,4 +28,24 @@ const routes = {
   },
 };
 
-export const handler = createGitHandler(gitlabProvider, routes);
+export const handler = async (event) => {
+  const query = event.queryStringParameters ?? {};
+  let instance;
+  try {
+    if (event.path?.endsWith('/callback') && query.code && query.state) {
+      // This unverified routing hint only selects a registered secret. The
+      // shared handler verifies the signature and instance before exchange.
+      const [state, signature] = decodeURIComponent(query.state).split('.');
+      if (!/^[a-f0-9]{64}$/.test(signature ?? '')) throw new Error('Invalid OAuth state');
+      instance = JSON.parse(Buffer.from(state, 'base64').toString()).instance;
+    } else {
+      instance = query.instance ?? gitlabProvider.instanceFor(projectFromQuery(query));
+    }
+    if (instance !== undefined) gitlabProvider.oauth.secretNameFor(instance);
+  } catch {
+    return buildResponse(event)(400, {
+      error: 'Invalid OAuth state or unregistered GitLab instance',
+    });
+  }
+  return createGitHandler(gitlabProvider, routes, instance)(event);
+};

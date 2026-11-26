@@ -1231,11 +1231,11 @@ resource "aws_iam_role_policy" "source_control" {
       {
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]
-        Resource = compact([
+        Resource = concat(compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
           var.bitbucket_oauth_secret_arn,
-        ])
+        ]), values(var.gitlab_instance_secrets))
       },
       {
         # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
@@ -1300,6 +1300,7 @@ module "source_control_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_INSTANCE_SECRETS            = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
@@ -1439,11 +1440,11 @@ resource "aws_iam_role_policy" "credential_broker" {
       {
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]
-        Resource = compact([
+        Resource = concat(compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
           var.bitbucket_oauth_secret_arn,
-        ])
+        ]), values(var.gitlab_instance_secrets))
       },
       {
         # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
@@ -1502,6 +1503,7 @@ module "credential_broker_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_INSTANCE_SECRETS            = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
@@ -1640,6 +1642,7 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
@@ -2205,7 +2208,7 @@ resource "aws_iam_role_policy" "gitlab_connector" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [var.gitlab_oauth_secret_arn]
+        Resource = concat([var.gitlab_oauth_secret_arn], values(var.gitlab_instance_secrets))
       },
       {
         Effect   = "Allow"
@@ -2253,6 +2256,7 @@ module "gitlab_lambda" {
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -2527,6 +2531,7 @@ module "trackers_lambda" {
     JIRA_REDIRECT_URI              = var.jira_redirect_uri
     JIRA_TOKEN_SSM_PREFIX          = "${var.project_name}/${var.environment}/jira-token"
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
     SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name

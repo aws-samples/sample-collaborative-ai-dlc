@@ -55,6 +55,55 @@ describe('git-providers registry', () => {
   });
 });
 
+describe('self-managed GitLab', () => {
+  const instance = 'git.example.com';
+  const repo = `gitlab:${instance}/platform/nested/widgets`;
+  const adapter = getProvider('gitlab');
+  it('keeps Git and REST operations on the bound instance', async () => {
+    expect(buildCloneUrl('gitlab', repo, '')).toBe(
+      `https://${instance}/platform/nested/widgets.git`,
+    );
+    expect(gitHost('gitlab', repo)).toBe(instance);
+    const fetchImpl = makeFetch([
+      ['/projects/platform%2Fnested%2Fwidgets', { json: { default_branch: 'trunk' } }],
+    ]);
+    expect(await adapter.getDefaultBranch({ instance, token: 'private', fetchImpl }, repo)).toBe(
+      'trunk',
+    );
+    expect(fetchImpl.calls[0]).toMatchObject({
+      url: `https://${instance}/api/v4/projects/platform%2Fnested%2Fwidgets`,
+      options: { redirect: 'manual', headers: { Authorization: 'Bearer private' } },
+    });
+    await expect(adapter.getDefaultBranch({ token: 'public', fetchImpl }, repo)).rejects.toThrow(
+      'does not match',
+    );
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+  it.each(['AbortError', 'TimeoutError'])('propagates %s without wrapping it', async (name) => {
+    const error = new DOMException('Request cancelled', name);
+    await expect(
+      adapter.listRepos({
+        instance,
+        token: 'private',
+        fetchImpl: vi.fn().mockRejectedValue(error),
+      }),
+    ).rejects.toBe(error);
+  });
+  it('distinguishes an interactive login redirect from a network failure', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 302 })
+      .mockRejectedValueOnce(new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } }));
+    const ctx = { token: 'private', instance, fetchImpl };
+    await expect(adapter.listRepos(ctx)).rejects.toThrow('redirect or login page');
+    await expect(adapter.listRepos(ctx)).rejects.toMatchObject({
+      status: 502,
+      extra: { code: 'GITLAB_UNREACHABLE', cause: 'ENOTFOUND' },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('clone URL + host plumbing', () => {
   it('builds a tokenized GitHub clone URL with x-access-token', () => {
     expect(buildCloneUrl('github', 'owner/repo', 'TKN')).toBe(

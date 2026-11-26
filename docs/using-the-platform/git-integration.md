@@ -7,7 +7,7 @@ AIDLC Collaborative integrates with external systems on two independent axes:
 
 A space can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per space in **Space Settings**.
 
-GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Bitbucket and CodeCommit are code hosts only. Jira Cloud is a tracker only.
+GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider instance. Bitbucket and CodeCommit are code hosts only. Jira Cloud is a tracker only.
 
 ## Operator setup (one time per deployment)
 
@@ -25,6 +25,20 @@ Set it to `"all"` to place every Lambda function in the private subnets. This in
 
 Development environments have one address; production environments have two, and both must be allow-listed to avoid intermittent provider failures. These addresses are printed after applying the Terraform configuration.
 
+### Register a self-managed GitLab instance
+
+Register a confidential OAuth application on your GitLab instance with the `api` and `read_user` scopes and redirect URI `https://<your-collab-domain>/gitlab/callback`. Create a Secrets Manager secret in the deployment account and Region containing the application's `client_id` and `client_secret` as JSON strings. Use one secret per instance. In the deployment `.tfvars`, map each lowercase hostname to its secret ARN, then apply Terraform:
+
+```hcl
+gitlab_instance_secrets = {
+  "gitlab.example.com" = "arn:aws:secretsmanager:eu-west-1:123456789012:secret:collab/gitlab-example-AbCdEf"
+}
+```
+
+For a private endpoint or an IP allowlist, also set `lambda_vpc_scope = "public-egress"` (or use an existing `"all"` deployment). Supply DNS and routes from the platform's private subnets to GitLab, including any VPN or Transit Gateway connections your network requires. The user's browser must reach GitLab for consent. The OAuth connector, source-control Lambda, and credential broker need HTTPS access for the API and token exchanges. The agent runtime needs HTTPS Git access for clone and push. Use an HTTPS hostname with GitLab at the site root. Include the port when it differs from 443. Use a TLS chain trusted by the browser and workloads. Browser SSO is supported when subsequent requests accept GitLab tokens. SSH-only Git, per-request proxy credentials, and private CA distribution are outside this integration.
+
+In **Create New Space**, select **GitLab**, select the instance, then connect and delegate access. Existing GitLab.com spaces continue to use their original connection. Disconnecting an instance affects spaces delegated to that connection. Disconnect users before removing an instance from the Terraform map. To verify the setup, select a private subgroup repository, enable its issue tracker, and run an intent that pushes a branch and opens a merge request. The release import setting `AIDLC_GITLAB_URL` configures workflow imports separately.
+
 ### Space-bound authentication
 
 GitHub OAuth and GitHub App configuration remain available at the same time. There is no platform-wide runtime mode:
@@ -40,7 +54,7 @@ Every repository is verified before any binding is written. Existing repository-
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a space uses it only after an Owner explicitly delegates it.
+Each user connects their own account on each provider instance they use. A personal connection is available for repository discovery, but a space uses it only after an Owner explicitly delegates it.
 
 - **GitHub**: from the dashboard (or the space-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the space-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
@@ -48,7 +62,7 @@ Each user connects their own GitHub / GitLab / Atlassian account once. A persona
 - **AWS CodeCommit**: there is nothing to connect on your account, and no role to supply. Once a platform admin has set the CodeCommit connection, choose **AWS CodeCommit** in the space-creation flow and pick repositories from the usual list, like any other provider. See [CodeCommit](#codecommit).
 - **Jira Cloud**: open **Space Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
-A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab-backed space (and vice versa). Each space uses the connection matching its selected code host.
+A connection is scoped to its provider and instance: connecting GitHub does not satisfy a GitLab-backed space (and vice versa). Each space uses the connection matching its selected code host.
 
 ## Selecting a code repository
 

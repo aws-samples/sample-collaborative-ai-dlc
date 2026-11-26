@@ -48,7 +48,10 @@ vi.mock('../../shared/git-providers.js', async (importOriginal) => {
     ...actual,
     getProvider: (provider) =>
       provider === 'codecommit'
-        ? { getRepositoryAccess: async () => ({ canRead: true, canWrite: true }) }
+        ? {
+            ...actual.getProvider(provider),
+            getRepositoryAccess: async () => ({ canRead: true, canWrite: true }),
+          }
         : actual.getProvider(provider),
   };
 });

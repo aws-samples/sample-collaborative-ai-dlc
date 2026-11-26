@@ -26,7 +26,12 @@ import {
 import { GitBranch, Loader2, Plus, Star, Trash2, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { projectsService, type Project } from '@/services/projects';
-import { gitProviderTerminology, type GitProvider, type GitRepo } from '@/services/gitProvider';
+import {
+  gitlabInstanceForRepo,
+  gitProviderTerminology,
+  type GitProvider,
+  type GitRepo,
+} from '@/services/gitProvider';
 import { GitRepoSelect } from '@/components/GitRepoSelect';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SourceControlBindingSection } from './SourceControlBindingSection';
@@ -264,6 +269,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
             <div className="space-y-3 py-4">
               <GitRepoSelect
                 provider={project.gitProvider ?? 'github'}
+                instance={gitlabInstanceForRepo(project.gitRepo)}
                 multiple
                 value={selectedNewRepos}
                 onChange={(selected: GitRepo[]) => {

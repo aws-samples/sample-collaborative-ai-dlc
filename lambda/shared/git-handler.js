@@ -7,6 +7,7 @@
 // Manager OAuth credentials) once; each lambda passes its provider + a small
 // route-shape descriptor that says how to extract a repoId from the path.
 
+import { createHash } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
@@ -41,9 +42,12 @@ const logger = new Logger({ persistentKeys: { component: 'git-handler' } });
 //   contents: (path) => repoId | null,        // GET .../contents
 //   comments: (path) => { repoId, prRef } | null, // GET/POST PR/MR comments
 // }
-export const createGitHandler = (provider, routes) => {
+export const createGitHandler = (provider, routes, instance) => {
   const providerLabel = provider.displayName;
-  const secretName = () => process.env[provider.oauth.secretEnvName];
+  const secretName = () =>
+    provider.oauth.secretNameFor
+      ? provider.oauth.secretNameFor(instance)
+      : process.env[provider.oauth.secretEnvName];
   const redirectUri = () => process.env[provider.oauth.redirectUriEnvName];
 
   // Resolve the caller's connection row for THIS provider. Backed by the
@@ -51,14 +55,14 @@ export const createGitHandler = (provider, routes) => {
   // a GitLab connection at once. Connections written before the cutover are
   // lazily migrated out of the legacy single-key table on first read (see
   // git-connection-store). Returns null when this provider isn't connected.
-  const getConnection = async (userId) => getGitConnection(ddb, userId, provider.id);
+  const getConnection = async (userId) => getGitConnection(ddb, userId, provider.id, instance);
 
   // Build a provider ctx that refreshes (and persists) the token on 401 when
   // the provider supports it (GitLab). GitHub's oauth has no refreshAccessToken
   // so onRefresh stays undefined and glFetch/ghFetch behave identically.
   const buildCtx = async (item) => {
     const tokens = await resolveGitTokenFull(ssm, item);
-    const ctx = { token: tokens.accessToken };
+    const ctx = { token: tokens.accessToken, instance };
     if (typeof provider.oauth.refreshAccessToken === 'function') {
       ctx.onRefresh = async () => {
         let refreshed;
@@ -68,12 +72,14 @@ export const createGitHandler = (provider, routes) => {
             clientId: creds.client_id,
             clientSecret: creds.client_secret,
             refreshToken: tokens.refreshToken,
+            instance,
             redirectUri: redirectUri(),
           });
         } catch (error) {
+          if (instance && error.status === 502) throw error;
           await invalidateBindingsByCredentialRef(
             ddb,
-            oauthCredentialRef(provider.id, item.userId),
+            oauthCredentialRef(provider.id, item.userId, instance),
             'oauth_refresh_failed',
           ).catch(() => {});
           throw error;
@@ -135,11 +141,12 @@ export const createGitHandler = (provider, routes) => {
           secretName(),
           providerLabel,
         );
-        const state = createSignedState({ userId, ts: Date.now() }, client_secret);
+        const state = createSignedState({ userId, ts: Date.now(), instance }, client_secret);
         const url = provider.oauth.buildAuthorizeUrl({
           clientId: client_id,
           redirectUri: redirectUri(),
           state,
+          instance,
         });
         return response(200, { url });
       }
@@ -156,7 +163,7 @@ export const createGitHandler = (provider, routes) => {
           providerLabel,
         );
         const statePayload = verifySignedState(decodeURIComponent(state), client_secret);
-        if (!statePayload || !statePayload.userId) {
+        if (!statePayload || !statePayload.userId || statePayload.instance !== instance) {
           return response(400, { error: 'Invalid or tampered state parameter' });
         }
         if (Date.now() - statePayload.ts > 10 * 60 * 1000) {
@@ -167,6 +174,7 @@ export const createGitHandler = (provider, routes) => {
           clientId: client_id,
           clientSecret: client_secret,
           code,
+          instance,
           redirectUri: redirectUri(),
         });
 
@@ -174,7 +182,10 @@ export const createGitHandler = (provider, routes) => {
         // user's GitHub and GitLab tokens from colliding (both used to write to
         // /PREFIX/userId). Legacy connections kept the 4-segment path; their
         // parameterName is read from the stored row, so they remain valid.
-        const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${provider.id}`;
+        const slot = instance
+          ? `${provider.id}-${createHash('sha256').update(instance).digest('hex')}`
+          : provider.id;
+        const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${slot}`;
         // GitLab stores a refresh token (+ expiry so the construction path can
         // refresh just-in-time); GitHub does not. Match each provider's
         // historical SSM value shape (key order matters for existing assertions).
@@ -206,7 +217,10 @@ export const createGitHandler = (provider, routes) => {
         let authorFields = {};
         if (typeof provider.getAuthenticatedUser === 'function') {
           try {
-            const user = await provider.getAuthenticatedUser({ token: tokens.accessToken });
+            const user = await provider.getAuthenticatedUser({
+              token: tokens.accessToken,
+              instance,
+            });
             authorFields = {
               githubLogin: user.login,
               authorName: user.authorName,
@@ -219,18 +233,21 @@ export const createGitHandler = (provider, routes) => {
         await putGitConnection(ddb, {
           userId: statePayload.userId,
           provider: provider.id,
+          ...(instance ? { instance } : {}),
           parameterName,
           scope: tokens.scope,
           createdAt: new Date().toISOString(),
           ...authorFields,
         });
-        return response(200, { success: true });
+        return response(200, { success: true, ...(instance ? { instance } : {}) });
       }
 
       // GET /{provider}/status
       if (httpMethod === 'GET' && path.endsWith('/status')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
         const Item = await getConnection(userId);
+        const instances = provider.listInstances?.() ?? [];
+        const statusDetails = instances.length ? { instances } : {};
         const grantedScopes = new Set(
           String(Item?.scope ?? '')
             .split(/[\s,]+/)
@@ -242,17 +259,18 @@ export const createGitHandler = (provider, routes) => {
         if (Item && missingScopes.length > 0) {
           await invalidateBindingsByCredentialRef(
             ddb,
-            oauthCredentialRef(provider.id, userId),
+            oauthCredentialRef(provider.id, userId, instance),
             'oauth_scopes_missing',
           ).catch(() => {});
           return response(200, {
             connected: false,
             provider: Item.provider,
+            ...statusDetails,
             reauthorizationRequired: true,
             missingScopes,
           });
         }
-        return response(200, { connected: !!Item, provider: Item?.provider });
+        return response(200, { connected: !!Item, provider: Item?.provider, ...statusDetails });
       }
 
       // GET /{provider}/repos[?q=search] — providers that support server-side
@@ -281,10 +299,10 @@ export const createGitHandler = (provider, routes) => {
         }
         // Delete from BOTH the new and legacy tables so a stale legacy row
         // can't resurrect this connection via migrate-on-read.
-        await deleteGitConnection(ddb, userId, provider.id);
+        await deleteGitConnection(ddb, userId, provider.id, instance);
         await invalidateBindingsByCredentialRef(
           ddb,
-          oauthCredentialRef(provider.id, userId),
+          oauthCredentialRef(provider.id, userId, instance),
           'oauth_disconnected',
           { actor: userId },
         );

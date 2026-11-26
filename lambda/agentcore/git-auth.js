@@ -56,6 +56,15 @@ export const withGitCredential = async (
   const dir = await fsOps.mkdtemp(path.join(tempRoot, 'aidlc-askpass-'));
   const helper = path.join(dir, 'askpass.sh');
   const env = {
+    // A private instance may redirect unauthenticated clients to an SSO host.
+    // Git must never prompt this credential helper for the redirected origin.
+    ...(context.provider === 'gitlab' && context.repository.startsWith('gitlab:')
+      ? {
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'http.followRedirects',
+          GIT_CONFIG_VALUE_0: 'false',
+        }
+      : {}),
     GIT_ASKPASS: helper,
     GIT_TERMINAL_PROMPT: '0',
     AIDLC_GIT_USERNAME: credential.username,

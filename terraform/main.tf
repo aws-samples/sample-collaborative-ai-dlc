@@ -632,6 +632,7 @@ module "lambda" {
   codecommit_connection_param_name         = module.git.codecommit_connection_param_name
   codecommit_connection_param_arn          = module.git.codecommit_connection_param_arn
   codecommit_external_id                   = module.git.codecommit_external_id
+  gitlab_instance_secrets                  = var.gitlab_instance_secrets
   gitlab_oauth_secret_name                 = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn                  = module.git.gitlab_oauth_secret_arn
   bitbucket_oauth_secret_name              = module.git.bitbucket_oauth_secret_name

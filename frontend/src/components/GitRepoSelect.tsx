@@ -19,6 +19,7 @@ const SERVER_SEARCH_DEBOUNCE_MS = 300;
 
 interface BaseProps {
   provider: GitProvider;
+  instance?: string;
   exclude?: string[];
   repoSource?: RepoSource;
 }
@@ -38,7 +39,8 @@ interface MultiProps extends BaseProps {
 export type GitRepoSelectProps = SingleProps | MultiProps;
 
 export function GitRepoSelect(props: GitRepoSelectProps) {
-  const { provider } = props;
+  const { provider, instance } = props;
+  const service = useMemo(() => getGitProviderService(provider, instance), [provider, instance]);
   const repoSource = props.repoSource ?? 'oauth';
 
   const [repos, setRepos] = useState<GitRepo[]>([]);
@@ -47,24 +49,30 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    const listRepos =
-      repoSource === 'github-app'
-        ? githubAppService.listRepos
-        : getGitProviderService(provider).listRepos;
+    let cancelled = false;
+    const listRepos = repoSource === 'github-app' ? githubAppService.listRepos : service.listRepos;
     setFetching(true);
     setError(null);
     listRepos()
-      .then(setRepos)
-      .catch((e) => setError(e.message))
-      .finally(() => setFetching(false));
-  }, [provider, repoSource]);
+      .then((rows) => {
+        if (!cancelled) setRepos(rows);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setFetching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [service, repoSource]);
 
   // Providers that cap the unfiltered list (GitLab: large group trees exceed
   // it) expose `searchRepos`; a typed search is sent there and the matches are
   // merged into the list. Merging, rather than replacing, keeps earlier
   // selections resolvable.
-  const searchRepos =
-    repoSource === 'oauth' ? getGitProviderService(provider).searchRepos : undefined;
+  const searchRepos = repoSource === 'oauth' ? service.searchRepos : undefined;
   const [searching, setSearching] = useState(false);
   useEffect(() => {
     const term = search.trim();

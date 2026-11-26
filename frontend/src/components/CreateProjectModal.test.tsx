@@ -13,12 +13,15 @@ let oauthConnected = true;
 // "not configured" without touching the OAuth providers.
 let codecommitConfigured = true;
 vi.mock('../hooks/useGitProviderStatus', () => ({
-  useGitProviderStatus: (provider: string) => ({
-    status: { connected: provider === 'codecommit' ? codecommitConfigured : oauthConnected },
+  useGitProviderStatus: vi.fn((provider: string) => ({
+    instances: provider === 'gitlab' ? ['git.example.org'] : [],
+    status: {
+      connected: provider === 'codecommit' ? codecommitConfigured : oauthConnected,
+    },
     loading: false,
     error: null,
     refresh: () => {},
-  }),
+  })),
 }));
 vi.mock('./GitConnectButton', () => ({ GitConnectButton: () => null }));
 const CODECOMMIT_ARN = 'arn:aws:codecommit:eu-west-1:123456789012:widgets';
@@ -28,9 +31,11 @@ const CODECOMMIT_ARN = 'arn:aws:codecommit:eu-west-1:123456789012:widgets';
 vi.mock('./GitRepoSelect', () => ({
   GitRepoSelect: ({
     provider,
+    instance,
     onChange,
   }: {
     provider: string;
+    instance?: string;
     onChange: (repos: { fullName: string }[]) => void;
   }) => (
     <button
@@ -39,7 +44,7 @@ vi.mock('./GitRepoSelect', () => ({
         onChange(
           provider === 'codecommit'
             ? [{ fullName: CODECOMMIT_ARN }]
-            : [{ fullName: 'acme/widgets' }],
+            : [{ fullName: instance ? `gitlab:${instance}/acme/widgets` : 'acme/widgets' }],
         )
       }
     >
@@ -89,10 +94,13 @@ vi.mock('../services/sourceControl', async (importOriginal) => {
 });
 
 import { CreateProjectModal } from './CreateProjectModal';
+import { trackersService } from '../services/trackers';
 import { projectsService } from '../services/projects';
 import { sourceControlService } from '../services/sourceControl';
 import { workflowsService } from '../services/workflows';
 import { githubAppService } from '../services/gitProvider';
+import { api, ApiError } from '../services/api';
+import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 
 describe('CreateProjectModal', () => {
   beforeEach(() => {
@@ -162,6 +170,90 @@ describe('CreateProjectModal', () => {
     });
     expect(onCreated).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows the requested GitLab hostname even when it is absent from the registry', async () => {
+    await renderModal(
+      <CreateProjectModal
+        onClose={() => {}}
+        onCreated={() => {}}
+        initialProvider="gitlab"
+        initialInstance="retired.example.org"
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: 'GitLab instance' })).toHaveTextContent(
+      'retired.example.org',
+    );
+  });
+
+  it('retries a failed status check for the same GitLab instance', async () => {
+    const user = userEvent.setup();
+    const host = 'git.example.org';
+    const { useGitProviderStatus: realStatus } = await vi.importActual<
+      typeof import('../hooks/useGitProviderStatus')
+    >('../hooks/useGitProviderStatus');
+    const get = vi
+      .spyOn(api, 'get')
+      .mockRejectedValueOnce(new ApiError(503, 'Service unavailable'))
+      .mockResolvedValueOnce({ connected: true, instances: [host] });
+    try {
+      await vi.mocked(useGitProviderStatus).withImplementation(realStatus, async () => {
+        await renderModal(
+          <CreateProjectModal
+            onClose={() => {}}
+            onCreated={() => {}}
+            initialProvider="gitlab"
+            initialInstance={host}
+          />,
+        );
+        const next = screen.getByRole('button', { name: 'Next' });
+        expect(next).toBeDisabled();
+        await user.click(await screen.findByRole('button', { name: 'Retry' }));
+        await waitFor(() => expect(next).toBeEnabled());
+        expect(get.mock.calls).toEqual([
+          [`/gitlab/status?instance=${host}`],
+          [`/gitlab/status?instance=${host}`],
+        ]);
+      });
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it('binds the repository and its issue tracker to the selected GitLab instance', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="gitlab" />,
+    );
+    // jsdom lacks the browser APIs used when opening a Radix Select.
+    HTMLElement.prototype.hasPointerCapture = () => false;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    await user.click(screen.getByRole('combobox', { name: 'GitLab instance' }));
+    await user.click(screen.getByRole('option', { name: 'git.example.org' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: /I confirm that this space may use my connected identity/,
+      }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /Enable GitLab issue integration/ }));
+    await user.click(screen.getByRole('button', { name: 'Create Space' }));
+    const repo = 'gitlab:git.example.org/acme/widgets';
+    await waitFor(() =>
+      expect(projectsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ gitProvider: 'gitlab', gitRepo: repo }),
+      ),
+    );
+    expect(trackersService.addToProject).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({
+        provider: 'gitlab-issues',
+        instance: 'git.example.org',
+        externalProjectKey: repo,
+      }),
+    );
   });
 
   it('requires explicit confirmation before delegating OAuth', async () => {

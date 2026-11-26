@@ -36,6 +36,7 @@ interface Props {
   // Empty string (the default) leaves the provider UNSELECTED so opening the
   // modal does not trigger a connection check / OAuth login until the user picks.
   initialProvider?: GitProvider | '';
+  initialInstance?: string;
 }
 
 // Short name for space naming: the last path segment for owner/repo ids, the
@@ -46,8 +47,16 @@ const repoShortName = (fullName: string) =>
 // Local form shape: gitProvider may be '' before the user selects one.
 type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
 
-export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }: Props) {
+export function CreateProjectModal({
+  onClose,
+  onCreated,
+  initialProvider = '',
+  initialInstance,
+}: Props) {
   const [step, setStep] = useState(1);
+  const [instance, setInstance] = useState(
+    initialProvider === 'gitlab' ? initialInstance : undefined,
+  );
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [primaryRepo, setPrimaryRepo] = useState<string>('');
   const [formData, setFormData] = useState<ProjectForm>({
@@ -60,10 +69,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   // App path discovers repositories with platform App credentials.
   const {
     status: gitStatus,
+    instances: gitlabInstances,
     loading: gitStatusLoading,
     error: gitStatusError,
     refresh: gitRefresh,
-  } = useGitProviderStatus(formData.gitProvider);
+  } = useGitProviderStatus(formData.gitProvider, instance);
   const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
     defaultAuthTypeFor(initialProvider),
   );
@@ -172,6 +182,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   };
 
   const handleProviderChange = (provider: GitProvider) => {
+    setInstance(undefined);
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
     setSourceControlAuthType(defaultAuthTypeFor(provider));
     setSelectedRepos([]);
@@ -249,7 +260,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         try {
           await trackersService.addToProject(project.id, {
             provider: trackerProvider,
-            instance: 'public',
+            instance: instance ?? 'public',
             externalProjectKey: formData.gitRepo,
             displayName: formData.gitRepo,
           });
@@ -275,7 +286,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       : // OAuth and CodeCommit both gate on a platform-level connection the
         // status route reports (OAuth: the caller connected; CodeCommit: an
         // admin configured the one platform role).
-        Boolean(gitStatus?.connected)
+        !gitStatusLoading && Boolean(gitStatus?.connected)
     : false;
   const canProceedStep2 = selectedRepos.length > 0;
   const repoCount = selectedRepos.length;
@@ -363,9 +374,47 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 </SelectItem>
               </SelectContent>
             </Select>
+            {formData.gitProvider === 'gitlab' && (gitlabInstances?.length || instance) ? (
+              <>
+                <label
+                  htmlFor="gitlab-instance-select"
+                  className="block font-medium mb-1 text-gray-900 dark:text-white"
+                >
+                  GitLab instance
+                </label>
+                <Select
+                  value={instance ?? 'gitlab.com'}
+                  onValueChange={(host) => {
+                    setInstance(host === 'gitlab.com' ? undefined : host);
+                    handleReposChange([]);
+                    setDelegationConfirmed(false);
+                  }}
+                >
+                  <SelectTrigger id="gitlab-instance-select" className="mb-4">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gitlab.com">gitlab.com</SelectItem>
+                    {instance && !gitlabInstances?.includes(instance) && (
+                      <SelectItem value={instance} disabled>
+                        {instance}
+                      </SelectItem>
+                    )}
+                    {(gitlabInstances ?? []).map((host) => (
+                      <SelectItem key={host} value={host}>
+                        {host}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            ) : null}
             {gitStatusError && sourceControlAuthType !== 'github-app' && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
                 {gitStatusError}
+                <button type="button" className="ml-2 underline" onClick={gitRefresh}>
+                  Retry
+                </button>
               </div>
             )}
             {!formData.gitProvider ? (
@@ -422,9 +471,12 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                   ) : null
                 ) : gitStatusLoading ? (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
-                ) : isOAuthGitProvider(formData.gitProvider) ? (
+                ) : formData.gitProvider === 'gitlab' &&
+                  instance &&
+                  gitStatusError ? null : isOAuthGitProvider(formData.gitProvider) ? (
                   <GitConnectButton
                     provider={formData.gitProvider}
+                    instance={instance}
                     connected={gitStatus?.connected || false}
                     reauthorizationRequired={gitStatus?.reauthorizationRequired}
                     missingScopes={gitStatus?.missingScopes}
@@ -473,6 +525,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             </p>
             <GitRepoSelect
               provider={formData.gitProvider}
+              instance={instance}
               multiple
               value={selectedRepos}
               onChange={handleReposChange}

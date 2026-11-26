@@ -67,6 +67,22 @@ variable "skip_final_snapshot" {
   default     = false
 }
 
+variable "gitlab_instance_secrets" {
+  description = "Self-managed GitLab HTTPS hostnames mapped to existing Secrets Manager OAuth application secret ARNs (client_id and client_secret)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([for host, arn in var.gitlab_instance_secrets :
+      length(split(":", host)[0]) <= 253 && !contains(["gitlab.com", "public"], split(":", host)[0]) &&
+      (length(split(":", host)) == 1 || (can(regex(":[1-9][0-9]{0,4}$", host)) && length(split(":", host)) == 2 && try(tonumber(split(":", host)[1]) <= 65535 && tonumber(split(":", host)[1]) != 443, false))) &&
+      alltrue([for label in split(".", split(":", host)[0]) : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", label))]) &&
+      can(regex("^arn:[a-z0-9-]+:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[a-zA-Z0-9/_+=.@-]+$", arn))
+    ])
+    error_message = "Use lowercase DNS hostnames and exact Secrets Manager ARNs, one OAuth application per host."
+  }
+}
+
 variable "lambda_vpc_scope" {
   description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress adds selected public-service Lambdas; all places every Lambda in the VPC"
   type        = string
