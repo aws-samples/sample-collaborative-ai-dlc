@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -227,6 +227,24 @@ test('lambda_vpc_scope all places every Lambda in private subnets', () => {
     deploy,
     /"\$lambda_vpc_scope" == "public-egress" \|\| "\$lambda_vpc_scope" == "all"/,
   );
+});
+
+test('every Lambda module log group expires its events', () => {
+  const paths = readdirSync(join(root, 'terraform/modules'), { recursive: true })
+    .filter((path) => path.endsWith('.tf'))
+    .map((path) => `terraform/modules/${path}`);
+  const missing = paths.flatMap((path) =>
+    lambdaModuleBlocks(read(path))
+      .filter(
+        (block) =>
+          !/^\s*cloudwatch_logs_retention_in_days\s+= var\.environment == "prod" \? 30 : 7$/m.test(
+            block,
+          ),
+      )
+      .map((block) => `${path}: ${block.match(/^module "([^"]+)"/)[1]}`),
+  );
+  assert.ok(paths.length > 0);
+  assert.deepEqual(missing, [], 'Lambda modules without a log retention period');
 });
 
 test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {

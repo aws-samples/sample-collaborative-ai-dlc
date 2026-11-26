@@ -76,6 +76,8 @@ module "agents_lambda" {
     }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
     # Set only in the strict profile (lambda/shared/runtime-mcp-policy.js).
   var.runtime_mcp_credentials == "gateway_only" ? { RUNTIME_MCP_CREDENTIALS = "gateway_only" } : {})
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 

@@ -126,6 +126,8 @@ module "connection_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Message Lambda (handles $default)
@@ -162,6 +164,8 @@ module "message_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Authorizer Lambda (validates Cognito token)
@@ -198,4 +202,6 @@ module "authorizer_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
