@@ -16,6 +16,11 @@
 //            refreshAccessToken?({clientId, clientSecret, refreshToken}) }
 //   listRepos(ctx)                      -> GitRepo[]
 //   listBranches(ctx, repoId)           -> string[]
+//   listReposPage?(ctx, page), listBranchesPage?(ctx, repoId, page) and
+//   listIssueCommentsPage?(ctx, repoId, issue, page) -> one provider page,
+//       { repos | branches | comments, nextPage: number | null }, for callers
+//       behind a request deadline; implemented where a list has more pages
+//       than one call reads (GitHub)
 //   getTree(ctx, repoId, branch)        -> GitFile[]
 //   getFileContents(ctx, repoId, path, branch) -> GitFileContent
 //   findPullRequest(ctx, repoId, {sourceBranch,targetBranch,state}) -> provider PR | null

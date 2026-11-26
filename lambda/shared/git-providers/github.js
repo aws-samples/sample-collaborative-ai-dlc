@@ -128,53 +128,40 @@ const mapRepo = (r) => ({
 });
 
 const PAGE_SIZE = 100;
-// Bounds a very large account inside the API Gateway 29s limit: page 1, then
-// the rest in parallel, each given up after LIST_PAGE_TIMEOUT_MS, so a listing
-// takes at most two page timeouts.
-const MAX_LIST_PAGES = 10;
-const LIST_PAGE_TIMEOUT_MS = 8_000;
 
-// The page count from the Link header's rel="last"; 1 when there is none.
-const lastPageFromLink = (res) => {
-  const match = /<[^>]*[?&]page=(\d+)[^>]*>;\s*rel="last"/.exec(res.headers?.get?.('link') ?? '');
-  return match ? Number(match[1]) : 1;
-};
-
-// Page 1 goes first and alone: its Link header gives the page count. The
-// remaining pages, up to the cap, are fetched in parallel and kept in order.
-// `readPage(res)` returns the page's rows or throws, so one failed page fails
-// the whole listing instead of returning part of it.
-const listPages = async (ctx, url, readPage) => {
+// One page of a GitHub list per call. The caller asks for `nextPage` in a
+// separate request, so no request waits on a whole list behind the API
+// Gateway timeout. GitHub's Link header announces rel="next" only when
+// another page exists, so a full last page costs no extra request.
+const readListPage = async (ctx, url, page, readRows) => {
   const separator = url.includes('?') ? '&' : '?';
-  const fetchPage = async (page) => {
-    const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`, {
-      signal: AbortSignal.timeout(ctx.listPageTimeoutMs ?? LIST_PAGE_TIMEOUT_MS),
-    });
-    return { rows: await readPage(res, page), lastPage: lastPageFromLink(res) };
-  };
-  const first = await fetchPage(1);
-  const lastPage = Math.min(first.lastPage, MAX_LIST_PAGES);
-  const pages = [];
-  for (let page = 2; page <= lastPage; page += 1) pages.push(page);
-  const rest = await Promise.all(pages.map(fetchPage));
-  return [first, ...rest].flatMap((p) => p.rows);
+  const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`);
+  const rows = await readRows(res, page);
+  const hasNext = /rel="next"/.test(res.headers?.get?.('link') ?? '');
+  return { rows, nextPage: hasNext ? page + 1 : null };
 };
 
-// The picker filters this list client-side, so it must hold every repo the
-// user can reach, not just the first page (/user/repos has no search).
-const listRepos = async (ctx) => {
-  const repos = await listPages(ctx, `${API_BASE}/user/repos?sort=updated`, async (res) => {
-    const data = await res.json();
-    if (!Array.isArray(data)) {
-      throw new ProviderError(400, data?.message || 'Failed to fetch repos');
-    }
-    return data.map(mapRepo);
-  });
-  // A repo updated while the pages are read moves to page 1 and can appear
-  // twice.
-  const seen = new Set();
-  return repos.filter((r) => !seen.has(r.id) && seen.add(r.id));
+const readRepoRows = async (res) => {
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new ProviderError(400, data?.message || 'Failed to fetch repos');
+  }
+  return data.map(mapRepo);
 };
+
+// The picker filters client-side and /user/repos has no search, so it asks
+// for every page in turn.
+const listReposPage = async (ctx, page = 1) => {
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/user/repos?sort=updated`,
+    page,
+    readRepoRows,
+  );
+  return { repos: rows, nextPage };
+};
+
+const listRepos = async (ctx) => (await listReposPage(ctx)).repos;
 
 // App-mode repo discovery: the repos the GitHub App installation can access
 // (GET /installation/repositories — requires an installation token, not a
@@ -201,18 +188,26 @@ const listInstallationRepos = async (ctx) => {
   return repos;
 };
 
-const listBranches = async (ctx, repoId) => {
+const listBranchesPage = async (ctx, repoId, page = 1) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  return listPages(ctx, `${API_BASE}/repos/${owner}/${repo}/branches`, async (res, page) => {
-    // A missing repo has no branches; a 404 after page 1 cut the list short.
-    if (res.status === 404 && page === 1) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) {
-      throw new ProviderError(400, data?.message || 'Failed to fetch branches');
-    }
-    return data.map((b) => b.name);
-  });
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/branches`,
+    page,
+    async (res) => {
+      // A missing repo has no branches; a 404 after page 1 cut the list short.
+      if (res.status === 404 && page === 1) return [];
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new ProviderError(400, data?.message || 'Failed to fetch branches');
+      }
+      return data.map((b) => b.name);
+    },
+  );
+  return { branches: rows, nextPage };
 };
+
+const listBranches = async (ctx, repoId) => (await listBranchesPage(ctx, repoId)).branches;
 
 // The repo's real default branch (`main`, `master`, or whatever HEAD points at).
 // Needed because init-ws `git clone` checks out the repo's actual default HEAD
@@ -386,6 +381,31 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
   };
 };
 
+// One page of an issue discussion, for a caller that waits behind the API
+// Gateway timeout and asks for the next page in a new request.
+const listIssueCommentsPage = async (ctx, repoId, issueNumber, page = 1) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    page,
+    async (res) => {
+      // A missing issue has no comments; a 404 after page 1 cut the list short.
+      if (res.status === 404 && page === 1) return [];
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !Array.isArray(data)) {
+        throw new ProviderError(
+          res.ok ? 400 : res.status,
+          data?.message || 'Failed to fetch issue comments',
+        );
+      }
+      return data.map(mapIssueDiscussionComment);
+    },
+  );
+  return { comments: rows, nextPage };
+};
+
+// Every page, for callers without a request deadline (delivery sync, agents).
 const listIssueComments = async (ctx, repoId, issueNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   // Comments come oldest first, so reading only page 1 dropped the newest.
@@ -1176,8 +1196,10 @@ export {
   getAuthenticatedUser,
   mapRepo,
   listRepos,
+  listReposPage,
   listInstallationRepos,
   listBranches,
+  listBranchesPage,
   getDefaultBranch,
   getRepositoryAccess,
   getTree,
@@ -1185,6 +1207,7 @@ export {
   listIssues,
   getIssue,
   listIssueComments,
+  listIssueCommentsPage,
   issueAttachments,
   addIssueComment,
   closeIssue,
@@ -1220,8 +1243,10 @@ export default {
   getAuthenticatedUser,
   mapRepo,
   listRepos,
+  listReposPage,
   listInstallationRepos,
   listBranches,
+  listBranchesPage,
   getDefaultBranch,
   getRepositoryAccess,
   getTree,
@@ -1229,6 +1254,7 @@ export default {
   listIssues,
   getIssue,
   listIssueComments,
+  listIssueCommentsPage,
   issueAttachments,
   addIssueComment,
   closeIssue,
