@@ -1,6 +1,7 @@
 import type { AidlcSettingValue } from '../lib/aidlcSettings';
 import { api, type ApiGetOptions } from './api';
 import { refreshAfterWrite } from '../lib/afterWrite';
+import { notifyIntentListWrite } from '../lib/intentListWrites';
 import { qk } from '../lib/queryKeys';
 import type { AgentCli, ConversationLanguage } from './projects';
 import type { AgentCredentialSource } from './agents';
@@ -1218,11 +1219,13 @@ const withOptions = <T>(path: string, options?: ApiGetOptions) =>
   options ? api.get<T>(path, options) : api.get<T>(path);
 
 // Writes that add, remove or re-status an intent make every cached view of the
-// space's list (qk.projectIntents and its status supplements) outdated.
+// space's list outdated: qk.projectIntents with its status supplements, and
+// the spaces cache the sidebar and dashboard read (notified, not imported).
 // A rejected intent write changes no list, so only success refreshes it.
 const listWrite = <T>(projectId: string, request: Promise<T>): Promise<T> =>
   request.then((result) => {
     refreshAfterWrite(qk.projectIntents(projectId));
+    notifyIntentListWrite(projectId);
     return result;
   });
 

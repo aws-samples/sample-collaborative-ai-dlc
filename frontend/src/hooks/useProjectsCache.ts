@@ -3,6 +3,7 @@ import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { intentsService, type Intent } from '@/services/intents';
 import { loadPersisted, persist } from '@/lib/persistentCache';
+import { onIntentListWrite } from '@/lib/intentListWrites';
 
 const PROJECTS_TTL = 30_000;
 const SPRINTS_TTL = 60_000;
@@ -391,6 +392,13 @@ function releasePolling() {
     }
   }
 }
+
+// A created, deleted, cancelled or started intent changes the lists held here:
+// re-read them at once rather than at the next 30 s poll. Nothing to correct
+// before the first read.
+onIntentListWrite(() => {
+  if (projectsCache) void revalidateProjects(true);
+});
 
 // Module-level (stable) mutation API — safe to use in effect dep arrays.
 export function refreshProjects() {

@@ -69,7 +69,7 @@ The existing document-reload boundary remains: signing in after a session ended,
 Domain writes go through `afterWrite(write, ...prefixes)` (`lib/afterWrite.ts`): once the write settles it invalidates each prefix and supersedes reads that started before it (cancelled and restarted, so their waiters get post-write data). Active queries refetch; inactive queries remain stale until needed.
 
 - Workflow writes invalidate the workflow prefix and workflow list. The prefix covers compiled views.
-- Successful intent lifecycle writes invalidate the space's intent lists, including status-filtered lists.
+- Successful intent lifecycle writes invalidate the space's intent lists, including status-filtered lists, and re-read the spaces cache (`useProjectsCache`) that the sidebar and dashboard still read outside the query cache.
 
 `afterWrite` refreshes in `finally`: a failed response can still follow an applied write. Intent lifecycle writes refresh only on success. Keep this decision in the service so every caller uses the same policy.
 
@@ -78,6 +78,7 @@ Domain writes go through `afterWrite(write, ...prefixes)` (`lib/afterWrite.ts`):
 Use `refetchInterval` on the query that owns the data. Leave `refetchIntervalInBackground` false so TanStack pauses background polling. The interval may depend on query state: live intent detail uses 8 seconds, waiting intents 30 seconds, and terminal intents stop polling. Realtime invalidation remains the primary update path; polling recovers dropped events.
 
 `useVisiblePoll` is reserved for non-query work such as catching up and merging independently paginated visible transcript panes. Do not introduce another timer for an ordinary query refresh.
+
 
 ## Reading without retaining
 
