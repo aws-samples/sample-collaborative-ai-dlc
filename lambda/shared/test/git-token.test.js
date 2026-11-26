@@ -74,53 +74,61 @@ describe('ensureFreshGitToken', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it('refreshes a GitLab token that is near expiry and persists the rotation', async () => {
-    vi.stubEnv('GITLAB_REDIRECT_URI', 'https://app.example.com/gitlab/callback');
-    storeToken({
-      accessToken: 'old',
-      refreshToken: 'r1',
-      expiresAt: Date.now() + 60 * 1000, // 1min — inside the safety margin
-    });
-    secretsMock.on(GetSecretValueCommand).resolves({
-      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
-    });
-    ssmMock.on(PutParameterCommand).resolves({});
-    ddbMock.on(PutCommand).resolves({});
-    globalThis.fetch = vi.fn(async () => ({
-      json: async () => ({
-        access_token: 'fresh',
-        refresh_token: 'r2',
-        token_type: 'bearer',
-        expires_in: 7200,
-        scope: 'api read_user',
-      }),
-    }));
+  it.each([undefined, 'git.example.com'])(
+    'refreshes a GitLab token on its own instance (%s)',
+    async (instance) => {
+      vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ 'git.example.com': 'private-app' }));
+      const item = { ...ITEM, instance };
+      vi.stubEnv('GITLAB_REDIRECT_URI', 'https://app.example.com/gitlab/callback');
+      storeToken({
+        accessToken: 'old',
+        refreshToken: 'r1',
+        expiresAt: Date.now() + 60 * 1000, // 1min — inside the safety margin
+      });
+      secretsMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+      });
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+      globalThis.fetch = vi.fn(async () => ({
+        json: async () => ({
+          access_token: 'fresh',
+          refresh_token: 'r2',
+          token_type: 'bearer',
+          expires_in: 7200,
+          scope: 'api read_user',
+        }),
+      }));
 
-    const out = await ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' });
+      const out = await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider: 'gitlab' });
 
-    expect(out).toBe('fresh');
-    // GitLab requires redirect_uri on the refresh_token grant — assert it is sent.
-    const refreshBody = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
-    expect(refreshBody.grant_type).toBe('refresh_token');
-    expect(refreshBody.redirect_uri).toBe('https://app.example.com/gitlab/callback');
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      'https://gitlab.com/oauth/token',
-      expect.objectContaining({ method: 'POST' }),
-    );
-    // Rotated token persisted to SSM with a new expiresAt.
-    const put = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input;
-    const persisted = JSON.parse(put.Value);
-    expect(persisted.accessToken).toBe('fresh');
-    expect(persisted.refreshToken).toBe('r2');
-    expect(persisted.expiresAt).toBeGreaterThan(Date.now());
-    // Connection metadata persisted to the authoritative composite-key table
-    // (userId + providerInstance), NOT the legacy single-key table.
-    const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
-    expect(ddbPut.TableName).toBe('test-git-provider-connections');
-    expect(ddbPut.Item.userId).toBe('user-1');
-    expect(ddbPut.Item.providerInstance).toBe('gitlab#public');
-    expect(ddbPut.Item.scope).toBe('api read_user');
-  });
+      expect(out).toBe('fresh');
+      // GitLab requires redirect_uri on the refresh_token grant — assert it is sent.
+      const refreshBody = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+      expect(refreshBody.grant_type).toBe('refresh_token');
+      expect(refreshBody.redirect_uri).toBe('https://app.example.com/gitlab/callback');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `https://${instance ?? 'gitlab.com'}/oauth/token`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+      // Rotated token persisted to SSM with a new expiresAt.
+      const put = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input;
+      const persisted = JSON.parse(put.Value);
+      expect(persisted.accessToken).toBe('fresh');
+      expect(persisted.refreshToken).toBe('r2');
+      expect(persisted.expiresAt).toBeGreaterThan(Date.now());
+      // Connection metadata persisted to the authoritative composite-key table
+      // (userId + providerInstance), NOT the legacy single-key table.
+      const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
+      expect(ddbPut.TableName).toBe('test-git-provider-connections');
+      expect(ddbPut.Item.userId).toBe('user-1');
+      expect(ddbPut.Item.providerInstance).toBe(`gitlab#${instance ?? 'public'}`);
+      expect(secretsMock).toHaveReceivedCommandWith(GetSecretValueCommand, {
+        SecretId: instance ? 'private-app' : 'test/gitlab-oauth',
+      });
+      expect(ddbPut.Item.scope).toBe('api read_user');
+    },
+  );
 
   it('refreshes when no expiresAt is recorded (legacy row)', async () => {
     storeToken({ accessToken: 'old', refreshToken: 'r1' });

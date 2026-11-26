@@ -15,6 +15,13 @@ export const GIT_PROVIDER_WEB_URL: Record<Exclude<GitProvider, 'codecommit'>, st
   bitbucket: 'https://bitbucket.org',
 };
 
+export const gitlabInstanceForRepo = (repo?: string | null) =>
+  /^gitlab:([a-z0-9.-]+(?::[0-9]+)?)\//.exec(repo ?? '')?.[1];
+const gitlabRepoWebUrl = (repo: string) =>
+  gitlabInstanceForRepo(repo)
+    ? `https://${repo.slice('gitlab:'.length)}`
+    : `https://gitlab.com/${repo}`;
+
 export const gitRepoSlug = (repo: string) =>
   repo
     .replace(/^https?:\/\/[^/]+\//, '')
@@ -51,6 +58,8 @@ export const gitBranchWebUrl = (
   if (!provider || !Object.hasOwn(GIT_PROVIDER_WEB_URL, provider)) return null;
   const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
   const typedProvider = provider as Exclude<GitProvider, 'codecommit'>;
+  if (typedProvider === 'gitlab' && gitlabInstanceForRepo(repo))
+    return `${gitlabRepoWebUrl(repo)}/-/tree/${encodedBranch}`;
   const base =
     configuredRepoBaseUrl(repo) ?? `${GIT_PROVIDER_WEB_URL[typedProvider]}/${gitRepoSlug(repo)}`;
   if (typedProvider === 'gitlab') return `${base}/-/tree/${encodedBranch}`;
@@ -101,6 +110,7 @@ export interface GitRepo {
 
 export interface GitProviderStatus {
   connected: boolean;
+  instances?: string[];
   provider?: string;
   reauthorizationRequired?: boolean;
   missingScopes?: string[];
@@ -207,15 +217,24 @@ export const githubService: GitProviderService = {
 // the backend re-encodes it into the GitLab API path.
 // =============================================================================
 
-export const gitlabService: GitProviderService = {
-  getAuthUrl: () => api.get<{ url: string }>('/gitlab/auth'),
-  getStatus: () => api.get<GitProviderStatus>('/gitlab/status'),
-  listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
-  // The unfiltered list is capped server-side, so the picker also sends its
-  // search text for GitLab to match across every project the user can push to.
-  searchRepos: (q: string) => api.get<GitRepo[]>(`/gitlab/repos?q=${encodeURIComponent(q)}`),
-  disconnect: () => api.delete('/gitlab/disconnect'),
+const gitlabConnectionService = (instance?: string): GitProviderService => {
+  const endpoint = (path: string, search?: string) => {
+    const params = new URLSearchParams();
+    if (instance) params.set('instance', instance);
+    if (search) params.set('q', search);
+    return `/gitlab/${path}${params.size ? `?${params}` : ''}`;
+  };
+  return {
+    getAuthUrl: () => api.get<{ url: string }>(endpoint('auth')),
+    getStatus: () => api.get<GitProviderStatus>(endpoint('status')),
+    listRepos: () => api.get<GitRepo[]>(endpoint('repos')),
+    // The unfiltered list is capped server-side, so the picker also sends its
+    // search text for GitLab to match across every project the user can push to.
+    searchRepos: (q: string) => api.get<GitRepo[]>(endpoint('repos', q)),
+    disconnect: () => api.delete(endpoint('disconnect')),
+  };
 };
+export const gitlabService = gitlabConnectionService();
 
 // =============================================================================
 // Bitbucket service implementation — Bitbucket Cloud addresses repositories by
@@ -235,8 +254,11 @@ export const bitbucketService: GitProviderService = {
 // Provider lookup — given a `gitProvider` field, return the matching service.
 // =============================================================================
 
-export const getGitProviderService = (provider: GitProvider): GitProviderService => {
-  if (provider === 'gitlab') return gitlabService;
+export const getGitProviderService = (
+  provider: GitProvider,
+  instance?: string,
+): GitProviderService => {
+  if (provider === 'gitlab') return instance ? gitlabConnectionService(instance) : gitlabService;
   if (provider === 'bitbucket') return bitbucketService;
   if (provider === 'codecommit') return codecommitStatusService;
   return githubService;
@@ -325,6 +347,7 @@ export const parseCodeCommitRepo = (repoId: string): CodeCommitRepoRef | null =>
 
 // Human label for a repository id: "owner/repo" as-is, an ARN as "name (region)".
 export const repoDisplayName = (provider: GitProvider, repoId: string): string => {
+  if (provider === 'gitlab' && gitlabInstanceForRepo(repoId)) return repoId.slice('gitlab:'.length);
   if (provider !== 'codecommit') return repoId;
   const ref = parseCodeCommitRepo(repoId);
   return ref ? `${ref.name} (${ref.region})` : repoId;
@@ -354,7 +377,7 @@ export const repoWebUrl = (
     return `${base}${where}?region=${ref.region}`;
   }
   if (provider === 'gitlab')
-    return `https://gitlab.com/${repoId}${enc ? `/-/tree/${enc}${sub}` : ''}`;
+    return `${gitlabRepoWebUrl(repoId)}${enc ? `/-/tree/${enc}${sub}` : ''}`;
   if (provider === 'bitbucket')
     return `https://bitbucket.org/${repoId}${enc ? `/src/${enc}${sub}` : ''}`;
   return `https://github.com/${repoId}${enc ? `/tree/${enc}${sub}` : ''}`;

@@ -1,3 +1,4 @@
+import { gitlabFetch, gitlabSecretName } from './git-providers/gitlab-instance.js';
 import crypto from 'crypto';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
@@ -38,8 +39,8 @@ const resolveGitToken = async (ssm, item) => {
   return value.accessToken;
 };
 
-const getGitlabOAuthCredentials = async (secrets) => {
-  const secretName = process.env.GITLAB_OAUTH_SECRET_NAME;
+const getGitlabOAuthCredentials = async (secrets, instance) => {
+  const secretName = gitlabSecretName(instance);
   if (!secretName) throw new Error('GITLAB_OAUTH_SECRET_NAME env var is required');
   const result = await secrets.send(new GetSecretValueCommand({ SecretId: secretName }));
   const parsed = JSON.parse(result.SecretString || '{}');
@@ -65,21 +66,26 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     // No refresh token (e.g. very old row) — nothing we can do; return as-is.
     return tokens.accessToken;
   }
-  const { client_id, client_secret } = await getGitlabOAuthCredentials(secrets);
+  const { client_id, client_secret } = await getGitlabOAuthCredentials(secrets, item.instance);
   // GitLab requires redirect_uri on the refresh_token grant, matching the one
   // used at authorization time — without it GitLab returns `invalid_grant`.
   const redirectUri = process.env.GITLAB_REDIRECT_URI;
-  const res = await fetch('https://gitlab.com/oauth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      refresh_token: tokens.refreshToken,
-      client_id,
-      client_secret,
-      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
-    }),
-  });
+  const res = await gitlabFetch(
+    fetch,
+    `https://${item.instance ?? 'gitlab.com'}/oauth/token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: tokens.refreshToken,
+        client_id,
+        client_secret,
+        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+      }),
+    },
+    item.instance,
+  );
   const data = await res.json();
   if (data.error) {
     // GitLab refresh tokens are one-time-use: a concurrent request (possibly
@@ -109,6 +115,7 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       status: res.status || 401,
     });
   }
+  if (!data.access_token) throw new Error('GitLab did not return an OAuth access token');
   logger.info('refresh ok', { userId: item?.userId, expiresIn: data.expires_in });
   const expiresAt = data.expires_in ? Date.now() + Number(data.expires_in) * 1000 : undefined;
   const newValue = {

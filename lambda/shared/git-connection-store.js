@@ -11,12 +11,9 @@
 // operations — one row, one token, both concerns.
 //
 // providerInstance: the range key is '<provider>#<instance>', mirroring the
-// tracker-connections table (e.g. 'jira-cloud#cloud'). Only the SaaS 'public'
-// instance exists today, so callers pass just a provider and the store pins
-// '#public' at the DynamoDB boundary (the same way jira-cloud.js pins
-// 'jira-cloud#cloud'). Storing the composite value now means future self-hosted
-// / enterprise instances ('gitlab#self-hosted', …) need NO data migration —
-// only a code change to vary the instance.
+// tracker-connections table. SaaS connections use the original `public` key.
+// A registered GitLab hostname selects an independent row and never falls back
+// to a public or legacy connection.
 //
 // Lazy migrate-on-read: pre-existing connections live in the legacy table
 // keyed by userId alone. On main these are all GitHub rows (GitLab post-dates
@@ -36,8 +33,6 @@ import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'git-connection-store' } });
 
-// The only git-connection instance today is the SaaS one. Pinned here so the
-// stored data already carries the composite key shape; callers never see it.
 const DEFAULT_INSTANCE = 'public';
 
 // Range-key value for a provider: '<provider>#<instance>'. Mirrors
@@ -59,9 +54,9 @@ const legacyTable = () => process.env.GIT_CONNECTIONS_TABLE;
 // into the new table before being returned.
 //
 // `ddb` is a DynamoDBDocumentClient.
-const getGitConnection = async (ddb, userId, provider) => {
+const getGitConnection = async (ddb, userId, provider, instance) => {
   if (!userId || !provider) return null;
-  const providerInstance = instanceKey(provider);
+  const providerInstance = instanceKey(provider, instance);
 
   // 1. Authoritative read on the composite-key table.
   if (newTable()) {
@@ -72,7 +67,7 @@ const getGitConnection = async (ddb, userId, provider) => {
   }
 
   // 2. Fallback to the legacy single-key row.
-  if (!legacyTable()) return null;
+  if (instance || !legacyTable()) return null;
   const { Item: legacy } = await ddb.send(
     new GetCommand({ TableName: legacyTable(), Key: { userId } }),
   );
@@ -108,7 +103,7 @@ const putGitConnection = async (ddb, item) => {
   if (!item?.userId || !item?.provider) {
     throw new Error('putGitConnection requires userId and provider');
   }
-  const row = { ...item, providerInstance: instanceKey(item.provider) };
+  const row = { ...item, providerInstance: instanceKey(item.provider, item.instance) };
   await ddb.send(new PutCommand({ TableName: newTable(), Item: row }));
 };
 
@@ -119,7 +114,7 @@ const putGitConnection = async (ddb, item) => {
 // keyed by userId alone (one row per user, in practice GitHub), so deleting it
 // unconditionally would wipe an unmigrated GitHub connection when the user
 // disconnects a DIFFERENT provider (e.g. GitLab). Guard on the row's provider.
-const deleteGitConnection = async (ddb, userId, provider) => {
+const deleteGitConnection = async (ddb, userId, provider, instance) => {
   if (!userId || !provider) return;
   const ops = [];
   if (newTable()) {
@@ -127,12 +122,12 @@ const deleteGitConnection = async (ddb, userId, provider) => {
       ddb.send(
         new DeleteCommand({
           TableName: newTable(),
-          Key: { userId, providerInstance: instanceKey(provider) },
+          Key: { userId, providerInstance: instanceKey(provider, instance) },
         }),
       ),
     );
   }
-  if (legacyTable()) {
+  if (!instance && legacyTable()) {
     // Only delete the legacy single-key row if it belongs to THIS provider.
     const { Item: legacy } = await ddb.send(
       new GetCommand({ TableName: legacyTable(), Key: { userId } }),

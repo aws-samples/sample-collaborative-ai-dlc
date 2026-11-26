@@ -11,6 +11,7 @@ import { projectsService, type Project, type TrackerBinding } from '@/services/p
 import { trackersService, type TrackerConnection } from '@/services/trackers';
 import {
   getGitProviderService,
+  gitlabInstanceForRepo,
   trackerIdForGitProvider,
   type GitTrackerProviderId,
 } from '@/services/gitProvider';
@@ -117,7 +118,10 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
       const meta = TRACKER_PROVIDERS[providerId];
       await trackersService.addToProject(project.id, {
         provider: meta.id,
-        instance: meta.instance,
+        instance:
+          providerId === 'gitlab-issues'
+            ? (gitlabInstanceForRepo(project.gitRepo) ?? meta.instance)
+            : meta.instance,
         externalProjectKey: project.gitRepo,
         displayName: project.gitRepo,
       });
@@ -197,7 +201,10 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
       // provider's OAuth connection — reconnect via the git auth flow.
       if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {
         const gitProvider = binding.provider === 'gitlab-issues' ? 'gitlab' : 'github';
-        const { url } = await getGitProviderService(gitProvider).getAuthUrl();
+        const { url } = await getGitProviderService(
+          gitProvider,
+          gitlabInstanceForRepo(binding.externalProjectKey),
+        ).getAuthUrl();
         window.location.href = url;
         return;
       }

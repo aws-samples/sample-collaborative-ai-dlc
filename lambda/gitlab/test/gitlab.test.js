@@ -157,7 +157,7 @@ describe('gitlab handler', () => {
   describe('OPTIONS', () => {
     it('returns 200 with empty body', async () => {
       const handler = await loadHandler();
-      const res = await handler(makeEvent('OPTIONS', '/gitlab/anything'));
+      const res = await handler(makeEvent('OPTIONS', '/gitlab/anything', { authorizer: {} }));
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({});
@@ -165,6 +165,14 @@ describe('gitlab handler', () => {
   });
 
   describe('GET /auth', () => {
+    it('requires an authenticated user before reading the OAuth secret', async () => {
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/auth', { authorizer: {} }));
+
+      expect(res.statusCode).toBe(401);
+      expect(secretsMock.calls()).toHaveLength(0);
+    });
+
     it('returns GitLab OAuth URL with signed state', async () => {
       mockOAuthSecret();
 
@@ -178,6 +186,170 @@ describe('gitlab handler', () => {
       expect(body.url).toContain('state=');
       expect(body.url).toContain('response_type=code');
       expect(body.url).toContain(encodeURIComponent('api read_user'));
+    });
+  });
+
+  describe('self-managed instance', () => {
+    const instance = 'git.example.com';
+    beforeEach(() =>
+      vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ [instance]: 'private-app' })),
+    );
+
+    it('uses the registered app through consent, callback, discovery and disconnect', async () => {
+      secretsMock.on(GetSecretValueCommand, { SecretId: 'private-app' }).resolves({
+        SecretString: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
+      });
+      const handler = await loadHandler();
+      const request = (method, route, params) =>
+        handler(makeEvent(method, `/gitlab/${route}`, { queryStringParameters: params }));
+      const auth = await request('GET', 'auth', { instance });
+      const consent = new URL(JSON.parse(auth.body).url);
+      expect(consent.origin).toBe(`https://${instance}`);
+      const fetch = mockFetch([
+        { body: { access_token: 'access', refresh_token: 'refresh', scope: 'api read_user' } },
+        { body: { id: 1, username: 'developer' } },
+        { body: [{ id: 7, path_with_namespace: 'group/sub/repo' }] },
+      ]);
+      const callback = await request('GET', 'callback', {
+        code: 'code',
+        state: consent.searchParams.get('state'),
+      });
+      expect(JSON.parse(callback.body)).toEqual({ success: true, instance });
+      const row = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item;
+      expect(row).toMatchObject({
+        userId: USER_ID,
+        providerInstance: `gitlab#${instance}`,
+        instance,
+      });
+      expect(row.parameterName).not.toBe(`/${SSM_PREFIX}/${USER_ID}/gitlab`);
+      expect(ssmMock).toHaveReceivedCommandWith(PutParameterCommand, { Name: row.parameterName });
+      ddbMock
+        .on(GetCommand, {
+          TableName: PROVIDER_CONNECTIONS_TABLE,
+          Key: { userId: USER_ID, providerInstance: row.providerInstance },
+        })
+        .resolves({ Item: row });
+      mockResolveGitToken();
+      const repos = await request('GET', 'repos', { instance });
+      expect(JSON.parse(repos.body)[0].fullName).toBe(`gitlab:${instance}/group/sub/repo`);
+      expect(fetch.mock.calls.map(([url]) => new URL(url).host)).toEqual([
+        instance,
+        instance,
+        instance,
+      ]);
+      const result = await request('DELETE', 'disconnect', { instance });
+      expect(result.statusCode).toBe(200);
+      expect(ssmMock).toHaveReceivedCommandWith(DeleteParameterCommand, {
+        Name: row.parameterName,
+      });
+      expect(ddbMock).toHaveReceivedCommandTimes(DeleteCommand, 1);
+      expect(ddbMock).toHaveReceivedCommandWith(DeleteCommand, {
+        Key: { userId: USER_ID, providerInstance: row.providerInstance },
+      });
+    });
+
+    it('keeps same-name public and self-managed projects and tokens independent across disconnect', async () => {
+      const userPrefix = `/${SSM_PREFIX}/${USER_ID}`;
+      const rows = new Map(
+        ['public', instance].map((host) => [
+          `gitlab#${host}`,
+          {
+            userId: USER_ID,
+            provider: 'gitlab',
+            parameterName: `${userPrefix}/${host === 'public' ? 'gitlab' : 'gitlab-private'}`,
+            ...(host === 'public' ? {} : { instance }),
+          },
+        ]),
+      );
+      ddbMock.on(GetCommand).callsFake(({ Key }) => ({ Item: rows.get(Key.providerInstance) }));
+      ddbMock.on(DeleteCommand).callsFake(({ Key }) => {
+        rows.delete(Key.providerInstance);
+        return {};
+      });
+      ssmMock.on(GetParameterCommand).callsFake(({ Name }) => ({
+        Parameter: {
+          Value: JSON.stringify({
+            accessToken: Name.endsWith('-private') ? 'private-token' : 'public-token',
+          }),
+        },
+      }));
+      const fetch = mockFetch([{ body: [{ id: 1, path_with_namespace: 'group/repo' }] }]);
+      const handler = await loadHandler();
+      const list = async (params) =>
+        JSON.parse(
+          (await handler(makeEvent('GET', '/gitlab/repos', { queryStringParameters: params })))
+            .body,
+        );
+      expect((await list({ instance }))[0].fullName).toBe(`gitlab:${instance}/group/repo`);
+      await handler(
+        makeEvent('DELETE', '/gitlab/disconnect', { queryStringParameters: { instance } }),
+      );
+      expect(rows.has(`gitlab#${instance}`)).toBe(false);
+      expect((await list({}))[0].fullName).toBe('group/repo');
+      expect(
+        fetch.mock.calls.map(([url, options]) => [
+          new URL(url).host,
+          options.headers.Authorization,
+        ]),
+      ).toEqual([
+        [instance, 'Bearer private-token'],
+        ['gitlab.com', 'Bearer public-token'],
+      ]);
+    });
+
+    it('rejects unknown hosts before a secret read and tampered state before token exchange', async () => {
+      const handler = await loadHandler();
+      const fetch = mockFetch();
+      const unregistered = await handler(
+        makeEvent('GET', '/gitlab/auth', {
+          queryStringParameters: { instance: 'unknown.example.com' },
+        }),
+      );
+      expect(unregistered.statusCode).toBe(400);
+      expect(secretsMock).toHaveReceivedCommandTimes(GetSecretValueCommand, 0);
+      mockOAuthSecret();
+      const state = createSignedState(
+        { userId: USER_ID, ts: Date.now(), instance },
+        'different-signing-key',
+      );
+      const callback = await handler(
+        makeEvent('GET', '/gitlab/callback', { queryStringParameters: { code: 'code', state } }),
+      );
+      expect(callback.statusCode).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('routes encoded project queries to the private connection and host', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      const fetch = mockFetch([{ body: [{ name: 'main' }] }]);
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: {
+            project: encodeURIComponent(`gitlab:${instance}/group/widgets`),
+          },
+        }),
+      );
+      expect(res.statusCode).toBe(200);
+      expect(new URL(fetch.mock.calls[0][0]).host).toBe(instance);
+      expect(ddbMock.commandCalls(GetCommand)[0].args[0].input.Key.providerInstance).toBe(
+        `gitlab#${instance}`,
+      );
+    });
+
+    it('does not fall back to the legacy token on a private connection miss', async () => {
+      ddbMock.on(GetCommand).resolves({});
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/status', { queryStringParameters: { instance } }),
+      );
+      expect(JSON.parse(res.body)).toEqual({ connected: false, instances: [instance] });
+      expect(ddbMock).toHaveReceivedCommandTimes(GetCommand, 1);
+      expect(ddbMock).toHaveReceivedCommandWith(GetCommand, {
+        TableName: PROVIDER_CONNECTIONS_TABLE,
+        Key: { userId: USER_ID, providerInstance: `gitlab#${instance}` },
+      });
     });
   });
 
@@ -267,6 +439,7 @@ describe('gitlab handler', () => {
       const handler = await loadHandler();
       const res = await handler(
         makeEvent('GET', '/gitlab/callback', {
+          authorizer: {},
           queryStringParameters: { code: 'valid-code', state: validState },
         }),
       );

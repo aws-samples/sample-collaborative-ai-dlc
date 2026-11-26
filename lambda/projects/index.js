@@ -559,11 +559,14 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
 // is only repository discovery metadata and never supplies runtime credentials.
 // Returns null when no credential is available — detection is best-effort,
 // so callers treat null as "skip detection".
-const getUserGitToken = async (userId, provider) => {
+const getUserGitToken = async (userId, provider, repo) => {
   if (!provider) return null;
   if (!userId) return null;
   try {
-    const item = await getGitConnection(ddb, userId, provider);
+    const adapter = getProvider(provider);
+    const instance = adapter.instanceFor(repo);
+    if (instance) adapter.oauth.secretNameFor(instance);
+    const item = await getGitConnection(ddb, userId, provider, instance);
     if (!item?.parameterName) return null;
     // Refresh GitLab OAuth tokens just-in-time (they live ~2h); passthrough for
     // other providers. Keeps detection working even if the stored token expired.
@@ -605,7 +608,10 @@ async function detectRepoStack(repoUrl, token, providerId = 'github') {
   } catch {
     return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
   }
-  const ctx = { token };
+  const ctx = {
+    token,
+    instance: provider.instanceFor(repoUrl),
+  };
 
   let tree;
   try {

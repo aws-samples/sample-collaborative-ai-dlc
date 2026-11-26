@@ -100,6 +100,25 @@ describe('AgentCore git credential isolation', () => {
     expect(ASKPASS_BODY).not.toContain(secret);
   });
 
+  it('disables Git HTTP redirects for self-managed checkouts', async () => {
+    const scope = {
+      ...context,
+      provider: 'gitlab',
+      repository: 'gitlab:git.example.org/group/web',
+    };
+    await withGitCredential(
+      scope,
+      async ({ env }) => {
+        expect(env).toMatchObject({
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'http.followRedirects',
+          GIT_CONFIG_VALUE_0: 'false',
+        });
+      },
+      { broker: async () => ({ username: 'oauth2', password: 'ephemeral' }), ...fsHarness() },
+    );
+  });
+
   it('cleans up when the git operation fails', async () => {
     const { fsOps } = fsHarness();
     const broker = async () => ({ username: 'oauth2', password: 'ephemeral' });

@@ -17,7 +17,13 @@ const isBoundGithubRepositoryUpload = (url, repository) => {
 
 // Only recognize provider uploads and explicit file/image references. Ordinary
 // links in a discussion (documentation, other issues, etc.) are not attachments.
-export const discoverLinkedAttachments = ({ provider, repository, issue, comments }) => {
+export const discoverLinkedAttachments = ({
+  provider,
+  repository,
+  issue,
+  comments,
+  gitlabOrigin = 'https://gitlab.com',
+}) => {
   const found = new Map();
   for (const entry of [{ body: issue.body }, ...comments]) {
     const text = entry.body || '';
@@ -34,8 +40,7 @@ export const discoverLinkedAttachments = ({ provider, repository, issue, comment
     for (const reference of references) {
       let url;
       try {
-        const base =
-          provider === 'gitlab' ? `https://gitlab.com/${repository}/` : issue.resourceUrl;
+        const base = provider === 'gitlab' ? `${gitlabOrigin}/${repository}/` : issue.resourceUrl;
         // GitLab's Markdown upload paths are relative to the project, even
         // though their leading slash resembles an origin-relative URL.
         url = new URL(
@@ -53,7 +58,7 @@ export const discoverLinkedAttachments = ({ provider, repository, issue, comment
             isBoundGithubRepositoryUpload(url, repository))) ||
         url.hostname === 'user-images.githubusercontent.com';
       const gitlabUpload =
-        url.hostname === 'gitlab.com' && url.pathname.startsWith(`/${repository}/uploads/`);
+        url.origin === gitlabOrigin && url.pathname.startsWith(`/${repository}/uploads/`);
       let filename;
       try {
         filename = decodeURIComponent(url.pathname.split('/').pop() || '');
@@ -68,7 +73,7 @@ export const discoverLinkedAttachments = ({ provider, repository, issue, comment
         url.protocol === 'https:' &&
         !url.username &&
         !url.password &&
-        !url.port &&
+        (provider === 'gitlab' || !url.port) &&
         (provider === 'github' ? githubUpload : gitlabUpload);
       const key = supported ? `${url.origin}${url.pathname}` : url.href;
       if (found.has(key)) continue;

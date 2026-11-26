@@ -1,3 +1,4 @@
+import { gitlabInstanceSecrets } from '../../shared/git-providers/gitlab-instance.js';
 import { provider as githubIssuesProvider } from './github-issues.js';
 import { provider as gitlabIssuesProvider } from './gitlab-issues.js';
 import { provider as jiraCloudProvider } from './jira-cloud.js';
@@ -25,7 +26,9 @@ export const getProvider = (providerId, instance) => {
   if (!entry) {
     throw new ProviderError(400, `Unknown tracker provider: ${providerId}`);
   }
-  if (instance && !entry.instances.includes(instance)) {
+  const registeredGitlab =
+    providerId === 'gitlab-issues' && Object.hasOwn(gitlabInstanceSecrets(), instance);
+  if (instance && !entry.instances.includes(instance) && !registeredGitlab) {
     throw new ProviderError(400, `Unknown instance "${instance}" for provider ${providerId}`);
   }
   return entry.provider;

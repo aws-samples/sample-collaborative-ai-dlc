@@ -1,3 +1,4 @@
+import { getProvider } from './git-providers.js';
 import { activePlanUnits } from './unit-completion.js';
 import { repoProvider as sharedRepoProvider } from './repo-provider.js';
 import { buildIntentAttribution } from './pr-attribution.js';
@@ -110,11 +111,15 @@ export const openIntentPrs = async ({
       (meta.source?.provider === 'github-issues' && provider === 'github') ||
       (meta.source?.provider === 'gitlab-issues' && provider === 'gitlab');
     if (matchingTracker && trackerRepository) {
-      const issueRef =
-        trackerRepository.toLowerCase() === repoId.toLowerCase()
-          ? `#${resourceId}`
-          : `${trackerRepository}#${resourceId}`;
-      return `Closes ${issueRef}`;
+      const adapter = getProvider(provider);
+      const host = adapter.instanceFor(repoId) ?? adapter.gitHost;
+      if (provider === 'github' || new URL(meta.source.resourceUrl).host === host) {
+        const issueRef =
+          trackerRepository.toLowerCase() === adapter.repoPathFor(repoId).toLowerCase()
+            ? `#${resourceId}`
+            : `${trackerRepository}#${resourceId}`;
+        return `Closes ${issueRef}`;
+      }
     }
     if (meta.source?.provider === 'jira-cloud') {
       return meta.source.resourceUrl
