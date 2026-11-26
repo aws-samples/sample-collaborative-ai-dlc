@@ -1,0 +1,194 @@
+[
+  {
+    "stageId": "workspace-scaffold",
+    "decisionMakerRoles": [],
+    "contributorRoles": [],
+    "automatic": true
+  },
+  {
+    "stageId": "workspace-detection",
+    "decisionMakerRoles": [],
+    "contributorRoles": [],
+    "automatic": true
+  },
+  {
+    "stageId": "state-init",
+    "decisionMakerRoles": [],
+    "contributorRoles": [],
+    "automatic": true
+  },
+  {
+    "stageId": "intent-capture",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["business-analyst", "architect"]
+  },
+  {
+    "stageId": "market-research",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["business-analyst"]
+  },
+  {
+    "stageId": "feasibility",
+    "decisionMakerRoles": ["architect"],
+    "contributorRoles": [
+      "product-owner",
+      "business-analyst",
+      "developer",
+      "operations-devops",
+      "security-compliance"
+    ]
+  },
+  {
+    "stageId": "scope-definition",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["business-analyst", "architect", "delivery-manager"]
+  },
+  {
+    "stageId": "team-formation",
+    "decisionMakerRoles": ["delivery-manager"],
+    "contributorRoles": ["product-owner", "architect", "developer", "operations-devops"]
+  },
+  {
+    "stageId": "rough-mockups",
+    "decisionMakerRoles": ["ux-ui-designer", "product-owner"],
+    "contributorRoles": ["business-analyst", "developer"]
+  },
+  {
+    "stageId": "approval-handoff",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["delivery-manager", "business-analyst", "architect"]
+  },
+  {
+    "stageId": "reverse-engineering",
+    "decisionMakerRoles": ["developer"],
+    "contributorRoles": ["architect"]
+  },
+  {
+    "stageId": "practices-discovery",
+    "decisionMakerRoles": ["developer"],
+    "contributorRoles": ["operations-devops", "qa-tester", "security-compliance", "architect"]
+  },
+  {
+    "stageId": "requirements-analysis",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["business-analyst", "architect", "qa-tester", "security-compliance"]
+  },
+  {
+    "stageId": "user-stories",
+    "decisionMakerRoles": ["product-owner"],
+    "contributorRoles": ["business-analyst", "ux-ui-designer", "developer", "qa-tester"]
+  },
+  {
+    "stageId": "refined-mockups",
+    "decisionMakerRoles": ["ux-ui-designer", "product-owner"],
+    "contributorRoles": ["business-analyst", "architect", "developer", "qa-tester"]
+  },
+  {
+    "stageId": "application-design",
+    "decisionMakerRoles": ["architect"],
+    "contributorRoles": [
+      "business-analyst",
+      "ux-ui-designer",
+      "developer",
+      "operations-devops",
+      "security-compliance"
+    ]
+  },
+  {
+    "stageId": "units-generation",
+    "decisionMakerRoles": ["architect"],
+    "contributorRoles": ["delivery-manager", "developer", "qa-tester", "operations-devops"]
+  },
+  {
+    "stageId": "contract-design",
+    "decisionMakerRoles": ["architect"],
+    "contributorRoles": ["developer", "operations-devops", "security-compliance", "qa-tester"]
+  },
+  {
+    "stageId": "delivery-planning",
+    "decisionMakerRoles": ["delivery-manager"],
+    "contributorRoles": [
+      "product-owner",
+      "architect",
+      "developer",
+      "operations-devops",
+      "qa-tester"
+    ]
+  },
+  {
+    "stageId": "functional-design",
+    "decisionMakerRoles": ["architect"],
+    "contributorRoles": [
+      "business-analyst",
+      "ux-ui-designer",
+      "developer",
+      "qa-tester",
+      "security-compliance"
+    ]
+  },
+  {
+    "stageId": "nfr-requirements",
+    "decisionMakerRoles": ["architect", "security-compliance", "operations-devops"],
+    "contributorRoles": ["product-owner", "developer", "qa-tester"]
+  },
+  {
+    "stageId": "nfr-design",
+    "decisionMakerRoles": ["architect", "security-compliance", "operations-devops"],
+    "contributorRoles": ["product-owner", "developer", "qa-tester"]
+  },
+  {
+    "stageId": "infrastructure-design",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["architect", "developer", "security-compliance"]
+  },
+  {
+    "stageId": "code-generation",
+    "decisionMakerRoles": ["developer"],
+    "contributorRoles": ["architect", "qa-tester", "security-compliance"]
+  },
+  {
+    "stageId": "build-and-test",
+    "decisionMakerRoles": ["qa-tester", "developer"],
+    "contributorRoles": ["architect", "security-compliance", "operations-devops"]
+  },
+  {
+    "stageId": "ci-pipeline",
+    "decisionMakerRoles": ["operations-devops", "developer"],
+    "contributorRoles": ["qa-tester", "security-compliance"]
+  },
+  {
+    "stageId": "deployment-pipeline",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["developer", "architect", "security-compliance", "qa-tester"]
+  },
+  {
+    "stageId": "environment-provisioning",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["architect", "security-compliance", "developer"]
+  },
+  {
+    "stageId": "deployment-execution",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["developer", "qa-tester", "security-compliance", "delivery-manager"]
+  },
+  {
+    "stageId": "observability-setup",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["developer", "qa-tester", "security-compliance"]
+  },
+  {
+    "stageId": "incident-response",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["developer", "security-compliance", "architect"]
+  },
+  {
+    "stageId": "performance-validation",
+    "decisionMakerRoles": ["qa-tester"],
+    "contributorRoles": ["developer", "architect", "operations-devops"]
+  },
+  {
+    "stageId": "feedback-optimization",
+    "decisionMakerRoles": ["operations-devops"],
+    "contributorRoles": ["product-owner", "architect", "developer", "qa-tester"]
+  }
+]

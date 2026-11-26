@@ -3,6 +3,7 @@ import {
   artifactAppliesToKind,
   pruneOutputArtifactsForUnit,
   stageIsNoopForUnit,
+  unitStageSkipReason,
 } from '../unit-kind-pruning.js';
 
 const outputs = [
@@ -73,5 +74,26 @@ describe('stageIsNoopForUnit', () => {
     expect(stageIsNoopForUnit([{ artifact: 'x', optional: true }], { x: ['ui'] }, 'service')).toBe(
       false,
     );
+  });
+});
+
+describe('unitStageSkipReason', () => {
+  const uiOnly = {
+    stageId: 'ui-design',
+    execution: 'ALWAYS',
+    outputArtifacts: [{ artifact: 'frontend-components' }],
+    producesKinds,
+  };
+  it('skips a stage listed by the approved matrix only when it is CONDITIONAL', () => {
+    const matrix = { backend: ['ui-design'] };
+    expect(
+      unitStageSkipReason({ ...uiOnly, execution: 'CONDITIONAL' }, { slug: 'backend' }, matrix),
+    ).toBe('matrix');
+    expect(unitStageSkipReason(uiOnly, { slug: 'backend' }, matrix)).toBeNull();
+  });
+  it('skips a stage whose required outputs do not apply to the unit kind', () => {
+    expect(unitStageSkipReason(uiOnly, { slug: 'backend', kind: 'service' }, {})).toBe('kind');
+    expect(unitStageSkipReason(uiOnly, { slug: 'web', kind: 'ui' }, {})).toBeNull();
+    expect(unitStageSkipReason(uiOnly, { slug: 'untagged' }, {})).toBeNull();
   });
 });
