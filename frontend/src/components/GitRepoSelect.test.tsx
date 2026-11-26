@@ -126,6 +126,44 @@ describe('GitRepoSelect, GitHub repositories page by page', () => {
     expect(screen.getAllByTitle(recent.fullName)).toHaveLength(1);
   });
 
+  it('says more repositories are loading instead of "No matching repositories"', async () => {
+    listReposPage
+      .mockResolvedValueOnce({ repos: [recent], nextPage: 2 })
+      .mockReturnValueOnce(new Promise(() => {}));
+    await renderPicker('github');
+
+    await typeSearch('older');
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading more repositories...');
+    expect(screen.queryByText('No matching repositories')).not.toBeInTheDocument();
+  });
+
+  it('clears the loading notice when the provider changes while a page is loading', async () => {
+    listReposPage
+      .mockResolvedValueOnce({ repos: [recent], nextPage: 2 })
+      .mockReturnValueOnce(new Promise(() => {}));
+    listRepos.mockResolvedValue([deep]);
+    const { rerender } = render(
+      <GitRepoSelect provider="github" multiple value={[]} onChange={() => {}} />,
+    );
+    await act(async () => {});
+    expect(screen.getByText('Loading more repositories...')).toBeInTheDocument();
+
+    rerender(<GitRepoSelect provider="gitlab" multiple value={[]} onChange={() => {}} />);
+    await act(async () => {});
+
+    expect(screen.getByTitle(deep.fullName)).toBeInTheDocument();
+    expect(screen.queryByText('Loading more repositories...')).not.toBeInTheDocument();
+  });
+
+  it('lists the bare first page from a server that predates paging', async () => {
+    listReposPage.mockResolvedValueOnce([recent]);
+    await renderPicker('github');
+
+    expect(screen.getByTitle(recent.fullName)).toBeInTheDocument();
+    expect(listReposPage).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the pages already read when a later page fails', async () => {
     listReposPage
       .mockResolvedValueOnce({ repos: [recent], nextPage: 2 })
@@ -134,9 +172,9 @@ describe('GitRepoSelect, GitHub repositories page by page', () => {
     await act(async () => {});
 
     expect(screen.getByTitle(recent.fullName)).toBeInTheDocument();
-    expect(
-      screen.getByText('Some repositories could not be loaded. Reopen the picker to try again.'),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Some repositories could not be loaded. Reopen the picker to try again.',
+    );
   });
 
   it('shows the error when page 1 fails', async () => {

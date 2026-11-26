@@ -63,6 +63,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
     setFetching(true);
     setError(null);
     setIncomplete(null);
+    setLoadingMore(false);
     if (!listReposPage) {
       const listRepos =
         repoSource === 'github-app' ? githubAppService.listRepos : service.listRepos;
@@ -80,12 +81,16 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       let done = false;
       try {
         const pages = readListPages((page) =>
-          listReposPage(page).then((r) => ({ rows: r.repos, nextPage: r.nextPage })),
+          listReposPage(page).then((r) =>
+            // A server that predates paging answers with the bare first page.
+            Array.isArray(r) ? { rows: r } : { rows: r.repos, nextPage: r.nextPage },
+          ),
         );
         for await (const page of pages) {
           if (cancelled) return;
-          // A repo updated while the pages are read moves to page 1 and can
-          // come back on a later page.
+          // sort=updated: a repo updated while the pages are read moves to
+          // page 1, so it can be listed twice (merged once here) or, if it
+          // moved from a page not yet read, missed until the picker reopens.
           const { rows } = page;
           const firstPage = pagesRead === 0;
           setRepos((current) => (firstPage ? rows : mergeRepos(current, rows)));
@@ -195,12 +200,14 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
         />
         <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
-            <div className="px-3 py-4 text-center text-sm text-gray-500">
+            <div role="status" className="px-3 py-4 text-center text-sm text-gray-500">
               {searching
                 ? 'Searching...'
-                : repos.length === 0
-                  ? 'No repositories available'
-                  : 'No matching repositories'}
+                : loadingMore
+                  ? 'Loading more repositories...'
+                  : repos.length === 0
+                    ? 'No repositories available'
+                    : 'No matching repositories'}
               {!searching && repos.length === 0 && emptyHint}
             </div>
           ) : (
@@ -223,14 +230,18 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
             ))
           )}
         </div>
-        {loadingMore && <p className="text-xs text-gray-500">Loading more repositories...</p>}
+        {loadingMore && filtered.length > 0 && (
+          <p role="status" className="text-xs text-gray-500">
+            Loading more repositories...
+          </p>
+        )}
         {incomplete === 'capped' && (
-          <p className="text-xs text-gray-500">
+          <p role="status" className="text-xs text-gray-500">
             Showing the {MAX_LIST_ROWS.toLocaleString('en-US')} most recently updated repositories.
           </p>
         )}
         {incomplete === 'failed' && (
-          <p className="text-xs text-amber-600">
+          <p role="alert" className="text-xs text-amber-600">
             Some repositories could not be loaded. Reopen the picker to try again.
           </p>
         )}
