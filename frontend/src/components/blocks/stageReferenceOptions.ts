@@ -5,6 +5,7 @@ import {
   type ReleaseBlock,
 } from '@/services/aidlcReleases';
 import type { ReferenceOption, StageReferenceOptions } from './StageEditor';
+import type { BusinessRole } from '@/services/projects';
 
 // The stage editor's picker options: the mutable library plus, when release
 // pinning is on, the stable release's catalog (issue #607).
@@ -68,7 +69,11 @@ export const mergeReleaseLibraryBlocks = (
 export const loadStageReferenceOptions = async (
   excludeStageId?: string,
   releaseId?: string | null,
-): Promise<{ options: StageReferenceOptions; release: StageReferenceRelease | null }> => {
+): Promise<{
+  options: StageReferenceOptions;
+  release: StageReferenceRelease | null;
+  businessRoles: BusinessRole[];
+}> => {
   const [agents, artifacts, sensors, stages, selected] = await Promise.all([
     blocksService.list('agent'),
     blocksService.list('artifact'),
@@ -82,6 +87,7 @@ export const loadStageReferenceOptions = async (
   const merge = (library: Block[], type: 'agent' | 'artifact' | 'sensor' | 'stage') =>
     mergeReferenceBlocks(library, selected ? (selected.contents.blocks[type] ?? []) : null, label);
   return {
+    businessRoles: stages.businessRoles ?? [],
     options: {
       agents: merge(agents.blocks, 'agent'),
       artifacts: merge(artifacts.blocks, 'artifact'),

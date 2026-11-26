@@ -1,12 +1,15 @@
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
+import { LATEST } from '../../shared/blocks.js';
 import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
+  UpdateCommand,
   DeleteCommand,
   QueryCommand,
   BatchWriteCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 
 const BLOCKS_TABLE = 'blocks-test';
@@ -19,6 +22,25 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const store = new Map();
 const keyOf = (pk, sk) => `${pk}|${sk}`;
 
+// Applies every Put or none, like DynamoDB, failing on attribute_not_exists.
+const installTransactWrites = () =>
+  ddbMock.on(TransactWriteCommand).callsFake((input) => {
+    const puts = input.TransactItems.map(({ Put }) => Put);
+    const reasons = puts.map((put) =>
+      put.ConditionExpression === 'attribute_not_exists(pk)' &&
+      store.has(keyOf(put.Item.pk, put.Item.sk))
+        ? { Code: 'ConditionalCheckFailed' }
+        : { Code: 'None' },
+    );
+    if (reasons.some((reason) => reason.Code !== 'None'))
+      throw Object.assign(new Error('Transaction cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: reasons,
+      });
+    for (const put of puts) store.set(keyOf(put.Item.pk, put.Item.sk), { ...put.Item });
+    return {};
+  });
+
 const installFakes = () => {
   ddbMock.reset();
   store.clear();
@@ -29,7 +51,22 @@ const installFakes = () => {
   });
 
   ddbMock.on(PutCommand).callsFake((input) => {
-    store.set(keyOf(input.Item.pk, input.Item.sk), { ...input.Item });
+    const key = keyOf(input.Item.pk, input.Item.sk);
+    if (input.ConditionExpression === 'attribute_not_exists(pk)' && store.has(key))
+      throw Object.assign(new Error('Item exists'), { name: 'ConditionalCheckFailedException' });
+    store.set(key, { ...input.Item });
+    return {};
+  });
+
+  installTransactWrites();
+
+  ddbMock.on(UpdateCommand).callsFake((input) => {
+    const item = store.get(keyOf(input.Key.pk, input.Key.sk));
+    if (!item || item.permissions != null)
+      throw Object.assign(new Error('Placement changed'), {
+        name: 'ConditionalCheckFailedException',
+      });
+    item.permissions = input.ExpressionAttributeValues[':permissions'];
     return {};
   });
 
@@ -142,6 +179,540 @@ beforeEach(() => {
 const createWorkflow = (body) => handler(event({ method: 'POST', body }));
 
 describe('workflows handler', () => {
+  it('places a stage saved without a role mapping as unmapped, even under a default stage ID', async () => {
+    const pk = 'BLOCK#default#STAGE#requirements-analysis';
+    store.set(`${pk}|V#latest`, {
+      pk,
+      blockId: 'requirements-analysis',
+      version: 1,
+      permissions: null,
+    });
+    await createWorkflow({ id: 'unmapped-flow', name: 'Unmapped' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'unmapped-flow',
+          path: 'placements',
+          body: { stageId: 'requirements-analysis' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.permissions).toBeNull();
+  });
+
+  it('copies custom stage defaults only when adding a placement, retaining existing workflow mappings', async () => {
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] };
+    const pk = 'BLOCK#default#STAGE#custom-stage';
+    store.set(`${pk}|V#latest`, { pk, blockId: 'custom-stage', version: 1, permissions });
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId: 'custom-stage' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.stageTenant).toBe('default');
+    expect(added.body.permissions).toEqual(permissions);
+    store.set(`${pk}|V#latest`, {
+      pk,
+      blockId: 'custom-stage',
+      version: 2,
+      permissions: { decisionMakerRoles: ['qa-tester'], contributorRoles: [] },
+    });
+    const updated = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'wf',
+          stageId: 'custom-stage',
+          path: 'placement',
+          body: { phasePath: '01' },
+        }),
+      ),
+    );
+    expect(updated.body.permissions).toEqual(permissions);
+    const loaded = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(loaded.body.cedarPolicies).toContain('architect');
+    expect(loaded.body.cedarPolicies).not.toContain('qa-tester');
+    const snapshot = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', query: { version: '2' } })),
+    );
+    expect(snapshot.body.placements[0].permissions).toEqual(permissions);
+  });
+
+  it.each([null, { decisionMakerRoles: ['qa-tester'], contributorRoles: [] }])(
+    'keeps an explicit placement mapping instead of the stage defaults: %j',
+    async (permissions) => {
+      const pk = 'BLOCK#default#STAGE#custom-stage';
+      store.set(`${pk}|V#latest`, {
+        pk,
+        blockId: 'custom-stage',
+        version: 1,
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] },
+      });
+      await createWorkflow({ id: 'wf', name: 'WF' });
+      const added = parse(
+        await handler(
+          event({
+            method: 'POST',
+            workflowId: 'wf',
+            path: 'placements',
+            body: { stageId: 'custom-stage', permissions },
+          }),
+        ),
+      );
+      expect(added.body.permissions).toEqual(permissions);
+    },
+  );
+
+  it('copies defaults from the exact pinned block version and tenant', async () => {
+    const pk = 'BLOCK#default#STAGE#custom-stage';
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: [] };
+    store.set(`${pk}|V#1`, { pk, blockId: 'custom-stage', version: 1, permissions });
+    store.set(`${pk}|V#latest`, {
+      pk,
+      blockId: 'custom-stage',
+      version: 2,
+      permissions: { decisionMakerRoles: ['developer'], contributorRoles: [] },
+    });
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId: 'custom-stage', stageTenant: 'default', pinnedVersion: 1 },
+        }),
+      ),
+    );
+    expect(added.body.permissions).toEqual(permissions);
+    expect(added.body.pinnedVersion).toBe(1);
+  });
+
+  it('does not offer default initialization for custom stages, but does for a missing saved policy', async () => {
+    await createWorkflow({ id: 'custom-flow', name: 'Custom' });
+    const pk = 'WF#default#custom-flow';
+    store.set(`${pk}|PLACEMENT#custom`, {
+      pk,
+      sk: 'PLACEMENT#custom',
+      type: 'StagePlacement',
+      stageId: 'custom',
+    });
+    const current = () => handler(event({ method: 'GET', workflowId: 'custom-flow' }));
+    expect(parse(await current()).body.needsDefaultResponsibilities).toBe(false);
+    delete store.get(`${pk}|META`).cedarPolicies;
+    expect(parse(await current()).body.needsDefaultResponsibilities).toBe(true);
+  });
+
+  it.each(['delete', 'assign'])(
+    'default initialization preserves a concurrent stage %s',
+    async (change) => {
+      const workflowId = 'initialize-flow';
+      await createWorkflow({ id: workflowId, name: 'Initialize' });
+      const pk = `WF#default#${workflowId}`;
+      store.set(`${pk}|PLACEMENT#requirements-analysis`, {
+        pk,
+        sk: 'PLACEMENT#requirements-analysis',
+        type: 'StagePlacement',
+        stageId: 'requirements-analysis',
+      });
+      const patchStarted = Promise.withResolvers();
+      const finishPatch = Promise.withResolvers();
+      ddbMock.on(UpdateCommand).callsFake(async (input) => {
+        patchStarted.resolve();
+        await finishPatch.promise;
+        const item = store.get(keyOf(input.Key.pk, input.Key.sk));
+        if (!item || item.permissions != null)
+          throw Object.assign(new Error('Placement changed'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        item.permissions = input.ExpressionAttributeValues[':permissions'];
+        return {};
+      });
+      const initializing = handler(
+        event({
+          method: 'PUT',
+          workflowId,
+          body: { applyDefaultPermissions: true },
+        }),
+      );
+      const permissions = { decisionMakerRoles: ['architect'], contributorRoles: [] };
+      let changed;
+      try {
+        await patchStarted.promise;
+        changed = await handler(
+          event({
+            method: change === 'delete' ? 'DELETE' : 'PUT',
+            workflowId,
+            path: 'placement',
+            stageId: 'requirements-analysis',
+            ...(change === 'assign' ? { body: { permissions } } : {}),
+          }),
+        );
+      } finally {
+        finishPatch.resolve();
+      }
+      expect(parse(changed).status).toBe(change === 'delete' ? 204 : 200);
+      expect(parse(await initializing).status).toBe(200);
+      const current = parse(await handler(event({ method: 'GET', workflowId }))).body;
+      if (change === 'delete') expect(current.placements).toEqual([]);
+      else expect(current.placements[0].permissions).toEqual(permissions);
+    },
+  );
+
+  it('does not restore a stage deleted while another request saves workflow metadata', async () => {
+    await createWorkflow({ id: 'overlap-flow', name: 'Overlap' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'overlap-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const snapshotStarted = Promise.withResolvers();
+    const finishSnapshot = Promise.withResolvers();
+    ddbMock.on(GetCommand).callsFake(async (input) => {
+      if (input.Key.sk === LATEST) {
+        snapshotStarted.resolve();
+        await finishSnapshot.promise;
+      }
+      const item = store.get(keyOf(input.Key.pk, input.Key.sk));
+      return { Item: item ? { ...item } : undefined };
+    });
+    const saving = handler(
+      event({ method: 'PUT', workflowId: 'overlap-flow', body: { name: 'Renamed' } }),
+    );
+    let deletion;
+    try {
+      await snapshotStarted.promise;
+      deletion = await handler(
+        event({
+          method: 'DELETE',
+          workflowId: 'overlap-flow',
+          path: 'placement',
+          stageId: 'requirements-analysis',
+        }),
+      );
+    } finally {
+      finishSnapshot.resolve();
+    }
+    // Both saves computed the same version: the deletion published it first,
+    // so the rename is rejected instead of replacing the published version.
+    const saved = parse(await saving);
+    expect(saved.status).toBe(409);
+    expect(saved.body.error).toMatch(/Reload it and try again/);
+    expect(parse(deletion).status).toBe(204);
+    const current = parse(await handler(event({ method: 'GET', workflowId: 'overlap-flow' })));
+    expect(current.body.placements).toEqual([]);
+    expect(current.body.name).toBe('Overlap');
+    expect(store.has('WF#default#overlap-flow|PLACEMENT#requirements-analysis')).toBe(false);
+    expect(store.get(`WF#default#overlap-flow|V#${current.body.version}#META`).name).toBe(
+      'Overlap',
+    );
+  });
+
+  it('chooses the next version from a strongly consistent read of the workflow', async () => {
+    await createWorkflow({ id: 'consistent-flow', name: 'Consistent' });
+    ddbMock.resetHistory();
+    const saved = await handler(
+      event({ method: 'PUT', workflowId: 'consistent-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(saved).status).toBe(200);
+    const metaReads = ddbMock
+      .commandCalls(GetCommand)
+      .map((call) => call.args[0].input)
+      .filter((input) => input.Key.sk === 'META');
+    expect(metaReads.length).toBeGreaterThan(0);
+    expect(metaReads.every((input) => input.ConsistentRead === true)).toBe(true);
+  });
+
+  it('publishes the versioned and live META together, so a failed commit leaves nothing half done', async () => {
+    await createWorkflow({ id: 'atomic-flow', name: 'Atomic' });
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'atomic-flow' }))).body;
+    const next = before.version + 1;
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      throw new Error('Throttled');
+    });
+    const save = (name) =>
+      handler(event({ method: 'PUT', workflowId: 'atomic-flow', body: { name } }));
+    expect(parse(await save('First')).status).toBe(500);
+    expect(store.has(`WF#default#atomic-flow|V#${next}#META`)).toBe(false);
+    expect(store.get('WF#default#atomic-flow|META').version).toBe(before.version);
+    // The retry publishes that version normally.
+    installTransactWrites();
+    expect(parse(await save('Second')).status).toBe(200);
+    expect(store.get('WF#default#atomic-flow|META')).toMatchObject({
+      version: next,
+      name: 'Second',
+    });
+    expect(store.get(`WF#default#atomic-flow|V#${next}#META`).name).toBe('Second');
+  });
+
+  it('does not let rows from a failed attempt reappear in the version published next', async () => {
+    await createWorkflow({ id: 'retry-flow', name: 'Retry' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'retry-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'retry-flow' }))).body;
+    const next = before.version + 1;
+    // A rename writes the next version's rows, then its commit fails.
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      throw new Error('Throttled');
+    });
+    const renamed = await handler(
+      event({ method: 'PUT', workflowId: 'retry-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(renamed).status).toBe(500);
+    expect(store.has(`WF#default#retry-flow|V#${next}#PLACEMENT#requirements-analysis`)).toBe(true);
+    installTransactWrites();
+    // Removing the stage publishes that same version number without it.
+    const removed = await handler(
+      event({
+        method: 'DELETE',
+        workflowId: 'retry-flow',
+        path: 'placement',
+        stageId: 'requirements-analysis',
+      }),
+    );
+    expect(parse(removed).status).toBe(204);
+    const pinned = parse(
+      await handler(
+        event({ method: 'GET', workflowId: 'retry-flow', query: { version: String(next) } }),
+      ),
+    ).body;
+    expect(pinned.placements).toEqual([]);
+    expect(pinned.cedarPolicies).not.toContain('Stage::"requirements-analysis"');
+  });
+
+  it('exposes a version only after its whole snapshot is written', async () => {
+    await createWorkflow({ id: 'partial-flow', name: 'Partial' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'partial-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'partial-flow' }))).body;
+    const next = before.version + 1;
+    // The snapshot batch fails after the version number was computed.
+    ddbMock.on(BatchWriteCommand).rejects(new Error('Throttled'));
+    const failed = await handler(
+      event({ method: 'PUT', workflowId: 'partial-flow', body: { name: 'Renamed' } }),
+    );
+    expect(parse(failed).status).toBe(500);
+    expect(store.has(`WF#default#partial-flow|V#${next}#META`)).toBe(false);
+    expect(store.get('WF#default#partial-flow|META').version).toBe(before.version);
+  });
+
+  it('publishes responsibilities in new complete snapshots and preserves older versions and copied policy bytes', async () => {
+    await createWorkflow({ id: 'roles-flow', name: 'Roles' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'roles-flow',
+        path: 'placements',
+        body: { stageId: 'requirements-analysis' },
+      }),
+    );
+    const current = parse(await handler(event({ method: 'GET', workflowId: 'roles-flow' }))).body;
+    expect(current.businessRoles).toContainEqual({ id: 'architect', name: 'Architect' });
+    expect(current.placements[0].permissions).toEqual({
+      decisionMakerRoles: ['product-owner'],
+      contributorRoles: ['business-analyst', 'architect', 'qa-tester', 'security-compliance'],
+    });
+    const previous = structuredClone(store.get('WF#default#roles-flow|V#2#META'));
+    await handler(
+      event({
+        method: 'PUT',
+        workflowId: 'roles-flow',
+        path: 'placement',
+        stageId: 'requirements-analysis',
+        body: { permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] } },
+      }),
+    );
+    expect(store.get('WF#default#roles-flow|V#2#META')).toEqual(previous);
+    const frozen = parse(
+      await handler(
+        event({
+          method: 'GET',
+          workflowId: 'roles-flow',
+          query: { version: '2' },
+        }),
+      ),
+    ).body;
+    expect(frozen.cedarPolicies).toBe(previous.cedarPolicies);
+    expect(frozen.placements[0].permissions.decisionMakerRoles).toEqual(['product-owner']);
+    await createWorkflow({ id: 'copied-flow', name: 'Copy', basedOn: 'roles-flow' });
+    const copied = parse(await handler(event({ method: 'GET', workflowId: 'copied-flow' }))).body;
+    const latest = parse(await handler(event({ method: 'GET', workflowId: 'roles-flow' }))).body;
+    expect(copied.cedarPolicies).toBe(latest.cedarPolicies);
+    expect(copied.placements[0].permissions).toEqual(latest.placements[0].permissions);
+  });
+
+  it('adds defaults only in a new version, leaves custom stages unmapped, and refuses invalid roles before saving', async () => {
+    await createWorkflow({ id: 'legacy-flow', name: 'Legacy' });
+    const pk = 'WF#default#legacy-flow';
+    store.set(`${pk}|PLACEMENT#requirements-analysis`, {
+      pk,
+      sk: 'PLACEMENT#requirements-analysis',
+      type: 'StagePlacement',
+      stageId: 'requirements-analysis',
+    });
+    store.set(`${pk}|PLACEMENT#custom`, {
+      pk,
+      sk: 'PLACEMENT#custom',
+      type: 'StagePlacement',
+      stageId: 'custom',
+    });
+    const before = parse(await handler(event({ method: 'GET', workflowId: 'legacy-flow' }))).body;
+    expect(before.needsDefaultResponsibilities).toBe(true);
+    const result = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'legacy-flow',
+          body: { applyDefaultPermissions: true },
+        }),
+      ),
+    );
+    expect(result.status).toBe(200);
+    expect(result.body.version).toBe(2);
+    expect(
+      store.get(`${pk}|V#2#PLACEMENT#requirements-analysis`).permissions.decisionMakerRoles,
+    ).toEqual(['product-owner']);
+    expect(store.get(`${pk}|V#2#PLACEMENT#custom`).permissions).toBeNull();
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'legacy-flow' }))).body;
+    expect(after.needsDefaultResponsibilities).toBe(false);
+    expect(store.has(`${pk}|V#1#PLACEMENT#requirements-analysis`)).toBe(false);
+    const invalid = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'legacy-flow',
+          path: 'placement',
+          stageId: 'custom',
+          body: { permissions: { decisionMakerRoles: ['unknown'], contributorRoles: [] } },
+        }),
+      ),
+    );
+    expect(invalid.status).toBe(400);
+    expect(store.get(`${pk}|PLACEMENT#custom`).permissions).toBeNull();
+  });
+
+  it('keeps a placement saved before responsibilities unmapped when another field changes', async () => {
+    await createWorkflow({ id: 'moved-flow', name: 'Moved' });
+    const pk = 'WF#default#moved-flow';
+    store.set(`${pk}|PLACEMENT#requirements-analysis`, {
+      pk,
+      sk: 'PLACEMENT#requirements-analysis',
+      type: 'StagePlacement',
+      stageId: 'requirements-analysis',
+      order: 1,
+    });
+    const move = (body) =>
+      handler(
+        event({
+          method: 'PUT',
+          workflowId: 'moved-flow',
+          path: 'placement',
+          stageId: 'requirements-analysis',
+          body,
+        }),
+      );
+    expect(parse(await move({ order: 2 })).status).toBe(200);
+    expect(store.get(`${pk}|PLACEMENT#requirements-analysis`)).toMatchObject({ order: 2 });
+    expect(store.get(`${pk}|PLACEMENT#requirements-analysis`)).not.toHaveProperty('permissions');
+    expect(store.get(`${pk}|V#2#PLACEMENT#requirements-analysis`)).not.toHaveProperty(
+      'permissions',
+    );
+    const moved = parse(await handler(event({ method: 'GET', workflowId: 'moved-flow' }))).body;
+    expect(moved.needsDefaultResponsibilities).toBe(true);
+
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: [] };
+    expect(parse(await move({ permissions })).status).toBe(200);
+    expect(parse(await move({ order: 3 })).status).toBe(200);
+    expect(store.get(`${pk}|PLACEMENT#requirements-analysis`).permissions).toEqual(permissions);
+  });
+
+  it('never reassigns responsibilities explicitly removed, when copying or applying defaults', async () => {
+    await createWorkflow({ id: 'removed-flow', name: 'Removed' });
+    const pk = 'WF#default#removed-flow';
+    store.set(`${pk}|PLACEMENT#requirements-analysis`, {
+      pk,
+      sk: 'PLACEMENT#requirements-analysis',
+      type: 'StagePlacement',
+      stageId: 'requirements-analysis',
+      permissions: null,
+    });
+    store.set(`${pk}|PLACEMENT#user-stories`, {
+      pk,
+      sk: 'PLACEMENT#user-stories',
+      type: 'StagePlacement',
+      stageId: 'user-stories',
+    });
+    const apply = await handler(
+      event({ method: 'PUT', workflowId: 'removed-flow', body: { applyDefaultPermissions: true } }),
+    );
+    expect(parse(apply).status).toBe(200);
+    expect(store.get(`${pk}|PLACEMENT#requirements-analysis`).permissions).toBeNull();
+    expect(store.get(`${pk}|PLACEMENT#user-stories`).permissions.decisionMakerRoles).toEqual([
+      'product-owner',
+    ]);
+    const source = parse(await handler(event({ method: 'GET', workflowId: 'removed-flow' }))).body;
+    expect(source.needsDefaultResponsibilities).toBe(false);
+    expect(source.cedarPolicies).not.toContain('Stage::"requirements-analysis"');
+
+    await createWorkflow({ id: 'removed-copy', name: 'Copy', basedOn: 'removed-flow' });
+    const copyPk = 'WF#default#removed-copy';
+    expect(store.get(`${copyPk}|PLACEMENT#requirements-analysis`).permissions).toBeNull();
+    const copy = parse(await handler(event({ method: 'GET', workflowId: 'removed-copy' }))).body;
+    expect(copy.cedarPolicies).toBe(source.cedarPolicies);
+    expect(copy.needsDefaultResponsibilities).toBe(false);
+  });
+
+  it('gives a copy defaults only for placements saved before responsibilities', async () => {
+    await createWorkflow({ id: 'old-flow', name: 'Old' });
+    const pk = 'WF#default#old-flow';
+    store.set(`${pk}|PLACEMENT#requirements-analysis`, {
+      pk,
+      sk: 'PLACEMENT#requirements-analysis',
+      type: 'StagePlacement',
+      stageId: 'requirements-analysis',
+    });
+    store.set(`${pk}|PLACEMENT#user-stories`, {
+      pk,
+      sk: 'PLACEMENT#user-stories',
+      type: 'StagePlacement',
+      stageId: 'user-stories',
+      permissions: null,
+    });
+    await createWorkflow({ id: 'old-copy', name: 'Copy', basedOn: 'old-flow' });
+    const copyPk = 'WF#default#old-copy';
+    expect(
+      store.get(`${copyPk}|PLACEMENT#requirements-analysis`).permissions.decisionMakerRoles,
+    ).toEqual(['product-owner']);
+    expect(store.get(`${copyPk}|PLACEMENT#user-stories`).permissions).toBeNull();
+    const copy = parse(await handler(event({ method: 'GET', workflowId: 'old-copy' }))).body;
+    expect(copy.cedarPolicies).toContain('Stage::"requirements-analysis"');
+    expect(copy.cedarPolicies).not.toContain('Stage::"user-stories"');
+  });
+
   it('200 on OPTIONS', async () => {
     const res = await handler({ httpMethod: 'OPTIONS', headers: {} });
     expect(res.statusCode).toBe(200);

@@ -87,6 +87,19 @@ to edit them:
 
 The editor shows inherited roles, local assignments, and the resulting roles.
 
+#### Stage responsibilities
+
+The **Stage responsibilities** table below **Members** shows **Decision Makers**
+and **Contributors** for the space's workflow. It updates when you save member
+roles. Click the crossed-out user icon or unassigned-role count to see missing
+assignments.
+
+When no Decision Makers are assigned, Contributors decide; if neither group is
+assigned, Owners decide. Viewers are excluded.
+
+Stage restrictions are not yet enforced. Existing access restrictions and
+workflow gates still apply.
+
 ### Agent
 
 - **Space Agent Credentials** — optional shared Bedrock and Kiro credentials for members without personal credentials. Personal credentials take precedence; platform credentials remain the fallback.

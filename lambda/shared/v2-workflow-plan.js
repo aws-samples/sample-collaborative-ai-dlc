@@ -152,6 +152,7 @@ const loadWorkflowItems = async (ddb, tableName, workflowId, workflowVersion) =>
   for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
     const items = await queryAll(ddb, {
       TableName: tableName,
+      ConsistentRead: true,
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :v)',
       ExpressionAttributeValues: {
         ':pk': workflowPk(tenant, workflowId),
@@ -172,10 +173,12 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   const scopeRefs = [];
   const phases = [];
   let sourceRef = null;
+  let cedarPolicies = null;
   for (const it of items) {
     const sk = liveSk(it.sk);
     if (sk === 'META') {
       sourceRef = it.sourceRef ?? null;
+      cedarPolicies = it.cedarPolicies ?? null;
     } else if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
@@ -184,6 +187,7 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
         order: it.order ?? 0,
         phasePath: it.phasePath ?? null,
         scopeMembership: it.scopeMembership ?? {},
+        ...(it.permissions != null ? { permissions: it.permissions } : {}),
       });
     } else if (sk.startsWith('RULEREF#')) {
       ruleRefs.push({ layer: it.layer, ruleId: it.ruleId });
@@ -197,11 +201,29 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
     workflowId,
     workflowVersion: Number(workflowVersion),
     sourceRef,
+    ...(cedarPolicies != null ? { cedarPolicies } : {}),
     placements,
     ruleRefs,
     scopeRefs,
     phases,
   };
+};
+
+export const loadWorkflowComposition = async (options) => {
+  if (options.methodologyRelease) {
+    const closure = await loadReleaseClosure(options);
+    const { workflow } = await resolveReleaseWorkflow({ ...options, closure });
+    return workflow;
+  }
+  const items = await loadWorkflowItems(
+    options.ddb,
+    options.tableName,
+    options.workflowId,
+    options.workflowVersion,
+  );
+  if (!items.some((item) => item.sk === `${workflowVersionPrefix(options.workflowVersion)}META`))
+    throw new Error('Workflow version is unavailable');
+  return assembleWorkflow(items, options);
 };
 
 // Build the ordered execution plan for a pinned workflow + scope. Returns the
@@ -491,7 +513,14 @@ const loadWorkflowScopes = async ({
 };
 
 const __test = { listMergedBlocks, loadPlacedStages, loadPinnedBlocks, pinsForBlocks };
-export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, listMergedBlocks, __test };
+export {
+  loadExecutionPlan,
+  loadWorkflowScopes,
+  loadWorkflowItems,
+  assembleWorkflow,
+  listMergedBlocks,
+  __test,
+};
 export default {
   loadExecutionPlan,
   loadWorkflowScopes,

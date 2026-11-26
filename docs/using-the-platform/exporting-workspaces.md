@@ -88,7 +88,7 @@ An export may be unavailable when:
 
 - The intent is still a draft or has not started.
 - A running intent has no completed checkpoint yet.
-- The workflow used incompatible edited methodology blocks.
+- The workflow used edited methodology blocks: library stages, agents, sensors, rules or knowledge. A library block that keeps the content of the block it replaces in the intent's pinned AI-DLC release (same type and id, and only its name or display name changed) is not edited: the export uses the release's block and a warning lists the release names it kept. On an intent not pinned to a release, every library block of those types counts as edited.
 - The execution contains stages from different AI-DLC methodology revisions.
 - The intent runs a custom fork release that ships no distribution for the selected harness, and its base AI-DLC release cannot be determined or a stage only the fork defines already has recorded work.
 - The intent changed while a parked-state export was being prepared. Retry to export a consistent snapshot.

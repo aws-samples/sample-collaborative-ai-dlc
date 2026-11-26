@@ -1,3 +1,4 @@
+import type { StagePermissions } from './workflows';
 import { api } from './api';
 import type { Block, BlockType } from './blocks';
 import { currentSessionEpoch } from './sessionExpiry';
@@ -241,6 +242,7 @@ export interface ReleaseBlock extends Block {
 }
 
 export interface ReleaseWorkflowPlacement {
+  permissions?: StagePermissions | null;
   stageId: string;
   phasePath: string | null;
   order: number;
@@ -248,6 +250,7 @@ export interface ReleaseWorkflowPlacement {
 }
 
 export interface ReleaseWorkflow {
+  cedarPolicies?: string | null;
   id: string;
   workflowId: string;
   name: string;

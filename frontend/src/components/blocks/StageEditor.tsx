@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState, type ReactNode } from 'react';
 import { GitBranch, Plus, ShieldCheck, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -57,6 +57,7 @@ interface Props {
   onChange: (next: StageForm) => void;
   disabled?: boolean;
   referenceOptions?: StageReferenceOptions;
+  responsibilities?: ReactNode;
 }
 
 const NONE = '__none__';
@@ -77,7 +78,13 @@ const verificationLabel = (stage: StageForm) => {
   return 'self-halting';
 };
 
-export function StageEditor({ value, onChange, disabled, referenceOptions = {} }: Props) {
+export function StageEditor({
+  value,
+  onChange,
+  disabled,
+  referenceOptions = {},
+  responsibilities,
+}: Props) {
   const set = (patch: Partial<StageForm>) => onChange({ ...value, ...patch });
   const summaryBranchId = useId();
 
@@ -148,8 +155,15 @@ export function StageEditor({ value, onChange, disabled, referenceOptions = {} }
           <TabsTrigger value="flow">Flow</TabsTrigger>
           <TabsTrigger value="run">Run</TabsTrigger>
           <TabsTrigger value="verify">Verify</TabsTrigger>
+          {responsibilities && <TabsTrigger value="responsibilities">Responsibilities</TabsTrigger>}
           <TabsTrigger value="advanced">Advanced</TabsTrigger>
         </TabsList>
+
+        {responsibilities && (
+          <TabsContent value="responsibilities" className="pt-2">
+            {responsibilities}
+          </TabsContent>
+        )}
 
         <TabsContent value="overview" className="space-y-4 pt-2">
           <div className="grid gap-4 md:grid-cols-2">

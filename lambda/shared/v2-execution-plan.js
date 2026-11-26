@@ -1107,6 +1107,7 @@ const buildExecutionPlan = ({
         stageVersion,
         stageTenant: placement.stageTenant ?? null,
         pinnedVersion: placement.pinnedVersion ?? null,
+        ...(placement.permissions != null ? { permissions: placement.permissions } : {}),
         phase: stage.phase ?? null,
         order: placement.order ?? 0,
         mode: stage.mode ?? 'inline',
@@ -1292,6 +1293,7 @@ const buildExecutionPlan = ({
     .filter((id) => !inScopeIds.has(id) && !skipSet.has(id));
 
   const plan = {
+    ...(workflow.cedarPolicies != null ? { cedarPolicies: workflow.cedarPolicies } : {}),
     workflowId,
     workflowVersion,
     scope: scope ?? (composedGrid != null ? 'composed' : null),

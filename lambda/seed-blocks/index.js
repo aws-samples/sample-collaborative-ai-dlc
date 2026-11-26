@@ -123,6 +123,12 @@ import {
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import {
+  DEFAULT_STAGE_PERMISSIONS,
+  generateStagePolicies,
+  validateStagePolicies,
+  assertWorkflowItemSize,
+} from '../shared/stage-responsibilities.js';
+import {
   AIDLC_COMPATIBILITY_PROFILES,
   customProfile,
   profileFor,
@@ -315,6 +321,9 @@ const buildItems = (block, bodyRef, scriptRef, now, sourceRef) => {
     createdAt: now,
     updatedAt: now,
     ...attrs,
+    ...(type === 'STAGE'
+      ? { permissions: attrs.permissions ?? DEFAULT_STAGE_PERMISSIONS[id] ?? null }
+      : {}),
   };
   return {
     latest: { ...base, sk: LATEST, GSI1PK: catalogGsi1Pk(SYSTEM_TENANT, type), GSI1SK: name },
@@ -377,7 +386,16 @@ const buildWorkflowItems = (wf, now, sourceRef) => {
     phasePath: p.phasePath ?? null,
     order: typeof p.order === 'number' ? p.order : 0,
     scopeMembership: p.scopeMembership ?? {},
+    permissions: p.permissions ?? DEFAULT_STAGE_PERMISSIONS[p.stageId] ?? null,
   }));
+  // Responsibilities are platform defaults for the seeded SYSTEM workflow.
+  // The upstream catalog and signed release imports keep their original bytes.
+  const mappingsAdded = (wf.placements ?? []).some(
+    (placement) => !placement.permissions && DEFAULT_STAGE_PERMISSIONS[placement.stageId],
+  );
+  meta.cedarPolicies =
+    wf.cedarPolicies && !mappingsAdded ? wf.cedarPolicies : generateStagePolicies(placements);
+  validateStagePolicies(meta.cedarPolicies);
   const ruleRefs = (wf.ruleRefs ?? []).map((rr) => ({
     pk,
     sk: ruleRefSk(rr.layer, rr.ruleId),
@@ -395,6 +413,7 @@ const buildWorkflowItems = (wf, now, sourceRef) => {
   }));
   const liveItems = [meta, ...phases, ...placements, ...ruleRefs, ...scopeRefs];
   const snapshots = liveItems.map((item) => workflowSnapshotItem(item, 1));
+  for (const item of [...liveItems, ...snapshots]) assertWorkflowItemSize(item);
   return {
     meta,
     children: [...phases, ...placements, ...ruleRefs, ...scopeRefs, ...snapshots],
@@ -796,6 +815,7 @@ export const handler = async (event, context) => {
   // stale seed is worse than a clear failure the operator retries.
   const files = normalizeSeedFiles(ref, await fetchCoreFiles(ref));
   const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(files);
+  const workflowItems = buildWorkflowItems(workflow, now, ref);
   const methodologyCatalog = buildMethodologyCatalog({
     ref,
     blocks,
@@ -859,13 +879,13 @@ export const handler = async (event, context) => {
     }
   }
 
-  // The default workflow: the "from default" fork source. Guard on the META
-  // item; only when it is newly created do we write the children.
+  // The default workflow is usable directly, including its responsibilities.
+  // Guard on META; only a new seed (or the normal deployment reseed) writes it.
   const wf = workflow;
   if (dryRun) {
     seeded.push(`WORKFLOW#${wf.id}`);
   } else {
-    const { meta, children } = buildWorkflowItems(wf, now, ref);
+    const { meta, children } = workflowItems;
     try {
       await ddb.send(
         new PutCommand({

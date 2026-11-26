@@ -8,6 +8,10 @@ import {
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { readFileSync } from 'node:fs';
+import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { buildReleaseBundle } from '../../shared/aidlc-release.js';
+import { renamedFromRelease, sameMethodologyContent } from '../../shared/native-export-blocks.js';
 
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
@@ -118,6 +122,75 @@ beforeEach(() => {
 const parse = (res) => ({ status: res.statusCode, body: res.body ? JSON.parse(res.body) : null });
 
 describe('building-blocks handler', () => {
+  it('persists stage responsibility defaults in immutable block versions and returns the role catalog', async () => {
+    const permissions = { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] };
+    const created = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
+          body: { id: 'custom-stage', name: 'Custom stage', permissions },
+        }),
+      ),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.permissions).toEqual(permissions);
+    const catalog = parse(await handler(event({ method: 'GET', type: 'stage' })));
+    expect(catalog.body.businessRoles).toContainEqual({ id: 'architect', name: 'Architect' });
+    const updated = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          type: 'stage',
+          id: 'custom-stage',
+          body: { name: 'Custom stage', permissions: null },
+        }),
+      ),
+    );
+    expect(updated.status).toBe(200);
+    expect(updated.body.version).toBe(2);
+    expect(updated.body.permissions).toBeNull();
+    expect(tableStore.get('BLOCK#default#STAGE#custom-stage|V#1').permissions).toEqual(permissions);
+    const loaded = parse(
+      await handler(event({ method: 'GET', type: 'stage', id: 'custom-stage' })),
+    );
+    expect(loaded.body.permissions).toBeNull();
+  });
+
+  it.each([
+    { decisionMakerRoles: ['unknown-role'], contributorRoles: [] },
+    { decisionMakerRoles: 'architect', contributorRoles: [] },
+    { decisionMakerRoles: [], contributorRoles: [], automatic: 'yes' },
+    [],
+  ])(
+    'rejects invalid responsibility defaults on stage create and update: %j',
+    async (permissions) => {
+      const body = { id: 'custom-stage', name: 'Custom stage', permissions };
+      expect(parse(await handler(event({ method: 'POST', type: 'stage', body }))).status).toBe(400);
+      expect(tableStore.size).toBe(0);
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
+          body: { id: 'custom-stage', name: 'Custom stage' },
+        }),
+      );
+      expect(
+        parse(
+          await handler(
+            event({
+              method: 'PUT',
+              type: 'stage',
+              id: 'custom-stage',
+              body: { name: 'Custom stage', permissions },
+            }),
+          ),
+        ).status,
+      ).toBe(400);
+      expect(tableStore.get('BLOCK#default#STAGE#custom-stage|V#latest').version).toBe(1);
+    },
+  );
+
   it('returns 200 with empty body on OPTIONS', async () => {
     const res = await handler({ httpMethod: 'OPTIONS', headers: {} });
     expect(res.statusCode).toBe(200);
@@ -690,5 +763,116 @@ describe('platform-admin gating', () => {
   it('keeps reads open for non-admins', async () => {
     const res = parse(await handler(asNonAdmin(event({ method: 'GET', type: 'scope' }))));
     expect(res.status).toBe(200);
+  });
+});
+
+// Native export treats a library block as the release block it shadows only
+// when the content matches (shared/native-export-blocks.js). This checks that a
+// copy saved through this API, with the payload the block editor builds from
+// the loaded block, is stored in a shape that still matches the importer's
+// catalog block, and that only a rename is ignored.
+describe('a library copy of a release block saved through the API', () => {
+  const profileId = 'current-stable';
+  const bundle = buildReleaseBundle({
+    profileId,
+    files: filesFromCompatibilityFixture({
+      profileId,
+      fixture: JSON.parse(
+        readFileSync(
+          new URL(
+            `../../shared/test/fixtures/aidlc-compatibility/${profileId}.json`,
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      ),
+    }),
+  });
+  const objectBody = (ref) => bundle.objects.find((object) => object.key === ref?.s3Key)?.body;
+
+  // The release block as the seed job stores it in the SYSTEM library.
+  const seedReleaseBlock = (releaseBlock) => {
+    const pk = `BLOCK#SYSTEM#${releaseBlock.type}#${releaseBlock.id}`;
+    tableStore.set(keyOf(pk, 'V#latest'), {
+      ...releaseBlock,
+      pk,
+      sk: 'V#latest',
+      blockType: releaseBlock.type,
+      GSI1PK: `TENANT#SYSTEM#${releaseBlock.type}`,
+      GSI1SK: releaseBlock.name,
+    });
+    for (const ref of [releaseBlock.bodyRef, releaseBlock.scriptRef].filter(Boolean)) {
+      s3Store.set(ref.s3Key, objectBody(ref));
+    }
+  };
+
+  // BlockEditor.buildPayload: the loaded block without the server-managed
+  // fields, plus the name, the body and, for a type with a script, the script.
+  const editorPayload = (loaded, { name, body, script }) => {
+    const {
+      id: _id,
+      blockId: _blockId,
+      blockType: _blockType,
+      tenantId: _tenantId,
+      version: _version,
+      readOnly: _readOnly,
+      hasBody: _hasBody,
+      bodyBytes: _bodyBytes,
+      hasScript: _hasScript,
+      scriptBytes: _scriptBytes,
+      createdAt: _createdAt,
+      updatedAt: _updatedAt,
+      ...attrs
+    } = loaded;
+    return { ...attrs, name, body, ...(script === undefined ? {} : { script }) };
+  };
+
+  const saveCopy = async (type, releaseBlock, edit = {}) => {
+    const path = type.toLowerCase();
+    const loaded = parse(await handler(event({ method: 'GET', type: path, id: releaseBlock.id })));
+    const body = parse(
+      await handler(event({ method: 'GET', type: path, id: releaseBlock.id, sub: 'bodyPath' })),
+    ).body.body;
+    const script =
+      type === 'SENSOR'
+        ? parse(
+            await handler(
+              event({ method: 'GET', type: path, id: releaseBlock.id, sub: 'scriptPath' }),
+            ),
+          ).body.script
+        : undefined;
+    const payload = {
+      ...editorPayload(loaded.body, { name: `ACME ${releaseBlock.name}`, body, script }),
+      id: releaseBlock.id,
+      ...edit,
+    };
+    const created = parse(await handler(event({ method: 'POST', type: path, body: payload })));
+    expect(created.status).toBe(201);
+    return tableStore.get(keyOf(`BLOCK#default#${type}#${releaseBlock.id}`, 'V#1'));
+  };
+
+  it.each([
+    ['AGENT', 'aidlc-developer-agent'],
+    ['SENSOR', 'linter'],
+    ['STAGE', 'code-generation'],
+    ['RULE', 'aidlc-org'],
+  ])('stores a renamed %s copy that still matches the release block', async (type, id) => {
+    const releaseBlock = bundle.catalog.blocks[type].find((block) => block.id === id);
+    seedReleaseBlock(releaseBlock);
+
+    const stored = await saveCopy(type, releaseBlock);
+
+    expect(stored.tenantId).toBe('default');
+    expect(sameMethodologyContent(stored, releaseBlock)).toBe(true);
+    expect(renamedFromRelease(stored, releaseBlock)).toBe(true);
+  });
+
+  it('stores an edited copy that no longer matches the release block', async () => {
+    const releaseBlock = bundle.catalog.blocks.SENSOR.find((block) => block.id === 'linter');
+    seedReleaseBlock(releaseBlock);
+
+    const stored = await saveCopy('SENSOR', releaseBlock, { severity: 'blocking' });
+
+    expect(sameMethodologyContent(stored, releaseBlock)).toBe(false);
   });
 });

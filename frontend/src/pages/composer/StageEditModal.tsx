@@ -18,6 +18,9 @@ import {
   type StageReferenceOptions,
 } from '@/components/blocks/StageEditor';
 import { loadStageReferenceOptions } from '@/components/blocks/stageReferenceOptions';
+import type { BusinessRole } from '@/services/projects';
+import type { StagePermissions } from '@/services/workflows';
+import { StageResponsibilitiesFields } from '@/components/blocks/StageResponsibilitiesFields';
 
 // A release-origin stage is the release's immutable copy, which the live
 // library may not have or may hold differently under the same id.
@@ -33,6 +36,12 @@ interface StageEditModalProps {
   libraryReleaseId?: string | null;
   onClose: () => void;
   onSaved: () => void;
+  responsibilities?: {
+    permissions: StagePermissions | null;
+    roles: BusinessRole[];
+    readOnly: boolean;
+    onSave: (permissions: StagePermissions | null) => Promise<void>;
+  };
 }
 
 export function StageEditModal({
@@ -41,6 +50,7 @@ export function StageEditModal({
   libraryReleaseId = null,
   onClose,
   onSaved,
+  responsibilities,
 }: StageEditModalProps) {
   const navigate = useNavigate();
   const [form, setForm] = useState<StageForm>({});
@@ -54,6 +64,10 @@ export function StageEditModal({
   // failed save does not, so the member can correct the form and retry.
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<StagePermissions | null>(null);
+  // The block as loaded: saving it creates a new version shared by every
+  // workflow, so it is only saved when one of its own fields changed.
+  const [loadedBlock, setLoadedBlock] = useState<{ name: string; form: StageForm } | null>(null);
 
   useEffect(() => {
     if (!stageId) return;
@@ -82,10 +96,15 @@ export function StageEditModal({
           ...rest
         } = block;
         setForm(rest as StageForm);
+        setLoadedBlock({ name: block.name, form: rest as StageForm });
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load stage'))
       .finally(() => setLoading(false));
   }, [stageId, stageReleaseId]);
+
+  useEffect(() => {
+    setPermissions(responsibilities?.permissions ?? null);
+  }, [stageId, responsibilities?.permissions]);
 
   useEffect(() => {
     if (!stageId) return;
@@ -112,7 +131,24 @@ export function StageEditModal({
     setSaving(true);
     setSaveError(null);
     try {
-      await blocksService.update('stage', stageId, { name: stageName, ...form });
+      const responsibilitiesChanged =
+        responsibilities &&
+        !responsibilities.readOnly &&
+        permissions !== responsibilities.permissions;
+      const blockChanged =
+        !loadedBlock ||
+        stageName !== loadedBlock.name ||
+        JSON.stringify(form) !== JSON.stringify(loadedBlock.form);
+      if (blockChanged) {
+        await blocksService.update('stage', stageId, {
+          name: stageName,
+          ...form,
+        });
+        // A retry after a failed placement save compares against what the
+        // block now holds, not what the dialog first loaded.
+        setLoadedBlock({ name: stageName, form });
+      }
+      if (responsibilitiesChanged) await responsibilities.onSave(permissions);
       onSaved();
       onClose();
     } catch (e) {
@@ -185,10 +221,22 @@ export function StageEditModal({
         {!loading && (
           <div className="flex-1 overflow-y-auto pr-1">
             <StageEditor
+              key={stageId}
               value={form}
               onChange={setForm}
               disabled={readOnly || referenceOptionsLoading || Boolean(error)}
               referenceOptions={referenceOptions}
+              responsibilities={
+                responsibilities && (
+                  <StageResponsibilitiesFields
+                    value={permissions}
+                    roles={responsibilities.roles}
+                    readOnly={readOnly || responsibilities.readOnly}
+                    disabled={saving || referenceOptionsLoading || Boolean(error)}
+                    onChange={setPermissions}
+                  />
+                )
+              }
             />
           </div>
         )}
