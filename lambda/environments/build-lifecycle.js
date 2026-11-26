@@ -246,7 +246,13 @@ const readEnhancedScanPages = async ({ firstPage, read, maxPages, keepPartialOnE
 // and the unread findings may include Critical or High ones, so the gate
 // sends it to review. `findingsTruncated` means the stored list does not
 // hold every finding.
-export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now = Date.now }) => {
+export const readGateScan = async ({
+  ecrClient,
+  repositoryName,
+  imageDigest,
+  now = Date.now,
+  abortSignal,
+}) => {
   const read = (nextToken) =>
     ecrClient.send(
       new DescribeImageScanFindingsCommand({
@@ -254,6 +260,7 @@ export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now
         imageId: { imageDigest },
         ...(nextToken ? { nextToken } : {}),
       }),
+      ...(abortSignal ? [{ abortSignal }] : []),
     );
   const scan = await read();
   const status = scan.imageScanStatus?.status;

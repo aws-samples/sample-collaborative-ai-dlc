@@ -163,6 +163,71 @@ describe('managed tool registry store', () => {
     expect(update.UpdateExpression).not.toMatch(/(?:^|, )definition =/);
   });
 
+  it('updates a version only while it still describes the same image', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockImplementation(async (command) =>
+          command.input.Key ? { Item: { status: 'SECURITY_REVIEW' }, Attributes: {} } : {},
+        ),
+    };
+    const store = createToolStore({ ddb, tableName: 'registry', clock: () => 'now' });
+
+    await store.updateVersion(
+      'go',
+      'tv-go-1',
+      { status: 'READY' },
+      { fromStatus: 'SECURITY_REVIEW', imageDigest: 'sha256:abc' },
+    );
+
+    const update = ddb.send.mock.calls.at(-1)[0].input;
+    expect(update.ConditionExpression).toBe(
+      '#status = :fromStatus AND #expectedImageDigest = :expectedImageDigest',
+    );
+    expect(update.ExpressionAttributeNames['#expectedImageDigest']).toBe('imageDigest');
+    expect(update.ExpressionAttributeValues[':expectedImageDigest']).toBe('sha256:abc');
+  });
+
+  it('claims the next scan check of a version under review once', async () => {
+    const ddb = { send: vi.fn().mockResolvedValue({}) };
+    const store = createToolStore({ ddb, tableName: 'registry' });
+
+    await expect(
+      store.claimScanRecheck('go', 'tv-go-1', { previous: null, at: '2026-11-25T12:00:00.000Z' }),
+    ).resolves.toBe(true);
+    const first = ddb.send.mock.calls[0][0].input;
+    expect(first).toMatchObject({
+      UpdateExpression: 'SET #recheckedAt = :at',
+      ConditionExpression: '#status = :review AND attribute_not_exists(#recheckedAt)',
+      ExpressionAttributeValues: {
+        ':at': '2026-11-25T12:00:00.000Z',
+        ':review': 'SECURITY_REVIEW',
+      },
+    });
+    // The status index is not rewritten by a check.
+    expect(first.UpdateExpression).not.toContain('GSI1');
+
+    await store.claimScanRecheck('go', 'tv-go-1', {
+      previous: '2026-11-25T12:00:00.000Z',
+      at: '2026-11-25T12:15:00.000Z',
+    });
+    expect(ddb.send.mock.calls[1][0].input).toMatchObject({
+      ConditionExpression: '#status = :review AND #recheckedAt = :previous',
+      ExpressionAttributeValues: { ':previous': '2026-11-25T12:00:00.000Z' },
+    });
+
+    ddb.send.mockRejectedValueOnce(
+      Object.assign(new Error('taken'), { name: 'ConditionalCheckFailedException' }),
+    );
+    await expect(store.claimScanRecheck('go', 'tv-go-1', { previous: null })).resolves.toBe(false);
+    ddb.send.mockRejectedValueOnce(
+      Object.assign(new Error('down'), { name: 'InternalServerError' }),
+    );
+    await expect(store.claimScanRecheck('go', 'tv-go-1', { previous: null })).rejects.toThrow(
+      'down',
+    );
+  });
+
   it('publishes only READY versions with an atomic status transition', async () => {
     const published = {
       toolId: 'java',
