@@ -184,6 +184,17 @@ describe('AppShell panel default behavior', () => {
     expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
   });
 
+  it('lets the activity column grow until only the sidebar and the main column minimum are left', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
+    const grid = screen
+      .getByRole('separator', { name: 'Resize activity panel' })
+      .closest('[style]') as HTMLElement;
+    const columns = grid.style.gridTemplateColumns;
+    expect(columns).toContain('calc(100vw - min(380px, 30vw) - 360px)');
+    expect(columns).not.toContain('45vw');
+  });
+
   it('closes panel on intent graph', () => {
     renderAtRoute('/space/p1/intent/i1/graph');
     expect(screen.getByTestId('panel-state').textContent).toBe('closed');

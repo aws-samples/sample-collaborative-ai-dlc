@@ -1,4 +1,5 @@
 import { seedMembership } from '../../../test/seed-membership.js';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, beforeEach, it, expect, vi } from 'vitest';
 import gremlin from 'gremlin';
@@ -137,6 +138,38 @@ it('checks historical delivery read-only then admits exactly one repeated/concur
   expect(providerCalls.every((c) => c.operation === 'delivery-inspect')).toBe(true);
   expect((await store.getExecution(meta.executionId)).status).toBe('SUCCEEDED');
 });
+it('shows a closed tracker PR on the intent page even without a delivery row', async () => {
+  const pr = {
+    repoId: 'owner/repo',
+    branch: meta.branch,
+    prUrl: 'https://example.test/pull/8',
+    prNumber: 8,
+  };
+  await db.doc.send(
+    new PutCommand({
+      TableName: tableName,
+      Item: {
+        pk: meta.pk,
+        sk: 'TRACKERSYNC',
+        state: 'BLOCKED',
+        lastError: { code: 'PR_CLOSED_WITHOUT_MERGE' },
+        pullRequests: [pr],
+      },
+    }),
+  );
+  const response = await request(
+    {},
+    { httpMethod: 'GET', path: `/projects/${projectId}/intents/${meta.executionId}` },
+  );
+  expect(response.statusCode).toBe(200);
+  expect(JSON.parse(response.body).delivery).toMatchObject({
+    status: 'succeeded',
+    repositories: [{ pr, prState: 'closed' }],
+  });
+  expect(JSON.parse((await request({ preview: true })).body).retryable).toBe(false);
+  expect(providerCalls).toHaveLength(0);
+  expect(launches()).toHaveLength(0);
+});
 it('rejects a changed branch preview and never starts publication', async () => {
   const preview = JSON.parse((await request({ preview: true })).body);
   remoteHead = 'head-two';
@@ -151,7 +184,7 @@ it('keeps an uncertain accepted launch fenced until the bounded lease expires', 
     .rejects(new Error('response lost'));
   const result = await request({ previewToken: preview.previewToken });
   expect(result.statusCode).toBe(202);
-  expect(JSON.parse(result.body).message).toContain('uncertain');
+  expect(JSON.parse(result.body).message).toContain('Refresh the page');
   expect((await request({ preview: true })).statusCode).toBe(409);
 });
 it('enforces authentication, membership, project scope, and recovery roles', async () => {

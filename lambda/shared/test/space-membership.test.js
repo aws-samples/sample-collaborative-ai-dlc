@@ -413,4 +413,207 @@ describe('authoritative membership and history', () => {
     expect(await fetchMembershipRole(g, 'gone', 'owner', store)).toBeNull();
     expect(store.get).not.toHaveBeenCalled();
   });
+
+  it('excludes only inherited SSO roles, preserving local roles, membership, and audit values', async () => {
+    await add('exclusions', 'owner');
+    await add('exclusions', 'alice', 'member');
+    await fixture.store.changeLocalRoles({
+      spaceId: 'exclusions',
+      userId: 'alice',
+      actorId: 'owner',
+      localRoles: ['developer'],
+    });
+    // A local-only role cannot be newly excluded.
+    await expect(
+      fixture.store.changeExcludedRoles({
+        spaceId: 'exclusions',
+        userId: 'alice',
+        actorId: 'owner',
+        excludedRoles: ['developer'],
+        inheritedSsoRoles: ['architect'],
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    const excluded = await fixture.store.changeExcludedRoles({
+      spaceId: 'exclusions',
+      userId: 'alice',
+      actorId: 'owner',
+      excludedRoles: ['architect'],
+      inheritedSsoRoles: ['architect', 'developer'],
+    });
+    expect(excluded).toMatchObject({
+      membershipRole: 'member',
+      localRoles: ['developer'],
+      excludedRoles: ['architect'],
+    });
+    const audit = (await fixture.store.listHistory('exclusions')).items.find(
+      (entry) => entry.action === 'excluded-roles-changed',
+    );
+    expect(audit).toMatchObject({
+      actorId: 'owner',
+      targetUserId: 'alice',
+      before: [],
+      after: ['architect'],
+    });
+    // An existing exclusion stays valid after the inherited role disappears;
+    // restoring never needs the inherited list.
+    const kept = await fixture.store.changeExcludedRoles({
+      spaceId: 'exclusions',
+      userId: 'alice',
+      actorId: 'owner',
+      excludedRoles: ['architect'],
+      inheritedSsoRoles: [],
+    });
+    expect(kept.excludedRoles).toEqual(['architect']);
+    const restored = await fixture.store.changeExcludedRoles({
+      spaceId: 'exclusions',
+      userId: 'alice',
+      actorId: 'owner',
+      excludedRoles: [],
+      inheritedSsoRoles: [],
+    });
+    expect(restored.excludedRoles).toEqual([]);
+    expect(restored.localRoles).toEqual(['developer']);
+    await expect(
+      fixture.store.changeExcludedRoles({
+        spaceId: 'exclusions',
+        userId: 'missing',
+        actorId: 'owner',
+        excludedRoles: [],
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('carries exclusions through promotion and demotion', async () => {
+    await add('exclusion-promotion', 'owner');
+    await add('exclusion-promotion', 'member', 'member');
+    const before = await fixture.store.changeExcludedRoles({
+      spaceId: 'exclusion-promotion',
+      userId: 'member',
+      actorId: 'owner',
+      excludedRoles: ['qa-tester'],
+      inheritedSsoRoles: ['qa-tester'],
+    });
+    const promoted = await fixture.store.change({
+      spaceId: 'exclusion-promotion',
+      userId: 'member',
+      actorId: 'owner',
+      role: 'owner',
+      before,
+      action: 'role-changed',
+    });
+    expect(promoted.excludedRoles).toEqual(['qa-tester']);
+  });
+
+  it('saves one business-role mapping per provider with an audited transaction', async () => {
+    const saved = await fixture.store.saveRoleMappings({
+      providerId: 'Entra',
+      actorId: 'admin',
+      roleMappings: {
+        developer: [' Engineering ', 'Contractors', 'Engineering'],
+        architect: ['Engineering'],
+        'qa-tester': [],
+      },
+    });
+    // Trimmed, deduplicated, sorted; empty lists dropped.
+    expect(saved.roleMappings).toEqual({
+      architect: ['Engineering'],
+      developer: ['Contractors', 'Engineering'],
+    });
+    expect(await fixture.store.getRoleMappings('Entra')).toEqual(saved.roleMappings);
+    expect(await fixture.store.getRoleMappingRecord('Entra')).toEqual(saved);
+    expect(await fixture.store.getRoleMappings('Okta')).toEqual({});
+    expect(await fixture.store.getRoleMappingRecord('Okta')).toEqual({
+      roleMappings: {},
+      revision: null,
+    });
+    const updated = await fixture.store.saveRoleMappings({
+      providerId: 'Entra',
+      actorId: 'admin',
+      roleMappings: { developer: ['Engineering'] },
+      expectedRevision: saved.revision,
+    });
+    expect(await fixture.store.getRoleMappings('Entra')).toEqual(updated.roleMappings);
+    // A save based on a stale (or missing) load loses against the newer edit:
+    // it must not silently restore the old values.
+    for (const expectedRevision of [saved.revision, null]) {
+      await expect(
+        fixture.store.saveRoleMappings({
+          providerId: 'Entra',
+          actorId: 'admin',
+          roleMappings: { architect: ['Old'] },
+          expectedRevision,
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+    }
+    expect(await fixture.store.getRoleMappings('Entra')).toEqual(updated.roleMappings);
+    // Platform audits use the PLATFORM partition, not a space partition.
+    const audits = (await fixture.store.listHistory('PLATFORM')).items;
+    const platformAudits = await fixture.ddb.send(
+      new QueryCommand({
+        TableName: fixture.auditTable,
+        KeyConditionExpression: 'pk = :pk',
+        ExpressionAttributeValues: { ':pk': 'PLATFORM' },
+      }),
+    );
+    expect(audits.filter((entry) => entry.action === 'sso-role-mappings-changed')).toHaveLength(0);
+    const entries = platformAudits.Items.filter((entry) => entry.providerId === 'Entra');
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => ({ before: entry.before, after: entry.after }))).toEqual(
+      expect.arrayContaining([
+        { before: {}, after: saved.roleMappings },
+        { before: saved.roleMappings, after: updated.roleMappings },
+      ]),
+    );
+    for (const roleMappings of [
+      { 'made-up': ['Engineering'] },
+      { developer: ['  '] },
+      { developer: 'Engineering' },
+      ['developer'],
+      null,
+    ]) {
+      await expect(
+        fixture.store.saveRoleMappings({
+          providerId: 'Entra',
+          actorId: 'admin',
+          roleMappings,
+          expectedRevision: updated.revision,
+        }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+    }
+    // The mapping item never enters the by-user index.
+    const byUser = await fixture.ddb.send(
+      new QueryCommand({
+        TableName: fixture.accessTable,
+        IndexName: 'by-user',
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: { ':userId': 'Entra' },
+      }),
+    );
+    expect(byUser.Items).toEqual([]);
+  });
+
+  it('rolls back a mapping save when its audit write fails', async () => {
+    const store = createMembershipStore({
+      ddb: fixture.ddb,
+      accessTable: fixture.accessTable,
+      auditTable: fixture.auditTable,
+      now: () => '2026-11-14T12:00:00.000Z',
+    });
+    const first = await store.saveRoleMappings({
+      providerId: 'Collision',
+      actorId: 'admin',
+      roleMappings: { developer: ['TeamA'] },
+      changeId: 'duplicate-mapping',
+    });
+    await expect(
+      store.saveRoleMappings({
+        providerId: 'Collision',
+        actorId: 'admin',
+        roleMappings: { developer: ['TeamB'] },
+        expectedRevision: first.revision,
+        changeId: 'duplicate-mapping',
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(await store.getRoleMappings('Collision')).toEqual({ developer: ['TeamA'] });
+  });
 });

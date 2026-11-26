@@ -174,21 +174,11 @@ In the intent view, each unit card shows repository-specific review state and li
 
 If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.
 
-## Check and retry final delivery
+## Check for pull requests
 
-Stage completion and final publication are separate outcomes. A completed intent
-can still need attention when its code host rejects or cannot confirm a PR/MR.
-The intent page shows **Final delivery** with each repository's branch, target,
-result and reason. Published PR links also remain available in Code when the
-graph projection was unavailable. **No changes to publish** is a verified
-no-diff outcome; missing records and failed reads are not treated as success.
+After the work finishes, the intent shows a pull request link for each repository with a recorded request. When the app knows a request was closed or merged, it shows that beside the link. A repository with no changes shows **No code changes to review**.
 
-A project owner or admin can choose **Check delivery**. This is read-only: it
-checks the run's recorded completion decision, the captured branches and existing
-PRs. Review the repository results, then choose **Retry delivery**. This publishes
-only unfinished repositories from their existing intent branches. It does not
-run a model, repeat stages or gates, regenerate code, integrate units again, or
-merge the final PR. Deliberately accepted partial work remains partial.
+If a pull request is missing or its status is unclear, a project owner can choose **Check for pull requests**. Ready branches offer **Open pull request**. After a retryable failure, **Retry opening pull request** checks the repository before opening a request from the existing changes.
 
 An uncertain previous create request is reconciled with the code host before
 another request is made. Successfully published repositories are preserved.
@@ -207,7 +197,7 @@ hide it; Bitbucket and CodeCommit may show it as a line of text. Leave it in
 place: it is how a later check recognizes this run's own closed or merged PR. When a
 create response was lost and a closed or merged PR on the branch has no marker
 (for example because its description was edited), the repository shows
-**Pull request ownership unconfirmed**. Delivery neither adopts that PR nor
+**Check which pull request contains these changes.**. Delivery neither adopts that PR nor
 opens a duplicate. Check the branch's PRs at the provider: reopen the PR if it
 holds this run's work (the next check reconciles the open PR), or start a new
 run, which publishes a new PR. On CodeCommit a closed PR cannot be reopened, so
@@ -217,7 +207,7 @@ This state needs a create request whose outcome is unknown: the request threw
 or timed out. A create that the provider or the platform refused without
 creating anything (unintegrated task branches, a changed intent branch, a
 missing base branch, no changes) leaves no request behind, so after the cause is
-fixed **Retry delivery** publishes even when the branch has older closed PRs
+fixed **Retry opening pull requests** publishes even when the branch has older closed PRs
 without a marker.
 
 CodeCommit cannot filter PRs by branch, so delivery reads open PRs only, from
@@ -228,11 +218,9 @@ PRs with a delivery marker.
 PR-per-unit workflows keep their existing unit review process; this action
 covers their final intent-to-base publication only.
 
-Older completed runs initially show **Delivery not yet verified**. Checking them
-does not rewrite their history. An older serial run without a pinned workflow
+For older runs, the page also looks for pull requests saved by the issue tracker or linked to the intent. If those records disagree, it shows the links so you can check them. After a rewind, the app checks the new run separately because both runs can use the same branch. An older serial run without a pinned workflow
 version can be checked when all of its stages succeeded or were skipped; one with
-unit work stays unverified because its historical sections cannot be proven. **Save delivery assessment** records a reconciled
-or refused result when no publication is needed. Missing ownership or unfinished
+unit work stays unverified because its historical sections cannot be proven. Checking shows the current result for this visit. Missing ownership or unfinished
 workflow/unit records require execution recovery first.
 
 Only one delivery attempt owns an intent at a time. The page refreshes while it

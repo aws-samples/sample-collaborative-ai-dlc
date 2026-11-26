@@ -469,9 +469,9 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
     expect(branchRow.compareDocumentPosition(summaryRow)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(branchRow).toHaveAttribute('target', '_blank');
     expect(branchRow).toHaveAttribute('title', 'acme/api · aidlc/i1--s1-unit-auth');
-    const unitPrLink = screen.getByRole('link', { name: 'Open PR #12 for acme/api' });
+    const unitPrLink = screen.getByRole('link', { name: 'PR #12 for acme/api' });
     expect(unitPrLink).toHaveAttribute('href', 'https://github.com/acme/api/pull/12');
-    expect(unitPrLink).toHaveTextContent('Open PR #12');
+    expect(unitPrLink).toHaveTextContent('PR #12');
     expect(unitPrLink.querySelector('[aria-label="GitHub"]')).not.toBeNull();
     expect(screen.queryByText('Branch')).not.toBeInTheDocument();
     expect(screen.queryByText('acme/api')).not.toBeInTheDocument();
@@ -569,9 +569,9 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
     });
 
     fireEvent.click(screen.getByText('Code'));
-    const intentPrLink = screen.getByRole('link', { name: 'Open PR #4 for acme/api' });
+    const intentPrLink = screen.getByRole('link', { name: 'PR #4 for acme/api' });
     expect(intentPrLink).toHaveAttribute('href', 'https://bitbucket.org/acme/api/pull-requests/4');
-    expect(intentPrLink).toHaveTextContent('Open PR #4');
+    expect(intentPrLink).toHaveTextContent('PR #4');
     expect(intentPrLink.querySelector('[aria-label="Bitbucket"]')).not.toBeNull();
   });
 

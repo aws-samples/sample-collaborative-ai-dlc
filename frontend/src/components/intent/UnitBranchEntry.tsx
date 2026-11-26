@@ -77,11 +77,11 @@ export function UnitBranchEntry({
               href={target.prUrl}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label={`Open PR${target.prNumber != null ? ` #${target.prNumber}` : ''} for ${target.repo}`}
+              aria-label={`PR${target.prNumber != null ? ` #${target.prNumber}` : ''} for ${target.repo}`}
               className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-primary hover:underline"
             >
               <GitProviderIcon provider={target.provider} className="h-3 w-3" />
-              Open PR{target.prNumber != null ? ` #${target.prNumber}` : ''}
+              PR{target.prNumber != null ? ` #${target.prNumber}` : ''}
             </a>
           )}
         </div>

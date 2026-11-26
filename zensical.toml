@@ -19,6 +19,7 @@ nav = [
   { "How it works" = [
     "concepts/index.md",
     "concepts/architecture.md",
+    "concepts/frontend-data-layer.md",
     "concepts/aws-services.md",
     "concepts/data-model.md",
     "concepts/workflows-and-blocks.md",

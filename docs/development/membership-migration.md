@@ -127,6 +127,55 @@ sorted list of unique IDs from the shared catalog in
 the same transaction. That item's `before` and `after` hold the old and new role
 lists.
 
+Exclusions of SSO-inherited roles are stored the same way as `excludedRoles`
+(absent or empty means none) with an `excluded-roles-changed` audit item. Only
+roles the member currently inherits through SSO can be newly excluded; existing
+exclusions may always be kept or restored. Exclusions ride the membership item,
+so role changes carry them forward and removal deletes them with the item.
+Calculated SSO roles are never stored: they come from the recorded SSO claims
+and the current mapping at read time.
+
+Each federated sign-in records its claims at `USER#<sub>` / `SSO` in the access
+table: `subject`, `providerName`, `sourceAttribute` (the provider's configured
+`role_claim`), the raw `claimValues`, `source` (`sign-in` or `backfill`) and
+`recordedAt`. Values count only while `sourceAttribute` matches the provider's
+current `role_claim`: changing or removing the source attribute invalidates every
+copy until the member signs in again, while mapping edits for the same source
+apply immediately. The backfill stamps the source configured at deployment. The Cognito pre token generation trigger writes it
+on every sign-in except token refresh, before checking `requiredClaimValues`, and
+a failed write fails the sign-in. Its role may only put items whose partition key
+starts with `USER#`. The item has no `userId`, so the `by-user` GSI skips it.
+
+On upgrade, Terraform invokes the migration Lambda once with
+`{"action":"backfill-sso-claims","version":1}` after the trigger is updated and
+before the users Lambda. It pages through the user pool and copies each federated
+user's current Cognito claims with a conditional put, so a copy written by a
+sign-in is never replaced. The invocation fails, and blocks the users Lambda
+update, when the directory cannot be read. It is safe to retry. From then on, a
+missing copy means the user has no SSO claims, and member APIs no longer read
+Cognito.
+
+Business-role mappings for SSO are one item per configured connection at
+`PLATFORM` / `SSO#<providerId>` in the access table, holding `roleMappings`
+(business-role ID → exact IdP values added through the UI). Saves from the Platform admin UI write
+the item and a `sso-role-mappings-changed` audit item (`PLATFORM` /
+`AUDIT#<time>#<changeId>`, with `providerId` and before/after mappings) in one
+`TransactWriteItems` call. Each save echoes the `revision` the editor loaded
+(null before the first save) and is rejected with 409 when the stored revision
+differs, so a stale editor cannot silently overwrite a newer mapping. The item has no `userId`, so the `by-user` GSI skips
+it. Existing items retain their values and revisions without a migration.
+
+Business-role calculations combine these additions with the provider's Terraform
+`role_mappings` baseline from `SSO_ROLE_CONFIG`. The mapping API returns
+`roleMappings` (editable additions), `terraformRoleMappings` (read-only), and
+`effectiveRoleMappings` (their deduplicated union). PUT still accepts only the
+additions as `roleMappings`, with the loaded revision; audit before/after values
+also contain only additions. The union is never persisted. Redeploying changes
+only the baseline, and removing a UI addition cannot suppress a Terraform value.
+Deploy the backend and frontend together to expose the source fields in the UI.
+`platform-admin` stays infrastructure-only and is excluded from business roles;
+Cognito group overrides use platform roles only.
+
 Each change records its actor, space, target user, timestamp, change ID, and
 before/after membership. Revision conditions reject stale changes. Actor
 authority is checked with the mutation transaction. The last-owner safeguard

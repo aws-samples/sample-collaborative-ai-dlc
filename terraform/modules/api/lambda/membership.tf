@@ -12,6 +12,7 @@ locals {
     source_control      = aws_iam_role.source_control.id
     intent_pin_lookup   = aws_iam_role.intent_pin_lookup.id
   }
+  sso_claim_readers = ["users"]
   membership_writers = {
     projects = aws_iam_role.neptune_artifacts.id
     users    = aws_iam_role.users.id
@@ -24,11 +25,24 @@ resource "aws_iam_role_policy" "membership_read" {
   role     = each.value
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-      Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user"]
-    }]
+    Statement = concat(
+      [{
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user"]
+      }],
+      # Raw SSO claims recorded under USER#<sub> are read only by the Lambdas that
+      # calculate business roles from them. The by-user index needs no exclusion:
+      # claim rows carry no userId.
+      contains(local.sso_claim_readers, each.key) ? [] : [{
+        Effect   = "Deny"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.access_table_arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
+        }
+      }]
+    )
   })
 }
 
@@ -54,6 +68,40 @@ resource "aws_iam_role_policy" "membership_write" {
       }
     ]
   })
+}
+
+locals {
+  membership_migration_environment = {
+    NEPTUNE_ENDPOINT        = var.neptune_endpoint
+    ACCESS_TABLE            = var.access_table_name
+    AUDIT_TABLE             = var.audit_table_name
+    COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
+    SSO_ROLE_CONFIG         = var.sso_role_config
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+  }
+
+  # Lambda rejects environments above 4 KB, measured as the serialized map. The
+  # SSO token trigger carries a subset of these variables and of the role config.
+  sso_role_config_environments = {
+    users               = local.users_environment
+    cognito-users       = local.cognito_users_environment
+    migrate-memberships = local.membership_migration_environment
+  }
+}
+
+# Fails the plan instead of the apply when the SSO role mappings no longer fit
+# in the environment of a Lambda that reads them.
+resource "terraform_data" "sso_role_config_size" {
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for environment in values(local.sso_role_config_environments) : length(jsonencode(environment)) <= 4096
+      ])
+      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of the users, cognito-users, or migrate-memberships Lambda. Reduce provider mappings."
+    }
+  }
 }
 
 resource "aws_iam_role" "membership_migration" {
@@ -83,6 +131,12 @@ resource "aws_iam_role_policy" "membership_migration" {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
         Resource = [var.access_table_arn, "${var.access_table_arn}/index/by-user", var.audit_table_arn]
+      },
+      {
+        # One pass over the directory to backfill federated users' SSO claims.
+        Effect   = "Allow"
+        Action   = ["cognito-idp:ListUsers"]
+        Resource = var.cognito_user_pool_arn
       }
     ]
   })
@@ -109,14 +163,7 @@ module "membership_migration_lambda" {
   vpc_subnet_ids                    = var.private_subnet_ids
   vpc_security_group_ids            = [aws_security_group.lambda.id]
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
-  environment_variables = {
-    NEPTUNE_ENDPOINT        = var.neptune_endpoint
-    ACCESS_TABLE            = var.access_table_name
-    AUDIT_TABLE             = var.audit_table_name
-    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
-    POWERTOOLS_SERVICE_NAME = local.powertools_service_name
-    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
-  }
+  environment_variables             = local.membership_migration_environment
   depends_on = [
     aws_iam_role_policy.membership_migration,
     aws_iam_role_policy_attachment.membership_migration_basic,
@@ -136,6 +183,33 @@ resource "aws_lambda_invocation" "membership_copy" {
     postcondition {
       condition     = try(jsondecode(self.result).verified, false)
       error_message = "Membership copy/verification failed. Application cutover is blocked; inspect the migration Lambda logs."
+    }
+  }
+}
+
+locals {
+  sso_claims_enabled = length(keys(try(jsondecode(var.sso_role_config).providers, {}))) > 0
+}
+
+# The sign-in trigger records claims before the backfill runs, so a sign-in
+# during the deployment is either recorded or copied by the backfill.
+resource "terraform_data" "sso_claims_recorder" {
+  count = local.sso_claims_enabled ? 1 : 0
+  input = var.sso_token_lambda_arn
+}
+
+# Runs once on upgrade, before the users Lambda reads recorded claims: from then
+# on a missing copy means the user has no SSO claims. Existing copies are kept.
+resource "aws_lambda_invocation" "sso_claims_backfill" {
+  count           = local.sso_claims_enabled ? 1 : 0
+  function_name   = module.membership_migration_lambda.lambda_function_name
+  input           = jsonencode({ action = "backfill-sso-claims", version = 1 })
+  lifecycle_scope = "CREATE_ONLY"
+  depends_on      = [aws_iam_role_policy.membership_migration, terraform_data.sso_claims_recorder]
+  lifecycle {
+    postcondition {
+      condition     = try(jsondecode(self.result).backfilled, false)
+      error_message = "SSO claims backfill failed. The users Lambda update is blocked; inspect the migration Lambda logs."
     }
   }
 }
