@@ -16,6 +16,11 @@ const getIssue = (ctx, repository, resourceId) =>
 const getIssueDiscussion = (ctx, repository, resourceId) =>
   invoke(ctx, repository, 'list-issue-comments', { number: resourceId });
 
+// One page of the discussion, { comments, nextPage }, for a caller behind a
+// request deadline.
+const getIssueDiscussionPage = (ctx, repository, resourceId, page) =>
+  invoke(ctx, repository, 'list-issue-comments', { number: resourceId, page });
+
 const addIssueComment = (ctx, repository, resourceId, body) =>
   invoke(ctx, repository, 'add-issue-comment', { number: resourceId, body });
 
@@ -37,6 +42,7 @@ export const provider = {
   listIssues,
   getIssue,
   getIssueDiscussion,
+  getIssueDiscussionPage,
   issueAttachments: (ctx, repository, resourceId, options) =>
     invoke(ctx, repository, 'issue-attachments', { ...options, number: resourceId }),
   addIssueComment,

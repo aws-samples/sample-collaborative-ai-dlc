@@ -72,6 +72,7 @@ const mockFetch = (responses = []) => {
       status: res.status || 200,
       ok: (res.status || 200) >= 200 && (res.status || 200) < 300,
       json: () => Promise.resolve(res.body),
+      headers: { get: (name) => res.headers?.[name.toLowerCase()] ?? null },
     });
   });
   globalThis.fetch = mock;
@@ -624,6 +625,47 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('Bad credentials');
+    });
+    it('returns one page and the next page number when a page is asked for', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      const fetchMock = mockFetch([
+        {
+          body: [
+            { id: 7, name: 'r7', full_name: 'org/r7', private: false, default_branch: 'main' },
+          ],
+          headers: { link: '<https://api.github.com/user/repos?page=3>; rel="next"' },
+        },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/repos', { queryStringParameters: { page: '2' } }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        repos: [{ id: 7, name: 'r7', fullName: 'org/r7', private: false, defaultBranch: 'main' }],
+        nextPage: 3,
+      });
+      const repoCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/user/repos'));
+      expect(repoCalls).toHaveLength(1);
+      expect(new URL(repoCalls[0][0]).searchParams.get('page')).toBe('2');
+    });
+
+    it.each(['0', '-1', '1.5', 'two'])('rejects page=%s before calling GitHub', async (page) => {
+      mockGitConnection();
+      mockResolveGitToken();
+      const fetchMock = mockFetch([{ body: [] }]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/repos', { queryStringParameters: { page } }),
+      );
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('page must be a positive integer');
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
