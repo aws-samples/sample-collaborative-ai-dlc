@@ -58,6 +58,8 @@ export interface StatusEntry {
 
 /** `resume_required`: answered, but the run was not woken up (resumeAvailable). */
 export type GateStatusKey = IntentGate['status'] | 'resume_required';
+/** `TIMED_OUT`: display-only, an agent run that stopped at its time limit. */
+export type StageStatusKey = StageState | 'TIMED_OUT';
 /** Unit lanes add two display-only states on top of the backend UnitState. */
 export type UnitStatusKey = UnitState | 'WAITING_INPUT' | 'NEEDS_RECOVERY';
 export type ConfigStatusKey = 'configured' | 'incomplete' | 'error' | 'none' | 'unknown';
@@ -65,7 +67,7 @@ export type SensorStatusKey = 'passed' | 'advisory' | 'inconclusive' | 'not_run'
 
 export interface StatusKeyMap {
   intent: IntentStatus;
-  stage: StageState;
+  stage: StageStatusKey;
   gate: GateStatusKey;
   unit: UnitStatusKey;
   connection: ConnectionStatus;
@@ -158,6 +160,12 @@ export const STATUS_REGISTRY: Registry = {
       tone: 'neutral',
       icon: CircleSlash,
       help: 'This stage was not needed for this run.',
+    },
+    TIMED_OUT: {
+      label: 'Timed out',
+      tone: 'warning',
+      icon: Clock,
+      help: 'The agent stopped because it ran past its time limit.',
     },
   },
   gate: {

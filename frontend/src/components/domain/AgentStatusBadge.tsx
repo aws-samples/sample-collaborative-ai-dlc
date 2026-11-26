@@ -11,7 +11,7 @@ interface AgentStatusBadgeProps {
   className?: string;
 }
 
-const STAGE_KEY: Record<NonNullable<AgentStatus>, StatusKeyMap['stage'] | 'TIMED_OUT'> = {
+const STAGE_KEY: Record<NonNullable<AgentStatus>, StatusKeyMap['stage']> = {
   idle: 'PENDING',
   running: 'RUNNING',
   waiting: 'WAITING_FOR_HUMAN',
