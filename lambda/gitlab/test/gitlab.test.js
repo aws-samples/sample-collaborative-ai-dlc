@@ -709,6 +709,43 @@ describe('gitlab handler', () => {
       ]);
     });
 
+    it('answers a page request with its list as a single page', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      mockFetch([
+        {
+          body: [
+            {
+              id: 101,
+              name: 'project1',
+              path_with_namespace: 'group/project1',
+              visibility: 'private',
+              default_branch: 'main',
+            },
+          ],
+        },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/repos', { queryStringParameters: { page: '2' } }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        repos: [
+          {
+            id: 101,
+            name: 'project1',
+            fullName: 'group/project1',
+            private: true,
+            defaultBranch: 'main',
+          },
+        ],
+        nextPage: null,
+      });
+    });
+
     it('passes ?q= to GitLab as a namespace-aware project search', async () => {
       mockGitConnection();
       mockResolveGitToken();

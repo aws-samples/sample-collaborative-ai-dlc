@@ -839,15 +839,16 @@ describe('/projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
     ...overrides,
   });
 
-  it('returns comments through the project source-control service', async () => {
-    lambdaMock
-      .on(InvokeCommand)
-      .resolves(
-        sourceControlResponse([
+  it('returns the first page of comments to a client that does not page', async () => {
+    lambdaMock.on(InvokeCommand).resolves(
+      sourceControlResponse({
+        comments: [
           trackerCommentFixture({ id: '1' }),
           trackerCommentFixture({ id: '2', body: 'Another point.' }),
-        ]),
-      );
+        ],
+        nextPage: 2,
+      }),
+    );
 
     const res = await handler(commentsEvent());
 
@@ -859,10 +860,56 @@ describe('/projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
       author: { handle: 'octocat' },
       body: 'I think we should also handle X.',
     });
+    // One provider page, not the whole discussion behind the request timeout.
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
     expect(sourceControlRequest()).toMatchObject({
       operation: 'list-issue-comments',
-      args: { number: '42' },
+      args: { number: '42', page: 1 },
     });
+  });
+
+  it('returns one page of comments and the next page number when a page is asked for', async () => {
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(
+        sourceControlResponse({ comments: [trackerCommentFixture({ id: '101' })], nextPage: 3 }),
+      );
+
+    const res = await handler(commentsEvent('42', { queryStringParameters: { page: '2' } }));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.nextPage).toBe(3);
+    expect(body.comments.map((c) => c.id)).toEqual(['101']);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    expect(sourceControlRequest()).toMatchObject({
+      operation: 'list-issue-comments',
+      args: { number: '42', page: 2 },
+    });
+  });
+
+  it('answers a page request with a single page for a provider that reads the whole discussion', async () => {
+    ({ projectId, bindingId } = await seedProjectAndBinding({
+      gitRepo: 'acme/widgets',
+      provider: 'gitlab-issues',
+    }));
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(sourceControlResponse([trackerCommentFixture({ id: '1' })]));
+
+    const res = await handler(commentsEvent('42', { queryStringParameters: { page: '1' } }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ comments: [{ id: '1' }], nextPage: null });
+    expect(sourceControlRequest().args).toEqual({ number: '42' });
+  });
+
+  it('rejects a page that is not a positive integer before reading the discussion', async () => {
+    const res = await handler(commentsEvent('42', { queryStringParameters: { page: '0' } }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('page must be a positive integer');
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
   });
 
   it('adds a comment through the project source-control service', async () => {
@@ -943,7 +990,9 @@ describe('Legacy github-issues binding (#194)', () => {
 
   it('GET .../legacy-github/issues/{rid}/comments works', async () => {
     const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
-    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse([trackerCommentFixture()]));
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(sourceControlResponse({ comments: [trackerCommentFixture()], nextPage: null }));
 
     const res = await handler({
       httpMethod: 'GET',

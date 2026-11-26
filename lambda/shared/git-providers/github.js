@@ -127,14 +127,41 @@ const mapRepo = (r) => ({
   defaultBranch: r.default_branch,
 });
 
-const listRepos = async (ctx) => {
-  const res = await ghFetch(ctx, `${API_BASE}/user/repos?per_page=100&sort=updated`);
-  const repos = await res.json();
-  if (!Array.isArray(repos)) {
-    throw new ProviderError(400, repos.message || 'Failed to fetch repos');
-  }
-  return repos.map(mapRepo);
+const PAGE_SIZE = 100;
+
+// One page of a GitHub list per call. The caller asks for `nextPage` in a
+// separate request, so no request waits on a whole list behind the API
+// Gateway timeout. GitHub's Link header announces rel="next" only when
+// another page exists, so a full last page costs no extra request.
+const readListPage = async (ctx, url, page, readRows) => {
+  const separator = url.includes('?') ? '&' : '?';
+  const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`);
+  const rows = await readRows(res, page);
+  const hasNext = /rel="next"/.test(res.headers?.get?.('link') ?? '');
+  return { rows, nextPage: hasNext ? page + 1 : null };
 };
+
+const readRepoRows = async (res) => {
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new ProviderError(400, data?.message || 'Failed to fetch repos');
+  }
+  return data.map(mapRepo);
+};
+
+// The picker filters client-side and /user/repos has no search, so it asks
+// for every page in turn.
+const listReposPage = async (ctx, page = 1) => {
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/user/repos?sort=updated`,
+    page,
+    readRepoRows,
+  );
+  return { repos: rows, nextPage };
+};
+
+const listRepos = async (ctx) => (await listReposPage(ctx)).repos;
 
 // App-mode repo discovery: the repos the GitHub App installation can access
 // (GET /installation/repositories — requires an installation token, not a
@@ -161,16 +188,26 @@ const listInstallationRepos = async (ctx) => {
   return repos;
 };
 
-const listBranches = async (ctx, repoId) => {
+const listBranchesPage = async (ctx, repoId, page = 1) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/branches?per_page=100`);
-  if (res.status === 404) return [];
-  const data = await res.json();
-  if (!Array.isArray(data)) {
-    throw new ProviderError(400, data.message || 'Failed to fetch branches');
-  }
-  return data.map((b) => b.name);
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/branches`,
+    page,
+    async (res) => {
+      // A missing repo has no branches; a 404 after page 1 cut the list short.
+      if (res.status === 404 && page === 1) return [];
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new ProviderError(400, data?.message || 'Failed to fetch branches');
+      }
+      return data.map((b) => b.name);
+    },
+  );
+  return { branches: rows, nextPage };
 };
+
+const listBranches = async (ctx, repoId) => (await listBranchesPage(ctx, repoId)).branches;
 
 // The repo's real default branch (`main`, `master`, or whatever HEAD points at).
 // Needed because init-ws `git clone` checks out the repo's actual default HEAD
@@ -344,18 +381,40 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
   };
 };
 
+// One page of an issue discussion, for a caller that waits behind the API
+// Gateway timeout and asks for the next page in a new request.
+const listIssueCommentsPage = async (ctx, repoId, issueNumber, page = 1) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const { rows, nextPage } = await readListPage(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    page,
+    async (res) => {
+      // A missing issue has no comments; a 404 after page 1 cut the list short.
+      if (res.status === 404 && page === 1) return [];
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !Array.isArray(data)) {
+        throw new ProviderError(
+          res.ok ? 400 : res.status,
+          data?.message || 'Failed to fetch issue comments',
+        );
+      }
+      return data.map(mapIssueDiscussionComment);
+    },
+  );
+  return { comments: rows, nextPage };
+};
+
+// Every page, for callers without a request deadline (delivery sync, agents).
 const listIssueComments = async (ctx, repoId, issueNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(
+  // Comments come oldest first, so reading only page 1 dropped the newest.
+  const comments = await listPaginated(
     ctx,
-    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    { emptyWhenMissing: true },
   );
-  if (res.status === 404) return [];
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
-  }
-  return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
+  return comments.map(mapIssueDiscussionComment);
 };
 
 // App installation tokens can read a private issue but receive 404 for its raw
@@ -518,12 +577,15 @@ const mapIssueComment = (c) => ({
   version: c.updated_at || c.created_at,
 });
 
-const listPaginated = async (ctx, url) => {
+// `emptyWhenMissing`: a 404 on page 1 means no rows; on a later page the
+// listing was cut short, so it still fails.
+const listPaginated = async (ctx, url, { emptyWhenMissing = false } = {}) => {
   const rows = [];
   for (let page = 1; page <= 100; page += 1) {
     const separator = url.includes('?') ? '&' : '?';
     const res = await ghFetch(ctx, `${url}${separator}per_page=100&page=${page}`);
-    const data = await res.json();
+    if (emptyWhenMissing && page === 1 && res.status === 404) return [];
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
       throw new ProviderError(res.status || 400, data?.message || 'Failed to list comments');
     }
@@ -1134,8 +1196,10 @@ export {
   getAuthenticatedUser,
   mapRepo,
   listRepos,
+  listReposPage,
   listInstallationRepos,
   listBranches,
+  listBranchesPage,
   getDefaultBranch,
   getRepositoryAccess,
   getTree,
@@ -1143,6 +1207,7 @@ export {
   listIssues,
   getIssue,
   listIssueComments,
+  listIssueCommentsPage,
   issueAttachments,
   addIssueComment,
   closeIssue,
@@ -1178,8 +1243,10 @@ export default {
   getAuthenticatedUser,
   mapRepo,
   listRepos,
+  listReposPage,
   listInstallationRepos,
   listBranches,
+  listBranchesPage,
   getDefaultBranch,
   getRepositoryAccess,
   getTree,
@@ -1187,6 +1254,7 @@ export default {
   listIssues,
   getIssue,
   listIssueComments,
+  listIssueCommentsPage,
   issueAttachments,
   addIssueComment,
   closeIssue,

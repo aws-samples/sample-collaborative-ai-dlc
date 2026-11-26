@@ -38,6 +38,7 @@ import {
   handleRuntimeOperation,
   isRuntimeAliasInvocation,
 } from './runtime-alias.js';
+import { INVALID_PAGE_ERROR, parsePageParam } from '../shared/list-page.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -303,16 +304,41 @@ const validateProjectBindings = async ({
   return { ready, repositories: results };
 };
 
+// With a page, one provider page comes back with nextPage; a provider that
+// lists everything in one call answers with nextPage null. Only page 1 looks
+// up the default branch, which the picker preselects.
+const invalidPage = () =>
+  Object.assign(new Error(INVALID_PAGE_ERROR), { status: 400, code: 'INVALID_PAGE' });
+
+const listBranchesResult = async (provider, ctx, repo, page) => {
+  if (page === null) throw invalidPage();
+  const [listing, defaultBranch] = await Promise.all([
+    page !== undefined && provider.listBranchesPage
+      ? provider.listBranchesPage(ctx, repo, page)
+      : provider.listBranches(ctx, repo).then((branches) => ({
+          branches,
+          ...(page === undefined ? {} : { nextPage: null }),
+        })),
+    page === undefined || page === 1
+      ? provider.getDefaultBranch(ctx, repo).catch(() => null)
+      : null,
+  ]);
+  return { ...listing, ...(defaultBranch ? { defaultBranch } : {}) };
+};
+
+const listIssueCommentsResult = async (provider, ctx, repo, number, page) => {
+  if (page === null) throw invalidPage();
+  if (page === undefined) return provider.listIssueComments(ctx, repo, number);
+  if (provider.listIssueCommentsPage) {
+    return provider.listIssueCommentsPage(ctx, repo, number, page);
+  }
+  return { comments: await provider.listIssueComments(ctx, repo, number), nextPage: null };
+};
+
 const callProvider = async (provider, operation, ctx, repo, args = {}) => {
   switch (operation) {
     case 'branches':
-      return Promise.all([
-        provider.listBranches(ctx, repo),
-        provider.getDefaultBranch(ctx, repo).catch(() => null),
-      ]).then(([branches, defaultBranch]) => ({
-        branches,
-        ...(defaultBranch ? { defaultBranch } : {}),
-      }));
+      return listBranchesResult(provider, ctx, repo, parsePageParam(args.page));
     case 'tree':
       return provider.getTree(ctx, repo, args.branch);
     case 'contents':
@@ -354,7 +380,7 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
     case 'get-issue':
       return provider.getIssue(ctx, repo, args.number);
     case 'list-issue-comments':
-      return provider.listIssueComments(ctx, repo, args.number);
+      return listIssueCommentsResult(provider, ctx, repo, args.number, parsePageParam(args.page));
     case 'issue-attachments':
       return provider.issueAttachments(ctx, repo, args);
     case 'add-issue-comment':
@@ -629,6 +655,9 @@ export const handler = async (event, context) => {
     const repo = event.queryStringParameters?.repository;
     if (!provider || !repo) {
       return response(400, { error: 'provider and repository query parameters are required' });
+    }
+    if (parsePageParam(event.queryStringParameters?.page) === null) {
+      return response(400, { error: INVALID_PAGE_ERROR });
     }
     let resolvedOperation = operation;
     const args = { ...event.queryStringParameters };

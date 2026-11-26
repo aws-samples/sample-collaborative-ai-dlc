@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { GitComment, GitFile, GitFileContent, GitProvider } from './gitProvider';
+import { collectListPages } from './pagination';
 
 export type SourceControlAuthType =
   | 'github-oauth'
@@ -133,10 +134,24 @@ export const sourceControlService = {
 
   unbind: (projectId: string) => api.delete(`/projects/${projectId}/source-control`),
 
+  // One request per page of branches; a page after the first that fails keeps
+  // the branches already read.
   async listBranches(projectId: string, provider: GitProvider, repository: string) {
-    return api.get<{ branches: string[]; defaultBranch?: string }>(
-      `/projects/${projectId}/source-control/branches?${query(provider, repository)}`,
-    );
+    let defaultBranch: string | undefined;
+    const { rows } = await collectListPages(async (page) => {
+      const result = await api.get<{
+        branches: string[];
+        defaultBranch?: string;
+        nextPage?: number | null;
+      }>(
+        `/projects/${projectId}/source-control/branches?${query(provider, repository, {
+          page: String(page),
+        })}`,
+      );
+      if (page === 1) defaultBranch = result.defaultBranch;
+      return { rows: result.branches, nextPage: result.nextPage };
+    });
+    return { branches: rows, ...(defaultBranch ? { defaultBranch } : {}) };
   },
 
   async getTree(projectId: string, provider: GitProvider, repository: string, branch?: string) {

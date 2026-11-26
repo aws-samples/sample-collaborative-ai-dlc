@@ -143,6 +143,59 @@ describe('github provider — repo browse + PR + comments', () => {
     ]);
   });
 
+  // GitHub list endpoints page with a Link header; rel="last" carries the
+  // page count, and the last page has no rel="last".
+  const ghRepo = (n) => ({ id: n, name: `r${n}`, full_name: `o/r${n}`, default_branch: 'main' });
+  const pageOf = (url) => Number(new URL(url).searchParams.get('page'));
+  const githubPages = (rowsForPage, lastPage) => (url) => {
+    const page = pageOf(url);
+    const next = (p) => url.replace(/([?&])page=\d+/, `$1page=${p}`);
+    const links = [];
+    if (page < lastPage) links.push(`<${next(page + 1)}>; rel="next"`);
+    if (page < lastPage) links.push(`<${next(lastPage)}>; rel="last"`);
+    return { json: rowsForPage(page), headers: links.length ? { link: links.join(', ') } : {} };
+  };
+  const fullPage = (page, make) =>
+    Array.from({ length: 100 }, (_, i) => make((page - 1) * 100 + i + 1));
+
+  it('listReposPage reads only the requested page and reports the next one', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => fullPage(page, ghRepo), 3)],
+    ]);
+    const { repos, nextPage } = await gh.listReposPage({ token: 't', fetchImpl }, 2);
+    expect(repos.map((r) => r.id)).toEqual(Array.from({ length: 100 }, (_, i) => i + 101));
+    expect(nextPage).toBe(3);
+    expect(fetchImpl.calls.map((c) => pageOf(c.url))).toEqual([2]);
+    expect(fetchImpl.calls[0].url).toContain('per_page=100');
+  });
+
+  it('listReposPage reports no next page on a full last page', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => fullPage(page, ghRepo), 1)],
+    ]);
+    const { repos, nextPage } = await gh.listReposPage({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(100);
+    expect(nextPage).toBeNull();
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it('listRepos reads one page for a caller that does not page', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', githubPages((page) => fullPage(page, ghRepo), 5)],
+    ]);
+    expect(await gh.listRepos({ token: 't', fetchImpl })).toHaveLength(100);
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it('listReposPage surfaces a GitHub error body', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/repos', { status: 403, json: { message: 'API rate limit exceeded' } }],
+    ]);
+    await expect(gh.listReposPage({ token: 't', fetchImpl }, 2)).rejects.toThrow(
+      'API rate limit exceeded',
+    );
+  });
+
   it('getAuthenticatedUser uses the PUBLIC email when present', async () => {
     const fetchImpl = makeFetch([
       ['/user', { json: { login: 'janedev', id: 123, name: 'Jane Dev', email: 'jane@corp.com' } }],
@@ -565,6 +618,135 @@ describe('github provider — repo browse + PR + comments', () => {
     ).toBe('conflict');
   });
 
+  it('listBranchesPage reads one page per call, so branch 101 is on page 2', async () => {
+    const branch = (n) => ({ name: `b${n}` });
+    const fetchImpl = makeFetch([
+      [
+        '/repos/o/r/branches',
+        githubPages((page) => (page === 1 ? fullPage(1, branch) : [branch(101)]), 2),
+      ],
+    ]);
+    const ctx = { token: 't', fetchImpl };
+    const first = await gh.listBranchesPage(ctx, 'o/r');
+    expect(first.branches).toHaveLength(100);
+    expect(first.nextPage).toBe(2);
+    expect(await gh.listBranchesPage(ctx, 'o/r', 2)).toEqual({
+      branches: ['b101'],
+      nextPage: null,
+    });
+    expect(fetchImpl.calls.map((c) => pageOf(c.url))).toEqual([1, 2]);
+  });
+
+  it('listBranchesPage treats only a first-page 404 as a missing repo', async () => {
+    const missing = makeFetch([['/branches', { status: 404, json: { message: 'Not Found' } }]]);
+    expect(await gh.listBranchesPage({ token: 't', fetchImpl: missing }, 'o/r')).toEqual({
+      branches: [],
+      nextPage: null,
+    });
+    expect(await gh.listBranches({ token: 't', fetchImpl: missing }, 'o/r')).toEqual([]);
+    await expect(gh.listBranchesPage({ token: 't', fetchImpl: missing }, 'o/r', 2)).rejects.toThrow(
+      'Not Found',
+    );
+  });
+
+  const comment = (n) => ({
+    id: n,
+    body: `c${n}`,
+    user: { login: 'alice' },
+    created_at: '2026-01-01T00:00:00Z',
+  });
+
+  it('listIssueCommentsPage makes one request however long the discussion is', async () => {
+    const fetchImpl = makeFetch([
+      ['/issues/7/comments', githubPages((page) => fullPage(page, comment), 50)],
+    ]);
+    const ctx = { token: 't', fetchImpl };
+    const first = await gh.listIssueCommentsPage(ctx, 'o/r', 7);
+    expect(first.comments).toHaveLength(100);
+    expect(first.nextPage).toBe(2);
+    const last = await gh.listIssueCommentsPage(ctx, 'o/r', 7, 50);
+    expect(last.comments.at(-1).body).toBe('c5000');
+    expect(last.nextPage).toBeNull();
+    expect(fetchImpl.calls.map((c) => pageOf(c.url))).toEqual([1, 50]);
+  });
+
+  it('listIssueCommentsPage treats only a first-page 404 as no comments, whatever its body', async () => {
+    const htmlNotFound = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => JSON.parse('<html>'),
+      headers: { get: () => null },
+    });
+    expect(
+      await gh.listIssueCommentsPage({ token: 't', fetchImpl: htmlNotFound }, 'o/r', 7),
+    ).toEqual({ comments: [], nextPage: null });
+    const gone = makeFetch([['/comments', { status: 404, json: { message: 'Not Found' } }]]);
+    await expect(
+      gh.listIssueCommentsPage({ token: 't', fetchImpl: gone }, 'o/r', 7, 2),
+    ).rejects.toThrow('Not Found');
+    const limited = makeFetch([
+      ['/comments', { status: 403, json: { message: 'API rate limit exceeded' } }],
+    ]);
+    await expect(
+      gh.listIssueCommentsPage({ token: 't', fetchImpl: limited }, 'o/r', 7, 2),
+    ).rejects.toMatchObject({ status: 403, message: 'API rate limit exceeded' });
+  });
+
+  it('listIssueComments reads every page, so the newest comments are present', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/issues/7/comments',
+        githubPages((page) => (page === 1 ? fullPage(1, comment) : [comment(101)]), 2),
+      ],
+    ]);
+    const comments = await gh.listIssueComments({ token: 't', fetchImpl }, 'o/r', 7);
+    expect(comments).toHaveLength(101);
+    expect(comments.at(-1).body).toBe('c101');
+  });
+
+  it('listIssueComments returns none for a missing issue and fails on a failed page', async () => {
+    const missing = makeFetch([['/comments', { status: 404, json: { message: 'Not Found' } }]]);
+    expect(await gh.listIssueComments({ token: 't', fetchImpl: missing }, 'o/r', 7)).toEqual([]);
+
+    const failing = makeFetch([
+      [
+        '/comments',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 403, json: { message: 'API rate limit exceeded' } }
+            : { json: fullPage(1, (n) => ({ id: n, body: '', user: { login: 'a' } })) },
+      ],
+    ]);
+    await expect(
+      gh.listIssueComments({ token: 't', fetchImpl: failing }, 'o/r', 7),
+    ).rejects.toThrow('API rate limit exceeded');
+  });
+
+  it('listIssueComments treats only a first-page 404 as no comments, whatever its body', async () => {
+    const htmlNotFound = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => JSON.parse('<html>'),
+      headers: { get: () => null },
+    });
+    expect(await gh.listIssueComments({ token: 't', fetchImpl: htmlNotFound }, 'o/r', 7)).toEqual(
+      [],
+    );
+
+    const gone = makeFetch([
+      [
+        '/comments',
+        (url) =>
+          pageOf(url) === 2
+            ? { status: 404, json: { message: 'Not Found' } }
+            : { json: fullPage(1, (n) => ({ id: n, body: '', user: { login: 'a' } })) },
+      ],
+    ]);
+    await expect(gh.listIssueComments({ token: 't', fetchImpl: gone }, 'o/r', 7)).rejects.toThrow(
+      'Not Found',
+    );
+  });
+
   it('rejects malformed repo references', async () => {
     await expect(
       gh.listBranches({ token: 't', fetchImpl: makeFetch([]) }, 'no-slash'),
@@ -787,7 +969,7 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
         calls
           .filter((c) => c.token === 'NEW')
           .map((c) => c.page)
-          .sort(),
+          .toSorted((a, b) => a - b),
       ).toEqual([2, 3]);
     });
 
