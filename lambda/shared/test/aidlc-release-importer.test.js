@@ -39,6 +39,7 @@ const PROFILES = Object.freeze([
   'v2.11.1',
   'v2.11.3',
   'v2.11.4',
+  'v2.11.5',
 ]);
 
 // Catalog digests every vendored fixture maps to under importer revision 2.
@@ -80,7 +81,7 @@ const CATALOG_GOLDENS = Object.freeze({
   }),
   // Revision 5 changes the dependency closure, not the mappers: every catalog
   // is unchanged, and only 2.11.3's recorded compatibility evidence differs.
-  // 2.11.4 is first imported at this revision.
+  // 2.11.4 and 2.11.5 are first imported at this revision.
   5: Object.freeze({
     'current-stable': 'e755d11af6ac83b558c93367e66760a2422bb90a90101e71fdc783542456cdf6',
     'v2.6.18': 'c96da502d523da21a2e19c661908c8dce43ddfe1f1dc95c36a50c89488f4f974',
@@ -91,6 +92,7 @@ const CATALOG_GOLDENS = Object.freeze({
     'v2.11.1': '4e7b502baabd3b717e98b8c0b6f7ecd559ebde1394156c8daf5dcda1d8346104',
     'v2.11.3': '811faa9795d2b2cd760380bb1d51f0cad7cfcf39a72951922ad1cdb24bb1e5fb',
     'v2.11.4': '5e7f13060ccaedb2c20ca7a204f0191abfed174bdf0f2b3db2e793e9ab040085',
+    'v2.11.5': '3d9cf9391cdd429bdbe8659b88cbc3854bc7234a98d03b7eb44fa477378dc297',
   }),
   // Revision 6 adds the platform default stage responsibilities. Every digest
   // changes; with the responsibilities removed, each catalog is still exactly
@@ -105,6 +107,7 @@ const CATALOG_GOLDENS = Object.freeze({
     'v2.11.1': 'a151a4bfa8a28d79ce8a27aa92ff8a19ef2241d35a6c3ef519874e37b222cd06',
     'v2.11.3': '4e17edcc24c2f0f85e704126925bd479bcf1e97f9f730c128e8b3b1e00262787',
     'v2.11.4': 'fa62937807897349f8837573391ddeb54bdb7b237c58daed3505163ffdf0b9f6',
+    'v2.11.5': '50dbd353aa4b9e74f6c166919eb2ba97b186d0fc823f942875f793849bc44884',
   }),
 });
 
