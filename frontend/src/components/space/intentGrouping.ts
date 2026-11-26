@@ -1,6 +1,6 @@
 import type { Intent } from '@/services/intents';
 import { intentAttention } from '@/lib/sprintStatus';
-import { deriveIntentStatus } from '@/lib/statusModel';
+import { deriveIntentStatus, type DerivedIntentStatus } from '@/lib/statusModel';
 
 export type GroupableIntent = Pick<Intent, 'id' | 'status' | 'title' | 'createdAt' | 'updatedAt'> &
   Partial<Pick<Intent, 'completedAt' | 'currentStage' | 'pendingHumanTaskId' | 'resumeRequired'>>;
@@ -100,17 +100,26 @@ export function parseSpaceFilter(value: string | null | undefined): SpaceFilter 
   return SPACE_FILTERS.includes(value as SpaceFilter) ? (value as SpaceFilter) : 'all';
 }
 
-/** A human must act: answer, resume, deal with a failure, or unstick a stalled run. */
-export function needsAttention(intent: GroupableIntent, now: number = Date.now()): boolean {
+/**
+ * A human must act: answer, resume, deal with a failure, or unstick a stalled
+ * run. Pass the `status` the row's pill shows (useIntentStatusReader) so
+ * "stalled" agrees with it; without it the intent's own timestamps decide.
+ */
+export function needsAttention(
+  intent: GroupableIntent,
+  now: number = Date.now(),
+  status: DerivedIntentStatus = deriveIntentStatus(intent, { now }),
+): boolean {
   const group = intentGroup(intent, now);
   if (group === 'attention' || group === 'failed') return true;
-  return deriveIntentStatus(intent, { now }).stalled;
+  return status.stalled;
 }
 
 export function matchesSpaceFilter(
   intent: GroupableIntent,
   filter: SpaceFilter,
   now: number = Date.now(),
+  status?: DerivedIntentStatus,
 ): boolean {
   const group = intentGroup(intent, now);
   switch (filter) {
@@ -119,7 +128,7 @@ export function matchesSpaceFilter(
     case 'active':
       return group === 'attention' || group === 'active';
     case 'needs-attention':
-      return needsAttention(intent, now);
+      return needsAttention(intent, now, status);
     case 'failed':
       return group === 'failed';
     case 'finished':

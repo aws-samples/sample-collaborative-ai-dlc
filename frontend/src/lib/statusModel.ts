@@ -714,8 +714,8 @@ export function useIntentStatus(
 
 export interface ResolvedIntentStatus<T extends IntentSummaryLike = IntentSummaryLike> {
   status: DerivedIntentStatus;
-  /** The intent the status was read from: the current cached detail's, else the summary. */
-  intent: T | (IntentSummaryLike & DetailLike['intent']);
+  /** The intent the status was read from: the summary, updated by the current cached detail. */
+  intent: T;
 }
 
 function resolveIntentStatus<T extends IntentSummaryLike>(
@@ -724,7 +724,11 @@ function resolveIntentStatus<T extends IntentSummaryLike>(
   { now, fallback }: { now?: Clock; fallback?: DerivedIntentStatus },
 ): ResolvedIntentStatus<T> {
   if (isCurrentDetail(intent, detail)) {
-    return { status: statusFromDetail(detail, { now }), intent: { ...intent, ...detail.intent } };
+    // A current detail is the newer copy of the same intent.
+    return {
+      status: statusFromDetail(detail, { now }),
+      intent: { ...intent, ...detail.intent } as T,
+    };
   }
   return { status: fallback ?? deriveIntentStatus(intent, { now }), intent };
 }

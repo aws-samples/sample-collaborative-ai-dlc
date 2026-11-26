@@ -41,7 +41,7 @@ export function IntentRow({ projectId, intent, now, actions, deleting = false }:
   const href = intentEntryPath(projectId, intent);
   const gates = useCachedGates(projectId, intent.id, attention === 'input');
   const untitled = isUntitledIntent(intent.title);
-  const meta = intentRowMeta(intent, { now, gates, since: derived.since });
+  const meta = intentRowMeta(intent, { now, gates, since: derived.since, derived });
   const metaParts = meta.parts;
   const hasMeta = metaParts.length > 0 || meta.time !== null;
 

@@ -337,6 +337,20 @@ describe('IntentList filters and sort (S1, S6)', () => {
     expect(onFilterChange).toHaveBeenCalledWith('finished');
   });
 
+  it('does not count or list a run as needing attention when its cached activity is recent', () => {
+    // The list row of running-hung is months old; the cached detail saw a stage start now.
+    const hung = ROWS.find((row) => row.id === 'running-hung')!;
+    queryClient.setQueryData(qk.intentDetail('p1', 'running-hung'), {
+      intent: hung,
+      gates: [],
+      stages: [{ stageId: 'build', state: 'RUNNING', startedAt: hoursAgo(0.05) }],
+      events: [],
+    });
+    renderList({ filter: 'needs-attention' });
+    expect(screen.getByRole('radio', { name: 'Needs your attention 3' })).toBeInTheDocument();
+    expect(rowTitles()).not.toContain('Intent running-hung');
+  });
+
   it('shows only the filtered group as a flat list and offers to clear it', () => {
     renderList({ filter: 'failed' });
     expect(rowTitles()).toEqual(['Intent failed-1']);

@@ -14,6 +14,7 @@ import {
 import { Disclosure } from '@/components/ui/disclosure';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
+import { useIntentStatusReader, type DerivedIntentStatus } from '@/lib/statusModel';
 import { cn } from '@/lib/utils';
 import { IntentRow } from './IntentRow';
 import {
@@ -94,7 +95,7 @@ export interface IntentListProps {
 
 export function IntentList({
   projectId,
-  intents,
+  intents: listed,
   filter,
   onFilterChange,
   rowActions,
@@ -110,29 +111,44 @@ export function IntentList({
     saveIntentSort(value as IntentSort);
   }, []);
 
+  // Groups, filters and counts read each intent as its row's pill does: the
+  // cached detail when it is current, else the list summary.
+  const readStatus = useIntentStatusReader();
+  const { intents, statusOf } = useMemo(() => {
+    const byId = new Map<string, DerivedIntentStatus>();
+    const shown = listed.map((summary) => {
+      const { intent, status } = readStatus(projectId, summary, { now });
+      byId.set(intent.id, status);
+      return intent;
+    });
+    return { intents: shown, statusOf: (intent: Intent) => byId.get(intent.id) };
+  }, [listed, readStatus, projectId, now]);
+
   const counts = useMemo(() => {
     const tally = { all: 0, active: 0, 'needs-attention': 0, failed: 0, finished: 0 };
     for (const intent of intents) {
       tally.all += 1;
       const group = intentGroup(intent, now);
       if (group === 'attention' || group === 'active') tally.active += 1;
-      if (needsAttention(intent, now)) tally['needs-attention'] += 1;
+      if (needsAttention(intent, now, statusOf(intent))) tally['needs-attention'] += 1;
       if (group === 'failed') tally.failed += 1;
       if (group === 'finished') tally.finished += 1;
     }
     return tally;
-  }, [intents, now]);
+  }, [intents, statusOf, now]);
 
   const { visible, finished } = useMemo(() => {
     const matching = orderIntents(intents, sort, now).filter(
-      (intent) => matchesSpaceFilter(intent, filter, now) && matchesIntentQuery(intent, query),
+      (intent) =>
+        matchesSpaceFilter(intent, filter, now, statusOf(intent)) &&
+        matchesIntentQuery(intent, query),
     );
     if (filter !== 'all') return { visible: matching, finished: [] as Intent[] };
     return {
       visible: matching.filter((intent) => intentGroup(intent, now) !== 'finished'),
       finished: matching.filter((intent) => intentGroup(intent, now) === 'finished'),
     };
-  }, [intents, sort, filter, query, now]);
+  }, [intents, statusOf, sort, filter, query, now]);
 
   const listRef = useIdleCandidateRows(projectId, visible.length > 0);
   const hasActiveFilter = filter !== 'all' || query.trim() !== '';

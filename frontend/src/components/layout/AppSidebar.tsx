@@ -221,7 +221,10 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
     intent: ProjectIntentSummary,
   ): ResolvedIntentStatus<ProjectIntentSummary> =>
     currentDerived && ctxDetail && spaceId === projectId && intent.id === intentId
-      ? { status: currentDerived, intent: { ...intent, ...ctxDetail.intent } }
+      ? {
+          status: currentDerived,
+          intent: { ...intent, ...ctxDetail.intent } as ProjectIntentSummary,
+        }
       : readStatus(spaceId, intent);
 
   // The detail request said the open intent is gone: a stale list entry must
