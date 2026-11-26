@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { putGitConnection } from './git-connection-store.js';
+import { assertCurrentGitConnection, updateGitConnectionMetadata } from './git-connection-store.js';
 import { clearGitHubAuthConfigCache } from './github-auth-config.js';
 
 const logger = new Logger({ persistentKeys: { component: 'git-token' } });
@@ -29,6 +29,29 @@ const readTokenValue = async (ssm, parameterName) => {
     new GetParameterCommand({ Name: parameterName, WithDecryption: true }),
   );
   return JSON.parse(param.Parameter.Value);
+};
+
+// Refresh never creates a connection. New OAuth connections receive a unique
+// parameter path, so an old refresh cannot overwrite a reconnect's token.
+// The conditional metadata update rejects disconnect/reconnect even when it
+// happens while SSM is writing. An unreferenced old parameter can remain after
+// that race; it does not restore connection authority.
+const persistRefreshedGitToken = async ({ ssm, ddb, item, tokens, scope }) => {
+  await assertCurrentGitConnection(ddb, item);
+  validateParamName(item.parameterName);
+  await ssm.send(
+    new PutParameterCommand({
+      Name: item.parameterName,
+      Value: JSON.stringify(tokens),
+      Type: 'SecureString',
+      Tier: 'Intelligent-Tiering',
+      Overwrite: true,
+    }),
+  );
+  await updateGitConnectionMetadata(ddb, item, {
+    ...(scope === undefined ? {} : { scope }),
+    updatedAt: new Date().toISOString(),
+  });
 };
 
 // Back-compat: resolve just the access token from the stored SSM value.
@@ -60,7 +83,14 @@ const getBitbucketOAuthCredentials = async (secrets) => {
   return parsed;
 };
 
-const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
+const refreshGitlabToken = async ({
+  ssm,
+  secrets,
+  ddb,
+  item,
+  tokens,
+  fetchImpl = globalThis.fetch,
+}) => {
   if (!tokens.refreshToken) {
     // No refresh token (e.g. very old row) — nothing we can do; return as-is.
     return tokens.accessToken;
@@ -69,7 +99,7 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   // GitLab requires redirect_uri on the refresh_token grant, matching the one
   // used at authorization time — without it GitLab returns `invalid_grant`.
   const redirectUri = process.env.GITLAB_REDIRECT_URI;
-  const res = await fetch('https://gitlab.com/oauth/token', {
+  const res = await fetchImpl('https://gitlab.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -117,32 +147,7 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     tokenType: data.token_type,
     ...(expiresAt ? { expiresAt } : {}),
   };
-  await ssm.send(
-    new PutParameterCommand({
-      Name: item.parameterName,
-      Value: JSON.stringify(newValue),
-      Type: 'SecureString',
-      Overwrite: true,
-    }),
-  );
-  // Persist the rotated refresh-token metadata (the access token itself lives
-  // in SSM, written above). Use putGitConnection so the row lands in the
-  // authoritative composite-key table (userId + providerInstance) — writing the
-  // raw item to the legacy single-key table would mismatch its schema. The SSM
-  // parameterName never changes, so the stored token reference stays valid.
-  if (ddb && item?.userId && item?.provider) {
-    try {
-      await putGitConnection(ddb, {
-        ...item,
-        scope: data.scope,
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      // Best-effort: the access token is already persisted in SSM, so a failure
-      // here only loses the metadata refresh, not the token itself.
-      logger.error('Failed to persist refreshed git connection metadata', e);
-    }
-  }
+  await persistRefreshedGitToken({ ssm, ddb, item, tokens: newValue, scope: data.scope });
   return data.access_token;
 };
 
@@ -154,12 +159,19 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
 //   - Bitbucket often omits a rotated refresh_token in the response, so we
 //     KEEP the existing one when the response has none.
 //   - tokens are JWTs (~2800+ chars) → SSM Intelligent-Tiering (4096 std cap).
-const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
+const refreshBitbucketToken = async ({
+  ssm,
+  secrets,
+  ddb,
+  item,
+  tokens,
+  fetchImpl = globalThis.fetch,
+}) => {
   if (!tokens.refreshToken) {
     return tokens.accessToken;
   }
   const { client_id, client_secret } = await getBitbucketOAuthCredentials(secrets);
-  const res = await fetch('https://bitbucket.org/site/oauth2/access_token', {
+  const res = await fetchImpl('https://bitbucket.org/site/oauth2/access_token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -177,7 +189,10 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       errorDescription: data.error_description,
       userId: item?.userId,
     });
-    throw new Error(data.error_description || data.error || `HTTP ${res.status}`);
+    throw Object.assign(new Error(data.error_description || data.error || `HTTP ${res.status}`), {
+      code: 'CREDENTIAL_REFRESH_FAILED',
+      status: res.status || 401,
+    });
   }
   logger.info('bitbucket refresh ok', {
     userId: item?.userId,
@@ -191,32 +206,18 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     tokenType: data.token_type,
     ...(expiresAt ? { expiresAt } : {}),
   };
-  await ssm.send(
-    new PutParameterCommand({
-      Name: item.parameterName,
-      Value: JSON.stringify(newValue),
-      Type: 'SecureString',
-      // Bitbucket access/refresh JWTs exceed the SSM Standard-tier 4096 cap.
-      Tier: 'Intelligent-Tiering',
-      Overwrite: true,
-    }),
-  );
-  if (ddb && item?.userId && item?.provider) {
-    try {
-      await putGitConnection(ddb, {
-        ...item,
-        scope: data.scopes ?? data.scope ?? item.scope,
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      logger.error('Failed to persist refreshed git connection metadata', e);
-    }
-  }
+  await persistRefreshedGitToken({
+    ssm,
+    ddb,
+    item,
+    tokens: newValue,
+    scope: data.scopes ?? data.scope ?? item.scope,
+  });
   return data.access_token;
 };
 
-// Single-flight refresh guard, keyed by SSM parameter name (one entry per
-// GitLab connection). GitLab refresh tokens are one-time-use, so two
+// Single-flight refresh guard, keyed by parameter path, creation time and
+// generation. GitLab refresh tokens are one-time-use, so two
 // concurrent refreshes of the same connection burn each other: the loser gets
 // invalid_grant and (via the credential broker) would invalidate the project
 // binding. Within a warm container, concurrent callers share one refresh
@@ -234,7 +235,15 @@ const _refreshInFlight = new Map();
 // skew, early revocation). If the stored pair has ALREADY rotated past the
 // rejected token (a concurrent refresh won), the rotated token is returned
 // without burning another refresh.
-const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, staleToken = null }) => {
+const resolveFreshGitToken = async ({
+  ssm,
+  secrets,
+  ddb,
+  item,
+  gitProvider,
+  staleToken = null,
+  fetchImpl,
+}) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);
   // Only GitLab and Bitbucket issue expiring OAuth tokens with refresh tokens.
@@ -254,18 +263,30 @@ const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, stale
   }
   // Single-flight guard (see _refreshInFlight above): GitLab refresh tokens are
   // one-time-use, so concurrent refreshes of the same connection burn each other.
-  const key = item.parameterName;
+  const key = JSON.stringify([item.parameterName, item.createdAt, item.generation]);
   const inFlight = _refreshInFlight.get(key);
   if (inFlight) return inFlight;
   const refresh = (
     gitProvider === 'bitbucket'
-      ? refreshBitbucketToken({ ssm, secrets, ddb, item, tokens })
-      : refreshGitlabToken({ ssm, secrets, ddb, item, tokens })
+      ? refreshBitbucketToken({ ssm, secrets, ddb, item, tokens, fetchImpl })
+      : refreshGitlabToken({ ssm, secrets, ddb, item, tokens, fetchImpl })
   ).finally(() => {
     _refreshInFlight.delete(key);
   });
   _refreshInFlight.set(key, refresh);
   return refresh;
+};
+
+const ensureFreshGitToken = async (options) => {
+  const { ddb, item } = options;
+  await assertCurrentGitConnection(ddb, item);
+  try {
+    return await resolveFreshGitToken(options);
+  } finally {
+    // Cover errors too: a failed old refresh must not invalidate bindings of
+    // a replacement connection. Also covers unexpired and race-recovery tokens.
+    await assertCurrentGitConnection(ddb, item);
+  }
 };
 
 // GitHub App installation tokens (GitHub-only): used platform-wide when the
@@ -361,14 +382,19 @@ const getAppPrivateKey = async (secrets) => {
   return pem;
 };
 
-const getInstallationDetails = async (secrets, appId, installationId) => {
+const getInstallationDetails = async (
+  secrets,
+  appId,
+  installationId,
+  fetchImpl = globalThis.fetch,
+) => {
   const cached = _installationAccountCache.get(installationId);
   if (cached && Date.now() - cached.fetchedAt < PEM_CACHE_TTL_MS) {
     return cached;
   }
   const privateKeyPem = await getAppPrivateKey(secrets);
   const jwt = buildAppJwt(appId, privateKeyPem);
-  const res = await fetch(
+  const res = await fetchImpl(
     `https://api.github.com/app/installations/${encodeURIComponent(installationId)}`,
     {
       method: 'GET',
@@ -401,8 +427,8 @@ const getInstallationDetails = async (secrets, appId, installationId) => {
   return details;
 };
 
-const getInstallationAccountLogin = async (secrets, appId, installationId) =>
-  (await getInstallationDetails(secrets, appId, installationId)).login;
+const getInstallationAccountLogin = async (secrets, appId, installationId, fetchImpl) =>
+  (await getInstallationDetails(secrets, appId, installationId, fetchImpl)).login;
 
 const githubAppHeaders = (jwt) => ({
   Authorization: `Bearer ${jwt}`,
@@ -425,8 +451,13 @@ const discoverGitHubInstallation = async ({ secrets, appId, repository, fetchImp
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.id) {
-    throw new Error(
-      data.message || `GitHub App is not installed for ${repository} (HTTP ${res.status})`,
+    throw Object.assign(
+      new Error(
+        data.message || `GitHub App is not installed for ${repository} (HTTP ${res.status})`,
+      ),
+      {
+        code: res.status === 404 ? 'APP_INSTALLATION_UNAVAILABLE' : 'APP_CREDENTIAL_FAILED',
+      },
     );
   }
   return {
@@ -545,6 +576,7 @@ const getInstallationToken = async ({
   installationId,
   repositories,
   permissions,
+  fetchImpl = globalThis.fetch,
 } = {}) => {
   const resolvedAppId = appId;
   const resolvedInstallationId = installationId;
@@ -567,6 +599,7 @@ const getInstallationToken = async ({
     secrets,
     resolvedAppId,
     resolvedInstallationId,
+    fetchImpl,
   );
   for (const slug of fullSlugs) {
     const owner = slug.split('/')[0];
@@ -599,7 +632,7 @@ const getInstallationToken = async ({
   const privateKeyPem = await getAppPrivateKey(secrets);
   const jwt = buildAppJwt(resolvedAppId, privateKeyPem);
   const mintBody = { repositories: scopedRepos, permissions: resolvedPermissions };
-  const res = await fetch(
+  const res = await fetchImpl(
     `https://api.github.com/app/installations/${encodeURIComponent(resolvedInstallationId)}/access_tokens`,
     {
       method: 'POST',

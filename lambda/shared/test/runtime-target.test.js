@@ -3,6 +3,23 @@ import { resolveRuntimeTarget, runtimeTargetInput } from '../runtime-target.js';
 import { laneSessionIdFor, runtimeSessionIdFor, stopRuntimeSessions } from '../intent-deletion.js';
 
 describe('runtime target snapshots', () => {
+  it('refuses native META, including a supplied environment or alleged binding', () => {
+    const meta = {
+      executionBackend: 'native',
+      environment: { runtimeArn: 'shared-runtime', runtimeEndpoint: 'DEFAULT' },
+      nativeRuntimeBinding: { status: 'READY', runtimeArn: 'alleged-native-runtime' },
+    };
+    expect(() => runtimeTargetInput(meta, 'fallback')).toThrow(
+      expect.objectContaining({ code: 'native_runtime_binding_required' }),
+    );
+  });
+
+  it.each([null, '', 'future', false])('refuses invalid backend %j', (executionBackend) => {
+    expect(() => resolveRuntimeTarget({ executionBackend }, 'fallback')).toThrow(
+      expect.objectContaining({ code: 'invalid_execution_backend' }),
+    );
+  });
+
   it('resolves the immutable runtime ARN and endpoint from execution metadata', () => {
     const meta = {
       environment: {
@@ -23,6 +40,12 @@ describe('runtime target snapshots', () => {
   it('keeps legacy executions on the deployment runtime without a qualifier', () => {
     expect(runtimeTargetInput({}, 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core')).toEqual({
       agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
+    });
+  });
+
+  it('keeps explicit platform executions on their existing fallback', () => {
+    expect(runtimeTargetInput({ executionBackend: 'platform' }, 'platform-runtime')).toEqual({
+      agentRuntimeArn: 'platform-runtime',
     });
   });
 

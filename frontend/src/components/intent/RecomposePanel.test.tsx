@@ -150,6 +150,39 @@ describe('RecomposePanel', () => {
     expect(await screen.findByTestId('stage-grid-editor')).toBeInTheDocument();
   });
 
+  it.each(['native', 'future-backend'])(
+    'disables composer and grid mutations for %s',
+    async (executionBackend) => {
+      renderPanel({ intent: intent({ executionBackend }) });
+      await screen.findByTestId('stage-grid-editor');
+      const composeButton = screen.getByTestId('recompose-ask-composer');
+      expect(composeButton).toBeDisabled();
+      await userEvent.click(composeButton);
+      for (const checkbox of screen.getAllByRole('checkbox')) {
+        expect(checkbox).toBeDisabled();
+        await userEvent.click(checkbox);
+      }
+      expect(compose).not.toHaveBeenCalled();
+      expect(recompose).not.toHaveBeenCalled();
+    },
+  );
+
+  it('honors a platform composer restriction while leaving permitted manual reshape available', async () => {
+    renderPanel({
+      intent: intent({
+        executionBackend: 'platform',
+        executionCapabilities: { workflowCompose: false },
+      }),
+    });
+    await screen.findByTestId('stage-grid-editor');
+    expect(screen.getByTestId('recompose-ask-composer')).toBeDisabled();
+    expect(
+      screen.getAllByRole('checkbox').some((checkbox) => !(checkbox as HTMLInputElement).disabled),
+    ).toBe(true);
+    await userEvent.click(screen.getByTestId('recompose-ask-composer'));
+    expect(compose).not.toHaveBeenCalled();
+  });
+
   it('locks frozen (ran) stages and initialization; a manual flip applies via /recompose', async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

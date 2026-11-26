@@ -53,9 +53,26 @@ export interface IntentFailure {
   message: string;
 }
 
+export type ExecutionCapability =
+  | 'artifactEdit'
+  | 'artifactVerify'
+  | 'quorumEdit'
+  | 'answerRevision'
+  | 'workflowRewind'
+  | 'workflowRecompose'
+  | 'workflowCompose'
+  | 'unitPullRequests'
+  | 'parallelUnits'
+  | 'nativeExport'
+  | 'derive'
+  | 'stageSkipping';
+
 export interface Intent {
   id: string;
   executionId: string;
+  // Missing on legacy platform executions. Unknown backend values fail closed in the UI.
+  executionBackend?: 'platform' | 'native' | (string & {});
+  executionCapabilities?: Partial<Record<ExecutionCapability, boolean>>;
   projectId: string;
   title: string | null;
   prompt: string | null;

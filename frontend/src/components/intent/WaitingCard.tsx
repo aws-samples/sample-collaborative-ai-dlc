@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useIntent } from '@/contexts/IntentContext';
 import { getTimeAgo } from '@/lib/timeAgo';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -43,6 +44,7 @@ export function WaitingCard({
   stageNameOf,
   rewindIntent,
 }: WaitingCardProps) {
+  const rewindBlocked = executionCapabilityReason(intent, 'workflowRewind');
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [guidance, setGuidance] = useState('');
@@ -82,6 +84,7 @@ export function WaitingCard({
   }
 
   const handleRestart = async () => {
+    if (rewindBlocked) return;
     setRewindError(null);
     setRewinding(true);
     try {
@@ -95,7 +98,7 @@ export function WaitingCard({
   };
 
   const handleRestartWithGuidance = async () => {
-    if (!guidance.trim()) return;
+    if (rewindBlocked || !guidance.trim()) return;
     setRewindError(null);
     setRewinding(true);
     try {
@@ -140,7 +143,8 @@ export function WaitingCard({
           variant="outline"
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          disabled={rewinding || !stageId}
+          disabled={Boolean(rewindBlocked) || rewinding || !stageId}
+          title={rewindBlocked ?? undefined}
           onClick={() => {
             setRewindError(null);
             setConfirmRestart(true);
@@ -153,7 +157,8 @@ export function WaitingCard({
           variant="outline"
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          disabled={rewinding || !stageId}
+          disabled={Boolean(rewindBlocked) || rewinding || !stageId}
+          title={rewindBlocked ?? undefined}
           onClick={() => {
             setRewindError(null);
             setGuidanceOpen(true);
@@ -164,6 +169,7 @@ export function WaitingCard({
         </Button>
       </div>
 
+      {rewindBlocked && <p className="mt-1 text-xs text-muted-foreground">{rewindBlocked}</p>}
       {/* Confirm restart */}
       <AlertDialog
         open={confirmRestart}
@@ -187,7 +193,10 @@ export function WaitingCard({
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={rewinding}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleRestart} disabled={rewinding}>
+            <AlertDialogAction
+              onClick={handleRestart}
+              disabled={Boolean(rewindBlocked) || rewinding}
+            >
               {rewinding ? 'Restarting…' : 'Restart'}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -228,7 +237,7 @@ export function WaitingCard({
             </DialogClose>
             <Button
               size="sm"
-              disabled={!guidance.trim() || rewinding}
+              disabled={Boolean(rewindBlocked) || !guidance.trim() || rewinding}
               onClick={handleRestartWithGuidance}
             >
               {rewinding ? 'Restarting…' : 'Restart'}

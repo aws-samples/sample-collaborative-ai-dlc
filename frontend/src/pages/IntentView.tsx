@@ -13,6 +13,7 @@ import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurati
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -118,6 +119,13 @@ export default function IntentView() {
   const { project } = useProjectCache(projectId ?? null);
   const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
   const canRepair = canDelete;
+  const rewindBlocked = executionCapabilityReason(detail?.intent, 'workflowRewind');
+  const repairBlocked = executionCapabilityReason(detail?.intent, 'parallelUnits') ?? rewindBlocked;
+  const reshapeBlocked = executionCapabilityReason(detail?.intent, 'workflowRecompose');
+  const exportBlocked = executionCapabilityReason(detail?.intent, 'nativeExport');
+  const openReshape = () => {
+    if (!reshapeBlocked) setReshapeOpen(true);
+  };
 
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -147,7 +155,7 @@ export default function IntentView() {
       ? (stageRows.find((stage) => stage.planned && stage.state === 'FAILED') ?? null)
       : null;
   const handleRecovery = async () => {
-    if (!projectId || !intentId) return;
+    if (rewindBlocked || !projectId || !intentId) return;
     setStarting(true);
     setActionError(null);
     try {
@@ -202,6 +210,7 @@ export default function IntentView() {
   };
 
   const handleRepair = async () => {
+    if (repairBlocked) return;
     setRepairing(true);
     setActionError(null);
     try {
@@ -217,6 +226,7 @@ export default function IntentView() {
   };
 
   const handleExport = async (harness?: NativeExportHarness) => {
+    if (exportBlocked) return;
     setConfirmExport(false);
     setExporting(true);
     setActionError(null);
@@ -241,6 +251,7 @@ export default function IntentView() {
   };
 
   const requestExport = (harness?: NativeExportHarness) => {
+    if (exportBlocked) return;
     setRequestedExportHarness(harness);
     setConfirmExport(true);
   };
@@ -293,8 +304,8 @@ export default function IntentView() {
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
-  const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
-  const exportUnavailableReason = 'Not available before the workflow starts';
+  const isExportable = !exportBlocked && !NON_EXPORTABLE_STATUSES.has(intent.status);
+  const exportUnavailableReason = exportBlocked ?? 'Not available before the workflow starts';
   const exportDisabled = exporting || !isExportable;
   const defaultExportHarness = intent.agentCli ?? undefined;
   const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
@@ -376,7 +387,7 @@ export default function IntentView() {
                         {EXPORT_HARNESSES.map((option) => (
                           <DropdownMenuItem
                             key={option.value}
-                            disabled={exporting}
+                            disabled={exportDisabled}
                             onClick={() => setSelectedExportHarness(option.value)}
                           >
                             <span>{option.label}</span>
@@ -439,7 +450,11 @@ export default function IntentView() {
                 Intent configuration
               </DropdownMenuItem>
               {canReshape && (
-                <DropdownMenuItem onSelect={() => setReshapeOpen(true)}>
+                <DropdownMenuItem
+                  disabled={Boolean(reshapeBlocked)}
+                  title={reshapeBlocked ?? undefined}
+                  onSelect={openReshape}
+                >
                   <GitBranch className="mr-2 h-4 w-4" />
                   Reshape remaining stages
                 </DropdownMenuItem>
@@ -467,7 +482,7 @@ export default function IntentView() {
       </div>
 
       <IntentPhaseBreadcrumb
-        onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
+        onOpenScopeDefinition={canReshape && !reshapeBlocked ? openReshape : undefined}
       />
 
       {visibleError && (
@@ -509,7 +524,8 @@ export default function IntentView() {
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"
-                disabled={repairing}
+                disabled={Boolean(repairBlocked) || repairing}
+                title={repairBlocked ?? undefined}
                 onClick={() => setConfirmRepair(true)}
               >
                 {repairing ? (
@@ -558,7 +574,8 @@ export default function IntentView() {
               )}
               <Button
                 onClick={handleRecovery}
-                disabled={starting}
+                disabled={Boolean(rewindBlocked) || starting}
+                title={rewindBlocked ?? undefined}
                 size="sm"
                 variant="outline"
                 className="shrink-0 gap-1.5"
@@ -683,7 +700,7 @@ export default function IntentView() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={exporting}
+              disabled={exportDisabled}
               onClick={(event) => {
                 event.preventDefault();
                 void handleExport(requestedExportHarness);
@@ -754,7 +771,7 @@ export default function IntentView() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={repairing}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={repairing}
+              disabled={Boolean(repairBlocked) || repairing}
               onClick={(event) => {
                 event.preventDefault();
                 void handleRepair();
@@ -769,10 +786,10 @@ export default function IntentView() {
       <IntentConfigurationDialog
         open={configurationOpen}
         onOpenChange={setConfigurationOpen}
-        onOpenReshape={canReshape ? () => setReshapeOpen(true) : undefined}
+        onOpenReshape={canReshape ? openReshape : undefined}
       />
 
-      {canReshape && (
+      {canReshape && !reshapeBlocked && (
         <RecomposePanel
           open={reshapeOpen}
           onOpenChange={setReshapeOpen}

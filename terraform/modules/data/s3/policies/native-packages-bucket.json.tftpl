@@ -1,0 +1,60 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": ["${bucket_arn}", "${bucket_arn}/*"],
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+    },
+    {
+      "Sid": "DenyOtherPackagePublishers",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": { "ArnNotEquals": { "aws:PrincipalArn": "${publisher_role_arn}" } }
+    },
+    {
+      "Sid": "DenyNonCreationPackageWrites",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": { "BoolIfExists": { "s3:ObjectCreationOperation": "false" } }
+    },
+    {
+      "Sid": "DenyPackageWritesWithoutCreationCondition",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": { "Null": { "s3:if-none-match": "true" } }
+    },
+    {
+      "Sid": "DenyPackageWritesWithOtherCreationCondition",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": { "StringNotEquals": { "s3:if-none-match": "*" } }
+    },
+    {
+      "Sid": "DenyPackageCopies",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": { "Null": { "s3:x-amz-copy-source": "false" } }
+    },
+    {
+      "Sid": "DenyPackageDeletion",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion"],
+      "Resource": "${bucket_arn}/native-packages/v1/*"
+    }
+  ]
+}

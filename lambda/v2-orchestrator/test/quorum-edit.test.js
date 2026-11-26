@@ -121,6 +121,32 @@ const approve = (approvedArtifactIds = ['a2', 'a3']) => {
 };
 
 describe('runQuorumEdit', () => {
+  it.each(['executionId', 'intentId'])(
+    'rejects a different %s on the loaded record before issuing credentials',
+    async (field) => {
+      deps.store.getExecution.mockResolvedValue({ ...META, [field]: 'another-intent' });
+      const result = await __durableHandler(EVENT, ctx, deps);
+      expect(result).toEqual({ ok: false, reason: 'execution_identity_mismatch' });
+      expect(deps.store.getQuorumEdit).not.toHaveBeenCalled();
+      expect(deps.issueAgentCredentialGrant).not.toHaveBeenCalled();
+      expect(deps.invokeRuntime).not.toHaveBeenCalled();
+      expect(deps.store.updateQuorumEdit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['native', 'unknown', null])(
+    'rejects backend %s before loading an edit or issuing credentials',
+    async (executionBackend) => {
+      deps.store.getExecution.mockResolvedValue({ ...META, executionBackend });
+      const result = await __durableHandler(EVENT, ctx, deps);
+      expect(result).toEqual({ ok: false, reason: 'execution_backend_mismatch' });
+      expect(deps.store.getQuorumEdit).not.toHaveBeenCalled();
+      expect(deps.issueAgentCredentialGrant).not.toHaveBeenCalled();
+      expect(deps.invokeRuntime).not.toHaveBeenCalled();
+      expect(deps.store.updateQuorumEdit).not.toHaveBeenCalled();
+    },
+  );
+
   it('drives plan → approval → apply → SUCCEEDED with the dedicated session', async () => {
     const run = runQuorumEdit(EVENT, ctx, deps);
     // Give the plan leg a tick, then approve.

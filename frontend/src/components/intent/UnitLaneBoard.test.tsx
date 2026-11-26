@@ -298,6 +298,27 @@ describe('UnitLaneBoardView', () => {
       />,
     );
     expect(screen.getByRole('button', { name: 'Address feedback' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Address feedback' }));
+    expect(onAddressFeedback).toHaveBeenCalledWith(props.units[0]);
+
+    onAddressFeedback.mockClear();
+    rerender(
+      <UnitLaneBoardView
+        unitPlan={props.unitPlan}
+        units={props.units}
+        streamsBySlug={{}}
+        runningStageBySlug={{}}
+        unitPrs={[{ ...pr, commentCount: 1 }]}
+        onAddressFeedback={onAddressFeedback}
+        feedbackDisabledReason="Unavailable in the native execution pilot"
+      />,
+    );
+    const feedback = screen.getByRole('button', { name: 'Address feedback' });
+    expect(feedback).toBeDisabled();
+    expect(feedback).toHaveAttribute('title', 'Unavailable in the native execution pilot');
+    fireEvent.click(feedback);
+    expect(onAddressFeedback).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: 'Open owner/api pull request' })).toBeInTheDocument();
   });
 
   it('keeps repeated unit slugs distinct across sections and shows repository PR state', () => {

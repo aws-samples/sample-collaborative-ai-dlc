@@ -38,6 +38,7 @@ import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js'
 import { commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import { isPlatformExecution } from '../shared/execution-backend.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import {
   planSegments,
@@ -342,6 +343,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     store.getExecution(executionId, { consistentRead: true }),
   );
   if (!meta) return { ok: false, reason: 'execution_not_found' };
+  if (!isPlatformExecution(meta)) {
+    return { ok: false, reason: 'execution_backend_mismatch' };
+  }
+  if (meta.executionId !== executionId || meta.intentId !== intentId) {
+    return { ok: false, reason: 'execution_identity_mismatch' };
+  }
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
   const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
 

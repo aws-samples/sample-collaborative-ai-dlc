@@ -1,8 +1,15 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
-data "aws_ecr_authorization_token" "token" {}
-
+resource "terraform_data" "native_probe_configuration" {
+  count = var.enable_native_interaction_probe ? 1 : 0
+  lifecycle {
+    precondition {
+      condition     = var.environment == "dev"
+      error_message = "The native interaction experiment is restricted to dev."
+    }
+  }
+}
 # AZ names are randomized per account; AZ IDs (use1-az1, …) are stable. We map the
 # region's AgentCore-supported AZ IDs to the names that exist in THIS account so the
 # runtime only ever lands in AZs where AgentCore VPC mode is available.
@@ -16,6 +23,7 @@ data "aws_availability_zones" "available" {
 # this is the single awscc resource. The kreuzwerker/docker provider is reused for
 # the (ARM64) image build, mirroring the compute/agents + realtime/yjs-server modules.
 terraform {
+  required_version = ">= 1.7"
   required_providers {
     docker = {
       source  = "kreuzwerker/docker"
@@ -32,15 +40,22 @@ provider "docker" {
   # Support for Podman via DOCKER_HOST environment variable (e.g., unix:///path/to/podman.sock)
   # If DOCKER_HOST is not set, defaults to the standard Docker socket
   registry_auth {
-    address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, data.aws_partition.current.dns_suffix)
-    username = data.aws_ecr_authorization_token.token.user_name
-    password = data.aws_ecr_authorization_token.token.password
+    address = local.ecr_registry_address
+    # Suppress DOCKER_REGISTRY_USER/PASS defaults, which otherwise take priority.
+    username = ""
+    password = ""
+    # Resolve credentials again when applying a saved plan. An ECR token data
+    # source would embed the plan-time password, which expires after 12 hours.
+    config_file_content = jsonencode({
+      credHelpers = { (local.ecr_registry_address) = "ecr-login" }
+    })
   }
 }
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  ecr_registry_address = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, data.aws_partition.current.dns_suffix)
+  partition            = data.aws_partition.current.partition
+  dns_suffix           = data.aws_partition.current.dns_suffix
 
   # Build context is the repo `lambda/` dir so the image can COPY both the
   # agentcore package and the shared/ helpers it imports via ../shared.
@@ -66,7 +81,8 @@ locals {
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
   agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
-  agentcore_image_tag     = substr(local.agentcore_files_sha, 0, 16)
+  # The optional fixture changes image bytes independently of application code.
+  agentcore_image_tag = substr(sha1("${local.agentcore_files_sha}:${var.enable_native_interaction_probe}"), 0, 16)
 
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
@@ -192,25 +208,42 @@ resource "aws_ecr_lifecycle_policy" "managed_environments" {
   })
 }
 
-module "agentcore_docker_build" {
-  source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
-  version = "~> 8.0"
+# The previous build resource stored keep_remotely=false. Updating that flag
+# alongside an image replacement would still delete the OLD image using its
+# old state. Forget the old build resources without calling their destroy
+# handlers, then manage future builds with remote retention enabled.
+removed {
+  from = module.agentcore_docker_build
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+module "agentcore_image_build" {
+  source     = "terraform-aws-modules/lambda/aws//modules/docker-build"
+  version    = "~> 8.0"
+  depends_on = [terraform_data.native_probe_configuration]
 
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.agentcore.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
 
   use_image_tag    = true
+  keep_remotely    = true
   image_tag        = local.agentcore_image_tag
   source_path      = local.agentcore_source_path
   docker_file_path = "${local.agentcore_source_path}/agentcore/Dockerfile"
   # AgentCore Runtime runs arm64 only.
-  platform   = "linux/arm64"
-  builder    = "default"
-  build_args = var.docker_build_args
+  platform = "linux/arm64"
+  builder  = "default"
+  build_args = merge(var.docker_build_args, {
+    ENABLE_NATIVE_INTERACTION_PROBE = tostring(var.enable_native_interaction_probe)
+  })
 
   triggers = {
-    dir_sha = local.agentcore_files_sha
+    dir_sha                  = local.agentcore_files_sha
+    native_interaction_probe = tostring(var.enable_native_interaction_probe)
   }
 }
 
@@ -218,7 +251,7 @@ data "aws_ecr_image" "agentcore" {
   repository_name = aws_ecr_repository.agentcore.name
   image_tag       = local.agentcore_image_tag
 
-  depends_on = [module.agentcore_docker_build]
+  depends_on = [module.agentcore_image_build]
 }
 
 # ---------------------------------------------------------------------------
@@ -661,26 +694,34 @@ resource "aws_security_group" "agentcore" {
 
 locals {
   runtime_environment_variables = {
-    V2_WORKSPACE_DIR              = "/mnt/workspace"
-    V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
-    BLOCKS_TABLE                  = var.blocks_table_name
-    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    CONNECTIONS_TABLE             = var.connections_table_name
-    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
-    AIDLC_REPO_REF                = var.aidlc_repo_ref
-    BEDROCK_MODEL                 = var.bedrock_model
-    AWS_REGION                    = var.aws_region
-    CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
-    SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
-    RUNTIME_COMPATIBILITY_VERSION = "1"
-    POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
-    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    V2_WORKSPACE_DIR                 = "/mnt/workspace"
+    V2_PROCESS_TABLE                 = aws_dynamodb_table.v2_executions.name
+    BLOCKS_TABLE                     = var.blocks_table_name
+    ARTIFACTS_BUCKET                 = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT                 = var.neptune_endpoint
+    CONNECTIONS_TABLE                = var.connections_table_name
+    WEBSOCKET_ENDPOINT               = var.websocket_endpoint
+    AIDLC_REPO_REF                   = var.aidlc_repo_ref
+    BEDROCK_MODEL                    = var.bedrock_model
+    AWS_REGION                       = var.aws_region
+    CREDENTIAL_BROKER_FUNCTION       = "${var.project_name}-credential-broker-${var.environment}"
+    SOURCE_CONTROL_FUNCTION          = "${var.project_name}-source-control-${var.environment}"
+    MCP_SECRETS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    RUNTIME_COMPATIBILITY_VERSION    = "1"
+    NATIVE_INTERACTION_PROBE_ENABLED = tostring(var.enable_native_interaction_probe)
+    POWERTOOLS_SERVICE_NAME          = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL             = var.powertools_log_level
   }
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
+  depends_on = [
+    terraform_data.native_efs_probe_configuration,
+    aws_efs_mount_target.native_probe,
+    aws_efs_file_system_policy.native_probe,
+    aws_iam_role_policy.native_efs_probe,
+  ]
+
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).
@@ -715,7 +756,15 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   # image + mount) until stopped/idle-reaped, and the mount is re-attached by
   # session id afterwards. Rewind/cancel therefore stop the session explicitly
   # (lambda/intents) so relaunches pick up the current image.
-  filesystem_configurations = [{ session_storage = { mount_path = "/mnt/workspace" } }]
+  filesystem_configurations = concat(
+    [{ session_storage = { mount_path = "/mnt/workspace" } }],
+    local.native_efs_probe_enabled ? [{
+      efs_access_point = {
+        access_point_arn = aws_efs_access_point.native_probe[0].arn
+        mount_path       = "/mnt/native"
+      }
+    }] : [],
+  )
 
   # idle 900s: with park/resume a parked question lets the session idle and free
   # compute after 15 min (the resume lambda may also StopRuntimeSession sooner).
@@ -723,7 +772,12 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   # mid-park is now recoverable from the persistent mount. idle must be <= max.
   lifecycle_configuration = { idle_runtime_session_timeout = 900, max_lifetime = 28800 }
 
-  environment_variables = local.runtime_environment_variables
+  # Probe-only settings must not enter the environment exported to managed
+  # runtimes, which do not mount this synthetic access point.
+  environment_variables = merge(local.runtime_environment_variables, local.native_efs_probe_enabled ? {
+    NATIVE_INTERACTION_WORKSPACE_DIR = "/mnt/native"
+    NATIVE_INTERACTION_REQUIRE_EFS   = "true"
+  } : {})
 
   tags = var.tags
 }

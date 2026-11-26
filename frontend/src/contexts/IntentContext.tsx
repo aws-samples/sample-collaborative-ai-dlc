@@ -10,6 +10,10 @@ import {
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useParams } from 'react-router';
 import {
+  executionCapabilityReason,
+  executionGateResponseReason,
+} from '@/lib/executionCapabilities';
+import {
   intentsService,
   type GateAnswer,
   type Intent,
@@ -256,7 +260,7 @@ export function IntentProvider({
   activeIntentRef.current = intentId;
 
   const load = useCallback(async () => {
-    if (!projectId || !intentId) return;
+    if (!projectId || !intentId || activeIntentRef.current !== intentId) return;
     try {
       const dto = await intentsService.get(projectId, intentId);
       if (activeIntentRef.current !== intentId) return;
@@ -310,6 +314,7 @@ export function IntentProvider({
   }, [projectId, intentId]);
 
   useEffect(() => {
+    activeIntentRef.current = intentId;
     outputBufRef.current = new Map();
     outputRowsRef.current = new Map();
     panesRef.current = new Map();
@@ -345,6 +350,11 @@ export function IntentProvider({
       setLiveGates(new Map());
       setLoading(false);
     }
+    // Native routes unmount this platform provider. Late platform fetches must
+    // not populate the cache or start workflow loads after that boundary.
+    return () => {
+      activeIntentRef.current = '';
+    };
   }, [projectId, intentId, load]);
 
   // Polling backstop. Lifecycle/failure transitions are broadcast live by the
@@ -410,7 +420,7 @@ export function IntentProvider({
   // broadcast, so REST can fill every frame missed while the socket was down.
   const syncOutputs = useCallback(
     (key: string) => {
-      if (!projectId || !intentId) return;
+      if (!projectId || !intentId || activeIntentRef.current !== intentId) return;
       const pane = paneOf(key);
       if (pane.status === 'loading') return;
       const initial = pane.status === 'unseeded';
@@ -584,19 +594,23 @@ export function IntentProvider({
   const answerGate = useCallback(
     async (gate: IntentGate, input: GateAnswer) => {
       if (!projectId || !intentId) return;
+      const reason = executionGateResponseReason(detail?.intent, gate);
+      if (reason) throw new Error(reason);
       await intentsService.answerGate(projectId, intentId, gate.humanTaskId, input);
       await load();
     },
-    [projectId, intentId, load],
+    [projectId, intentId, load, detail?.intent],
   );
 
   const reviseGate = useCallback(
     async (gate: IntentGate, message: string) => {
       if (!projectId || !intentId) return;
+      const reason = executionCapabilityReason(detail?.intent, 'answerRevision');
+      if (reason) throw new Error(reason);
       await intentsService.reviseGate(projectId, intentId, gate.humanTaskId, message);
       await load();
     },
-    [projectId, intentId, load],
+    [projectId, intentId, load, detail?.intent],
   );
 
   const cancelIntent = useCallback(async () => {
@@ -615,13 +629,15 @@ export function IntentProvider({
   const rewindIntent = useCallback(
     async (fromStageId: string, guidance?: string) => {
       if (!projectId || !intentId) return;
+      const reason = executionCapabilityReason(detail?.intent, 'workflowRewind');
+      if (reason) throw new Error(reason);
       await intentsService.rewind(projectId, intentId, {
         fromStageId,
         ...(guidance ? { guidance } : {}),
       });
       await load();
     },
-    [projectId, intentId, load],
+    [projectId, intentId, load, detail?.intent],
   );
 
   const focusOutput = useCallback(

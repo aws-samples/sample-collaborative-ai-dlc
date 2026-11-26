@@ -7,6 +7,7 @@ import { useIntent } from '@/contexts/IntentContext';
 import { useCollaborativeArtifactContent } from '@/hooks/useCollaborativeArtifactContent';
 import { intentsService, type IntentArtifact } from '@/services/intents';
 import { generateColor } from '@/utils/colors';
+import { useArtifactEditability } from './ArtifactEditControls';
 
 // Inline collaborative markdown editor for a v2 artifact (post-hoc document
 // editing). Yjs doc `intent-artifact-{intentId}-{artifactId}` — live remote
@@ -22,6 +23,7 @@ export function ArtifactContentEditor({
   onDone: () => void;
 }) {
   const { projectId, intentId, reload } = useIntent();
+  const blocked = useArtifactEditability(artifact);
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [finishing, setFinishing] = useState(false);
@@ -34,8 +36,9 @@ export function ArtifactContentEditor({
       artifactId: artifact.id,
       userName,
       userColor: generateColor(userName || artifact.id),
-      enabled: true,
+      enabled: !blocked,
       onAutoSave: async (value) => {
+        if (blocked) return;
         try {
           await intentsService.updateArtifactContent(projectId, intentId, artifact.id, value);
           setSaveError(null);
@@ -56,6 +59,10 @@ export function ArtifactContentEditor({
   }, [synced, initContent, artifact.content]);
 
   const finish = async () => {
+    if (blocked) {
+      onDone();
+      return;
+    }
     setFinishing(true);
     try {
       const value = getContent();
@@ -77,15 +84,20 @@ export function ArtifactContentEditor({
         yText={contentText}
         awareness={awareness}
         value={content}
-        disabled={!synced}
+        disabled={Boolean(blocked) || !synced}
         placeholder={synced ? 'Document content (markdown)…' : 'Connecting…'}
         className="min-h-64 rounded-md border bg-background p-3 font-mono text-xs leading-relaxed"
         rows={18}
       />
       <div className="flex items-center gap-2">
-        <Button size="sm" className="h-7 gap-1.5" onClick={finish} disabled={finishing || !synced}>
+        <Button
+          size="sm"
+          className="h-7 gap-1.5"
+          onClick={finish}
+          disabled={finishing || (!blocked && !synced)}
+        >
           {finishing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-          Done
+          {blocked ? 'Close editor' : 'Done'}
         </Button>
         {!synced && <span className="text-[11px] text-muted-foreground">Connecting…</span>}
         {remoteUsers.size > 0 && (
@@ -96,7 +108,7 @@ export function ArtifactContentEditor({
         )}
         {saveError && <span className="text-[11px] text-destructive">{saveError}</span>}
         <span className="ml-auto text-[10px] text-muted-foreground/60">
-          Auto-saves as you type · downstream artifacts get a “possibly stale” marker
+          {blocked ?? 'Auto-saves as you type · downstream artifacts get a “possibly stale” marker'}
         </span>
       </div>
     </div>

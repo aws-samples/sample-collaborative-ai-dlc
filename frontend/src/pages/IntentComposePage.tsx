@@ -17,6 +17,7 @@ import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -86,6 +87,8 @@ function IntentComposePageContent() {
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
 
   const [intent, setIntent] = useState<Intent | null>(null);
+  const composeBlocked = executionCapabilityReason(intent, 'workflowCompose');
+  const gridBlocked = composeBlocked ?? executionCapabilityReason(intent, 'stageSkipping');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -372,7 +375,7 @@ function IntentComposePageContent() {
   const [showGridEditor, setShowGridEditor] = useState(false);
 
   const toggleGridStage = (stageId: string) => {
-    if (!draftReady || lockedStageIds.has(stageId)) return;
+    if (gridBlocked || !draftReady || lockedStageIds.has(stageId)) return;
     // First customization materializes the scope's projection into a composed
     // grid (initialization pinned EXECUTE) so the flip has a total baseline.
     // Legacy deselections are folded into the grid at the same moment — after
@@ -389,14 +392,14 @@ function IntentComposePageContent() {
   };
 
   const resetGridToScope = (nextScope: string) => {
-    if (!draftReady) return;
+    if (composeBlocked || !draftReady) return;
     draft.setScope(nextScope);
     draft.setComposedGrid(null);
     draft.setSkipStageIds(null);
   };
 
   const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
-    if (!draftReady) return;
+    if (composeBlocked || !draftReady) return;
     if (proposal.mode === 'matched') {
       resetGridToScope(proposal.scope);
     } else if (proposal.grid) {
@@ -754,7 +757,7 @@ function IntentComposePageContent() {
                     // Picking a stock scope leaves any composed grid behind.
                     if (v) resetGridToScope(v);
                   }}
-                  disabled={!draftReady || scopeOptions.length === 0}
+                  disabled={Boolean(composeBlocked) || !draftReady || scopeOptions.length === 0}
                 >
                   <SelectTrigger id="draft-scope">
                     <SelectValue
@@ -780,9 +783,12 @@ function IntentComposePageContent() {
                     projectId={projectId}
                     intentId={intentId}
                     agentCli={selectedCli}
-                    disabled={starting || !draftReady}
+                    disabled={Boolean(composeBlocked) || starting || !draftReady}
                     onApply={applyProposal}
                   />
+                  {composeBlocked && (
+                    <p className="mt-1 text-xs text-muted-foreground">{composeBlocked}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -797,7 +803,7 @@ function IntentComposePageContent() {
                     type="button"
                     className="ml-auto text-xs underline text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="grid-reset"
-                    disabled={starting || !draftReady}
+                    disabled={Boolean(gridBlocked) || starting || !draftReady}
                     onClick={() => {
                       const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
                         ? scope.replace(/-custom$/, '')
@@ -857,8 +863,10 @@ function IntentComposePageContent() {
                 <button
                   type="button"
                   onClick={() => setShowGridEditor((v) => !v)}
-                  className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
+                  className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
                   data-testid="grid-editor-toggle"
+                  disabled={Boolean(gridBlocked)}
+                  title={gridBlocked ?? undefined}
                 >
                   {showGridEditor ? (
                     <ChevronDown className="h-3.5 w-3.5" />
@@ -880,7 +888,7 @@ function IntentComposePageContent() {
                       phaseNames={phaseNames}
                       grid={effectiveGrid}
                       lockedStageIds={lockedStageIds}
-                      disabled={starting || !draftReady}
+                      disabled={Boolean(gridBlocked) || starting || !draftReady}
                       onToggle={toggleGridStage}
                     />
                   </div>

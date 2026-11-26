@@ -68,6 +68,7 @@ export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply 
   }, [pending, reload]);
 
   const startCompose = async (input: { reportKey?: string } = {}) => {
+    if (disabled) return;
     setBusy(true);
     setError(null);
     try {
@@ -86,6 +87,7 @@ export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply 
   };
 
   const uploadReport = async (file: File) => {
+    if (disabled) return;
     setUploading(true);
     setError(null);
     try {
@@ -231,6 +233,7 @@ export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply 
               type="button"
               size="sm"
               onClick={() => {
+                if (disabled) return;
                 onApply(latest.proposal!);
                 setAppliedId(latest.composeId);
               }}

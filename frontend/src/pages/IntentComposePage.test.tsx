@@ -258,6 +258,24 @@ describe('IntentComposePage', () => {
     expect(summary.textContent).toContain('5 stages fan out per unit of work');
   });
 
+  it('disables native draft composition and stage customization', async () => {
+    get.mockResolvedValue(draftIntent({ executionBackend: 'native' }));
+    renderPage();
+    await screen.findByTestId('scope-summary');
+    const customize = screen.getByTestId('grid-editor-toggle');
+    expect(customize).toBeDisabled();
+    await userEvent.click(customize);
+    expect(screen.queryByTestId('stage-grid-editor')).not.toBeInTheDocument();
+    expect(screen.getByTestId('compose-instructions')).toBeDisabled();
+    const composePanel = screen.getByTestId('compose-panel');
+    for (const button of composePanel.querySelectorAll('button')) {
+      expect(button).toBeDisabled();
+      await userEvent.click(button);
+    }
+    expect(compose).not.toHaveBeenCalled();
+    expect(composeReportUpload).not.toHaveBeenCalled();
+    expect(setComposedGrid).not.toHaveBeenCalled();
+  });
   it('previews a composed grid through validate-grid instead of the scope preview', async () => {
     draftState.composedGrid = { a: 'EXECUTE', b: 'SKIP' };
     draftState.scope = 'my-custom';

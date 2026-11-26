@@ -3,6 +3,15 @@
 const VERSION = 1;
 const PREFIX = `aidlc-cache:v${VERSION}:`;
 const MAX_AGE_MS = 10 * 60 * 1000;
+const clearListeners = new Set<() => void>();
+
+/** In-memory sensitive caches share the logout boundary with persisted caches. */
+export function onCacheCleared(listener: () => void): () => void {
+  clearListeners.add(listener);
+  return () => {
+    clearListeners.delete(listener);
+  };
+}
 
 interface PersistedEnvelope<T> {
   data: T;
@@ -49,6 +58,7 @@ export function persist<T>(key: string, entry: { data: T; fetchedAt: number }): 
 
 /** Remove all `aidlc-cache:*` keys from sessionStorage. Call on logout. */
 export function clearPersistedCache(): void {
+  clearListeners.forEach((listener) => listener());
   try {
     const toRemove: string[] = [];
     for (let i = 0; i < sessionStorage.length; i++) {

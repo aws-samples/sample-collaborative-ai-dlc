@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   BatchWriteCommand,
   GetCommand,
@@ -6,6 +7,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { buildGitConnectionConditionCheck, rowProvider } from './git-connection-store.js';
 
 const CREDENTIAL_REF_INDEX = 'CredentialRefIndex';
 const ACTIVE = 'active';
@@ -73,6 +75,9 @@ const prepareBinding = (binding, { actor, now = new Date().toISOString() } = {})
   const canonical = canonicalRepo(binding.provider, binding.repo);
   return {
     ...binding,
+    // Re-verification always creates a new revision, including when all other
+    // values and timestamps are unchanged or the caller supplies an old UUID.
+    revision: randomUUID(),
     repo: String(binding.repo).trim(),
     canonicalRepo: canonical,
     bindingKey: bindingKeyFor(binding.provider, canonical),
@@ -193,33 +198,145 @@ const deleteProjectBindings = async (ddb, projectId) => {
   return existing.length;
 };
 
-const markBindingInvalid = async (
-  ddb,
-  binding,
-  reason,
-  { actor = 'system', now = new Date().toISOString() } = {},
-) => {
-  await ddb.send(
-    new UpdateCommand({
-      TableName: tableName(),
-      Key: { projectId: binding.projectId, bindingKey: binding.bindingKey },
-      UpdateExpression:
-        'SET #status = :invalid, invalidReason = :reason, invalidatedAt = :now, invalidatedBy = :actor, updatedAt = :now, updatedBy = :actor',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':invalid': INVALID,
-        ':reason': reason || 'credential_invalid',
-        ':now': now,
-        ':actor': actor,
-      },
-    }),
-  );
+// Legacy bindings have no revision. Match their observed identity/verification
+// state and require revision to remain absent. All new writes assign a UUID, so
+// a re-verification or delete/re-add cannot match this legacy fingerprint.
+const LEGACY_INVALIDATION_FIELDS = [
+  'provider',
+  'repo',
+  'canonicalRepo',
+  'authType',
+  'credentialRef',
+  'connectionUserId',
+  'connectionCreatedAt',
+  'connectionIdentity',
+  'installationId',
+  'capabilities',
+  'createdAt',
+  'createdBy',
+  'updatedAt',
+  'updatedBy',
+  'verifiedAt',
+  'verifiedBy',
+  'status',
+  'invalidReason',
+  'invalidatedAt',
+  'invalidatedBy',
+];
+const bindingInvalidationCondition = (binding) => {
+  if (!binding?.projectId || !binding?.bindingKey) {
+    throw new Error('Invalidation requires an inspected binding');
+  }
+  const names = { '#projectId': 'projectId', '#bindingKey': 'bindingKey', '#revision': 'revision' };
+  const values = {};
+  const conditions = ['attribute_exists(#projectId)', 'attribute_exists(#bindingKey)'];
+  if (binding.revision !== undefined) {
+    if (typeof binding.revision !== 'string' || !binding.revision) {
+      throw new Error('Invalid binding revision');
+    }
+    conditions.push('#revision = :observedRevision');
+    values[':observedRevision'] = binding.revision;
+  } else {
+    conditions.push('attribute_not_exists(#revision)');
+    for (const [index, field] of [
+      ...new Set([...LEGACY_INVALIDATION_FIELDS, ...Object.keys(binding)]),
+    ].entries()) {
+      const name = `#observed${index}`;
+      names[name] = field;
+      if (binding[field] === undefined) {
+        conditions.push(`attribute_not_exists(${name})`);
+      } else {
+        const value = `:observed${index}`;
+        conditions.push(`${name} = ${value}`);
+        values[value] = binding[field];
+      }
+    }
+  }
+  return {
+    ConditionExpression: conditions.join(' AND '),
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  };
+};
+
+const invalidationConditionFailed = (error) =>
+  error?.name === 'ConditionalCheckFailedException' ||
+  (error?.name === 'TransactionCanceledException' &&
+    error.CancellationReasons?.some((reason) => reason.Code === 'ConditionalCheckFailed') &&
+    error.CancellationReasons.every(
+      (reason) => reason.Code === 'None' || reason.Code === 'ConditionalCheckFailed',
+    ));
+
+const invalidationConnectionCheck = (snapshot, credentialRef) => {
+  const check = buildGitConnectionConditionCheck(snapshot);
+  if (credentialRef !== oauthCredentialRef(rowProvider(snapshot), snapshot.userId)) {
+    throw new Error('Connection snapshot does not match the OAuth credential reference');
+  }
+  return check;
+};
+
+const markBindingInvalid = async (ddb, binding, reason, options = {}) => {
+  const { actor = 'system', now = new Date().toISOString(), connectionSnapshot } = options;
+  const condition = bindingInvalidationCondition(binding);
+  const connectionCheck = Object.hasOwn(options, 'connectionSnapshot')
+    ? invalidationConnectionCheck(connectionSnapshot, binding.credentialRef)
+    : null;
+  if (binding.status === 'deleted') return false;
+  if (
+    connectionCheck &&
+    (binding.provider !== rowProvider(connectionSnapshot) ||
+      binding.authType !== `${rowProvider(connectionSnapshot)}-oauth` ||
+      binding.connectionUserId !== connectionSnapshot.userId)
+  )
+    return false;
+  const update = {
+    TableName: tableName(),
+    Key: { projectId: binding.projectId, bindingKey: binding.bindingKey },
+    ConditionExpression: condition.ConditionExpression,
+    UpdateExpression:
+      'SET #status = :invalid, invalidReason = :reason, invalidatedAt = :now, invalidatedBy = :actor, updatedAt = :now, updatedBy = :actor, #revision = :nextRevision',
+    ExpressionAttributeNames: { ...condition.ExpressionAttributeNames, '#status': 'status' },
+    ExpressionAttributeValues: {
+      ...condition.ExpressionAttributeValues,
+      ':invalid': INVALID,
+      ':reason': reason || 'credential_invalid',
+      ':now': now,
+      ':actor': actor,
+      ':nextRevision': randomUUID(),
+    },
+  };
+  try {
+    await ddb.send(
+      connectionCheck
+        ? new TransactWriteCommand({
+            TransactItems: [{ ConditionCheck: connectionCheck }, { Update: update }],
+          })
+        : new UpdateCommand(update),
+    );
+    return true;
+  } catch (error) {
+    if (invalidationConditionFailed(error)) return false;
+    throw error;
+  }
 };
 
 const invalidateBindingsByCredentialRef = async (ddb, credentialRef, reason, options = {}) => {
-  const bindings = await listBindingsByCredentialRef(ddb, credentialRef);
-  await Promise.all(bindings.map((binding) => markBindingInvalid(ddb, binding, reason, options)));
-  return bindings.length;
+  if (Object.hasOwn(options, 'connectionSnapshot')) {
+    invalidationConnectionCheck(options.connectionSnapshot, credentialRef);
+  }
+  // Disconnect captures dependencies before revoking the connection. Reusing
+  // those inspected revisions revokes unchanged grants even if reconnect wins
+  // before cleanup, while protecting bindings verified after the snapshot.
+  const bindings = Object.hasOwn(options, 'inspectedBindings')
+    ? options.inspectedBindings
+    : await listBindingsByCredentialRef(ddb, credentialRef);
+  if (!Array.isArray(bindings)) throw new Error('Inspected bindings must be an array');
+  const invalidated = await Promise.all(
+    bindings
+      .filter((binding) => binding.credentialRef === credentialRef)
+      .map((binding) => markBindingInvalid(ddb, binding, reason, options)),
+  );
+  return invalidated.filter(Boolean).length;
 };
 
 const invalidateProjectBindingsByDelegator = async (
@@ -235,8 +352,10 @@ const invalidateProjectBindingsByDelegator = async (
     (binding) =>
       binding.authType?.endsWith('-oauth') && binding.connectionUserId === connectionUserId,
   );
-  await Promise.all(dependent.map((binding) => markBindingInvalid(ddb, binding, reason, options)));
-  return dependent.length;
+  const invalidated = await Promise.all(
+    dependent.map((binding) => markBindingInvalid(ddb, binding, reason, options)),
+  );
+  return invalidated.filter(Boolean).length;
 };
 
 // Error codes safe to log/emit. Codes are attached via Object.assign on
@@ -248,6 +367,7 @@ const KNOWN_ERROR_CODES = Object.freeze([
   'APP_CREDENTIAL_FAILED',
   'APP_INSTALLATION_UNAVAILABLE',
   'BINDING_INVALID',
+  'CONNECTION_CHANGED',
   'CONNECTION_REQUIRED',
   'CREDENTIAL_REFRESH_FAILED',
   'DELEGATION_CONFIRMATION_REQUIRED',
@@ -277,6 +397,7 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
 
 const invalidationReasonForError = (error) => {
   const code = error?.code;
+  if (code === 'CONNECTION_CHANGED') return null;
   if (code === 'CONNECTION_REQUIRED') return 'oauth_connection_unavailable';
   if (code === 'MISSING_SCOPES') return 'oauth_scopes_missing';
   if (code === 'CREDENTIAL_REFRESH_FAILED') return 'oauth_refresh_failed';

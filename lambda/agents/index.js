@@ -58,6 +58,7 @@ import {
   authorizeLegacySprintRead,
   fetchProjectIdForExecution,
 } from '../shared/legacy-authz.js';
+import { handleNativeInteractionProbe } from './native-interaction-probe.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -343,6 +344,14 @@ async function refreshModelPricing() {
 // --- Handler ---
 
 export const handler = async (event, context) => {
+  // Direct operator/IAM invocation only; validate before generic event logging.
+  if (event?.operation === 'native-interaction-probe') {
+    return handleNativeInteractionProbe(event, {
+      ssm,
+      agentcore,
+      runtimeTarget: coreRuntimeTarget(),
+    });
+  }
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
@@ -528,6 +537,8 @@ export const handler = async (event, context) => {
       const stageSkippingPath = `${prefix}/stage-skipping`;
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
+      const nativeDebugArchivesEnabledPath = `${prefix}/native-debug-archives-enabled`;
+      const nativeDebugArchiveRetentionDaysPath = `${prefix}/native-debug-archive-retention-days`;
       try {
         const [result, platformCredentialStatus] = await Promise.all([
           ssm.send(
@@ -540,6 +551,8 @@ export const handler = async (event, context) => {
                 stageSkippingPath,
                 composeLlmBypassPath,
                 prStrategyPath,
+                nativeDebugArchivesEnabledPath,
+                nativeDebugArchiveRetentionDaysPath,
               ],
               WithDecryption: true,
             }),
@@ -562,6 +575,14 @@ export const handler = async (event, context) => {
         const composeLlmBypass =
           byName[composeLlmBypassPath] === 'disabled' ? 'disabled' : 'enabled';
         const prStrategy = byName[prStrategyPath] === 'pr-per-unit' ? 'pr-per-unit' : 'intent-pr';
+        // Optional debug archive preferences only. These do not control native
+        // enablement or required recovery for unfinished/resumable work.
+        const nativeDebugArchivesEnabled = byName[nativeDebugArchivesEnabledPath] === 'true';
+        const rawRetentionDays = byName[nativeDebugArchiveRetentionDaysPath] || '';
+        const nativeDebugArchiveRetentionDays =
+          /^[1-9]\d*$/.test(rawRetentionDays) && Number.isSafeInteger(Number(rawRetentionDays))
+            ? Number(rawRetentionDays)
+            : 7;
         // Custom MCP servers may carry secrets in env/headers — only expose the
         // raw config to platform admins (the only ones who can edit it). Others
         // get an empty object so the non-secret settings fields still load.
@@ -619,6 +640,8 @@ export const handler = async (event, context) => {
           stageSkipping,
           composeLlmBypass,
           prStrategy,
+          nativeDebugArchivesEnabled,
+          nativeDebugArchiveRetentionDays,
           customMcpServers,
           customMcpServerNames,
           mcpSecretsSet,
@@ -637,6 +660,28 @@ export const handler = async (event, context) => {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const input = JSON.parse(body || '{}');
       const errors = [];
+
+      // Validate the whole debug preference update before any settings writes.
+      // Omitting either field preserves its stored value.
+      if (
+        input.nativeDebugArchivesEnabled !== undefined &&
+        typeof input.nativeDebugArchivesEnabled !== 'boolean'
+      ) {
+        return response(400, {
+          error: 'Invalid nativeDebugArchivesEnabled value',
+          issues: ['nativeDebugArchivesEnabled must be a boolean'],
+        });
+      }
+      if (
+        input.nativeDebugArchiveRetentionDays !== undefined &&
+        (!Number.isSafeInteger(input.nativeDebugArchiveRetentionDays) ||
+          input.nativeDebugArchiveRetentionDays < 1)
+      ) {
+        return response(400, {
+          error: 'Invalid nativeDebugArchiveRetentionDays value',
+          issues: ['nativeDebugArchiveRetentionDays must be a positive safe integer of days'],
+        });
+      }
 
       if (typeof input.bedrockBearerToken === 'string') {
         // Empty string clears the token (stored as literal "placeholder" sentinel)
@@ -817,6 +862,26 @@ export const handler = async (event, context) => {
         } catch (err) {
           logger.error('[settings] Failed to write PR strategy', err);
           errors.push('prStrategy: ' + err.message);
+        }
+      }
+
+      for (const [field, parameter] of [
+        ['nativeDebugArchivesEnabled', 'native-debug-archives-enabled'],
+        ['nativeDebugArchiveRetentionDays', 'native-debug-archive-retention-days'],
+      ]) {
+        if (input[field] === undefined) continue;
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/${parameter}`,
+              Value: String(input[field]),
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          logger.error(`[settings] Failed to write ${field}`, err);
+          errors.push(`${field}: ${err.message}`);
         }
       }
 

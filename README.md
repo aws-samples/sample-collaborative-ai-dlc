@@ -154,9 +154,17 @@ Full documentation lives at [aws-samples.github.io/sample-collaborative-ai-dlc](
 | Tool      | Version       |
 | --------- | ------------- |
 | Node.js   | 22+           |
-| Terraform | 1.4+          |
+| Terraform | 1.7+          |
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
+| Amazon ECR credential helper | `docker-credential-ecr-login` on `PATH` |
+
+Terraform resolves registry credentials through the ECR helper at plan and apply
+time, so saved plans do not reuse an expired plan-time registry password. Install
+it with `brew install docker-credential-helper-ecr` on macOS or
+`sudo apt install amazon-ecr-credential-helper` on Debian/Ubuntu. Use the intended
+AWS deployment profile when applying; no manual Docker login or Docker config
+changes are needed.
 
 ### Using an alternative container runtime
 
@@ -293,6 +301,10 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ```
 
 The plan is rejected in both phases if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table.
+
+If an apply fails after completing some resources, create and review a new plan
+against the updated state before retrying. The old saved plan may be stale even
+though the overall deployment failed.
 
 <details>
 <summary>Variable overrides, environment variables, and manual-path caveats</summary>

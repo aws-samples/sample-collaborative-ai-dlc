@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, Link } from 'react-router';
 
 import { shouldDefaultOpen } from './AppShell';
 
@@ -20,6 +20,10 @@ describe('shouldDefaultOpen', () => {
 
   it('returns false for new intent creation', () => {
     expect(shouldDefaultOpen('/space/p1/intent/new')).toBe(false);
+  });
+  it('returns false for native preparation and creation routes', () => {
+    expect(shouldDefaultOpen('/space/p1/native-intent/i1')).toBe(false);
+    expect(shouldDefaultOpen('/space/p1/native-intent/new')).toBe(false);
   });
 
   it('returns false for intent graph', () => {
@@ -118,9 +122,15 @@ import { AppShell } from './AppShell';
 function renderAtRoute(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <Link to="/space/p1/native-intent/i1">Open native status</Link>
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/space/:projectId/intent/:intentId" element={<div>work</div>} />
+          <Route path="/space/:projectId/native-intent/new" element={<div>new native</div>} />
+          <Route
+            path="/space/:projectId/native-intent/:intentId"
+            element={<div>native status</div>}
+          />
           <Route
             path="/space/:projectId/intent/:intentId/review/:humanTaskId"
             element={<div>review</div>}
@@ -142,6 +152,7 @@ function renderAtRoute(path: string) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
@@ -154,6 +165,22 @@ beforeEach(() => {
 });
 
 describe('AppShell panel default behavior', () => {
+  it('keeps native activity controls inert and preserves the platform section preference', async () => {
+    localStorage.setItem('aidlc.intentSection.v2.i1', 'graph');
+    renderAtRoute('/space/p1/native-intent/i1');
+    await userEvent.click(screen.getByTestId('toggle-activity'));
+    expect(screen.getByTestId('panel-state')).toHaveTextContent('closed');
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('activity-panel')).not.toBeInTheDocument();
+    expect(localStorage.getItem('aidlc.intentSection.v2.i1')).toBe('graph');
+  });
+  it('closes platform activity when navigating to a native intent with the same UUID', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    await screen.findByTestId('intent-activity-panel');
+    await userEvent.click(screen.getByRole('link', { name: 'Open native status' }));
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+    expect(screen.getByTestId('panel-state')).toHaveTextContent('closed');
+  });
   it('opens panel on intent work root', async () => {
     renderAtRoute('/space/p1/intent/i1');
     expect(screen.getByTestId('panel-state').textContent).toBe('open');

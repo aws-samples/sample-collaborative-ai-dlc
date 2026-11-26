@@ -3,6 +3,83 @@ import { authenticatedClisForEnv, resolveInvocationAgentAuth } from '../auth-res
 import { AGENT_AUTH_MODES } from '../command-registry.js';
 
 describe('resolveInvocationAgentAuth', () => {
+  it('uses a distinct probe grant without consulting agent-writable execution metadata', async () => {
+    const id = '33333333-3333-4333-8333-333333333333';
+    const binding = { provider: 'bedrock', source: 'platform' };
+    const payload = {
+      command: 'native-interaction-probe',
+      requestedCli: 'codex',
+      probeId: id,
+      executionId: id,
+      agentCredentialGrant: 'private-probe-grant',
+    };
+    const store = {
+      getExecution: vi.fn(() => {
+        throw new Error('Must not read project state');
+      }),
+    };
+    const broker = vi.fn(async () => ({
+      purpose: 'native-probe',
+      projectId: null,
+      executionId: id,
+      credentials: [{ binding, value: 'private-probe-credential' }],
+    }));
+    const input = {
+      payload,
+      store,
+      broker,
+      authMode: AGENT_AUTH_MODES.NATIVE_PROBE,
+      env: { NATIVE_INTERACTION_PROBE_ENABLED: 'true', KIRO_API_KEY: 'ambient-secret' },
+    };
+    const result = await resolveInvocationAgentAuth(input);
+    expect(store.getExecution).not.toHaveBeenCalled();
+    expect(result.env.AWS_BEARER_TOKEN_BEDROCK).toBe('private-probe-credential');
+    expect(result.env.KIRO_API_KEY).toBeUndefined();
+    for (const change of [{ projectId: 'p' }, { intentId: 'e' }, { executionId: 'e' }]) {
+      await expect(
+        resolveInvocationAgentAuth({ ...input, payload: { ...payload, ...change } }),
+      ).rejects.toMatchObject({ code: 'credential_grant_mismatch' });
+    }
+    broker.mockResolvedValueOnce({
+      purpose: 'execution',
+      projectId: null,
+      executionId: id,
+      credentials: [{ binding, value: 'wrong-purpose-key' }],
+    });
+    await expect(resolveInvocationAgentAuth(input)).rejects.toMatchObject({
+      code: 'credential_grant_mismatch',
+    });
+  });
+
+  it('does not redeem a probe credential while the experiment is disabled', async () => {
+    const broker = vi.fn();
+    await expect(
+      resolveInvocationAgentAuth({
+        authMode: AGENT_AUTH_MODES.NATIVE_PROBE,
+        broker,
+        env: {},
+      }),
+    ).rejects.toMatchObject({ code: 'native_probe_disabled' });
+    expect(broker).not.toHaveBeenCalled();
+  });
+
+  it.each(['status', 'cancel'])(
+    'keeps probe %s available without redeeming credentials',
+    async (action) => {
+      const id = '33333333-3333-4333-8333-333333333333';
+      const broker = vi.fn(() => {
+        throw new Error('Credential store unavailable');
+      });
+      const result = await resolveInvocationAgentAuth({
+        authMode: AGENT_AUTH_MODES.NATIVE_PROBE,
+        payload: { action, requestedCli: 'codex', probeId: id, executionId: id },
+        env: { NATIVE_INTERACTION_PROBE_ENABLED: 'true', AWS_BEARER_TOKEN_BEDROCK: 'ambient' },
+        broker,
+      });
+      expect(broker).not.toHaveBeenCalled();
+      expect(result.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    },
+  );
   it('strongly reads the credential pin before verifying a grant', async () => {
     const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
     const getExecution = vi.fn(async (_executionId, options) =>

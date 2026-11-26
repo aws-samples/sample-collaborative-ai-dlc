@@ -114,6 +114,12 @@ export interface AgentSettings {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default for spaces that inherit PR delivery policy. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Optional native execution debug archives; defaults to false.
+   *  Never controls native enablement or required recovery data. */
+  nativeDebugArchivesEnabled?: boolean;
+  /** Positive whole days for optional debug archives; defaults to 7.
+   *  Does not limit recovery for unfinished/resumable work. */
+  nativeDebugArchiveRetentionDays?: number;
   /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
    *  injected into every agent session; merged under a project's own set.
    *  Only returned to platform admins. */
@@ -164,6 +170,11 @@ export interface AgentSettingsUpdate {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default PR delivery strategy. Omit to leave unchanged. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Optional native debug archives only. Omit to leave unchanged.
+   *  Does not disable required recovery or enable native execution. */
+  nativeDebugArchivesEnabled?: boolean;
+  /** Positive safe integer of debug retention days. Omit to leave unchanged. */
+  nativeDebugArchiveRetentionDays?: number;
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
   /** Global MCP secret values keyed by `${VAR}` name. A non-empty value rotates;

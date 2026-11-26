@@ -26,9 +26,14 @@ import {
   mapBinding,
   fetchMembershipRole,
 } from '../shared/trackers.js';
-import { getGitConnection, deleteGitConnection } from '../shared/git-connection-store.js';
+import {
+  getGitConnection,
+  getGitConnectionSnapshot,
+  deleteGitConnection,
+} from '../shared/git-connection-store.js';
 import {
   invalidateBindingsByCredentialRef,
+  listBindingsByCredentialRef,
   oauthCredentialRef,
 } from '../shared/source-control-bindings.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
@@ -481,7 +486,14 @@ const disconnectTracker = async (response, userId, provider, instance) => {
     // github-issues/gitlab-issues reuse the git connection. Map the tracker id
     // to its git provider and resolve the row (lazily migrating if needed).
     const gitProvider = provider === 'gitlab-issues' ? 'gitlab' : 'github';
-    const Item = await getGitConnection(ddb, userId, gitProvider);
+    const connection = await getGitConnection(ddb, userId, gitProvider);
+    const snapshot = connection ?? (await getGitConnectionSnapshot(ddb, userId, gitProvider));
+    const Item = snapshot?.status === 'deleted' ? null : snapshot;
+    // Revoke connection authority before token cleanup. Do not let a delayed
+    // tracker disconnect remove a newer OAuth connection.
+    const credentialRef = oauthCredentialRef(gitProvider, userId);
+    const inspectedBindings = await listBindingsByCredentialRef(ddb, credentialRef);
+    await deleteGitConnection(ddb, userId, gitProvider, { expectedItem: snapshot });
     if (Item?.parameterName) {
       try {
         await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
@@ -489,14 +501,10 @@ const disconnectTracker = async (response, userId, provider, instance) => {
         logger.error('Failed to delete git token parameter', e);
       }
     }
-    // Remove from both the new and legacy tables.
-    await deleteGitConnection(ddb, userId, gitProvider);
-    await invalidateBindingsByCredentialRef(
-      ddb,
-      oauthCredentialRef(gitProvider, userId),
-      'oauth_disconnected',
-      { actor: userId },
-    );
+    await invalidateBindingsByCredentialRef(ddb, credentialRef, 'oauth_disconnected', {
+      actor: userId,
+      inspectedBindings,
+    });
     return response(200, { success: true });
   }
   if (provider === 'jira-cloud' && instance === 'cloud') {
@@ -806,7 +814,22 @@ export const handler = async (event, context) => {
     pathParameters.instance &&
     !pathParameters.projectId
   ) {
-    return disconnectTracker(response, userId, pathParameters.provider, pathParameters.instance);
+    try {
+      return await disconnectTracker(
+        response,
+        userId,
+        pathParameters.provider,
+        pathParameters.instance,
+      );
+    } catch (error) {
+      if (error.code === 'CONNECTION_CHANGED') {
+        return response(409, {
+          error: 'Git connection changed; reload before retrying',
+          code: error.code,
+        });
+      }
+      throw error;
+    }
   }
 
   // Everything below is /projects/{projectId}/trackers...

@@ -1,6 +1,7 @@
 type SessionExpiredHandler = () => void;
 
 const handlers = new Set<SessionExpiredHandler>();
+const resetHandlers = new Set<() => void>();
 let epoch = 0;
 let notified = false;
 
@@ -8,6 +9,12 @@ export function currentSessionEpoch(): number {
   return epoch;
 }
 
+export function onSessionReset(handler: () => void): () => void {
+  resetHandlers.add(handler);
+  return () => {
+    resetHandlers.delete(handler);
+  };
+}
 export function isSessionExpiryNotified(): boolean {
   return notified;
 }
@@ -38,4 +45,5 @@ export function armSessionExpiry(): void {
 export function resetSessionExpiry(): void {
   epoch += 1;
   armSessionExpiry();
+  resetHandlers.forEach((handler) => handler());
 }

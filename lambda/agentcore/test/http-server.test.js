@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
+import { createRunStageStart } from '../commands/run-stage-start.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -325,18 +326,80 @@ describe('createServer (http)', () => {
   const listen = (server) =>
     new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 
-  it('serves /ping with a status', async () => {
-    const server = createServer({ handlers });
+  it('serves repeated idle pings without advancing an activity timestamp', async () => {
+    const now = vi.fn();
+    const server = createServer({ handlers, now });
     const port = await listen(server);
-    const res = await fetch(`http://127.0.0.1:${port}/ping`);
-    const body = await res.json();
-    expect(res.status).toBe(200);
-    expect(body.status).toBe('Healthy');
-    server.close();
+    try {
+      for (const at of [
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:15:00.000Z',
+        '2026-01-01T01:00:00.000Z',
+      ]) {
+        now.mockReturnValue(at);
+        const res = await fetch(`http://127.0.0.1:${port}/ping`);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ status: 'Healthy' });
+      }
+      expect(now).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+    }
+  });
+
+  it('keeps /ping HealthyBusy after acceptance until all background stages finish', async () => {
+    const busy = createBusyTracker();
+    const finishStages = [];
+    const runStageStart = createRunStageStart({
+      busy,
+      runStage: () => new Promise((resolve) => finishStages.push(resolve)),
+      sendCallbackSuccess: async () => ({ delivered: true }),
+      sendCallbackHeartbeat: async () => ({ delivered: true }),
+      log: vi.fn(),
+    });
+    const server = createServer({ handlers: { runStageStart }, busy });
+    const port = await listen(server);
+    const ping = async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/ping`);
+      expect(res.status).toBe(200);
+      return res.json();
+    };
+
+    try {
+      expect(await ping()).toEqual({ status: 'Healthy' });
+      for (const stageId of ['s1', 's2']) {
+        const res = await fetch(`http://127.0.0.1:${port}/invocations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'run-stage-start',
+            executionId: 'e1',
+            stageId,
+            stageCallbackId: `cb-${stageId}`,
+          }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ ok: true, accepted: true });
+        expect(await ping()).toEqual({ status: 'HealthyBusy' });
+      }
+
+      finishStages[0]({ ok: true, state: 'SUCCEEDED' });
+      await vi.waitFor(() => expect(runStageStart.activeJobs.size).toBe(1));
+      expect(await ping()).toEqual({ status: 'HealthyBusy' });
+
+      finishStages[1]({ ok: true, state: 'WAITING_FOR_HUMAN' });
+      await vi.waitFor(() => expect(runStageStart.activeJobs.size).toBe(0));
+      expect(await ping()).toEqual({ status: 'Healthy' });
+    } finally {
+      for (const finish of finishStages) finish({ ok: true, state: 'SUCCEEDED' });
+      server.close();
+      await vi.waitFor(() => expect(runStageStart.activeJobs.size).toBe(0));
+    }
   });
 
   it('serves POST /invocations', async () => {
-    const server = createServer({ handlers });
+    const at = '2026-01-01T00:00:00.000Z';
+    const server = createServer({ handlers, now: () => at });
     const port = await listen(server);
     const res = await fetch(`http://127.0.0.1:${port}/invocations`, {
       method: 'POST',
@@ -345,7 +408,7 @@ describe('createServer (http)', () => {
     });
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toMatchObject({ ok: true, command: 'run-stage' });
+    expect(body).toMatchObject({ ok: true, command: 'run-stage', at });
     server.close();
   });
 

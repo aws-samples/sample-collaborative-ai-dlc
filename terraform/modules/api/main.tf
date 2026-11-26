@@ -45,6 +45,11 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.repos_post,
     aws_api_gateway_integration.repos_delete,
     aws_api_gateway_integration.source_control,
+    aws_api_gateway_integration.workflow_sources,
+    aws_api_gateway_integration.native_intents,
+    module.cors_native_intents,
+    module.cors_native_intent,
+    module.cors_native_intent_prepare,
     aws_api_gateway_integration.sprints_get,
     aws_api_gateway_integration.sprint_get,
     aws_api_gateway_integration.entity_collection_get,
@@ -159,6 +164,10 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_project_agent_capabilities,
     module.cors_user_agent_credentials,
     module.cors_source_control,
+    module.cors_workflow_sources,
+    module.cors_workflow_source,
+    module.cors_workflow_source_packages,
+    module.cors_workflow_source_package_job,
     module.cors_source_control_branches,
     module.cors_source_control_tree,
     module.cors_source_control_contents,
@@ -314,6 +323,64 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.source_control_review_comments.id,
       jsonencode({ for k, v in aws_api_gateway_method.source_control : k => v.id }),
       jsonencode({ for k, v in aws_api_gateway_integration.source_control : k => v.id }),
+      aws_api_gateway_resource.workflow_sources.id,
+      {
+        methods = {
+          for key, method in aws_api_gateway_method.native_intents : key => {
+            resource_id        = method.resource_id
+            http_method        = method.http_method
+            authorization      = method.authorization
+            authorizer_id      = method.authorizer_id
+            request_parameters = method.request_parameters
+          }
+        }
+        integrations = {
+          for key, integration in aws_api_gateway_integration.native_intents : key => {
+            resource_id = integration.resource_id
+            http_method = integration.http_method
+            type        = integration.type
+            uri         = integration.uri
+          }
+        }
+        paths = concat(
+          aws_api_gateway_resource.native_intents[*].path_part,
+          aws_api_gateway_resource.native_intent[*].path_part,
+          aws_api_gateway_resource.native_intent_prepare[*].path_part
+        )
+        cors = filesha256("${path.module}/cors/main.tf")
+      },
+      aws_api_gateway_resource.workflow_source.id,
+      aws_api_gateway_resource.workflow_source_packages.id,
+      aws_api_gateway_resource.workflow_source_package_job.id,
+      # Hash configuration, not only resource IDs, so auth/URI/path changes
+      # force a deployment of the new API snapshot.
+      {
+        methods = {
+          for key, method in aws_api_gateway_method.workflow_sources : key => {
+            resource_id        = method.resource_id
+            http_method        = method.http_method
+            authorization      = method.authorization
+            authorizer_id      = method.authorizer_id
+            request_parameters = method.request_parameters
+          }
+        }
+        integrations = {
+          for key, integration in aws_api_gateway_integration.workflow_sources : key => {
+            resource_id             = integration.resource_id
+            http_method             = integration.http_method
+            type                    = integration.type
+            integration_http_method = integration.integration_http_method
+            uri                     = integration.uri
+          }
+        }
+        paths = [
+          aws_api_gateway_resource.workflow_sources.path_part,
+          aws_api_gateway_resource.workflow_source.path_part,
+          aws_api_gateway_resource.workflow_source_packages.path_part,
+          aws_api_gateway_resource.workflow_source_package_job.path_part,
+        ]
+        cors = filesha256("${path.module}/cors/main.tf")
+      },
       aws_api_gateway_method.repos_get.id,
       aws_api_gateway_method.repos_post.id,
       aws_api_gateway_method.repos_delete.id,

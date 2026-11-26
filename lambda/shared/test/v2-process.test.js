@@ -49,6 +49,19 @@ import {
 import { createProcessStore } from '../v2-process-store.js';
 
 describe('v2-process-keys', () => {
+  it('pins an explicit backend on new rows and rejects invalid identities', () => {
+    const input = { executionId: 'e1', projectId: 'p1', intentId: 'i1', startedAt: 'T' };
+    expect(buildExecutionMeta(input).executionBackend).toBe('platform');
+    expect(buildExecutionMeta({ ...input, executionBackend: 'native' }).executionBackend).toBe(
+      'native',
+    );
+    for (const executionBackend of [null, '', 'unknown', false]) {
+      expect(() => buildExecutionMeta({ ...input, executionBackend })).toThrow(
+        'executionBackend must be',
+      );
+    }
+  });
+
   it('namespaces every record under EXEC#<id>', () => {
     expect(executionMetaKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'META' });
     expect(workflowCheckpointKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'CHECKPOINT' });

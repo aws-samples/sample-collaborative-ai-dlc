@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -55,6 +56,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   const [guidance, setGuidance] = useState('');
   const [rewinding, setRewinding] = useState(false);
   const [rewindError, setRewindError] = useState<string | null>(null);
+  const rewindBlocked = executionCapabilityReason(detail?.intent, 'workflowRewind');
   const canRewind =
     row.planned &&
     REWINDABLE_STATUSES.has(detail?.intent.status ?? '') &&
@@ -66,6 +68,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   const [retrying, setRetrying] = useState(false);
 
   const handleRewind = async () => {
+    if (rewindBlocked) return;
     setRewinding(true);
     setRewindError(null);
     try {
@@ -80,6 +83,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   };
 
   const handleRetry = async () => {
+    if (rewindBlocked) return;
     setRetrying(true);
     setRewindError(null);
     try {
@@ -424,7 +428,8 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             size="sm"
             variant="outline"
             className="h-6 gap-1 px-2 text-[11px]"
-            disabled={retrying || rewinding}
+            disabled={Boolean(rewindBlocked) || retrying || rewinding}
+            title={rewindBlocked ?? undefined}
             onClick={handleRetry}
           >
             {retrying ? (
@@ -440,7 +445,8 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             size="sm"
             variant="outline"
             className="h-6 gap-1 px-2 text-[11px]"
-            disabled={retrying}
+            disabled={Boolean(rewindBlocked) || retrying}
+            title={rewindBlocked ?? undefined}
             onClick={() => setRewindOpen(true)}
           >
             <RotateCcw className="h-3 w-3" />
@@ -450,6 +456,9 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
       </div>
 
       {/* Retry error, when the inline retry (no form) failed */}
+      {canRewind && rewindBlocked && (
+        <p className="text-[11px] text-muted-foreground">{rewindBlocked}</p>
+      )}
       {canRetry && !rewindOpen && rewindError && (
         <p className="text-[11px] text-agent-error">{rewindError}</p>
       )}
@@ -476,7 +485,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             <Button
               size="sm"
               className="h-6 gap-1 px-2 text-[11px]"
-              disabled={rewinding}
+              disabled={Boolean(rewindBlocked) || rewinding}
               onClick={handleRewind}
             >
               {rewinding ? (

@@ -30,6 +30,19 @@ variable "docker_build_args" {
   sensitive   = true
 }
 
+variable "enable_native_interaction_probe" {
+  description = "Enable the operator-only public-package fixture in dev"
+  type        = bool
+  default     = false
+
+}
+
+variable "enable_native_efs_probe" {
+  description = "Mount synthetic EFS storage for the dev native interaction probe; requires VPC mode"
+  type        = bool
+  default     = false
+}
+
 variable "neptune_endpoint" {
   description = "Neptune cluster endpoint"
   type        = string

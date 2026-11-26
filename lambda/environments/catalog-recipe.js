@@ -51,6 +51,14 @@ const mergeVariables = (...collections) => {
   const variables = {};
   for (const collection of collections) {
     for (const [name, value] of Object.entries(collection ?? {})) {
+      // Saved base/tool snapshots also pass here during rebuilds; they may
+      // predate a variable becoming platform-owned.
+      if (PROTECTED_VARIABLE_NAME.test(name)) {
+        throw Object.assign(new Error(`Variable ${name} is reserved for the platform runtime`), {
+          statusCode: 409,
+          code: 'PROTECTED_RUNTIME_VARIABLE',
+        });
+      }
       if (Object.hasOwn(variables, name) && variables[name] !== value) {
         throw Object.assign(new Error(`Variable ${name} has conflicting tool values`), {
           statusCode: 409,

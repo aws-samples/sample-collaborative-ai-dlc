@@ -153,6 +153,40 @@ beforeEach(() => {
 const stageStarts = () => invokes.filter((p) => p.command === 'run-stage-start');
 
 describe('orchestrator durable handler', () => {
+  it.each(['executionId', 'intentId'])(
+    'rejects a different %s on the loaded record before issuing credentials',
+    async (field) => {
+      deps.store.getExecution.mockResolvedValue({ ...META, [field]: 'another-intent' });
+      const result = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(result).toEqual({ ok: false, reason: 'execution_identity_mismatch' });
+      expect(deps.loadPlan).not.toHaveBeenCalled();
+      expect(deps.issueAgentCredentialGrant).not.toHaveBeenCalled();
+      expect(deps.invokeRuntime).not.toHaveBeenCalled();
+      expect(deps.store.updateExecution).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['native', 'unknown', null])(
+    'rejects backend %s before loading a plan, issuing credentials, or changing state',
+    async (executionBackend) => {
+      deps.store.getExecution.mockResolvedValue({ ...META, executionBackend });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toEqual({ ok: false, reason: 'execution_backend_mismatch' });
+      expect(deps.loadPlan).not.toHaveBeenCalled();
+      expect(deps.issueAgentCredentialGrant).not.toHaveBeenCalled();
+      expect(deps.invokeRuntime).not.toHaveBeenCalled();
+      expect(deps.store.updateExecution).not.toHaveBeenCalled();
+    },
+  );
+
   it('ignores non-start invocations', async () => {
     const res = await __durableHandler({ action: 'answer', intentId: 'i1' }, ctx, deps);
     expect(res).toEqual({ ok: false, reason: 'not_a_start' });

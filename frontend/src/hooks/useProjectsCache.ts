@@ -3,6 +3,16 @@ import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { intentsService, type Intent } from '@/services/intents';
 import { loadPersisted, persist } from '@/lib/persistentCache';
+import {
+  clearNativeIntents,
+  getNativeListing,
+  nativeAccessDenied,
+  refreshNativeIntents,
+  useNativeListingVersion,
+  type NativeListing,
+} from './useNativeIntents';
+import { currentSessionEpoch } from '@/services/sessionExpiry';
+import { isPlatformIntent } from '@/lib/intentDiscovery';
 
 const PROJECTS_TTL = 30_000;
 const SPRINTS_TTL = 60_000;
@@ -26,6 +36,8 @@ export interface ProjectWithSprint {
   lastIntentActivityAt: string | null;
   // Cross-intent activity counts (v2 only; zeroed on sprint/v1 projects).
   activity: ProjectActivity;
+  // Native discovery is held only in memory and never persisted with this cache.
+  nativeIntents?: NativeListing;
 }
 
 interface CacheEntry<T> {
@@ -75,6 +87,7 @@ function latestOf(sprints: Sprint[]): Sprint | null {
 }
 
 function pickIntent(intents: Intent[]): Intent | null {
+  intents = intents.filter(isPlatformIntent);
   if (intents.length === 0) return null;
   const running = intents.find((i) => i.status === 'RUNNING');
   if (running) return running;
@@ -95,6 +108,7 @@ export function projectLastActivityAt(p: ProjectWithSprint): string | null {
     p.project.updatedAt,
     p.project.createdAt,
     p.lastIntentActivityAt,
+    ...(p.nativeIntents?.items.flatMap((item) => [item.updatedAt, item.createdAt]) ?? []),
     p.latestSprint?.agentCompletedAt,
     p.latestSprint?.agentStartedAt,
     p.latestSprint?.createdAt,
@@ -133,10 +147,12 @@ export function deriveActivity(intents: Intent[]): ProjectActivity {
 const NO_ACTIVITY: ProjectActivity = { inProgress: 0, attention: 0 };
 
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
+  const requestEpoch = currentSessionEpoch();
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
     projs.map(async (project): Promise<ProjectWithSprint> => {
       if (project.kind === 'v2') {
+        if (requestEpoch === currentSessionEpoch()) void refreshNativeIntents(project.id);
         try {
           const intents = await intentsService.list(project.id);
           return {
@@ -146,7 +162,10 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
             lastIntentActivityAt: maxIntentActivity(intents),
             activity: deriveActivity(intents),
           };
-        } catch {
+        } catch (error) {
+          if (requestEpoch === currentSessionEpoch() && nativeAccessDenied(error)) {
+            clearNativeIntents(project.id, true);
+          }
           return {
             project,
             latestSprint: null,
@@ -228,6 +247,7 @@ function revalidateProjects(force = false): Promise<void> {
   // Notify so subscribers see the loading transition (no flash of empty
   // content on cold load — they can render a skeleton instead).
   notifyProjectListeners();
+  const requestEpoch = currentSessionEpoch();
   projectsInflight = (async () => {
     try {
       const data = await fetchProjects();
@@ -235,6 +255,9 @@ function revalidateProjects(force = false): Promise<void> {
       projectsError = null;
       persist('projects', projectsCache);
     } catch (err) {
+      if (requestEpoch === currentSessionEpoch() && nativeAccessDenied(err)) {
+        for (const { project } of projectsCache?.data ?? []) clearNativeIntents(project.id, true);
+      }
       // Keep stale cache (if any); surface the failure to subscribers.
       projectsError = err instanceof Error ? err.message : 'Failed to load spaces';
     } finally {
@@ -364,6 +387,8 @@ export function refreshProjectSprints(projectId: string) {
 }
 
 export function useProjectsCache() {
+  useNativeListingVersion();
+  const epoch = currentSessionEpoch();
   const subscribe = useCallback((onStoreChange: () => void) => {
     projectsListeners.add(onStoreChange);
     return () => {
@@ -373,7 +398,7 @@ export function useProjectsCache() {
 
   const getSnapshot = useCallback(() => projectsVersion, []);
 
-  useSyncExternalStore(subscribe, getSnapshot);
+  const projectVersion = useSyncExternalStore(subscribe, getSnapshot);
 
   useEffect(() => {
     // TTL-guarded: fresh cache → no fetch; failed/expired → retry.
@@ -382,8 +407,18 @@ export function useProjectsCache() {
     return () => releasePolling();
   }, []);
 
+  // Hydrated platform previews still need an authenticated native list request.
+  useEffect(() => {
+    for (const { project } of projectsCache?.data ?? []) {
+      if (project.kind === 'v2') void refreshNativeIntents(project.id);
+    }
+  }, [projectVersion, epoch]);
+
   return {
-    projects: projectsCache?.data ?? [],
+    projects: (projectsCache?.data ?? []).map((entry) => ({
+      ...entry,
+      nativeIntents: entry.project.kind === 'v2' ? getNativeListing(entry.project.id) : undefined,
+    })),
     loading: !projectsCache && projectsFetching,
     error: projectsCache ? null : projectsError,
     refresh: refreshProjects,

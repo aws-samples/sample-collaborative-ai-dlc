@@ -461,6 +461,9 @@ fi
     { mode: 0o755 },
   );
 
+  writeFileSync(join(bin, 'docker-credential-ecr-login'), '#!/usr/bin/env bash\nexit 0\n', {
+    mode: 0o755,
+  });
   const deployed = run(
     'bash',
     [deployTerraform, 'summary', '--plan-file', join(dir, 'summary.tfplan')],
@@ -551,6 +554,9 @@ fi
     { mode: 0o755 },
   );
 
+  writeFileSync(join(bin, 'docker-credential-ecr-login'), '#!/usr/bin/env bash\nexit 0\n', {
+    mode: 0o755,
+  });
   return {
     env: {
       PATH: `${bin}:${process.env.PATH}`,
@@ -1146,6 +1152,9 @@ exit 0
     { mode: 0o755 },
   );
   writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'docker-credential-ecr-login'), '#!/usr/bin/env bash\nexit 0\n', {
+    mode: 0o755,
+  });
   return {
     ...env,
     PATH: `${bin}:${process.env.PATH}`,
@@ -1199,17 +1208,86 @@ test('installer accepts a non-default DOCKER_HOST without a container CLI on PAT
   assert.doesNotMatch(installed.stderr, /Missing required command: docker/);
 });
 
-test('installer rejects Terraform older than 1.4 during preflight', () => {
+test('installer rejects Terraform older than 1.7 during preflight', () => {
   const repository = createReleaseRepository();
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-old-terraform-'));
   const env = mockedCommandEnv(dir, repository);
   const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
-    env: { ...env, AIDLC_FAKE_TERRAFORM_VERSION: '1.3.9' },
+    env: { ...env, AIDLC_FAKE_TERRAFORM_VERSION: '1.6.9' },
   });
 
   assert.equal(installed.status, 1);
-  assert.match(installed.stderr, /Terraform 1\.4 or later is required; found 1\.3\.9/);
+  assert.match(installed.stderr, /Terraform 1\.7 or later is required; found 1\.6\.9/);
   assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
+  assert.equal(existsSync(env.AIDLC_AWS_LOG), false);
+});
+
+test('installer accepts Terraform 1.7.0 during preflight', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-minimum-terraform-'));
+  try {
+    const env = mockedCommandEnv(dir, join(dir, 'unused-repository'));
+    const dataRoot = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc');
+    mkdirSync(dataRoot, { recursive: true });
+    symlinkSync(dir, join(dataRoot, 'current'));
+
+    const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
+      env: { ...env, AIDLC_FAKE_TERRAFORM_VERSION: '1.7.0' },
+    });
+    // Passing version preflight reaches this existing-installation guard.
+    assert.equal(installed.status, 1);
+    assert.match(installed.stderr, /A managed installation already exists/);
+    assert.doesNotMatch(installed.stderr, /Terraform .* required/);
+    assert.equal(existsSync(env.AIDLC_AWS_LOG), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installer rejects a missing ECR helper before AWS or deployment work', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-missing-ecr-helper-'));
+  try {
+    const env = mockedCommandEnv(dir, join(dir, 'unused-repository'));
+    const path = isolatedInstallerPath(env);
+    rmSync(join(path, 'docker-credential-ecr-login'));
+    const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
+      env: { ...env, PATH: path },
+    });
+    assert.equal(installed.status, 1);
+    assert.match(installed.stderr, /Missing required command: docker-credential-ecr-login/);
+    assert.equal(existsSync(env.AIDLC_AWS_LOG), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('standalone plan and apply reject a missing ECR helper before Terraform or AWS', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-missing-ecr-helper-'));
+  try {
+    const { env, planFile, terraformLog, awsLog } = standaloneDeployEnv(dir);
+    const bin = env.PATH.split(delimiter)[0];
+    rmSync(join(bin, 'docker-credential-ecr-login'));
+    for (const command of ['bash', 'dirname', 'find', 'basename', 'tr', 'grep']) {
+      const source = execFileSync('/bin/sh', ['-c', `command -v ${command}`], {
+        encoding: 'utf8',
+      }).trim();
+      symlinkSync(source, join(bin, command));
+    }
+    writeFileSync(planFile, 'unused saved-plan fixture');
+    for (const phase of ['plan', 'apply']) {
+      const result = run(
+        '/bin/bash',
+        [deployTerraform, 'summary', '--phase', phase, '--plan-file', planFile],
+        { env: { ...env, PATH: bin } },
+      );
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Missing required command: docker-credential-ecr-login/);
+      assert.match(result.stderr, /brew install docker-credential-helper-ecr/);
+    }
+    assert.equal(existsSync(terraformLog), false);
+    assert.equal(existsSync(awsLog), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('installer creates permanent administrators with v1 and v2 roles', () => {

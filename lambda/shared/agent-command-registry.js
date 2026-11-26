@@ -8,6 +8,7 @@ export const AGENT_AUTH_MODES = Object.freeze({
   CAPABILITIES: 'capabilities',
   COMPOSE: 'compose',
   DISCUSSION: 'discussion',
+  NATIVE_PROBE: 'native-probe',
 });
 
 const command = (handler, agentAuth = false) => Object.freeze({ handler, agentAuth });
@@ -34,6 +35,7 @@ export const COMMANDS = Object.freeze({
   inspect: command('inspect'),
   capabilities: command('capabilities', AGENT_AUTH_MODES.CAPABILITIES),
   'managed-runtime-check': command('managedRuntimeCheck'),
+  'native-interaction-probe': command('nativeInteractionProbe', AGENT_AUTH_MODES.NATIVE_PROBE),
   'verify-mcp': command('verifyMcp'),
 });
 

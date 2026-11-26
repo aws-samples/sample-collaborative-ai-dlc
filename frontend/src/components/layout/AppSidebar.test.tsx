@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -39,6 +39,7 @@ function renderSidebar(path = '/dashboard') {
         <Route path="/space/:projectId/intent/:intentId" element={<AppSidebar />} />
         <Route path="/space/:projectId/intent/:intentId/observability" element={<AppSidebar />} />
         <Route path="/space/:projectId/intent/:intentId/graph" element={<AppSidebar />} />
+        <Route path="/space/:projectId/native-intent/:intentId" element={<AppSidebar />} />
         <Route path="*" element={<AppSidebar />} />
       </Routes>
     </MemoryRouter>,
@@ -49,6 +50,95 @@ beforeEach(() => {
   mockProjects.projects = [];
   mockIntentCtx.value = null;
   localStorage.clear();
+});
+
+describe('AppSidebar native discovery routing', () => {
+  it('does not expose platform section tabs for a detail with a non-platform backend', () => {
+    mockIntentCtx.value = {
+      detail: { intent: { id: 'same', projectId: 'p1', executionBackend: 'native' } },
+    };
+    renderSidebar('/space/p1/intent/same');
+    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+  });
+  it('does not reuse a context title from an equal UUID in another project', () => {
+    mockIntentCtx.value = {
+      detail: { intent: { id: 'same', projectId: 'p1', title: 'Wrong project title' } },
+    };
+    renderSidebar('/space/p2/intent/same');
+    expect(screen.queryByText('Wrong project title')).not.toBeInTheDocument();
+  });
+  const setup = () => {
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: { id: 'same', title: 'Platform same', status: 'RUNNING' },
+        nativeIntents: {
+          items: [
+            {
+              id: 'same',
+              projectId: 'p1',
+              title: 'Native same',
+              status: 'READY',
+              updatedAt: '2026-09-29T07:00:00Z',
+            },
+          ],
+          loading: false,
+          error: null,
+          nextCursor: null,
+        },
+      },
+    ];
+  };
+  it('keeps platform section tabs off native routes even with the same UUID', () => {
+    setup();
+    renderSidebar('/space/p1/native-intent/same');
+    expect(screen.getByText('Native same')).toBeInTheDocument();
+    expect(screen.getByText('Workspace ready')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pinned-selected-intent')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+  it('native discovery navigates to status and removes platform tabs', async () => {
+    setup();
+    renderSidebar('/space/p1/intent/same');
+    expect(screen.getByRole('navigation', { name: /intent sections/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Native same/ }));
+    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+  it('does not select equal platform UUIDs from different projects', () => {
+    setup();
+    mockProjects.projects.push({
+      project: { id: 'p2', name: 'Other', kind: 'v2', createdAt: '2024-01-01' },
+      latestIntent: { id: 'same', title: 'Other platform', status: 'RUNNING' },
+    });
+    renderSidebar('/space/p2/intent/same');
+    expect(screen.getAllByRole('navigation', { name: /intent sections/i })).toHaveLength(1);
+    const row = screen.getByRole('button', { name: /Other platform/ }).parentElement!;
+    expect(within(row).getByRole('navigation', { name: /intent sections/i })).toBeInTheDocument();
+  });
+  it('does not trust a platform META native flag as native discovery', () => {
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Space', kind: 'v2' },
+        latestIntent: {
+          id: 'forged',
+          title: 'Forged native',
+          status: 'RUNNING',
+          executionBackend: 'native',
+        },
+      },
+    ];
+    renderSidebar();
+    expect(screen.queryByText('Forged native')).not.toBeInTheDocument();
+  });
 });
 
 describe('AppSidebar active-work section', () => {
@@ -140,7 +230,7 @@ describe('AppSidebar pinned historical Intent', () => {
     ];
     mockIntentCtx.value = {
       detail: {
-        intent: { id: 'int-old', title: 'Historical Intent', status: 'FAILED' },
+        intent: { id: 'int-old', projectId: 'p1', title: 'Historical Intent', status: 'FAILED' },
       },
     };
   };
@@ -205,7 +295,7 @@ describe('AppSidebar pinned historical Intent', () => {
     ];
     mockIntentCtx.value = {
       detail: {
-        intent: { id: 'int-1', title: 'Active Intent', status: 'RUNNING' },
+        intent: { id: 'int-1', projectId: 'p1', title: 'Active Intent', status: 'RUNNING' },
       },
     };
     renderSidebar('/space/p1/intent/int-1/observability');

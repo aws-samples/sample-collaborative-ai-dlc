@@ -1,6 +1,6 @@
 terraform {
-  # terraform_data (used for plan-time configuration guards) requires 1.4.
-  required_version = ">= 1.4"
+  # removed blocks preserve previously published runtime images during migration.
+  required_version = ">= 1.7"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -314,6 +314,9 @@ module "s3" {
 
   project_name = var.project_name
   environment  = var.environment
+  # Depend only on the dedicated role. The worker's publisher grant consumes
+  # the S3 module's protected bucket output after policy/versioning attachment.
+  native_package_publisher_role_arn = module.lambda.native_package_worker_role_arn
 
   tags = {
     Environment = var.environment
@@ -373,52 +376,71 @@ module "lambda" {
     module.dynamodb.yjs_documents_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
-  artifacts_bucket_name                    = module.s3.artifacts_bucket_name
-  artifacts_bucket_arn                     = module.s3.artifacts_bucket_arn
-  blocks_table_name                        = module.dynamodb.blocks_table_name
-  blocks_table_arn                         = module.dynamodb.blocks_table_arn
-  v2_executions_table_name                 = module.agentcore.v2_executions_table_name
-  v2_executions_table_arn                  = module.agentcore.v2_executions_table_arn
-  yjs_documents_table_name                 = module.dynamodb.yjs_documents_table_name
-  yjs_documents_table_arn                  = module.dynamodb.yjs_documents_table_arn
-  agentcore_runtime_arn                    = module.agentcore.runtime_arn
-  environment_registry_table_name          = module.dynamodb.environment_registry_table_name
-  environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
-  core_image_digest                        = module.agentcore.image_digest
-  core_runtime_version                     = module.agentcore.runtime_version
-  runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
-  github_oauth_secret_name                 = module.git.github_oauth_secret_name
-  github_oauth_secret_arn                  = module.git.github_oauth_secret_arn
-  github_app_private_key_secret_name       = module.git.github_app_private_key_secret_name
-  github_app_private_key_secret_arn        = module.git.github_app_private_key_secret_arn
-  github_app_config_param_name             = module.git.github_app_config_param_name
-  github_app_config_param_arn              = module.git.github_app_config_param_arn
-  gitlab_oauth_secret_name                 = module.git.gitlab_oauth_secret_name
-  gitlab_oauth_secret_arn                  = module.git.gitlab_oauth_secret_arn
-  bitbucket_oauth_secret_name              = module.git.bitbucket_oauth_secret_name
-  bitbucket_oauth_secret_arn               = module.git.bitbucket_oauth_secret_arn
-  git_connections_table_name               = module.git.git_connections_table_name
-  git_connections_table_arn                = module.git.git_connections_table_arn
-  git_provider_connections_table_name      = module.git.git_provider_connections_table_name
-  git_provider_connections_table_arn       = module.git.git_provider_connections_table_arn
-  source_control_bindings_table_name       = module.git.source_control_bindings_table_name
-  source_control_bindings_table_arn        = module.git.source_control_bindings_table_arn
-  tracker_connections_table_name           = module.git.tracker_connections_table_name
-  tracker_connections_table_arn            = module.git.tracker_connections_table_arn
-  github_redirect_uri                      = "${local.app_url}/github/callback"
-  gitlab_redirect_uri                      = "${local.app_url}/gitlab/callback"
-  bitbucket_redirect_uri                   = "${local.app_url}/bitbucket/callback"
-  jira_oauth_secret_name                   = module.git.jira_oauth_secret_name
-  jira_oauth_secret_arn                    = module.git.jira_oauth_secret_arn
-  jira_redirect_uri                        = "${local.app_url}/trackers/callback/jira-cloud"
-  cognito_user_pool_id                     = module.auth.user_pool_id
-  cognito_user_pool_arn                    = module.auth.user_pool_arn
-  sso_role_config                          = jsonencode(local.sso_role_config)
-  cors_allowed_origins                     = local.cors_allowed_origins
-  realtime_doc_secret_param_arn            = module.realtime.realtime_doc_secret_param_arn
-  realtime_doc_secret_param_name           = module.realtime.realtime_doc_secret_param_name
-  agent_credential_grant_secret_param_arn  = aws_ssm_parameter.agent_credential_grant_secret.arn
-  agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
+  artifacts_bucket_name                        = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn                         = module.s3.artifacts_bucket_arn
+  blocks_table_name                            = module.dynamodb.blocks_table_name
+  blocks_table_arn                             = module.dynamodb.blocks_table_arn
+  v2_executions_table_name                     = module.agentcore.v2_executions_table_name
+  v2_executions_table_arn                      = module.agentcore.v2_executions_table_arn
+  yjs_documents_table_name                     = module.dynamodb.yjs_documents_table_name
+  yjs_documents_table_arn                      = module.dynamodb.yjs_documents_table_arn
+  agentcore_runtime_arn                        = module.agentcore.runtime_arn
+  environment_registry_table_name              = module.dynamodb.environment_registry_table_name
+  environment_registry_table_arn               = module.dynamodb.environment_registry_table_arn
+  core_image_digest                            = module.agentcore.image_digest
+  core_runtime_version                         = module.agentcore.runtime_version
+  runtime_compatibility_version                = module.agentcore.runtime_compatibility_version
+  github_oauth_secret_name                     = module.git.github_oauth_secret_name
+  github_oauth_secret_arn                      = module.git.github_oauth_secret_arn
+  github_app_private_key_secret_name           = module.git.github_app_private_key_secret_name
+  github_app_private_key_secret_arn            = module.git.github_app_private_key_secret_arn
+  github_app_config_param_name                 = module.git.github_app_config_param_name
+  github_app_config_param_arn                  = module.git.github_app_config_param_arn
+  gitlab_oauth_secret_name                     = module.git.gitlab_oauth_secret_name
+  gitlab_oauth_secret_arn                      = module.git.gitlab_oauth_secret_arn
+  bitbucket_oauth_secret_name                  = module.git.bitbucket_oauth_secret_name
+  bitbucket_oauth_secret_arn                   = module.git.bitbucket_oauth_secret_arn
+  git_connections_table_name                   = module.git.git_connections_table_name
+  git_connections_table_arn                    = module.git.git_connections_table_arn
+  git_provider_connections_table_name          = module.git.git_provider_connections_table_name
+  git_provider_connections_table_arn           = module.git.git_provider_connections_table_arn
+  source_control_bindings_table_name           = module.git.source_control_bindings_table_name
+  source_control_bindings_table_arn            = module.git.source_control_bindings_table_arn
+  workflow_source_bindings_table_name          = module.dynamodb.workflow_source_bindings_table_name
+  workflow_source_bindings_table_arn           = module.dynamodb.workflow_source_bindings_table_arn
+  enable_native_workflow_sources               = var.enable_native_workflow_sources
+  enable_native_package_jobs                   = var.enable_native_package_jobs
+  native_package_jobs_host_qualified           = var.native_package_jobs_host_qualified
+  native_package_jobs_table_name               = module.dynamodb.native_package_jobs_table_name
+  native_package_jobs_table_arn                = module.dynamodb.native_package_jobs_table_arn
+  native_package_jobs_table_stream_arn         = module.dynamodb.native_package_jobs_table_stream_arn
+  native_packages_bucket_name                  = module.s3.native_packages_bucket_name
+  native_packages_bucket_arn                   = module.s3.native_packages_bucket_arn
+  native_package_worker_memory_size            = var.native_package_worker_memory_size
+  native_package_worker_ephemeral_storage_size = var.native_package_worker_ephemeral_storage_size
+  native_package_worker_timeout_seconds        = var.native_package_worker_timeout_seconds
+  native_package_worker_reserved_concurrency   = var.native_package_worker_reserved_concurrency
+  native_package_worker_max_attempts           = var.native_package_worker_max_attempts
+  native_package_worker_lease_seconds          = var.native_package_worker_lease_seconds
+  native_package_jobs_max_receive_count        = var.native_package_jobs_max_receive_count
+  enable_native_package_storage_probe          = var.enable_native_package_storage_probe
+  native_package_storage_probe_run_id          = var.native_package_storage_probe_run_id
+  tracker_connections_table_name               = module.git.tracker_connections_table_name
+  tracker_connections_table_arn                = module.git.tracker_connections_table_arn
+  github_redirect_uri                          = "${local.app_url}/github/callback"
+  gitlab_redirect_uri                          = "${local.app_url}/gitlab/callback"
+  bitbucket_redirect_uri                       = "${local.app_url}/bitbucket/callback"
+  jira_oauth_secret_name                       = module.git.jira_oauth_secret_name
+  jira_oauth_secret_arn                        = module.git.jira_oauth_secret_arn
+  jira_redirect_uri                            = "${local.app_url}/trackers/callback/jira-cloud"
+  cognito_user_pool_id                         = module.auth.user_pool_id
+  cognito_user_pool_arn                        = module.auth.user_pool_arn
+  sso_role_config                              = jsonencode(local.sso_role_config)
+  cors_allowed_origins                         = local.cors_allowed_origins
+  realtime_doc_secret_param_arn                = module.realtime.realtime_doc_secret_param_arn
+  realtime_doc_secret_param_name               = module.realtime.realtime_doc_secret_param_name
+  agent_credential_grant_secret_param_arn      = aws_ssm_parameter.agent_credential_grant_secret.arn
+  agent_credential_grant_secret_param_name     = aws_ssm_parameter.agent_credential_grant_secret.name
 
   # Discussions feature
   discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
@@ -485,6 +507,12 @@ module "api" {
   bitbucket_lambda_name                    = module.lambda.bitbucket_lambda_name
   source_control_lambda_invoke_arn         = module.lambda.source_control_lambda_invoke_arn
   source_control_lambda_name               = module.lambda.source_control_lambda_name
+  workflow_sources_lambda_invoke_arn       = module.lambda.workflow_sources_lambda_invoke_arn
+  workflow_sources_lambda_name             = module.lambda.workflow_sources_lambda_name
+  native_preparation_enabled               = var.enable_native_preparation
+  native_execution_enabled                 = var.enable_native_execution
+  native_intents_lambda_invoke_arn         = try(module.native_runs[0].api_invoke_arn, "")
+  native_intents_lambda_name               = try(module.native_runs[0].api_function_name, "")
   trackers_lambda_invoke_arn               = module.lambda.trackers_lambda_invoke_arn
   trackers_lambda_name                     = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn          = module.lambda.cognito_users_lambda_invoke_arn
@@ -492,6 +520,7 @@ module "api" {
   agent_questions_table_name               = module.dynamodb.agent_questions_table_name
   agent_outputs_table_name                 = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn                   = module.lambda.agents_orchestrator_role_arn
+  enable_native_interaction_probe          = var.enable_native_interaction_probe
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
@@ -555,24 +584,26 @@ module "yjs_server" {
 module "agentcore" {
   source = "./modules/compute/agentcore"
 
-  project_name                = var.project_name
-  environment                 = var.environment
-  powertools_service_name     = local.powertools_service_name
-  powertools_log_level        = var.powertools_log_level
-  aws_region                  = var.aws_region
-  docker_build_args           = var.docker_build_args
-  neptune_endpoint            = module.neptune.cluster_endpoint
-  neptune_cluster_resource_id = module.neptune.cluster_resource_id
-  artifacts_bucket_name       = module.s3.artifacts_bucket_name
-  artifacts_bucket_arn        = module.s3.artifacts_bucket_arn
-  blocks_table_name           = module.dynamodb.blocks_table_name
-  blocks_table_arn            = module.dynamodb.blocks_table_arn
-  connections_table_name      = module.dynamodb.connections_table_name
-  connections_table_arn       = module.dynamodb.connections_table_arn
-  websocket_endpoint          = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
-  websocket_execution_arn     = module.realtime.websocket_execution_arn
-  aidlc_repo_ref              = var.aidlc_repo_ref
-  bedrock_model               = var.bedrock_model
+  project_name                    = var.project_name
+  environment                     = var.environment
+  powertools_service_name         = local.powertools_service_name
+  powertools_log_level            = var.powertools_log_level
+  aws_region                      = var.aws_region
+  docker_build_args               = var.docker_build_args
+  enable_native_interaction_probe = var.enable_native_interaction_probe
+  enable_native_efs_probe         = var.enable_native_efs_probe
+  neptune_endpoint                = module.neptune.cluster_endpoint
+  neptune_cluster_resource_id     = module.neptune.cluster_resource_id
+  artifacts_bucket_name           = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn            = module.s3.artifacts_bucket_arn
+  blocks_table_name               = module.dynamodb.blocks_table_name
+  blocks_table_arn                = module.dynamodb.blocks_table_arn
+  connections_table_name          = module.dynamodb.connections_table_name
+  connections_table_arn           = module.dynamodb.connections_table_arn
+  websocket_endpoint              = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn         = module.realtime.websocket_execution_arn
+  aidlc_repo_ref                  = var.aidlc_repo_ref
+  bedrock_model                   = var.bedrock_model
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,
@@ -612,12 +643,14 @@ module "managed_environments" {
   runtime_network_mode          = module.agentcore.network_mode
   runtime_subnet_ids            = module.agentcore.runtime_subnet_ids
   runtime_security_group_ids    = module.agentcore.runtime_security_group_ids
-  runtime_environment_variables = module.agentcore.runtime_environment_variables
-  core_repository_arn           = module.agentcore.ecr_repository_arn
-  environment_repository_name   = module.agentcore.managed_environment_repository_name
-  environment_repository_url    = module.agentcore.managed_environment_repository_url
-  environment_repository_arn    = module.agentcore.managed_environment_repository_arn
-  cors_allowed_origins          = local.cors_allowed_origins
+  runtime_environment_variables = merge(module.agentcore.runtime_environment_variables, {
+    NATIVE_INTERACTION_PROBE_ENABLED = "false"
+  })
+  core_repository_arn         = module.agentcore.ecr_repository_arn
+  environment_repository_name = module.agentcore.managed_environment_repository_name
+  environment_repository_url  = module.agentcore.managed_environment_repository_url
+  environment_repository_arn  = module.agentcore.managed_environment_repository_arn
+  cors_allowed_origins        = local.cors_allowed_origins
 
   tags = {
     Environment = var.environment

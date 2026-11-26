@@ -10,11 +10,11 @@
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:be8929e08ae137e81b5e1edba02259e6c4cb2f5ad655092bb9f56b97e41c4536
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
-# archives), jq, procps,
+# archives), jq, procps, tini (reap orphaned CLI descendants),
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 \
+    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps tini python3 \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
@@ -33,7 +33,7 @@ RUN curl -fsSLo /tmp/kiro-cli.zip \
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
     && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
-ARG CLAUDE_CODE_VERSION=2.1.246
+ARG CLAUDE_CODE_VERSION=2.1.257
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
@@ -118,6 +118,26 @@ COPY --chown=node:node shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
+# gh verifies upstream provenance, including the installer's offline package
+# path. Version and checksum are pinned independently of workflow selection.
+ARG GH_VERSION=2.101.0
+ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+RUN curl -fsSLo /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
+    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_arm64/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_arm64"
+
+# Explicit dev fixture only. Build verifies all five original public assets
+# against the successful import and verifies the signature without credentials.
+ARG ENABLE_NATIVE_INTERACTION_PROBE=false
+RUN ENABLE_NATIVE_INTERACTION_PROBE="${ENABLE_NATIVE_INTERACTION_PROBE}" \
+    node /opt/agentcore/native/install-probe-fixture.mjs \
+    && if [ "${ENABLE_NATIVE_INTERACTION_PROBE}" = "true" ]; then \
+        install -m 0755 /opt/agentcore/native/aidlc-launcher.sh /usr/local/bin/aidlc; \
+    fi
+
 WORKDIR /mnt/workspace
 USER node
 # CLI conversation-store placement (for park/resume durability):
@@ -151,4 +171,6 @@ ENV HOME=/home/node \
 # AgentCore Runtime contract: listen on 8080. /ping is the health surface.
 EXPOSE 8080
 
-ENTRYPOINT ["node", "/opt/agentcore/http-server.js"]
+# PID 1 must reap orphaned descendants so exited CLI process groups disappear.
+# The native command runner still requires complete process-group cleanup.
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentcore/http-server.js"]

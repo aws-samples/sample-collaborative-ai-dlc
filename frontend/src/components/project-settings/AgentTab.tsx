@@ -33,6 +33,7 @@ import { TierModelsSection, canonicalTierModels } from '@/components/settings/Ti
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
+import { WorkflowSourcesSection } from './WorkflowSourcesSection';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
@@ -499,6 +500,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
           )}
         </div>
       </SettingsCard>
+
+      <WorkflowSourcesSection projectId={project.id} canEdit={canEdit} />
 
       {/* Custom MCP servers — owner/admin get the full editor; members get a
           read-only list of server names (the raw config may carry secrets). */}

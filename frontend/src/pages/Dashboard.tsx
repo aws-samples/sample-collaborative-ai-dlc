@@ -47,6 +47,13 @@ import {
   PROJECT_SORT_LABELS,
   type ProjectSort,
 } from '@/hooks/useProjectSort';
+import {
+  getNativeListing,
+  nativeProjectDeleteReason,
+  refreshNativeIntents,
+  type NativeListing,
+} from '@/hooks/useNativeIntents';
+import { discoveryPath, nativeIntentTitle, nativePreparationLabels } from '@/lib/intentDiscovery';
 
 function formatRelativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '—';
@@ -80,6 +87,54 @@ function ProjectSignals({ activity }: { activity: { inProgress: number; attentio
   );
 }
 
+function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: NativeListing }) {
+  const navigate = useNavigate();
+  if (!listing) return null;
+  const latest = listing.items.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  return (
+    <div className="my-2 text-xs" onClick={(event) => event.stopPropagation()}>
+      {latest && (
+        <button
+          className="text-left"
+          aria-label={`Native ${nativeIntentTitle(latest)}: ${nativePreparationLabels[latest.status]}`}
+          onClick={() => navigate(discoveryPath(projectId, { backend: 'native', intent: latest }))}
+        >
+          <span className="flex items-center gap-1.5">
+            <Badge variant="outline" className="text-[9px]">
+              Native
+            </Badge>
+            {nativeIntentTitle(latest)}
+          </span>
+          <span className="block text-muted-foreground">
+            {nativePreparationLabels[latest.status]}
+          </span>
+        </button>
+      )}
+      {(listing.items.length > 1 || listing.nextCursor) && (
+        <button
+          className="block text-muted-foreground underline"
+          onClick={() => navigate(`/space/${projectId}`)}
+        >
+          View native intents in space
+        </button>
+      )}
+      {listing.loading && <p role="status">Loading native intents…</p>}
+      {listing.error && (
+        <div role="alert" className="text-destructive">
+          {listing.error}
+          <button
+            className="block underline"
+            disabled={listing.loading}
+            onClick={() => void refreshNativeIntents(projectId, 'refresh', true)}
+          >
+            Retry native intents
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -88,6 +143,7 @@ export default function Dashboard() {
   const [createInitialProvider, setCreateInitialProvider] = useState<GitProvider | ''>('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   // Shared with the sidebar project list (useProjectSort store) — changing the
@@ -107,6 +163,8 @@ export default function Dashboard() {
         hasActiveWork: p.latestIntent?.status === 'RUNNING' || p.latestIntent?.status === 'WAITING',
         // UX-002: per-project activity counts aggregated across all intents.
         activity: p.activity,
+        nativeIntents: p.nativeIntents,
+        deleteReason: p.project.kind === 'v2' ? nativeProjectDeleteReason(p.nativeIntents) : null,
       })),
     [projectsWithSprints],
   );
@@ -124,12 +182,20 @@ export default function Dashboard() {
 
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
+    const project = projects.find((item) => item.id === confirmDelete);
+    if (!project || project.deleteReason || project.userRole !== 'owner') return;
     setDeleting(confirmDelete);
+    setDeleteError(null);
     try {
+      if (project.kind === 'v2') {
+        await refreshNativeIntents(confirmDelete, 'refresh', true);
+        const reason = nativeProjectDeleteReason(getNativeListing(confirmDelete));
+        if (reason) throw new Error(reason);
+      }
       await projectsService.delete(confirmDelete);
       invalidate();
     } catch (err) {
-      console.error('Failed to delete project:', err);
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete space.');
     } finally {
       setDeleting(null);
       setConfirmDelete(null);
@@ -209,6 +275,7 @@ export default function Dashboard() {
             <Button
               variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
               size="icon"
+              aria-label="Grid view"
               className="h-8 w-8 rounded-r-none"
               onClick={() => setViewMode('grid')}
             >
@@ -217,6 +284,7 @@ export default function Dashboard() {
             <Button
               variant={viewMode === 'list' ? 'secondary' : 'ghost'}
               size="icon"
+              aria-label="List view"
               className="h-8 w-8 rounded-l-none"
               onClick={() => setViewMode('list')}
             >
@@ -226,6 +294,11 @@ export default function Dashboard() {
         </div>
 
         {/* Content */}
+        {deleteError && (
+          <p role="alert" className="text-sm text-destructive">
+            {deleteError}
+          </p>
+        )}
         {loading ? (
           <div
             className={cn(
@@ -295,7 +368,8 @@ export default function Dashboard() {
                       ? 'pointer-events-none opacity-50'
                       : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
                   )}
-                  onClick={() => {
+                  onClick={(event) => {
+                    if ((event.target as Element).closest('button')) return;
                     if (!isDeleting) navigate(`/space/${project.id}`);
                   }}
                 >
@@ -346,9 +420,12 @@ export default function Dashboard() {
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
+                            aria-label={`Delete ${project.name}`}
+                            disabled={!!project.deleteReason}
+                            title={project.deleteReason ?? undefined}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setConfirmDelete(project.id);
+                              if (!project.deleteReason) setConfirmDelete(project.id);
                             }}
                           >
                             <Trash2 className="h-3.5 w-3.5 text-destructive" />
@@ -372,6 +449,7 @@ export default function Dashboard() {
                         <ProjectSignals activity={project.activity} />
                       </div>
                     )}
+                    <NativeDiscovery projectId={project.id} listing={project.nativeIntents} />
 
                     <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
                       <span>Created on {new Date(project.createdAt).toLocaleDateString()}</span>
@@ -397,7 +475,8 @@ export default function Dashboard() {
                       ? 'pointer-events-none opacity-50'
                       : 'cursor-pointer hover:bg-accent/50',
                   )}
-                  onClick={() => {
+                  onClick={(event) => {
+                    if ((event.target as Element).closest('button')) return;
                     if (!isDeleting) navigate(`/space/${project.id}`);
                   }}
                 >
@@ -407,6 +486,7 @@ export default function Dashboard() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-sm">{project.name}</span>
+                      <NativeDiscovery projectId={project.id} listing={project.nativeIntents} />
                     </div>
                     {project.activity.inProgress > 0 && (
                       <div className="hidden md:block shrink-0">
@@ -443,9 +523,12 @@ export default function Dashboard() {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
+                          aria-label={`Delete ${project.name}`}
+                          disabled={!!project.deleteReason}
+                          title={project.deleteReason ?? undefined}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setConfirmDelete(project.id);
+                            if (!project.deleteReason) setConfirmDelete(project.id);
                           }}
                         >
                           <Trash2 className="h-3.5 w-3.5 text-destructive" />
@@ -496,7 +579,10 @@ export default function Dashboard() {
             <AlertDialogCancel disabled={!!deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteConfirm}
-              disabled={!!deleting}
+              disabled={
+                !!deleting ||
+                !!projects.find((project) => project.id === confirmDelete)?.deleteReason
+              }
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleting ? (

@@ -16,6 +16,9 @@ vi.mock('@/components/admin/AgentCredentialsCard', () => ({
 vi.mock('@/components/admin/DefaultModelsCard', () => ({
   DefaultModelsCard: () => <div data-testid="default-models-card" />,
 }));
+vi.mock('@/components/admin/NativeDebugArchivesCard', () => ({
+  NativeDebugArchivesCard: () => <div data-testid="native-debug-archives-card" />,
+}));
 vi.mock('@/components/admin/tabs/EnvironmentsTab', () => ({
   EnvironmentsTab: () => <div data-testid="environments-tab" />,
 }));
@@ -81,6 +84,7 @@ describe('PlatformAdmin', () => {
     renderAt('/admin?tab=agents');
     expect(await screen.findByTestId('agent-credentials-card')).toBeInTheDocument();
     expect(screen.getByTestId('default-models-card')).toBeInTheDocument();
+    expect(screen.getByTestId('native-debug-archives-card')).toBeInTheDocument();
     expect(screen.queryByTestId('user-management-card')).not.toBeInTheDocument();
   });
 

@@ -13,8 +13,14 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { useIntent } from '@/contexts/IntentContext';
-import { intentsService, type ArtifactImpact, type IntentArtifact } from '@/services/intents';
+import {
+  intentsService,
+  type ArtifactImpact,
+  type IntentArtifact,
+  type ExecutionCapability,
+} from '@/services/intents';
 
 // Post-hoc artifact editing affordances, shared by the ArtifactViewer card and
 // the document Preview tab:
@@ -35,9 +41,14 @@ const EDITABLE_INTENT_STATUSES = new Set(['DRAFT', 'WAITING', 'SUCCEEDED', 'FAIL
 const ACTIVE_QEDIT_STATES = new Set(['PLANNING', 'AWAITING_APPROVAL', 'APPLYING']);
 
 /** Why editing is currently unavailable, or null when it is allowed. */
-export function useArtifactEditability(artifact: IntentArtifact): string | null {
+export function useArtifactEditability(
+  artifact: IntentArtifact,
+  capability: ExecutionCapability = 'artifactEdit',
+): string | null {
   const { detail } = useIntent();
   return useMemo(() => {
+    const reason = executionCapabilityReason(detail?.intent, capability);
+    if (reason) return reason;
     if (artifact.supersededAt) return 'Superseded by a rewind — edit its replacement instead';
     const status = detail?.intent.status;
     if (status && !EDITABLE_INTENT_STATUSES.has(status)) {
@@ -47,7 +58,7 @@ export function useArtifactEditability(artifact: IntentArtifact): string | null 
       return 'A Quorum edit is in progress for this intent';
     }
     return null;
-  }, [artifact.supersededAt, detail]);
+  }, [artifact.supersededAt, detail, capability]);
 }
 
 /** Drift badge + one-click "mark verified". Renders nothing when not stale. */
@@ -58,11 +69,13 @@ export function ArtifactStaleBadge({
   artifact: IntentArtifact;
   className?: string;
 }) {
-  const { projectId, intentId, reload } = useIntent();
+  const { projectId, intentId, reload, detail } = useIntent();
+  const blocked = executionCapabilityReason(detail?.intent, 'artifactVerify');
   const [verifying, setVerifying] = useState(false);
   if (!artifact.staleSince) return null;
 
   const verify = async () => {
+    if (blocked) return;
     setVerifying(true);
     try {
       await intentsService.verifyArtifact(projectId, intentId, artifact.id);
@@ -97,26 +110,29 @@ export function ArtifactStaleBadge({
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
-              disabled={verifying}
-              onClick={(e) => {
-                e.stopPropagation();
-                verify();
-              }}
-            >
-              {verifying ? (
-                <Loader2 className="h-2.5 w-2.5 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-2.5 w-2.5" />
-              )}
-              Mark verified
-            </Button>
+            <span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+                disabled={verifying || Boolean(blocked)}
+                title={blocked ?? undefined}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  verify();
+                }}
+              >
+                {verifying ? (
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-2.5 w-2.5" />
+                )}
+                Mark verified
+              </Button>
+            </span>
           </TooltipTrigger>
           <TooltipContent className="text-xs">
-            Reviewed — still valid despite the upstream edit
+            {blocked ?? 'Reviewed — still valid despite the upstream edit'}
           </TooltipContent>
         </Tooltip>
       </span>
@@ -136,6 +152,7 @@ export function ArtifactEditControls({
 }) {
   const { projectId, intentId, reload } = useIntent();
   const blocked = useArtifactEditability(artifact);
+  const quorumBlocked = useArtifactEditability(artifact, 'quorumEdit');
 
   const [impact, setImpact] = useState<ArtifactImpact | null>(null);
   const [impactLoading, setImpactLoading] = useState(false);
@@ -162,6 +179,7 @@ export function ArtifactEditControls({
   // Edit: always show the drift warning first — the user must see what was
   // consumed/derived downstream before changing something under it.
   const onEditClick = async () => {
+    if (blocked) return;
     setError(null);
     const data = await loadImpact();
     if (!data) {
@@ -172,7 +190,7 @@ export function ArtifactEditControls({
   };
 
   const startQuorum = async () => {
-    if (!changeDescription.trim()) return;
+    if (quorumBlocked || !changeDescription.trim()) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -207,6 +225,7 @@ export function ArtifactEditControls({
                 size="icon"
                 className="h-6 w-6"
                 aria-label="Edit document"
+                title={blocked ?? undefined}
                 disabled={Boolean(blocked) || impactLoading}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -231,9 +250,11 @@ export function ArtifactEditControls({
                 size="icon"
                 className="h-6 w-6"
                 aria-label="Edit with Quorum"
-                disabled={Boolean(blocked)}
+                title={quorumBlocked ?? undefined}
+                disabled={Boolean(quorumBlocked)}
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (quorumBlocked) return;
                   setError(null);
                   setQuorumOpen(true);
                 }}
@@ -243,7 +264,7 @@ export function ArtifactEditControls({
             </span>
           </TooltipTrigger>
           <TooltipContent className="text-xs">
-            {blocked ?? 'Edit with Quorum — it plans and applies the downstream updates too'}
+            {quorumBlocked ?? 'Edit with Quorum — it plans and applies the downstream updates too'}
           </TooltipContent>
         </Tooltip>
         {error && <span className="text-[10px] text-destructive">{error}</span>}
@@ -311,7 +332,9 @@ export function ArtifactEditControls({
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
+                disabled={Boolean(quorumBlocked)}
                 onClick={() => {
+                  if (quorumBlocked) return;
                   setWarningOpen(false);
                   setQuorumOpen(true);
                 }}
@@ -322,7 +345,9 @@ export function ArtifactEditControls({
               <Button
                 size="sm"
                 className="gap-1.5"
+                disabled={Boolean(blocked)}
                 onClick={() => {
+                  if (blocked) return;
                   setWarningOpen(false);
                   onStartEdit();
                 }}
@@ -363,7 +388,7 @@ export function ArtifactEditControls({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={!changeDescription.trim() || submitting}
+                disabled={Boolean(quorumBlocked) || !changeDescription.trim() || submitting}
                 onClick={startQuorum}
               >
                 {submitting ? (

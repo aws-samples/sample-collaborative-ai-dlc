@@ -37,6 +37,8 @@
 //   GSI3PK = TRACKER_SYNCS       GSI3SK = CHECK#<timestamp>#EXEC#<executionId>
 //     (sparse maintenance index for live execution and integration work)
 
+import { requireExecutionBackend } from './execution-backend.js';
+
 const META = 'META';
 const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
 
@@ -293,6 +295,7 @@ const buildExecutionMeta = ({
   executionId,
   projectId,
   intentId,
+  executionBackend = 'platform',
   status = 'CREATED',
   workflowId,
   workflowVersion,
@@ -446,6 +449,7 @@ const buildExecutionMeta = ({
   executionId,
   projectId,
   intentId,
+  executionBackend: requireExecutionBackend(executionBackend),
   status,
   workflowId,
   workflowVersion,

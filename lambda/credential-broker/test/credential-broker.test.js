@@ -313,6 +313,6 @@ describe('concurrent GitLab credential requests (refresh race)', () => {
     expect(b.token).toBe('fresh');
     expect(refreshCalls).toBe(1);
     // The losing request must NOT have marked the binding invalid.
-    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(UpdateCommand, { TableName: 'bindings' })).toHaveLength(0);
   });
 });

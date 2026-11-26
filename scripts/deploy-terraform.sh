@@ -287,6 +287,13 @@ fi
 
 echo "Deploying environment: $ENVIRONMENT ($PHASE)"
 
+if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
+    echo "Missing required command: docker-credential-ecr-login" >&2
+    echo "Install the Amazon ECR credential helper (macOS: brew install docker-credential-helper-ecr; Debian/Ubuntu: sudo apt install amazon-ecr-credential-helper)." >&2
+    echo "Terraform uses it at plan and apply time; no docker login or Docker config changes are needed." >&2
+    exit 1
+fi
+
 if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
     configure_docker_build_args
 

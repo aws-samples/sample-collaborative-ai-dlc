@@ -42,6 +42,10 @@ export interface GraphCanvasProps {
   error?: string | null;
   emptyState?: ReactNode;
   headerLeading?: ReactNode;
+  /** Optional navigation for a graph backed by published files. No API or cache ownership. */
+  onOpenArtifact?: (artifactId: string) => void;
+  /** Optional navigation to a published assistant turn, independent of files. */
+  onOpenInteraction?: (interactionId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,8 @@ export function GraphCanvas({
   error,
   emptyState,
   headerLeading,
+  onOpenArtifact,
+  onOpenInteraction,
 }: GraphCanvasProps) {
   // Internal layout state
   const [nodes, setNodes] = useState<LayoutNode[]>([]);
@@ -1026,6 +1032,20 @@ export function GraphCanvas({
                     const isConnected = connectedNodeIds.has(node.id);
                     const dimmed = highlightNodeId && !isConnected;
                     const IconComp = cfg.icon;
+                    const navigation =
+                      onOpenInteraction &&
+                      typeof node.interactionId === 'string' &&
+                      node.interactionId
+                        ? {
+                            label: `Open response for ${node.label}`,
+                            open: () => onOpenInteraction(node.interactionId as string),
+                          }
+                        : onOpenArtifact && typeof node.artifactId === 'string' && node.artifactId
+                          ? {
+                              label: `Open file for ${node.label}`,
+                              open: () => onOpenArtifact(node.artifactId as string),
+                            }
+                          : null;
 
                     return (
                       <g
@@ -1037,9 +1057,20 @@ export function GraphCanvas({
                         }}
                         onMouseEnter={() => setHoveredNode(node.id)}
                         onMouseLeave={() => setHoveredNode(null)}
-                        onClick={() =>
-                          setSelectedNode((prev) => (prev === node.id ? null : node.id))
-                        }
+                        role={navigation ? 'button' : undefined}
+                        tabIndex={navigation ? 0 : undefined}
+                        aria-label={navigation?.label}
+                        onKeyDown={(event) => {
+                          if (navigation && (event.key === 'Enter' || event.key === ' ')) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            navigation.open();
+                          }
+                        }}
+                        onClick={() => {
+                          if (navigation) navigation.open();
+                          else setSelectedNode((prev) => (prev === node.id ? null : node.id));
+                        }}
                         className="cursor-pointer"
                         opacity={dimmed ? 0.15 : 1}
                         style={{ transition: 'opacity 300ms ease' }}

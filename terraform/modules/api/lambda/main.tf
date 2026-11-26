@@ -214,6 +214,16 @@ resource "aws_iam_role_policy" "github_connector" {
       },
       {
         Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = [var.git_provider_connections_table_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = [var.source_control_bindings_table_arn]
+      },
+      {
+        Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [var.github_oauth_secret_arn]
       },
@@ -436,6 +446,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          # Optional native debug archives; required recovery is independent.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/native-debug-archives-enabled",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/native-debug-archive-retention-days",
           # Global custom MCP servers injected into every agent session (merged
           # with project-level entries at intent-create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
@@ -988,6 +1001,13 @@ resource "aws_iam_role_policy" "credential_broker" {
           var.git_connections_table_arn,
           var.git_provider_connections_table_arn,
         ])
+      },
+      {
+        # Migration now atomically creates the provider row and conditionally
+        # removes the observed legacy row. Only the legacy table needs delete.
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [var.git_connections_table_arn]
       },
       {
         Effect   = "Allow"
@@ -1586,6 +1606,7 @@ module "github_lambda" {
     GITHUB_OAUTH_SECRET_NAME           = var.github_oauth_secret_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     GIT_TOKEN_SSM_PREFIX               = "${var.project_name}/${var.environment}/git-token"
     GITHUB_REDIRECT_URI                = var.github_redirect_uri
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
@@ -1637,6 +1658,11 @@ resource "aws_iam_role_policy" "gitlab_connector" {
           var.source_control_bindings_table_arn,
           "${var.source_control_bindings_table_arn}/index/*",
         ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = [var.git_provider_connections_table_arn]
       },
       {
         Effect   = "Allow"
@@ -1739,6 +1765,11 @@ resource "aws_iam_role_policy" "bitbucket_connector" {
           var.source_control_bindings_table_arn,
           "${var.source_control_bindings_table_arn}/index/*",
         ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = [var.git_provider_connections_table_arn]
       },
       {
         Effect   = "Allow"

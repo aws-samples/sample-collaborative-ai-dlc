@@ -15,7 +15,7 @@ output "ecr_repository_arn" {
 
 output "image_uri" {
   description = "Full image URI (with content-hash tag) built for the runtime"
-  value       = module.agentcore_docker_build.image_uri
+  value       = module.agentcore_image_build.image_uri
 }
 
 output "image_digest" {
@@ -59,8 +59,8 @@ output "role_arn" {
 }
 
 output "runtime_version" {
-  description = "AgentCore runtime version used by the seeded Standard environment"
-  value       = awscc_bedrockagentcore_runtime.stage_executor.agent_runtime_version
+  description = "Verified observed AgentCore runtime version used by the seeded Standard environment"
+  value       = data.awscc_bedrockagentcore_runtime.stage_executor_observed.agent_runtime_version
 }
 
 output "runtime_compatibility_version" {

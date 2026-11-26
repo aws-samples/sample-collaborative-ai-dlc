@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import { StageBadge, formatDuration, useTick } from '@/components/intent/stageStyle';
 import { SensorChips } from '@/components/intent/SensorChips';
@@ -238,6 +239,7 @@ function StageRow({
   hideUnitBadge?: boolean;
 }) {
   const { detail, rewindIntent } = useIntent();
+  const rewindBlocked = executionCapabilityReason(detail?.intent, 'workflowRewind');
   useTick(row.state === 'RUNNING');
   const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
   // One-click retry on a failed stage, right in the list: same reset+relaunch
@@ -247,7 +249,7 @@ function StageRow({
   const [retrying, setRetrying] = useState(false);
   const handleRetry = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (retrying) return;
+    if (rewindBlocked || retrying) return;
     setRetrying(true);
     try {
       await rewindIntent(row.stageId);
@@ -300,8 +302,9 @@ function StageRow({
           /* span, not <button>: the row itself is a button and buttons can't nest */
           <span
             role="button"
-            tabIndex={0}
-            title="Retry this stage (re-runs it and everything after)"
+            tabIndex={rewindBlocked || retrying ? -1 : 0}
+            aria-disabled={Boolean(rewindBlocked) || retrying}
+            title={rewindBlocked ?? 'Retry this stage (re-runs it and everything after)'}
             aria-label={`Retry stage ${row.stageId}`}
             onClick={handleRetry}
             onKeyDown={(e) => {
@@ -310,7 +313,12 @@ function StageRow({
                 void handleRetry(e as unknown as React.MouseEvent);
               }
             }}
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border text-muted-foreground hover:bg-muted hover:text-foreground"
+            className={cn(
+              'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border text-muted-foreground',
+              rewindBlocked || retrying
+                ? 'cursor-not-allowed opacity-50'
+                : 'hover:bg-muted hover:text-foreground',
+            )}
           >
             {retrying ? (
               <Loader2 className="h-3 w-3 animate-spin" />

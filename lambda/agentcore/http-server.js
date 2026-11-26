@@ -2,7 +2,7 @@
 //
 // Bedrock AgentCore Runtime requires a container that listens on 0.0.0.0:8080
 // (ARM64) and serves:
-//   GET  /ping         → 200 { status: "Healthy" | "HealthyBusy", time_of_last_update }
+//   GET  /ping         → 200 { status: "Healthy" | "HealthyBusy" }
 //                        HealthyBusy keeps the runtime SESSION alive while a stage
 //                        runs (a stage can take many minutes).
 //   POST /invocations  → run a command; JSON in, JSON out.
@@ -64,12 +64,15 @@
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
 
-import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
-import { createProcessStore } from '../shared/v2-process-store.js';
-import { commandDefinition } from './command-registry.js';
+if (process.env.NATIVE_RUNTIME_MODE && process.env.NATIVE_RUNTIME_MODE !== 'isolated') {
+  throw new Error('native_runtime_mode_invalid');
+}
+const isolatedRuntime = process.env.NATIVE_RUNTIME_MODE === 'isolated';
+const { Logger } = isolatedRuntime ? {} : await import('@aws-lambda-powertools/logger');
+const { commandDefinition } = isolatedRuntime ? {} : await import('./command-registry.js');
 
-const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
+const logger = isolatedRuntime ? null : new Logger({ persistentKeys: { component: 'agentcore' } });
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
@@ -171,10 +174,8 @@ export const createServer = ({
     };
 
     if (req.method === 'GET' && req.url === '/ping') {
-      return send(200, {
-        status: busy.status,
-        time_of_last_update: Math.floor(Date.parse(now()) / 1000),
-      });
+      // Omit time_of_last_update so AgentCore tracks actual status transitions.
+      return send(200, { status: busy.status });
     }
     if (req.method === 'POST' && req.url === '/invocations') {
       let payload;
@@ -198,6 +199,12 @@ export const createServer = ({
 
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
+  if (isolatedRuntime) {
+    const { startNativeRuntimeServer } = await import('./native/runtime-server.js');
+    await startNativeRuntimeServer();
+    return;
+  }
+  const { createProcessStore } = await import('../shared/v2-process-store.js');
   const {
     ddb,
     s3,
@@ -225,6 +232,7 @@ const main = async () => {
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
+  const { createNativeInteractionProbe } = await import('./native/interaction-probe.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
@@ -333,6 +341,13 @@ const main = async () => {
   // background job holds the SAME busy tracker the server uses for /ping, so
   // the session stays HealthyBusy for the job's lifetime.
   const busy = createBusyTracker();
+  const nativeProbe = createNativeInteractionProbe({
+    enabled: process.env.NATIVE_INTERACTION_PROBE_ENABLED === 'true',
+    workspaceDir: process.env.NATIVE_INTERACTION_WORKSPACE_DIR || workspaceDir,
+    requireEfs: process.env.NATIVE_INTERACTION_REQUIRE_EFS === 'true',
+    busy,
+  });
+  handlers.nativeInteractionProbe = (p, context) => nativeProbe.invoke(p, context);
   const stageJobs = new Map();
   handlers.runStageStart = (p, context) =>
     createRunStageStart({
@@ -419,7 +434,8 @@ const main = async () => {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
-    logger.error('fatal', e);
+    if (isolatedRuntime) console.error('native_runtime_start_failed');
+    else logger.error('fatal', e);
     process.exit(1);
   });
 }

@@ -27,7 +27,16 @@ import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
 import { type Project } from '@/services/projects';
 import { type Sprint } from '@/services/sprints';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
-import { useIntent } from '@/contexts/IntentContext';
+import { useIntentOptional } from '@/contexts/IntentContext';
+import { getNativeListing, useNativeListingVersion } from '@/hooks/useNativeIntents';
+import {
+  discoveryPath,
+  isNativeIntentRoute,
+  isPlatformIntent,
+  nativePreparationLabels,
+  nativeIntentTitle,
+} from '@/lib/intentDiscovery';
+import type { NativeIntentSummary } from '@/services/nativeIntents';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -53,10 +62,30 @@ export function AppHeader({
     params.projectId && params.sprintId ? params.projectId : null,
   );
   const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
-  const { detail: intentDetail } = useIntent();
-  const intentTitle = intentDetail?.intent.title ?? null;
+  const intent = useIntentOptional()?.detail?.intent;
+  const intentTitle =
+    intent &&
+    intent.id === params.intentId &&
+    intent.projectId === params.projectId &&
+    isPlatformIntent(intent)
+      ? intent.title
+      : null;
+  const inNative = isNativeIntentRoute(location.pathname);
+  useNativeListingVersion();
+  const nativeIntent =
+    inNative && params.projectId && params.intentId
+      ? (getNativeListing(params.projectId).items.find((item) => item.id === params.intentId) ??
+        null)
+      : null;
 
-  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle);
+  const breadcrumbs = buildBreadcrumbs(
+    location.pathname,
+    params,
+    project,
+    sprint,
+    intentTitle,
+    nativeIntent,
+  );
 
   const initials = user?.displayName
     ? user.displayName
@@ -105,7 +134,7 @@ export function AppHeader({
       <Separator orientation="vertical" className="h-5" />
 
       {/* Breadcrumbs */}
-      <nav className="flex items-center gap-1 text-sm min-w-0 flex-1">
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm min-w-0 flex-1">
         {breadcrumbs.map((crumb, i) => (
           <div key={i} className="flex items-center gap-1 min-w-0">
             {i > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
@@ -153,7 +182,7 @@ export function AppHeader({
       {/* Right: theme + activity toggle + user */}
       <ThemeToggle />
 
-      {(params.sprintId || params.intentId) && (
+      {!inNative && (params.sprintId || params.intentId) && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -225,6 +254,7 @@ function buildBreadcrumbs(
   project: Project | null,
   sprint: Sprint | null,
   intentTitle: string | null,
+  nativeIntent: NativeIntentSummary | null,
 ): Breadcrumb[] {
   // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
@@ -261,6 +291,23 @@ function buildBreadcrumbs(
   // Add project name if available
   if (params.projectId && project) {
     crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
+  }
+
+  if (params.projectId && isNativeIntentRoute(pathname)) {
+    if (params.intentId) {
+      crumbs.push({
+        label: nativeIntent ? nativeIntentTitle(nativeIntent) : 'Native intent',
+        href: nativeIntent
+          ? discoveryPath(params.projectId, { backend: 'native', intent: nativeIntent })
+          : `/space/${encodeURIComponent(params.projectId)}/native-intent/${encodeURIComponent(params.intentId)}`,
+      });
+      crumbs.push({
+        label: nativeIntent ? nativePreparationLabels[nativeIntent.status] : 'Preparation status',
+      });
+    } else {
+      crumbs.push({ label: 'New native intent' });
+    }
+    return crumbs;
   }
 
   // Intent routes: Spaces > Space > Intent > section

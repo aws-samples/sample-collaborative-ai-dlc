@@ -57,6 +57,7 @@ mise.toml
 
 lambda/dist
 lambda/*/.build/
+lambda/native-package-worker/.probe-build/
 test/fixtures/oidc-idp/.role-claim.zip
 
 # Documentation build output
@@ -72,3 +73,4 @@ tfplan*
 # A7 local annex-check run artifacts (generated per-run; contain local paths)
 lambda/agentcore/test/a7-prompt.txt
 lambda/agentcore/test/a7-mcp-config.json
+.native-evidence/

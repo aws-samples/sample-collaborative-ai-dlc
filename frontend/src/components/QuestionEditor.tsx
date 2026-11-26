@@ -22,6 +22,7 @@ interface Props {
   scope: CollabScope;
   userName: string;
   onAnswer: (structuredAnswer: StructuredAnswer) => Promise<void>;
+  disabled?: boolean;
   onAutoSave?: (draftAnswer: StructuredAnswer) => Promise<void>;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -32,6 +33,7 @@ export default function QuestionEditor({
   scope,
   userName,
   onAnswer,
+  disabled = false,
   onAutoSave,
   onFocus,
   onBlur,
@@ -69,7 +71,7 @@ export default function QuestionEditor({
   }, [synced]);
 
   const handleSubmit = async () => {
-    if (submitting) return;
+    if (disabled || submitting) return;
     const answer = toStructuredAnswer();
     const allAnswered = answer.answers.every(
       (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.trim().length > 0),
@@ -130,7 +132,7 @@ export default function QuestionEditor({
             awareness={awareness}
             onSelectionChange={(indices) => setSelection(qIdx, indices)}
             onFreeTextChange={(text, cursor) => setFreeText(qIdx, text, cursor)}
-            disabled={submitting || !synced}
+            disabled={disabled || submitting || !synced}
             onFocus={() => {
               addContributor();
               onFocus?.();
@@ -152,7 +154,7 @@ export default function QuestionEditor({
       <Button
         size="sm"
         onClick={handleSubmit}
-        disabled={!allAnswered || submitting}
+        disabled={disabled || !allAnswered || submitting}
         className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
       >
         {submitting && <Loader2 className="h-3 w-3 animate-spin" />}

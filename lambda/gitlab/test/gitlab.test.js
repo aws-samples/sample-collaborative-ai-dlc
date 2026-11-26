@@ -87,6 +87,8 @@ const createSignedState = (payload, secret) => {
 describe('gitlab handler', () => {
   beforeEach(() => {
     ddbMock.reset();
+    ddbMock.on(GetCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
     secretsMock.reset();
     ssmMock.reset();
     vi.stubEnv('GIT_CONNECTIONS_TABLE', CONNECTIONS_TABLE);
@@ -272,15 +274,21 @@ describe('gitlab handler', () => {
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ success: true });
 
+      const parameter = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input;
+      const connection = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item;
+      expect(connection.generation).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(parameter.Name).toBe(`/${SSM_PREFIX}/${USER_ID}/gitlab-${connection.generation}`);
       expect(ssmMock).toHaveReceivedCommandWith(PutParameterCommand, {
-        Name: `/${SSM_PREFIX}/${USER_ID}/gitlab`,
+        Name: parameter.Name,
         Value: JSON.stringify({
           accessToken: 'glpat-new',
           refreshToken: 'refresh-new',
           tokenType: 'bearer',
         }),
         Type: 'SecureString',
-        Overwrite: true,
+        Overwrite: false,
       });
 
       expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
@@ -288,7 +296,7 @@ describe('gitlab handler', () => {
         Item: expect.objectContaining({
           userId: USER_ID,
           provider: 'gitlab',
-          parameterName: `/${SSM_PREFIX}/${USER_ID}/gitlab`,
+          parameterName: parameter.Name,
           scope: 'api read_user',
         }),
       });
@@ -870,7 +878,7 @@ describe('gitlab handler', () => {
   });
 
   describe('DELETE /disconnect', () => {
-    it('deletes SSM parameter and DynamoDB row', async () => {
+    it('tombstones the connection and cleans up its SSM parameter and legacy row', async () => {
       ddbMock.on(GetCommand).resolves({
         Item: { userId: USER_ID, provider: 'gitlab', parameterName: `/${SSM_PREFIX}/${USER_ID}` },
       });
@@ -885,10 +893,26 @@ describe('gitlab handler', () => {
       expect(ssmMock).toHaveReceivedCommandWith(DeleteParameterCommand, {
         Name: `/${SSM_PREFIX}/${USER_ID}`,
       });
+      expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
+        TableName: PROVIDER_CONNECTIONS_TABLE,
+        Item: expect.objectContaining({
+          userId: USER_ID,
+          provider: 'gitlab',
+          providerInstance: 'gitlab#public',
+          status: 'deleted',
+          generation: expect.any(String),
+        }),
+      });
+      expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.Item).not.toHaveProperty(
+        'parameterName',
+      );
       expect(ddbMock).toHaveReceivedCommandWith(DeleteCommand, {
         TableName: CONNECTIONS_TABLE,
         Key: { userId: USER_ID },
       });
+      expect(
+        ddbMock.commandCalls(DeleteCommand, { TableName: PROVIDER_CONNECTIONS_TABLE }),
+      ).toHaveLength(0);
     });
 
     it('returns 401 without userId', async () => {

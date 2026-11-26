@@ -49,6 +49,16 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu';
+import {
+  discoveryKey,
+  discoveryPath,
+  isNativeIntentRoute,
+  isPlatformIntent,
+  nativePreparationLabels,
+  nativeIntentTitle,
+} from '@/lib/intentDiscovery';
+import { refreshNativeIntents } from '@/hooks/useNativeIntents';
+import { Badge } from '@/components/ui/badge';
 
 type IterationFilter = 'attention' | 'active' | 'in-progress';
 
@@ -113,8 +123,16 @@ export function AppSidebar() {
 
   const projectId = params.projectId ?? null;
   const intentId = params.intentId ?? null;
+  const contextIntent = intentCtx?.detail?.intent;
+  const selectedPlatformIntent =
+    contextIntent?.id === intentId && contextIntent.projectId === projectId ? contextIntent : null;
   const onComposePage = location.pathname.endsWith('/compose');
-  const showIntentTabs = !!intentId && !onComposePage;
+  const isNativeRoute = isNativeIntentRoute(location.pathname);
+  const showIntentTabs =
+    !!intentId &&
+    !onComposePage &&
+    !isNativeRoute &&
+    (!selectedPlatformIntent || isPlatformIntent(selectedPlatformIntent));
 
   const currentSection: IntentSection | null = showIntentTabs
     ? location.pathname.endsWith('/graph')
@@ -177,12 +195,17 @@ export function AppSidebar() {
   const filteredIterations: IterationItem[] = sortedProjects.flatMap(
     ({ project, latestSprint, latestIntent }) => {
       if (project.kind === 'v2') {
-        if (!latestIntent) return [];
+        if (
+          !latestIntent ||
+          (latestIntent.executionBackend !== undefined &&
+            latestIntent.executionBackend !== 'platform')
+        )
+          return [];
         const status = effectiveIntentStatus(latestIntent);
         if (!matchesFilter(status, iterationFilter)) return [];
         return [
           {
-            key: `intent-${latestIntent.id}`,
+            key: JSON.stringify(['platform', project.id, latestIntent.id]),
             title: latestIntent.title ?? 'Intent',
             subtitle: project.name,
             status,
@@ -211,14 +234,15 @@ export function AppSidebar() {
 
   const pinnedSelectedIntent: IterationItem | null = useMemo(() => {
     if (!showIntentTabs || !projectId || !intentId) return null;
-    const alreadyInList = filteredIterations.some((item) => item.intentMeta?.intentId === intentId);
+    const alreadyInList = filteredIterations.some(
+      (item) => item.intentMeta?.intentId === intentId && item.intentMeta.projectId === projectId,
+    );
     if (alreadyInList) return null;
-    const detail = intentCtx?.detail;
-    const intent = detail?.intent;
+    const intent = selectedPlatformIntent;
     const spaceName = projects.find((p) => p.project.id === projectId)?.project.name ?? '';
     const status: EffectiveSprintStatus = intent ? effectiveIntentStatus(intent) : 'idle';
     return {
-      key: `pinned-intent-${intentId}`,
+      key: JSON.stringify(['pinned-platform', projectId, intentId]),
       title: intent?.title ?? 'Intent',
       subtitle: spaceName,
       status,
@@ -233,7 +257,7 @@ export function AppSidebar() {
     projectId,
     intentId,
     filteredIterations,
-    intentCtx?.detail,
+    selectedPlatformIntent,
     projects,
     navigate,
   ]);
@@ -428,7 +452,10 @@ export function AppSidebar() {
               </div>
             )}
             {filteredIterations.map((item) => {
-              const isSelectedIntent = showIntentTabs && item.intentMeta?.intentId === intentId;
+              const isSelectedIntent =
+                showIntentTabs &&
+                item.intentMeta?.intentId === intentId &&
+                item.intentMeta.projectId === projectId;
 
               return (
                 <div key={item.key}>
@@ -459,6 +486,79 @@ export function AppSidebar() {
             })}
           </div>
         </div>
+        {sortedProjects.some(
+          ({ nativeIntents }) =>
+            nativeIntents?.items.length ||
+            nativeIntents?.error ||
+            nativeIntents?.loading ||
+            nativeIntents?.nextCursor,
+        ) && (
+          <div className="px-3 pb-3" aria-label="Native workspaces">
+            <p className="px-3 py-1.5 text-[13px] font-medium">Native workspaces</p>
+            {sortedProjects.map(({ project, nativeIntents: native }) => {
+              if (!native) return null;
+              const selected =
+                isNativeRoute && projectId === project.id
+                  ? native.items.find((item) => item.id === intentId)
+                  : undefined;
+              const item =
+                selected ??
+                native.items.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+              return (
+                <div key={project.id} className="px-3 py-1">
+                  {item && (
+                    <button
+                      key={discoveryKey(project.id, { backend: 'native', intent: item })}
+                      aria-current={
+                        isNativeRoute && projectId === project.id && intentId === item.id
+                          ? 'page'
+                          : undefined
+                      }
+                      onClick={() =>
+                        navigate(discoveryPath(project.id, { backend: 'native', intent: item }))
+                      }
+                      className="w-full rounded-md py-1 text-left text-[11px] hover:bg-sidebar-accent/50"
+                    >
+                      <span className="flex items-center gap-1">
+                        <span className="truncate">{nativeIntentTitle(item)}</span>
+                        <Badge variant="outline" className="text-[9px]">
+                          Native
+                        </Badge>
+                      </span>
+                      <span className="block text-muted-foreground">
+                        {nativePreparationLabels[item.status]}
+                      </span>
+                      <span className="block text-muted-foreground">{project.name}</span>
+                    </button>
+                  )}
+                  {(native.items.length > 1 || native.nextCursor) && (
+                    <button
+                      className="text-[10px] underline"
+                      onClick={() => navigate(`/space/${project.id}`)}
+                    >
+                      View native intents in space
+                    </button>
+                  )}
+                  {native.error && (
+                    <div role="alert" className="text-[10px] text-destructive">
+                      {project.name}: {native.error}
+                      <button
+                        className="block underline"
+                        disabled={native.loading}
+                        onClick={() => void refreshNativeIntents(project.id, 'refresh', true)}
+                      >
+                        Retry native intents
+                      </button>
+                    </div>
+                  )}
+                  {native.loading && (
+                    <p className="text-[10px] text-muted-foreground">Loading native intents…</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </ScrollArea>
 
       <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">

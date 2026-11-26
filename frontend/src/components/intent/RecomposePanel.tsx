@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 
 interface Props {
   open: boolean;
@@ -51,6 +52,9 @@ export function RecomposePanel({
   workflowVersion,
   onRelaunched,
 }: Props) {
+  const recomposeBlocked = executionCapabilityReason(intent, 'workflowRecompose');
+  const composeBlocked = recomposeBlocked ?? executionCapabilityReason(intent, 'workflowCompose');
+  const gridBlocked = recomposeBlocked ?? executionCapabilityReason(intent, 'stageSkipping');
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [phases, setPhases] = useState<PhaseNode[]>([]);
   const [grid, setGrid] = useState<Record<string, 'EXECUTE' | 'SKIP'> | null>(null);
@@ -189,7 +193,7 @@ export function RecomposePanel({
   };
 
   const toggleStage = (stageId: string) => {
-    if (lockedStageIds.has(stageId)) return;
+    if (gridBlocked || lockedStageIds.has(stageId)) return;
     const next = { ...effectiveGrid };
     next[stageId] = next[stageId] === 'EXECUTE' ? 'SKIP' : 'EXECUTE';
     setGrid(next);
@@ -197,6 +201,7 @@ export function RecomposePanel({
   };
 
   const askComposer = async () => {
+    if (composeBlocked) return;
     setComposing(true);
     setError(null);
     try {
@@ -216,6 +221,7 @@ export function RecomposePanel({
     applyGrid: Record<string, 'EXECUTE' | 'SKIP'>,
     scopeLabel: string,
   ) => {
+    if (recomposeBlocked) return;
     setApplying(true);
     setError(null);
     try {
@@ -248,6 +254,11 @@ export function RecomposePanel({
         </DialogHeader>
 
         <div className="space-y-4 px-6 py-5">
+          {(recomposeBlocked || composeBlocked || gridBlocked) && (
+            <p className="text-xs text-muted-foreground">
+              {recomposeBlocked || composeBlocked || gridBlocked}
+            </p>
+          )}
           {error && (
             <p className="flex items-start gap-1.5 text-xs text-destructive">
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -261,14 +272,14 @@ export function RecomposePanel({
               onChange={(e) => setInstructions(e.target.value)}
               placeholder="Optional steering for the composer, e.g. skip the NFR work…"
               className="text-sm"
-              disabled={composing || pending || applying}
+              disabled={Boolean(composeBlocked) || composing || pending || applying}
               data-testid="recompose-instructions"
             />
             <Button
               type="button"
               variant="secondary"
               onClick={askComposer}
-              disabled={composing || pending || applying}
+              disabled={Boolean(composeBlocked) || composing || pending || applying}
               data-testid="recompose-ask-composer"
             >
               {composing || pending ? (
@@ -314,7 +325,7 @@ export function RecomposePanel({
                 onClick={() =>
                   applyAndRelaunch(latestInflight.proposal!.grid!, latestInflight.proposal!.scope)
                 }
-                disabled={applying}
+                disabled={Boolean(recomposeBlocked) || applying}
                 data-testid="recompose-apply-proposal"
               >
                 {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
@@ -330,7 +341,7 @@ export function RecomposePanel({
                 phaseNames={Object.fromEntries(phases.map((p) => [p.path, p.name || p.phaseId]))}
                 grid={effectiveGrid}
                 lockedStageIds={lockedStageIds}
-                disabled={applying}
+                disabled={Boolean(gridBlocked) || applying}
                 onToggle={toggleStage}
               />
               {dirty && (
@@ -339,7 +350,7 @@ export function RecomposePanel({
                     type="button"
                     size="sm"
                     onClick={() => applyAndRelaunch(grid!, gridScope ?? intent.scope ?? 'composed')}
-                    disabled={applying}
+                    disabled={Boolean(gridBlocked) || applying}
                     data-testid="recompose-apply-manual"
                   >
                     {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}

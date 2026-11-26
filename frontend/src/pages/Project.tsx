@@ -49,6 +49,16 @@ import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { loadPersisted, persist } from '@/lib/persistentCache';
+import { MAX_NATIVE_PAGES, useNativeIntents } from '@/hooks/useNativeIntents';
+import {
+  canDeleteDiscoveredIntent,
+  discoveryKey,
+  discoveryPath,
+  isPlatformIntent,
+  nativePreparationLabels,
+  nativeIntentTitle,
+  type DiscoveredIntent,
+} from '@/lib/intentDiscovery';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -112,7 +122,9 @@ export default function Project() {
   // v2 projects run intents (dynamic phases/stages), not the fixed sprint
   // lifecycle — render the dedicated intents view.
   if (project.kind === 'v2') {
-    return <IntentsView project={project} projectId={projectId} onNavigate={navigate} />;
+    return (
+      <IntentsView key={projectId} project={project} projectId={projectId} onNavigate={navigate} />
+    );
   }
 
   return (
@@ -345,6 +357,8 @@ const INTENT_STATUS_LABEL: Record<string, string> = {
 
 const INTENT_STATUS_ICON: Record<string, typeof Loader2> = {
   RUNNING: Loader2,
+  PREPARING: Loader2,
+  READY: CheckCircle2,
   WAITING: MessageCircleQuestion,
   SUCCEEDED: CheckCircle2,
   FAILED: XCircle,
@@ -371,6 +385,7 @@ function IntentsView({
   projectId: string;
   onNavigate: (path: string) => void;
 }) {
+  const native = useNativeIntents(projectId);
   let cached = intentsCache.get(projectId);
   if (!cached) {
     const persisted = loadPersisted<{ intents: Intent[]; usage: ProjectMetrics | null }>(
@@ -390,7 +405,7 @@ function IntentsView({
   const [error, setError] = useState<string | null>(null);
 
   const [usage, setUsage] = useState<ProjectMetrics | null>(cached?.usage ?? null);
-  const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
+  const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<DiscoveredIntent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
   const [showAll, setShowAll] = useState(false);
@@ -411,7 +426,11 @@ function IntentsView({
   // reads as arbitrary — always re-sort client-side.
   const sortedIntents = useMemo(() => {
     const time = (t: string | null | undefined) => (t ? new Date(t).getTime() : 0);
-    return [...intents].toSorted((a, b) => {
+    const discovered: DiscoveredIntent[] = [
+      ...intents.map((intent): DiscoveredIntent => ({ backend: 'platform', intent })),
+      ...native.items.map((intent): DiscoveredIntent => ({ backend: 'native', intent })),
+    ];
+    return discovered.toSorted(({ intent: a }, { intent: b }) => {
       switch (sortBy) {
         case 'title':
           return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
@@ -422,7 +441,7 @@ function IntentsView({
           return time(b.updatedAt ?? b.createdAt) - time(a.updatedAt ?? a.createdAt);
       }
     });
-  }, [intents, sortBy]);
+  }, [intents, native.items, sortBy]);
 
   const API_INTENT_CAP = 100;
   const INITIAL_INTENT_CAP = 10;
@@ -472,12 +491,17 @@ function IntentsView({
     !!usage && (Object.keys(usage.project.metrics).length > 0 || usage.project.cost.totalCost > 0);
 
   const handleDeleteIntent = async () => {
-    if (!confirmDeleteIntent) return;
+    if (
+      !confirmDeleteIntent ||
+      !canDeleteIntents ||
+      !canDeleteDiscoveredIntent(confirmDeleteIntent)
+    )
+      return;
     const intentToDelete = confirmDeleteIntent;
-    setDeletingIntent(intentToDelete.id);
+    setDeletingIntent(discoveryKey(projectId, intentToDelete));
     setError(null);
     try {
-      await intentsService.delete(projectId, intentToDelete.id);
+      await intentsService.delete(projectId, intentToDelete.intent.id);
       setConfirmDeleteIntent(null);
       refresh();
     } catch (err) {
@@ -545,7 +569,7 @@ function IntentsView({
               <CardTitle className="text-sm">Intents</CardTitle>
             </div>
             <div className="flex items-center gap-2">
-              {intents.length > 1 && (
+              {sortedIntents.length > 1 && (
                 <Select value={sortBy} onValueChange={(v) => changeSort(v as IntentSort)}>
                   <SelectTrigger className="h-7 w-[160px] gap-1.5 text-xs">
                     <ArrowUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
@@ -571,40 +595,72 @@ function IntentsView({
         </CardHeader>
         <CardContent className="flex-1 space-y-2 pt-0">
           {error && <p className="text-xs text-destructive">{error}</p>}
+          {native.error && (
+            <div role="alert" className="text-xs text-destructive">
+              {native.error}
+              <Button
+                variant="link"
+                size="sm"
+                disabled={native.loading}
+                onClick={() => void native.refresh()}
+              >
+                Retry native intents
+              </Button>
+            </div>
+          )}
+          {native.loading && (
+            <p role="status" className="text-xs text-muted-foreground">
+              Loading native intents…
+            </p>
+          )}
           {loading ? (
             <Skeleton className="h-16 rounded-lg" />
-          ) : intents.length === 0 ? (
+          ) : sortedIntents.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
-              <p className="text-sm text-muted-foreground">No intents yet</p>
+              <p className="text-sm text-muted-foreground">
+                {native.error || native.loading || native.nextCursor
+                  ? 'No intents loaded on this page'
+                  : 'No intents yet'}
+              </p>
               <p className="text-xs text-muted-foreground/60 mt-1">
                 Start one to kick off the AI-DLC v2 workflow.
               </p>
             </div>
           ) : (
             <>
-              {visibleIntents.map((it) => {
+              {visibleIntents.map((item) => {
+                const it = item.intent;
+                const unsupported = item.backend === 'platform' && !isPlatformIntent(item.intent);
                 const Icon = INTENT_STATUS_ICON[it.status];
                 // The row being purged: dimmed + spinner, navigation disabled while
                 // the (multi-store) cascade runs so it can't be clicked into a
                 // half-deleted intent.
-                const isDeleting = deletingIntent === it.id;
+                const isDeleting = deletingIntent === discoveryKey(projectId, item);
                 // A row is a div-with-role, not a <button>: the delete affordance
                 // nested inside would otherwise be a button-in-button (invalid HTML).
                 return (
                   <div
-                    key={it.id}
+                    key={discoveryKey(projectId, item)}
                     role="button"
-                    tabIndex={isDeleting ? -1 : 0}
+                    tabIndex={isDeleting || unsupported ? -1 : 0}
+                    aria-disabled={unsupported || undefined}
+                    title={
+                      unsupported
+                        ? 'This platform record has an unsupported execution backend and cannot be opened.'
+                        : undefined
+                    }
                     aria-busy={isDeleting}
-                    onClick={() => {
-                      if (isDeleting) return;
-                      onNavigate(`/space/${projectId}/intent/${it.id}`);
+                    onClick={(event) => {
+                      if ((event.target as Element).closest('button')) return;
+                      if (isDeleting || unsupported) return;
+                      onNavigate(discoveryPath(projectId, item));
                     }}
                     onKeyDown={(e) => {
-                      if (isDeleting) return;
+                      if ((e.target as Element).closest('button')) return;
+                      if (isDeleting || unsupported) return;
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        onNavigate(`/space/${projectId}/intent/${it.id}`);
+                        onNavigate(discoveryPath(projectId, item));
                       }
                     }}
                     className={cn(
@@ -617,14 +673,31 @@ function IntentsView({
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
                         <span className="text-sm font-medium truncate">
-                          {it.title || 'Untitled intent'}
+                          {item.backend === 'native'
+                            ? nativeIntentTitle(item.intent)
+                            : it.title || 'Untitled intent'}
                         </span>
+                        {item.backend === 'native' && (
+                          <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+                            Native
+                          </Badge>
+                        )}
                         <Badge variant="outline" className="text-[9px] h-4 shrink-0">
-                          {isDeleting ? 'DELETING' : (INTENT_STATUS_LABEL[it.status] ?? it.status)}
+                          {isDeleting
+                            ? 'DELETING'
+                            : unsupported
+                              ? 'Unsupported backend'
+                              : item.backend === 'native'
+                                ? nativePreparationLabels[item.intent.status]
+                                : (INTENT_STATUS_LABEL[it.status] ?? it.status)}
                         </Badge>
                       </span>
                       <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                        {it.currentStage && <span>stage: {it.currentStage}</span>}
+                        {item.backend === 'platform' &&
+                          !unsupported &&
+                          item.intent.currentStage && (
+                            <span>stage: {item.intent.currentStage}</span>
+                          )}
                         {it.createdAt && (
                           <span className="text-muted-foreground/60">
                             created {formatRelativeTime(it.createdAt)}
@@ -646,6 +719,7 @@ function IntentsView({
                             className={cn(
                               'h-3.5 w-3.5 shrink-0',
                               it.status === 'RUNNING' && 'animate-spin text-agent-running',
+                              it.status === 'PREPARING' && 'animate-spin text-muted-foreground',
                               it.status === 'WAITING' && 'text-agent-waiting',
                               it.status === 'SUCCEEDED' && 'text-agent-success',
                               it.status === 'FAILED' && 'text-agent-error',
@@ -658,9 +732,15 @@ function IntentsView({
                             size="icon"
                             className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
                             aria-label="Delete intent"
+                            disabled={!canDeleteDiscoveredIntent(item)}
+                            title={
+                              item.backend === 'native'
+                                ? 'Deleting native intents is not available yet'
+                                : undefined
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
-                              setConfirmDeleteIntent(it);
+                              if (canDeleteDiscoveredIntent(item)) setConfirmDeleteIntent(item);
                             }}
                           >
                             <Trash2 className="h-3.5 w-3.5 text-destructive" />
@@ -693,6 +773,29 @@ function IntentsView({
                 </p>
               )}
             </>
+          )}
+          {native.nextCursor && (
+            <div className="text-center text-xs text-muted-foreground">
+              <p>More native intents are available. {native.items.length} loaded.</p>
+              {native.pages < MAX_NATIVE_PAGES ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={native.loading}
+                  onClick={() => {
+                    setShowAll(true);
+                    void native.loadMore();
+                  }}
+                >
+                  Load more native intents
+                </Button>
+              ) : (
+                <p>
+                  This view is limited to 40 pages (up to 1,000 native intents). Older intents
+                  remain accessible through their saved status links.
+                </p>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -728,9 +831,9 @@ function IntentsView({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Intent</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete “{confirmDeleteIntent?.title || 'this intent'}”? All
-              of its artifacts, questions, discussions and run history will be permanently removed.
-              This action cannot be undone.
+              Are you sure you want to delete “{confirmDeleteIntent?.intent.title || 'this intent'}
+              ”? All of its artifacts, questions, discussions and run history will be permanently
+              removed. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -740,7 +843,11 @@ function IntentsView({
                 e.preventDefault();
                 void handleDeleteIntent();
               }}
-              disabled={!!deletingIntent}
+              disabled={
+                !!deletingIntent ||
+                !confirmDeleteIntent ||
+                !canDeleteDiscoveredIntent(confirmDeleteIntent)
+              }
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deletingIntent ? (

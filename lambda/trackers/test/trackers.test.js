@@ -10,6 +10,7 @@ import {
   DeleteCommand,
   QueryCommand,
   ScanCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   SSMClient,
@@ -32,6 +33,7 @@ const lambdaMock = mockClient(LambdaClient);
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
 const GIT_TABLE = 'test-git-connections';
+const GIT_PROVIDER_TABLE = 'test-git-provider-connections';
 const TRACKER_TABLE = 'test-tracker-connections';
 const PARAM_NAME = '/aidlc/dev/git-token/user-1';
 const JIRA_PARAM_NAME = '/aidlc/dev/jira-token/user-1';
@@ -55,6 +57,7 @@ beforeAll(async () => {
   vi.stubEnv('GREMLIN_PARTITION', PARTITION);
   vi.stubEnv('AWS_PROFILE', undefined);
   vi.stubEnv('GIT_CONNECTIONS_TABLE', GIT_TABLE);
+  vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', GIT_PROVIDER_TABLE);
   vi.stubEnv('SOURCE_CONTROL_BINDINGS_TABLE', 'test-source-control-bindings');
   vi.stubEnv('TRACKER_CONNECTIONS_TABLE', TRACKER_TABLE);
   vi.stubEnv('CORS_ALLOWED_ORIGINS', 'https://example.com');
@@ -103,6 +106,7 @@ beforeEach(() => {
   ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({
     Item: { userId: 'user-1', parameterName: PARAM_NAME, createdAt: NOW.toISOString() },
   });
+  ddbMock.on(GetCommand, { TableName: GIT_PROVIDER_TABLE }).resolves({});
   ssmMock.on(GetParameterCommand).resolves({
     Parameter: { Value: JSON.stringify({ accessToken: TOKEN }) },
   });
@@ -373,7 +377,18 @@ describe('GET /trackers (unified listing)', () => {
 });
 
 describe('DELETE /trackers/{provider}/{instance}', () => {
-  it('disconnects github-issues by deleting the SSM param + git-connections row', async () => {
+  it('revokes github-issues authority before deleting the SSM parameter', async () => {
+    let revoked = false;
+    ddbMock.on(PutCommand, { TableName: GIT_PROVIDER_TABLE }).callsFake(({ Item }) => {
+      expect(Item).toMatchObject({ provider: 'github', status: 'deleted' });
+      expect(Item.parameterName).toBeUndefined();
+      revoked = true;
+      return {};
+    });
+    ssmMock.on(DeleteParameterCommand).callsFake(() => {
+      expect(revoked).toBe(true);
+      return {};
+    });
     const res = await handler({
       httpMethod: 'DELETE',
       path: '/trackers/github-issues/public',
@@ -386,6 +401,23 @@ describe('DELETE /trackers/{provider}/{instance}', () => {
     expect(ssmMock).toHaveReceivedCommand(DeleteParameterCommand);
     expect(ddbMock).toHaveReceivedCommand(DeleteCommand);
     expect(ddbMock).toHaveReceivedCommand(QueryCommand);
+  });
+
+  it('returns conflict without deleting tokens when a newer connection wins', async () => {
+    ddbMock
+      .on(PutCommand, { TableName: GIT_PROVIDER_TABLE })
+      .rejects(Object.assign(new Error('Changed'), { name: 'ConditionalCheckFailedException' }));
+    const res = await handler({
+      httpMethod: 'DELETE',
+      path: '/trackers/github-issues/public',
+      pathParameters: { provider: 'github-issues', instance: 'public' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('CONNECTION_CHANGED');
+    expect(ssmMock).not.toHaveReceivedCommand(DeleteParameterCommand);
+    expect(ddbMock).not.toHaveReceivedCommand(UpdateCommand);
   });
 
   it('returns 400 for unknown provider/instance pair', async () => {

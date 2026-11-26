@@ -1,0 +1,15 @@
+{
+  "image": "collaborative-ai-dlc-agentcore-dev@sha256:a226eb964ae779ee64496f0bdbf481dee4e9025dcf5d642015c9018975d6c0ff",
+  "platform": "linux/arm64",
+  "layer": "sha256:d7b3ab24f51320641a3c38a0e485fea8679c5c91de64aa1cf1f38672be673e8e",
+  "containerPaths": [
+    "/opt/agentcore/native/runtime-server.js",
+    "/opt/agentcore/native/workspace-check.js"
+  ],
+  "sha256": {
+    "runtime-server.js": "67785da2060f5fc54ef2019a87c8d320a185b2d853c9b694b0584bc5eeb4ef4a",
+    "workspace-check.js": "7486e5e499c35a83906c3dbad1869b2d8e75d7b96d4f667b36f5f5fa0c194d44"
+  },
+  "sourceBytesUnmodified": true,
+  "scope": "Exact writer-generation HTTP router pinned by retained dev runs; the executor is injected in tests; no runtime/model calls"
+}

@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { useIntent } from '@/contexts/IntentContext';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
@@ -186,9 +187,10 @@ function CompactQuestionRow({
     : null;
   const intentStatus = detail?.intent.status ?? '';
   const canRevise = answered && !['SUCCEEDED', 'CANCELLED'].includes(intentStatus);
+  const reviseBlocked = executionCapabilityReason(detail?.intent, 'answerRevision');
 
   const handleRevise = async () => {
-    if (!revision.trim()) return;
+    if (reviseBlocked || !revision.trim()) return;
     setRevising(true);
     setReviseError(null);
     try {
@@ -294,11 +296,17 @@ function CompactQuestionRow({
               size="sm"
               variant="outline"
               className="h-6 gap-1 px-2 text-[11px]"
+              disabled={Boolean(reviseBlocked)}
+              title={reviseBlocked ?? undefined}
               onClick={() => setReviseOpen(true)}
             >
               <Compass className="h-3 w-3" />
               Revise answer
             </Button>
+          )}
+
+          {canRevise && reviseBlocked && (
+            <p className="text-[11px] text-muted-foreground">{reviseBlocked}</p>
           )}
 
           {canRevise && reviseOpen && (
@@ -315,7 +323,7 @@ function CompactQuestionRow({
                 <Button
                   size="sm"
                   className="h-6 px-2 text-[11px]"
-                  disabled={!revision.trim() || revising}
+                  disabled={Boolean(reviseBlocked) || !revision.trim() || revising}
                   onClick={handleRevise}
                 >
                   {revising ? 'Sending…' : 'Send correction'}

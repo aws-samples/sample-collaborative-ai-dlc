@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublishImmutableNativePackages",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "${bucket_arn}/native-packages/v1/*",
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "true",
+          "s3:ObjectCreationOperation": "true"
+        },
+        "StringEquals": { "s3:if-none-match": "*" },
+        "Null": { "s3:x-amz-copy-source": "true" }
+      }
+    }
+  ]
+}

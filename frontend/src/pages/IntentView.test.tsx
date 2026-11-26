@@ -478,6 +478,89 @@ describe('IntentView', () => {
     expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
   });
 
+  it.each([
+    { executionBackend: 'native' },
+    { executionBackend: 'future-backend' },
+    {
+      executionBackend: 'platform',
+      executionCapabilities: { workflowRecompose: false, nativeExport: false },
+    },
+  ])('disables excluded export and reshape actions: %j', async (execution) => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex', ...execution }));
+    renderAt();
+    const download = await screen.findByRole('button', { name: 'Download Codex workspace' });
+    expect(download).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Choose workspace harness' })).toBeDisabled();
+    await userEvent.click(download);
+    expect(exportWorkflow).not.toHaveBeenCalled();
+    expect(screen.queryByText('Continue outside Collaborative AI-DLC?')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+    const reshape = screen.getByRole('menuitem', { name: 'Reshape remaining stages' });
+    expect(reshape).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(reshape);
+    expect(screen.queryByTestId('recompose-dialog')).not.toBeInTheDocument();
+  });
+
+  it('disables native recovery without calling start or rewind', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'FAILED', executionBackend: 'native' }));
+    renderAt();
+    const restart = await screen.findByRole('button', { name: 'Restart workflow' });
+    expect(restart).toBeDisabled();
+    await userEvent.click(restart);
+    expect(start).not.toHaveBeenCalled();
+    expect(rewind).not.toHaveBeenCalled();
+  });
+
+  it('keeps the native review visible while disabling approvals, feedback and stage skipping', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', executionBackend: 'native' }),
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-design',
+          status: 'pending',
+          kind: 'validation',
+          questions: null,
+          nextStageId: 'design-next',
+          skipTargets: ['build'],
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    renderAt('/space/p1/intent/i1/review/h1');
+    const skip = await screen.findByRole('combobox', { name: 'After approval' });
+    expect(skip).toBeDisabled();
+    const approve = screen.getByRole('button', { name: 'Approve — continue to design-next' });
+    expect(approve).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Request changes' })).toBeDisabled();
+    expect(screen.getByLabelText('Feedback for the agent')).toBeDisabled();
+    expect(screen.getByText('Native approvals are not available yet')).toBeInTheDocument();
+    await userEvent.click(approve);
+    expect(answerGate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Back to intent' })).toBeEnabled();
+  });
+
+  it('keeps a native unit recovery action disabled even for an owner', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', executionBackend: 'native' }),
+      stages: [
+        {
+          stageInstanceId: 'si-design',
+          stageId: 'design',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'construction',
+        },
+      ],
+    });
+    renderAt();
+    const recover = await screen.findByRole('button', { name: 'Repair execution' });
+    expect(recover).toBeDisabled();
+    await userEvent.click(recover);
+    expect(repair).not.toHaveBeenCalled();
+  });
+
   it('switches from intent configuration to reshape', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue(

@@ -162,6 +162,16 @@ export const NODE_TYPES: Record<
     label: 'Artifact',
     shortLabel: 'Art',
   },
+  NativeInteraction: {
+    color: '#7c3aed',
+    darkColor: '#6d28d9',
+    gradientFrom: '#8b5cf6',
+    gradientTo: '#6d28d9',
+    textColor: '#fff',
+    icon: MessageSquare,
+    label: 'AI-DLC response',
+    shortLabel: 'Response',
+  },
   Steering: {
     color: '#d97706',
     darkColor: '#b45309',
@@ -318,6 +328,7 @@ export const ICON_SIZE = 14;
 export const TYPE_HIERARCHY: string[] = [
   'AgentRun',
   'Intent',
+  'NativeInteraction',
   'Requirement',
   'GeneralInfo',
   'Steering',

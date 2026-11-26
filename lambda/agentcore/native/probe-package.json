@@ -1,0 +1,39 @@
+{
+  "purpose": "fixed-public-operator-test-fixture",
+  "source": {
+    "provider": "github",
+    "repository": "awslabs/aidlc-workflows",
+    "release": "v2.9.0",
+    "commit": "22f5d1b15a064c9ae80046e5b1761d5877e2f69f"
+  },
+  "version": "2.9.0",
+  "packageId": "sha256:0399ab50fa7ed00eae5a246159fdb1d594c8fd4946c6aeb72452d9d6e2770ce0",
+  "materializationId": "sha256:eed746ebdc9078b8bf9217cebaad743e8f90eded8b299da8b96c99eb81bf9368",
+  "files": [
+    {
+      "name": "aidlc-linux-arm64",
+      "sha256": "0863c54bfaccc695097a6e003ea405e7983e080261a327efd91335578f742ee5",
+      "bytes": 96708752
+    },
+    {
+      "name": "aidlc-runtime-2.9.0.tar.gz",
+      "sha256": "e66e864ac4c29f30024c32cab579eea3e0142a303596d2192b1c88b4ad69b25b",
+      "bytes": 13473410
+    },
+    {
+      "name": "version.json",
+      "bytes": 3658,
+      "sha256": "a07d4bc0018f6d08cd077f750d798de29dc77c73542aabc72f19ab52d21c6af2"
+    },
+    {
+      "name": "checksums.txt",
+      "bytes": 925,
+      "sha256": "1a8ad281f71854a5c5cbe062b03810f29b18e41dcd2248a52cce0ef99e7d4fcc"
+    },
+    {
+      "name": "aidlc-release.intoto.jsonl",
+      "sha256": "53ed8a35f7396830b5a97187ede6c82d8d3299daf575103769b7d883e3bfceb1",
+      "bytes": 12764
+    }
+  ]
+}

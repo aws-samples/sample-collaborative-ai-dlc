@@ -88,6 +88,17 @@ const normalizedClaims = (claims) => {
       ? null
       : requiredString(claims.executionId, 'executionId');
   const bindings = normalizeGrantBindings(claims.bindings);
+  if (
+    purpose === AGENT_AUTH_MODES.NATIVE_PROBE &&
+    (projectId !== null ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        executionId || '',
+      ) ||
+      bindings.length !== 1 ||
+      bindings[0].source !== 'platform')
+  ) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Native probe grant scope is invalid');
+  }
   if (bindings.some((binding) => binding.source === 'space') && !projectId) {
     throw grantError(
       'AGENT_CREDENTIAL_GRANT_INVALID',

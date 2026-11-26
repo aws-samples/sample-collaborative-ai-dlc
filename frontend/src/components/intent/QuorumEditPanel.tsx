@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { useIntent } from '@/contexts/IntentContext';
 import { intentsService, type QuorumEdit, type QuorumEditPlanItem } from '@/services/intents';
 
@@ -172,7 +173,8 @@ function QuorumEditProgress({ editId }: { editId: string }) {
 }
 
 function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
-  const { projectId, intentId, reload } = useIntent();
+  const { projectId, intentId, reload, detail } = useIntent();
+  const blocked = executionCapabilityReason(detail?.intent, 'quorumEdit');
   const items = useMemo(() => edit.plan?.items ?? [], [edit.plan]);
   // Everything starts included: updates apply, verify-unaffected clears the
   // drift marker with Quorum's rationale. Excluded items stay marked stale.
@@ -189,6 +191,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
     });
 
   const decide = async (decision: 'approve' | 'reject') => {
+    if (blocked) return;
     setSubmitting(decision);
     setError(null);
     try {
@@ -222,17 +225,19 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
               key={item.artifactId}
               item={item}
               included={!excluded.has(item.artifactId)}
+              disabled={Boolean(blocked)}
               onToggle={() => toggle(item.artifactId)}
             />
           ))}
         </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {blocked && <p className="text-xs text-muted-foreground">{blocked}</p>}
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           className="h-7 gap-1.5"
-          disabled={submitting != null}
+          disabled={Boolean(blocked) || submitting != null}
           onClick={() => decide('approve')}
         >
           {submitting === 'approve' ? (
@@ -246,7 +251,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
           size="sm"
           variant="outline"
           className="h-7 gap-1.5"
-          disabled={submitting != null}
+          disabled={Boolean(blocked) || submitting != null}
           onClick={() => decide('reject')}
         >
           {submitting === 'reject' ? (
@@ -268,10 +273,12 @@ function PlanItemRow({
   item,
   included,
   onToggle,
+  disabled,
 }: {
   item: QuorumEditPlanItem;
   included: boolean;
   onToggle: () => void;
+  disabled?: boolean;
 }) {
   const isUpdate = item.action === 'update';
   return (
@@ -283,6 +290,7 @@ function PlanItemRow({
     >
       <input
         type="checkbox"
+        disabled={disabled}
         checked={included}
         onChange={onToggle}
         className="mt-0.5 h-3.5 w-3.5 accent-primary"

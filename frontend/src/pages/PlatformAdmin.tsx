@@ -26,6 +26,7 @@ import { GlobalMcpServersCard } from '@/components/admin/GlobalMcpServersCard';
 import { GraphEnrichmentCard } from '@/components/admin/GraphEnrichmentCard';
 import { StageSkippingCard } from '@/components/admin/StageSkippingCard';
 import { ComposerCard } from '@/components/admin/ComposerCard';
+import { NativeDebugArchivesCard } from '@/components/admin/NativeDebugArchivesCard';
 import { SourceControlTab } from '@/components/admin/tabs/SourceControlTab';
 import { TrackersTab } from '@/components/admin/tabs/TrackersTab';
 import { EnvironmentsTab } from '@/components/admin/tabs/EnvironmentsTab';
@@ -99,6 +100,7 @@ export default function PlatformAdmin() {
             <GraphEnrichmentCard />
             <StageSkippingCard />
             <ComposerCard />
+            <NativeDebugArchivesCard />
           </TabsContent>
 
           <TabsContent value="environments" className="mt-5">

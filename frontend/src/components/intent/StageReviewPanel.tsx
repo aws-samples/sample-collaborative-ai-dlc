@@ -27,6 +27,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import {
+  executionCapabilityReason,
+  executionGateResponseReason,
+} from '@/lib/executionCapabilities';
 import { generateColor } from '@/utils/colors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -207,6 +211,9 @@ export function StageReviewPanel({
   // Rides the approve answer as { decision: 'approve', skipTo } and is
   // re-validated server-side.
   const [skipTo, setSkipTo] = useState('');
+  const skipBlocked = executionCapabilityReason(detail.intent, 'stageSkipping');
+  const responseBlocked = executionGateResponseReason(detail.intent, gate);
+  const effectiveSkipTo = skipBlocked ? '' : skipTo;
   const skipTargets = gate.skipTargets ?? [];
   const graph = useIntentGraph(projectId, intentId);
   const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
@@ -249,6 +256,7 @@ export function StageReviewPanel({
       enabled: pending,
     });
   const submit = async (decision: 'approve' | 'request-changes') => {
+    if (responseBlocked) return;
     setSubmitting(true);
     try {
       const currentFeedback = getFeedback();
@@ -258,7 +266,7 @@ export function StageReviewPanel({
           decision === 'approve'
             ? {
                 decision,
-                ...(skipTo ? { skipTo } : {}),
+                ...(effectiveSkipTo ? { skipTo: effectiveSkipTo } : {}),
               }
             : { decision, feedback: currentFeedback },
       });
@@ -504,7 +512,7 @@ export function StageReviewPanel({
                 rows={4}
                 placeholder="What should the agent change before this stage can continue?"
                 className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting || !synced}
+                disabled={Boolean(responseBlocked) || submitting || !synced}
               />
               {remoteUsers.size > 0 && (
                 <div className="flex items-center gap-1">
@@ -533,9 +541,9 @@ export function StageReviewPanel({
                 After approval
               </Label>
               <Select
-                value={skipTo || 'next'}
+                value={effectiveSkipTo || 'next'}
                 onValueChange={(v) => setSkipTo(v === 'next' ? '' : v)}
-                disabled={submitting}
+                disabled={Boolean(responseBlocked) || Boolean(skipBlocked) || submitting}
               >
                 <SelectTrigger id="skip-to-select" className="h-9 w-full text-sm">
                   <SelectValue />
@@ -559,7 +567,11 @@ export function StageReviewPanel({
                   ))}
                 </SelectContent>
               </Select>
+              {skipBlocked && <p className="mt-1 text-xs text-muted-foreground">{skipBlocked}</p>}
             </div>
+          )}
+          {pending && responseBlocked && (
+            <p className="text-xs text-muted-foreground">{responseBlocked}</p>
           )}
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button variant="outline" className="mr-auto" onClick={onBack}>
@@ -569,14 +581,17 @@ export function StageReviewPanel({
               <>
                 <Button
                   variant="outline"
-                  disabled={submitting || !synced || !feedback.trim()}
+                  disabled={Boolean(responseBlocked) || submitting || !synced || !feedback.trim()}
                   onClick={() => submit('request-changes')}
                 >
                   Request changes
                 </Button>
-                <Button disabled={submitting} onClick={() => submit('approve')}>
-                  {skipTo
-                    ? `Approve & skip to ${skipTo}`
+                <Button
+                  disabled={Boolean(responseBlocked) || submitting}
+                  onClick={() => submit('approve')}
+                >
+                  {effectiveSkipTo
+                    ? `Approve & skip to ${effectiveSkipTo}`
                     : gate.nextStageId !== undefined
                       ? gate.nextStageId
                         ? `Approve — continue to ${gate.nextStageId}`
@@ -586,7 +601,7 @@ export function StageReviewPanel({
               </>
             )}
           </div>
-          {pending && skipTo && (
+          {pending && effectiveSkipTo && (
             <p className="text-xs text-amber-600 dark:text-amber-500">
               Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;
               downstream stages treat their outputs as absent by design. {skipTo} itself runs in

@@ -20,10 +20,28 @@ locals {
   ]))
 }
 
+variable "enable_native_interaction_probe" {
+  description = "Enable the direct-IAM operator interaction experiment in dev only"
+  type        = bool
+  default     = false
+
+}
+
+resource "terraform_data" "native_probe_configuration" {
+  count = var.enable_native_interaction_probe ? 1 : 0
+  lifecycle {
+    precondition {
+      condition     = var.environment == "dev"
+      error_message = "The native interaction experiment is restricted to dev."
+    }
+  }
+}
+
 # Agents Lambda
 module "agents_lambda" {
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 8.0"
+  source     = "terraform-aws-modules/lambda/aws"
+  version    = "~> 8.0"
+  depends_on = [terraform_data.native_probe_configuration]
 
   function_name = "${var.project_name}-agents-${var.environment}"
   handler       = "index.handler"
@@ -62,9 +80,10 @@ module "agents_lambda" {
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.
-    AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
-    ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
-    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
+    AGENTCORE_RUNTIME_ARN            = var.agentcore_runtime_arn
+    ENVIRONMENT_REGISTRY_TABLE       = var.environment_registry_table_name
+    RUNTIME_COMPATIBILITY_VERSION    = var.runtime_compatibility_version
+    NATIVE_INTERACTION_PROBE_ENABLED = tostring(var.enable_native_interaction_probe)
   }
 }
 

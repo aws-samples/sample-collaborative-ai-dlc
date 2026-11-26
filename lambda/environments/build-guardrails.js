@@ -18,7 +18,7 @@ export const SECRET_COMMAND =
 // Variables the platform owns: a recipe may not set or shadow these, because
 // they carry runtime identity, credential brokering, and loader configuration.
 export const PROTECTED_VARIABLE_NAME =
-  /^(AWS_|AIDLC_|AGENTCORE_|BEDROCK_|V2_|MCP_|CREDENTIAL_BROKER_|SOURCE_CONTROL_|CLAUDE_|KIRO_|OPENCODE_|CODEX_|XDG_|LD_|PATH$|HOME$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELLOPTS$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|RUNTIME_COMPATIBILITY_VERSION$)/;
+  /^(AWS_|AIDLC_|AGENTCORE_|BEDROCK_|V2_|MCP_|CREDENTIAL_BROKER_|SOURCE_CONTROL_|CLAUDE_|KIRO_|OPENCODE_|CODEX_|XDG_|LD_|PATH$|HOME$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELLOPTS$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|RUNTIME_COMPATIBILITY_VERSION$|NATIVE_INTERACTION_)/;
 
 // Build-command shapes that would rewrite the image contract or reach into the
 // protected trees.

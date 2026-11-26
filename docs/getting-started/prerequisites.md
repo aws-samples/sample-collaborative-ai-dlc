@@ -26,17 +26,33 @@ To deploy AIDLC Collaborative to AWS, install the following additional tools. Fo
 
 | Tool                                                                                                                  | Version        | Purpose                                                                               |
 | --------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
-| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                                                           |
+| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.7 or later   | Infrastructure provisioning                                                           |
 | [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling                                       |
 | [Docker](https://docs.docker.com/get-docker/) (default)                                                               | 20.10 or later | Lambda packaging and container builds; alternatives use the override documented below |
+| [Amazon ECR credential helper](https://github.com/awslabs/amazon-ecr-credential-helper) | Available on `PATH` | Resolve registry credentials when Terraform plans and applies |
 
 Run the following commands to confirm the default Docker-based deployment tools are installed. If you use an alternative container runtime, follow the section below instead of the Docker verification command.
 
 ```bash
-terraform --version  # Expected output: v1.4 or later
+terraform --version  # Expected output: v1.7 or later
 aws --version        # Expected output: aws-cli/2.x
 docker --version     # Expected output: Docker version 20.10 or later
+command -v docker-credential-ecr-login
 ```
+
+Install the ECR helper with `brew install docker-credential-helper-ecr` on macOS
+or `sudo apt install amazon-ecr-credential-helper` on Debian/Ubuntu. It is also
+required with alternative container runtimes. Terraform supplies its own
+registry-specific helper configuration; you do not need to change
+`~/.docker/config.json` or run `docker login`.
+
+The helper uses the AWS credentials available to the Terraform process, including
+`AWS_PROFILE`. Use the deployment profile at apply time. Credentials are resolved
+again when applying a saved plan, rather than embedding an expiring ECR password
+in the provider configuration. This does not renew an expired AWS login; renew
+the underlying AWS session when required. The provider holds resolved credentials
+for that Terraform invocation, so an individual apply lasting beyond ECR's
+12-hour token lifetime can still need replanning and retrying.
 
 ### Using an alternative container runtime
 

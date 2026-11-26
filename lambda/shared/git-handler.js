@@ -7,6 +7,7 @@
 // Manager OAuth credentials) once; each lambda passes its provider + a small
 // route-shape descriptor that says how to extract a repoId from the path.
 
+import { randomUUID } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
@@ -21,9 +22,18 @@ import {
   resolveGitTokenFull,
   getUserId,
 } from './git-oauth.js';
-import { getGitConnection, putGitConnection, deleteGitConnection } from './git-connection-store.js';
+import {
+  assertCurrentGitConnection,
+  getGitConnection,
+  getGitConnectionSnapshot,
+  putGitConnection,
+  deleteGitConnection,
+} from './git-connection-store.js';
+import { ensureFreshGitToken } from './git-token.js';
 import {
   invalidateBindingsByCredentialRef,
+  invalidationReasonForError,
+  listBindingsByCredentialRef,
   oauthCredentialRef,
 } from './source-control-bindings.js';
 
@@ -57,54 +67,36 @@ export const createGitHandler = (provider, routes) => {
   // the provider supports it (GitLab). GitHub's oauth has no refreshAccessToken
   // so onRefresh stays undefined and glFetch/ghFetch behave identically.
   const buildCtx = async (item) => {
+    await assertCurrentGitConnection(ddb, item);
     const tokens = await resolveGitTokenFull(ssm, item);
+    await assertCurrentGitConnection(ddb, item);
     const ctx = { token: tokens.accessToken };
     if (typeof provider.oauth.refreshAccessToken === 'function') {
       ctx.onRefresh = async () => {
-        let refreshed;
         try {
-          const creds = await getOAuthCredentials(secrets, secretName(), providerLabel);
-          refreshed = await provider.oauth.refreshAccessToken({
-            clientId: creds.client_id,
-            clientSecret: creds.client_secret,
-            refreshToken: tokens.refreshToken,
-            redirectUri: redirectUri(),
+          return await ensureFreshGitToken({
+            ssm,
+            secrets,
+            ddb,
+            item,
+            gitProvider: provider.id,
+            staleToken: tokens.accessToken,
           });
         } catch (error) {
-          await invalidateBindingsByCredentialRef(
-            ddb,
-            oauthCredentialRef(provider.id, item.userId),
-            'oauth_refresh_failed',
-          ).catch(() => {});
+          // A delayed request for an old connection must not invalidate the
+          // replacement's bindings after the user reconnects.
+          if (error.code === 'CONNECTION_CHANGED') throw error;
+          const reason = invalidationReasonForError(error);
+          if (reason) {
+            await invalidateBindingsByCredentialRef(
+              ddb,
+              oauthCredentialRef(provider.id, item.userId),
+              reason,
+              { connectionSnapshot: item },
+            ).catch(() => {});
+          }
           throw error;
         }
-        await ssm.send(
-          new PutParameterCommand({
-            Name: item.parameterName,
-            Value: JSON.stringify({
-              accessToken: refreshed.accessToken,
-              refreshToken: refreshed.refreshToken,
-              tokenType: refreshed.tokenType,
-              // Record expiry so the construction path (ensureFreshGitToken)
-              // can tell whether an API-refreshed token is still valid.
-              ...(refreshed.expiresIn
-                ? { expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000 }
-                : {}),
-            }),
-            Type: 'SecureString',
-            // Bitbucket access/refresh tokens are JWTs (~2800+ chars) that
-            // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
-            // promotes to Advanced only when needed (no-op for short tokens).
-            Tier: 'Intelligent-Tiering',
-            Overwrite: true,
-          }),
-        );
-        await putGitConnection(ddb, {
-          ...item,
-          scope: refreshed.scope,
-          updatedAt: new Date().toISOString(),
-        });
-        return refreshed.accessToken;
       };
     }
     return ctx;
@@ -163,6 +155,13 @@ export const createGitHandler = (provider, routes) => {
           return response(400, { error: 'OAuth state expired, please try again' });
         }
 
+        // Observe the connection before slow provider calls. A disconnect or
+        // newer connect while this callback is running wins over this attempt.
+        const previousConnection = await getGitConnectionSnapshot(
+          ddb,
+          statePayload.userId,
+          provider.id,
+        );
         const tokens = await provider.oauth.exchangeCode({
           clientId: client_id,
           clientSecret: client_secret,
@@ -170,11 +169,11 @@ export const createGitHandler = (provider, routes) => {
           redirectUri: redirectUri(),
         });
 
-        // Per-provider SSM token path. The 5th `provider.id` segment keeps a
-        // user's GitHub and GitLab tokens from colliding (both used to write to
-        // /PREFIX/userId). Legacy connections kept the 4-segment path; their
-        // parameterName is read from the stored row, so they remain valid.
-        const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${provider.id}`;
+        // Every connect gets its own token path. Late writes from the previous
+        // connection can never replace these bytes. Keep the existing segment
+        // count for path validation/IAM; old stored paths remain readable.
+        const generation = randomUUID();
+        const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${provider.id}-${generation}`;
         // GitLab stores a refresh token (+ expiry so the construction path can
         // refresh just-in-time); GitHub does not. Match each provider's
         // historical SSM value shape (key order matters for existing assertions).
@@ -197,7 +196,7 @@ export const createGitHandler = (provider, routes) => {
             // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
             // promotes to Advanced only when needed (no-op for short tokens).
             Tier: 'Intelligent-Tiering',
-            Overwrite: true,
+            Overwrite: false,
           }),
         );
         // Commit-attribution identity ("on behalf of": author = user,
@@ -216,14 +215,41 @@ export const createGitHandler = (provider, routes) => {
             logger.error(`Failed to fetch ${providerLabel} user for attribution`, e);
           }
         }
-        await putGitConnection(ddb, {
-          userId: statePayload.userId,
-          provider: provider.id,
-          parameterName,
-          scope: tokens.scope,
-          createdAt: new Date().toISOString(),
-          ...authorFields,
-        });
+        try {
+          await putGitConnection(
+            ddb,
+            {
+              userId: statePayload.userId,
+              provider: provider.id,
+              parameterName,
+              generation,
+              scope: tokens.scope,
+              createdAt: new Date().toISOString(),
+              ...authorFields,
+            },
+            { expectedItem: previousConnection },
+          );
+        } catch (error) {
+          // A retry can turn a committed write with a lost response into a
+          // conditional failure. Check the live row before deciding cleanup;
+          // never delete a parameter still referenced by the connection.
+          if (error.code === 'CONNECTION_CHANGED') {
+            let current;
+            try {
+              current = await getGitConnectionSnapshot(ddb, statePayload.userId, provider.id);
+            } catch {
+              throw error;
+            }
+            if (current?.parameterName === parameterName) {
+              if (current.generation === generation && current.status !== 'deleted') {
+                return response(200, { success: true });
+              }
+            } else {
+              await ssm.send(new DeleteParameterCommand({ Name: parameterName })).catch(() => {});
+            }
+          }
+          throw error;
+        }
         return response(200, { success: true });
       }
 
@@ -244,6 +270,7 @@ export const createGitHandler = (provider, routes) => {
             ddb,
             oauthCredentialRef(provider.id, userId),
             'oauth_scopes_missing',
+            { connectionSnapshot: Item },
           ).catch(() => {});
           return response(200, {
             connected: false,
@@ -267,26 +294,27 @@ export const createGitHandler = (provider, routes) => {
       // DELETE /{provider}/disconnect
       if (httpMethod === 'DELETE' && path.endsWith('/disconnect')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        // getConnection scopes by provider, so a null Item means "nothing of
-        // ours to disconnect".
-        if (!Item) return response(200, { success: true });
-        if (Item.parameterName) {
+        const connection = await getConnection(userId);
+        const snapshot = connection ?? (await getGitConnectionSnapshot(ddb, userId, provider.id));
+        const Item = snapshot?.status === 'deleted' ? null : snapshot;
+        const credentialRef = oauthCredentialRef(provider.id, userId);
+        const inspectedBindings = await listBindingsByCredentialRef(ddb, credentialRef);
+        // Revoke authority before best-effort token cleanup. Condition against
+        // the viewed connection so a delayed disconnect cannot delete a newer
+        // connect, and leave a tombstone to prevent stale legacy migration.
+        // With no active connection, also fence an in-flight first callback.
+        await deleteGitConnection(ddb, userId, provider.id, { expectedItem: snapshot });
+        if (Item?.parameterName) {
           try {
             await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
           } catch (e) {
             logger.error('Failed to delete git token parameter', e);
           }
         }
-        // Delete from BOTH the new and legacy tables so a stale legacy row
-        // can't resurrect this connection via migrate-on-read.
-        await deleteGitConnection(ddb, userId, provider.id);
-        await invalidateBindingsByCredentialRef(
-          ddb,
-          oauthCredentialRef(provider.id, userId),
-          'oauth_disconnected',
-          { actor: userId },
-        );
+        await invalidateBindingsByCredentialRef(ddb, credentialRef, 'oauth_disconnected', {
+          actor: userId,
+          inspectedBindings,
+        });
         return response(200, { success: true });
       }
 
@@ -367,6 +395,12 @@ export const createGitHandler = (provider, routes) => {
       return response(404, { error: 'Not found' });
     } catch (err) {
       logger.error('Error', err);
+      if (err.code === 'CONNECTION_CHANGED') {
+        return response(409, {
+          error: 'Git connection changed; reload before retrying',
+          code: err.code,
+        });
+      }
       if (err.status && err.name === 'ProviderError') {
         return response(err.status, { error: err.message, ...err.extra });
       }

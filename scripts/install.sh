@@ -571,22 +571,22 @@ require_terraform_version() {
         }
       });
     ')"; then
-        echo "Could not determine the Terraform version; Terraform 1.4 or later is required." >&2
+        echo "Could not determine the Terraform version; Terraform 1.7 or later is required." >&2
         return 1
     fi
     if ! is_semver "$version"; then
-        echo "Could not parse Terraform version '$version'; Terraform 1.4 or later is required." >&2
+        echo "Could not parse Terraform version '$version'; Terraform 1.7 or later is required." >&2
         return 1
     fi
-    if [[ "$(version_cmp "$version" "1.4.0")" -lt 0 ]]; then
-        echo "Terraform 1.4 or later is required; found $version." >&2
+    if [[ "$(version_cmp "$version" "1.7.0")" -lt 0 ]]; then
+        echo "Terraform 1.7 or later is required; found $version." >&2
         return 1
     fi
 }
 
 require_commands() {
     local missing=0 command
-    local commands="git node npm terraform aws"
+    local commands="git node npm terraform aws docker-credential-ecr-login"
     [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && commands="git node"
     for command in $commands; do
         if ! command -v "$command" >/dev/null 2>&1; then

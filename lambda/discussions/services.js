@@ -133,25 +133,23 @@ const discussionSessionIdFor = (intentId, discussionId) =>
   `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
 const discussionRuntimeTargetFor = async (intentId, fallbackRuntimeArn) => {
-  const fallbackTarget = runtimeTargetInput(null, fallbackRuntimeArn);
   const processTable = process.env.V2_PROCESS_TABLE;
-  if (!processTable) return fallbackTarget;
-  try {
-    const { Item: meta } = await ddb.send(
-      new GetCommand({
-        TableName: processTable,
-        Key: { pk: `EXEC#${intentId}`, sk: 'META' },
-      }),
-    );
-    if (meta) return runtimeTargetInput(meta, fallbackRuntimeArn);
-    logger.warn('Discussion assist runtime snapshot missing; using core runtime', { intentId });
-  } catch (error) {
-    logger.warn('Discussion assist runtime snapshot lookup failed; using core runtime', {
-      intentId,
-      error: error?.message ?? String(error),
+  if (!processTable) throw new Error('V2_PROCESS_TABLE is not configured');
+  // A missing/failed read cannot establish whether this is a platform or
+  // isolated native execution. Do not dispatch its data to the shared runtime.
+  const { Item: meta } = await ddb.send(
+    new GetCommand({
+      TableName: processTable,
+      Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+      ConsistentRead: true,
+    }),
+  );
+  if (!meta) {
+    throw Object.assign(new Error('Discussion intent runtime snapshot is missing'), {
+      code: 'execution_runtime_snapshot_missing',
     });
   }
-  return fallbackTarget;
+  return runtimeTargetInput(meta, fallbackRuntimeArn);
 };
 
 export const invokeDiscussionAssist = async ({ intentId, payload }) => {

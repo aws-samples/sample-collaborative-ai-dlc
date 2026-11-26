@@ -1,0 +1,8 @@
+{
+  "image": "aidlc-native-composer-local:20260929",
+  "imageId": "sha256:c6897c2f05648e74c9a9e968341c6e64d14282548f1a85a60711ba2ae7a2821f",
+  "containerPath": "/opt/agentcore/native/runtime-server.js",
+  "sha256": "a257b863d8d9715317fb4584575bad474f49e21b3ee128d3b30a67a4fa605bf6",
+  "sourceBytesUnmodified": true,
+  "scope": "Exact legacy HTTP router, executor and unused workspace-check injected in tests; no runtime/model calls"
+}

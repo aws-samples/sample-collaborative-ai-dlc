@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import type { IntentGate } from '@/services/intents';
 
 // Capture the realtime callback so tests can push events into the provider.
 let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
@@ -24,6 +25,8 @@ vi.mock('@/services/realtime', () => ({
 
 const get = vi.fn();
 const answerGate = vi.fn();
+const reviseGate = vi.fn();
+const rewind = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
 const outputs = vi.fn();
@@ -31,6 +34,8 @@ vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
+    reviseGate: (...a: unknown[]) => reviseGate(...a),
+    rewind: (...a: unknown[]) => rewind(...a),
     outputs: (...a: unknown[]) => outputs(...a),
   },
 }));
@@ -71,17 +76,13 @@ function Probe() {
   );
 }
 
-const renderProvider = () =>
+const renderProvider = (content = <Probe />) =>
   render(
     <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
       <Routes>
         <Route
           path="/space/:projectId/intent/:intentId"
-          element={
-            <IntentProvider>
-              <Probe />
-            </IntentProvider>
-          }
+          element={<IntentProvider>{content}</IntentProvider>}
         />
       </Routes>
     </MemoryRouter>,
@@ -121,10 +122,91 @@ describe('IntentContext', () => {
     clearIntentCache();
     get.mockReset();
     answerGate.mockReset();
+    reviseGate.mockReset().mockResolvedValue({});
+    rewind.mockReset().mockResolvedValue({});
     outputs.mockReset().mockResolvedValue({ outputs: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
   });
+
+  it.each([
+    { executionBackend: 'native' },
+    { executionBackend: 'future-backend' },
+    {
+      executionBackend: 'platform',
+      executionCapabilities: { workflowRewind: false, answerRevision: false },
+    },
+  ])('blocks excluded mutations before service invocation: %j', async (execution) => {
+    get.mockResolvedValue(detail({ status: 'WAITING', ...execution }));
+    let context!: ReturnType<typeof useIntent>;
+    function CaptureActions() {
+      context = useIntent();
+      return null;
+    }
+    renderProvider(<CaptureActions />);
+    await waitFor(() => expect(context.detail?.intent.status).toBe('WAITING'));
+    const gate = { humanTaskId: 'h1' } as IntentGate;
+    await expect(context.rewindIntent('design')).rejects.toThrow();
+    await expect(context.reviseGate(gate, 'Use the revised scope')).rejects.toThrow();
+    expect(rewind).not.toHaveBeenCalled();
+    expect(reviseGate).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy rewind and answer revision services', async () => {
+    get.mockResolvedValue(detail({ status: 'WAITING' }));
+    let context!: ReturnType<typeof useIntent>;
+    function CaptureActions() {
+      context = useIntent();
+      return null;
+    }
+    renderProvider(<CaptureActions />);
+    await waitFor(() => expect(context.detail?.intent.status).toBe('WAITING'));
+    const gate = { humanTaskId: 'h1' } as IntentGate;
+    await act(() => context.rewindIntent('design'));
+    await act(() => context.reviseGate(gate, 'Use the revised scope'));
+    expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'design' });
+    expect(reviseGate).toHaveBeenCalledWith('p1', 'i1', 'h1', 'Use the revised scope');
+  });
+
+  it.each(['native', 'future-backend'])(
+    'blocks all gate response kinds before the answer service for %s',
+    async (executionBackend) => {
+      get.mockResolvedValue(detail({ status: 'WAITING', executionBackend }));
+      let context!: ReturnType<typeof useIntent>;
+      function CaptureActions() {
+        context = useIntent();
+        return null;
+      }
+      renderProvider(<CaptureActions />);
+      await waitFor(() => expect(context.detail?.intent.status).toBe('WAITING'));
+      for (const kind of ['question', 'approval', 'review-verdict', 'validation'] as const) {
+        await expect(
+          context.answerGate({ humanTaskId: 'h1', kind } as IntentGate, { answer: 'approve' }),
+        ).rejects.toThrow();
+      }
+      expect(answerGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, 'platform'])(
+    'preserves %s gate response services',
+    async (executionBackend) => {
+      get.mockResolvedValue(detail({ status: 'WAITING', executionBackend }));
+      answerGate.mockResolvedValue({});
+      let context!: ReturnType<typeof useIntent>;
+      function CaptureActions() {
+        context = useIntent();
+        return null;
+      }
+      renderProvider(<CaptureActions />);
+      await waitFor(() => expect(context.detail?.intent.status).toBe('WAITING'));
+      const input = { answer: 'Keep the scope' };
+      await act(() =>
+        context.answerGate({ humanTaskId: 'h1', kind: 'question' } as IntentGate, input),
+      );
+      expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'h1', input);
+    },
+  );
 
   it('stageRows: scope-filters the plan and appends live rows outside it', async () => {
     get.mockResolvedValue({

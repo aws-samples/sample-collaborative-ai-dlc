@@ -23,31 +23,11 @@ const invoke = () =>
   });
 
 describe('discussion assist runtime routing', () => {
-  let warnLines;
-  const warnedWith = (substr) =>
-    warnLines
-      .map((l) => {
-        try {
-          return JSON.parse(l);
-        } catch {
-          return null;
-        }
-      })
-      .some((o) => o && o.level === 'WARN' && String(o.message).includes(substr));
-
   beforeEach(() => {
     ddbMock.reset();
     agentcoreMock.reset();
     vi.stubEnv('AGENTCORE_RUNTIME_ARN', CORE_RUNTIME_ARN);
     vi.stubEnv('V2_PROCESS_TABLE', PROCESS_TABLE);
-    warnLines = [];
-    const captureStream = (chunk) => {
-      warnLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
-      return true;
-    };
-    // Powertools routes WARN to stderr — capture both streams.
-    vi.spyOn(process.stdout, 'write').mockImplementation(captureStream);
-    vi.spyOn(process.stderr, 'write').mockImplementation(captureStream);
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true }) },
     });
@@ -74,27 +54,49 @@ describe('discussion assist runtime routing', () => {
       agentRuntimeArn: MANAGED_RUNTIME_ARN,
       qualifier: 'revision_r_1',
     });
+    expect(ddbMock.commandCalls(GetCommand)[0].args[0].input.ConsistentRead).toBe(true);
   });
 
-  it('falls back to the core runtime when the intent snapshot is missing', async () => {
+  it('does not send unknown intent data to the core runtime when META is missing', async () => {
     ddbMock.on(GetCommand).resolves({});
-
-    await expect(invoke()).resolves.toEqual({ ok: true });
-
-    const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
-    expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
-    expect(input).not.toHaveProperty('qualifier');
-    expect(warnedWith('runtime snapshot missing')).toBe(true);
+    await expect(invoke()).rejects.toMatchObject({ code: 'execution_runtime_snapshot_missing' });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
   });
 
-  it('falls back to the core runtime when the snapshot lookup fails', async () => {
+  it('does not fall back after a failed snapshot lookup', async () => {
     ddbMock.on(GetCommand).rejects(new Error('throttled'));
+    await expect(invoke()).rejects.toThrow('throttled');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
 
-    await expect(invoke()).resolves.toEqual({ ok: true });
+  it.each([undefined, 'platform'])(
+    'preserves the core target for confirmed %s META',
+    async (backend) => {
+      ddbMock.on(GetCommand).resolves({ Item: { executionBackend: backend } });
+      await expect(invoke()).resolves.toEqual({ ok: true });
+      const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
+      expect(input).not.toHaveProperty('qualifier');
+    },
+  );
 
-    const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
-    expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
-    expect(input).not.toHaveProperty('qualifier');
-    expect(warnedWith('lookup failed')).toBe(true);
+  it.each(['native', 'future', null])('does not swallow the %s backend guard', async (backend) => {
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        executionBackend: backend,
+        environment: { runtimeArn: MANAGED_RUNTIME_ARN },
+      },
+    });
+    await expect(invoke()).rejects.toMatchObject({
+      code: backend === 'native' ? 'native_runtime_binding_required' : 'invalid_execution_backend',
+    });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
+  it('does not dispatch when the process table is unconfigured', async () => {
+    vi.stubEnv('V2_PROCESS_TABLE', '');
+    await expect(invoke()).rejects.toThrow('V2_PROCESS_TABLE');
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
   });
 });

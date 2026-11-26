@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   resolveSession: vi.fn(),
@@ -28,6 +28,34 @@ const session = {
 describe('authenticated API session expiry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('sends the revision when deleting a workflow source and accepts an empty 204', async () => {
+    mocks.resolveSession.mockResolvedValue({ session, expired: false });
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(
+      api.delete('/projects/p/workflow-sources/s', { expectedRevision: 'observed-revision' }),
+    ).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/projects/p/workflow-sources/s'), {
+      method: 'DELETE',
+      body: '{"expectedRevision":"observed-revision"}',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer id' },
+    });
+  });
+
+  it('preserves bodyless DELETE requests for existing endpoints', async () => {
+    mocks.resolveSession.mockResolvedValue({ session, expired: false });
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal('fetch', fetch);
+
+    await api.delete('/projects/p/source-control');
+
+    expect(fetch.mock.calls[0][1]).not.toHaveProperty('body');
   });
 
   it('does not expire the session after a transient refresh failure', async () => {

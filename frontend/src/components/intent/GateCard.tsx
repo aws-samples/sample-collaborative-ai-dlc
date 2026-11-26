@@ -10,6 +10,10 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Compass } from 'lucide-react';
+import {
+  executionCapabilityReason,
+  executionGateResponseReason,
+} from '@/lib/executionCapabilities';
 
 // Map a v2 HUMAN# gate to the right editor, keyed by the intent collaboration
 // scope. `question` gates render the structured QuestionEditor; approval and
@@ -37,6 +41,12 @@ export interface GateCardProps {
 export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
   const navigate = useNavigate();
   const { stageNameOf: gateStageNameOf, detail } = useIntent();
+  const steeringBlocked = executionCapabilityReason(detail?.intent, 'answerRevision');
+  const responseBlocked = executionGateResponseReason(detail?.intent, gate);
+  const submitAnswer = async (input: GateAnswer) => {
+    if (responseBlocked) throw new Error(responseBlocked);
+    await onAnswer(gate, input);
+  };
   // Steering (docs/v2-steering.md): an optional course correction riding the
   // answer — injected into the resumed agent conversation right after it, so
   // the human can redirect the agent's direction while answering.
@@ -86,6 +96,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               ))}
             </div>
           )}
+          {responseBlocked && <p className="text-xs text-muted-foreground">{responseBlocked}</p>}
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
@@ -109,6 +120,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       <Card>
         <CardContent className="space-y-2 py-3">
           <p className="text-sm font-medium">{gate.prompt || 'Review verdict required'}</p>
+          {responseBlocked && <p className="text-xs text-muted-foreground">{responseBlocked}</p>}
           <div className="flex flex-wrap gap-2">
             {options.length > 0 ? (
               options.map((opt) => (
@@ -116,8 +128,9 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                   key={opt}
                   size="sm"
                   variant="outline"
+                  disabled={Boolean(responseBlocked)}
                   onClick={() =>
-                    onAnswer(gate, {
+                    submitAnswer({
                       answer: opt,
                       status: /reject/i.test(opt) ? 'rejected' : 'answered',
                     })
@@ -130,14 +143,16 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               <>
                 <Button
                   size="sm"
-                  onClick={() => onAnswer(gate, { answer: 'approve', status: 'approved' })}
+                  disabled={Boolean(responseBlocked)}
+                  onClick={() => submitAnswer({ answer: 'approve', status: 'approved' })}
                 >
                   Approve
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => onAnswer(gate, { answer: 'reject', status: 'rejected' })}
+                  disabled={Boolean(responseBlocked)}
+                  onClick={() => submitAnswer({ answer: 'reject', status: 'rejected' })}
                 >
                   Reject
                 </Button>
@@ -170,6 +185,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             </Badge>
           )}
           <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
+          {responseBlocked && <p className="text-xs text-muted-foreground">{responseBlocked}</p>}
           {offersRevision && (
             <div className="space-y-1 rounded-md border border-dashed px-3 py-2">
               <Label
@@ -181,6 +197,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               <Textarea
                 id={`gate-feedback-${gate.humanTaskId}`}
                 value={feedback}
+                disabled={Boolean(responseBlocked)}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="What should change before you can approve? Sent with 'request-changes' — the engine revises the increment with this feedback and asks again."
                 rows={2}
@@ -195,8 +212,9 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                   key={opt}
                   size="sm"
                   variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
+                  disabled={Boolean(responseBlocked)}
                   onClick={() =>
-                    onAnswer(gate, {
+                    submitAnswer({
                       answer: {
                         decision: opt,
                         ...(/^request-changes/i.test(opt) && feedback.trim()
@@ -213,7 +231,8 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             ) : (
               <Button
                 size="sm"
-                onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
+                disabled={Boolean(responseBlocked)}
+                onClick={() => submitAnswer({ answer: { approved: true }, status: 'approved' })}
               >
                 Approve
               </Button>
@@ -226,14 +245,16 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
 
   return (
     <div>
+      {responseBlocked && <p className="mb-2 text-xs text-muted-foreground">{responseBlocked}</p>}
       <QuestionEditor
         question={question}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
+        disabled={Boolean(responseBlocked)}
         onAnswer={(structuredAnswer) =>
-          onAnswer(gate, {
+          submitAnswer({
             answer: structuredAnswer,
-            ...(steering.trim() ? { steering: steering.trim() } : {}),
+            ...(!steeringBlocked && steering.trim() ? { steering: steering.trim() } : {}),
           })
         }
       />
@@ -246,11 +267,13 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
         </summary>
         <Textarea
           value={steering}
+          disabled={Boolean(steeringBlocked)}
           onChange={(e) => setSteering(e.target.value)}
           placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."
           rows={2}
           className="mt-1.5 text-xs"
         />
+        {steeringBlocked && <p className="mt-1 text-xs text-muted-foreground">{steeringBlocked}</p>}
       </details>
     </div>
   );

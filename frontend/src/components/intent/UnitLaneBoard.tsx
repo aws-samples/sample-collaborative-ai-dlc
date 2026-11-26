@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import type { PhaseNode } from '@/services/workflows';
@@ -167,6 +168,7 @@ interface UnitCardProps {
   /** Open this lane's full output in the sidebar (only when building). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
   onAddressFeedback?: (unit: IntentUnit) => void;
+  feedbackDisabledReason?: string | null;
   laneWait?: LaneWaitStatus | null;
 }
 
@@ -179,6 +181,7 @@ function UnitCard({
   stream,
   onViewLiveOutput,
   onAddressFeedback,
+  feedbackDisabledReason,
   laneWait,
 }: UnitCardProps) {
   useTick((unit.state === 'RUNNING' && !laneWait) || unit.state === 'MERGING');
@@ -389,7 +392,11 @@ function UnitCard({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => onAddressFeedback(unit)}
+            disabled={Boolean(feedbackDisabledReason)}
+            title={feedbackDisabledReason ?? undefined}
+            onClick={() => {
+              if (!feedbackDisabledReason) onAddressFeedback(unit);
+            }}
             className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
           >
             <MessageSquare className="h-3 w-3" />
@@ -414,6 +421,7 @@ export interface UnitLaneBoardViewProps {
    *  that lane's stageInstanceId — during fan-out each lane streams separately). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
   onAddressFeedback?: (unit: IntentUnit) => void;
+  feedbackDisabledReason?: string | null;
   laneWaitBySlug?: Record<string, LaneWaitStatus>;
 }
 
@@ -426,6 +434,7 @@ export function UnitLaneBoardView({
   feedbackBatches = [],
   onViewLiveOutput,
   onAddressFeedback,
+  feedbackDisabledReason,
   laneWaitBySlug = {},
 }: UnitLaneBoardViewProps) {
   const unitByLane = useMemo(() => {
@@ -566,6 +575,7 @@ export function UnitLaneBoardView({
                                 stream={streamsBySlug[key] ?? streamsBySlug[slug] ?? null}
                                 onViewLiveOutput={onViewLiveOutput}
                                 onAddressFeedback={onAddressFeedback}
+                                feedbackDisabledReason={feedbackDisabledReason}
                                 laneWait={laneWaitBySlug[key] ?? null}
                               />
                             );
@@ -648,6 +658,7 @@ export function UnitLaneBoard({
     workflowPhases,
   } = useIntent();
   const unitPlan = detail?.unitPlan ?? null;
+  const feedbackBlocked = executionCapabilityReason(detail?.intent, 'unitPullRequests');
   const units = useMemo(() => detail?.units ?? [], [detail?.units]);
   const unitPrs = useMemo(() => detail?.unitPrs ?? [], [detail?.unitPrs]);
   const feedbackBatches = useMemo(() => detail?.feedbackBatches ?? [], [detail?.feedbackBatches]);
@@ -716,7 +727,10 @@ export function UnitLaneBoard({
         feedbackBatches={feedbackBatches}
         laneWaitBySlug={laneWaitBySlug}
         onViewLiveOutput={onViewLiveOutput}
-        onAddressFeedback={setReviewUnit}
+        feedbackDisabledReason={feedbackBlocked}
+        onAddressFeedback={(unit) => {
+          if (!feedbackBlocked) setReviewUnit(unit);
+        }}
       />
       <UnitReviewDrawer unit={reviewUnit} onClose={() => setReviewUnit(null)} />
     </>
@@ -724,7 +738,8 @@ export function UnitLaneBoard({
 }
 
 function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose: () => void }) {
-  const { projectId, intentId } = useIntent();
+  const { projectId, intentId, detail } = useIntent();
+  const feedbackBlocked = executionCapabilityReason(detail?.intent, 'unitPullRequests');
   const [comments, setComments] = useState<UnitReviewComment[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -732,7 +747,7 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!unit || unit.sectionIndex == null) return;
+    if (feedbackBlocked || !unit || unit.sectionIndex == null) return;
     let live = true;
     setLoading(true);
     setError(null);
@@ -751,10 +766,10 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
     return () => {
       live = false;
     };
-  }, [projectId, intentId, unit]);
+  }, [projectId, intentId, unit, feedbackBlocked]);
 
   const submit = async () => {
-    if (!unit || unit.sectionIndex == null || selected.size === 0) return;
+    if (feedbackBlocked || !unit || unit.sectionIndex == null || selected.size === 0) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -812,7 +827,7 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
                     type="checkbox"
                     className="mt-1 h-4 w-4 shrink-0"
                     checked={selected.has(key)}
-                    disabled={comment.previouslySelected}
+                    disabled={Boolean(feedbackBlocked) || comment.previouslySelected}
                     onChange={(event) =>
                       setSelected((current) => {
                         const next = new Set(current);
@@ -845,12 +860,15 @@ function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose:
             })}
           </div>
           {error && <p className="py-2 text-sm text-agent-error">{error}</p>}
+          {feedbackBlocked && <p className="text-xs text-muted-foreground">{feedbackBlocked}</p>}
         </ScrollArea>
         <SheetFooter className="pt-3">
           <Button
             type="button"
             onClick={submit}
-            disabled={submitting || selected.size === 0 || selected.size > 20}
+            disabled={
+              Boolean(feedbackBlocked) || submitting || selected.size === 0 || selected.size > 20
+            }
             className="gap-2"
           >
             {submitting ? (

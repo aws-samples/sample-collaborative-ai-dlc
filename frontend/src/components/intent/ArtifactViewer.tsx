@@ -33,10 +33,13 @@ export function ArtifactViewer({
   artifact,
   graphNeighbors = [],
   derivedItemCount = 0,
+  readOnly = false,
 }: {
   artifact: IntentArtifact;
   graphNeighbors?: GraphNeighbor[];
   derivedItemCount?: number;
+  /** Render content without mounting platform editing, history or discussion consumers. */
+  readOnly?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -77,7 +80,7 @@ export function ArtifactViewer({
                   superseded
                 </Badge>
               )}
-              <ArtifactStaleBadge artifact={artifact} />
+              {!readOnly && <ArtifactStaleBadge artifact={artifact} />}
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {artifact.createdAt && new Date(artifact.createdAt).toLocaleString()}
@@ -93,21 +96,25 @@ export function ArtifactViewer({
               )}
             </p>
           </div>
-          {!editing && (
+          {!readOnly && !editing && (
             <ArtifactEditControls artifact={artifact} onStartEdit={() => setEditing(true)} />
           )}
-          <ArtifactHistoryDrawer artifact={artifact} />
-          <DerivedItemCountChip artifactId={artifact.id} count={derivedItemCount} />
-          <IntentGraphPopover neighbors={graphNeighbors} className="shrink-0" />
-          <DiscussButton
-            entityType="artifact"
-            entityId={artifact.id}
-            entityTitle={artifact.title || artifact.id}
-            className="shrink-0"
-          />
+          {!readOnly && (
+            <>
+              <ArtifactHistoryDrawer artifact={artifact} />
+              <DerivedItemCountChip artifactId={artifact.id} count={derivedItemCount} />
+              <IntentGraphPopover neighbors={graphNeighbors} className="shrink-0" />
+              <DiscussButton
+                entityType="artifact"
+                entityId={artifact.id}
+                entityTitle={artifact.title || artifact.id}
+                className="shrink-0"
+              />
+            </>
+          )}
         </div>
 
-        {editing ? (
+        {editing && !readOnly ? (
           <ArtifactContentEditor artifact={artifact} onDone={() => setEditing(false)} />
         ) : (
           <>

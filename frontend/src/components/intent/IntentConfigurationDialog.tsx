@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { executionCapabilityReason } from '@/lib/executionCapabilities';
 
 interface IntentConfigurationDialogProps {
   open: boolean;
@@ -78,6 +79,7 @@ export function IntentConfigurationDialog({
   if (!detail) return null;
 
   const intent = detail.intent;
+  const reshapeBlocked = executionCapabilityReason(intent, 'workflowRecompose');
   const environment = intent.environment;
   const selection = compiled
     ? getIntentStageSelection(intent, compiled, initializationPhasePaths)
@@ -179,7 +181,10 @@ export function IntentConfigurationDialog({
                       variant="outline"
                       size="sm"
                       className="h-7 gap-1.5 px-2.5 text-xs"
+                      disabled={Boolean(reshapeBlocked)}
+                      title={reshapeBlocked ?? undefined}
                       onClick={() => {
+                        if (reshapeBlocked) return;
                         onOpenChange(false);
                         onOpenReshape();
                       }}

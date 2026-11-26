@@ -8,6 +8,34 @@ const SECRET = 'g'.repeat(48);
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 
 describe('agent credential grants', () => {
+  it('keeps the operator experiment separate from project and user credentials', () => {
+    const claims = {
+      purpose: 'native-probe',
+      executionId: '33333333-3333-4333-8333-333333333333',
+      bindings: [{ provider: 'bedrock', source: 'platform' }],
+    };
+    const token = signAgentCredentialGrant(claims, SECRET, { now: () => NOW });
+    expect(verifyAgentCredentialGrant(token, SECRET, { now: () => NOW })).toMatchObject({
+      ...claims,
+      projectId: null,
+    });
+    for (const change of [
+      { projectId: 'a-real-project' },
+      { executionId: 'a-real-execution' },
+      { bindings: [{ provider: 'bedrock', source: 'user', userId: 'member' }] },
+      { bindings: [{ provider: 'bedrock', source: 'space' }] },
+      {
+        bindings: [
+          { provider: 'bedrock', source: 'platform' },
+          { provider: 'kiro', source: 'platform' },
+        ],
+      },
+    ]) {
+      expect(() => signAgentCredentialGrant({ ...claims, ...change }, SECRET)).toThrow(
+        'Native probe grant scope is invalid',
+      );
+    }
+  });
   it('round-trips an exact, short-lived binding authorization', () => {
     const token = signAgentCredentialGrant(
       {

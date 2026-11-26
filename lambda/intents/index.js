@@ -37,6 +37,12 @@ import {
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import {
+  backendSelectionError,
+  executionBackendFields,
+  executionRequestError,
+  isPlatformExecution,
+} from '../shared/execution-backend.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -206,8 +212,8 @@ const ingestAttachmentUpload = async (event) => {
   let source;
 
   for (let attempt = 0; attempt < ATTACHMENT_PROMOTION_CAS_ATTEMPTS; attempt += 1) {
-    const meta = await store.getExecution(intentId);
-    if (!meta) return;
+    const meta = await store.getExecution(intentId, { consistentRead: true });
+    if (!meta || !isPlatformExecution(meta)) return;
     if (meta.status !== 'DRAFT') {
       throw new Error(`Attachment upload arrived after intent ${intentId} left DRAFT`);
     }
@@ -1236,6 +1242,7 @@ const mapExecutionFailure = (meta) => {
 
 // Map a process-store META row to the wire shape the frontend consumes.
 const mapIntent = (meta) => ({
+  ...executionBackendFields(meta),
   id: meta.intentId,
   executionId: meta.executionId,
   projectId: meta.projectId,
@@ -1569,6 +1576,23 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+
+    // Central boundary: none of the platform mutation routes below may handle
+    // a native record. Keep reads available for inspection during rollout.
+    const needsBackendGuard = intentId && (httpMethod !== 'GET' || path?.endsWith('/feedback'));
+    let guardedMeta;
+    if (needsBackendGuard) {
+      guardedMeta = await store.getExecution(intentId, { consistentRead: true });
+      if (!guardedMeta || guardedMeta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const denied = executionRequestError({ meta: guardedMeta, method: httpMethod, path });
+      if (denied) return response(denied.statusCode, denied.body);
+    }
+    if (httpMethod === 'POST' || httpMethod === 'PATCH') {
+      const denied = backendSelectionError(body ? JSON.parse(body) : {}, guardedMeta);
+      if (denied) return response(denied.statusCode, denied.body);
+    }
 
     // Authenticated unit-review selection. Provider comments are data only:
     // no webhook/comment can launch an agent. GET refreshes selectable
@@ -3013,7 +3037,9 @@ export const handler = async (event, context) => {
       let meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId)
         return response(404, { error: 'Intent not found' });
-      meta = await attachmentCleanup.retryPendingDeletions(meta);
+      if (isPlatformExecution(meta)) {
+        meta = await attachmentCleanup.retryPendingDeletions(meta);
+      }
       return response(200, {
         attachments: mapIntent(meta).attachments,
         attachmentRevision: Number(meta.attachmentRevision ?? 0),
@@ -4986,6 +5012,7 @@ export const handler = async (event, context) => {
         executionId: newIntentId,
         projectId,
         intentId: newIntentId,
+        executionBackend: 'platform',
         status: 'DRAFT',
         workflowId,
         workflowVersion,
@@ -5221,6 +5248,10 @@ const runDurableExecutionWatchdog = async ({ candidates: injectedCandidates = nu
     }));
   const out = { checked: candidates.length, repaired: 0, skipped: 0, errors: [] };
   for (const meta of candidates) {
+    if (!isPlatformExecution(meta)) {
+      out.skipped += 1;
+      continue;
+    }
     try {
       const durableStatus = await lookupDurableExecutionStatus(meta).catch((err) => {
         if (err?.name === 'ResourceNotFoundException') return 'NOT_FOUND';
@@ -5306,6 +5337,10 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
   for (const wait of waits) {
     try {
       const meta = await store.getExecution(wait.executionId);
+      if (meta && !isPlatformExecution(meta)) {
+        out.unchanged += 1;
+        continue;
+      }
       if (
         !meta ||
         !['CREATED', 'RUNNING', 'WAITING'].includes(meta.status) ||

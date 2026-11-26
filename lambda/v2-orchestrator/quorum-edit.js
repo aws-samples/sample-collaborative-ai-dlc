@@ -26,6 +26,7 @@
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
+import { isPlatformExecution } from '../shared/execution-backend.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -60,6 +61,12 @@ export const runQuorumEdit = async (event, ctx, deps) => {
 
   const meta = await ctx.step('qe-load-meta', () => store.getExecution(executionId));
   if (!meta) return { ok: false, reason: 'execution_not_found' };
+  if (!isPlatformExecution(meta)) {
+    return { ok: false, reason: 'execution_backend_mismatch' };
+  }
+  if (meta.executionId !== executionId || meta.intentId !== intentId) {
+    return { ok: false, reason: 'execution_identity_mismatch' };
+  }
   const edit = await ctx.step('qe-load-edit', () => store.getQuorumEdit(executionId, editId));
   if (!edit) return { ok: false, reason: 'quorum_edit_not_found' };
   const { projectId } = meta;

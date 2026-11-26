@@ -107,7 +107,10 @@ export const api = {
     return response.json();
   },
 
-  async delete(path: string): Promise<void> {
-    await fetchWithAuth(path, { method: 'DELETE' });
+  async delete(path: string, body?: unknown): Promise<void> {
+    await fetchWithAuth(path, {
+      method: 'DELETE',
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
   },
 };

@@ -52,6 +52,23 @@ const singleBinding = ({ binding, requestedCli, mismatchMessage }) => {
 };
 
 const bindingResolvers = Object.freeze({
+  [AGENT_AUTH_MODES.NATIVE_PROBE]: ({ payload }) => {
+    // An operator experiment has no project, member, or execution-store row.
+    // Derive the sole allowed binding instead of trusting payload credentials.
+    const binding = legacyPlatformBinding(payload.requestedCli);
+    if (
+      !binding ||
+      payload.projectId !== undefined ||
+      payload.intentId !== undefined ||
+      payload.executionId !== payload.probeId ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        payload.probeId || '',
+      )
+    ) {
+      throw grantMismatch();
+    }
+    return [binding];
+  },
   [AGENT_AUTH_MODES.CAPABILITIES]: ({ payload }) =>
     payload.credentialBindings
       ? AGENT_CREDENTIAL_PROVIDERS.map((provider) => payload.credentialBindings[provider]).filter(
@@ -112,10 +129,18 @@ export const resolveInvocationAgentAuth = async ({
   env = process.env,
   broker = invokeCredentialBroker,
 } = {}) => {
+  if (
+    authMode === AGENT_AUTH_MODES.NATIVE_PROBE &&
+    env.NATIVE_INTERACTION_PROBE_ENABLED !== 'true'
+  ) {
+    throw Object.assign(new Error('Native interaction probe is disabled'), {
+      code: 'native_probe_disabled',
+    });
+  }
   const invocationEnv = cleanBaseEnv(env);
   let meta = null;
   const executionId = payload.executionId || payload.intentId || null;
-  if (executionId && store?.getExecution) {
+  if (authMode !== AGENT_AUTH_MODES.NATIVE_PROBE && executionId && store?.getExecution) {
     meta = await store.getExecution(executionId, { consistentRead: true });
   }
   const projectId = meta?.projectId ?? payload.projectId ?? null;
@@ -131,7 +156,12 @@ export const resolveInvocationAgentAuth = async ({
   const resolvedProviders = [];
   const missingProviders = [];
   const missingCredentialBindings = [];
-  if (bindings.length === 0) {
+  if (
+    bindings.length === 0 ||
+    (authMode === AGENT_AUTH_MODES.NATIVE_PROBE && ['status', 'cancel'].includes(payload.action))
+  ) {
+    // These operator-only diagnostics consume no model or project credentials.
+    // Keep inspection/cancellation available during credential-store outages.
     return {
       env: invocationEnv,
       credentialBindings,

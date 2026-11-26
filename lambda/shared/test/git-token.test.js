@@ -4,7 +4,12 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 
 import { resolveGitToken, ensureFreshGitToken } from '../git-token.js';
 
@@ -47,6 +52,10 @@ describe('ensureFreshGitToken', () => {
     vi.stubEnv('GITLAB_OAUTH_SECRET_NAME', 'test/gitlab-oauth');
     vi.stubEnv('GIT_CONNECTIONS_TABLE', 'test-git-connections');
     vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'test-git-provider-connections');
+    ddbMock.on(GetCommand).callsFake(({ Key }) => ({
+      Item: { ...ITEM, provider: Key.providerInstance?.split('#')[0] || ITEM.provider },
+    }));
+    ddbMock.on(UpdateCommand).resolves({});
     delete globalThis.fetch;
   });
 
@@ -54,6 +63,35 @@ describe('ensureFreshGitToken', () => {
     vi.unstubAllEnvs();
     delete globalThis.fetch;
   });
+
+  it.each(['gitlab', 'bitbucket'])(
+    'uses the host transport and propagates cancellation before persisting a %s refresh',
+    async (gitProvider) => {
+      vi.stubEnv('BITBUCKET_OAUTH_SECRET_NAME', 'test/bitbucket-oauth');
+      storeToken({ accessToken: 'expired', refreshToken: 'refresh', expiresAt: 1 });
+      secretsMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify({ client_id: 'id', client_secret: 'secret' }),
+      });
+      const cancelled = new Error('host request cancelled');
+      const fetchImpl = vi.fn().mockRejectedValue(cancelled);
+      globalThis.fetch = vi.fn(() => {
+        throw new Error('unbounded transport used');
+      });
+      await expect(
+        ensureFreshGitToken({
+          ssm,
+          secrets,
+          ddb,
+          item: { ...ITEM, provider: gitProvider },
+          gitProvider,
+          fetchImpl,
+        }),
+      ).rejects.toBe(cancelled);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+    },
+  );
 
   it('is a passthrough for GitHub (tokens never expire)', async () => {
     storeToken({ accessToken: 'gh-tok' });
@@ -115,11 +153,12 @@ describe('ensureFreshGitToken', () => {
     expect(persisted.expiresAt).toBeGreaterThan(Date.now());
     // Connection metadata persisted to the authoritative composite-key table
     // (userId + providerInstance), NOT the legacy single-key table.
-    const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
-    expect(ddbPut.TableName).toBe('test-git-provider-connections');
-    expect(ddbPut.Item.userId).toBe('user-1');
-    expect(ddbPut.Item.providerInstance).toBe('gitlab#public');
-    expect(ddbPut.Item.scope).toBe('api read_user');
+    const metadata = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(metadata.TableName).toBe('test-git-provider-connections');
+    expect(metadata.Key).toEqual({ userId: 'user-1', providerInstance: 'gitlab#public' });
+    expect(Object.values(metadata.ExpressionAttributeValues)).toContain('api read_user');
+    expect(metadata.ConditionExpression).toBeTruthy();
+    expect(ddbMock).toHaveReceivedCommandTimes(PutCommand, 0);
   });
 
   it('refreshes when no expiresAt is recorded (legacy row)', async () => {
@@ -213,11 +252,14 @@ describe('ensureFreshGitToken', () => {
     const persisted = JSON.parse(put.Value);
     expect(persisted.accessToken).toBe('fresh-bb');
     expect(persisted.refreshToken).toBe('bb-r1');
-    const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
-    expect(ddbPut.Item.providerInstance).toBe('bitbucket#public');
+    const metadata = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(metadata.Key.providerInstance).toBe('bitbucket#public');
     // The persisted scope must come from the plural `scopes` field Bitbucket
     // actually sends — a regression here silently blanks connection metadata.
-    expect(ddbPut.Item.scope).toBe('account repository pullrequest');
+    expect(Object.values(metadata.ExpressionAttributeValues)).toContain(
+      'account repository pullrequest',
+    );
+    expect(ddbMock).toHaveReceivedCommandTimes(PutCommand, 0);
   });
 
   it('does not refresh a Bitbucket token that is well within expiry', async () => {
@@ -369,6 +411,30 @@ describe('getInstallationToken', () => {
     delete globalThis.fetch;
   });
 
+  it('uses the host transport for both installation details and token minting', async () => {
+    globalThis.fetch = vi.fn(() => {
+      throw new Error('unbounded transport used');
+    });
+    const fetchImpl = vi.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url.endsWith('/access_tokens')
+          ? { token: 'scoped-test-token', expires_at: new Date(Date.now() + 3600000).toISOString() }
+          : { account: { login: 'my-org' } },
+    }));
+    await expect(
+      getInstallationToken({
+        secrets,
+        ...app,
+        repositories: ['my-org/repo'],
+        permissions: { contents: 'read', metadata: 'read' },
+        fetchImpl,
+      }),
+    ).resolves.toBe('scoped-test-token');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it('throws when repositories array is missing (fail-closed)', async () => {
     await expect(getInstallationToken({ secrets, ...app })).rejects.toThrow(
       /repositories array is required/,
@@ -465,6 +531,102 @@ describe('getInstallationToken', () => {
     const mintBody = JSON.parse(mintCall[1].body);
     expect(mintBody.permissions).toEqual({ contents: 'read' });
   });
+});
+
+describe('discoverGitHubInstallation', () => {
+  let discoverGitHubInstallation;
+  const input = { secrets, appId: '12345', repository: 'my-org/my-repo' };
+  const { privateKey: testPrivateKeyPem } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+
+  beforeEach(async () => {
+    secretsMock.reset();
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
+    vi.resetModules();
+    ({ discoverGitHubInstallation } = await import('../git-token.js'));
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ privateKey: testPrivateKeyPem }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    {
+      status: 404,
+      body: { message: 'Private repository installation unavailable' },
+      code: 'APP_INSTALLATION_UNAVAILABLE',
+    },
+    { status: 404, body: {}, code: 'APP_INSTALLATION_UNAVAILABLE' },
+    { status: 401, body: { message: 'Bad credentials' }, code: 'APP_CREDENTIAL_FAILED' },
+    {
+      status: 403,
+      body: { message: 'Resource not accessible by integration' },
+      code: 'APP_CREDENTIAL_FAILED',
+    },
+    { status: 503, body: {}, code: 'APP_CREDENTIAL_FAILED' },
+    {
+      status: 200,
+      body: { message: 'Private upstream response without an installation ID' },
+      code: 'APP_CREDENTIAL_FAILED',
+    },
+  ])('adds $code for HTTP $status without changing its message', async ({ status, body, code }) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status }));
+    await expect(discoverGitHubInstallation({ ...input, fetchImpl })).rejects.toMatchObject({
+      code,
+      message:
+        body.message || `GitHub App is not installed for ${input.repository} (HTTP ${status})`,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the fallback message and 404 code when the response is not JSON', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('Not Found', { status: 404 }));
+    await expect(discoverGitHubInstallation({ ...input, fetchImpl })).rejects.toMatchObject({
+      code: 'APP_INSTALLATION_UNAVAILABLE',
+      message: `GitHub App is not installed for ${input.repository} (HTTP 404)`,
+    });
+  });
+
+  it('preserves successful discovery output', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ id: 67890, account: { login: 'my-org' } })));
+    await expect(discoverGitHubInstallation({ ...input, fetchImpl })).resolves.toEqual({
+      installationId: '67890',
+      installationAccount: 'my-org',
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.github.com/repos/my-org/my-repo/installation',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: expect.stringMatching(/^Bearer /) }),
+      }),
+    );
+  });
+
+  it.each(['fetch', 'secrets'])(
+    'does not reclassify a thrown %s error with a 404-like status',
+    async (origin) => {
+      const failure = Object.assign(new Error('Private dependency failure'), {
+        status: 404,
+        $metadata: { httpStatusCode: 404 },
+      });
+      const fetchImpl = vi.fn().mockRejectedValue(failure);
+      if (origin === 'secrets') {
+        secretsMock.on(GetSecretValueCommand).callsFake(() => {
+          throw failure;
+        });
+      }
+      await expect(discoverGitHubInstallation({ ...input, fetchImpl })).rejects.toBe(failure);
+      expect(failure).not.toHaveProperty('code');
+      expect(fetchImpl).toHaveBeenCalledTimes(origin === 'fetch' ? 1 : 0);
+    },
+  );
 });
 
 describe('validateGitHubAppInstallation', () => {
