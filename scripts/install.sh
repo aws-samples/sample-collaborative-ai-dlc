@@ -646,19 +646,41 @@ prompt_admin() {
 
 # Validate a password against the Cognito user pool policy defined in
 # terraform/modules/auth/main.tf (minimum_length 12; requires lowercase,
-# uppercase, numbers, and symbols). Keep these rules in sync with that policy.
-validate_password() {
-    local p="$1"
-    [[ ${#p} -ge 12 ]] \
-        && [[ "$p" == *[[:lower:]]* ]] \
-        && [[ "$p" == *[[:upper:]]* ]] \
-        && [[ "$p" == *[[:digit:]]* ]] \
-        && [[ "$p" == *[^[:alnum:]]* ]]
-}
+# uppercase, numbers, and symbols), with the same rules as
+# frontend/src/lib/passwordPolicy.ts. Both are checked against
+# frontend/src/lib/passwordPolicyCases.json; keep the three in sync.
+# The subshell pins LC_ALL=C so the result does not depend on the caller's
+# locale. As in the UI: letters and digits are ASCII only, a symbol is one
+# of the special characters the UI takes from Cognito, the password must not
+# start or end with whitespace (ASCII or the Unicode spaces String.trim()
+# removes), and the length counts UTF-16 code units (UTF-8 continuation
+# bytes are dropped; a 4-byte lead byte counts twice).
+validate_password() (
+    LC_ALL=C
+    local p="$1" i
+    local symbols='^$*.[]{}()?"!@#%&/\,><'"'"':;|_~`=+- '
+    local cont_lo=$'\x80' cont_hi=$'\xbf' four_lo=$'\xf0' four_hi=$'\xf4'
+    local units="${p//[$cont_lo-$cont_hi]/}" astral="${p//[!$four_lo-$four_hi]/}"
+    (( ${#units} + ${#astral} >= 12 )) || return 1
+    [[ "$p" != [[:space:]]* && "$p" != *[[:space:]] ]] || return 1
+    local ws
+    for ws in $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+        $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' \
+        $'\xe2\x80\x88' $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' \
+        $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80' $'\xef\xbb\xbf'; do
+        [[ "$p" != "$ws"* && "$p" != *"$ws" ]] || return 1
+    done
+    [[ "$p" == *[a-z]* && "$p" == *[A-Z]* && "$p" == *[0-9]* ]] || return 1
+    for (( i = 0; i < ${#p}; i++ )); do
+        [[ "$symbols" == *"${p:i:1}"* ]] && return 0
+    done
+    return 1
+)
 
 password_policy_hint() {
     echo "Permanent Cognito password must be at least 12 characters and include" >&2
-    echo "lowercase, uppercase, a number, and a symbol." >&2
+    echo "lowercase, uppercase, a number, and a symbol such as ! @ # \$ % ^ & * - _ = + ?," >&2
+    echo "and must not start or end with a space." >&2
 }
 
 prompt_password() {
