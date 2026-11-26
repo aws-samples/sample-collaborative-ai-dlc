@@ -1,5 +1,5 @@
 // Real session lifecycle and query client; only the Cognito service is mocked.
-import { act, render, screen } from '@/test/query';
+import { act, render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -74,7 +74,7 @@ describe('session isolation: user A → logout → user B', () => {
       </AuthProvider>,
     );
     expect(await screen.findByText('user:a@example.com')).toBeInTheDocument();
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     expect(screen.getByText('data:summary of A')).toBeInTheDocument();
     let finishWrite!: (value: string) => void;
     const oldRead = queryClient

@@ -7,18 +7,32 @@ import { readConfig } from '../config.js';
 import { ClusterCoordinator, ownerFor, scopeKey, routeHeader, verifyRoute } from '../cluster.js';
 import { send } from '../protocol.js';
 import { connectClient, MemoryStore, DOCUMENT, SECRET, logger } from './helpers.js';
+import { createMembershipLookup } from '../permissions.js';
+import { createMembershipStore, membershipStore } from '../../shared/space-membership.js';
+import { realtimePermissions } from '../../shared/realtime-permissions.js';
 import { runLoad, verifyLoadDocument } from '../load.js';
 import { signRealtimeToken, requiredScopeForYjsDoc } from '../realtime-token.js';
 
 const servers = [];
 const clients = [];
-const start = async ({ store, id, clock, config = {} } = {}) => {
+const start = async ({
+  store,
+  id,
+  clock,
+  config = {},
+  authorize = null,
+  authorizeMessage = authorize,
+  enforceScope = true,
+} = {}) => {
   const cluster = store
     ? new ClusterCoordinator({ store, id, clock, logger, heartbeatMs: 1_000_000 })
     : null;
   const service = createCollaborationServer({
     config: { ...readConfig({}), port: 0, shutdownMs: 1000, clusterEnabled: !!store, ...config },
     cluster,
+    authorize,
+    authorizeMessage,
+    enforceScope,
     logger,
     secret: SECRET,
     allowLoopback: true,
@@ -640,4 +654,102 @@ describe('capacity-aware ownership', () => {
     expect(server.cluster.claimsInFlight).toBe(0);
     expect(server.cluster.leases.size).toBe(1);
   });
+});
+
+describe('current Viewer permissions', () => {
+  it('rejects updates and offline sync responses across demotion, reconnect, and persisted recovery', async () => {
+    const roles = new Map([
+      ['alice', true],
+      ['bob', true],
+      ['viewer', false],
+    ]);
+    const authorize = vi.fn(async ({ sub }) => ({
+      read: roles.has(sub),
+      write: roles.get(sub) === true,
+    }));
+    const store = new MemoryStore();
+    const server = await start({ store, id: 'permissions', authorize, config: { saveMs: 20 } });
+    const alice = await join(server, DOCUMENT, { user: 'alice' });
+    const bob = await join(server, DOCUMENT, { user: 'bob' });
+    const viewer = await join(server, DOCUMENT, { user: 'viewer' });
+    alice.doc.getText('content').insert(0, 'allowed');
+    await vi.waitFor(() => expect(viewer.doc.getText('content').toString()).toBe('allowed'));
+    await alice.flush();
+    const room = server.rooms.rooms.get(DOCUMENT);
+    const before = Y.encodeStateAsUpdate(room.doc);
+    const revision = room.revision;
+    roles.set('bob', false); // The connection and token are unchanged.
+    const count = authorize.mock.calls.length;
+    bob.doc.getText('content').insert(0, 'forbidden');
+    viewer.doc.getText('content').delete(0, 7); // Delete sets must also be rejected.
+    await vi.waitFor(() => expect(authorize.mock.calls.length).toBeGreaterThanOrEqual(count + 2));
+    expect(room.revision).toBe(revision);
+    expect(Y.encodeStateAsUpdate(room.doc)).toEqual(before);
+    expect(alice.doc.getText('content').toString()).toBe('allowed');
+    const offline = new Y.Doc();
+    offline.getText('content').insert(0, 'offline');
+    const reconnected = await join(server, DOCUMENT, { user: 'bob', doc: offline });
+    await vi.waitFor(() =>
+      expect(reconnected.doc.getText('content').toString()).toContain('allowed'),
+    );
+    await alice.flush();
+    expect(Y.encodeStateAsUpdate(room.doc)).toEqual(before);
+    const saved = new Y.Doc();
+    Y.applyUpdate(saved, store.snapshots.get(DOCUMENT));
+    expect(saved.getText('content').toString()).toBe('allowed');
+    saved.destroy();
+    roles.delete('bob');
+    await expect(join(server, DOCUMENT, { user: 'bob' })).rejects.toThrow('403');
+  });
+
+  it('fails closed when the membership service fails on an existing connection', async () => {
+    const authorize = vi.fn().mockResolvedValue({ read: true, write: true });
+    const server = await start({ authorize });
+    const client = await join(server);
+    authorize.mockRejectedValue(new Error('Unavailable'));
+    client.doc.getText('content').insert(0, 'must not apply');
+    await vi.waitFor(() => expect(client.ws.readyState).toBe(3));
+    expect(server.rooms.rooms.get(DOCUMENT).doc.getText('content').toString()).toBe('');
+  });
+});
+
+it('resolves intent access with scope enforcement disabled and uses only direct membership reads for edits', async () => {
+  const g = { V: () => ({ has: () => ({ hasNext: async () => true }) }) };
+  const executionStore = { getExecution: vi.fn().mockResolvedValue({ projectId: 'actual-space' }) };
+  const openingMembership = vi
+    .spyOn(membershipStore, 'get')
+    .mockResolvedValue({ membershipRole: 'member' });
+  const authorize = vi.fn((target) => realtimePermissions(g, executionStore, target));
+  const ddb = { send: vi.fn().mockResolvedValue({ Item: { membershipRole: 'member' } }) };
+  const authorizeMessage = createMembershipLookup({
+    accessTable: 'access',
+    store: createMembershipStore({ ddb, accessTable: 'access' }),
+  });
+  try {
+    const server = await start({ authorize, authorizeMessage, enforceScope: false });
+    const client = await join(server, DOCUMENT, { token: 'invalid' });
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(executionStore.getExecution).toHaveBeenCalledTimes(1);
+    client.doc.getText('content').insert(0, 'accepted');
+    await vi.waitFor(() =>
+      expect(server.rooms.rooms.get(DOCUMENT).doc.getText('content').toString()).toBe('accepted'),
+    );
+    const reads = ddb.send.mock.calls.length;
+    ddb.send.mockResolvedValue({ Item: { membershipRole: 'viewer' } });
+    client.doc.getText('content').insert(0, 'rejected');
+    await vi.waitFor(() => expect(ddb.send.mock.calls.length).toBeGreaterThan(reads));
+    expect(server.rooms.rooms.get(DOCUMENT).doc.getText('content').toString()).toBe('accepted');
+    expect(authorize).toHaveBeenCalledTimes(1);
+    for (const [command] of ddb.send.mock.calls)
+      expect(command.input).toMatchObject({
+        Key: { pk: 'SPACE#actual-space', sk: 'MEMBER#alice' },
+        ConsistentRead: true,
+      });
+    const closed = new Promise((resolve) => client.ws.once('close', resolve));
+    ddb.send.mockRejectedValue(new Error('Unavailable'));
+    client.doc.getText('content').insert(0, 'unavailable');
+    expect(await closed).toBe(1013);
+  } finally {
+    openingMembership.mockRestore();
+  }
 });

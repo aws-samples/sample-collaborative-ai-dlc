@@ -374,10 +374,11 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   ]) {
     assert.match(moduleBlock(rootMain, moduleName), /kms_key_arn\s+= var\.kms_key_arn/);
   }
+  // Standalone workers now also read the encrypted canonical access table.
   const yjsScaling = read('terraform/modules/realtime/yjs-server/scaling.tf');
   assert.match(
     moduleBlock(yjsScaling, 'dynamodb_kms_runtime_access'),
-    /kms_key_arn\s+= var\.scaling\.cluster_enabled \? var\.kms_key_arn : ""/,
+    /kms_key_arn\s+= var\.kms_key_arn/,
   );
 
   const prerequisites = read('docs/getting-started/prerequisites.md');

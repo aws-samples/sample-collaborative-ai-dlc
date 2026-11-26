@@ -39,7 +39,7 @@ vi.mock('gremlin', async (original) => {
 });
 vi.mock('../../shared/space-membership.js', async (original) => ({
   ...(await original()),
-  fetchMembershipRole: async () => 'MEMBER',
+  fetchMembershipRole: async () => 'member',
 }));
 vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToIntentChannel: async () => {} }));
 

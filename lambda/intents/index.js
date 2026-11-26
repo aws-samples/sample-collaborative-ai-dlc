@@ -1,3 +1,4 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
 import { validateSparseCheckout } from '../shared/sparse-checkout.js';
 import gremlin from 'gremlin';
@@ -103,6 +104,11 @@ import {
   describeAidlcSettingsChange,
   normalizeAidlcSettings,
 } from '../shared/intent-aidlc-settings.js';
+import {
+  describeConversationLanguageChange,
+  normalizeConversationLanguage,
+  parseStoredConversationLanguage,
+} from '../shared/conversation-language.js';
 import {
   assertPrStrategySupported,
   draftlessProviders,
@@ -1043,6 +1049,11 @@ const fetchProjectConfig = async (g, projectId) => {
     tierModels: Object.keys(tierModels).length ? tierModels : null,
     mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
     customRules: customRules.length ? customRules : null,
+    // Conversation language for agent prose (#784): the resolved
+    // { tag, englishName, nativeName } the projects lambda stored, or null
+    // (unset — no language instruction). Snapshotted onto the intent META at
+    // create; later space edits do not retarget existing intents.
+    conversationLanguage: parseStoredConversationLanguage(getVal(v, 'conversation_language')),
     environmentId: getVal(v, 'environment_id') || 'standard',
     repos: ordered,
     repoProviders,
@@ -1542,6 +1553,9 @@ const mapIntent = (meta) => ({
   // unpinned, 2.3.3, 2.8.2 and 2.9.0 intent falls in that case, and their DTOs
   // stay byte-identical to what a deployed client already parses.
   ...(meta.aidlcSettings ? { aidlcSettings: meta.aidlcSettings } : {}),
+  // Conversation language for agent prose (#784). OMITTED, not nulled, for an
+  // intent that has none, so existing DTOs stay byte-identical.
+  ...(meta.conversationLanguage ? { conversationLanguage: meta.conversationLanguage } : {}),
   source: meta.source ?? null,
   planWarnings: meta.planWarnings ?? null,
   attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
@@ -4177,6 +4191,16 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
     return response(404, { error: 'Intent not found' });
   }
   const data = body ? JSON.parse(body) : {};
+  // The body's conversation language as a raw tag (#784). The object form is a
+  // reopened draft echoing a stored value; it is accepted ONLY with a string
+  // tag, so a malformed object cannot masquerade as an explicit clear — it
+  // falls through to normalization, which rejects a non-string.
+  const rawConversationLanguage =
+    typeof data.conversationLanguage === 'object' &&
+    data.conversationLanguage !== null &&
+    typeof data.conversationLanguage.tag === 'string'
+      ? data.conversationLanguage.tag
+      : data.conversationLanguage;
   // The settings path normalises against this row and diffs the timeline
   // against it, so on that path the row has to be the exact pre-image this
   // write replaces — it is re-read CONSISTENTLY rather than letting a
@@ -4187,7 +4211,17 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
   // Only this path pays: a save that neither mentions settings nor finds any
   // recorded keeps the single eventually consistent read it has always made,
   // which is the save every unpinned, 2.3.3, 2.8.2 and 2.9.0 draft makes.
-  if (data.aidlcSettings !== undefined || meta.aidlcSettings) {
+  //
+  // The conversation-language diff decides whether the save writes the field
+  // at all, so it needs the same exact pre-image whenever the body mentions the
+  // language. A stale row that already shows the requested tag would otherwise
+  // drop a real change: the draft revision is read consistently elsewhere, so
+  // the CAS below does not catch a stale language value.
+  if (
+    data.aidlcSettings !== undefined ||
+    meta.aidlcSettings ||
+    data.conversationLanguage !== undefined
+  ) {
     meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
   }
   // A body that carries `aidlcSettings: null` for an intent that has none
@@ -4261,6 +4295,34 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
       return response(400, { error: 'scope must be a non-empty string' });
     }
     patch.scope = data.scope;
+  }
+  // Conversation language override (#784): re-resolved from the tag here, like
+  // the space PUT, so the stored display names can never disagree with the
+  // stored tag. `null` clears — the run then states no language at all, which
+  // is deliberately different from "the space's current value" (the intent is
+  // a snapshot; the space is not re-read after create).
+  //
+  // An invalid value in a body that also carries other fields is DROPPED (the
+  // stored language is kept) and named in the response, never a 400: the
+  // collaborative autosave sends the language beside the title and prompt, so
+  // refusing the body would stop every member's draft from persisting over
+  // one bad tag — for example one the browser's newer ICU names but this
+  // runtime's does not. A body that carries ONLY the language keeps the 400,
+  // the answer a direct caller can act on.
+  let conversationLanguageChanged = false;
+  let conversationLanguageDropped = null;
+  if (data.conversationLanguage !== undefined) {
+    const normalized = normalizeConversationLanguage(rawConversationLanguage);
+    if (normalized.error) {
+      if (Object.keys(data).filter((key) => key !== 'ifDraftRevision').length === 1) {
+        return response(400, { error: normalized.error.message, code: normalized.error.code });
+      }
+      conversationLanguageDropped = normalized.error.message;
+    } else {
+      conversationLanguageChanged =
+        (meta.conversationLanguage?.tag ?? null) !== (normalized.value?.tag ?? null);
+      if (conversationLanguageChanged) patch.conversationLanguage = normalized.value; // null clears
+    }
   }
   // Per-intent AI-DLC settings travel with the selection they belong to, in
   // this one body, under this one CAS — which is what makes them
@@ -4470,6 +4532,22 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
         .catch((err) => logger.error('AI-DLC settings event append failed', err));
     }
   }
+  if (conversationLanguageChanged) {
+    const editor = getResponder(event);
+    for (const summary of describeConversationLanguageChange({
+      previous: meta.conversationLanguage ?? null,
+      next: patch.conversationLanguage ?? null,
+    })) {
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.intent.settings.changed',
+          actor: editor.displayName || editor.sub,
+          summary,
+        })
+        .catch((err) => logger.error('Conversation language event append failed', err));
+    }
+  }
   return response(200, {
     ...mapIntent(updated),
     // The settings this selection does not author, so the page can say
@@ -4477,6 +4555,10 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
     // dropped, which is every save of every intent that has no settings.
     ...(settingsDropped.length
       ? { aidlcSettingsDropped: settingsDropped.map(({ key }) => key) }
+      : {}),
+    // The invalid language this save carried and did not apply (see above).
+    ...(conversationLanguageDropped
+      ? { conversationLanguageDropped: conversationLanguageDropped }
       : {}),
   });
 };
@@ -7154,6 +7236,7 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
     tierModels: cfg.tierModels,
     mcpServersByTier: cfg.mcpServersByTier,
     customRules: cfg.customRules,
+    conversationLanguage: cfg.conversationLanguage,
     environment,
     deriveEnrichment: await fetchDeriveEnrichment(),
     parkReleaseSeconds: cfg.parkReleaseSeconds,
@@ -7265,6 +7348,15 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+    // Token issuance is a read capability; every other non-GET route mutates
+    // intent state or invokes an agent (including workspace export).
+    if (
+      httpMethod !== 'GET' &&
+      !(httpMethod === 'POST' && path?.endsWith('/realtime-token')) &&
+      !spacePermissions(auth.role).write
+    ) {
+      return response(403, VIEWER_DENIED);
+    }
     if (
       intentId &&
       (httpMethod === 'DELETE' ||

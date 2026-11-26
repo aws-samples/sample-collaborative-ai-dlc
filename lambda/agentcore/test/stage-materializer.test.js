@@ -100,6 +100,35 @@ describe('buildStagePrompt', () => {
     expect(prompt).toContain(OUTPUT_CONTRACT);
   });
 
+  it('states the conversation language right after the intent block when set (#784)', () => {
+    const prompt = buildStagePrompt({
+      stage: stage(),
+      intent: { title: 'Build the thing', prompt: 'Make it work', scope: 'full' },
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+      stageBody: 'x',
+    });
+    expect(prompt).toContain('Conversation language: Korean (한국어)');
+    // Directly after the intent so the agent reads it before any stage prose.
+    expect(prompt.indexOf('## Conversation language')).toBeGreaterThan(
+      prompt.indexOf('## The intent (originating request)'),
+    );
+    expect(prompt.indexOf('## Conversation language')).toBeLessThan(
+      prompt.indexOf('## Stage instructions'),
+    );
+  });
+
+  it('keeps the prompt byte-identical when no conversation language is set', () => {
+    const shared = {
+      stage: stage(),
+      intent: { title: 'Build the thing', prompt: 'Make it work', scope: 'full' },
+      stageBody: 'x',
+    };
+    expect(buildStagePrompt({ ...shared, conversationLanguage: null })).toBe(
+      buildStagePrompt(shared),
+    );
+    expect(buildStagePrompt(shared)).not.toContain('Conversation language');
+  });
+
   it('renders "none" for empty inputs/outputs and omits optional sections', () => {
     const prompt = buildStagePrompt({
       stage: stage({ inputArtifacts: [], outputArtifacts: [], humanValidation: 'none' }),

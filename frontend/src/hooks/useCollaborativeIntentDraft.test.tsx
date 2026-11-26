@@ -255,6 +255,173 @@ describe('useCollaborativeIntentDraft — persisting the AI-DLC settings', () =>
   });
 });
 
+describe('useCollaborativeIntentDraft — conversation language (#784)', () => {
+  it('omits the field for a draft that never had one', async () => {
+    const { a } = bothSeeded();
+    act(() => {
+      a.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls[0][2]).not.toHaveProperty('conversationLanguage');
+  });
+
+  it('seeds the snapshotted tag and both members see a change', async () => {
+    const { a, b } = bothSeeded({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    expect(a.result.current.conversationLanguage).toBe('ko');
+    expect(b.result.current.conversationLanguage).toBe('ko');
+
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+      sync(a.doc, b.doc);
+    });
+    expect(b.result.current.conversationLanguage).toBe('ja');
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('ja');
+  });
+
+  it('sends null once the language is cleared, and keeps sending it', async () => {
+    const { a } = bothSeeded({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    act(() => {
+      a.result.current.setConversationLanguage(null);
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBeNull();
+    expect(a.result.current.conversationLanguage).toBeNull();
+  });
+
+  it('shows the stored language and holds Start when the server drops the tag', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const { a, b } = bothSeeded({ conversationLanguage: korean });
+    api.update.mockResolvedValueOnce(
+      intent({
+        draftRevision: 8,
+        conversationLanguage: korean,
+        conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+      sync(a.doc, b.doc);
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('tlh');
+    // The draft is back on what the intent will run with, for every member.
+    expect(a.result.current.conversationLanguage).toBe('ko');
+    act(() => sync(a.doc, b.doc));
+    expect(b.result.current.conversationLanguage).toBe('ko');
+    expect(a.result.current.conversationLanguageRejection).toMatchObject({ tag: 'tlh' });
+    expect(a.result.current.isConversationLanguageRejected()).toBe(true);
+
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+    });
+    expect(a.result.current.conversationLanguageRejection).toBeNull();
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+  });
+
+  it('reports the rejection as soon as the flush resolves, before any render', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const { a } = bothSeeded({ conversationLanguage: korean });
+    api.update.mockResolvedValueOnce(
+      intent({
+        draftRevision: 8,
+        conversationLanguage: korean,
+        conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+    });
+    // Start's sequence: await the flush, then check — all inside one act, so
+    // React has not rendered the save's state update yet.
+    const draft = a.result.current;
+    let afterFlush: boolean | undefined;
+    let afterPick: boolean | undefined;
+    await act(async () => {
+      await draft.flushDraft();
+      afterFlush = draft.isConversationLanguageRejected();
+      draft.setConversationLanguage('ja');
+      afterPick = draft.isConversationLanguageRejected();
+    });
+    expect(afterFlush).toBe(true);
+    expect(afterPick).toBe(false);
+  });
+
+  it('ignores a delayed rejection once a newer language choice supersedes it', async () => {
+    const korean = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    const japanese = { tag: 'ja', englishName: 'Japanese', nativeName: '日本語' };
+    const { a } = bothSeeded({ conversationLanguage: korean });
+    let resolveRejected!: (value: ReturnType<typeof intent>) => void;
+    api.update.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRejected = resolve;
+      }),
+    );
+    act(() => {
+      a.result.current.setConversationLanguage('tlh');
+    });
+    let pending!: Promise<unknown>;
+    act(() => {
+      pending = a.result.current.flushDraft();
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
+    });
+    // The member picks a valid language while the rejected save is in flight.
+    act(() => {
+      a.result.current.setConversationLanguage('ja');
+    });
+    await act(async () => {
+      resolveRejected(
+        intent({
+          draftRevision: 8,
+          conversationLanguage: korean,
+          conversationLanguageDropped: 'conversationLanguage "tlh" does not name a known language',
+        }),
+      );
+      await pending;
+    });
+
+    expect(a.result.current.conversationLanguage).toBe('ja');
+    expect(a.result.current.conversationLanguageRejection).toBeNull();
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+
+    api.update.mockResolvedValueOnce(intent({ draftRevision: 9, conversationLanguage: japanese }));
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(api.update.mock.calls.at(-1)![2].conversationLanguage).toBe('ja');
+    expect(a.result.current.isConversationLanguageRejected()).toBe(false);
+  });
+
+  it('clearing a draft that never had one writes nothing', async () => {
+    const a = member('Alice');
+    act(() => {
+      a.result.current.initFromIntent(intent());
+    });
+    act(() => {
+      a.result.current.setConversationLanguage(null);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(api.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('useCollaborativeIntentDraft — pruning the settings a selection drops', () => {
   it('withdraws an unauthored setting in one transaction and names it', () => {
     const { a, b } = bothSeeded({ scope: 'bugfix', aidlcSettings: { existingCode: false } });
