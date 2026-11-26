@@ -160,6 +160,7 @@ import { AIDLC_RELEASE_IMPORTER_REVISION, readReleaseManifest } from '../shared/
 import { blockPk, versionSk } from '../shared/blocks.js';
 import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import { resolveNativeExportSource } from './native-export-source.js';
+import { renamedFromRelease, sameMethodologyContent } from '../shared/native-export-blocks.js';
 import {
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
@@ -1660,14 +1661,22 @@ const exportSnapshotToken = (projection) =>
  * use would be reported as a blocker for an export that is perfectly fine, and a
  * genuine overlay pin would be missed whenever the live `default` row was since
  * deleted.
+ *
+ * `releaseBlocksByType` maps each type (STAGE included) to the release's own
+ * blocks by id, so a user block can be compared with the block it shadows. It
+ * is null for an unpinned intent: the live SYSTEM rows are reseedable and are
+ * not evidence of what the exported distribution contains.
  */
 const loadClassificationBlocks = async (meta, types) => {
   if (!meta?.methodologyRelease) {
-    return Object.fromEntries(
-      await Promise.all(
-        types.map(async (type) => [type, await listMergedBlocks(ddb, BLOCKS_TABLE(), type)]),
+    return {
+      blocksByType: Object.fromEntries(
+        await Promise.all(
+          types.map(async (type) => [type, await listMergedBlocks(ddb, BLOCKS_TABLE(), type)]),
+        ),
       ),
-    );
+      releaseBlocksByType: null,
+    };
   }
   const closure = await loadReleaseClosure({
     s3,
@@ -1677,7 +1686,7 @@ const loadClassificationBlocks = async (meta, types) => {
     tableName: BLOCKS_TABLE(),
   });
   const overlay = meta.methodologyPins ?? {};
-  return Object.fromEntries(
+  const blocksByType = Object.fromEntries(
     await Promise.all(
       types.map(async (type) => {
         const pins = Object.entries(overlay[type] ?? {}).filter(
@@ -1697,7 +1706,7 @@ const loadClassificationBlocks = async (meta, types) => {
             // A pinned overlay row that has since been deleted is still
             // user-edited methodology as far as export compatibility goes, so it
             // must be reported rather than dropped.
-            return Item ?? { blockId, id: blockId, tenantId: pin.tenantId };
+            return Item ?? { blockId, id: blockId, tenantId: pin.tenantId, missing: true };
           }),
         );
         const byId = new Map(
@@ -1708,9 +1717,55 @@ const loadClassificationBlocks = async (meta, types) => {
       }),
     ),
   );
+  const releaseBlocksByType = Object.fromEntries(
+    [...new Set([...types, 'STAGE'])].map((type) => [
+      type,
+      new Map(
+        (closure.blocksByType?.[type] ?? []).map((block) => [block.blockId ?? block.id, block]),
+      ),
+    ]),
+  );
+  return { blocksByType, releaseBlocksByType };
 };
 
-const findNativeIncompatibleBlocks = async (plan, meta = null) => {
+// The pinned row of a user-tenant stage a plan resolved, or a placeholder that
+// never matches its release block when the row is gone or unversioned. The
+// tenant is the placement's and the version is that of the stage block the plan
+// resolved (`stageVersion`), so this reads the exact row the intent ran.
+const loadPlanStageBlock = async (stage) => {
+  const placeholder = {
+    blockId: stage.stageId,
+    id: stage.stageId,
+    tenantId: stage.stageTenant,
+    missing: true,
+  };
+  if (stage.stageVersion == null) return placeholder;
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: BLOCKS_TABLE(),
+      Key: {
+        pk: blockPk(stage.stageTenant, 'STAGE', stage.stageId),
+        sk: versionSk(Number(stage.stageVersion)),
+      },
+    }),
+  );
+  return Item ?? placeholder;
+};
+
+const blockKey = (block) => block.id ?? block.blockId;
+const isUserBlock = (block) => block.tenantId !== SYSTEM_TENANT;
+
+/**
+ * Classifies the user-tenant blocks of a resolved plan for native export.
+ *
+ * `incompatibleBlocks` is user-edited methodology the exported distribution
+ * cannot reproduce. A user block that shadows a block of the intent's pinned
+ * release with the same content is not edited (native-export-blocks.js); when
+ * only its name differs it is listed in `renamedBlocks`, because the workspace
+ * carries the release's name. An unpinned intent has no release to compare
+ * with, so every user-tenant block it uses stays incompatible.
+ */
+const classifyNativeExportBlocks = async (plan, meta = null) => {
   const agentIds = new Set();
   const sensorIds = new Set();
   const ruleIds = new Set();
@@ -1728,37 +1783,53 @@ const findNativeIncompatibleBlocks = async (plan, meta = null) => {
     }
   }
   const {
-    AGENT: agents,
-    SENSOR: sensors,
-    RULE: rules,
-    KNOWLEDGE: knowledge,
+    blocksByType: { AGENT: agents, SENSOR: sensors, RULE: rules, KNOWLEDGE: knowledge },
+    releaseBlocksByType,
   } = await loadClassificationBlocks(meta, ['AGENT', 'SENSOR', 'RULE', 'KNOWLEDGE']);
-  const custom = [
-    ...plan.stages
-      .filter((stage) => stage.stageTenant && stage.stageTenant !== SYSTEM_TENANT)
-      .map((stage) => `STAGE:${stage.stageId}`),
+  const userStages = [
+    ...new Map(
+      plan.stages
+        .filter((stage) => stage.stageTenant && stage.stageTenant !== SYSTEM_TENANT)
+        .map((stage) => [stage.stageId, stage]),
+    ).values(),
+  ];
+  const stageBlocks = await Promise.all(
+    userStages.map((stage) =>
+      releaseBlocksByType
+        ? loadPlanStageBlock(stage)
+        : { blockId: stage.stageId, id: stage.stageId, tenantId: stage.stageTenant },
+    ),
+  );
+  const candidates = [
+    ...stageBlocks.map((block) => ['STAGE', block]),
     ...agents
-      .filter(
-        (block) => block.tenantId !== SYSTEM_TENANT && agentIds.has(block.id ?? block.blockId),
-      )
-      .map((block) => `AGENT:${block.id ?? block.blockId}`),
+      .filter((block) => isUserBlock(block) && agentIds.has(blockKey(block)))
+      .map((block) => ['AGENT', block]),
     ...sensors
-      .filter(
-        (block) => block.tenantId !== SYSTEM_TENANT && sensorIds.has(block.id ?? block.blockId),
-      )
-      .map((block) => `SENSOR:${block.id ?? block.blockId}`),
+      .filter((block) => isUserBlock(block) && sensorIds.has(blockKey(block)))
+      .map((block) => ['SENSOR', block]),
     ...rules
-      .filter((block) => block.tenantId !== SYSTEM_TENANT && ruleIds.has(block.id ?? block.blockId))
-      .map((block) => `RULE:${block.id ?? block.blockId}`),
+      .filter((block) => isUserBlock(block) && ruleIds.has(blockKey(block)))
+      .map((block) => ['RULE', block]),
     ...knowledge
       .filter(
         (block) =>
-          block.tenantId !== SYSTEM_TENANT &&
-          (block.agentRef === 'shared' || agentIds.has(block.agentRef)),
+          isUserBlock(block) && (block.agentRef === 'shared' || agentIds.has(block.agentRef)),
       )
-      .map((block) => `KNOWLEDGE:${block.id ?? block.blockId}`),
+      .map((block) => ['KNOWLEDGE', block]),
   ];
-  return [...new Set(custom)].toSorted();
+  const incompatibleBlocks = new Set();
+  const renamedBlocks = new Set();
+  for (const [type, block] of candidates) {
+    const label = `${type}:${blockKey(block)}`;
+    const releaseBlock = releaseBlocksByType?.[type]?.get(blockKey(block));
+    if (!sameMethodologyContent(block, releaseBlock)) incompatibleBlocks.add(label);
+    else if (renamedFromRelease(block, releaseBlock)) renamedBlocks.add(label);
+  }
+  return {
+    incompatibleBlocks: [...incompatibleBlocks].toSorted(),
+    renamedBlocks: [...renamedBlocks].toSorted(),
+  };
 };
 
 const hasNonSystemMethodologyPins = (methodologyPins) =>
@@ -2155,7 +2226,10 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
       errors: planResult.errors ?? [],
     });
   }
-  const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan, meta);
+  const { incompatibleBlocks, renamedBlocks } = await classifyNativeExportBlocks(
+    planResult.plan,
+    meta,
+  );
   if (incompatibleBlocks.length > 0) {
     return response(409, {
       error: 'The workflow uses edited methodology blocks that cannot yet be exported',
@@ -2241,7 +2315,14 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
       bucket: ARTIFACTS_BUCKET(),
       upstreamRef: exportSource.upstreamRef,
       harness,
-      warnings: exportSource.warnings,
+      warnings: [
+        ...exportSource.warnings,
+        ...(renamedBlocks.length
+          ? [
+              `These library blocks match the AI-DLC release except for their names, so the workspace uses the release names: ${renamedBlocks.join(', ')}.`,
+            ]
+          : []),
+      ],
       omitStagesNotInDistribution: exportSource.omitStagesNotInDistribution,
       preloadedDistribution: exportSource.preloadedDistribution,
       projection,
