@@ -703,6 +703,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     // routed by the intents API, which owns the lifecycle rule and the value
     // normalisation; the store validates shape, like every field here.
     aidlcSettings,
+    // Conversation language (#784): the resolved { tag, englishName,
+    // nativeName }. DRAFT-only, routed by the intents API, which normalises
+    // the value; the store validates shape. null REMOVEs it.
+    conversationLanguage,
     // DRAFT-phase editable header fields (the collaborative draft page's
     // auto-save writes these). The intents API only routes them while the
     // intent is DRAFT; the store validates shape, not lifecycle.
@@ -982,6 +986,23 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         removes.push('aidlcSettings');
       }
     }
+    if (conversationLanguage !== undefined) {
+      if (
+        conversationLanguage !== null &&
+        (typeof conversationLanguage !== 'object' ||
+          Array.isArray(conversationLanguage) ||
+          typeof conversationLanguage.tag !== 'string' ||
+          !conversationLanguage.tag)
+      ) {
+        throw new Error('conversationLanguage must be a { tag, ... } object or null');
+      }
+      if (conversationLanguage) {
+        sets.push('conversationLanguage = :clang');
+        values[':clang'] = conversationLanguage;
+      } else {
+        removes.push('conversationLanguage');
+      }
+    }
     if (title !== undefined) {
       if (title !== null && typeof title !== 'string') {
         throw new Error('title must be a string or null');
@@ -1040,9 +1061,16 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('draftRevision = :nextDraftRevision');
       values[':nextDraftRevision'] = ifDraftRevision + 1;
     } else if (
-      [title, prompt, scope, composedGrid, policyScope, skipStageIds, aidlcSettings].some(
-        (value) => value !== undefined,
-      )
+      [
+        title,
+        prompt,
+        scope,
+        composedGrid,
+        policyScope,
+        skipStageIds,
+        aidlcSettings,
+        conversationLanguage,
+      ].some((value) => value !== undefined)
     ) {
       // Composer/orchestrator changes invalidate a browser's preflight too.
       sets.push('draftRevision = if_not_exists(draftRevision, :draftZero) + :draftOne');

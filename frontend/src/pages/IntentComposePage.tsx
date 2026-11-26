@@ -19,6 +19,7 @@ import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { AidlcSettingsPanel } from '@/components/AidlcSettingsPanel';
+import { ConversationLanguageField } from '@/components/ConversationLanguageField';
 import {
   aidlcSettingsFromComposeProposal,
   AIDLC_SETTING_LABELS,
@@ -676,6 +677,10 @@ function IntentComposePageContent() {
       // Persist the last shared edits BEFORE launching — Start reads the
       // intent row, not the Yjs doc.
       await draft.flushDraft();
+      if (draft.isConversationLanguageRejected()) {
+        setError('Choose the output language again: the server did not accept the last one.');
+        return;
+      }
       if (!selectedCli) return;
       await intentsService.start(projectId, intentId, { agentCli: selectedCli });
       // IntentProvider stays mounted across /compose -> /intent and is keyed
@@ -1104,6 +1109,20 @@ function IntentComposePageContent() {
             disabled={starting || !draftReady}
             onChange={draft.setAidlcSetting}
           />
+          <ConversationLanguageField
+            value={draft.conversationLanguage}
+            disabled={starting || !draftReady}
+            onChange={draft.setConversationLanguage}
+          />
+          {draft.conversationLanguageRejection && (
+            <p className="text-xs text-destructive" data-testid="conversation-language-rejected">
+              The server did not accept the output language
+              {` "${draft.conversationLanguageRejection.tag}"`} (
+              {draft.conversationLanguageRejection.reason}), so the intent keeps{' '}
+              {draft.conversationLanguage ? `"${draft.conversationLanguage}"` : 'no language'}.
+              Choose the output language again before starting.
+            </p>
+          )}
           {withdrawnSettings.length > 0 && (
             <p className="text-xs text-amber-600" data-testid="aidlc-settings-dropped">
               This selection does not offer {withdrawnSettings.join(', ')}, so the choice recorded
@@ -1240,7 +1259,8 @@ function IntentComposePageContent() {
                 !draft.prompt.trim() ||
                 !scope ||
                 !selectedCli ||
-                previewErrors.length > 0
+                previewErrors.length > 0 ||
+                Boolean(draft.conversationLanguageRejection)
               }
               data-testid="start-intent"
             >

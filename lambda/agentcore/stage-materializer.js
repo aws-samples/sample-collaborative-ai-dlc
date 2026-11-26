@@ -26,6 +26,7 @@ import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 import { codexUntrustedProjectsToml, exclusiveOpenCodeConfig } from './cli/exclusive-mcp.js';
 import { gatewayOnlyMcp } from '../shared/runtime-mcp-policy.js';
+import { renderConversationLanguageBlock } from '../shared/conversation-language.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -478,6 +479,9 @@ export const buildStagePrompt = ({
   stage = {},
   unit = null,
   intent = null, // { title, prompt, scope } — the originating request
+  // { tag, englishName, nativeName } from the intent META (#784); null renders
+  // nothing so prompts without the setting stay byte-identical.
+  conversationLanguage = null,
   stageBody = '',
   agentPersona = '',
   knowledge = '',
@@ -504,6 +508,11 @@ export const buildStagePrompt = ({
   // human for it.
   const intentBlock = renderIntentBlock(intent ?? {});
   if (intentBlock) sections.push('', intentBlock);
+  // The conversation language (#784) — stated by the engine the way upstream's
+  // orchestrator states it in a delegated brief, directly after the intent so
+  // the agent reads it before any stage prose it will be answering in it.
+  const languageBlock = renderConversationLanguageBlock(conversationLanguage);
+  if (languageBlock) sections.push('', languageBlock);
   // The conductor persona (upstream execution-quality doctrine) — loaded from the
   // pinned runtime snapshot so the quality guidance can't drift from upstream.
   // The annex already declared it authoritative for WORK QUALITY (not mechanics);
@@ -1397,6 +1406,7 @@ export const materializeStage = async ({
   stage,
   unit = null,
   intent = null,
+  conversationLanguage = null,
   stageBody,
   agentPersona,
   knowledge,
@@ -1437,6 +1447,7 @@ export const materializeStage = async ({
     stage,
     unit,
     intent,
+    conversationLanguage,
     stageBody,
     agentPersona,
     knowledge,

@@ -110,6 +110,8 @@ vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
     pruneAidlcSettings: (...a: unknown[]) => pruneAidlcSettings(...a),
     applyComposedSelection: (...a: unknown[]) => applyComposedSelection(...a),
     flushDraft: (...a: unknown[]) => flushDraft(...a),
+    conversationLanguageRejection: null,
+    isConversationLanguageRejected: () => false,
   }),
 }));
 

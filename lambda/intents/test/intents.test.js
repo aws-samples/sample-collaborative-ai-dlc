@@ -2749,6 +2749,172 @@ describe('composed grids + DRAFT PATCH', () => {
     expect(empty.statusCode).toBe(400);
   });
 
+  it('snapshots the space conversation language onto the intent at create (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const ko = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property('conversation_language', JSON.stringify(ko))
+      .next();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    expect(intent.conversationLanguage).toEqual(ko);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).conversationLanguage).toEqual(ko);
+
+    // Later space edits do not retarget the snapshot.
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property('conversation_language', JSON.stringify({ ...ko, tag: 'ja' }))
+      .next();
+    const fetched = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).intent.conversationLanguage).toEqual(ko);
+  });
+
+  it('omits conversationLanguage entirely when the space has none (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    expect(intent).not.toHaveProperty('conversationLanguage');
+    expect(
+      Object.hasOwn(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')), 'conversationLanguage'),
+    ).toBe(false);
+  });
+
+  it('PATCH sets, re-resolves and clears the conversation language while DRAFT (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    // Set from a raw tag: stored resolved, timeline line appended.
+    const set = await patchIntent(sub, projectId, intent.id, { conversationLanguage: 'ko' });
+    expect(set.statusCode).toBe(200);
+    expect(JSON.parse(set.body).conversationLanguage).toEqual({
+      tag: 'ko',
+      englishName: 'Korean',
+      nativeName: '한국어',
+    });
+    // An object from a reopened draft is accepted by its tag and re-resolved.
+    const reSet = await patchIntent(sub, projectId, intent.id, {
+      conversationLanguage: { tag: 'ja', englishName: 'stale', nativeName: 'stale' },
+    });
+    expect(reSet.statusCode).toBe(200);
+    expect(JSON.parse(reSet.body).conversationLanguage).toEqual({
+      tag: 'ja',
+      englishName: 'Japanese',
+      nativeName: '日本語',
+    });
+    // null clears the attribute entirely.
+    const cleared = await patchIntent(sub, projectId, intent.id, { conversationLanguage: null });
+    expect(cleared.statusCode).toBe(200);
+    expect(JSON.parse(cleared.body)).not.toHaveProperty('conversationLanguage');
+    expect(
+      Object.hasOwn(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')), 'conversationLanguage'),
+    ).toBe(false);
+    const languageEvents = [...procStore.values()]
+      .filter(
+        (row) =>
+          row.eventType === 'v2.intent.settings.changed' &&
+          String(row.summary).startsWith('Conversation language'),
+      )
+      .map((row) => row.summary);
+    expect(languageEvents).toEqual([
+      'Conversation language set to Korean (한국어) for this intent',
+      'Conversation language set to Japanese (日本語) for this intent',
+      'Conversation language override removed (was Japanese (日本語))',
+    ]);
+  });
+
+  it('PATCH rejects an invalid conversation language and locks it after start (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const invalid = await patchIntent(sub, projectId, intent.id, { conversationLanguage: 'xx' });
+    expect(invalid.statusCode).toBe(400);
+    expect(JSON.parse(invalid.body).code).toBe('conversation_language_invalid');
+    // A malformed object cannot masquerade as an explicit clear.
+    const malformed = await patchIntent(sub, projectId, intent.id, { conversationLanguage: {} });
+    expect(malformed.statusCode).toBe(400);
+    expect(JSON.parse(malformed.body).code).toBe('conversation_language_invalid');
+
+    await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+    const late = await patchIntent(sub, projectId, intent.id, { conversationLanguage: 'ko' });
+    expect(late.statusCode).toBe(409);
+  });
+
+  it('PATCH drops an invalid language from an autosave body instead of refusing it (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const ko = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property('conversation_language', JSON.stringify(ko))
+      .next();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    // The collaborative autosave sends the language beside the other fields; a
+    // tag this runtime's ICU cannot name must not stop the whole draft save.
+    const res = await patchIntent(sub, projectId, intent.id, {
+      title: 'Still saved',
+      conversationLanguage: 'xx',
+    });
+    expect(res.statusCode).toBe(200);
+    const saved = JSON.parse(res.body);
+    expect(saved.title).toBe('Still saved');
+    expect(saved.conversationLanguageDropped).toContain('does not name a known language');
+    // The stored snapshot is kept, not cleared.
+    expect(saved.conversationLanguage).toEqual(ko);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).conversationLanguage).toEqual(ko);
+  });
+
+  // A replica that still shows the tag a save asks for must not decide that the
+  // save changes nothing: the draft revision the CAS checks is read
+  // consistently, so it would not catch the stale language (#784).
+  it('writes a language change that a lagging read already shows (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const ko = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property('conversation_language', JSON.stringify(ko))
+      .next();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const lagging = structuredClone(procStore.get(metaKey));
+    expect(
+      (await patchIntent(sub, projectId, intent.id, { conversationLanguage: 'ja' })).statusCode,
+    ).toBe(200);
+    ddbMock.on(GetCommand, { Key: { pk: `EXEC#${intent.id}`, sk: 'META' } }).callsFake((input) => {
+      const current = procStore.get(metaKey);
+      if (input.ConsistentRead) return { Item: { ...current } };
+      // The replica has not seen the switch to ja: it still shows ko.
+      return { Item: { ...lagging, draftRevision: current.draftRevision } };
+    });
+
+    const res = await patchIntent(sub, projectId, intent.id, {
+      title: 'Back to Korean',
+      conversationLanguage: 'ko',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).conversationLanguage).toEqual(ko);
+    expect(procStore.get(metaKey).conversationLanguage).toEqual(ko);
+  });
+
   it('start accepts a composedGrid override on a DRAFT and pins it', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

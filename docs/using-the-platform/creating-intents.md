@@ -210,6 +210,10 @@ There is no greenfield or brownfield scope: the **workspace detection** stage cl
 
 The stage grid shows the stages of the selected scope. Deselect stages you don't need; a summary line shows how many stages will run and how many fan out per unit of work. **reset to scope** returns a customized selection to its original scope.
 
+### Output language
+
+The space's [output language](projects.md#agent) is snapshotted onto the draft and can be overridden here with another BCP 47 tag, or cleared for the default behaviour. The choice is collaborative like the scope, applies to agent prose only (artifacts, questions, summaries, review findings — code and commit messages stay in English), and locks when the intent starts. Changing the space setting later does not affect this intent.
+
 ### Start the intent
 
 **Start Intent** is enabled once the draft has a prompt, a scope, and an agent CLI. Starting the intent:
