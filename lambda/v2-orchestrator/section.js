@@ -64,6 +64,7 @@ import {
 } from '../shared/unit-completion.js';
 import { unitStageSkipReason } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from '../shared/pr-attribution.js';
+import { mergedUnitPrDelivered } from '../shared/unit-pr-delivery.js';
 import { bindGateCallback, releaseUnusedGateCallback, unparkGate } from './gate-callback.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
@@ -1559,13 +1560,21 @@ export const runParallelSection = async (segment, toolkit) => {
         let moved = false;
         for (const { row, status } of statuses) {
           if (status.state === 'merged') {
+            // A squash or rebase merge leaves its result commit on the intent
+            // branch instead of the accepted head (shared/unit-pr-delivery.js).
             const ancestor = await laneCtx.step(
               `unit-pr-ancestor-${sk}-${slug}-${encodeURIComponent(row.repository)}${rTag}-${reconciliation}-${observation}`,
               () =>
-                callProvider('isAncestor', {
-                  repoId: row.repository,
-                  ancestorSha: row.readyHeadSha,
-                  descendantRef: intentBranch,
+                mergedUnitPrDelivered({
+                  acceptedHeadSha: row.readyHeadSha,
+                  status,
+                  targetRef: intentBranch,
+                  isAncestor: (ancestorSha, descendantRef) =>
+                    callProvider('isAncestor', {
+                      repoId: row.repository,
+                      ancestorSha,
+                      descendantRef,
+                    }),
                 }),
             );
             if (ancestor) merged.push({ row, status });
@@ -1625,9 +1634,15 @@ export const runParallelSection = async (segment, toolkit) => {
                 }),
             );
           }
+          const reason = partial ? 'partial_merge' : closed[0].reason;
           return laneFailed(laneCtx, slug, round, {
             stageId: 'unit-pr',
-            reason: partial ? 'partial_merge' : closed[0].reason,
+            reason,
+            ...(reason === 'ready_head_not_on_intent'
+              ? {
+                  detail: `the merged pull request's changes are not on ${intentBranch}; a retry will not change this`,
+                }
+              : {}),
           });
         }
         if (merged.length === readyRows.length) {
@@ -1938,6 +1953,10 @@ export const runParallelSection = async (segment, toolkit) => {
             repoProviders: cloneBase.repoProviders ?? null,
             sparseCheckout: cloneBase.sparseCheckout ?? null,
             attachments,
+            // A revision's first round revives a merged unit: its branch may
+            // hold commits a squash or rebase merge never put on the intent
+            // branch, so the runtime restarts it from the intent branch.
+            ...(revive && round === 0 ? { restartFromIntent: true } : {}),
           },
           laneSession,
         ),

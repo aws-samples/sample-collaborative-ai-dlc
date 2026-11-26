@@ -1377,6 +1377,119 @@ describe('ensureLaneBranch', () => {
     expect(remoteSha).toBe(localSha);
   });
 
+  describe('restartFromIntent (a revision of an integrated unit)', () => {
+    const unitBranch = 'aidlc/i1--s1-unit-auth';
+    const remoteHead = async (remote, branch) =>
+      (await git(['ls-remote', remote, `refs/heads/${branch}`], root)).stdout.split(/\s/)[0];
+    // The unit branch's work lands on the intent branch as one new commit,
+    // as a squash merge does: the unit branch's own commits never reach it.
+    const squashUnitIntoIntent = async (remote) => {
+      await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+      await commitOnRemote(remote, unitBranch, 'auth.txt', 'auth v1\n', 'unit work');
+      await commitOnRemote(remote, 'aidlc/i1', 'auth.txt', 'auth v1\n', 'squash: unit work');
+      await commitOnRemote(remote, 'aidlc/i1', 'other.txt', 'another unit\n');
+    };
+
+    it('replaces a unit branch a squash merge left off the intent branch', async () => {
+      const { remote, work } = await initRemoteAndClone();
+      await squashUnitIntoIntent(remote);
+      const intentSha = await remoteHead(remote, 'aidlc/i1');
+
+      const res = await ensureLaneBranch({
+        dir: work,
+        repo: 'o/r',
+        unitBranch,
+        intentBranch: 'aidlc/i1',
+        restartFromIntent: true,
+        urls: laneUrls(remote),
+        ...quiet,
+      });
+
+      expect(res).toEqual({ ready: true, created: false, sha: intentSha, restarted: true });
+      expect(await remoteHead(remote, unitBranch)).toBe(intentSha);
+      expect((await git(['rev-parse', 'HEAD'], work)).stdout.trim()).toBe(intentSha);
+      expect(await readFile(path.join(work, 'other.txt'), 'utf8')).toBe('another unit\n');
+    });
+
+    it('recreates a unit branch deleted on merge from the intent branch, not a stale local ref', async () => {
+      const { remote, work } = await initRemoteAndClone();
+      await squashUnitIntoIntent(remote);
+      await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+      await git(['checkout', '-B', unitBranch, `refs/remotes/origin/${unitBranch}`], work);
+      await git(['push', remote, '--delete', unitBranch], work);
+      const intentSha = await remoteHead(remote, 'aidlc/i1');
+
+      const res = await ensureLaneBranch({
+        dir: work,
+        repo: 'o/r',
+        unitBranch,
+        intentBranch: 'aidlc/i1',
+        restartFromIntent: true,
+        urls: laneUrls(remote),
+        ...quiet,
+      });
+
+      expect(res).toEqual({ ready: true, created: true, sha: intentSha, restarted: true });
+      expect(await remoteHead(remote, unitBranch)).toBe(intentSha);
+    });
+
+    it('resumes a unit branch the intent branch already contains (merge commit)', async () => {
+      const { remote, work } = await initRemoteAndClone();
+      await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+      await commitOnRemote(remote, unitBranch, 'auth.txt', 'auth v1\n');
+      const unitSha = await remoteHead(remote, unitBranch);
+      // Merge the unit branch into the intent branch, as a merge commit does.
+      const peer = await mkdtemp(path.join(root, 'merge-'));
+      await git(['clone', remote, peer], root);
+      await git(['checkout', 'aidlc/i1'], peer);
+      await git(
+        ['-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '--no-ff', `origin/${unitBranch}`],
+        peer,
+      );
+      await git(['push', 'origin', 'aidlc/i1'], peer);
+
+      const res = await ensureLaneBranch({
+        dir: work,
+        repo: 'o/r',
+        unitBranch,
+        intentBranch: 'aidlc/i1',
+        restartFromIntent: true,
+        urls: laneUrls(remote),
+        ...quiet,
+      });
+
+      expect(res).toEqual({ ready: true, created: false, sha: unitSha });
+      expect(await remoteHead(remote, unitBranch)).toBe(unitSha);
+    });
+
+    it('refuses to replace a unit branch that moved after the fetch', async () => {
+      const { remote, work } = await initRemoteAndClone();
+      await squashUnitIntoIntent(remote);
+      // The lease names the head this call fetched; a push after it must win.
+      const racingGit = async (args, opts) => {
+        if (args[0] === 'push' && String(args[1]).startsWith('--force-with-lease')) {
+          await commitOnRemote(remote, unitBranch, 'late.txt', 'pushed meanwhile\n');
+        }
+        return runGit(args, opts);
+      };
+
+      const res = await ensureLaneBranch({
+        dir: work,
+        repo: 'o/r',
+        unitBranch,
+        intentBranch: 'aidlc/i1',
+        restartFromIntent: true,
+        urls: laneUrls(remote),
+        git: racingGit,
+        ...quiet,
+      });
+
+      expect(res).toMatchObject({ ready: false, reason: 'push_failed' });
+      const late = await git(['ls-tree', '--name-only', unitBranch], remote);
+      expect(late.stdout).toContain('late.txt');
+    });
+  });
+
   it('fails with intent_branch_missing when the fork point does not exist remotely', async () => {
     const { remote, work } = await initRemoteAndClone();
     const res = await ensureLaneBranch({

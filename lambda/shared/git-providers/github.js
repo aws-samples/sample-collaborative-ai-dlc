@@ -1099,6 +1099,9 @@ const getPullRequestStatus = async (ctx, repoId, prNumber) => {
     mergeable: pr.mergeable ?? null,
     mergeableState: pr.mergeable_state ?? null,
     mergedAt: pr.merged_at ?? null,
+    // Before a merge, merge_commit_sha names a test merge, so it only counts
+    // as the merge result once the PR is merged.
+    mergeResultSha: pr.merged_at ? (pr.merge_commit_sha ?? null) : null,
     closedAt: pr.closed_at ?? null,
     updatedAt: pr.updated_at ?? null,
   };

@@ -2767,6 +2767,72 @@ describe('PR per unit delivery', () => {
     );
   });
 
+  // A squash (or rebase) merge leaves a new commit on the intent branch; the
+  // promoted head itself never becomes an ancestor of it.
+  const squashMerged = ({ headSha = (number) => `head-${number}` } = {}) => {
+    const calls = new Map();
+    return async ({ number }) => {
+      const call = (calls.get(number) ?? 0) + 1;
+      calls.set(number, call);
+      const merged = call >= 3;
+      return {
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: merged ? headSha(number) : `head-${number}`,
+        targetSha: 'intent-before',
+        state: merged ? 'merged' : 'open',
+        draft: call < 3,
+        mergeable: true,
+        mergeResultSha: merged ? `squash-${number}` : null,
+      };
+    };
+  };
+  it('integrates a squash-merged unit PR whose merge result is on the intent branch', async () => {
+    configure({ statusFor: squashMerged() });
+    deps.unitPrProvider.isAncestor.mockImplementation(async ({ ancestorSha }) =>
+      ancestorSha.startsWith('squash-'),
+    );
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(deps.unitPrProvider.isAncestor.mock.calls.map(([args]) => args.ancestorSha)).toEqual([
+      'head-7',
+      'squash-7',
+    ]);
+    expect(unitStates.map((row) => row.state)).toContain('MERGED');
+    expect(unitStates.map((row) => row.state)).not.toContain('FAILED');
+    expect(unitPrStates).toContainEqual(
+      expect.objectContaining({
+        repository: 'owner/repo',
+        state: 'MERGED',
+        fields: expect.objectContaining({ repositoryOutcome: 'merged' }),
+      }),
+    );
+  });
+  it('fails a merged unit PR whose head moved after promotion, saying a retry will not help', async () => {
+    configure({ statusFor: squashMerged({ headSha: (number) => `pushed-after-${number}` }) });
+    deps.unitPrProvider.isAncestor.mockImplementation(async ({ ancestorSha }) =>
+      ancestorSha.startsWith('squash-'),
+    );
+    await start();
+    expect(deps.unitPrProvider.isAncestor.mock.calls.map(([args]) => args.ancestorSha)).toEqual([
+      'head-7',
+    ]);
+    expect(unitPrStates).toContainEqual(
+      expect.objectContaining({
+        repository: 'owner/repo',
+        state: 'FAILED',
+        fields: expect.objectContaining({ repositoryOutcome: 'ready_head_not_on_intent' }),
+      }),
+    );
+    const failed = unitStates.find((row) => row.slug === 'auth' && row.state === 'FAILED');
+    expect(failed.fields.failureReason).toBe(
+      "unit-pr: ready_head_not_on_intent (the merged pull request's changes are not on aidlc/i1; a retry will not change this)",
+    );
+  });
+
   it('records the evidence attribute for an unchanged unit PR integration', async () => {
     configure({ statusFor: async () => null });
     deps.unitPrProvider.compare.mockResolvedValue({ status: 'identical' });
@@ -3780,6 +3846,13 @@ describe('WP5 — engine-gate decisions', () => {
     expect(invokes.filter((p) => p.command === 'merge-lane' && p.unitSlug === 'auth')).toHaveLength(
       2,
     );
+    // Only the revision restarts the integrated unit's branch from the intent
+    // branch (a squash or rebase merge leaves its commits off it).
+    expect(
+      invokes
+        .filter((p) => p.command === 'init-lane' && p.unitSlug === 'auth')
+        .map((p) => p.restartFromIntent),
+    ).toEqual([undefined, true]);
     // Revision stages resumed from the answered skeleton gate (feedback in).
     const revisionRuns = stageStarts().filter(
       (p) => p.unitSlug === 'auth' && String(p.resumeFrom ?? '').startsWith('eg-skeleton-s1'),

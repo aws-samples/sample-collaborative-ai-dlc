@@ -9111,7 +9111,12 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     ).toBe(true);
   });
 
-  it('reconciles merged PR #11 and resumes draft PR #12 without rebuilding stages', async () => {
+  // A squash merge leaves its own commit on the intent branch, never the
+  // reviewed head; the provider reports it as the PR's merge result.
+  it.each([
+    ['a merge commit', { ancestors: ['comparison-head'], mergeResultSha: 'merge-11' }],
+    ['a squash merge', { ancestors: ['squash-11'], mergeResultSha: 'squash-11' }],
+  ])('reconciles PR #11 merged by %s; resumes draft PR #12', async (_label, merge) => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedSectionPlan();
@@ -9173,7 +9178,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     unitPr('views', 12, 'views-head');
     sourceControlOperationHandler = (request) => {
       if (request.operation === 'is-ancestor')
-        return request.args.ancestorSha === 'comparison-head';
+        return merge.ancestors.includes(request.args.ancestorSha);
       if (request.operation !== 'pr-status') return null;
       return request.args.number === 11
         ? {
@@ -9182,6 +9187,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
             draft: false,
             headSha: 'comparison-head',
             targetSha: 'intent-after-comparison',
+            mergeResultSha: merge.mergeResultSha,
           }
         : {
             number: 12,

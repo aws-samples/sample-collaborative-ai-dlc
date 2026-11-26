@@ -56,6 +56,9 @@ export const initLane = async (
     repos = [],
     unitBranch,
     intentBranch,
+    // A revision of an already-integrated unit: start its branch from the
+    // intent branch (git-engine.js ensureLaneBranch).
+    restartFromIntent = false,
     gitProvider,
     repoProviders = null,
     sparseCheckout = null,
@@ -132,6 +135,7 @@ export const initLane = async (
       repo: url,
       unitBranch,
       intentBranch,
+      restartFromIntent: Boolean(restartFromIntent),
       gitProvider: provider,
       projectId,
       executionId,

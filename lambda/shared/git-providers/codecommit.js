@@ -1083,6 +1083,7 @@ const getPullRequestStatus = async (ctx, repoId, prNumber) => {
     // CodeCommit records no merge/close timestamp of its own; lastActivityDate
     // is the closest thing the API exposes.
     mergedAt: !open && merged ? activity : null,
+    mergeResultSha: !open && merged ? (target.mergeMetadata?.mergeCommitId ?? null) : null,
     closedAt: !open ? activity : null,
     updatedAt: activity,
     title: pr.title ?? '',

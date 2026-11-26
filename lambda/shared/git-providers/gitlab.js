@@ -1088,6 +1088,9 @@ const getPullRequestStatus = async (ctx, repoId, mrIid) => {
           : null,
     mergeableState: mr.detailed_merge_status ?? mr.merge_status ?? null,
     mergedAt: mr.merged_at ?? null,
+    // The merge commit, or the squash commit when the merge fast-forwarded.
+    mergeResultSha:
+      mr.state === 'merged' ? (mr.merge_commit_sha ?? mr.squash_commit_sha ?? null) : null,
     closedAt: mr.closed_at ?? null,
     updatedAt: mr.updated_at ?? null,
     title: mr.title ?? '',

@@ -1060,13 +1060,23 @@ const ensureMergeBase = (args, a, b) =>
 // exists, retry publishes that local ref without resetting its committed work.
 // Only a lane with neither a remote nor local unit ref is recreated from
 // origin/<intentBranch>. Never throws.
-//   { ready: true,  created, sha }       — checkout on the unit branch
+//
+// `restartFromIntent` is for a lane whose unit was already integrated (a
+// revision of a merged unit). A squash or rebase merge leaves the unit
+// branch's own commits off the intent branch, so resuming that branch would
+// put the already-delivered work in the next PR again. Instead, a unit
+// branch the intent branch does not contain, or one deleted on merge, is
+// restarted from origin/<intentBranch>; an existing remote branch is replaced
+// with --force-with-lease against the head just fetched. A unit branch the
+// intent branch already contains (a merge-commit merge) is resumed as before.
+//   { ready: true,  created, sha, restarted? } — checkout on the unit branch
 //   { ready: false, reason, detail? }    — fetch / missing intent branch / git failure
 export const ensureLaneBranch = async ({
   dir,
   repo,
   unitBranch,
   intentBranch,
+  restartFromIntent = false,
   gitProvider,
   projectId,
   executionId,
@@ -1095,6 +1105,24 @@ export const ensureLaneBranch = async ({
     cwd: dir,
   });
   const localUnit = await git(['rev-parse', '--verify', localUnitRef], { cwd: dir });
+  if (restartFromIntent) {
+    const restarted = await restartLaneBranch({
+      dir,
+      repo,
+      unitBranch,
+      intentBranch,
+      remoteUnitSha: remoteUnit.exitCode === 0 ? remoteUnit.stdout.trim() : null,
+      gitProvider,
+      projectId,
+      executionId,
+      urls,
+      git,
+      withGitCredential,
+      sleep,
+      log,
+    });
+    if (restarted) return restarted;
+  }
   if (remoteUnit.exitCode === 0) {
     if (localUnit.exitCode === 0 && localUnit.stdout.trim() !== remoteUnit.stdout.trim()) {
       // A shallow boundary between the two would read as "not an ancestor"
@@ -1197,6 +1225,111 @@ export const ensureLaneBranch = async ({
     return { ready: false, reason: push.reason ?? 'push_failed', detail: push.detail };
   }
   return { ready: true, created: true, sha: remoteIntent.stdout.trim() };
+};
+
+// ensureLaneBranch's restartFromIntent. Returns null to resume the existing
+// remote unit branch (the intent branch already contains it), otherwise the
+// ensureLaneBranch result of restarting it from origin/<intentBranch>.
+const restartLaneBranch = async ({
+  dir,
+  repo,
+  unitBranch,
+  intentBranch,
+  remoteUnitSha,
+  gitProvider,
+  projectId,
+  executionId,
+  urls,
+  git,
+  withGitCredential,
+  sleep,
+  log,
+}) => {
+  const intentRef = `refs/remotes/origin/${intentBranch}`;
+  const remoteIntent = await git(['rev-parse', '--verify', intentRef], { cwd: dir });
+  if (remoteIntent.exitCode !== 0) {
+    return { ready: false, reason: 'intent_branch_missing', detail: intentBranch };
+  }
+  const intentSha = remoteIntent.stdout.trim();
+  if (remoteUnitSha) {
+    const history = await ensureMergeBase(
+      { dir, repo, projectId, executionId, gitProvider, urls, git, withGitCredential },
+      `refs/remotes/origin/${unitBranch}`,
+      intentRef,
+    );
+    if (!history.ok) return { ready: false, reason: history.reason, detail: history.detail };
+    const contained = await git(
+      ['merge-base', '--is-ancestor', `refs/remotes/origin/${unitBranch}`, intentRef],
+      { cwd: dir },
+    );
+    if (contained.exitCode === 0) return null;
+  }
+  const checkout = await git(['checkout', '-B', unitBranch, intentRef], { cwd: dir });
+  if (checkout.exitCode !== 0) {
+    return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+  }
+  if (!remoteUnitSha) {
+    const push = await pushBranch({
+      dir,
+      repo,
+      branch: unitBranch,
+      gitProvider,
+      projectId,
+      executionId,
+      urls,
+      git,
+      withGitCredential,
+      sleep,
+      log,
+    });
+    if (push.pushed !== true && push.pushed !== 'empty') {
+      return { ready: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+    }
+    return { ready: true, created: true, sha: intentSha, restarted: true };
+  }
+  try {
+    return await withAuthenticatedRemote(
+      {
+        dir,
+        repo,
+        projectId,
+        executionId,
+        gitProvider,
+        requiredAccess: 'write',
+        urls,
+        git,
+        withGitCredential,
+      },
+      async (env) => {
+        const push = await git(
+          [
+            'push',
+            `--force-with-lease=refs/heads/${unitBranch}:${remoteUnitSha}`,
+            'origin',
+            `HEAD:refs/heads/${unitBranch}`,
+          ],
+          { cwd: dir, env },
+        );
+        if (push.exitCode !== 0) {
+          return {
+            ready: false,
+            reason: 'push_failed',
+            detail: (push.stderr || '').trim().slice(-500),
+          };
+        }
+        return { ready: true, created: false, sha: intentSha, restarted: true };
+      },
+    );
+  } catch (error) {
+    return {
+      ready: false,
+      reason:
+        error.message === 'remote_set_url_failed'
+          ? 'remote_set_url_failed'
+          : 'credential_unavailable',
+      detail: error.code || error.message,
+    };
+  }
 };
 
 // Serialized fan-in merge (docs/v2-parallel.md A3: lane end): merge the unit

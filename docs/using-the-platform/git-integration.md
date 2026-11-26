@@ -186,6 +186,7 @@ The platform supports two delivery strategies:
 
 In the intent view, each unit card shows repository-specific review state and links. Space members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
 
+Unit PRs can be merged with a merge commit, a squash or a rebase. A merged unit integrates once its merge result is on the intent branch and the PR still points at the head the platform promoted. If the merged changes can't be found on the intent branch, the unit fails with `ready_head_not_on_intent`, which a retry can't change.
 If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.
 
 ## Check for pull requests
