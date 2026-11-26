@@ -13,7 +13,12 @@ import { EmptyState, ErrorState } from '@/components/ui/empty-state';
 import { StatusPill } from '@/components/ui/status-pill';
 import { cn } from '@/lib/utils';
 import { getBranding } from '@/lib/branding';
-import { deriveIntentStatus, useIntentStatus } from '@/lib/statusModel';
+import {
+  deriveIntentStatus,
+  useIntentStatus,
+  useIntentStatusReader,
+  type ResolvedIntentStatus,
+} from '@/lib/statusModel';
 import { intentAttention } from '@/lib/sprintStatus';
 import { intentEntryPath } from '@/lib/intentEntry';
 import { qk } from '@/lib/queryKeys';
@@ -53,21 +58,35 @@ const INBOX_KIND_RANK: Record<InboxKind, number> = {
 };
 const isAnswerable = (item: InboxItem) => INBOX_KIND_RANK[item.kind] === 0;
 
-function inboxKind(
-  intent: ProjectIntentSummary,
-  derived: ReturnType<typeof deriveIntentStatus>,
-): InboxKind | null {
+function inboxKind({ intent, status }: ResolvedIntentStatus): InboxKind | null {
   const attention = intentAttention(intent);
   if (attention) return attention;
-  return derived.stalled ? 'stalled' : null;
+  return status.stalled ? 'stalled' : null;
 }
 
-function deriveInbox(projects: readonly ProjectWithSprint[], now: number): InboxItem[] {
+type StatusOf = (projectId: string, intent: ProjectIntentSummary) => ResolvedIntentStatus;
+
+// Membership and order follow the status each row's pill shows (the cached
+// detail when current), so a row never sits in the inbox as stalled while its
+// pill says the run is progressing.
+function deriveInbox(
+  projects: readonly ProjectWithSprint[],
+  now: number,
+  statusOf: StatusOf = (_projectId, intent) => ({
+    status: deriveIntentStatus(intent, { now }),
+    intent,
+  }),
+): InboxItem[] {
   const items: InboxItem[] = [];
   for (const p of projects) {
+    // A Viewer cannot answer, resume or retry (#777), so the space's intents
+    // are not the reader's to act on until the eligibility API (#677/#678) says
+    // per item who can.
+    if (p.project.userRole === 'viewer') continue;
     for (const intent of p.intents) {
-      const status = deriveIntentStatus(intent, { now });
-      const kind = inboxKind(intent, status);
+      const resolved = statusOf(p.project.id, intent);
+      const { status } = resolved;
+      const kind = inboxKind(resolved);
       if (!kind) continue;
       items.push({
         kind,
@@ -104,7 +123,7 @@ function inboxMeta(
     },
     // The derived `since` only: `item.since` also carries the updatedAt
     // fallback that orders the list, which is not the wait's age.
-    { now, gates: detail?.gates, since: item.status.since },
+    { now, gates: detail?.gates, since: item.status.since, derived: item.status },
   );
   return [...parts, item.project.name];
 }
@@ -271,7 +290,12 @@ export default function Dashboard() {
   // The portfolio re-renders on every 30 s poll, so one clock per render is
   // enough for ages and the stall rule.
   const now = Date.now();
-  const inbox = useMemo(() => deriveInbox(portfolio, now), [portfolio, now]);
+  const readStatus = useIntentStatusReader();
+  const inbox = useMemo(
+    () =>
+      deriveInbox(portfolio, now, (projectId, intent) => readStatus(projectId, intent, { now })),
+    [portfolio, now, readStatus],
+  );
   useOfferIdleCandidates(
     'page',
     inbox

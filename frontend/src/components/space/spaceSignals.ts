@@ -1,10 +1,14 @@
 import { intentAttention } from '@/lib/sprintStatus';
-import { deriveIntentStatus } from '@/lib/statusModel';
+import { deriveIntentStatus, type ResolvedIntentStatus } from '@/lib/statusModel';
 import type { ProjectIntentSummary } from '@/hooks/useProjectsCache';
+
+/** The status a row's pill shows for an intent (useIntentStatusReader). */
+export type IntentStatusOf = (intent: ProjectIntentSummary) => ResolvedIntentStatus;
 
 // One count per thing a space row can say about its work. The Spaces table
 // renders the counts as pills, the sidebar as a tooltip line; the stall rule
-// is `deriveIntentStatus`, so a run with no progress is never "running".
+// is the one the pills use (`statusOf`, by default the summary's own
+// `deriveIntentStatus`), so a run with no progress is never "running".
 export interface SpaceSignals {
   questions: number;
   failed: number;
@@ -15,14 +19,19 @@ export interface SpaceSignals {
 export function deriveSpaceSignals(
   intents: readonly ProjectIntentSummary[],
   now: number,
+  statusOf: IntentStatusOf = (intent) => ({
+    status: deriveIntentStatus(intent, { now }),
+    intent,
+  }),
 ): SpaceSignals {
   const signals: SpaceSignals = { questions: 0, failed: 0, running: 0, stalled: 0 };
-  for (const intent of intents) {
+  for (const summary of intents) {
+    const { status, intent } = statusOf(summary);
     const attention = intentAttention(intent);
     if (attention === 'failed') signals.failed++;
     else if (attention) signals.questions++;
-    else if (intent.status === 'RUNNING' || intent.status === 'CREATED') {
-      if (deriveIntentStatus(intent, { now }).stalled) signals.stalled++;
+    else if (status.key === 'RUNNING' || status.key === 'CREATED') {
+      if (status.stalled) signals.stalled++;
       else signals.running++;
     }
   }

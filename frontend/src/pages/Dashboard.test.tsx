@@ -241,6 +241,36 @@ describe('Needs your attention', () => {
     ]);
   const quiet = () => space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))]);
 
+  it("does not list a Viewer's questions or failures as theirs to act on, but lists a member's", () => {
+    fixtures.projects = [
+      space(
+        'audit',
+        'Audit',
+        [
+          intent('vq', 'WAITING', daysAgo(20), { pendingHumanTaskId: 'task-v' }),
+          intent('vf', 'FAILED', daysAgo(15)),
+        ],
+        { userRole: 'viewer' },
+      ),
+      space(
+        'team',
+        'Team',
+        [intent('mq', 'WAITING', daysAgo(2), { pendingHumanTaskId: 'task-m' })],
+        {
+          userRole: 'member',
+        },
+      ),
+    ];
+    renderDashboard();
+
+    const inbox = screen.getByRole('region', { name: /needs your attention/i });
+    const rows = within(inbox).getAllByRole('listitem');
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByRole('link', { name: 'Intent mq' })).toBeVisible();
+    expect(within(inbox).queryByRole('link', { name: 'Intent vq' })).toBeNull();
+    expect(within(inbox).queryByRole('link', { name: 'Intent vf' })).toBeNull();
+  });
+
   it('lists every intent that needs a human — answerable items first, then failures, then stalled runs', () => {
     fixtures.projects = [quiet(), platform(), retail()];
     renderDashboard();
@@ -361,6 +391,21 @@ describe('Needs your attention', () => {
     for (const row of rows.slice(0, 4)) expect(row).not.toHaveClass('hidden');
     expect(rows[4]).toHaveClass('hidden', 'sm:flex');
     expect(within(inbox).getByRole('button', { name: 'Show all (8)' })).toBeInTheDocument();
+  });
+
+  it('leaves out a run whose list row is old when its cached activity is recent', () => {
+    // r2's list row is 2 h old (stalled by itself); the cached detail saw a stage start now.
+    queryClient.setQueryData(qk.intentDetail('retail', 'r2'), () => ({
+      intent: { id: 'r2', status: 'RUNNING', updatedAt: hoursAgo(2), createdAt: hoursAgo(2) },
+      gates: [],
+      stages: [{ stageId: 'build', state: 'RUNNING', startedAt: hoursAgo(0.05) }],
+      events: [],
+    }));
+    fixtures.projects = [retail()];
+    renderDashboard();
+    const inbox = screen.getByRole('region', { name: /needs your attention/i });
+    expect(within(inbox).queryByText('Intent r2')).not.toBeInTheDocument();
+    expect(within(inbox).getAllByRole('listitem')).toHaveLength(2);
   });
 
   it('names the pending gates and the stage next to the title once the detail is cached', () => {

@@ -1,5 +1,5 @@
 import type { Intent, IntentGate } from '@/services/intents';
-import { ageLabel, deriveIntentStatus } from '@/lib/statusModel';
+import { ageLabel, deriveIntentStatus, type DerivedIntentStatus } from '@/lib/statusModel';
 import { describeFailure } from '@/lib/failureReasons';
 import { displayStageName } from '@/lib/displayNames';
 import { intentAttention } from '@/lib/sprintStatus';
@@ -63,15 +63,21 @@ export interface IntentRowMetaOptions {
   gates?: readonly GateLike[] | null;
   /** The wait's start when the caller knows it better (oldest open gate). */
   since?: string | null;
+  /** The status the row's pill shows, when the caller read it from the cache. */
+  derived?: DerivedIntentStatus;
 }
 
 const compact = (parts: (string | null)[]) => parts.filter(Boolean) as string[];
 
 export function intentRowMeta(
   intent: RowMetaIntent,
-  { now = Date.now(), gates, since }: IntentRowMetaOptions = {},
+  {
+    now = Date.now(),
+    gates,
+    since,
+    derived = deriveIntentStatus(intent, { now }),
+  }: IntentRowMetaOptions = {},
 ): IntentRowMeta {
-  const derived = deriveIntentStatus(intent, { now });
   const attention = intentAttention(intent);
   const stage = intent.currentStage ? displayStageName(intent.currentStage) : null;
   const updated = intent.updatedAt ?? intent.createdAt ?? null;

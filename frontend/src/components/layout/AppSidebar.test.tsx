@@ -622,6 +622,32 @@ describe('AppSidebar expanded space', () => {
     expect(screen.queryByText('Old iteration')).toBeNull();
   });
 
+  it('counts a run as running, not stalled, when its cached activity is recent', async () => {
+    const minutesAgo = (n: number) => new Date(Date.now() - n * 60 * 1000).toISOString();
+    // The list row is 45 min old, but the cached detail saw a stage start 2 min ago.
+    const busy = { id: 'busy', title: 'Busy run', status: 'RUNNING', updatedAt: minutesAgo(45) };
+    const snapshot = {
+      data: {
+        intent: busy,
+        gates: [],
+        stages: [{ stageId: 's1', state: 'RUNNING', startedAt: minutesAgo(2) }],
+        events: [{ timestamp: minutesAgo(2) }],
+      },
+    };
+    mockCache.peek.mockImplementation((key?: unknown) =>
+      (key as readonly unknown[])[2] === 'busy' ? snapshot : undefined,
+    );
+    mockProjects.projects = [v2Space('p1', 'Busy Space', [busy])];
+    renderSidebar();
+    const row = screen.getByRole('link', { name: /^Busy Space.*Agent running$/ });
+    fireEvent.pointerMove(row);
+    fireEvent.focus(row);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('1 running');
+    expect(tooltip).not.toHaveTextContent('stalled');
+    mockCache.peek.mockImplementation(() => undefined);
+  });
+
   it('says the feed could not load instead of claiming there are no spaces', () => {
     mockProjects.projects = [
       {
@@ -692,6 +718,36 @@ describe('AppSidebar drawer (narrow screens)', () => {
     ]);
     expect(rows[0]).toHaveTextContent('Platform');
     expect(screen.queryByText('Shipped')).toBeNull();
+  });
+
+  it("ranks a member's question first but not a Viewer's", () => {
+    const question = (id: string) => ({
+      id,
+      title: `Question ${id}`,
+      status: 'WAITING',
+      pendingHumanTaskId: 't',
+      updatedAt: ago(5),
+    });
+    const running = { id: 'r', title: 'Running fine', status: 'RUNNING', updatedAt: ago(0) };
+    const viewerSpace = (role: string) =>
+      v2Space('pv', 'Audit', [question('vq')], {
+        project: { id: 'pv', name: 'Audit', kind: 'v2', createdAt: '2024-01-01', userRole: role },
+      });
+    const intentHrefs = () =>
+      screen
+        .getAllByRole('link')
+        .filter((link) => link.getAttribute('href')?.includes('/intent/'))
+        .map((link) => link.getAttribute('href'));
+
+    mockProjects.projects = [v2Space('p1', 'Retail', [running]), viewerSpace('viewer')];
+    const { unmount } = renderSidebar('/dashboard', { variant: 'drawer' });
+    // Still listed (it is active), by activity like any other row.
+    expect(intentHrefs()).toEqual(['/space/p1/intent/r/observability', '/space/pv/intent/vq']);
+    unmount();
+
+    mockProjects.projects = [v2Space('p1', 'Retail', [running]), viewerSpace('member')];
+    renderSidebar('/dashboard', { variant: 'drawer' });
+    expect(intentHrefs()).toEqual(['/space/pv/intent/vq', '/space/p1/intent/r/observability']);
   });
 
   it('keeps the open intent highlighted with its section tabs in the drawer', () => {

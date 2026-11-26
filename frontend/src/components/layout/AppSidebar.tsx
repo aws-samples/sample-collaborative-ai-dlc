@@ -31,6 +31,8 @@ import {
   isTerminalIntentStatus,
   statusFromDetail,
   useIntentStatus,
+  useIntentStatusReader,
+  type ResolvedIntentStatus,
   type DerivedIntentStatus,
 } from '@/lib/statusModel';
 import {
@@ -213,6 +215,18 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
         })
       : undefined;
 
+  // One status per intent behind the drawer's attention order, the space
+  // signals and live dot, and the pills: the open intent reads the page's
+  // derivation, every other the shared cache (never the list timestamps alone).
+  const readStatus = useIntentStatusReader();
+  const resolve = (
+    spaceId: string,
+    intent: ProjectIntentSummary,
+  ): ResolvedIntentStatus<ProjectIntentSummary> =>
+    currentDerived && ctxDetail && spaceId === projectId && intent.id === intentId
+      ? { status: currentDerived, intent: { ...intent, ...ctxDetail.intent } }
+      : readStatus(spaceId, intent);
+
   // The detail request said the open intent is gone: a stale list entry must
   // not keep it on screen, and no row is synthesised for it.
   const openIntentGone = Boolean(intentId && intentCtx?.notFound && !ctxDetail);
@@ -315,14 +329,17 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
     return rows;
   };
 
+  const now = Date.now();
   const drawerItems: IterationItem[] = [];
   if (variant === 'drawer') {
     const all = sortedProjects.flatMap((entry) =>
-      (activeByProject.get(entry.project.id) ?? []).map((intent) => ({
-        entry,
-        intent,
-        attention: needsAttention(intent) ? 0 : 1,
-      })),
+      (activeByProject.get(entry.project.id) ?? []).map((intent) => {
+        const shown = resolve(entry.project.id, intent);
+        // Same rule as My work: a Viewer's intents are listed, not ranked as needing them.
+        const actionable =
+          entry.project.userRole !== 'viewer' && needsAttention(shown.intent, now, shown.status);
+        return { entry, intent, attention: actionable ? 0 : 1 };
+      }),
     );
     drawerItems.push(
       ...all
@@ -349,7 +366,6 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
     .map((item) => item.path);
   useOfferIdleCandidates('shell', visibleWaiting);
 
-  const now = Date.now();
   const pinnedEntries = sortedProjects.filter((entry) => sidebarSpaces.isPinned(entry.project.id));
   const otherEntries = sortedProjects.filter((entry) => !sidebarSpaces.isPinned(entry.project.id));
 
@@ -371,7 +387,7 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
         onToggle={() => toggleSpace(id)}
         pinned={sidebarSpaces.isPinned(id)}
         onPin={(pinned) => sidebarSpaces.setPinned(id, pinned)}
-        summary={deriveSpaceSignals(projectIntentList(entry), now)}
+        summary={deriveSpaceSignals(projectIntentList(entry), now, (intent) => resolve(id, intent))}
       >
         {isExpanded && (
           <div className="flex flex-col gap-0.5 pb-1 pl-5">

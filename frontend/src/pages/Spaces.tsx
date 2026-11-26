@@ -50,7 +50,7 @@ import { cn } from '@/lib/utils';
 import { usePanelsInline } from '@/hooks/usePanelsInline';
 import { PageHeader } from '@/components/ui/page-header';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { TONE_CLASSES, type StatusTone } from '@/lib/statusModel';
+import { TONE_CLASSES, useIntentStatusReader, type StatusTone } from '@/lib/statusModel';
 import {
   deriveSpaceSignals,
   hasOpenWork,
@@ -370,11 +370,15 @@ function Spaces() {
   // The portfolio re-renders on every 30 s poll, so one clock per render is
   // enough for ages and the stall rule.
   const now = Date.now();
+  // The counts follow each intent's pill (the cached detail when current).
+  const readStatus = useIntentStatusReader();
 
   const projects = useMemo<DashboardProject[]>(
     () =>
       portfolio.map((p) => {
-        const signals = deriveSpaceSignals(p.intents, now);
+        const signals = deriveSpaceSignals(p.intents, now, (intent) =>
+          readStatus(p.project.id, intent, { now }),
+        );
         return {
           ...p.project,
           lastActivityAt: projectLastActivityAt(p),
@@ -384,7 +388,7 @@ function Spaces() {
           signals,
         };
       }),
-    [portfolio, now],
+    [portfolio, now, readStatus],
   );
 
   const openCreate = () => setShowCreateModal(true);
