@@ -28,7 +28,7 @@ You can keep refining the prompt with your teammates on the Compose page.
 If the space has one or more trackers bound (GitHub Issues, GitLab Issues, Jira Cloud), a tracker panel appears next to the form. Browse open issues and pick one to seed the intent:
 
 - The issue title becomes the intent title.
-- The issue body and all comments are imported into the prompt (Jira's rich-text body is converted to Markdown; comments are appended chronologically).
+- The issue body and all comments are imported into the prompt (Jira's rich-text body is converted to Markdown; comments are appended chronologically). For GitHub Issues the first 1,000 comments are read, one page of 100 per request; if a later page fails, the comments already read are kept.
 - Jira attachment references are replaced with their corresponding filenames in
   the original text position when they can be resolved. Unresolved references
   keep a placeholder.
