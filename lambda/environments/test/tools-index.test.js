@@ -226,6 +226,59 @@ describe('managed tool control API', () => {
     expect(store.updateVersion.mock.calls[0][3]).toEqual({ fromStatus: 'FAILED' });
   });
 
+  it('rebuilds a version whose scan is unavailable, for an administrator only', async () => {
+    const rust = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust');
+    const unavailable = {
+      toolId: 'rust',
+      versionId: 'tv-rust-1',
+      status: 'SECURITY_REVIEW',
+      buildAttempt: 1,
+      definition: rust.version,
+      scanFindings: { status: 'SCAN_ELIGIBILITY_EXPIRED', severityCounts: {}, findings: [] },
+    };
+    const store = {
+      ...baseStore(),
+      getTool: vi.fn().mockResolvedValue(rust),
+      getVersion: vi.fn().mockResolvedValue(unavailable),
+      updateVersion: vi.fn().mockImplementation(async (_toolId, _versionId, patch) => ({
+        ...unavailable,
+        ...patch,
+      })),
+    };
+    const codebuildClient = {
+      send: vi.fn().mockResolvedValue({
+        build: {
+          id: 'tool-build:2',
+          arn: 'arn:aws:codebuild:us-east-1:111111111111:build/tool-build:2',
+        },
+      }),
+    };
+    const handler = createToolsHandler({
+      store,
+      s3Client: { send: vi.fn().mockResolvedValue({}) },
+      codebuildClient,
+    });
+    const retry = (groups) =>
+      handler({
+        httpMethod: 'POST',
+        path: '/tools/rust/versions/tv-rust-1/retry',
+        ...claims(groups),
+      });
+
+    const denied = await retry('member');
+    expect(denied.statusCode).toBe(403);
+    expect(codebuildClient.send).not.toHaveBeenCalled();
+
+    const accepted = await retry('platform-admin');
+    expect(accepted.statusCode).toBe(202);
+    expect(store.updateVersion.mock.calls[0][2]).toMatchObject({
+      status: 'QUEUED',
+      scanFindings: null,
+      imageDigest: null,
+    });
+    expect(store.updateVersion.mock.calls[0][3]).toEqual({ fromStatus: 'SECURITY_REVIEW' });
+  });
+
   it('marks environments when a published version becomes recommended', async () => {
     const tool = {
       toolId: 'java',
