@@ -237,6 +237,24 @@ describe('IntentContext', () => {
     );
   });
 
+  it('stageRows: a composed grid overrides the scope baseline grid', async () => {
+    get.mockResolvedValue(detail({ composedGrid: { 'stage-a': 'EXECUTE', 'stage-b': 'SKIP' } }));
+    compiled.mockResolvedValue({
+      // The named scope would execute both stages; the composed grid deselects stage-b.
+      scopeGrid: { feature: { 'stage-a': 'EXECUTE', 'stage-b': 'EXECUTE' } },
+      graph: {
+        nodes: [
+          { stageId: 'stage-a', phasePath: 'p', order: 0 },
+          { stageId: 'stage-b', phasePath: 'p', order: 1 },
+        ],
+        edges: [],
+      },
+    });
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('rows')).toHaveTextContent('stage-a:PENDING'));
+    expect(screen.getByTestId('rows')).not.toHaveTextContent('stage-b');
+  });
+
   it('compiles the workflow with the intent release pin', async () => {
     get.mockResolvedValue(
       detail({
