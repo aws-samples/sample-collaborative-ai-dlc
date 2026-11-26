@@ -41,6 +41,7 @@ import {
   listAccessibleResources,
   persistConnection,
 } from './providers/jira-cloud.js';
+import { INVALID_PAGE_ERROR, parsePageParam } from '../shared/list-page.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -1047,14 +1048,30 @@ export const handler = async (event, context) => {
     try {
       const resourceId = pathParameters.resourceId;
 
-      // GET /projects/{id}/trackers/{bid}/issues/{rid}/comments
+      // GET /projects/{id}/trackers/{bid}/issues/{rid}/comments[?page=N]
+      // With page, one provider page comes back as { comments, nextPage }, so
+      // no request waits on a whole long discussion; a provider that reads it
+      // in one call answers with nextPage null.
       if (httpMethod === 'GET' && resourceId && path.endsWith('/comments')) {
+        const page = parsePageParam(queryStringParameters?.page);
+        if (page === null) return response(400, { error: INVALID_PAGE_ERROR });
+        if (page !== undefined && provider.getIssueDiscussionPage) {
+          return response(
+            200,
+            await provider.getIssueDiscussionPage(
+              ctx,
+              binding.externalProjectKey,
+              resourceId,
+              page,
+            ),
+          );
+        }
         const comments = await provider.getIssueDiscussion(
           ctx,
           binding.externalProjectKey,
           resourceId,
         );
-        return response(200, comments);
+        return response(200, page === undefined ? comments : { comments, nextPage: null });
       }
 
       // POST /projects/{id}/trackers/{bid}/issues/{rid}/comments
