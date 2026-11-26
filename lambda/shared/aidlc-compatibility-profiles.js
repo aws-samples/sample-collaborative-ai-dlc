@@ -145,6 +145,22 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.5 keeps 2.11.4's frontmatter dialect, engine commands and sensors,
+  // including the requirements-analysis outputs value that needs quoting; its
+  // Units Generation consumes the Refined Mockups artifacts as optional inputs.
+  'v2.11.5': Object.freeze({
+    id: 'v2.11.5',
+    releaseId: 'aidlc:30d674ed196c7051222130ce344bf513c82eff2b',
+    fixtureDigest: '869bcb164c0b6e3683106e488529db6bface354cff3dfb68231ad13811fce9ab',
+    label: 'AI-DLC 2.11.5',
+    upstreamVersion: '2.11.5',
+    upstreamRef: '30d674ed196c7051222130ce344bf513c82eff2b',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {

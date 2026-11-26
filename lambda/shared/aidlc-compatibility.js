@@ -576,16 +576,16 @@ const quoteInvokeCommand = (source) =>
   );
 
 // AI-DLC 2.11.3 adds a colon followed by a space inside one plain-scalar
-// `outputs` description, and 2.11.4 keeps it. YAML treats that as a nested mapping and rejects the
-// whole stage. Quote the known upstream value while preserving its string
-// content; this is an import normalization, not an execution capability.
+// `outputs` description, and 2.11.4 and 2.11.5 keep it. YAML treats that
+// as a nested mapping and rejects the whole stage. Quote the known upstream
+// value while preserving its string content; this is an import normalization, not an execution capability.
 const quoteRequirementsAnalysisOutputs = (source) =>
   source.replace(
     /^(outputs:\s*)(requirements\.md,\s*requirements-analysis-questions\.md,\s*traceability\.json \(Step 10:.*\))$/m,
     (_match, prefix, value) => `${prefix}${JSON.stringify(value.trim())}`,
   );
 
-const REQUIREMENTS_OUTPUTS_PROFILES = new Set(['v2.11.3', 'v2.11.4']);
+const REQUIREMENTS_OUTPUTS_PROFILES = new Set(['v2.11.3', 'v2.11.4', 'v2.11.5']);
 
 const normalizeAidlcFrontmatter = ({
   profileId,
