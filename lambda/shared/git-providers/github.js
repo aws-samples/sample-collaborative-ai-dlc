@@ -127,13 +127,53 @@ const mapRepo = (r) => ({
   defaultBranch: r.default_branch,
 });
 
+const PAGE_SIZE = 100;
+// Bounds a very large account inside the API Gateway 29s limit: page 1, then
+// the rest in parallel, each given up after LIST_PAGE_TIMEOUT_MS, so a listing
+// takes at most two page timeouts.
+const MAX_LIST_PAGES = 10;
+const LIST_PAGE_TIMEOUT_MS = 8_000;
+
+// The page count from the Link header's rel="last"; 1 when there is none.
+const lastPageFromLink = (res) => {
+  const match = /<[^>]*[?&]page=(\d+)[^>]*>;\s*rel="last"/.exec(res.headers?.get?.('link') ?? '');
+  return match ? Number(match[1]) : 1;
+};
+
+// Page 1 goes first and alone: its Link header gives the page count. The
+// remaining pages, up to the cap, are fetched in parallel and kept in order.
+// `readPage(res)` returns the page's rows or throws, so one failed page fails
+// the whole listing instead of returning part of it.
+const listPages = async (ctx, url, readPage) => {
+  const separator = url.includes('?') ? '&' : '?';
+  const fetchPage = async (page) => {
+    const res = await ghFetch(ctx, `${url}${separator}per_page=${PAGE_SIZE}&page=${page}`, {
+      signal: AbortSignal.timeout(ctx.listPageTimeoutMs ?? LIST_PAGE_TIMEOUT_MS),
+    });
+    return { rows: await readPage(res, page), lastPage: lastPageFromLink(res) };
+  };
+  const first = await fetchPage(1);
+  const lastPage = Math.min(first.lastPage, MAX_LIST_PAGES);
+  const pages = [];
+  for (let page = 2; page <= lastPage; page += 1) pages.push(page);
+  const rest = await Promise.all(pages.map(fetchPage));
+  return [first, ...rest].flatMap((p) => p.rows);
+};
+
+// The picker filters this list client-side, so it must hold every repo the
+// user can reach, not just the first page (/user/repos has no search).
 const listRepos = async (ctx) => {
-  const res = await ghFetch(ctx, `${API_BASE}/user/repos?per_page=100&sort=updated`);
-  const repos = await res.json();
-  if (!Array.isArray(repos)) {
-    throw new ProviderError(400, repos.message || 'Failed to fetch repos');
-  }
-  return repos.map(mapRepo);
+  const repos = await listPages(ctx, `${API_BASE}/user/repos?sort=updated`, async (res) => {
+    const data = await res.json();
+    if (!Array.isArray(data)) {
+      throw new ProviderError(400, data?.message || 'Failed to fetch repos');
+    }
+    return data.map(mapRepo);
+  });
+  // A repo updated while the pages are read moves to page 1 and can appear
+  // twice.
+  const seen = new Set();
+  return repos.filter((r) => !seen.has(r.id) && seen.add(r.id));
 };
 
 // App-mode repo discovery: the repos the GitHub App installation can access
@@ -163,13 +203,15 @@ const listInstallationRepos = async (ctx) => {
 
 const listBranches = async (ctx, repoId) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/branches?per_page=100`);
-  if (res.status === 404) return [];
-  const data = await res.json();
-  if (!Array.isArray(data)) {
-    throw new ProviderError(400, data.message || 'Failed to fetch branches');
-  }
-  return data.map((b) => b.name);
+  return listPages(ctx, `${API_BASE}/repos/${owner}/${repo}/branches`, async (res, page) => {
+    // A missing repo has no branches; a 404 after page 1 cut the list short.
+    if (res.status === 404 && page === 1) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) {
+      throw new ProviderError(400, data?.message || 'Failed to fetch branches');
+    }
+    return data.map((b) => b.name);
+  });
 };
 
 // The repo's real default branch (`main`, `master`, or whatever HEAD points at).
@@ -346,16 +388,13 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
 
 const listIssueComments = async (ctx, repoId, issueNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(
+  // Comments come oldest first, so reading only page 1 dropped the newest.
+  const comments = await listPaginated(
     ctx,
-    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    { emptyWhenMissing: true },
   );
-  if (res.status === 404) return [];
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
-  }
-  return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
+  return comments.map(mapIssueDiscussionComment);
 };
 
 // App installation tokens can read a private issue but receive 404 for its raw
@@ -518,12 +557,15 @@ const mapIssueComment = (c) => ({
   version: c.updated_at || c.created_at,
 });
 
-const listPaginated = async (ctx, url) => {
+// `emptyWhenMissing`: a 404 on page 1 means no rows; on a later page the
+// listing was cut short, so it still fails.
+const listPaginated = async (ctx, url, { emptyWhenMissing = false } = {}) => {
   const rows = [];
   for (let page = 1; page <= 100; page += 1) {
     const separator = url.includes('?') ? '&' : '?';
     const res = await ghFetch(ctx, `${url}${separator}per_page=100&page=${page}`);
-    const data = await res.json();
+    if (emptyWhenMissing && page === 1 && res.status === 404) return [];
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
       throw new ProviderError(res.status || 400, data?.message || 'Failed to list comments');
     }
