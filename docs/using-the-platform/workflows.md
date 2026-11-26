@@ -12,7 +12,7 @@ Platform administrators can tailor the methodology: fork building blocks, edit s
 
 - **SYSTEM blocks** (the imported AI-DLC baseline) are read-only and marked with a lock badge. They are pinned to an upstream commit and replaced only when an operator re-seeds.
 - **Forking** a SYSTEM block creates an editable copy in the shared user library. The copy **shadows** the SYSTEM block of the same id — every workflow that references the id picks up your version.
-- **Creating** a block from scratch works the same way; the stage editor is the richest, covering the stage prompt body, phase, execution mode, lead/support agents, produced/consumed artifacts, sensors, reviewer, and the human-validation flag.
+- **Creating** a block from scratch works the same way; the stage editor covers the prompt body, phase, execution mode, lead/support agents, artifacts, sensors, reviewer, human-validation flag, and Decision Maker/Contributor roles in the **Responsibilities** tab.
 
 Editing a block affects future intents only — running intents pinned an earlier workflow version.
 

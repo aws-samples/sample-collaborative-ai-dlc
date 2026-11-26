@@ -12,6 +12,8 @@ const stableCatalog = vi.fn();
 const catalogRequest = vi.fn();
 const contents = vi.fn();
 const releaseBlock = vi.fn();
+const create = vi.fn();
+const update = vi.fn();
 
 vi.mock('@/services/blocks', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/blocks')>();
@@ -22,8 +24,8 @@ vi.mock('@/services/blocks', async (importOriginal) => {
       get: (...a: unknown[]) => get(...a),
       getBody: (...a: unknown[]) => getBody(...a),
       getScript: (...a: unknown[]) => getScript(...a),
-      create: vi.fn(),
-      update: vi.fn(),
+      create: (...a: unknown[]) => create(...a),
+      update: (...a: unknown[]) => update(...a),
       delete: vi.fn(),
     },
   };
@@ -107,6 +109,8 @@ beforeEach(() => {
   contents.mockReset();
   catalogRequest.mockReset();
   releaseBlock.mockReset();
+  create.mockReset();
+  update.mockReset();
   stableCatalog.mockReset().mockResolvedValue(null);
 });
 
@@ -230,6 +234,93 @@ describe('BlockLibrary with a stable release', () => {
 });
 
 describe('BlockEditor', () => {
+  it('creates a stage without a role mapping when Responsibilities is left untouched', async () => {
+    list.mockImplementation((type) =>
+      Promise.resolve({
+        blocks: [],
+        ...(type === 'stage' ? { businessRoles: [{ id: 'architect', name: 'Architect' }] } : {}),
+      }),
+    );
+    create.mockResolvedValue({});
+    get.mockResolvedValue(block('plain-stage', 'default', { blockType: 'STAGE' }));
+    const user = userEvent.setup();
+    renderAt('/blocks/stage/new');
+    await user.type(screen.getByPlaceholderText('kebab-case-id'), 'plain-stage');
+    await user.type(screen.getByPlaceholderText('Stage name'), 'Plain stage');
+    await user.click(screen.getByRole('button', { name: 'Create Stage' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(
+      'stage',
+      expect.objectContaining({ id: 'plain-stage', permissions: null }),
+    );
+  });
+
+  it('creates a stage with responsibility defaults and retains the draft after a failed save', async () => {
+    const roles = [
+      { id: 'architect', name: 'Architect' },
+      { id: 'developer', name: 'Developer' },
+    ];
+    list.mockImplementation((type) =>
+      Promise.resolve({
+        blocks: [],
+        ...(type === 'stage' ? { businessRoles: roles } : {}),
+      }),
+    );
+    create.mockRejectedValueOnce(new Error('Save failed')).mockResolvedValue({});
+    get.mockResolvedValue(block('my-stage', 'default', { blockType: 'STAGE' }));
+    const user = userEvent.setup();
+    renderAt('/blocks/stage/new');
+    await user.type(screen.getByPlaceholderText('kebab-case-id'), 'my-stage');
+    await user.type(screen.getByPlaceholderText('Stage name'), 'My stage');
+    await user.click(screen.getByRole('tab', { name: 'Responsibilities' }));
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Contributors: Developer' }));
+    // Switching tabs must not discard the responsibility draft.
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
+    await user.click(screen.getByRole('button', { name: 'Create Stage' }));
+    expect(await screen.findByText('Save failed')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Responsibilities' }));
+    expect(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create Stage' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create).toHaveBeenLastCalledWith(
+      'stage',
+      expect.objectContaining({
+        id: 'my-stage',
+        name: 'My stage',
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] },
+      }),
+    );
+    expect(await screen.findByTestId('location')).toHaveTextContent('/blocks/stage/my-stage');
+  });
+
+  it('shows SYSTEM stage responsibility defaults without editing controls', async () => {
+    get.mockResolvedValue(
+      block('system-stage', 'SYSTEM', {
+        blockType: 'STAGE',
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: [] },
+      }),
+    );
+    list.mockImplementation((type) =>
+      Promise.resolve({
+        blocks: [],
+        ...(type === 'stage' ? { businessRoles: [{ id: 'architect', name: 'Architect' }] } : {}),
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt('/blocks/stage/system-stage');
+    await user.click(await screen.findByRole('tab', { name: 'Responsibilities' }));
+    expect(
+      await screen.findByRole('checkbox', { name: 'Decision Makers: Architect' }),
+    ).toBeChecked();
+    for (const checkbox of screen.getAllByRole('checkbox')) expect(checkbox).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('ignores a late release body after switching to another version', async () => {
     let resolveOld!: (value: unknown) => void;
     const oldResponse = new Promise((resolve) => {

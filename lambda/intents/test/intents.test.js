@@ -1843,6 +1843,30 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps refusing a library block on an intent not pinned to a release, even unchanged', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    // The same id as a SYSTEM block, with no edit: without a pinned release
+    // there is no immutable block to prove the copy unchanged against.
+    procStore.set(keyOf('BLOCK#default#KNOWLEDGE#shared-glossary', 'V#latest'), {
+      pk: 'BLOCK#default#KNOWLEDGE#shared-glossary',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#default#KNOWLEDGE',
+      GSI1SK: 'shared-glossary',
+      id: 'shared-glossary',
+      blockId: 'shared-glossary',
+      tenantId: 'default',
+      version: 1,
+      agentRef: 'shared',
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['KNOWLEDGE:shared-glossary']);
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
   it('requires a completed checkpoint while RUNNING', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
@@ -10998,6 +11022,216 @@ describe('AI-DLC release pinning', () => {
       expect.arrayContaining([releasePin.manifestKey, releasePin.catalogKey]),
     );
     expect(getObjectKeys()).not.toContain(methodologyCatalogKey(releaseSha));
+  });
+
+  // A user-library copy of a release block, stored the way the block API
+  // stores it, plus the pin a release-pinned intent replays it from.
+  const seedUserCopy = (type, blockId, version, overrides = {}) => {
+    const releaseBlock = releaseBundle.catalog.blocks[type].find((block) => block.id === blockId);
+    if (!releaseBlock) throw new Error(`missing ${type} fixture block ${blockId}`);
+    const pk = `BLOCK#default#${type}#${blockId}`;
+    procStore.set(keyOf(pk, `V#${version}`), {
+      ...releaseBlock,
+      pk,
+      sk: `V#${version}`,
+      tenantId: 'default',
+      blockType: type,
+      version,
+      sourceRef: undefined,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      updatedAt: '2026-11-01T00:00:00.000Z',
+      ...overrides,
+    });
+    return { tenantId: 'default', version };
+  };
+
+  const exportIntent = async (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/export`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ harness: 'codex' }),
+      ...claims(sub),
+    });
+
+  const createPinnedIntent = async (overrides) => {
+    installReleaseObjects();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    repinToRelease(intent.id, {
+      status: 'WAITING',
+      startedAt: '2026-08-14T10:00:00.000Z',
+      ...overrides,
+    });
+    return { sub, projectId, intentId: intent.id };
+  };
+
+  it('exports library copies that only rename release blocks, under the release names', async () => {
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: {
+        AGENT: {
+          'aidlc-developer-agent': seedUserCopy('AGENT', 'aidlc-developer-agent', 7, {
+            name: 'ACME Developer Agent',
+            displayName: 'ACME Developer Agent',
+          }),
+        },
+        SENSOR: { linter: seedUserCopy('SENSOR', 'linter', 2) },
+      },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(201);
+    const { warnings } = createNativeExportSpy.mock.calls[0][0];
+    const renamedWarning = warnings.find((warning) => warning.includes('release names'));
+    expect(renamedWarning).toContain('AGENT:aidlc-developer-agent');
+    expect(renamedWarning).not.toContain('SENSOR:linter');
+  });
+
+  it('still refuses a library copy that edits a release block, whatever its name', async () => {
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: {
+        AGENT: {
+          'aidlc-developer-agent': seedUserCopy('AGENT', 'aidlc-developer-agent', 7, {
+            name: 'ACME Developer Agent',
+            description: 'Senior developer who follows the ACME standards',
+          }),
+          'aidlc-product-agent': seedUserCopy('AGENT', 'aidlc-product-agent', 4, {
+            name: 'ACME Product Agent',
+          }),
+        },
+      },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['AGENT:aidlc-developer-agent']);
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  // A forked workflow that places a renamed library stage: the stage row is
+  // read at the version the plan resolved and compared with the release stage.
+  const seedForkedWorkflow = (version, stagePlacement) => {
+    const { workflow } = releaseBundle.catalog;
+    const pk = `WF#default#${workflow.id}`;
+    const put = (sk, item) =>
+      procStore.set(keyOf(pk, `V#${version}#${sk}`), { pk, sk: `V#${version}#${sk}`, ...item });
+    put('META', { sourceRef: null });
+    for (const placement of workflow.placements) {
+      put(`PLACEMENT#${placement.stageId}`, {
+        ...placement,
+        ...(placement.stageId === stagePlacement.stageId ? stagePlacement : {}),
+      });
+    }
+    for (const ruleRef of workflow.ruleRefs ?? []) {
+      put(`RULEREF#${ruleRef.layer}#${ruleRef.ruleId}`, ruleRef);
+    }
+    for (const scopeRef of workflow.scopeRefs ?? []) put(`SCOPEREF#${scopeRef.scopeId}`, scopeRef);
+    for (const phase of workflow.phases ?? []) put(`PHASE#${phase.phaseId}`, phase);
+  };
+
+  it.each([
+    ['exports a forked workflow stage that only renames the release stage', {}, 201],
+    [
+      'refuses a forked workflow stage that edits the release stage',
+      { humanValidation: 'none' },
+      409,
+    ],
+  ])('%s', async (_label, edit, statusCode) => {
+    seedUserCopy('STAGE', 'code-generation', 3, { name: 'ACME Code Generation', ...edit });
+    seedForkedWorkflow(9, { stageId: 'code-generation', stageTenant: 'default', pinnedVersion: 3 });
+    const { sub, projectId, intentId } = await createPinnedIntent({ workflowVersion: 9 });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(statusCode);
+    if (statusCode === 409) {
+      expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['STAGE:code-generation']);
+    } else {
+      expect(createNativeExportSpy.mock.calls[0][0].warnings.join('\n')).toContain(
+        'STAGE:code-generation',
+      );
+    }
+  });
+
+  it('refuses a library copy that only changes a sensor severity', async () => {
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: {
+        SENSOR: { linter: seedUserCopy('SENSOR', 'linter', 2, { severity: 'blocking' }) },
+      },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['SENSOR:linter']);
+  });
+
+  it('refuses a library agent the release does not ship', async () => {
+    const releaseAgent = releaseBundle.catalog.blocks.AGENT.find(
+      (block) => block.id === 'aidlc-developer-agent',
+    );
+    const agentPk = 'BLOCK#default#AGENT#acme-developer-agent';
+    procStore.set(keyOf(agentPk, 'V#1'), {
+      ...releaseAgent,
+      pk: agentPk,
+      sk: 'V#1',
+      id: 'acme-developer-agent',
+      blockId: 'acme-developer-agent',
+      tenantId: 'default',
+      version: 1,
+    });
+    seedUserCopy('STAGE', 'code-generation', 3, { leadAgent: 'acme-developer-agent' });
+    seedForkedWorkflow(9, { stageId: 'code-generation', stageTenant: 'default', pinnedVersion: 3 });
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      workflowVersion: 9,
+      methodologyPins: { AGENT: { 'acme-developer-agent': { tenantId: 'default', version: 1 } } },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual([
+      'AGENT:acme-developer-agent',
+      'STAGE:code-generation',
+    ]);
+  });
+
+  it('refuses an intent whose pinned library copy no longer exists', async () => {
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: { AGENT: { 'aidlc-developer-agent': { tenantId: 'default', version: 99 } } },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    // The pinned plan no longer resolves, so the export never gets as far as
+    // comparing blocks; the deleted row is never exported as the release block.
+    expect(res.statusCode).toBe(409);
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('classifies a library copy by its block id, not by an id field the client sent', async () => {
+    // updateBlock keeps a client-sent `id`, so the stored row can disagree with
+    // its key. The plan resolves the row by `blockId`, so the edit must be
+    // reported under that id rather than hidden behind the forged one.
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: {
+        AGENT: {
+          'aidlc-developer-agent': seedUserCopy('AGENT', 'aidlc-developer-agent', 7, {
+            id: 'not-in-this-plan',
+            description: 'Senior developer who follows the ACME standards',
+          }),
+        },
+      },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['AGENT:aidlc-developer-agent']);
   });
 
   it('refuses to start when the pinned release cannot be resolved', async () => {

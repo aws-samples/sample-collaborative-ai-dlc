@@ -93,6 +93,15 @@ mapping change alters the importer fingerprint and catalog goldens, so it
 requires a new importer revision and closure upgrade. Runtime handlers may be
 added for fields already recorded in a catalog without changing that catalog.
 
+Importer revision 6 adds the platform default stage responsibilities to each
+release catalog: Decision Maker and Contributor role lists on stage blocks and
+workflow placements, keyed by stable stage ID, and the workflow's generated Cedar
+policy text. Stages without a default mapping, such as a custom fork's own
+stages, are recorded as unmapped. The mapped methodology is otherwise unchanged.
+Closures imported at earlier revisions keep their bytes and define no
+responsibilities, so the stage responsibilities preview for an intent pinned to
+one reports that none are defined.
+
 The 2.3.3 block digest and per-scope plan digests are compatibility contracts.
 Optional mapper and plan properties are omitted when the source did not author
 them, preserving byte identity for existing 2.3.3 runs.

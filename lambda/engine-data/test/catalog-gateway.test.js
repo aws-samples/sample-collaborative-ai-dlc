@@ -352,6 +352,39 @@ describe('catalog gateway — confined loader clients', () => {
       createCatalog: (clients) => ({ listMergedBlocks: () => run(clients) }),
     });
 
+  it('allows consistent workflow version reads while retaining query confinement', async () => {
+    const query = {
+      TableName: TABLE,
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :vp)',
+      ExpressionAttributeValues: { ':pk': 'WF#default#flow', ':vp': 'V#2#' },
+      ConsistentRead: true,
+    };
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
+    await expect(
+      call(
+        withFakeCatalog(({ ddb: c }) => c.send(new QueryCommand(query))),
+        'listMergedBlocks',
+        { type: 'STAGE' },
+      ),
+    ).resolves.toEqual({ ok: true, result: { Items: [] } });
+    await expect(
+      call(
+        withFakeCatalog(({ ddb: c }) =>
+          c.send(
+            new QueryCommand({
+              ...query,
+              IndexName: 'GSI1',
+              KeyConditionExpression: 'GSI1PK = :pk',
+              ExpressionAttributeValues: { ':pk': 'TENANT#SYSTEM#STAGE' },
+            }),
+          ),
+        ),
+        'listMergedBlocks',
+        { type: 'STAGE' },
+      ),
+    ).resolves.toEqual(denial('catalog_row_not_allowed'));
+  });
+
   it.each([
     [
       'another bucket',

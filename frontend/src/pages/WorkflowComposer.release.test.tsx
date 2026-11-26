@@ -9,6 +9,7 @@ const get = vi.fn();
 const compiled = vi.fn();
 const executionPreview = vi.fn();
 const update = vi.fn();
+const updatePlacement = vi.fn();
 const list = vi.fn();
 const stableCatalog = vi.fn();
 const catalog = vi.fn();
@@ -27,6 +28,7 @@ vi.mock('@/services/workflows', async (importOriginal) => {
       compiled: (...a: unknown[]) => compiled(...a),
       executionPreview: (...a: unknown[]) => executionPreview(...a),
       update: (...a: unknown[]) => update(...a),
+      updatePlacement: (...a: unknown[]) => updatePlacement(...a),
       putScopeMembership: (...a: unknown[]) => putScopeMembership(...a),
       removeScopeRef: (...a: unknown[]) => removeScopeRef(...a),
     },
@@ -140,6 +142,8 @@ beforeEach(() => {
     scopeRefs: [{ scopeId: 'mvp', scopeTenant: 'SYSTEM' }],
     ruleRefs: [],
   });
+  update.mockReset();
+  updatePlacement.mockReset();
   list.mockReset().mockResolvedValue({ blocks: [] });
   stableCatalog.mockReset().mockResolvedValue({
     releaseId: STABLE,
@@ -154,6 +158,136 @@ beforeEach(() => {
   releaseBlock.mockReset();
   compiled.mockReset();
   executionPreview.mockReset();
+});
+
+describe('default responsibilities', () => {
+  const flow = (needsDefaultResponsibilities: boolean, readOnly = false) => ({
+    id: 'my-flow',
+    workflowId: 'my-flow',
+    name: 'My flow',
+    objective: '',
+    owner: readOnly ? 'SYSTEM' : 'default',
+    readOnly,
+    version: 2,
+    needsDefaultResponsibilities,
+    phases: [],
+    placements: [],
+    scopeRefs: [],
+    ruleRefs: [],
+  });
+
+  beforeEach(() => {
+    compiled.mockResolvedValue(compiledView({ libraryRelease: STABLE }));
+  });
+
+  it.each([
+    [false, true],
+    [true, true],
+    [true, false],
+  ])(
+    'locks responsibilities when the workflow or block is read-only (workflow=%s, block=%s)',
+    async (readOnly, blockReadOnly) => {
+      const roles = [
+        { id: 'architect', name: 'Architect' },
+        { id: 'developer', name: 'Developer' },
+      ];
+      const placement = {
+        stageId: 'custom',
+        stageTenant: 'SYSTEM',
+        pinnedVersion: 1,
+        phasePath: null,
+        order: 0,
+        scopeMembership: {},
+        permissions: { decisionMakerRoles: ['architect'], contributorRoles: ['developer'] },
+      };
+      get.mockResolvedValue({
+        ...flow(false, readOnly),
+        placements: [placement],
+        businessRoles: roles,
+      });
+      list.mockImplementation((type) =>
+        Promise.resolve({
+          blocks:
+            type === 'stage'
+              ? [{ id: 'custom', name: 'Custom stage', readOnly: blockReadOnly, version: 1 }]
+              : [],
+        }),
+      );
+      getBlock.mockResolvedValue({
+        id: 'custom',
+        name: 'Custom stage',
+        readOnly: blockReadOnly,
+        blockType: 'stage',
+        phase: 'inception',
+      });
+      const user = userEvent.setup();
+      renderComposer();
+      await user.click(await screen.findByTitle('Open stage'));
+      const tab = await screen.findByRole('tab', { name: 'Responsibilities' });
+      expect(
+        screen.queryByRole('region', { name: 'Stage responsibilities' }),
+      ).not.toBeInTheDocument();
+      await user.click(tab);
+      const panel = screen.getByRole('tabpanel', { name: 'Responsibilities' });
+      expect(panel).toHaveTextContent('Architect');
+      expect(panel).toHaveTextContent('Developer');
+      expect(screen.getByRole('checkbox', { name: 'Decision Makers: Architect' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'Contributors: Developer' })).toBeChecked();
+      for (const checkbox of screen.getAllByRole('checkbox')) expect(checkbox).toBeDisabled();
+      if (blockReadOnly)
+        expect(screen.queryByRole('button', { name: /Save/ })).not.toBeInTheDocument();
+      else expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+      await user.click(screen.getByRole('tab', { name: 'Overview' }));
+      if (blockReadOnly) expect(screen.getByPlaceholderText('ideation')).toBeDisabled();
+      else expect(screen.getByPlaceholderText('ideation')).toBeEnabled();
+      expect(updatePlacement).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'hides the initialization block when already applied (readOnly=%s)',
+    async (readOnly) => {
+      get.mockResolvedValue(flow(false, readOnly));
+      renderComposer();
+      await screen.findByRole('heading', { name: 'My flow' });
+      expect(
+        screen.queryByRole('button', { name: 'Add default responsibilities' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          'Published workflow versions retain their stage role mappings and policies.',
+        ),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it('hides the block after saving, even if the silent refresh fails, and expires confirmation', async () => {
+    get.mockResolvedValueOnce(flow(true)).mockRejectedValue(new Error('Refresh unavailable'));
+    update.mockResolvedValue({ version: 3 });
+    renderComposer();
+    const button = await screen.findByRole('button', { name: 'Add default responsibilities' });
+    const user = userEvent.setup();
+    await user.click(button);
+    expect(update).toHaveBeenCalledWith('my-flow', { applyDefaultPermissions: true });
+    expect(
+      screen.queryByRole('button', { name: 'Add default responsibilities' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Default responsibilities saved');
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument(), {
+      timeout: 6000,
+    });
+  }, 10000);
+
+  it('keeps initialization available after a failed save', async () => {
+    get.mockResolvedValue(flow(true));
+    update.mockRejectedValue(new Error('Save failed'));
+    const user = userEvent.setup();
+    renderComposer();
+    await user.click(await screen.findByRole('button', { name: 'Add default responsibilities' }));
+    expect(await screen.findByText('Save failed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add default responsibilities' })).toBeEnabled();
+  });
 });
 
 describe('WorkflowComposer release plan check', () => {
