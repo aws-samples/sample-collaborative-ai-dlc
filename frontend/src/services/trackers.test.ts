@@ -77,6 +77,28 @@ describe('trackersService.listComments', () => {
     expect((await trackersService.listComments('p1', 'b1', '42')).map((c) => c.id)).toEqual(['1']);
   });
 
+  it('stops after 10 pages, the first 1,000 comments', async () => {
+    get.mockReset();
+    get.mockImplementation(async (path: string) => {
+      const page = Number(new URLSearchParams(path.split('?')[1]).get('page'));
+      return { comments: [comment(String(page))], nextPage: page + 1 };
+    });
+
+    expect(await trackersService.listComments('p1', 'b1', '42')).toHaveLength(10);
+    expect(get).toHaveBeenCalledTimes(10);
+  });
+
+  it('reads the bare first page from a server that predates paging', async () => {
+    get.mockReset();
+    get.mockResolvedValueOnce([comment('1'), comment('2')]);
+
+    expect((await trackersService.listComments('p1', 'b1', '42')).map((c) => c.id)).toEqual([
+      '1',
+      '2',
+    ]);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
   it('fails when page 1 fails, so the caller falls back to no comments', async () => {
     get.mockReset();
     get.mockRejectedValueOnce(new Error('Gateway Timeout'));

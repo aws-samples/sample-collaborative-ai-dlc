@@ -291,10 +291,15 @@ export const trackersService = {
   listComments: async (projectId: string, bindingId: string, resourceId: string) =>
     (
       await collectListPages(async (page) => {
-        const result = await api.get<{ comments: TrackerComment[]; nextPage: number | null }>(
+        const result = await api.get<
+          { comments: TrackerComment[]; nextPage: number | null } | TrackerComment[]
+        >(
           `/projects/${projectId}/trackers/${bindingId}/issues/${resourceId}/comments?page=${page}`,
         );
-        return { rows: result.comments, nextPage: result.nextPage };
+        // A server that predates paging answers with the bare first page.
+        return Array.isArray(result)
+          ? { rows: result }
+          : { rows: result.comments, nextPage: result.nextPage };
       })
     ).rows,
 };

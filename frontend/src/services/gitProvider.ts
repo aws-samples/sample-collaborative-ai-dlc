@@ -178,7 +178,9 @@ export interface GitProviderService {
   searchRepos?: (q: string) => Promise<GitRepo[]>;
   // Implemented only by providers whose repository list has more pages than
   // one request reads (GitHub): the picker asks for each page in turn.
-  listReposPage?: (page: number) => Promise<{ repos: GitRepo[]; nextPage: number | null }>;
+  listReposPage?: (
+    page: number,
+  ) => Promise<{ repos: GitRepo[]; nextPage: number | null } | GitRepo[]>;
   disconnect: () => Promise<unknown>;
 }
 
@@ -192,7 +194,9 @@ export const githubService: GitProviderService = {
   getStatus: () => api.get<GitProviderStatus>('/github/status'),
   listRepos: () => api.get<GitRepo[]>('/github/repos'),
   listReposPage: (page: number) =>
-    api.get<{ repos: GitRepo[]; nextPage: number | null }>(`/github/repos?page=${page}`),
+    api.get<{ repos: GitRepo[]; nextPage: number | null } | GitRepo[]>(
+      `/github/repos?page=${page}`,
+    ),
   disconnect: () => api.delete('/github/disconnect'),
 };
 

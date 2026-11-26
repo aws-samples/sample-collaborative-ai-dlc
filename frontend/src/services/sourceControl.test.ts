@@ -35,6 +35,18 @@ describe('sourceControlService.listBranches', () => {
     });
   });
 
+  it('stops after 10 pages, the first 1,000 branches', async () => {
+    get.mockImplementation(async (...args: unknown[]) => {
+      const page = Number(pageOf(String(args[0])));
+      return { branches: [`b${page}`], nextPage: page + 1 };
+    });
+
+    expect(
+      (await sourceControlService.listBranches('p1', 'github', 'acme/api')).branches,
+    ).toHaveLength(10);
+    expect(get).toHaveBeenCalledTimes(10);
+  });
+
   it('fails when page 1 fails', async () => {
     get.mockRejectedValueOnce(new Error('Source-control provider operation failed'));
 
