@@ -142,4 +142,15 @@ describe('source-control list pages', () => {
     const res = await handler(operate('branches', {}));
     expect(res.result).toEqual({ branches: ['b1', 'b2'], defaultBranch: 'main' });
   });
+
+  it.each(['0', 'abc'])('refuses page=%s without calling GitHub', async (page) => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    expect(await handler(operate('branches', { page }))).toMatchObject({ ok: false });
+    expect(await handler(operate('list-issue-comments', { number: 7, page }))).toMatchObject({
+      ok: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });

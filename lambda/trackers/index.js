@@ -1063,6 +1063,17 @@ export const handler = async (event, context) => {
             ),
           );
         }
+        // An unpaged request (an older client) gets the first page, as before
+        // paging, rather than a whole discussion read behind the timeout.
+        if (provider.getIssueDiscussionPage) {
+          const first = await provider.getIssueDiscussionPage(
+            ctx,
+            binding.externalProjectKey,
+            resourceId,
+            1,
+          );
+          return response(200, first.comments);
+        }
         const comments = await provider.getIssueDiscussion(
           ctx,
           binding.externalProjectKey,

@@ -753,15 +753,16 @@ describe('/projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
     ...overrides,
   });
 
-  it('returns comments through the project source-control service', async () => {
-    lambdaMock
-      .on(InvokeCommand)
-      .resolves(
-        sourceControlResponse([
+  it('returns the first page of comments to a client that does not page', async () => {
+    lambdaMock.on(InvokeCommand).resolves(
+      sourceControlResponse({
+        comments: [
           trackerCommentFixture({ id: '1' }),
           trackerCommentFixture({ id: '2', body: 'Another point.' }),
-        ]),
-      );
+        ],
+        nextPage: 2,
+      }),
+    );
 
     const res = await handler(commentsEvent());
 
@@ -773,9 +774,11 @@ describe('/projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
       author: { handle: 'octocat' },
       body: 'I think we should also handle X.',
     });
+    // One provider page, not the whole discussion behind the request timeout.
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
     expect(sourceControlRequest()).toMatchObject({
       operation: 'list-issue-comments',
-      args: { number: '42' },
+      args: { number: '42', page: 1 },
     });
   });
 
@@ -901,7 +904,9 @@ describe('Legacy github-issues binding (#194)', () => {
 
   it('GET .../legacy-github/issues/{rid}/comments works', async () => {
     const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
-    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse([trackerCommentFixture()]));
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(sourceControlResponse({ comments: [trackerCommentFixture()], nextPage: null }));
 
     const res = await handler({
       httpMethod: 'GET',
