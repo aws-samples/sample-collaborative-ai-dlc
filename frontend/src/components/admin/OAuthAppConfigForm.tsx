@@ -13,19 +13,12 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  BookOpen,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  RefreshCw,
-  ShieldCheck,
-} from 'lucide-react';
+import { CheckCircle2, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
 import { trackersService } from '@/services/trackers';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import { appOrigin } from '@/lib/appOrigin';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { SetupGuideToggle } from '@/components/admin/SetupGuideToggle';
 
 interface Props {
   /** Tracker-provider id owning the OAuth secret slot (e.g. 'github-issues'). */
@@ -166,51 +159,34 @@ export function OAuthAppConfigForm({ providerId, configured, onSaved }: Props) {
       </div>
 
       {guide && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setGuideOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        <SetupGuideToggle open={guideOpen} onOpenChange={setGuideOpen}>
+          <a
+            href={guide.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
           >
-            <BookOpen className="h-3.5 w-3.5" />
-            Setup guide
-            {guideOpen ? (
-              <ChevronUp className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5" />
-            )}
-          </button>
-          {guideOpen && (
-            <div className="mt-2 space-y-3 rounded-lg bg-muted/40 p-3.5 text-xs text-muted-foreground">
-              <a
-                href={guide.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
-              >
-                Open {guide.label} <ExternalLink className="h-3 w-3" />
-              </a>
-              <ol className="list-decimal list-inside space-y-1 leading-relaxed">
-                {guide.steps.map((step, i) => (
-                  <li key={i}>{step}</li>
-                ))}
-              </ol>
-              {guide.scopeNote && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                  Note: {guide.scopeNote}
-                </p>
-              )}
-              {callbackUrl && (
-                <div className="space-y-1">
-                  <p className="font-medium text-foreground">Authorization callback URL</p>
-                  <code className="block break-all rounded-md border bg-background px-2 py-1.5 font-mono text-[11px]">
-                    {callbackUrl}
-                  </code>
-                </div>
-              )}
+            Open {guide.label} <ExternalLink className="h-3 w-3" />
+          </a>
+          <ol className="list-decimal list-inside space-y-1 leading-relaxed">
+            {guide.steps.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+          {guide.scopeNote && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              Note: {guide.scopeNote}
+            </p>
+          )}
+          {callbackUrl && (
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Authorization callback URL</p>
+              <code className="block break-all rounded-md border bg-background px-2 py-1.5 font-mono text-[11px]">
+                {callbackUrl}
+              </code>
             </div>
           )}
-        </div>
+        </SetupGuideToggle>
       )}
     </div>
   );

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  gitBranchWebUrl,
   isGitProvider,
   isOAuthGitProvider,
   parseCodeCommitRepo,
@@ -50,6 +51,13 @@ describe('repoWebUrl', () => {
     );
     expect(repoWebUrl('bitbucket', 'ws/slug', { branch: 'main' })).toBe(
       'https://bitbucket.org/ws/slug/src/main',
+    );
+  });
+  it('keeps nested GitLab links on the selected host', () => {
+    const repo = 'gitlab:git.example.com/team/sub/repo';
+    expect(repoWebUrl('gitlab', repo)).toBe('https://git.example.com/team/sub/repo');
+    expect(gitBranchWebUrl('gitlab', repo, 'feature/new item')).toBe(
+      'https://git.example.com/team/sub/repo/-/tree/feature/new%20item',
     );
   });
   it('points a CodeCommit ARN at the regional console', () => {

@@ -7,6 +7,7 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 
+import { parseGitlabRepo } from './gitlab-instance.js';
 import { canonicalCodeCommitRepo } from './git-providers/codecommit-repo.js';
 
 const CREDENTIAL_REF_INDEX = 'CredentialRefIndex';
@@ -58,6 +59,11 @@ const canonicalRepo = (provider, value) => {
       .replace(/^https?:\/\/[^/]+\//i, '')
       .replace(/\.git$/i, ''),
   );
+  if (provider === 'gitlab' && raw.toLowerCase().startsWith('gitlab:')) {
+    // Host-qualified identifiers are only valid in their explicit wire form.
+    if (!parseGitlabRepo(value).instance)
+      throw new Error('Invalid self-managed GitLab repository reference');
+  }
   const parts = raw.split('/');
   if (parts.length < 2 || parts.some((part) => !part)) {
     throw new Error(`Invalid ${provider} repository reference`);
@@ -70,7 +76,8 @@ const bindingKeyFor = (provider, repo) => `${provider}#${canonicalRepo(provider,
 const credentialBindingKeyFor = (projectId, provider, repo) =>
   `${projectId}#${provider}#${canonicalRepo(provider, repo)}`;
 
-const oauthCredentialRef = (provider, userId) => `oauth#${provider}#${userId}`;
+const oauthCredentialRef = (provider, userId, instance) =>
+  `oauth#${provider}#${userId}${instance ? `#${instance}` : ''}`;
 const appCredentialRef = (installationId) => `github-app#${installationId}`;
 // The credential is the (tenant role, external ID) pair: STS accepts or refuses
 // the pair, not the role, and the external ID is per user. A refusal fans out
@@ -311,6 +318,8 @@ const KNOWN_ERROR_CODES = Object.freeze([
   'EXECUTION_NOT_ACTIVE',
   'EXECUTION_NOT_FOUND',
   'EXTERNAL_ID_NOT_OWNED',
+  'GITLAB_INTERACTIVE_LOGIN',
+  'GITLAB_UNREACHABLE',
   'INSUFFICIENT_REPOSITORY_ACCESS',
   'INVALID_REQUEST',
   'MERGE_STATUS_UNKNOWN',

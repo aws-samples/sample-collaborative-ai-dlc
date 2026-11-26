@@ -16,6 +16,17 @@ describe('repoCheckoutPath', () => {
       'codecommit/aws-cn/cn-north-1/123456789012/svc.api',
     );
   });
+  it('isolates the same subgroup path on public and private GitLab instances', () => {
+    const repo = 'group/sub/repo';
+    const privateRepo = `gitlab:git.example.org:8443/${repo}`;
+    expect(repoCheckoutPath(privateRepo)).toBe(`gitlab/git.example.org_8443/${repo}`);
+    expect(isValidRepoPath(privateRepo)).toBe(true);
+    expect(
+      findCheckoutPathCollision([repo, privateRepo, `gitlab:git.example.org/${repo}`]),
+    ).toBeNull();
+    expect(isValidRepoPath('gitlab:git.example.org/group/../repo')).toBe(false);
+    expect(isValidRepoPath('gitlab:git.example.org:99999/group/repo')).toBe(false);
+  });
   it('leaves path ids untouched', () => {
     expect(repoCheckoutPath('octo/hello')).toBe('octo/hello');
     expect(repoCheckoutPath('group/sub/project')).toBe('group/sub/project');

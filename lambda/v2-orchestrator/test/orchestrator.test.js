@@ -4169,6 +4169,24 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(deps.openPr.mock.calls[0][0].body.trim().endsWith('Closes #42')).toBe(true);
   });
 
+  it.each([
+    ['git.example.org', 'Closes #42'],
+    ['gitlab.com', 'Related issue: [#42](https://gitlab.com/group/web/-/issues/42)'],
+  ])('references an issue on %s from a self-managed merge request', async (host, reference) => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      repos: ['gitlab:git.example.org/group/web'],
+      gitProvider: 'gitlab',
+      source: {
+        provider: 'gitlab-issues',
+        resourceId: '42',
+        resourceUrl: `https://${host}/group/web/-/issues/42`,
+      },
+    }));
+    await start();
+    expect(deps.openPr.mock.calls[0][0].body.trim().endsWith(reference)).toBe(true);
+  });
+
   it('links Jira tasks without claiming the PR will close them', async () => {
     deps.store.getExecution = vi.fn(async () => ({
       ...META,

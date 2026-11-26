@@ -33,7 +33,9 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
       return;
     }
 
-    fetch(`${API_BASE_URL}${meta.callbackPath}?code=${code}&state=${state}`)
+    fetch(
+      `${API_BASE_URL}${meta.callbackPath}?${new URLSearchParams({ code, state: state ?? '' })}`,
+    )
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
@@ -53,10 +55,10 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
                 : trackerProviderId === 'bitbucket-issues'
                   ? 'bitbucket'
                   : 'github';
-            setTimeout(
-              () => navigate(`/dashboard?reopenCreateSpace=1&gitProvider=${gitProvider}`),
-              1500,
-            );
+            const query = new URLSearchParams({ reopenCreateSpace: '1', gitProvider });
+            if (gitProvider === 'gitlab' && data.instance)
+              query.set('gitlabInstance', data.instance);
+            setTimeout(() => navigate(`/dashboard?${query}`), 1500);
           }
         } else {
           setStatus('error');

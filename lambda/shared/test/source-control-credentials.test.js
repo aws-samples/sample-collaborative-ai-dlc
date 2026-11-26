@@ -231,6 +231,7 @@ describe('resolveBindingCredential GitLab 401 retry support', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    getProvider.mockReset();
     getGitConnection.mockResolvedValue({
       userId: 'u1',
       provider: 'gitlab',
@@ -238,6 +239,24 @@ describe('resolveBindingCredential GitLab 401 retry support', () => {
       scope: 'api read_user',
     });
     ensureFreshGitToken.mockResolvedValue('gl-token');
+  });
+
+  it('requires the delegated credential reference for the repository host', async () => {
+    const instance = 'git.example.org';
+    vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ [instance]: 'gitlab-example' }));
+    try {
+      const scoped = { ...binding, repo: `gitlab:${instance}/${binding.repo}` };
+      const resolve = (b) =>
+        resolveBindingCredential({ ddb: {}, ssm: {}, secrets: {}, binding: b });
+      await expect(resolve(scoped)).rejects.toMatchObject({ code: 'CONNECTION_REQUIRED' });
+      expect(ensureFreshGitToken).not.toHaveBeenCalled();
+      await expect(
+        resolve({ ...scoped, credentialRef: `oauth#gitlab#u1#${instance}` }),
+      ).resolves.toMatchObject({ token: 'gl-token' });
+      expect(getGitConnection).toHaveBeenLastCalledWith({}, 'u1', 'gitlab', instance);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('exposes a refresh callback that forces past the rejected token', async () => {

@@ -251,8 +251,10 @@ const validateProjectBindings = async ({
         binding,
         requiredAccess: 'write',
       });
-      const access = await getProvider(repo.provider).getRepositoryAccess(
+      const adapter = getProvider(repo.provider);
+      const access = await adapter.getRepositoryAccess(
         {
+          instance: adapter.instanceFor(binding.repo),
           token: credential.token,
           ...(credential.refresh ? { onRefresh: credential.refresh } : {}),
         },
@@ -440,10 +442,12 @@ const executeSourceControlOperation = async ({
     // onRefresh restores the personal git handler's 401 refresh-and-retry on
     // this project-bound path: without it a transiently-rejected GitLab token
     // (clock skew, near-expiry) invalidates the binding as provider_unauthorized.
+    const adapter = getProvider(provider);
     return await callProvider(
-      getProvider(provider),
+      adapter,
       operation,
       {
+        instance: adapter.instanceFor(binding.repo),
         token: credential.token,
         ...(credential.refresh ? { onRefresh: credential.refresh } : {}),
       },

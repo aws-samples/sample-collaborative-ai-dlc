@@ -1,3 +1,4 @@
+import { parseGitlabRepo } from '../shared/gitlab-instance.js';
 import { randomUUID } from 'node:crypto';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { buildIntentUrl } from '../shared/intent-url.js';
@@ -36,7 +37,7 @@ const branchUrlFor = (pr, fallbackBranch) => {
     if (pr.provider === 'github') {
       url.pathname = `/${pr.repoId}/tree/${encodedBranch}`;
     } else if (pr.provider === 'gitlab') {
-      url.pathname = `/${pr.repoId}/-/tree/${encodedBranch}`;
+      url.pathname = `/${parseGitlabRepo(pr.repoId).path}/-/tree/${encodedBranch}`;
     } else if (pr.provider === 'bitbucket') {
       url.pathname = `/${pr.repoId}/branch/${encodedBranch}`;
     } else {
