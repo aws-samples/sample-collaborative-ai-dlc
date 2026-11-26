@@ -90,6 +90,7 @@ module "dynamodb_kms_runtime_access" {
     agents_orchestrator  = aws_iam_role.agents_orchestrator.name
     bitbucket_connector  = aws_iam_role.bitbucket_connector.name
     blocks               = aws_iam_role.blocks.name
+    cognito_reader       = aws_iam_role.cognito_reader.name
     credential_broker    = aws_iam_role.credential_broker.name
     discussions          = aws_iam_role.discussions.name
     github_connector     = aws_iam_role.github_connector.name
@@ -440,6 +441,18 @@ resource "aws_iam_role_policy" "cognito_reader" {
           "cognito-idp:AdminRemoveUserFromGroup",
         ]
         Resource = var.cognito_user_pool_arn
+      },
+      {
+        # SSO business-role mappings: the PLATFORM/SSO#<provider> item and its
+        # audit entry are written in one transaction from the admin API.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Resource = [var.access_table_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = [var.audit_table_arn]
       }
     ]
   })
@@ -1653,9 +1666,25 @@ module "projects_lambda" {
   } : {}, local.notification_event_env, local.runtime_mcp_policy_env)
 }
 
+locals {
+  users_environment = {
+    AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
+    ACCESS_TABLE                  = var.access_table_name
+    AUDIT_TABLE                   = var.audit_table_name
+    NEPTUNE_ENDPOINT              = var.neptune_endpoint
+    SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
+    ENVIRONMENT                   = var.environment
+    CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
+    SSO_ROLE_CONFIG               = var.sso_role_config
+  }
+}
+
 # Users Lambda
 module "users_lambda" {
-  depends_on = [aws_lambda_invocation.membership_copy]
+  depends_on = [aws_lambda_invocation.membership_copy, aws_lambda_invocation.sso_claims_backfill]
 
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -1684,18 +1713,7 @@ module "users_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
-    AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
-    POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
-    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
-    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
-    ACCESS_TABLE                  = var.access_table_name
-    AUDIT_TABLE                   = var.audit_table_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
-    ENVIRONMENT                   = var.environment
-    CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
-  }
+  environment_variables = local.users_environment
 }
 
 # Sprints Lambda
@@ -2731,6 +2749,21 @@ module "discussions_lambda" {
   }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
 }
 
+locals {
+  cognito_users_environment = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    COGNITO_USER_POOL_ID        = var.cognito_user_pool_id
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    SSO_ROLE_CONFIG             = var.sso_role_config
+    ACCESS_TABLE                = var.access_table_name
+    AUDIT_TABLE                 = var.audit_table_name
+  }
+}
+
 # Cognito Users Lambda (lists users from Cognito)
 module "cognito_users_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -2761,16 +2794,7 @@ module "cognito_users_lambda" {
   vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
-  environment_variables = {
-    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
-    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
-    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
-    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
-    COGNITO_USER_POOL_ID        = var.cognito_user_pool_id
-    ENVIRONMENT                 = var.environment
-    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
-    SSO_ROLE_CONFIG             = var.sso_role_config
-  }
+  environment_variables = local.cognito_users_environment
 
   depends_on = [aws_iam_role_policy_attachment.cognito_reader_vpc]
 }

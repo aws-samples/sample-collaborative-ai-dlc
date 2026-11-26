@@ -4,9 +4,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const supportedRoles = new Set(
-  JSON.parse(readFileSync(resolve(root, 'config/platform-roles.json'), 'utf8')),
-);
+const supportedRoles = new Set([
+  ...JSON.parse(readFileSync(resolve(root, 'config/platform-roles.json'), 'utf8')),
+  ...JSON.parse(
+    readFileSync(resolve(root, 'lambda/shared/business-role-catalog.json'), 'utf8'),
+  ).map(({ id }) => id),
+]);
 const MODES = new Set(['local', 'hybrid', 'sso-only']);
 const PROVIDER_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const SECRET_ARN = /^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]+$/;
@@ -37,7 +40,7 @@ const normalizeMappings = (value, providerName) => {
       throw new Error(`${providerName}.roleMappings targets unsupported role "${role}"`);
     }
     result[role] = stringList(claims, `${providerName}.roleMappings.${role}`);
-    if (result[role].length === 0) {
+    if (role === 'platform-admin' && result[role].length === 0) {
       throw new Error(`${providerName}.roleMappings.${role} must not be empty`);
     }
   }

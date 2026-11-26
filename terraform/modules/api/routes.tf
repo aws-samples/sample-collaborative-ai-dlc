@@ -150,6 +150,12 @@ resource "aws_api_gateway_resource" "member_business_roles" {
   path_part   = "business-roles"
 }
 
+resource "aws_api_gateway_resource" "member_excluded_roles" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.member.id
+  path_part   = "excluded-roles"
+}
+
 resource "aws_api_gateway_resource" "membership_history" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.project.id
@@ -158,9 +164,10 @@ resource "aws_api_gateway_resource" "membership_history" {
 
 locals {
   business_role_routes = {
-    catalog = { resource = aws_api_gateway_resource.business_roles.id, method = "GET" }
-    update  = { resource = aws_api_gateway_resource.member_business_roles.id, method = "PUT" }
-    history = { resource = aws_api_gateway_resource.membership_history.id, method = "GET" }
+    catalog    = { resource = aws_api_gateway_resource.business_roles.id, method = "GET" }
+    update     = { resource = aws_api_gateway_resource.member_business_roles.id, method = "PUT" }
+    exclusions = { resource = aws_api_gateway_resource.member_excluded_roles.id, method = "PUT" }
+    history    = { resource = aws_api_gateway_resource.membership_history.id, method = "GET" }
   }
 }
 
@@ -4181,6 +4188,68 @@ module "cors_admin_users_platform_admin" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.admin_users_platform_admin.id
+}
+
+# /admin/sso-mappings — SSO business-role mappings (cognito-users lambda):
+# GET lists configured connections with their source attribute and saved
+# mappings; PUT on /admin/sso-mappings/{providerId} saves one connection's
+# mapping. The Lambda enforces the platform-admin gate.
+resource "aws_api_gateway_resource" "admin_sso_mappings" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin.id
+  path_part   = "sso-mappings"
+}
+
+resource "aws_api_gateway_resource" "admin_sso_mappings_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin_sso_mappings.id
+  path_part   = "{providerId}"
+}
+
+resource "aws_api_gateway_method" "admin_sso_mappings_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_sso_mappings.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_sso_mappings_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_sso_mappings.id
+  http_method             = aws_api_gateway_method.admin_sso_mappings_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.cognito_users_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_method" "admin_sso_mappings_provider_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_sso_mappings_provider.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_sso_mappings_provider_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_sso_mappings_provider.id
+  http_method             = aws_api_gateway_method.admin_sso_mappings_provider_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.cognito_users_lambda_invoke_arn
+}
+
+module "cors_admin_sso_mappings" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_sso_mappings.id
+}
+
+module "cors_admin_sso_mappings_provider" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_sso_mappings_provider.id
 }
 
 resource "aws_lambda_permission" "cognito_users" {

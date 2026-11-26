@@ -71,6 +71,12 @@ const initials = (m: { email?: string; userId: string }) => {
 const identityLabel = (user: AssignableUser) =>
   user.identitySource === 'sso' ? user.identityProvider || 'Enterprise SSO' : 'Cognito account';
 
+const sameRoles = (a: string[], b: string[]) => {
+  const sortedA = a.toSorted();
+  const sortedB = b.toSorted();
+  return sortedA.length === sortedB.length && sortedA.every((role, i) => role === sortedB[i]);
+};
+
 interface Props {
   projectId: string;
   userRole: ProjectRole | undefined;
@@ -89,6 +95,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
   const [businessRoles, setBusinessRoles] = useState<BusinessRole[]>([]);
   const [editingMember, setEditingMember] = useState<Member | null>(null);
   const [draftRoles, setDraftRoles] = useState<string[]>([]);
+  const [draftExcluded, setDraftExcluded] = useState<string[]>([]);
   const [savingRoles, setSavingRoles] = useState(false);
   const [rolesError, setRolesError] = useState<string | null>(null);
 
@@ -213,24 +220,42 @@ function MembersTabContent({ projectId, userRole }: Props) {
     }
   };
 
+  const applyUpdatedMember = (updated: Member) =>
+    setMembers((current) =>
+      current.map((member) =>
+        member.userId === updated.userId ? { ...member, ...updated } : member,
+      ),
+    );
+
   const handleSaveBusinessRoles = async () => {
     if (!editingMember || !canManageMembers || savingRoles) return;
     setSavingRoles(true);
     setRolesError(null);
+    // Local additions and SSO exclusions are separate contracts with separate
+    // audit entries, so the save issues one request per changed list.
     try {
-      const updated = await projectsService.updateMemberBusinessRoles(
-        projectId,
-        editingMember.userId,
-        draftRoles,
-      );
-      setMembers((current) =>
-        current.map((member) =>
-          member.userId === updated.userId ? { ...member, localRoles: updated.localRoles } : member,
-        ),
-      );
+      if (!sameRoles(draftRoles, editingMember.localRoles || [])) {
+        applyUpdatedMember(
+          await projectsService.updateMemberBusinessRoles(
+            projectId,
+            editingMember.userId,
+            draftRoles,
+          ),
+        );
+      }
+      if (!sameRoles(draftExcluded, editingMember.excludedRoles || [])) {
+        applyUpdatedMember(
+          await projectsService.updateMemberExcludedRoles(
+            projectId,
+            editingMember.userId,
+            draftExcluded,
+          ),
+        );
+      }
       setEditingMember(null);
     } catch (err) {
       setRolesError(err instanceof Error ? err.message : 'Failed to save business roles');
+      await load();
     } finally {
       setSavingRoles(false);
     }
@@ -325,17 +350,18 @@ function MembersTabContent({ projectId, userRole }: Props) {
                             onClick={() => {
                               setEditingMember(member);
                               setDraftRoles([...(member.localRoles || [])]);
+                              setDraftExcluded([...(member.excludedRoles || [])]);
                               setRolesError(null);
                             }}
                           >
                             <span className="flex flex-1 flex-wrap gap-1">
-                              {roleChips(member.localRoles || [])}
+                              {roleChips(member.effectiveRoles ?? member.localRoles ?? [])}
                             </span>
                             <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
                           </button>
                         ) : (
                           <div className="flex flex-wrap gap-1 rounded-md bg-muted/50 p-2">
-                            {roleChips(member.localRoles || [])}
+                            {roleChips(member.effectiveRoles ?? member.localRoles ?? [])}
                           </div>
                         )}
                       </td>
@@ -347,7 +373,10 @@ function MembersTabContent({ projectId, userRole }: Props) {
                               onValueChange={(value) => {
                                 const newRole = value as ProjectRole;
                                 if (newRole !== member.role) {
-                                  setConfirmRoleChange({ userId: member.userId, newRole });
+                                  setConfirmRoleChange({
+                                    userId: member.userId,
+                                    newRole,
+                                  });
                                 }
                               }}
                             >
@@ -431,53 +460,122 @@ function MembersTabContent({ projectId, userRole }: Props) {
               Business roles do not change Owner or Member access.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <Label htmlFor="business-role-select">Add a business role</Label>
-            <Select
-              value=""
-              disabled={savingRoles || draftRoles.length === businessRoles.length}
-              onValueChange={(id) =>
-                setDraftRoles((current) => [...new Set([...current, id])].toSorted())
-              }
-            >
-              <SelectTrigger id="business-role-select" className="bg-background">
-                <SelectValue placeholder="Select a role" />
-              </SelectTrigger>
-              <SelectContent>
-                {businessRoles
-                  .filter(({ id }) => !draftRoles.includes(id))
-                  .map(({ id, name }) => (
-                    <SelectItem key={id} value={id}>
-                      <span className="flex items-center gap-2">
-                        <BusinessRoleIcon id={id} />
-                        {name}
-                      </span>
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-            <div className="flex flex-wrap gap-2">
-              {draftRoles.length ? (
-                draftRoles.map((id) => (
-                  <Badge key={id} variant="outline" className="gap-1 bg-muted/50 font-normal">
-                    <BusinessRoleIcon id={id} />
-                    {roleName(id)}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${roleName(id)}`}
-                      className="rounded-sm p-1 hover:bg-muted"
-                      disabled={savingRoles}
-                      onClick={() =>
-                        setDraftRoles((current) => current.filter((role) => role !== id))
-                      }
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                ))
-              ) : (
-                <p className="text-xs text-muted-foreground">No business roles assigned.</p>
-              )}
+          <div className="space-y-4 py-2">
+            {/* Persisted exclusions stay editable even when the role is no longer
+                received from SSO; hiding them would leave a dormant exclusion in
+                place with no way to restore it. */}
+            {new Set([...(editingMember?.ssoRoles ?? []), ...draftExcluded]).size > 0 && (
+              <div className="space-y-2">
+                <Label>Company roles (from SSO)</Label>
+                <div className="flex flex-wrap gap-2">
+                  {[...new Set([...(editingMember?.ssoRoles ?? []), ...draftExcluded])]
+                    .toSorted()
+                    .map((id) => {
+                      const excluded = draftExcluded.includes(id);
+                      const inherited = (editingMember?.ssoRoles ?? []).includes(id);
+                      return (
+                        <Badge
+                          key={id}
+                          variant="outline"
+                          className={`gap-1 font-normal ${excluded ? 'bg-muted/30 text-muted-foreground line-through' : 'bg-muted/50'}`}
+                        >
+                          <BusinessRoleIcon id={id} />
+                          {roleName(id)}
+                          {!inherited && (
+                            <span className="text-[10px] no-underline">
+                              (not currently received)
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            aria-label={
+                              excluded ? `Restore ${roleName(id)}` : `Exclude ${roleName(id)}`
+                            }
+                            className="rounded-sm px-1 py-0.5 text-[10px] font-medium no-underline hover:bg-muted"
+                            disabled={savingRoles}
+                            onClick={() =>
+                              setDraftExcluded((current) =>
+                                excluded
+                                  ? current.filter((role) => role !== id)
+                                  : [...current, id].toSorted(),
+                              )
+                            }
+                          >
+                            {excluded ? 'Restore' : 'Exclude'}
+                          </button>
+                        </Badge>
+                      );
+                    })}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Excluding an inherited role applies to this space only. The company groups and the
+                  central mapping stay the same.
+                </p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="business-role-select">Roles added in this space</Label>
+              <Select
+                value=""
+                disabled={savingRoles || draftRoles.length === businessRoles.length}
+                onValueChange={(id) =>
+                  setDraftRoles((current) => [...new Set([...current, id])].toSorted())
+                }
+              >
+                <SelectTrigger id="business-role-select" className="bg-background">
+                  <SelectValue placeholder="Select a role" />
+                </SelectTrigger>
+                <SelectContent>
+                  {businessRoles
+                    .filter(({ id }) => !draftRoles.includes(id))
+                    .map(({ id, name }) => (
+                      <SelectItem key={id} value={id}>
+                        <span className="flex items-center gap-2">
+                          <BusinessRoleIcon id={id} />
+                          {name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <div className="flex flex-wrap gap-2">
+                {draftRoles.length ? (
+                  draftRoles.map((id) => (
+                    <Badge key={id} variant="outline" className="gap-1 bg-muted/50 font-normal">
+                      <BusinessRoleIcon id={id} />
+                      {roleName(id)}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${roleName(id)}`}
+                        className="rounded-sm p-1 hover:bg-muted"
+                        disabled={savingRoles}
+                        onClick={() =>
+                          setDraftRoles((current) => current.filter((role) => role !== id))
+                        }
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">No roles added in this space.</p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Roles in this space</Label>
+              <div className="flex flex-wrap gap-1 rounded-md bg-muted/50 p-2">
+                {roleChips(
+                  [
+                    ...new Set([
+                      ...(editingMember?.ssoRoles ?? []).filter(
+                        (id) => !draftExcluded.includes(id),
+                      ),
+                      ...draftRoles,
+                    ]),
+                  ].toSorted(),
+                )}
+              </div>
             </div>
             {rolesError && (
               <p role="alert" className="text-sm text-destructive">

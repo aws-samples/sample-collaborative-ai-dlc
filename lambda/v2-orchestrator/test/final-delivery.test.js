@@ -142,6 +142,50 @@ const completeParallelWork = async ({ partial = false } = {}) => {
 };
 
 describe('final delivery with real DynamoDB ownership', () => {
+  it('preserves a legacy closed pull request while checking the other repository', async () => {
+    const records = await store.getExecutionRecords(meta.executionId);
+    const pr = {
+      repoId: 'owner/api',
+      branch: meta.branch,
+      prUrl: 'https://example.test/pull/8',
+      prNumber: 8,
+    };
+    records.trackerSync = {
+      state: 'BLOCKED',
+      pullRequests: [pr],
+      lastError: { code: 'PR_CLOSED_WITHOUT_MERGE' },
+    };
+    const args = { meta, records, plan: workflowPlan, operation };
+    const checked = await previewDelivery(args);
+    expect(checked.delivery.repositories).toMatchObject([
+      { status: 'succeeded', prState: 'closed', pr },
+      { status: 'pending' },
+    ]);
+    expect(operation.mock.calls.map(([call]) => call.repo)).toEqual(['owner/web']);
+    const conflicting = await previewDelivery({
+      ...args,
+      graphPrs: [
+        { ...pr, repository: pr.repoId, prUrl: 'https://example.test/pull/9', prNumber: 9 },
+      ],
+    });
+    expect(conflicting.delivery.repositories[0]).toMatchObject({
+      status: 'uncertain',
+      retryable: false,
+    });
+    records.trackerSync.pullRequests.push({
+      ...pr,
+      repoId: 'owner/web',
+      prUrl: 'https://example.test/web/pull/2',
+    });
+    const multiple = await previewDelivery(args);
+    expect(
+      multiple.delivery.repositories.every((repo) => repo.status === 'succeeded' && !repo.prState),
+    ).toBe(true);
+    records.meta.rewindFromStageId = 'build';
+    const rewound = await previewDelivery(args);
+    expect(rewound.delivery.repositories.every((repo) => repo.status === 'pending')).toBe(true);
+  });
+
   it.each(['start', 'retry-delivery'])(
     'publishes pre-deploy multi-repo MERGED rows through %s without rebuilding units',
     async (action) => {
@@ -357,7 +401,7 @@ describe('final delivery with real DynamoDB ownership', () => {
     expect(createCalls().map((c) => c.repo)).toEqual(['owner/web']);
     const [api, web] = (await row()).repositories;
     expect(api).toMatchObject({ status: 'failed', retryable: true });
-    expect(api.reason).toContain('delivery record could not be saved');
+    expect(api.reason).toContain('pull request details could not be saved');
     expect(api.reason).not.toContain('socket hang up');
     expect(api.createRequestedAt).toBeUndefined();
     expect(web).toMatchObject({ status: 'succeeded', createRequestedAt: expect.any(String) });

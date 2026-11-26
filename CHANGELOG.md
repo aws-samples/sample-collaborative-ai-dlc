@@ -16,6 +16,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The managed tool catalog offers Go 1.27.4 instead of Go 1.24.6, which is no longer supported upstream and whose toolchain (`stdlib`, `golang.org/x/crypto`, `golang.org/x/mod`) has Critical and High vulnerabilities fixed in later releases. Existing deployments get the new version created and built by the next catalog bootstrap. Publishing and recommending it stay manual, and the 1.24.6 version is left as it is: an installation that recommends 1.24.6 keeps doing so until an admin recommends 1.27.4.
 
+## [2.4.1] - 2026-11-24
+
+Hotfix for fresh installations of 2.4.0 ([#844](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/844)).
+
+### Fixed
+
+- A fresh installation no longer fails at the membership copy with `connect ECONNREFUSED …:8182`. The copy, added in 2.4.0, could run before the Neptune writer instance served the cluster endpoint. Everything that uses the endpoint now waits for the instance ([#844](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/844)).
+
+### Notes
+
+- **Upgrade from v2.4.0.** No Terraform change is planned for an existing installation: its Neptune instance already exists.
+- Patch releases are now published from release line branches such as `release/2.4.x`; see `RELEASING.md` ([#845](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/845)).
+
 ## [2.4.0] - 2026-11-20
 
 ### Added

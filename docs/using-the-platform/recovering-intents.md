@@ -46,6 +46,8 @@ platform does not automatically switch credential scopes or providers.
 MCP definitions, repositories and model selections are separate intent snapshots.
 Rotating a secret does not refresh those configurations.
 
+A finished run can show **Completion unverified** beside its title. Hover over the badge or focus it with the keyboard to see why. **Incomplete work** identifies unfinished units. When the **Units** card is present, its summary lists unfinished work or counts units skipped by decision.
+
 ## Recover the execution
 
 | Symptom                                                                            | Recovery                                                                                                                                                                                                                                 |

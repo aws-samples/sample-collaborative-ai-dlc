@@ -16,6 +16,9 @@ output "cluster_resource_id" {
 output "cluster_endpoint" {
   description = "Neptune cluster endpoint"
   value       = aws_neptune_cluster.main.endpoint
+  # The cluster endpoint exists before any instance serves it. Apply-time
+  # invocations (the membership copy) must not reach it before the writer does.
+  depends_on = [aws_neptune_cluster_instance.main]
 }
 
 output "cluster_reader_endpoint" {

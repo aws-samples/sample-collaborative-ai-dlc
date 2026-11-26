@@ -151,7 +151,14 @@ export interface Member {
   userId: string;
   email?: string;
   role: ProjectRole;
+  /** Business roles assigned in this space. */
   localRoles?: string[];
+  /** Business roles inherited through SSO from the central mapping. */
+  ssoRoles?: string[];
+  /** Inherited SSO roles a Space Owner excluded in this space. */
+  excludedRoles?: string[];
+  /** (ssoRoles − excludedRoles) + localRoles, deduplicated. */
+  effectiveRoles?: string[];
 }
 
 export interface BusinessRole {
@@ -212,7 +219,9 @@ export const projectsService = {
   getEnvironment: (id: string) =>
     api.get<ProjectEnvironmentAssignment>(`/projects/${id}/environment`),
   assignEnvironment: (id: string, environmentId: string) =>
-    api.put<ProjectEnvironmentAssignment>(`/projects/${id}/environment`, { environmentId }),
+    api.put<ProjectEnvironmentAssignment>(`/projects/${id}/environment`, {
+      environmentId,
+    }),
 
   // Repos
   listRepos: (projectId: string) => api.get<ProjectRepo[]>(`/projects/${projectId}/repos`),
@@ -226,7 +235,13 @@ export const projectsService = {
   listBusinessRoles: (projectId: string) =>
     api.get<BusinessRole[]>(`/projects/${projectId}/business-roles`),
   updateMemberBusinessRoles: (projectId: string, userId: string, localRoles: string[]) =>
-    api.put<Member>(`/projects/${projectId}/members/${userId}/business-roles`, { localRoles }),
+    api.put<Member>(`/projects/${projectId}/members/${userId}/business-roles`, {
+      localRoles,
+    }),
+  updateMemberExcludedRoles: (projectId: string, userId: string, excludedRoles: string[]) =>
+    api.put<Member>(`/projects/${projectId}/members/${userId}/excluded-roles`, {
+      excludedRoles,
+    }),
   addMember: (projectId: string, input: AddMemberInput) =>
     api.post<Member>(`/projects/${projectId}/members`, input),
   updateMemberRole: (projectId: string, userId: string, role: ProjectRole) =>

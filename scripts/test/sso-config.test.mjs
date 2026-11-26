@@ -48,7 +48,12 @@ test('normalizes multiple OIDC providers and known role mappings', () => {
           clientId: 'client-id',
           clientSecretArn: secretArn,
           claims: { email: 'email', name: 'name', roles: 'roles' },
-          roleMappings: { 'platform-admin': ['AI-DLC.Admin'] },
+          roleMappings: {
+            'platform-admin': ['AI-DLC.Admin'],
+            developer: ['Engineering', 'Engineering', 'Contractors'],
+            architect: ['Engineering'],
+            'qa-tester': [],
+          },
           requiredClaimValues: ['AI-DLC.User'],
         },
         {
@@ -69,6 +74,9 @@ test('normalizes multiple OIDC providers and known role mappings', () => {
   assert.equal(normalized.Entra.issuer_url, 'https://login.microsoftonline.com/example/v2.0');
   assert.deepEqual(normalized.Entra.role_mappings, {
     'platform-admin': ['AI-DLC.Admin'],
+    developer: ['Engineering', 'Contractors'],
+    architect: ['Engineering'],
+    'qa-tester': [],
   });
   assert.deepEqual(normalized.Okta.scopes, ['openid', 'email', 'profile']);
 });

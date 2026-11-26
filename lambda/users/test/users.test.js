@@ -5,6 +5,29 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { membershipStore } from '../../shared/space-membership.js';
 import { seedMembership } from '../../../test/seed-membership.js';
 
+const SSO_CONFIG = JSON.stringify({
+  providers: {
+    Entra: {
+      roleMappings: {},
+      requiredClaimValues: [],
+      roleClaim: 'groups',
+      displayName: 'Entra ID',
+    },
+  },
+});
+
+// The claims the sign-in trigger records for a federated member.
+const recordSignIn = (subject, claimValues, providerName = 'Entra', sourceAttribute = 'groups') =>
+  membershipStore.recordSsoClaims({ subject, providerName, sourceAttribute, claimValues });
+
+const saveEntraMappings = async (roleMappings) =>
+  membershipStore.saveRoleMappings({
+    providerId: 'Entra',
+    actorId: 'admin',
+    roleMappings,
+    expectedRevision: (await membershipStore.getRoleMappingRecord('Entra')).revision,
+  });
+
 const cleanup = vi.hoisted(() => ({ trackers: vi.fn(), sourceControl: vi.fn() }));
 vi.mock('../../shared/tracker-binding-delegation.js', () => ({
   invalidateTrackerBindingsByDelegator: cleanup.trackers,
@@ -47,6 +70,8 @@ beforeEach(async () => {
   await seedMembership(projectId, 'owner');
   cleanup.trackers.mockReset().mockResolvedValue(undefined);
   cleanup.sourceControl.mockReset().mockResolvedValue(undefined);
+  vi.stubEnv('COGNITO_USER_POOL_ID', 'eu-central-1_testpool');
+  vi.stubEnv('SSO_ROLE_CONFIG', '{}');
 });
 const request = (method, { actor = 'owner', userId, data, query, route = 'members' } = {}) =>
   handler({
@@ -267,5 +292,237 @@ describe('space member API', () => {
     expect(
       (await request('GET', { query: { paged: '1', nextToken: first.nextToken } })).statusCode,
     ).toBe(400);
+  });
+
+  it('keeps local sign-in behavior without SSO and never reads recorded claims', async () => {
+    const claims = vi.spyOn(membershipStore, 'getSsoClaims');
+    await seedMembership(projectId, 'member', 'member');
+    await request('PUT', {
+      route: 'members/member/business-roles',
+      userId: 'member',
+      data: { localRoles: ['developer'] },
+    });
+    const members = JSON.parse((await request('GET')).body);
+    expect(members.find((m) => m.userId === 'member')).toMatchObject({
+      ssoRoles: [],
+      excludedRoles: [],
+      localRoles: ['developer'],
+      effectiveRoles: ['developer'],
+    });
+    expect(claims).not.toHaveBeenCalled();
+    // Without SSO there is nothing inherited, so new exclusions are rejected.
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/excluded-roles',
+          userId: 'member',
+          data: { excludedRoles: ['developer'] },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it.each(['ui', 'terraform'])(
+    'computes per-space SSO roles from %s with independent exclusions',
+    async (source) => {
+      const config = JSON.parse(SSO_CONFIG);
+      if (source === 'terraform') {
+        config.providers.Entra.roleMappings = { developer: ['Engineering'] };
+      }
+      vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+      await saveEntraMappings({
+        ...(source === 'ui' ? { developer: ['Engineering'] } : {}),
+        architect: ['Engineering', 'Architects'],
+      });
+      await recordSignIn('alice', ['Engineering']);
+      await seedMembership(projectId, 'alice', 'member');
+      const listed = JSON.parse((await request('GET')).body).find((m) => m.userId === 'alice');
+      expect(listed).toMatchObject({
+        ssoRoles: ['architect', 'developer'],
+        excludedRoles: [],
+        effectiveRoles: ['architect', 'developer'],
+      });
+      const spaceA = JSON.parse(
+        (
+          await request('PUT', {
+            route: 'members/alice/excluded-roles',
+            userId: 'alice',
+            data: { excludedRoles: ['developer'] },
+          })
+        ).body,
+      );
+      expect(spaceA).toMatchObject({
+        excludedRoles: ['developer'],
+        effectiveRoles: ['architect'],
+      });
+      // Space B excludes Architect instead; Space A's exclusion is untouched.
+      const spaceAId = projectId;
+      projectId = randomUUID();
+      await g.addV('Project').property('id', projectId).next();
+      await seedMembership(projectId, 'owner');
+      await seedMembership(projectId, 'alice', 'member');
+      const spaceB = JSON.parse(
+        (
+          await request('PUT', {
+            route: 'members/alice/excluded-roles',
+            userId: 'alice',
+            data: { excludedRoles: ['architect'] },
+          })
+        ).body,
+      );
+      expect(spaceB).toMatchObject({ effectiveRoles: ['developer'] });
+      expect((await membershipStore.get(spaceAId, 'alice')).excludedRoles).toEqual(['developer']);
+    },
+  );
+
+  it('keeps a local assignment active when the same SSO role is excluded, then removes it independently', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    await saveEntraMappings({ developer: ['Engineering'] });
+    await recordSignIn('leo', ['Engineering']);
+    await seedMembership(projectId, 'leo', 'member');
+    await request('PUT', {
+      route: 'members/leo/business-roles',
+      userId: 'leo',
+      data: { localRoles: ['developer'] },
+    });
+    const excluded = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/leo/excluded-roles',
+          userId: 'leo',
+          data: { excludedRoles: ['developer'] },
+        })
+      ).body,
+    );
+    expect(excluded).toMatchObject({
+      localRoles: ['developer'],
+      excludedRoles: ['developer'],
+      effectiveRoles: ['developer'],
+    });
+    const removedLocal = JSON.parse(
+      (
+        await request('PUT', {
+          route: 'members/leo/business-roles',
+          userId: 'leo',
+          data: { localRoles: [] },
+        })
+      ).body,
+    );
+    expect(removedLocal).toMatchObject({
+      localRoles: [],
+      excludedRoles: ['developer'],
+      effectiveRoles: [],
+    });
+  });
+
+  it('derives SSO roles from the recorded claims with the current mapping and access gate', async () => {
+    const config = JSON.parse(SSO_CONFIG);
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const [recorded, unrecorded] = [randomUUID(), randomUUID()];
+    await recordSignIn(recorded, ['Engineering', 'aidlc-user']);
+    await seedMembership(projectId, recorded, 'member');
+    await seedMembership(projectId, unrecorded, 'member');
+    const roles = async () =>
+      Object.fromEntries(
+        JSON.parse((await request('GET')).body).map((m) => [m.userId, m.ssoRoles]),
+      );
+    // A mapping saved after the sign-in applies without a new sign-in.
+    await saveEntraMappings({ developer: ['Engineering'] });
+    expect(await roles()).toMatchObject({ [recorded]: ['developer'], [unrecorded]: [] });
+    // Admission follows the current configuration, as at sign-in.
+    config.providers.Entra.requiredClaimValues = ['aidlc-admin'];
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect((await roles())[recorded]).toEqual([]);
+  });
+
+  it('never reads recorded values under another or a removed source attribute', async () => {
+    const config = JSON.parse(SSO_CONFIG);
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    const member = randomUUID();
+    await recordSignIn(member, ['Engineering']);
+    await seedMembership(projectId, member, 'member');
+    await saveEntraMappings({ developer: ['Engineering'] });
+    const roles = async () =>
+      JSON.parse((await request('GET')).body).find((m) => m.userId === member).ssoRoles;
+    expect(await roles()).toEqual(['developer']);
+    // Same value, new source: the old group strings are not reinterpreted.
+    config.providers.Entra.roleClaim = 'roles';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect(await roles()).toEqual([]);
+    // No source: saved UI additions no longer grant anything.
+    config.providers.Entra.roleClaim = '';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    expect(await roles()).toEqual([]);
+    // A sign-in under the new source applies the mappings again.
+    config.providers.Entra.roleClaim = 'roles';
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify(config));
+    await recordSignIn(member, ['Engineering'], 'Entra', 'roles');
+    expect(await roles()).toEqual(['developer']);
+  });
+
+  it('denies exclusion changes to Members and outsiders and rejects non-inherited roles', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    await recordSignIn('member', ['Quality']);
+    await seedMembership(projectId, 'member', 'member');
+    for (const actor of ['member', 'outsider']) {
+      expect(
+        (
+          await request('PUT', {
+            actor,
+            route: 'members/member/excluded-roles',
+            userId: 'member',
+            data: { excludedRoles: [] },
+          })
+        ).statusCode,
+      ).toBe(403);
+    }
+    // 'Quality' maps to nothing, so no role is inherited and the exclusion fails.
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/excluded-roles',
+          userId: 'member',
+          data: { excludedRoles: ['qa-tester'] },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (await request('GET', { route: 'members/member/excluded-roles', userId: 'member' }))
+        .statusCode,
+    ).toBe(405);
+  });
+
+  it('fails member reads when claim or mapping lookups fail instead of returning empty roles', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    const claims = vi
+      .spyOn(membershipStore, 'getSsoClaims')
+      .mockRejectedValue(new Error('Unavailable'));
+    expect((await request('GET')).statusCode).toBe(500);
+    claims.mockRestore();
+    await recordSignIn('owner', ['Engineering']);
+    vi.spyOn(membershipStore, 'getRoleMappings').mockRejectedValue(new Error('Unavailable'));
+    expect((await request('GET')).statusCode).toBe(500);
+  });
+
+  it('does not commit a local-role change when the claim lookup fails', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', SSO_CONFIG);
+    vi.spyOn(membershipStore, 'getSsoClaims').mockRejectedValue(new Error('Unavailable'));
+    await seedMembership(projectId, 'member', 'member');
+    expect(
+      (
+        await request('PUT', {
+          route: 'members/member/business-roles',
+          userId: 'member',
+          data: { localRoles: ['developer'] },
+        })
+      ).statusCode,
+    ).toBe(500);
+    // The reported failure means nothing changed: roles and history are intact.
+    expect((await membershipStore.get(projectId, 'member')).localRoles).toBeUndefined();
+    expect(
+      (await membershipStore.listHistory(projectId)).items.filter(
+        (entry) => entry.action === 'local-roles-changed',
+      ),
+    ).toHaveLength(0);
   });
 });

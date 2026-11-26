@@ -1718,13 +1718,13 @@ describe('IntentView', () => {
     expect(await screen.findByText('Work products')).toBeInTheDocument();
     await userEvent.click(screen.getByText('Code'));
     expect(screen.getByText('owner/repo')).toBeInTheDocument();
-    expect(screen.queryByText('PR #9')).not.toBeInTheDocument();
+    expect(screen.getAllByText('PR #9')).toHaveLength(1);
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.getByText('main')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /open pr/i });
+    const link = screen.getByRole('link', { name: /^PR\b/i });
     expect(link).toHaveAttribute('href', 'https://github.com/owner/repo/pull/9');
-    expect(link).toHaveTextContent('Open PR #9');
+    expect(link).toHaveTextContent('PR #9');
   });
 
   it('shows the branch (name + link, no base) once code is pushed, before any PR', async () => {
@@ -1739,7 +1739,7 @@ describe('IntentView', () => {
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.queryByText(/PR #/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /open pr/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^PR\b/i })).not.toBeInTheDocument();
     expect(screen.queryByText('main')).not.toBeInTheDocument();
   });
 
@@ -2498,10 +2498,12 @@ describe('terminal completion diagnostics without terminal recovery', () => {
   it.each(['incomplete', 'unknown', 'partial'] as const)(
     'shows %s evidence without offering preservation recovery',
     async (state) => {
+      graph.mockResolvedValue({ nodes: [], edges: [] });
       get.mockResolvedValue({
         ...baseDetail({ status: 'SUCCEEDED' }),
         unitCompletion: {
           state,
+          reason: state === 'unknown' ? 'unit_plan_missing' : null,
           total: 2,
           integrated: 1,
           skipped: state === 'partial' ? 1 : 0,
@@ -2532,6 +2534,13 @@ describe('terminal completion diagnostics without terminal recovery', () => {
       expect(
         screen.queryByRole('button', { name: /Preview recovery|Confirm and continue/ }),
       ).not.toBeInTheDocument();
+      expect(screen.queryByText(/units verified integrated/)).toBeNull();
+      if (state === 'unknown') {
+        await userEvent.hover(screen.getByRole('button', { name: 'Completion unverified' }));
+        expect(await screen.findByRole('tooltip')).toHaveTextContent(
+          'The list of planned units is missing.',
+        );
+      }
       expect(repair).not.toHaveBeenCalled();
     },
   );

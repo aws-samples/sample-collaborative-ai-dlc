@@ -11,6 +11,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { completionExplanation } from '@/lib/completionExplanation';
 import { cn } from '@/lib/utils';
 import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
@@ -19,6 +20,7 @@ import type { PhaseNode } from '@/services/workflows';
 import {
   intentsService,
   type IntentFeedbackBatch,
+  type IntentDetail,
   type IntentUnit,
   type IntentUnitPlan,
   type IntentUnitPr,
@@ -180,6 +182,7 @@ interface UnitCardProps {
   /** Open this lane's full output in the sidebar (only when building). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
   onAddressFeedback?: (unit: IntentUnit) => void;
+  completionNote?: string;
   laneWait?: LaneWaitStatus | null;
 }
 
@@ -193,6 +196,7 @@ function UnitCard({
   onViewLiveOutput,
   onAddressFeedback,
   laneWait,
+  completionNote,
 }: UnitCardProps) {
   useTick((unit.state === 'RUNNING' && !laneWait) || unit.state === 'MERGING');
   const displayState: DisplayState =
@@ -259,6 +263,7 @@ function UnitCard({
           &#9203; {unit.blockedOn}
         </p>
       )}
+      {completionNote && <p className="mt-1 text-xs text-muted-foreground">{completionNote}</p>}
       {unit.integrationOwner && (
         <p className="mt-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
           Integration turn
@@ -414,6 +419,7 @@ function UnitCard({
 
 // ── Presentational board (pure — tested in isolation) ────────────────────────
 export interface UnitLaneBoardViewProps {
+  completion?: IntentDetail['unitCompletion'];
   intentBranch?: string | null;
   unitPlan: IntentUnitPlan;
   units: IntentUnit[];
@@ -431,6 +437,7 @@ export interface UnitLaneBoardViewProps {
 }
 
 export function UnitLaneBoardView({
+  completion,
   intentBranch,
   unitPlan,
   units,
@@ -492,16 +499,6 @@ export function UnitLaneBoardView({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <p className="text-xs text-muted-foreground">
-          Integrated units are on the intent branch
-          {intentBranch ? (
-            <>
-              {' '}
-              <code>{intentBranch}</code>
-            </>
-          ) : null}
-          . The final pull request is reviewed and merged separately.
-        </p>
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle className="text-sm">Units</CardTitle>
           <Badge variant="outline" className="text-[10px] text-muted-foreground">
@@ -528,6 +525,32 @@ export function UnitLaneBoardView({
             ))}
           </div>
         </div>
+        {completion?.state === 'incomplete' ? (
+          <p className="flex items-center gap-2 text-xs">
+            <TriangleAlert
+              aria-hidden
+              className="size-4 shrink-0 text-amber-600 dark:text-amber-400"
+            />
+            {completion.unresolved.length} unfinished unit
+            {completion.unresolved.length === 1 ? '' : 's'}:{' '}
+            {completion.unresolved.map((unit) => unit.slug).join(', ')}
+          </p>
+        ) : completion?.state === 'partial' ? (
+          <p className="text-xs text-muted-foreground">
+            {completion.skipped} unit{completion.skipped === 1 ? '' : 's'} skipped by decision
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Integrated units are on the intent branch
+            {intentBranch ? (
+              <>
+                {' '}
+                <code>{intentBranch}</code>
+              </>
+            ) : null}
+            . The final pull request is reviewed and merged separately.
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         {/* Horizontal scroll so many waves (or narrow/mobile widths) keep each
@@ -568,10 +591,19 @@ export function UnitLaneBoardView({
                             const key = unitLaneKey(sectionIndex, slug);
                             const unit = unitByLane.get(key);
                             if (!unit) return null;
+                            const unresolved = completion?.unresolved.find(
+                              (entry) => entry.sectionIndex === sectionIndex && entry.slug === slug,
+                            );
+
                             return (
                               <UnitCard
                                 key={key}
                                 unit={unit}
+                                completionNote={
+                                  unresolved && unresolved.reason !== 'unit_unfinished'
+                                    ? completionExplanation(unresolved.reason)
+                                    : undefined
+                                }
                                 prs={unitPrs.filter(
                                   (pr) =>
                                     pr.sectionIndex === sectionIndex && pr.unitSlug === unit.slug,
@@ -730,6 +762,7 @@ export function UnitLaneBoard({
   return (
     <>
       <UnitLaneBoardView
+        completion={detail?.intent.status === 'SUCCEEDED' ? detail.unitCompletion : null}
         intentBranch={detail?.intent.branch}
         unitPlan={unitPlan}
         units={units}

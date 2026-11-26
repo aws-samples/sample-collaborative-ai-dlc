@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook } from '@/test/query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAutoSave } from './useAutoSave';
 

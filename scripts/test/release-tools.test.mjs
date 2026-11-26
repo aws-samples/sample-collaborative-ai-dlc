@@ -29,6 +29,7 @@ const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
 const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
 const releaseWorkflow = join(root, '.github/workflows/release.yml');
+const prepareWorkflow = join(root, '.github/workflows/prepare-release.yml');
 const demoWorkflow = join(root, '.github/workflows/deploy-demo.yml');
 const mainDemoWorkflow = join(root, '.github/workflows/deploy-main.yml');
 const yjsDockerfile = join(root, 'lambda/yjs-server/Dockerfile');
@@ -105,13 +106,13 @@ test('release forwards every deployment configuration secret through the reusabl
     .flatMap((value) =>
       [...String(value).matchAll(/\bsecrets\.([A-Z_][A-Z0-9_]*)/g)].map((match) => match[1]),
     )
-    .sort();
+    .toSorted();
 
   assert.ok(configurationSecrets.includes('APP_DOMAIN'));
   assert.ok(configurationSecrets.includes('SSO_CONFIG'));
   assert.equal(typeof release.secrets, 'object', 'release must use explicit secret mappings');
   assert.deepEqual(
-    Object.keys(release.secrets ?? {}).sort(),
+    Object.keys(release.secrets ?? {}).toSorted(),
     configurationSecrets,
     'release must forward all deployment configuration secrets, without unrelated secrets',
   );
@@ -273,6 +274,137 @@ test('release and main deployments use isolated protected environments and GitHu
       deployment.indexOf('- name: Deploy frontend'),
     'frontend deployment must follow the infrastructure script',
   );
+});
+
+// How releasing and bug fixing works, in plain words:
+//
+// Every minor or major release lives on its own branch. Running the "Prepare Release
+// Branch" workflow from main creates release/X.Y.x (for example release/2.5.x) from the
+// current main. The changelog and version bump land on that branch through a normal PR,
+// and the "Publish Release" workflow is then run from the branch itself — it creates the
+// vX.Y.Z tag and deploys. main itself is never tagged or published directly.
+//
+// Bug fixes go to the release branch first: branch off release/X.Y.x, fix, PR back into
+// release/X.Y.x, and publish the patch (for example v2.5.1) from there. Afterwards the
+// release branch is merged back into main with a real merge commit (never squashed), so
+// main carries every fix that customers already have.
+//
+// The safety net: "Prepare Release Branch" refuses to start a new line while any
+// release/X.Y.x line branch still has commits that main lacks. A fix shipped in 2.5.1 can
+// therefore not quietly disappear again in 2.6.0 because someone forgot the back-merge.
+//
+// This test pins the workflow wiring that keeps all of the above true.
+test('releases publish only from line branches that the prepare workflow creates', () => {
+  const release = readFileSync(releaseWorkflow, 'utf8');
+  const prepareText = readFileSync(prepareWorkflow, 'utf8');
+  const prepare = yaml.load(prepareText);
+
+  // Publishing accepts no ref besides release/X.Y.x and pins the version to the branch line.
+  assert.match(release, /case "\$GITHUB_REF" in/);
+  assert.match(release, /refs\/heads\/release\/\*\.x\)/);
+  assert.doesNotMatch(release, /refs\/heads\/main/);
+  assert.match(release, /"\$VERSION" != "\$line"\.\*/);
+
+  // Line branches are created from main by the prepare workflow, with the publish permissions model.
+  assert.ok(
+    prepare.on.workflow_dispatch.inputs.line.required,
+    'the release line input is required',
+  );
+  assert.equal(prepare.permissions.contents, 'read');
+  assert.equal(prepare.jobs.prepare.permissions.contents, 'write');
+  assert.equal(prepare.concurrency.group, 'release', 'branch creation must not race a publish');
+  assert.match(prepareText, /"\$GITHUB_REF" != refs\/heads\/main/);
+  assert.match(prepareText, /\^\[0-9\]\+\\\.\[0-9\]\+\$/);
+  assert.match(prepareText, /git ls-remote --exit-code origin "refs\/heads\/release\/\$LINE\.x"/);
+  assert.match(prepareText, /git push origin "\$GITHUB_SHA:refs\/heads\/release\/\$LINE\.x"/);
+  assert.doesNotMatch(prepareText, /git tag -a|gh release create/);
+
+  // A new line must not start while a fix sits un-back-merged on any release branch.
+  assert.match(
+    prepareText,
+    /git merge-base --is-ancestor "refs\/remotes\/origin\/\$branch" "\$GITHUB_SHA"/,
+  );
+
+  // The demo guard trusts a release tag on its own protected line branch and
+  // keeps the main fallback only for releases that predate line branches.
+  const demo = readFileSync(demoWorkflow, 'utf8');
+  assert.match(demo, /line_ref="refs\/remotes\/origin\/release\/\$line\.x"/);
+  assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$line_ref"/);
+  assert.match(demo, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
+});
+
+// Only X.Y.x line branches take part in back-merges. Other release/* names —
+// the frozen release/1.x maintenance line (v1 fixes never merge into v2 main)
+// and preparation branches from the previous naming, such as release/2.1.0 —
+// must not block new lines, or the first dispatch would fail forever.
+test('the new-line guard ignores release branches that are not X.Y.x lines', () => {
+  const prepare = yaml.load(readFileSync(prepareWorkflow, 'utf8'));
+  const validate = prepare.jobs.prepare.steps.find(
+    (step) => step.name === 'Validate the new release line',
+  ).run;
+
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-prepare-guard-'));
+  const gitEnv = {
+    GIT_AUTHOR_NAME: 'release-tools-test',
+    GIT_AUTHOR_EMAIL: 'release-tools-test@example.com',
+    GIT_COMMITTER_NAME: 'release-tools-test',
+    GIT_COMMITTER_EMAIL: 'release-tools-test@example.com',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  const git = (cwd, ...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...gitEnv } }).trim();
+
+  // The origin repository: main carries v2.4.0 and has moved on, release/2.4.x
+  // is fully back-merged, and release/2.1.0 (an old preparation branch) and the
+  // frozen release/1.x both hold commits that main lacks.
+  const origin = join(fixture, 'origin');
+  mkdirSync(origin);
+  git(origin, 'init', '-q', '-b', 'main');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'base');
+  git(origin, 'branch', 'release/2.1.0');
+  git(origin, 'branch', 'release/1.x');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'release 2.4.0');
+  git(origin, 'tag', 'v2.4.0');
+  git(origin, 'branch', 'release/2.4.x');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'main moves on');
+  for (const branch of ['release/2.1.0', 'release/1.x']) {
+    git(origin, 'switch', '-q', branch);
+    git(origin, 'commit', '--allow-empty', '-q', '-m', `only on ${branch}`);
+  }
+  git(origin, 'switch', '-q', 'main');
+
+  const clone = join(fixture, 'clone');
+  git(fixture, 'clone', '-q', origin, clone);
+  const guardEnv = {
+    ...gitEnv,
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: git(clone, 'rev-parse', 'HEAD'),
+    LINE: '2.5',
+  };
+
+  // Neither the stale preparation branch nor frozen release/1.x block the line.
+  const accepted = run('bash', ['-e', '-o', 'pipefail', '-c', validate], {
+    cwd: clone,
+    env: guardEnv,
+  });
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  // A real line branch with a commit that main lacks still blocks, and the
+  // error names only that branch.
+  git(origin, 'switch', '-q', '-c', 'release/2.3.x', 'v2.4.0^');
+  git(origin, 'commit', '--allow-empty', '-q', '-m', 'fix only on release/2.3.x');
+  git(origin, 'switch', '-q', 'main');
+  git(clone, 'fetch', '-q', 'origin');
+  const blocked = run('bash', ['-e', '-o', 'pipefail', '-c', validate], {
+    cwd: clone,
+    env: guardEnv,
+  });
+  assert.notEqual(blocked.status, 0, 'an unmerged line branch must block a new line');
+  assert.match(blocked.stderr, /Back-merge these release branches into main .*release\/2\.3\.x/);
+  assert.doesNotMatch(blocked.stderr, /release\/2\.1\.0|release\/1\.x/);
+
+  rmSync(fixture, { recursive: true, force: true });
 });
 
 test('demo deployments use the resolved backend for both concurrency and Terraform', () => {
@@ -1672,6 +1804,11 @@ const createReleaseRepository = () => {
   mkdirSync(join(repository, 'lambda/yjs-server'), { recursive: true });
   cpSync(join(root, 'scripts/sso-config.mjs'), join(repository, 'scripts/sso-config.mjs'));
   cpSync(join(root, 'config/platform-roles.json'), join(repository, 'config/platform-roles.json'));
+  mkdirSync(join(repository, 'lambda/shared'), { recursive: true });
+  cpSync(
+    join(root, 'lambda/shared/business-role-catalog.json'),
+    join(repository, 'lambda/shared/business-role-catalog.json'),
+  );
   writeJson(join(repository, 'frontend/package.json'), { name: 'frontend', private: true });
   writeFileSync(join(repository, 'lambda/yjs-server/server.js'), 'console.log("ready");\n');
   writeFileSync(
