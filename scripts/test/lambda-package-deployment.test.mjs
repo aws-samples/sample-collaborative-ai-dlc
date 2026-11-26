@@ -266,6 +266,12 @@ test('the script retains protected-resource destruction rejection before apply',
   assert.equal(result.status, 1);
   assert.match(result.stderr, /protected persistent resources would be destroyed/);
   assert.equal(events(fixture).includes('apply'), false);
+
+  // The operator's decision reaches the check in both phases and through the auth wrapper.
+  const allowed = deploy(fixture, { AIDLC_ALLOW_DESTROY: '1' });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /aws_dynamodb_table\.executions \(delete\)/);
+  assert.ok(events(fixture).includes('apply'));
 });
 
 const olderRelease = (t) => {

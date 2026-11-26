@@ -350,6 +350,16 @@ effect.
 
 The plan is rejected if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table. The check runs in both phases, so a saved plan is re-inspected before it is applied.
 
+To destroy such resources on purpose, set `AIDLC_ALLOW_DESTROY=1` in the environment of the deploy command, the deploy script or the installer:
+
+```bash
+AIDLC_ALLOW_DESTROY=1 ./scripts/deploy-terraform.sh dev
+```
+
+The switch covers every protected resource in that plan, and the script lists them before it applies. Run the command without the switch first and read the list it refuses. With `--phase plan` and `--phase apply`, set the switch for both commands.
+
+The switch only lifts the script's refusal. Terraform still cannot delete an S3 bucket that holds objects or object versions, or a resource whose deletion protection is on. Empty the bucket or turn the protection off first.
+
 Manual deployments honor the same proxy variables documented for the managed
 installer. You can also define `docker_build_args` in the `.tfvars` file.
 

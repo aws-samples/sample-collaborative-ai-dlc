@@ -27,6 +27,10 @@ const protectedTypes = new Set([
   'aws_dynamodb_table',
 ]);
 
+// Set by an operator who has decided to remove protected resources. It lifts
+// the refusal for the whole plan, so every resource it covers is listed.
+const OVERRIDE = 'AIDLC_ALLOW_DESTROY';
+
 const expectedRetirement = (change) => {
   if (change.type !== 'aws_dynamodb_table') return false;
   return /agent[_-]?pool/i.test(change.address);
@@ -107,11 +111,20 @@ for (const change of expected) {
   console.log(`Allowed retired v1 resource removal: ${change.address}`);
 }
 if (rejected.length) {
-  console.error('Refusing Terraform plan: protected persistent resources would be destroyed:');
+  const allowed = process.env[OVERRIDE] === '1';
+  const log = allowed ? console.log : console.error;
+  log(
+    allowed
+      ? `${OVERRIDE}=1 is set: these protected persistent resources will be destroyed:`
+      : 'Refusing Terraform plan: protected persistent resources would be destroyed:',
+  );
   for (const change of rejected) {
-    console.error(`  - ${change.address} (${change.change.actions.join(', ')})`);
+    log(`  - ${change.address} (${change.change.actions.join(', ')})`);
   }
-  process.exit(1);
+  if (!allowed) {
+    console.error(`To destroy them on purpose, set ${OVERRIDE}=1 for this run.`);
+    process.exit(1);
+  }
+} else {
+  console.log('Terraform plan destruction check passed.');
 }
-
-console.log('Terraform plan destruction check passed.');
