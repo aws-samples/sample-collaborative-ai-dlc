@@ -305,7 +305,11 @@ const validateProjectBindings = async ({
 // With a page, one provider page comes back with nextPage; a provider that
 // lists everything in one call answers with nextPage null. Only page 1 looks
 // up the default branch, which the picker preselects.
+const invalidPage = () =>
+  Object.assign(new Error(INVALID_PAGE_ERROR), { status: 400, code: 'INVALID_PAGE' });
+
 const listBranchesResult = async (provider, ctx, repo, page) => {
+  if (page === null) throw invalidPage();
   const [listing, defaultBranch] = await Promise.all([
     page !== undefined && provider.listBranchesPage
       ? provider.listBranchesPage(ctx, repo, page)
@@ -321,6 +325,7 @@ const listBranchesResult = async (provider, ctx, repo, page) => {
 };
 
 const listIssueCommentsResult = async (provider, ctx, repo, number, page) => {
+  if (page === null) throw invalidPage();
   if (page === undefined) return provider.listIssueComments(ctx, repo, number);
   if (provider.listIssueCommentsPage) {
     return provider.listIssueCommentsPage(ctx, repo, number, page);
