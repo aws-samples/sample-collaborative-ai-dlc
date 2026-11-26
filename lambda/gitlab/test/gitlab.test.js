@@ -157,7 +157,7 @@ describe('gitlab handler', () => {
   describe('OPTIONS', () => {
     it('returns 200 with empty body', async () => {
       const handler = await loadHandler();
-      const res = await handler(makeEvent('OPTIONS', '/gitlab/anything'));
+      const res = await handler(makeEvent('OPTIONS', '/gitlab/anything', { authorizer: {} }));
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({});
@@ -165,6 +165,14 @@ describe('gitlab handler', () => {
   });
 
   describe('GET /auth', () => {
+    it('requires an authenticated user before reading the OAuth secret', async () => {
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/auth', { authorizer: {} }));
+
+      expect(res.statusCode).toBe(401);
+      expect(secretsMock.calls()).toHaveLength(0);
+    });
+
     it('returns GitLab OAuth URL with signed state', async () => {
       mockOAuthSecret();
 
@@ -431,6 +439,7 @@ describe('gitlab handler', () => {
       const handler = await loadHandler();
       const res = await handler(
         makeEvent('GET', '/gitlab/callback', {
+          authorizer: {},
           queryStringParameters: { code: 'valid-code', state: validState },
         }),
       );

@@ -120,8 +120,222 @@ export const createGitHandler = (provider, routes, instance) => {
   // workflows use /projects/{id}/source-control and never reach this path.
   const resolveRouteCtx = async (userId) => {
     const Item = await getConnection(userId);
-    if (!Item) return { ctx: null };
-    return { ctx: await buildCtx(Item) };
+    return Item ? buildCtx(Item) : null;
+  };
+
+  const handleOAuthCallback = async (query, response) => {
+    const { code, state } = query || {};
+    if (!code) return response(400, { error: 'Missing code parameter' });
+    if (!state) return response(400, { error: 'Missing state parameter' });
+
+    const { client_id, client_secret } = await getOAuthCredentials(
+      secrets,
+      secretName(),
+      providerLabel,
+    );
+    const statePayload = verifySignedState(decodeURIComponent(state), client_secret);
+    if (!statePayload || !statePayload.userId || statePayload.instance !== instance) {
+      return response(400, { error: 'Invalid or tampered state parameter' });
+    }
+    if (Date.now() - statePayload.ts > 10 * 60 * 1000) {
+      return response(400, { error: 'OAuth state expired, please try again' });
+    }
+
+    const tokens = await provider.oauth.exchangeCode({
+      clientId: client_id,
+      clientSecret: client_secret,
+      code,
+      instance,
+      redirectUri: redirectUri(),
+    });
+
+    // Per-provider SSM token path. The 5th `provider.id` segment keeps a
+    // user's GitHub and GitLab tokens from colliding (both used to write to
+    // /PREFIX/userId). Legacy connections kept the 4-segment path; their
+    // parameterName is read from the stored row, so they remain valid.
+    const slot = instance
+      ? `${provider.id}-${createHash('sha256').update(instance).digest('hex')}`
+      : provider.id;
+    const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${slot}`;
+    // GitLab stores a refresh token (+ expiry so the construction path can
+    // refresh just-in-time); GitHub does not. Match each provider's
+    // historical SSM value shape (key order matters for existing assertions).
+    const ssmValue = tokens.refreshToken
+      ? {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          tokenType: tokens.tokenType,
+          ...(tokens.expiresIn ? { expiresAt: Date.now() + Number(tokens.expiresIn) * 1000 } : {}),
+        }
+      : { accessToken: tokens.accessToken, tokenType: tokens.tokenType };
+    await ssm.send(
+      new PutParameterCommand({
+        Name: parameterName,
+        Value: JSON.stringify(ssmValue),
+        Type: 'SecureString',
+        // Bitbucket access/refresh tokens are JWTs (~2800+ chars) that
+        // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
+        // promotes to Advanced only when needed (no-op for short tokens).
+        Tier: 'Intelligent-Tiering',
+        Overwrite: true,
+      }),
+    );
+    // Commit-attribution identity ("on behalf of": author = user,
+    // committer = engine). Best-effort — a failed /user lookup must never
+    // break the connect flow; the orchestrator lazily backfills later.
+    let authorFields = {};
+    if (typeof provider.getAuthenticatedUser === 'function') {
+      try {
+        const user = await provider.getAuthenticatedUser({
+          token: tokens.accessToken,
+          instance,
+        });
+        authorFields = {
+          githubLogin: user.login,
+          authorName: user.authorName,
+          authorEmail: user.authorEmail,
+        };
+      } catch (e) {
+        logger.error(`Failed to fetch ${providerLabel} user for attribution`, e);
+      }
+    }
+    await putGitConnection(ddb, {
+      userId: statePayload.userId,
+      provider: provider.id,
+      ...(instance ? { instance } : {}),
+      parameterName,
+      scope: tokens.scope,
+      createdAt: new Date().toISOString(),
+      ...authorFields,
+    });
+    return response(200, { success: true, ...(instance ? { instance } : {}) });
+  };
+
+  const handleConnectionStatus = async (userId, response) => {
+    const Item = await getConnection(userId);
+    const instances = provider.listInstances?.() ?? [];
+    const statusDetails = instances.length ? { instances } : {};
+    const grantedScopes = new Set(
+      String(Item?.scope ?? '')
+        .split(/[\s,]+/)
+        .filter(Boolean),
+    );
+    const missingScopes = (provider.oauth.requiredConnectionScopes ?? []).filter(
+      (scope) => !grantedScopes.has(scope),
+    );
+    if (Item && missingScopes.length > 0) {
+      await invalidateBindingsByCredentialRef(
+        ddb,
+        oauthCredentialRef(provider.id, userId, instance),
+        'oauth_scopes_missing',
+      ).catch(() => {});
+      return response(200, {
+        connected: false,
+        provider: Item.provider,
+        ...statusDetails,
+        reauthorizationRequired: true,
+        missingScopes,
+      });
+    }
+    return response(200, { connected: !!Item, provider: Item?.provider, ...statusDetails });
+  };
+
+  const handleAuthorize = async (userId, response) => {
+    const { client_id, client_secret } = await getOAuthCredentials(
+      secrets,
+      secretName(),
+      providerLabel,
+    );
+    const state = createSignedState({ userId, ts: Date.now(), instance }, client_secret);
+    const url = provider.oauth.buildAuthorizeUrl({
+      clientId: client_id,
+      redirectUri: redirectUri(),
+      state,
+      instance,
+    });
+    return response(200, { url });
+  };
+
+  const handleListRepos = async (userId, queryStringParameters, response) => {
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const repos = await provider.listRepos(ctx, { search: queryStringParameters?.q });
+    return response(200, repos);
+  };
+
+  const handleDisconnect = async (userId, response) => {
+    const Item = await getConnection(userId);
+    // getConnection scopes by provider, so a null Item means "nothing of
+    // ours to disconnect".
+    if (!Item) return response(200, { success: true });
+    if (Item.parameterName) {
+      try {
+        await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
+      } catch (e) {
+        logger.error('Failed to delete git token parameter', e);
+      }
+    }
+    // Delete from BOTH the new and legacy tables so a stale legacy row
+    // can't resurrect this connection via migrate-on-read.
+    await deleteGitConnection(ddb, userId, provider.id, instance);
+    await invalidateBindingsByCredentialRef(
+      ddb,
+      oauthCredentialRef(provider.id, userId, instance),
+      'oauth_disconnected',
+      { actor: userId },
+    );
+    return response(200, { success: true });
+  };
+
+  const handleListBranches = async (userId, branchRepo, response) => {
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const branches = await provider.listBranches(ctx, branchRepo);
+    // Best-effort: also surface the repo's actual default branch so a
+    // base-branch picker can preselect it instead of assuming `main`.
+    // Never fail the request over this — the picker just falls back to
+    // showing no preselection.
+    const defaultBranch = await provider.getDefaultBranch(ctx, branchRepo).catch(() => null);
+    return response(200, defaultBranch ? { branches, defaultBranch } : { branches });
+  };
+
+  const handleTree = async (userId, treeRepo, queryStringParameters, response) => {
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const branch = queryStringParameters?.branch || 'main';
+    const tree = await provider.getTree(ctx, treeRepo, branch);
+    return response(200, { tree });
+  };
+
+  const handleFileContents = async (userId, contentsRepo, queryStringParameters, response) => {
+    const filePath = queryStringParameters?.path;
+    if (!filePath) return response(400, { error: 'Missing path parameter' });
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const branch = queryStringParameters?.branch || 'main';
+    const file = await provider.getFileContents(ctx, contentsRepo, filePath, branch);
+    return response(200, file);
+  };
+
+  const handleListComments = async (userId, commentRef, response) => {
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const comments = await provider.listPRComments(ctx, commentRef.repoId, commentRef.prRef);
+    return response(200, { comments });
+  };
+
+  const handleAddComment = async (userId, commentRef, body, response) => {
+    const ctx = await resolveRouteCtx(userId);
+    if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+    const data = JSON.parse(body || '{}');
+    if (!data.body) return response(400, { error: 'Comment body is required' });
+    const created = await provider.addPRComment(ctx, commentRef.repoId, commentRef.prRef, {
+      body: data.body,
+      path: data.path,
+      line: data.line,
+      side: data.side,
+    });
+    return response(201, created);
   };
 
   return async (event) => {
@@ -131,256 +345,53 @@ export const createGitHandler = (provider, routes, instance) => {
     if (event.httpMethod === 'OPTIONS') return response(200, {});
 
     const { httpMethod, path, queryStringParameters, body } = event;
-    const userId = getUserId(event);
 
     try {
-      // GET /{provider}/auth — return OAuth URL
-      if (httpMethod === 'GET' && path.endsWith('/auth')) {
-        const { client_id, client_secret } = await getOAuthCredentials(
-          secrets,
-          secretName(),
-          providerLabel,
-        );
-        const state = createSignedState({ userId, ts: Date.now(), instance }, client_secret);
-        const url = provider.oauth.buildAuthorizeUrl({
-          clientId: client_id,
-          redirectUri: redirectUri(),
-          state,
-          instance,
-        });
-        return response(200, { url });
-      }
-
-      // GET /{provider}/callback — exchange code for token
+      // The OAuth redirect identifies the caller through the verified signed state.
       if (httpMethod === 'GET' && path.endsWith('/callback')) {
-        const { code, state } = queryStringParameters || {};
-        if (!code) return response(400, { error: 'Missing code parameter' });
-        if (!state) return response(400, { error: 'Missing state parameter' });
-
-        const { client_id, client_secret } = await getOAuthCredentials(
-          secrets,
-          secretName(),
-          providerLabel,
-        );
-        const statePayload = verifySignedState(decodeURIComponent(state), client_secret);
-        if (!statePayload || !statePayload.userId || statePayload.instance !== instance) {
-          return response(400, { error: 'Invalid or tampered state parameter' });
-        }
-        if (Date.now() - statePayload.ts > 10 * 60 * 1000) {
-          return response(400, { error: 'OAuth state expired, please try again' });
-        }
-
-        const tokens = await provider.oauth.exchangeCode({
-          clientId: client_id,
-          clientSecret: client_secret,
-          code,
-          instance,
-          redirectUri: redirectUri(),
-        });
-
-        // Per-provider SSM token path. The 5th `provider.id` segment keeps a
-        // user's GitHub and GitLab tokens from colliding (both used to write to
-        // /PREFIX/userId). Legacy connections kept the 4-segment path; their
-        // parameterName is read from the stored row, so they remain valid.
-        const slot = instance
-          ? `${provider.id}-${createHash('sha256').update(instance).digest('hex')}`
-          : provider.id;
-        const parameterName = `/${process.env.GIT_TOKEN_SSM_PREFIX}/${statePayload.userId}/${slot}`;
-        // GitLab stores a refresh token (+ expiry so the construction path can
-        // refresh just-in-time); GitHub does not. Match each provider's
-        // historical SSM value shape (key order matters for existing assertions).
-        const ssmValue = tokens.refreshToken
-          ? {
-              accessToken: tokens.accessToken,
-              refreshToken: tokens.refreshToken,
-              tokenType: tokens.tokenType,
-              ...(tokens.expiresIn
-                ? { expiresAt: Date.now() + Number(tokens.expiresIn) * 1000 }
-                : {}),
-            }
-          : { accessToken: tokens.accessToken, tokenType: tokens.tokenType };
-        await ssm.send(
-          new PutParameterCommand({
-            Name: parameterName,
-            Value: JSON.stringify(ssmValue),
-            Type: 'SecureString',
-            // Bitbucket access/refresh tokens are JWTs (~2800+ chars) that
-            // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
-            // promotes to Advanced only when needed (no-op for short tokens).
-            Tier: 'Intelligent-Tiering',
-            Overwrite: true,
-          }),
-        );
-        // Commit-attribution identity ("on behalf of": author = user,
-        // committer = engine). Best-effort — a failed /user lookup must never
-        // break the connect flow; the orchestrator lazily backfills later.
-        let authorFields = {};
-        if (typeof provider.getAuthenticatedUser === 'function') {
-          try {
-            const user = await provider.getAuthenticatedUser({
-              token: tokens.accessToken,
-              instance,
-            });
-            authorFields = {
-              githubLogin: user.login,
-              authorName: user.authorName,
-              authorEmail: user.authorEmail,
-            };
-          } catch (e) {
-            logger.error(`Failed to fetch ${providerLabel} user for attribution`, e);
-          }
-        }
-        await putGitConnection(ddb, {
-          userId: statePayload.userId,
-          provider: provider.id,
-          ...(instance ? { instance } : {}),
-          parameterName,
-          scope: tokens.scope,
-          createdAt: new Date().toISOString(),
-          ...authorFields,
-        });
-        return response(200, { success: true, ...(instance ? { instance } : {}) });
+        return await handleOAuthCallback(queryStringParameters, response);
       }
 
-      // GET /{provider}/status
+      const userId = getUserId(event);
+      if (!userId) return response(401, { error: 'Unauthorized' });
+
+      if (httpMethod === 'GET' && path.endsWith('/auth')) {
+        return await handleAuthorize(userId, response);
+      }
+
       if (httpMethod === 'GET' && path.endsWith('/status')) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        const instances = provider.listInstances?.() ?? [];
-        const statusDetails = instances.length ? { instances } : {};
-        const grantedScopes = new Set(
-          String(Item?.scope ?? '')
-            .split(/[\s,]+/)
-            .filter(Boolean),
-        );
-        const missingScopes = (provider.oauth.requiredConnectionScopes ?? []).filter(
-          (scope) => !grantedScopes.has(scope),
-        );
-        if (Item && missingScopes.length > 0) {
-          await invalidateBindingsByCredentialRef(
-            ddb,
-            oauthCredentialRef(provider.id, userId, instance),
-            'oauth_scopes_missing',
-          ).catch(() => {});
-          return response(200, {
-            connected: false,
-            provider: Item.provider,
-            ...statusDetails,
-            reauthorizationRequired: true,
-            missingScopes,
-          });
-        }
-        return response(200, { connected: !!Item, provider: Item?.provider, ...statusDetails });
+        return await handleConnectionStatus(userId, response);
       }
 
-      // GET /{provider}/repos[?q=search] — providers that support server-side
-      // search (GitLab) filter by q; the others ignore it.
       if (httpMethod === 'GET' && path.endsWith('/repos')) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const { ctx } = await resolveRouteCtx(userId);
-        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        const repos = await provider.listRepos(ctx, { search: queryStringParameters?.q });
-        return response(200, repos);
+        return await handleListRepos(userId, queryStringParameters, response);
       }
 
-      // DELETE /{provider}/disconnect
       if (httpMethod === 'DELETE' && path.endsWith('/disconnect')) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        // getConnection scopes by provider, so a null Item means "nothing of
-        // ours to disconnect".
-        if (!Item) return response(200, { success: true });
-        if (Item.parameterName) {
-          try {
-            await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
-          } catch (e) {
-            logger.error('Failed to delete git token parameter', e);
-          }
-        }
-        // Delete from BOTH the new and legacy tables so a stale legacy row
-        // can't resurrect this connection via migrate-on-read.
-        await deleteGitConnection(ddb, userId, provider.id, instance);
-        await invalidateBindingsByCredentialRef(
-          ddb,
-          oauthCredentialRef(provider.id, userId, instance),
-          'oauth_disconnected',
-          { actor: userId },
-        );
-        return response(200, { success: true });
+        return await handleDisconnect(userId, response);
       }
 
-      // GET .../branches
       const branchRepo = routes.branches?.(path, queryStringParameters);
       if (httpMethod === 'GET' && branchRepo) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const { ctx } = await resolveRouteCtx(userId, {
-          repositories: [branchRepo],
-          permissions: { contents: 'read' },
-        });
-        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        const branches = await provider.listBranches(ctx, branchRepo);
-        // Best-effort: also surface the repo's actual default branch so a
-        // base-branch picker can preselect it instead of assuming `main`.
-        // Never fail the request over this — the picker just falls back to
-        // showing no preselection.
-        const defaultBranch = await provider.getDefaultBranch(ctx, branchRepo).catch(() => null);
-        return response(200, defaultBranch ? { branches, defaultBranch } : { branches });
+        return await handleListBranches(userId, branchRepo, response);
       }
 
-      // GET .../tree
       const treeRepo = routes.tree?.(path, queryStringParameters);
       if (httpMethod === 'GET' && treeRepo) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const { ctx } = await resolveRouteCtx(userId, {
-          repositories: [treeRepo],
-          permissions: { contents: 'read' },
-        });
-        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        const branch = queryStringParameters?.branch || 'main';
-        const tree = await provider.getTree(ctx, treeRepo, branch);
-        return response(200, { tree });
+        return await handleTree(userId, treeRepo, queryStringParameters, response);
       }
 
-      // GET .../contents
       const contentsRepo = routes.contents?.(path, queryStringParameters);
       if (httpMethod === 'GET' && contentsRepo) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const filePath = queryStringParameters?.path;
-        if (!filePath) return response(400, { error: 'Missing path parameter' });
-        const { ctx } = await resolveRouteCtx(userId, {
-          repositories: [contentsRepo],
-          permissions: { contents: 'read' },
-        });
-        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        const branch = queryStringParameters?.branch || 'main';
-        const file = await provider.getFileContents(ctx, contentsRepo, filePath, branch);
-        return response(200, file);
+        return await handleFileContents(userId, contentsRepo, queryStringParameters, response);
       }
 
-      // GET/POST PR/MR comments. In app mode comments are authored by the App
-      // (bot attribution) — the platform-level trade-off of installation auth.
       const commentRef = routes.comments?.(path, queryStringParameters);
-      if (commentRef && (httpMethod === 'GET' || httpMethod === 'POST')) {
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const { ctx } = await resolveRouteCtx(userId, {
-          repositories: [commentRef.repoId],
-          permissions: { pull_requests: httpMethod === 'POST' ? 'write' : 'read' },
-        });
-        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-
-        if (httpMethod === 'GET') {
-          const comments = await provider.listPRComments(ctx, commentRef.repoId, commentRef.prRef);
-          return response(200, { comments });
-        }
-        const data = JSON.parse(body || '{}');
-        if (!data.body) return response(400, { error: 'Comment body is required' });
-        const created = await provider.addPRComment(ctx, commentRef.repoId, commentRef.prRef, {
-          body: data.body,
-          path: data.path,
-          line: data.line,
-          side: data.side,
-        });
-        return response(201, created);
+      if (httpMethod === 'GET' && commentRef) {
+        return await handleListComments(userId, commentRef, response);
+      }
+      if (httpMethod === 'POST' && commentRef) {
+        return await handleAddComment(userId, commentRef, body, response);
       }
 
       return response(404, { error: 'Not found' });
