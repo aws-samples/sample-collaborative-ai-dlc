@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useMemo, useState } from 'react';
 import { Loader2, Pencil, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -37,7 +38,9 @@ const ACTIVE_QEDIT_STATES = new Set(['PLANNING', 'AWAITING_APPROVAL', 'APPLYING'
 /** Why editing is currently unavailable, or null when it is allowed. */
 export function useArtifactEditability(artifact: IntentArtifact): string | null {
   const { detail } = useIntent();
+  const { readOnly } = useSpacePermissions();
   return useMemo(() => {
+    if (readOnly) return 'You have view-only access to this space.';
     if (artifact.supersededAt) return 'Superseded by a rewind — edit its replacement instead';
     const status = detail?.intent.status;
     if (status && !EDITABLE_INTENT_STATUSES.has(status)) {
@@ -47,7 +50,7 @@ export function useArtifactEditability(artifact: IntentArtifact): string | null 
       return 'A Quorum edit is in progress for this intent';
     }
     return null;
-  }, [artifact.supersededAt, detail]);
+  }, [artifact.supersededAt, detail, readOnly]);
 }
 
 /** Drift badge + one-click "mark verified". Renders nothing when not stale. */
@@ -59,6 +62,7 @@ export function ArtifactStaleBadge({
   className?: string;
 }) {
   const { projectId, intentId, reload } = useIntent();
+  const { readOnly } = useSpacePermissions();
   const [verifying, setVerifying] = useState(false);
   if (!artifact.staleSince) return null;
 
@@ -101,7 +105,7 @@ export function ArtifactStaleBadge({
               variant="ghost"
               size="sm"
               className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
-              disabled={verifying}
+              disabled={readOnly || verifying}
               onClick={(e) => {
                 e.stopPropagation();
                 verify();
@@ -308,6 +312,7 @@ export function ArtifactEditControls({
                 Cancel
               </Button>
               <Button
+                disabled={Boolean(blocked)}
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
@@ -320,6 +325,7 @@ export function ArtifactEditControls({
                 Edit with Quorum
               </Button>
               <Button
+                disabled={Boolean(blocked)}
                 size="sm"
                 className="gap-1.5"
                 onClick={() => {
@@ -349,6 +355,7 @@ export function ArtifactEditControls({
               </DialogDescription>
             </DialogHeader>
             <Textarea
+              disabled={Boolean(blocked)}
               value={changeDescription}
               onChange={(e) => setChangeDescription(e.target.value)}
               placeholder="e.g. Reposition the product for the EU market instead of the US market; adjust the competitor list accordingly…"
@@ -363,7 +370,7 @@ export function ArtifactEditControls({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={!changeDescription.trim() || submitting}
+                disabled={Boolean(blocked) || !changeDescription.trim() || submitting}
                 onClick={startQuorum}
               >
                 {submitting ? (

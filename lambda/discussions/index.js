@@ -1,3 +1,6 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
+import { authorizeScope } from './services.js';
+import { resolveScope } from './scope.js';
 // lambda/discussions — scoped discussion threads (router).
 //
 // Threads live under a SCOPE root — a v1 Sprint (`/sprints/{sprintId}/…`) or a
@@ -65,6 +68,17 @@ export const handler = async (event, context) => {
   try {
     const path = event.resource || event.path || '';
     const method = event.httpMethod;
+    // Read cursors are personal state; opening a Viewer session must not create
+    // a thread or allow discussion/agent mutations.
+    if (method !== 'GET' && !path.endsWith('/realtime-token') && !path.endsWith('/read')) {
+      const auth = await authorizeScope(
+        resolveScope(event.pathParameters),
+        event.requestContext?.authorizer?.claims?.sub,
+        res,
+      );
+      if (auth.res) return auth.res;
+      if (!spacePermissions(auth.role).write) return res(403, VIEWER_DENIED);
+    }
 
     if (method === 'POST' && path.endsWith('/realtime-token')) {
       return await issueRealtimeToken(event, res);

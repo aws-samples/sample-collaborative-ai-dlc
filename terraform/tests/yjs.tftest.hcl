@@ -28,25 +28,53 @@ mock_provider "aws" {
 mock_provider "docker" {}
 
 variables {
-  aws_sdk_ua_app_id             = "Collaborative_AI-DLC-test"
-  project_name                  = "test"
-  environment                   = "prod"
-  aws_region                    = "us-east-1"
-  powertools_service_name       = "test-yjs"
-  powertools_log_level          = "INFO"
-  vpc_id                        = "vpc-0123456789abcdef0"
-  private_subnet_ids            = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
-  cognito_user_pool_id          = "us-east-1_test"
-  cognito_client_id             = "testclient"
-  realtime_doc_secret_param_arn = "arn:aws:ssm:us-east-1:123456789012:parameter/test"
-  documents_table_name          = "test-documents"
-  documents_table_arn           = "arn:aws:dynamodb:us-east-1:123456789012:table/test-documents"
-  snapshots_bucket_name         = "test-snapshots"
-  snapshots_bucket_arn          = "arn:aws:s3:::test-snapshots"
+  access_table_name              = "test-access"
+  access_table_arn               = "arn:aws:dynamodb:us-east-1:123456789012:table/test-access"
+  space_permissions_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:projects"
+  aws_sdk_ua_app_id              = "Collaborative_AI-DLC-test"
+  project_name                   = "test"
+  environment                    = "prod"
+  aws_region                     = "us-east-1"
+  powertools_service_name        = "test-yjs"
+  powertools_log_level           = "INFO"
+  vpc_id                         = "vpc-0123456789abcdef0"
+  private_subnet_ids             = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+  cognito_user_pool_id           = "us-east-1_test"
+  cognito_client_id              = "testclient"
+  realtime_doc_secret_param_arn  = "arn:aws:ssm:us-east-1:123456789012:parameter/test"
+  documents_table_name           = "test-documents"
+  documents_table_arn            = "arn:aws:dynamodb:us-east-1:123456789012:table/test-documents"
+  snapshots_bucket_name          = "test-snapshots"
+  snapshots_bucket_arn           = "arn:aws:s3:::test-snapshots"
 }
 
 run "standalone_defaults" {
   command = plan
+  override_resource {
+    target          = aws_cloudwatch_log_group.yjs_server
+    override_during = plan
+    values          = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:test-yjs" }
+  }
+  assert {
+    condition = contains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].environment, {
+      name  = "ACCESS_TABLE"
+      value = var.access_table_name
+      }) && anytrue([
+      for statement in jsondecode(aws_iam_role_policy.ecs_task.policy).Statement :
+      statement.Action == ["dynamodb:GetItem"] && statement.Resource == var.access_table_arn
+    ])
+    error_message = "Yjs must read canonical membership directly with GetItem-only access."
+  }
+  assert {
+    condition = contains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].environment, {
+      name  = "SPACE_PERMISSIONS_FUNCTION"
+      value = var.space_permissions_function_arn
+      }) && anytrue([
+      for statement in jsondecode(aws_iam_role_policy.ecs_task.policy).Statement :
+      statement.Action == ["lambda:InvokeFunction"] && statement.Resource == var.space_permissions_function_arn
+    ])
+    error_message = "Yjs must call the current permission checker with narrowly scoped invocation rights."
+  }
   assert {
     condition = contains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].environment, {
       name  = "AWS_SDK_UA_APP_ID"

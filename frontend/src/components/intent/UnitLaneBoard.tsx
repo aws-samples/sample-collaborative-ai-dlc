@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -787,6 +788,7 @@ export function UnitReviewDrawer({
   onClose: () => void;
 }) {
   const { projectId, intentId } = useIntent();
+  const { readOnly } = useSpacePermissions();
   const [comments, setComments] = useState<UnitReviewComment[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -887,7 +889,7 @@ export function UnitReviewDrawer({
                     type="checkbox"
                     className="mt-1 h-4 w-4 shrink-0"
                     checked={selected.has(key)}
-                    disabled={comment.previouslySelected}
+                    disabled={readOnly || comment.previouslySelected}
                     onChange={(event) =>
                       setSelected((current) => {
                         const next = new Set(current);
@@ -935,7 +937,7 @@ export function UnitReviewDrawer({
           <Button
             type="button"
             onClick={submit}
-            disabled={submitting || selected.size === 0 || selected.size > 20}
+            disabled={readOnly || submitting || selected.size === 0 || selected.size > 20}
             className="gap-2"
           >
             {submitting ? (

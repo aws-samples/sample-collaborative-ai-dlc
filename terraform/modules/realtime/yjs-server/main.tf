@@ -54,7 +54,11 @@ locals {
   yjs_files_include = setunion([for f in local.path_include : fileset(local.yjs_source_path, f)]...)
   yjs_files_exclude = setunion([for f in local.path_exclude : fileset(local.yjs_source_path, f)]...)
   yjs_files         = sort(setsubtract(local.yjs_files_include, local.yjs_files_exclude))
-  yjs_files_sha     = sha1(join("", [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")]))
+  yjs_shared_files  = ["space-permissions.js", "space-membership.js", "business-roles.js", "business-role-catalog.json", "policies/space.cedar"]
+  yjs_files_sha = sha1(join("", concat(
+    [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")],
+    [for f in local.yjs_shared_files : filesha1("${local.yjs_source_path}/../shared/${f}")]
+  )))
   # A pre-built image (var.image_tag) replaces the build below.
   build_image   = var.image_tag == null
   yjs_image_tag = local.build_image ? substr(local.yjs_files_sha, 0, 16) : var.image_tag
@@ -123,7 +127,7 @@ module "yjs_docker_build" {
   # never run concurrently (parallel kreuzwerker provider builds deadlock).
   # It can never change the tag or trigger a rebuild.
   image_tag        = "${local.yjs_image_tag}${substr(var.build_after, 0, 0)}"
-  source_path      = local.yjs_source_path
+  source_path      = abspath("${local.yjs_source_path}/..")
   docker_file_path = "${local.yjs_source_path}/Dockerfile"
   platform         = "linux/amd64"
   # BuildKit session path instead of the provider's legacy tar.gz streaming —
@@ -210,6 +214,16 @@ resource "aws_iam_role_policy" "ecs_task" {
     Statement = [
       {
         Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = var.space_permissions_function_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.access_table_arn
+      },
+      {
+        Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.yjs_server.arn}:*"
       }
@@ -247,6 +261,8 @@ resource "aws_ecs_task_definition" "yjs_server" {
       protocol      = "tcp"
     }]
     environment = concat([
+      { name = "SPACE_PERMISSIONS_FUNCTION", value = var.space_permissions_function_arn },
+      { name = "ACCESS_TABLE", value = var.access_table_name },
       {
         name  = "AWS_SDK_UA_APP_ID"
         value = var.aws_sdk_ua_app_id
