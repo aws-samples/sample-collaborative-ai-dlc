@@ -483,6 +483,13 @@ function listKey(project: Project): string {
   return `${project.kind === 'v2' ? 'i' : 's'}:${project.id}`;
 }
 
+function invalidatedList(key: QueryKey): Project | undefined {
+  if (key.length !== 3 || key[0] !== 'project' || typeof key[1] !== 'string') return undefined;
+  const project = currentProjects()?.find(({ id }) => id === key[1]);
+  if (!project) return undefined;
+  return String(key[2]) === (project.kind === 'v2' ? 'intents' : 'sprints') ? project : undefined;
+}
+
 function openBridge(): void {
   if (bridge) return;
   const owner = new QueriesObserver(queryClient, []);
@@ -507,8 +514,16 @@ function openBridge(): void {
     }
     notifyView();
   };
-  const unsubscribe = queryClient.getQueryCache().subscribe(({ type, query }) => {
+  const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
     if (syncing) return;
+    const { type, query } = event;
+    // The bridge's observers are disabled (the portfolio reads on its own
+    // schedule), so invalidating a list it shows — an intent write — does not
+    // refetch it: re-read that list now instead of at the next poll.
+    if (type === 'updated' && event.action.type === 'invalidate') {
+      const shown = invalidatedList(query.queryKey);
+      if (shown) void loadList(shown, 'refresh');
+    }
     if (
       type === 'removed' &&
       (query.queryKey[0] === 'projects' ||

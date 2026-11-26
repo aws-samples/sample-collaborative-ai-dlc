@@ -74,7 +74,7 @@ Signing in after a session ended, or switching users, still reloads the whole pa
 Saves go through `afterWrite(write, ...prefixes)` in `lib/afterWrite.ts`. When the save finishes, it marks every key under each given prefix as out of date. It also restarts any read of those keys that started before the save, so whoever waits on that read gets the data after the save. Data a screen is showing reloads at once; other data reloads the next time it is needed.
 
 - Workflow saves refresh the workflow's keys (including its compiled views) and the workflow list.
-- Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status.
+- Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status. The spaces view behind the sidebar, the dashboard, and the command palette shows those lists without reloading them on its own, so it re-reads a list it shows as soon as that list is marked out of date.
 
 `afterWrite` refreshes even when the save fails, because the server may have applied the change before the error. Intent changes refresh only when they succeed. Keep this choice in the service, so every caller follows the same rule.
 
