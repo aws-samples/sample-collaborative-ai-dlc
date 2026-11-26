@@ -449,7 +449,7 @@ default_severity: advisory
     );
   });
 
-  it.each(['v2.11.3', 'v2.11.4'])(
+  it.each(['v2.11.3', 'v2.11.4', 'v2.11.5'])(
     'quotes the %s requirements output description without changing its value',
     (profileId) => {
       const requirementsPath = 'core/aidlc-common/stages/inception/requirements-analysis.md';
