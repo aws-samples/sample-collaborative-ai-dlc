@@ -37,5 +37,5 @@ export const workspaceRelativePath = ({ repo, file, multi }) => {
   if (typeof file !== 'string' || file === '') return null;
   if (!multi) return file;
   if (!isValidRepoPath(repo)) return null;
-  return `${repo}/${file}`;
+  return `${repoCheckoutPath(repo)}/${file}`;
 };

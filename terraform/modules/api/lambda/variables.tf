@@ -230,6 +230,12 @@ variable "github_redirect_uri" {
   default     = ""
 }
 
+variable "gitlab_instance_secrets" {
+  description = "Self-managed GitLab HTTPS hostnames mapped to existing Secrets Manager OAuth application secret ARNs (client_id and client_secret)."
+  type        = map(string)
+  default     = {}
+}
+
 variable "gitlab_oauth_secret_name" {
   description = "Secrets Manager secret name for GitLab OAuth credentials"
   type        = string

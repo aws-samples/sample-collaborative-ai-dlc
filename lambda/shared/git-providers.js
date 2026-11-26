@@ -9,11 +9,15 @@
 //
 // Provider contract (each implementation exports):
 //   id, displayName, gitHost, apiBase
+//   instanceFor(repoId)                 -> self-managed instance or undefined
+//   repoPathFor(repoId)                  -> repository path within its instance
+//   listInstances?()                    -> registered self-managed hosts (defaults to [])
 //   buildCloneUrl(repoId, token)        -> tokenized https clone URL
 //   oauth: { secretEnvName, redirectUriEnvName, scopes,
 //            buildAuthorizeUrl({clientId, redirectUri, state}),
 //            exchangeCode({clientId, clientSecret, code, redirectUri?}),
 //            refreshAccessToken?({clientId, clientSecret, refreshToken}) }
+//   oauth.secretNameFor?(instance)      -> OAuth secret name (defaults to process.env[oauth.secretEnvName])
 //   listRepos(ctx)                      -> GitRepo[]
 //   listBranches(ctx, repoId)           -> string[]
 //   listReposPage?(ctx, page), listBranchesPage?(ctx, repoId, page) and
@@ -46,7 +50,12 @@ import bitbucket from './git-providers/bitbucket.js';
 import codecommit from './git-providers/codecommit.js';
 import { ProviderError } from './git-providers/errors.js';
 
-const REGISTRY = { github, gitlab, bitbucket, codecommit };
+const REGISTRY = Object.fromEntries(
+  [github, gitlab, bitbucket, codecommit].map((provider) => [
+    provider.id,
+    { instanceFor: () => undefined, repoPathFor: (repo) => repo, ...provider },
+  ]),
+);
 
 // Every provider declares the contract gaps it cannot honour so callers can
 // branch BEFORE invoking a method that can only throw. Missing keys read as
@@ -88,9 +97,8 @@ const getProvider = (providerId) => {
 // resolve it, otherwise the provider-wide constant is returned.
 const gitHost = (providerId, repoId) => {
   const provider = getProvider(providerId);
-  if (provider.gitHost) return provider.gitHost;
   if (repoId && typeof provider.gitHostFor === 'function') return provider.gitHostFor(repoId);
-  return null;
+  return provider.gitHost ?? null;
 };
 const buildCloneUrl = (providerId, repoId, token) =>
   getProvider(providerId).buildCloneUrl(repoId, token);

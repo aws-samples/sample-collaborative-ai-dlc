@@ -197,3 +197,30 @@ describe('authentication settings provider registration', () => {
     expect((await post(true)).status).toBe(404);
   });
 });
+
+describe('space credential administration remains separate from membership', () => {
+  it.each([undefined, 'viewer', 'member', 'owner'])(
+    'allows platform administrators with membership %s through the same reviewed update',
+    async (callerRole) => {
+      const projectId = `admin-credentials-${callerRole ?? 'none'}`;
+      await addSpace(projectId, { callerRole });
+      expect((await invoke({}, { projectId, method: 'GET' })).status).toBe(200);
+      // Reaching the review requirement proves PUT passed the same authorization.
+      expect(await invoke({ kiroApiKey: 'fixture-key' }, { projectId })).toMatchObject({
+        status: 409,
+        data: { code: 'AGENT_AUTH_REVIEW_REQUIRED' },
+      });
+      expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+    },
+  );
+  it.each(['viewer', 'member'])(
+    'rejects non-admin %s credential reads and updates',
+    async (callerRole) => {
+      const projectId = `non-admin-credentials-${callerRole}`;
+      await addSpace(projectId, { callerRole });
+      for (const method of ['GET', 'PUT'])
+        expect((await invoke({}, { projectId, admin: false, method })).status).toBe(403);
+      expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+    },
+  );
+});

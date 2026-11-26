@@ -279,6 +279,21 @@ describe('environment registry store', () => {
       findingsTruncated: true,
     });
     expect(updates()).toBe(7);
+
+    // A result stored from the first page only (no `incomplete`, truncated by
+    // the token ECR leaves on the last page) is rewritten once by the full read.
+    const fullRead = {
+      ...withFindings(pending('2026-11-20T09:00:00.000Z'), [finding('CVE-old')]),
+      incomplete: false,
+    };
+    await stage(newDigest, fullRead);
+    expect(items.get(`ENV#standard|REV#${staged.revisionId}`).scanFindings).toMatchObject({
+      findingsTruncated: false,
+      incomplete: false,
+    });
+    expect(updates()).toBe(8);
+    await stage(newDigest, { ...fullRead, evaluatedAt: '2026-11-20T10:00:00.000Z' });
+    expect(updates()).toBe(8);
   });
 
   it('marks an unpublished dependent when its current revision uses an older base', async () => {

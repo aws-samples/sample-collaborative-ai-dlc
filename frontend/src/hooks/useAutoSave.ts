@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useMemo } from 'react';
 
 interface UseAutoSaveOptions {
@@ -18,6 +19,7 @@ class SaveQueue<T> {
   interval = 2000;
   maxWait = 10_000;
   enabled = true;
+  readOnly = false;
   disposed = false;
   revision = 0;
   savedRevision = 0;
@@ -66,9 +68,11 @@ class SaveQueue<T> {
 
   flush = async (): Promise<void> => {
     this.cancelTimer();
+    if (this.readOnly) return;
     const requiredRevision = this.revision;
     try {
       while (this.savedRevision < requiredRevision) {
+        if (this.readOnly) return;
         if (this.running) {
           await this.running;
           continue;
@@ -111,12 +115,14 @@ export function useAutoSave<T = Record<string, string>>(
   deps: readonly unknown[],
   options?: UseAutoSaveOptions,
 ) {
+  const { readOnly } = useSpacePermissions();
   const resetKey = options?.resetKey;
   // A new document needs an independent queue. Callbacks/configuration are
   // refreshed below without discarding an in-flight save on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const queue = useMemo(() => new SaveQueue(getData, onSave), [resetKey]);
-  const enabled = options?.enabled ?? true;
+  queue.readOnly = readOnly;
+  const enabled = !readOnly && (options?.enabled ?? true);
   const interval = options?.interval ?? 2000;
   const maxWait = options?.maxWait ?? 10_000;
   const skipInitial = options?.skipInitial ?? false;

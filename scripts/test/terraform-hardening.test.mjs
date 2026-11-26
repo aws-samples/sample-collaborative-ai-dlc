@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -229,6 +229,24 @@ test('lambda_vpc_scope all places every Lambda in private subnets', () => {
   );
 });
 
+test('every Lambda module log group expires its events', () => {
+  const paths = readdirSync(join(root, 'terraform/modules'), { recursive: true })
+    .filter((path) => path.endsWith('.tf'))
+    .map((path) => `terraform/modules/${path}`);
+  const missing = paths.flatMap((path) =>
+    lambdaModuleBlocks(read(path))
+      .filter(
+        (block) =>
+          !/^\s*cloudwatch_logs_retention_in_days\s+= var\.environment == "prod" \? 30 : 7$/m.test(
+            block,
+          ),
+      )
+      .map((block) => `${path}: ${block.match(/^module "([^"]+)"/)[1]}`),
+  );
+  assert.ok(paths.length > 0);
+  assert.deepEqual(missing, [], 'Lambda modules without a log retention period');
+});
+
 test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
   const variables = read('terraform/variables.tf');
   assert.match(variables, /variable "enable_waf"[\s\S]*?default\s+= false/);
@@ -356,10 +374,11 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   ]) {
     assert.match(moduleBlock(rootMain, moduleName), /kms_key_arn\s+= var\.kms_key_arn/);
   }
+  // Standalone workers now also read the encrypted canonical access table.
   const yjsScaling = read('terraform/modules/realtime/yjs-server/scaling.tf');
   assert.match(
     moduleBlock(yjsScaling, 'dynamodb_kms_runtime_access'),
-    /kms_key_arn\s+= var\.scaling\.cluster_enabled \? var\.kms_key_arn : ""/,
+    /kms_key_arn\s+= var\.kms_key_arn/,
   );
 
   const prerequisites = read('docs/getting-started/prerequisites.md');

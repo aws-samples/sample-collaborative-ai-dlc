@@ -23,6 +23,7 @@ import {
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { SetupGuideToggle } from '@/components/admin/SetupGuideToggle';
 import { ApiError } from '@/services/api';
 import {
   codecommitAdminService,
@@ -155,9 +156,8 @@ export function CodeCommitSourceControlCard() {
         setConfig(next);
         setRoleArn(next.roleArn ?? '');
         setRegion(next.region ?? '');
-        // No connection yet → open the form (and its guide) straight away.
+        // No connection yet → open the form straight away.
         setEditing(next.roleArn === null);
-        setGuideOpen(next.roleArn === null);
       })
       .catch((error) => {
         setLoadError(error instanceof Error ? error.message : 'Failed to load configuration');
@@ -237,15 +237,10 @@ export function CodeCommitSourceControlCard() {
             <Button size="sm" onClick={() => setEditing(true)}>
               Change
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setGuideOpen((o) => !o)}>
-              {guideOpen ? 'Hide setup guide' : 'Setup guide'}
-            </Button>
           </div>
-          {guideOpen && (
-            <div className="rounded-md border bg-muted/40 p-3.5">
-              <SetupGuide config={config} region={region} roleArn={roleArn} />
-            </div>
-          )}
+          <SetupGuideToggle open={guideOpen} onOpenChange={setGuideOpen}>
+            <SetupGuide config={config} region={region} roleArn={roleArn} />
+          </SetupGuideToggle>
           <p className="text-xs text-muted-foreground">
             Existing spaces keep their role until their next Rebind and verify.
           </p>
@@ -310,24 +305,9 @@ export function CodeCommitSourceControlCard() {
             </div>
           </div>
 
-          <div className="rounded-md border bg-muted/40">
-            <button
-              type="button"
-              onClick={() => setGuideOpen((o) => !o)}
-              aria-expanded={guideOpen}
-              className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium"
-            >
-              Setup guide for the AWS admin
-              <span className="text-xs font-normal text-muted-foreground">
-                {guideOpen ? 'Hide' : 'Show'}
-              </span>
-            </button>
-            {guideOpen && config && (
-              <div className="px-3 pb-3.5">
-                <SetupGuide config={config} region={region} roleArn={roleArn} />
-              </div>
-            )}
-          </div>
+          <SetupGuideToggle open={guideOpen} onOpenChange={setGuideOpen}>
+            <SetupGuide config={config} region={region} roleArn={roleArn} />
+          </SetupGuideToggle>
 
           {trustError && (
             <div

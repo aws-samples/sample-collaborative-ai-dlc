@@ -20,6 +20,7 @@ const SERVER_SEARCH_DEBOUNCE_MS = 300;
 
 interface BaseProps {
   provider: GitProvider;
+  instance?: string;
   exclude?: string[];
   repoSource?: RepoSource;
 }
@@ -46,7 +47,8 @@ const mergeRepos = (current: GitRepo[], more: GitRepo[]) => {
 };
 
 export function GitRepoSelect(props: GitRepoSelectProps) {
-  const { provider } = props;
+  const { provider, instance } = props;
+  const service = useMemo(() => getGitProviderService(provider, instance), [provider, instance]);
   const repoSource = props.repoSource ?? 'oauth';
 
   const [repos, setRepos] = useState<GitRepo[]>([]);
@@ -58,7 +60,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const [incomplete, setIncomplete] = useState<'capped' | 'failed' | null>(null);
 
   useEffect(() => {
-    const service = getGitProviderService(provider);
+    let cancelled = false;
     const listReposPage = repoSource === 'oauth' ? service.listReposPage : undefined;
     setFetching(true);
     setError(null);
@@ -68,14 +70,21 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       const listRepos =
         repoSource === 'github-app' ? githubAppService.listRepos : service.listRepos;
       listRepos()
-        .then(setRepos)
-        .catch((e) => setError(e.message))
-        .finally(() => setFetching(false));
-      return;
+        .then((rows) => {
+          if (!cancelled) setRepos(rows);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(e.message);
+        })
+        .finally(() => {
+          if (!cancelled) setFetching(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
     // One request per page: the list shows after page 1 and grows as the
     // next pages arrive.
-    let cancelled = false;
     void (async () => {
       let pagesRead = 0;
       let done = false;
@@ -115,14 +124,13 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
     return () => {
       cancelled = true;
     };
-  }, [provider, repoSource]);
+  }, [service, repoSource]);
 
   // Providers that cap the unfiltered list (GitLab: large group trees exceed
   // it) expose `searchRepos`; a typed search is sent there and the matches are
   // merged into the list. Merging, rather than replacing, keeps earlier
   // selections resolvable.
-  const searchRepos =
-    repoSource === 'oauth' ? getGitProviderService(provider).searchRepos : undefined;
+  const searchRepos = repoSource === 'oauth' ? service.searchRepos : undefined;
   const [searching, setSearching] = useState(false);
   useEffect(() => {
     const term = search.trim();

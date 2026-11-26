@@ -1412,6 +1412,39 @@ describe('intent-scoped discussions', () => {
 
   const intentPath = (suffix) => `/api/projects/{projectId}/intents/{intentId}${suffix}`;
 
+  it('keeps discussions readable after demotion but refuses posting, resolution and assistance', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'intent' },
+    });
+    expect(created.statusCode).toBe(200);
+    const discussionId = json(created).id;
+    await seedMembership(projectId, MEMBER_SUB, 'viewer');
+    const pathParameters = { projectId, intentId, discussionId, messageId: 'message' };
+    const before = await call('GET', intentPath('/discussions'), { pathParameters });
+    expect(before.statusCode).toBe(200);
+    for (const [method, suffix, body] of [
+      ['POST', '/discussions', { entityType: 'intent' }],
+      ['POST', '/discussions/{discussionId}/messages', { content: 'change', clientMessageId: 'm' }],
+      ['PUT', '/discussions/{discussionId}', { status: 'resolved' }],
+      ['POST', '/discussions/{discussionId}/assist', { action: 'summarize' }],
+      ['POST', '/discussions/{discussionId}/messages/{messageId}/redact', {}],
+    ]) {
+      const result = await call(method, intentPath(suffix), { pathParameters, body });
+      expect(result.statusCode).toBe(403);
+      expect(json(result).code).toBe('SPACE_WRITE_FORBIDDEN');
+    }
+    expect(json(await call('GET', intentPath('/discussions'), { pathParameters }))).toEqual(
+      json(before),
+    );
+    expect((await call('POST', intentPath('/realtime-token'), { pathParameters })).statusCode).toBe(
+      200,
+    );
+    expect(agentcoreMock.calls()).toHaveLength(0);
+    expect(lockStore.size).toBe(0);
+  });
+
   it('creates + lists an intent-level thread and a per-artifact thread', async () => {
     const { projectId, intentId, artifactId } = await seedIntent();
 

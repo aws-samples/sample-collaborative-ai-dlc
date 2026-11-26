@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { Project } from '@/services/projects';
 import { UNPRICED_MODEL_NOTE } from '@/components/settings/UnpricedModelNote';
 
@@ -145,5 +145,46 @@ describe('AgentTab model overrides', () => {
       expect(document.getElementById('model-codex')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('model-source-codex')).toBeNull();
+  });
+});
+
+describe('AgentTab output language (#784)', () => {
+  it('previews a valid tag and saves it through the project update', async () => {
+    const { projectsService } = await import('@/services/projects');
+    const update = vi.fn().mockResolvedValue({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+    (projectsService as unknown as Record<string, unknown>).update = update;
+    const onProjectUpdated = vi.fn();
+    render(<AgentTab project={project({})} canEdit onProjectUpdated={onProjectUpdated} />);
+
+    const input = (await screen.findByLabelText('BCP 47 language tag')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'ko' } });
+    expect(screen.getByText(/Korean \(한국어\)/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Save Language/ }));
+    await waitFor(() => {
+      expect(update).toHaveBeenCalledWith('p-1', { conversationLanguage: 'ko' });
+    });
+    expect(onProjectUpdated).toHaveBeenCalledWith({
+      conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+    });
+  });
+
+  it('shows members the read-only value, or Not set', async () => {
+    render(
+      <AgentTab
+        project={
+          {
+            ...project({}),
+            conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' },
+          } as Project
+        }
+        canEdit={false}
+        onProjectUpdated={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('Korean (한국어)')).toBeInTheDocument();
+    expect(screen.queryByLabelText('BCP 47 language tag')).toBeNull();
   });
 });

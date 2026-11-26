@@ -39,10 +39,10 @@ locals {
   # tree into each affected module's `hash_extra`, so any shared-file edit forces
   # a rebuild. Covers nested dirs (e.g. git-providers/) via the "**" glob.
   shared_dir = "${path.module}/../../../../lambda/shared"
-  shared_sources_hash = sha256(join("", [
-    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+  shared_sources_hash = sha256(join("", concat([
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json,cedar}")) :
     filesha256("${local.shared_dir}/${f}")
-  ]))
+  ], [filesha256("${path.module}/../../../../scripts/package-cedar.mjs")])))
 
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
@@ -1231,11 +1231,11 @@ resource "aws_iam_role_policy" "source_control" {
       {
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]
-        Resource = compact([
+        Resource = concat(compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
           var.bitbucket_oauth_secret_arn,
-        ])
+        ]), values(var.gitlab_instance_secrets))
       },
       {
         # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
@@ -1300,6 +1300,7 @@ module "source_control_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_INSTANCE_SECRETS            = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
@@ -1439,11 +1440,11 @@ resource "aws_iam_role_policy" "credential_broker" {
       {
         Effect = "Allow"
         Action = ["secretsmanager:GetSecretValue"]
-        Resource = compact([
+        Resource = concat(compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
           var.bitbucket_oauth_secret_arn,
-        ])
+        ]), values(var.gitlab_instance_secrets))
       },
       {
         # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
@@ -1502,6 +1503,7 @@ module "credential_broker_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_INSTANCE_SECRETS            = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
@@ -1640,6 +1642,7 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
@@ -1664,6 +1667,8 @@ module "projects_lambda" {
     }, var.enable_mcp_gateway ? {
     GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
   } : {}, local.notification_event_env, local.runtime_mcp_policy_env)
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 locals {
@@ -1714,6 +1719,8 @@ module "users_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = local.users_environment
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Sprints Lambda
@@ -1757,6 +1764,8 @@ module "sprints_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Requirements Lambda
@@ -1801,6 +1810,8 @@ module "requirements_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # User Stories Lambda
@@ -1845,6 +1856,8 @@ module "user_stories_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Tasks Lambda
@@ -1888,6 +1901,8 @@ module "tasks_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Code Files Lambda
@@ -1932,6 +1947,8 @@ module "code_files_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Reviews Lambda
@@ -1976,6 +1993,8 @@ module "reviews_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Questions Lambda
@@ -2020,6 +2039,8 @@ module "questions_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Sprint Graph Lambda
@@ -2063,6 +2084,8 @@ module "sprint_graph_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # General Info Lambda
@@ -2107,6 +2130,8 @@ module "general_info_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # GitHub Lambda
@@ -2155,6 +2180,8 @@ module "github_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.github_connector_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # -----------------------------------------------------------------------------
@@ -2205,7 +2232,7 @@ resource "aws_iam_role_policy" "gitlab_connector" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [var.gitlab_oauth_secret_arn]
+        Resource = concat([var.gitlab_oauth_secret_arn], values(var.gitlab_instance_secrets))
       },
       {
         Effect   = "Allow"
@@ -2253,6 +2280,7 @@ module "gitlab_lambda" {
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -2264,6 +2292,8 @@ module "gitlab_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.gitlab_connector_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # -----------------------------------------------------------------------------
@@ -2371,6 +2401,8 @@ module "bitbucket_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.bitbucket_connector_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # -----------------------------------------------------------------------------
@@ -2478,6 +2510,8 @@ module "codecommit_lambda" {
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Trackers Lambda — provider-agnostic tracker integration. Git-backed providers
@@ -2527,6 +2561,7 @@ module "trackers_lambda" {
     JIRA_REDIRECT_URI              = var.jira_redirect_uri
     JIRA_TOKEN_SSM_PREFIX          = "${var.project_name}/${var.environment}/jira-token"
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GITLAB_INSTANCE_SECRETS        = jsonencode(var.gitlab_instance_secrets)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
     SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name
@@ -2540,6 +2575,8 @@ module "trackers_lambda" {
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 resource "aws_cloudwatch_event_rule" "tracker_delivery_reconciler" {
@@ -2604,6 +2641,8 @@ module "timeline_events_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # -----------------------------------------------------------------------------
@@ -2747,6 +2786,8 @@ module "discussions_lambda" {
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
   }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {}, local.notification_event_env)
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 locals {
@@ -2797,6 +2838,8 @@ module "cognito_users_lambda" {
   environment_variables = local.cognito_users_environment
 
   depends_on = [aws_iam_role_policy_attachment.cognito_reader_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Purge Neptune Lambda (admin utility, invoked directly via CLI)
@@ -2834,6 +2877,8 @@ module "purge_neptune_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Tracker-fields migration Lambda (admin one-shot, invoked directly via CLI).
@@ -2876,6 +2921,8 @@ module "migrate_tracker_fields_lambda" {
     NEPTUNE_ENDPOINT            = var.neptune_endpoint
     ENVIRONMENT                 = var.environment
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Building Blocks Lambda — CRUD over the reusable-block library. DynamoDB + S3
@@ -2920,6 +2967,8 @@ module "building_blocks_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
@@ -2972,6 +3021,8 @@ module "seed_blocks_lambda" {
   }
 
   depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Workflows Lambda — composition over the block library: a workflow references
@@ -3033,6 +3084,8 @@ module "workflows_lambda" {
     aws_iam_role_policy_attachment.workflows_vpc,
     aws_iam_role_policy.workflows_intent_lookup,
   ]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # -----------------------------------------------------------------------------
@@ -3399,6 +3452,8 @@ module "intents_lambda" {
     var.enable_mcp_gateway ? {
       GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
   } : {}, local.runtime_mcp_policy_env)
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3446,6 +3501,8 @@ module "intent_pin_lookup_lambda" {
   }
 
   depends_on = [aws_lambda_invocation.membership_copy, aws_iam_role_policy_attachment.intent_pin_lookup_vpc]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Only the workflows principal may invoke the lookup, and only that one function.

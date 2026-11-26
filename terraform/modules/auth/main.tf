@@ -146,6 +146,8 @@ module "sso_token_lambda" {
     SSO_ROLE_CONFIG         = jsonencode(local.role_config)
     ACCESS_TABLE            = var.access_table_name
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 resource "aws_lambda_permission" "allow_cognito_sso_token" {

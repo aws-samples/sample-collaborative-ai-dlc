@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   notifySessionExpired: vi.fn(),
   getRealtimeToken: vi.fn(),
   getYjsUrl: vi.fn(),
+  getProject: vi.fn(),
 }));
 
 vi.mock('../services/auth', () => ({
@@ -33,6 +34,10 @@ vi.mock('../lib/realtimeToken', () => ({
   msUntilRefresh: () => 60_000,
   scopeTargetForYjsDoc: () => ({ projectId: 'project-1' }),
 }));
+
+vi.mock('../services/projects', () => ({ projectsService: { get: mocks.getProject } }));
+import { SpacePermissionsProvider } from '../contexts/SpacePermissionsContext';
+import { ApiError } from '../services/api';
 
 import { useYjsDocument } from './useYjsDocument';
 
@@ -99,6 +104,37 @@ describe('useYjsDocument', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
+
+  it.each([new TypeError('Offline'), new ApiError(503, 'Unavailable')])(
+    'connects after a short initial permission retry without replacing the document (%s)',
+    async (error) => {
+      vi.useFakeTimers();
+      mocks.getProject
+        .mockReset()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue({
+          userRole: 'member',
+          permissions: { read: true, write: true, manage: false },
+        });
+      const { result, unmount } = renderHook(
+        () => useYjsDocument('inception-project-1', 'Alice', '#3b82f6'),
+        {
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <SpacePermissionsProvider projectId="project-1">{children}</SpacePermissionsProvider>
+          ),
+        },
+      );
+      const doc = result.current.doc;
+      await act(async () => await vi.advanceTimersByTimeAsync(999));
+      expect(instances).toHaveLength(0);
+      expect(mocks.getProject).toHaveBeenCalledTimes(1);
+      await act(async () => await vi.advanceTimersByTimeAsync(1));
+      expect(instances).toHaveLength(1);
+      expect(result.current.doc).toBe(doc);
+      expect(mocks.getProject).toHaveBeenCalledTimes(2);
+      unmount();
+    },
+  );
 
   it('publishes the current user awareness state as soon as the socket opens', async () => {
     const { result, unmount } = renderHook(
@@ -347,4 +383,70 @@ describe('useYjsDocument', () => {
     await waitFor(() => expect(oldDoc.isDestroyed).toBe(true));
     unmount();
   });
+});
+
+describe('permission refresh during offline editing', () => {
+  it.each([new TypeError('Network unavailable'), new ApiError(503, 'Unavailable')])(
+    'preserves the document and unsent edit after %s, then revokes on a confirmed Viewer response',
+    async (failure) => {
+      instances.length = 0;
+      mocks.resolveSession.mockResolvedValue({ session: { idToken: 'id-token' }, expired: false });
+      mocks.getRealtimeToken.mockResolvedValue({
+        token: 'scope-token',
+        exp: Math.floor(Date.now() / 1000) + 600,
+      });
+      mocks.getYjsUrl.mockReturnValue('wss://example.test/yjs/doc');
+      vi.stubGlobal('WebSocket', MockWebSocket);
+      let resolvePermissions!: (value: unknown) => void;
+      mocks.getProject.mockReset().mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolvePermissions = resolve;
+        }),
+      );
+      const { result, unmount } = renderHook(() => useYjsDocument('inception-project-1'), {
+        wrapper: ({ children }) => (
+          <SpacePermissionsProvider projectId="project-1">{children}</SpacePermissionsProvider>
+        ),
+      });
+      const doc = result.current.doc;
+      expect(instances).toHaveLength(0);
+      await act(async () =>
+        resolvePermissions({
+          userRole: 'member',
+          permissions: { read: true, write: true, manage: false },
+        }),
+      );
+      await waitFor(() => expect(instances).toHaveLength(1));
+      expect(result.current.doc).toBe(doc);
+      act(() => instances[0].open());
+      act(() => completeSync(instances[0], new Y.Doc()));
+      vi.useFakeTimers();
+      act(() => instances[0].close());
+      act(() => doc.getText('content').insert(0, 'unsent edit'));
+      mocks.resolveSession.mockRejectedValue(new TypeError('Offline'));
+      mocks.getProject.mockRejectedValue(failure);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(result.current.doc).toBe(doc);
+      expect(doc.getText('content').toString()).toBe('unsent edit');
+      expect(instances).toHaveLength(1);
+      // A real demotion still drops rejected local updates before reconnection.
+      mocks.getProject.mockResolvedValue({
+        userRole: 'viewer',
+        permissions: { read: true, write: false, manage: false },
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(result.current.doc).not.toBe(doc);
+      expect(result.current.doc.getText('content').toString()).toBe('');
+      unmount();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    },
+  );
 });

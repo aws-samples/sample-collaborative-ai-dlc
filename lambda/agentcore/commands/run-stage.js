@@ -533,11 +533,15 @@ const buildReviewerPrompt = ({
   reviewerPersona,
   knowledge,
   round,
+  // Forwarded like runReviewer's dispatchPersona call does, so this renders
+  // the exact prompt the reviewer runs with when a language is set (#784).
+  conversationLanguage = null,
 }) =>
   composePersonaPrompt({
     brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
     persona: reviewerPersona,
     knowledge,
+    conversationLanguage,
     role: 'reviewer',
     stageId: stage.stageId,
     // The reviewer's MCP role carries neither checkpoint tool and no
@@ -626,6 +630,9 @@ const runReviewer = async ({
   // The reviewer agent's AGENT.maxTurns, or null. Passed only for a release
   // catalog, where upstream sets it (on the two reviewer agents).
   maxTurns = null,
+  // Conversation language from the intent META (#784); review findings follow
+  // it like every other persona's prose.
+  conversationLanguage = null,
 }) => {
   const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
   await store
@@ -652,6 +659,7 @@ const runReviewer = async ({
     persona: reviewerPersona,
     knowledge,
     brief,
+    conversationLanguage,
     cli,
     cliModels,
     tierModels,
@@ -1810,6 +1818,9 @@ const runStageAttempt = async (
     // agent's `tier` to a concrete model per CLI. A tier row wins over the flat
     // cliModels default above; the flat default covers everything tier-less.
     tierModels = null,
+    // { tag, englishName, nativeName } pinned on META (#784), forwarded by the
+    // orchestrator from its consistent META read. null states no language.
+    conversationLanguage = null,
     // Custom MCP servers — carried as TWO SEPARATE tier maps (global + project),
     // each holding only `${VAR}` references (no secret values). The runtime
     // computes survivors (project overrides global by name), resolves each tier's
@@ -3619,6 +3630,8 @@ const runStageAttempt = async (
       intent: intentMeta
         ? { title: intentMeta.title, prompt: intentMeta.prompt, scope }
         : { scope },
+      // Conversation language (#784) from the dispatch; null renders nothing.
+      conversationLanguage,
       stageBody,
       agentPersona,
       knowledge,
@@ -4252,6 +4265,7 @@ const runStageAttempt = async (
         cli,
         cliModels,
         tierModels,
+        conversationLanguage,
         env,
         redirectEnv,
         workspaceDir,
@@ -5065,6 +5079,7 @@ const runStageAttempt = async (
         reviewerPersona,
         knowledge: reviewerMethodology,
         round,
+        conversationLanguage,
         cli,
         cliModels,
         tierModels,

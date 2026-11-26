@@ -1,3 +1,5 @@
+import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
+import { realtimePermissions } from '../shared/realtime-permissions.js';
 import { fetchMembershipRole, membershipStore } from '../shared/space-membership.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -29,6 +31,10 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Logger } from '@aws-lambda-powertools/logger';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import {
+  normalizeConversationLanguage,
+  parseStoredConversationLanguage,
+} from '../shared/conversation-language.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import {
   isEnvironmentResolutionError,
@@ -227,6 +233,7 @@ const readV2Settings = (v) => {
   const kind = getVal(v, 'kind') || 'v1';
   if (kind !== 'v2') return { kind };
   const rawVersion = getVal(v, 'workflow_version');
+  const conversationLanguage = parseStoredConversationLanguage(getVal(v, 'conversation_language'));
   return {
     kind,
     workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
@@ -245,6 +252,10 @@ const readV2Settings = (v) => {
       DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
     environmentId: getVal(v, 'environment_id') || 'standard',
+    // Conversation language for agent prose (#784). OMITTED, not nulled, when
+    // unset (agents keep today's behaviour), so existing DTOs stay
+    // byte-identical for deployed clients.
+    ...(conversationLanguage ? { conversationLanguage } : {}),
   };
 };
 
@@ -548,11 +559,14 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
 // is only repository discovery metadata and never supplies runtime credentials.
 // Returns null when no credential is available — detection is best-effort,
 // so callers treat null as "skip detection".
-const getUserGitToken = async (userId, provider) => {
+const getUserGitToken = async (userId, provider, repo) => {
   if (!provider) return null;
   if (!userId) return null;
   try {
-    const item = await getGitConnection(ddb, userId, provider);
+    const adapter = getProvider(provider);
+    const instance = adapter.instanceFor(repo);
+    if (instance) adapter.oauth.secretNameFor(instance);
+    const item = await getGitConnection(ddb, userId, provider, instance);
     if (!item?.parameterName) return null;
     // Refresh GitLab OAuth tokens just-in-time (they live ~2h); passthrough for
     // other providers. Keeps detection working even if the stored token expired.
@@ -594,7 +608,10 @@ async function detectRepoStack(repoUrl, token, providerId = 'github') {
   } catch {
     return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
   }
-  const ctx = { token };
+  const ctx = {
+    token,
+    instance: provider.instanceFor(repoUrl),
+  };
 
   let tree;
   try {
@@ -1191,7 +1208,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       (await g.V().has('Project', 'id', projectId).valueMap('git_repo').next()).value,
       'git_repo',
     );
-    await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+    if (spacePermissions(role).write) await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
     const repos = await fetchRepos(g, projectId);
     return response(200, repos);
   }
@@ -1318,9 +1335,20 @@ export const handler = async (event, context) => {
       );
     }
 
+    if (event.action === 'realtime-permissions' && !event.httpMethod && !event.requestContext) {
+      return await realtimePermissions(g, store, event);
+    }
+
     const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
+    if (projectId && httpMethod !== 'GET') {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const currentRole = await fetchMembershipRole(g, projectId, userId);
+      // Route handlers retain their resource/Owner checks, including deletion
+      // retries after graph teardown that use the retained membership record.
+      if (currentRole && !spacePermissions(currentRole).write) return response(403, VIEWER_DENIED);
+    }
     logger.appendKeys({
       ...(projectId && { projectId }),
       ...(userId && { userId }),
@@ -1440,7 +1468,8 @@ export const handler = async (event, context) => {
           const legacyGitRepo = getVal(v, 'git_repo');
 
           // Lazy migration: ensure legacy git_repo has a corresponding Repository vertex
-          await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+          if (spacePermissions(role).write)
+            await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
           const repos = await fetchRepos(g, projectId);
           const project = {
             id: getVal(v, 'id') || projectId,
@@ -1454,7 +1483,8 @@ export const handler = async (event, context) => {
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             // Legacy projects created before updated_at existed fall back to created_at.
             updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-            userRole: role || 'member',
+            userRole: role,
+            permissions: spacePermissions(role),
             trackers: trackerMaps.map(mapBinding),
             repos,
             ...readV2Settings(v),
@@ -1492,7 +1522,8 @@ export const handler = async (event, context) => {
                 (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
               const legacyGitRepo = getVal(v, 'git_repo');
 
-              await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
+              if (spacePermissions(role).write)
+                await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
               const repos = await fetchRepos(g, pid);
 
               return withLegacyTracker({
@@ -1507,7 +1538,8 @@ export const handler = async (event, context) => {
                 createdAt: getVal(v, 'created_at') || new Date().toISOString(),
                 // Legacy projects created before updated_at existed fall back to created_at.
                 updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
-                userRole: role || 'member',
+                userRole: role,
+                permissions: spacePermissions(role),
                 trackers: trackerMaps.map(mapBinding),
                 repos,
                 ...readV2Settings(v),
@@ -1922,6 +1954,30 @@ export const handler = async (event, context) => {
             .property(cardinality.single, 'pr_strategy', normalizedPrStrategy)
             .next();
         }
+        // Conversation language for agent-authored prose (#784). Stored as the
+        // resolved { tag, englishName, nativeName } JSON; '' clears it.
+        let normalizedConversationLanguage;
+        let conversationLanguageSet = false;
+        if (data.conversationLanguage !== undefined) {
+          const languageValidation = normalizeConversationLanguage(data.conversationLanguage);
+          if (languageValidation.error) {
+            return response(400, {
+              error: languageValidation.error.message,
+              code: languageValidation.error.code,
+            });
+          }
+          normalizedConversationLanguage = languageValidation.value;
+          conversationLanguageSet = true;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'conversation_language',
+              normalizedConversationLanguage ? JSON.stringify(normalizedConversationLanguage) : '',
+            )
+            .next();
+        }
         // Per-project stage-skipping override (shared/stage-skip.js).
         let normalizedStageSkipping;
         if (data.stageSkipping !== undefined) {
@@ -1975,6 +2031,9 @@ export const handler = async (event, context) => {
           ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
           ...(normalizedStageSkipping !== undefined
             ? { stageSkipping: normalizedStageSkipping }
+            : {}),
+          ...(conversationLanguageSet
+            ? { conversationLanguage: normalizedConversationLanguage }
             : {}),
         });
       }

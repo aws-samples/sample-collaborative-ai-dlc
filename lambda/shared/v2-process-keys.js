@@ -36,6 +36,8 @@
 //   GSI3PK = PR_WAITS            GSI3SK = EXEC#<executionId>#UNIT#<unitLaneId>
 //   GSI3PK = TRACKER_SYNCS       GSI3SK = CHECK#<timestamp>#EXEC#<executionId>
 //     (sparse maintenance index for live execution and integration work)
+//   PK = MAINTENANCE#<sweep>  SK = CURSOR
+//     (where a scheduled sweep over one GSI3 partition resumes; not indexed)
 
 const META = 'META';
 const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
@@ -498,6 +500,11 @@ const buildExecutionMeta = ({
   // from the project; the orchestrator forwards it to run-stage which fetches
   // each .md from S3 and injects it into the agent context. null = none.
   customRules = null,
+  // Conversation language for agent prose (#784): the resolved
+  // { tag, englishName, nativeName } snapshotted from the space at create,
+  // PATCHable while DRAFT. run-stage reads it off this row and states it in
+  // every lead and persona prompt. null = unset (no language instruction).
+  conversationLanguage = null,
   // Immutable environment identity, image, runtime, endpoint, compatibility,
   // and verification data used for the full intent lifetime.
   environment = null,
@@ -647,6 +654,9 @@ const buildExecutionMeta = ({
   mcpServersByTier,
   customMcpServers,
   customRules,
+  // Only a language-stated intent carries the attribute, so every other row
+  // keeps exactly the attributes it always had.
+  ...(conversationLanguage ? { conversationLanguage } : {}),
   environment,
   deriveEnrichment,
   parkReleaseSeconds,
@@ -1588,4 +1598,11 @@ export default {
 export const deliveryKey = (executionId, runId) => ({
   pk: executionPk(executionId),
   sk: `DELIVERY#${runId}`,
+});
+
+// The resume position of a scheduled maintenance sweep (durable watchdog,
+// PR-wait reconciler). Carries no GSI attributes, so no index lists it.
+export const maintenanceCursorKey = (sweep) => ({
+  pk: `MAINTENANCE#${sweep}`,
+  sk: 'CURSOR',
 });

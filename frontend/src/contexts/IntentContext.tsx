@@ -973,7 +973,9 @@ export function IntentProvider({
       );
     }
     const scope = detail?.intent.scope ?? null;
-    const grid = scope ? compiled?.scopeGrid?.[scope] : undefined;
+    // A composed grid replaces the named-scope projection (`scope` is then only
+    // the provenance label), so it must win over the scope's baseline grid.
+    const grid = detail?.intent.composedGrid ?? (scope ? compiled?.scopeGrid?.[scope] : undefined);
     const planNodes = (compiled?.graph.nodes ?? [])
       .filter((n) => !grid || grid[n.stageId] === 'EXECUTE')
       .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0));

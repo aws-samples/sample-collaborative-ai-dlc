@@ -51,7 +51,7 @@ jobs:
             dockerfile: lambda/agentcore/Dockerfile
           - image: yjs-server
             runner: ubuntu-24.04
-            context: lambda/yjs-server
+            context: lambda
             dockerfile: lambda/yjs-server/Dockerfile
     permissions:
       contents: read

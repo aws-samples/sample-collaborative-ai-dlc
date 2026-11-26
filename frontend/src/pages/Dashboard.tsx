@@ -87,6 +87,7 @@ export default function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { projects: projectsWithSprints, loading, error, refresh, invalidate } = useProjectsCache();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createInitialInstance, setCreateInitialInstance] = useState<string>();
   const [createInitialProvider, setCreateInitialProvider] = useState<GitProvider | ''>('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -115,6 +116,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (searchParams.get('reopenCreateSpace') === '1') {
+      setCreateInitialInstance(searchParams.get('gitlabInstance') || undefined);
       const provider = searchParams.get('gitProvider');
       if (isGitProvider(provider)) {
         setCreateInitialProvider(provider);
@@ -175,6 +177,7 @@ export default function Dashboard() {
           </div>
           <Button
             onClick={() => {
+              setCreateInitialInstance(undefined);
               setCreateInitialProvider('');
               setShowCreateModal(true);
             }}
@@ -268,6 +271,7 @@ export default function Dashboard() {
               </p>
               <Button
                 onClick={() => {
+                  setCreateInitialInstance(undefined);
                   setCreateInitialProvider('');
                   setShowCreateModal(true);
                 }}
@@ -466,6 +470,7 @@ export default function Dashboard() {
       {showCreateModal && (
         <CreateProjectModal
           initialProvider={createInitialProvider}
+          initialInstance={createInitialInstance}
           onClose={() => setShowCreateModal(false)}
           onCreated={refresh}
         />

@@ -632,6 +632,7 @@ module "lambda" {
   codecommit_connection_param_name         = module.git.codecommit_connection_param_name
   codecommit_connection_param_arn          = module.git.codecommit_connection_param_arn
   codecommit_external_id                   = module.git.codecommit_external_id
+  gitlab_instance_secrets                  = var.gitlab_instance_secrets
   gitlab_oauth_secret_name                 = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn                  = module.git.gitlab_oauth_secret_arn
   bitbucket_oauth_secret_name              = module.git.bitbucket_oauth_secret_name
@@ -788,6 +789,10 @@ module "realtime" {
 # Yjs Server (ECS)
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
+
+  space_permissions_function_arn = module.lambda.projects_lambda_arn
+  access_table_name              = module.dynamodb.access_table_name
+  access_table_arn               = module.dynamodb.access_table_arn
 
   iam_role_path                = var.iam_role_path
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn

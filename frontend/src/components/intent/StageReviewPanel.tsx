@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useCallback, useEffect, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import type {
@@ -251,6 +252,7 @@ export function StageReviewPanel({
   onAnswer,
   onBack,
 }: StageReviewPanelProps) {
+  const { readOnly } = useSpacePermissions();
   const [submitting, setSubmitting] = useState(false);
   const { stageNameOf, openItemPreview, reload } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
@@ -657,7 +659,7 @@ export function StageReviewPanel({
                 rows={4}
                 placeholder="What should the agent change before this stage can continue?"
                 className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting || !synced}
+                disabled={readOnly || submitting || !synced}
               />
               {remoteUsers.size > 0 && (
                 <div className="flex items-center gap-1">
@@ -688,7 +690,7 @@ export function StageReviewPanel({
               <Select
                 value={skipTo || 'next'}
                 onValueChange={(v) => setSkipTo(v === 'next' ? '' : v)}
-                disabled={submitting}
+                disabled={readOnly || submitting}
               >
                 <SelectTrigger id="skip-to-select" className="h-9 w-full text-sm">
                   <SelectValue />
@@ -725,7 +727,7 @@ export function StageReviewPanel({
                 rows={2}
                 placeholder="A convention, constraint or gotcha that should steer future work in this project."
                 className="flex min-h-[44px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting}
+                disabled={readOnly || submitting}
               />
               <p className="flex justify-between gap-2 text-xs text-muted-foreground">
                 <span>
@@ -751,7 +753,7 @@ export function StageReviewPanel({
                 rows={2}
                 placeholder="Recorded with your name on the approval, e.g. 'The claim is sourced in the linked ADR.'"
                 className="flex min-h-[44px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting}
+                disabled={readOnly || submitting}
               />
               <p className="text-right text-xs text-muted-foreground" aria-live="polite">
                 {overrideReason.length}/{OVERRIDE_REASON_MAX_LENGTH}
@@ -793,7 +795,7 @@ export function StageReviewPanel({
               <>
                 <Button
                   variant="outline"
-                  disabled={submitting || !synced || !feedback.trim()}
+                  disabled={readOnly || submitting || !synced || !feedback.trim()}
                   onClick={() => submit('request-changes')}
                 >
                   Request changes
@@ -801,7 +803,7 @@ export function StageReviewPanel({
                 {loopBackTarget && (
                   <Button
                     variant="outline"
-                    disabled={submitting || !synced}
+                    disabled={readOnly || submitting || !synced}
                     onClick={() => {
                       if (
                         !window.confirm(
@@ -819,7 +821,7 @@ export function StageReviewPanel({
                 {canGrantAutonomy && (
                   <Button
                     variant="outline"
-                    disabled={submitting || !synced}
+                    disabled={readOnly || submitting || !synced}
                     onClick={() => {
                       if (!confirmGrantAutonomy()) return;
                       void submit('grant-autonomy');
@@ -831,7 +833,7 @@ export function StageReviewPanel({
                 {canOverride && (
                   <Button
                     variant="outline"
-                    disabled={submitting || !overrideReason.trim()}
+                    disabled={readOnly || submitting || !overrideReason.trim()}
                     onClick={() => {
                       // An override records the human's name against the blocking
                       // findings it waives. Naming the count in the confirmation is
@@ -851,7 +853,7 @@ export function StageReviewPanel({
                   </Button>
                 )}
                 {canApprove && (
-                  <Button disabled={submitting} onClick={() => submit('approve')}>
+                  <Button disabled={readOnly || submitting} onClick={() => submit('approve')}>
                     {skipTo
                       ? `Approve & skip to ${skipTo}`
                       : gate.nextStageId !== undefined

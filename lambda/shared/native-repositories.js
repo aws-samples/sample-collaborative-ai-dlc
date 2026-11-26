@@ -1,3 +1,4 @@
+import { parseGitlabRepo } from './gitlab-instance.js';
 import { createHash } from 'node:crypto';
 import {
   CODECOMMIT_REPO_ARN_PATTERN,
@@ -93,7 +94,10 @@ const assignNativeRepositoryDirectories = (repositories) => {
 const repositoryCloneUrl = (repository, provider) => {
   const value = String(repository ?? '');
   if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
-  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
+  if (provider === 'gitlab') {
+    const { instance, path } = parseGitlabRepo(value);
+    return instance ? `https://${instance}/${path}.git` : `git@gitlab.com:${value}.git`;
+  }
   if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
   if (provider === 'codecommit') {
     // The regional HTTPS endpoint, the form every CodeCommit credential works

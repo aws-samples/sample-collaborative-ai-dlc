@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -40,6 +41,7 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } f
 // lands on next (IntentComposePage), so teammates can join the draft live.
 export default function NewIntentPage() {
   const navigate = useNavigate();
+  const { readOnly } = useSpacePermissions();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const requestedReleaseId = searchParams.get('release');
@@ -515,6 +517,7 @@ export default function NewIntentPage() {
               <Label htmlFor="intent-title">Title</Label>
               <Input
                 id="intent-title"
+                disabled={readOnly}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="e.g. Add user authentication"
@@ -532,6 +535,7 @@ export default function NewIntentPage() {
               </Label>
               <textarea
                 id="intent-prompt"
+                disabled={readOnly}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={10}
@@ -635,7 +639,7 @@ export default function NewIntentPage() {
                               onValueChange={(v) =>
                                 setBaseBranchSelections((prev) => ({ ...prev, [repo.url]: v }))
                               }
-                              disabled={branchLoading[repo.url] || !options}
+                              disabled={readOnly || branchLoading[repo.url] || !options}
                             >
                               <SelectTrigger id={`base-branch-${repo.url}`} className="mt-1.5">
                                 <SelectValue
@@ -708,7 +712,12 @@ export default function NewIntentPage() {
               </Button>
               <Button
                 type="submit"
-                disabled={creating || (!title.trim() && !prompt.trim()) || requestedReleaseBlocked}
+                disabled={
+                  readOnly ||
+                  creating ||
+                  (!title.trim() && !prompt.trim()) ||
+                  requestedReleaseBlocked
+                }
               >
                 {creating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
                 {creating ? 'Creating…' : 'Continue to Compose'}

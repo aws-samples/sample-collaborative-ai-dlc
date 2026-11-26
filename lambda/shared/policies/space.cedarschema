@@ -1,0 +1,13 @@
+// Entities and actions evaluated by space.cedar. Tests only; not loaded at runtime.
+
+entity User {
+  membershipRole: String,
+};
+
+entity Space;
+
+action "read", "write", "manage" appliesTo {
+  principal: User,
+  resource: Space,
+  context: {},
+};
