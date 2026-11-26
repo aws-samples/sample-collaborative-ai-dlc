@@ -2134,9 +2134,36 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     const res = await exportIntent(sub, projectId, intent.id);
 
     expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body).detail).toBe(
-      'native-export: projected plan is missing native stage foo',
-    );
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'export_snapshot_incompatible',
+      detail: 'native-export: projected plan is missing native stage foo',
+    });
+  });
+
+  it('refuses an export whose workflow uses edited methodology blocks, naming them', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    procStore.set(keyOf('BLOCK#team-conventions', 'META'), {
+      pk: 'BLOCK#team-conventions',
+      sk: 'META',
+      GSI1PK: 'TENANT#default#KNOWLEDGE',
+      GSI1SK: 'NAME#team-conventions',
+      id: 'team-conventions',
+      blockId: 'team-conventions',
+      type: 'KNOWLEDGE',
+      tenantId: 'default',
+      agentRef: 'shared',
+      version: 1,
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'export_edited_blocks',
+      incompatibleBlocks: ['KNOWLEDGE:team-conventions'],
+    });
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 
   it('returns 502 when the distribution source is unavailable', async () => {
