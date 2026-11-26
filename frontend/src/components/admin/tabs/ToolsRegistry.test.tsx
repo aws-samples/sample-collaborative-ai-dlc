@@ -8,6 +8,7 @@ const createVersion = vi.fn();
 const updateVersion = vi.fn();
 const build = vi.fn();
 const retry = vi.fn();
+const publish = vi.fn();
 const acceptFindings = vi.fn();
 const recommend = vi.fn();
 const capabilities = vi.fn();
@@ -24,7 +25,7 @@ vi.mock('@/services/environments', () => ({
     build: (...args: unknown[]) => build(...args),
     retry: (...args: unknown[]) => retry(...args),
     acceptFindings: (...args: unknown[]) => acceptFindings(...args),
-    publish: vi.fn(),
+    publish: (...args: unknown[]) => publish(...args),
     recommend: (...args: unknown[]) => recommend(...args),
   },
 }));
@@ -544,6 +545,121 @@ describe('ToolsRegistry', () => {
     );
 
     expect(recommend).toHaveBeenCalledWith('java', 'tv-java-corretto');
+  });
+
+  it('asks before publishing and says what the stored scan found and when', async () => {
+    const user = userEvent.setup();
+    publish.mockResolvedValue({});
+    const readyVersion = {
+      ...publishedVersion,
+      status: 'READY' as const,
+      publishedAt: undefined,
+      scanFindings: {
+        status: 'ACTIVE',
+        severityCounts: { CRITICAL: 1, HIGH: 13 },
+        findings: [],
+        evaluatedAt: '2026-11-22T10:00:00.000Z',
+      },
+      securityFindingsAcceptedAt: '2026-11-22T11:00:00.000Z',
+      securityFindingsAcceptedBy: 'admin@example.com',
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [readyVersion] }]);
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Publish' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog).toHaveTextContent('Publish Go SDK 1.24.6?');
+    expect(dialog).toHaveTextContent(
+      `The package scan on ${new Date('2026-11-22T10:00:00.000Z').toLocaleString()} found 1 Critical and 13 High findings, which an administrator accepted.`,
+    );
+    expect(dialog).toHaveTextContent('a published version cannot be unpublished');
+    expect(publish).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Publish' }));
+    expect(publish).toHaveBeenCalledWith('go', 'tv-go-1');
+  });
+
+  it('does not publish when the administrator cancels', async () => {
+    const user = userEvent.setup();
+    const readyVersion = { ...publishedVersion, status: 'READY' as const, publishedAt: undefined };
+    list.mockResolvedValue([{ ...goTool, versions: [readyVersion] }]);
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Publish' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no stored scan', undefined, 'No stored package scan result is available for this version.'],
+    [
+      'a partial scan without a date',
+      { status: 'ACTIVE', severityCounts: { HIGH: 2 }, findings: [], incomplete: true },
+      'The package scan found at least 0 Critical and 2 High findings.',
+    ],
+    [
+      'a clean scan',
+      { status: 'COMPLETE', severityCounts: {}, findings: [], evaluatedAt: 'not a date' },
+      'The package scan found 0 Critical and 0 High findings.',
+    ],
+    [
+      'an expired scan',
+      { status: 'SCAN_ELIGIBILITY_EXPIRED', severityCounts: {}, findings: [] },
+      'ECR no longer scans this image because its scan eligibility expired. No package finding was checked.',
+    ],
+    [
+      'an image ECR could not scan, accepted',
+      { status: 'UNSUPPORTED', description: null, severityCounts: {}, findings: [] },
+      'ECR could not scan this image. No package finding was checked; an administrator continued without a scan.',
+    ],
+  ])('says what the publish decision rests on with %s', async (name, scanFindings, summary) => {
+    const user = userEvent.setup();
+    const readyVersion = {
+      ...publishedVersion,
+      status: 'READY' as const,
+      publishedAt: undefined,
+      scanFindings,
+      ...(name.endsWith('accepted')
+        ? { securityFindingsAcceptedAt: '2026-11-22T11:00:00.000Z' }
+        : {}),
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [readyVersion] }]);
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Publish' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      `${summary} The scan is not checked again before publishing, and a published version cannot be unpublished.`,
+    );
+  });
+
+  it('explains why a ready version cannot be rebuilt while a dependency is missing', async () => {
+    const readyVersion = {
+      ...publishedVersion,
+      status: 'READY' as const,
+      publishedAt: undefined,
+      definition: { ...publishedVersion.definition, dependencies: ['java'] },
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [readyVersion] }]);
+    render(<ToolsRegistry />);
+
+    expect(await screen.findByRole('button', { name: 'Rebuild and re-check' })).toBeDisabled();
+    expect(screen.getByText(/before building this version/)).toBeInTheDocument();
+  });
+
+  it('rebuilds and re-checks a ready version after confirmation', async () => {
+    const user = userEvent.setup();
+    const readyVersion = { ...publishedVersion, status: 'READY' as const, publishedAt: undefined };
+    list.mockResolvedValue([{ ...goTool, versions: [readyVersion] }]);
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Rebuild and re-check' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog).toHaveTextContent('the current acceptance is discarded');
+    expect(dialog).toHaveTextContent('can only be partly read');
+    expect(dialog).toHaveTextContent('otherwise it returns to Ready');
+    expect(retry).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: 'Rebuild and re-check' }));
+    expect(retry).toHaveBeenCalledWith('go', 'tv-go-1');
   });
 
   it('requires explicit acceptance when ECR cannot scan a tool artifact', async () => {

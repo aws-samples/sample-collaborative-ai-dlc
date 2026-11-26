@@ -458,6 +458,14 @@ Publishing and recommending are separate decisions:
 | **Publish**          | Makes one exact immutable version available for explicit environment selection.       |
 | **Make recommended** | Makes one published version the default for new selections and dependency resolution. |
 
+**Publish** asks for confirmation and shows what the stored scan found, when it
+was checked, and whether an administrator accepted it. The scan is not checked
+again at that point and a published version cannot be unpublished, so to
+decide on a current scan, choose **Rebuild and re-check** first. The version is
+built and scanned again and its acceptance is discarded: Critical or High
+findings, a scan that could only be partly read, or an image ECR cannot scan
+send it back to review, and anything else returns it to `READY`.
+
 Multiple versions of the same tool can remain published. Each architecture has
 its own recommendation: one arm64 version and one x86_64 version per tool
 family. **Make recommended** on an x86_64 version sets only the x86_64
