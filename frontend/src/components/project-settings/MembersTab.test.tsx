@@ -677,6 +677,36 @@ describe('MembersTab assignable identity picker', () => {
     });
   });
 
+  it('cannot be dismissed while adding, so a failure stays visible', async () => {
+    const user = userEvent.setup();
+    let failAdd!: (reason: unknown) => void;
+    addMember.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failAdd = reject;
+        }),
+    );
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    await screen.findByText('existing@example.com');
+    await user.click(screen.getByRole('button', { name: 'Add Member' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Add Member' });
+    await user.click(within(dialog).getByLabelText('Users'));
+    await user.click(await within(dialog).findByRole('button', { name: /Local User · Cognito/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Add Member' }));
+    await waitFor(() => expect(addMember).toHaveBeenCalledTimes(1));
+
+    await user.keyboard('{Escape}');
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('dialog', { name: 'Add Member' })).toBeInTheDocument();
+
+    failAdd(new Error('Space Owner access required'));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Space Owner access required',
+    );
+    expect(within(dialog).getByText('Local User · Cognito account')).toBeInTheDocument();
+  });
+
   it('keeps only the identities that failed selected and says why', async () => {
     const user = userEvent.setup();
     addMember.mockImplementation(async (_projectId, { userId }) => {

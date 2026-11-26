@@ -702,7 +702,14 @@ function MembersTabContent({ projectId, userRole }: Props) {
       </Dialog>
 
       {/* Add Member Dialog */}
-      <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
+      <Dialog
+        open={showAddMember}
+        onOpenChange={(open) => {
+          // Stay open while adding, so a failure is not lost in a closed dialog.
+          if (!open && addingMember) return;
+          setShowAddMember(open);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <form onSubmit={handleAddMember}>
             <DialogHeader>
