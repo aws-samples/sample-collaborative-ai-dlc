@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { buildDistributionArchive } from '../../shared/distribution-archive.js';
@@ -579,6 +580,172 @@ describe('native workflow export', () => {
         code: 'export_source_unavailable',
       });
       expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+    });
+
+    // 2.11.3 and 2.11.4 ship requirements-analysis with an `outputs` value whose
+    // embedded `Step 10: ` is not valid YAML. Exporting a scope the distribution
+    // lacks rewrites that stage's scopes, so its frontmatter must be parsed with
+    // the import's normalization.
+    const RA_OUTPUTS =
+      "outputs: requirements.md, requirements-analysis-questions.md, traceability.json (Step 10: an `ids` list with one entry per FR and NFR ID, spelled exactly as requirements.md spells it, each with `kind` functional or non-functional and, for a sub-requirement, `of` its requirement) (under this stage's record dir, engine-resolved)";
+    const RA_PATH = '.codex/aidlc-common/stages/inception/requirements-analysis.md';
+    const withRequirementsAnalysis = (distributionFiles) => {
+      const files = new Map(distributionFiles);
+      files.set(
+        RA_PATH,
+        Buffer.from(`---
+slug: requirements-analysis
+number: "2.2"
+name: Requirements Analysis
+phase: inception
+execution: ALWAYS
+lead_agent: aidlc-product-agent
+produces:
+  - requirements
+scopes:
+  - feature
+inputs: intent-statement.md
+${RA_OUTPUTS}
+---
+
+# Requirements Analysis
+`),
+      );
+      const graph = JSON.parse(files.get('.codex/tools/data/stage-graph.json').toString());
+      graph.push({
+        slug: 'requirements-analysis',
+        number: '2.2',
+        phase: 'inception',
+        lead_agent: 'aidlc-product-agent',
+        produces: ['requirements'],
+        scopes: ['feature'],
+      });
+      files.set('.codex/tools/data/stage-graph.json', Buffer.from(JSON.stringify(graph)));
+      const grid = JSON.parse(files.get('.codex/tools/data/scope-grid.json').toString());
+      grid.feature.stages['requirements-analysis'] = 'EXECUTE';
+      grid.mvp.stages['requirements-analysis'] = 'SKIP';
+      files.set('.codex/tools/data/scope-grid.json', Buffer.from(JSON.stringify(grid)));
+      return files;
+    };
+    const customScopeExport = (overrides) =>
+      createNativeExport({
+        bucket: 'artifacts',
+        harness: 'codex',
+        now: '2026-08-11T12:00:00.000Z',
+        presign: vi.fn().mockResolvedValue('https://download.example/export.zip'),
+        projection: {
+          intent: {
+            projectId: 'project-1',
+            intentId: 'intent-1',
+            title: 'Payment service',
+            prompt: 'Add payments',
+            scope: 'feature-custom',
+            workflowId: 'aidlc-v2',
+            workflowVersion: 4,
+            createdAt: '2026-08-11T10:00:00.000Z',
+          },
+          stages: [
+            { stageId: 'intent-capture', phase: 'ideation' },
+            { stageId: 'requirements-analysis', phase: 'inception' },
+          ],
+          stageRows: [],
+          artifacts: [],
+          humanTasks: [],
+          repositories: [],
+        },
+        ...overrides,
+      });
+    // Reads the export ZIP through its central directory.
+    const unzip = (zip) => {
+      const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+      const entries = new Map();
+      let offset = zip.readUInt32LE(eocd + 16);
+      for (let count = zip.readUInt16LE(eocd + 10); count > 0; count -= 1) {
+        const method = zip.readUInt16LE(offset + 10);
+        const size = zip.readUInt32LE(offset + 20);
+        const nameLength = zip.readUInt16LE(offset + 28);
+        const local = zip.readUInt32LE(offset + 42);
+        const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+        const data = zip.subarray(start, start + size);
+        entries.set(
+          zip.toString('utf8', offset + 46, offset + 46 + nameLength),
+          method === 8 ? inflateRawSync(data) : data,
+        );
+        offset += 46 + nameLength + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+      }
+      return entries;
+    };
+    const exportedFiles = (s3) =>
+      unzip(
+        [...s3.objects].find(([key]) => key.startsWith('workflow-exports/'))?.[1] ??
+          Buffer.alloc(0),
+      );
+
+    it.each(['v2.11.3', 'v2.11.4'])(
+      'exports a custom scope from the %s release runtime',
+      async (profileId) => {
+        fetchRepoFiles.mockReset();
+        fetchReleaseRuntimeFiles.mockReset();
+        const profile = AIDLC_COMPATIBILITY_PROFILES[profileId];
+        const { distributionFiles } = await distribution();
+        fetchRepoFiles.mockRejectedValueOnce(noDist(profile.upstreamRef));
+        fetchReleaseRuntimeFiles.mockResolvedValueOnce(
+          new Map(
+            [...withRequirementsAnalysis(distributionFiles)].map(([path, value]) => [
+              `runtime/codex/${path}`,
+              value,
+            ]),
+          ),
+        );
+        const s3 = memoryS3();
+
+        const result = await customScopeExport({ s3, upstreamRef: profile.upstreamRef });
+
+        expect(result.downloadUrl).toBe('https://download.example/export.zip');
+        const stage = exportedFiles(s3).get(RA_PATH).toString();
+        expect(stage).toContain('scopes:\n  - feature\n  - feature-custom\n');
+        // Only the scopes block changes: the file keeps upstream's own text.
+        expect(stage).toContain(`\n${RA_OUTPUTS}\n`);
+      },
+    );
+
+    it("exports a custom scope from a custom release's own distribution in its base dialect", async () => {
+      fetchRepoFiles.mockReset();
+      const { distributionFiles } = await distribution();
+      const s3 = memoryS3();
+
+      await customScopeExport({
+        s3,
+        upstreamRef: '3333333333333333333333333333333333333333',
+        preloadedDistribution: {
+          files: withRequirementsAnalysis(distributionFiles),
+          workspaceLayout: 'spaces',
+        },
+        frontmatterProfile: AIDLC_COMPATIBILITY_PROFILES['v2.11.4'],
+      });
+
+      expect(exportedFiles(s3).get(RA_PATH).toString()).toContain('  - feature-custom\n');
+      expect(fetchRepoFiles).not.toHaveBeenCalled();
+    });
+
+    it('refuses frontmatter no known dialect parses as deterministic (409), not a crash', async () => {
+      const { distributionFiles } = await distribution();
+
+      const rejection = await rejectionOf(
+        customScopeExport({
+          s3: memoryS3(),
+          upstreamRef: '3333333333333333333333333333333333333333',
+          preloadedDistribution: {
+            files: withRequirementsAnalysis(distributionFiles),
+            workspaceLayout: 'spaces',
+          },
+        }),
+      );
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toBe(
+        `native-export: stage file has invalid frontmatter: ${RA_PATH}`,
+      );
     });
   });
 

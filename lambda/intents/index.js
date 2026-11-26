@@ -2244,6 +2244,7 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
       warnings: exportSource.warnings,
       omitStagesNotInDistribution: exportSource.omitStagesNotInDistribution,
       preloadedDistribution: exportSource.preloadedDistribution,
+      frontmatterProfile: exportSource.frontmatterProfile,
       projection,
       sourceCheckpoint: checkpoint
         ? {

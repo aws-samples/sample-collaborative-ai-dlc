@@ -22,8 +22,11 @@ const LEGACY_REF_WARNING =
   'This legacy intent did not pin a native upstream ref; the current deployment ref was used.';
 
 // Returns { upstreamRef, warnings, omitStagesNotInDistribution,
-// preloadedDistribution }, or null when the intent runs a custom release whose
-// own distribution is absent and whose base cannot be determined.
+// preloadedDistribution, frontmatterProfile }, or null when the intent runs a
+// custom release whose own distribution is absent and whose base cannot be
+// determined. frontmatterProfile is the profile whose frontmatter dialect the
+// distribution is written in: a custom release's base, or null for the profile
+// of upstreamRef.
 //
 //   readManifest({ sha, importerRevision, custom, sourceRepository })
 //   loadReleaseDistribution({ keyArgs, harness })  -> distribution | null
@@ -41,6 +44,7 @@ const resolveNativeExportSource = async ({
       warnings: meta.aidlcRepoRef ? [] : [LEGACY_REF_WARNING],
       omitStagesNotInDistribution: false,
       preloadedDistribution: null,
+      frontmatterProfile: null,
     };
   }
   const keyArgs = {
@@ -50,16 +54,17 @@ const resolveNativeExportSource = async ({
     sourceRepository: release.sourceRepository ?? null,
   };
   const own = await loadReleaseDistribution({ keyArgs, harness });
+  const manifest = await readManifest(keyArgs);
+  const base = manifest?.baseProfileId ? profileFor(manifest.baseProfileId) : null;
   if (own) {
     return {
       upstreamRef: release.sourceSha,
       warnings: [],
       omitStagesNotInDistribution: false,
       preloadedDistribution: own,
+      frontmatterProfile: base && !base.custom ? base : null,
     };
   }
-  const manifest = await readManifest(keyArgs);
-  const base = manifest?.baseProfileId ? profileFor(manifest.baseProfileId) : null;
   if (!base || base.custom || !isCommitSha(base.upstreamRef)) return null;
   return {
     upstreamRef: base.upstreamRef,
@@ -71,6 +76,7 @@ const resolveNativeExportSource = async ({
     ],
     omitStagesNotInDistribution: true,
     preloadedDistribution: null,
+    frontmatterProfile: base,
   };
 };
 

@@ -12,6 +12,7 @@ import {
 import { projectNativeWorkspace } from '../shared/native-workspace-projector.js';
 import { fetchReleaseRuntimeFiles, fetchRepoFiles } from '../shared/repo-fetch.js';
 import { isCommitSha } from '../shared/aidlc-ref.js';
+import { normalizeAidlcFrontmatter } from '../shared/aidlc-compatibility.js';
 import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import { releaseDistributionKeys } from '../shared/release-distributions.js';
 
@@ -476,11 +477,31 @@ const assertNativeScopeName = (value) => {
   return scope;
 };
 
-const parseMarkdownFrontmatter = (body, path) => {
+// A stage's frontmatter is parsed as the import parses it: with the release
+// dialect's normalizations (AI-DLC 2.11.3 and 2.11.4 ship a requirements-analysis
+// `outputs` value that is not valid YAML), applied at the stage's `core/` path.
+// The normalized text is only parsed; the file keeps its own text, so a stage
+// changes only in the scopes block renderStageScopes rewrites.
+const parseMarkdownFrontmatter = (body, path, { profile = null, corePath = null } = {}) => {
   const source = body.toString('utf8');
   const match = source.match(FRONTMATTER_RE);
   if (!match) throw new Error(`native-export: stage file has no frontmatter: ${path}`);
-  const data = yaml.load(match[1]);
+  const normalized =
+    profile && corePath
+      ? normalizeAidlcFrontmatter({ profile, path: corePath, content: source })
+      : null;
+  const yamlSource =
+    normalized && !normalized.error
+      ? (normalized.content.match(FRONTMATTER_RE)?.[1] ?? match[1])
+      : match[1];
+  let data;
+  try {
+    data = yaml.load(yamlSource);
+  } catch (error) {
+    throw new Error(`native-export: stage file has invalid frontmatter: ${path}`, {
+      cause: error,
+    });
+  }
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new Error(`native-export: stage file has invalid frontmatter: ${path}`);
   }
@@ -514,7 +535,9 @@ Its stage membership is defined by the installed stage frontmatter and compiled
 scope grid.
 `;
 
-const registerNativeScope = ({ distributionFiles, harness, stages, scope }) => {
+// `profile` is the compatibility profile whose frontmatter dialect the
+// distribution's stage files are written in (see parseMarkdownFrontmatter).
+const registerNativeScope = ({ distributionFiles, harness, stages, scope, profile = null }) => {
   const nativeScope = assertNativeScopeName(scope);
   const dataDir = HARNESS_DATA_DIRS[harness];
   const graphPath = `${dataDir}/stage-graph.json`;
@@ -571,7 +594,10 @@ const registerNativeScope = ({ distributionFiles, harness, stages, scope }) => {
       const stagePath = `${harnessDir}/aidlc-common/stages/${phase}/${slug}.md`;
       const stageBody = files.get(stagePath);
       if (!stageBody) throw new Error(`native-export: native stage file is missing: ${stagePath}`);
-      const parsed = parseMarkdownFrontmatter(stageBody, stagePath);
+      const parsed = parseMarkdownFrontmatter(stageBody, stagePath, {
+        profile,
+        corePath: `core/aidlc-common/stages/${phase}/${slug}.md`,
+      });
       files.set(stagePath, Buffer.from(renderStageScopes(parsed, scopes)));
     }
     return { ...stage, scopes };
@@ -696,6 +722,10 @@ const createNativeExport = async ({
   // A distribution the caller already loaded (a custom release's own, from
   // loadReleaseDistribution); otherwise the official one at upstreamRef.
   preloadedDistribution = null,
+  // The profile whose frontmatter dialect the distribution is written in. A
+  // custom release's own distribution is in its base profile's dialect;
+  // otherwise it is the profile of upstreamRef.
+  frontmatterProfile = null,
 }) => {
   if (!bucket) throw misconfigured('native-export: artifacts bucket is not configured');
   if (!upstreamRef) throw misconfigured('native-export: upstream ref is not configured');
@@ -719,6 +749,7 @@ const createNativeExport = async ({
     harness,
     stages: alignedProjection.stages,
     scope: alignedProjection.nativeScope,
+    profile: frontmatterProfile ?? profileFor(upstreamRef),
   });
   const distributionFiles = registeredScope.files;
   const constructionCapabilities = detectConstructionCapabilities({
