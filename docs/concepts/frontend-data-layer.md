@@ -147,6 +147,8 @@ To reload data on a timer, set `refetchInterval` on the query that owns it. Leav
 
 `useIntentStatus` uses the cached detail only when it is at least as recent as the list summary. So the sidebar shows the same status as the intent page, without keeping every visited intent in memory or sending a request per row.
 
+Filters and counts over a list read the same status through `useIntentStatusReader`, so “Needs your attention”, its count, the space badges and the live dot always agree with the pills.
+
 ## Checklist for changes
 
 - Add the key to `qk` and a shared `queryOptions` helper. Pass `signal` on. Choose `staleTime` and `gcTime` on purpose.

@@ -3,8 +3,9 @@
 // surface (sidebar, Spaces, Space, Overview, Work, Observability, settings).
 //
 // Pure functions; clocks are injected (`now`) and `Date.now()` only appears
-// as a default parameter. The one hook (`useIntentStatus`) only reads the
-// shared query cache so list surfaces derive exactly what the intent page does.
+// as a default parameter. The hooks (`useIntentStatus`, `useIntentStatusReader`)
+// only read the shared query cache so list surfaces derive exactly what the
+// intent page does.
 
 import {
   Ban,
@@ -32,6 +33,8 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useQueryData } from '@/hooks/useQueryData';
 import { qk } from '@/lib/queryKeys';
 import type { ConnectionStatus } from '@/services/realtime';
@@ -646,7 +649,10 @@ export function statusLabel<K extends StatusKind>(
 
 // ── One status per intent, on every surface ──────────────────────────────────
 
-type IntentSummaryLike = IntentLike & { id?: string; resumeRequired?: unknown };
+type IntentSummaryLike = IntentLike & {
+  id?: string;
+  resumeRequired?: Intent['resumeRequired'] | boolean;
+};
 
 /** A detail older than the summary is ignored: the summary is the newer truth. */
 function isCurrentDetail(
@@ -686,6 +692,60 @@ export function useIntentStatus(
       : null;
   const detail = useQueryData<DetailLike>(detailKey);
   if (!intent) return fallback ?? { key: 'DRAFT', stalled: false };
-  if (isCurrentDetail(intent, detail)) return statusFromDetail(detail, { now });
-  return fallback ?? deriveIntentStatus(intent, { now });
+  return resolveIntentStatus(intent, detail, { now, fallback }).status;
+}
+
+export interface ResolvedIntentStatus<T extends IntentSummaryLike = IntentSummaryLike> {
+  status: DerivedIntentStatus;
+  /** The intent the status was read from: the current cached detail's, else the summary. */
+  intent: T | (IntentSummaryLike & DetailLike['intent']);
+}
+
+function resolveIntentStatus<T extends IntentSummaryLike>(
+  intent: T,
+  detail: DetailLike | null | undefined,
+  { now, fallback }: { now?: Clock; fallback?: DerivedIntentStatus },
+): ResolvedIntentStatus<T> {
+  if (isCurrentDetail(intent, detail)) {
+    return { status: statusFromDetail(detail, { now }), intent: { ...intent, ...detail.intent } };
+  }
+  return { status: fallback ?? deriveIntentStatus(intent, { now }), intent };
+}
+
+const isIntentDetailKey = (key: readonly unknown[]) => key[0] === 'intent' && key[3] === 'detail';
+
+/**
+ * `useIntentStatus` for a whole list: a reader returning what each intent's
+ * pill shows (and the intent it was read from), re-rendering the caller when
+ * any cached intent detail changes. For filters and counts that must agree
+ * with the pills.
+ */
+export function useIntentStatusReader(): <T extends IntentSummaryLike>(
+  projectId: string,
+  intent: T,
+  options?: { now?: Clock },
+) => ResolvedIntentStatus<T> {
+  const client = useQueryClient();
+  const version = useRef(0);
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      client.getQueryCache().subscribe(({ query }) => {
+        if (!isIntentDetailKey(query.queryKey)) return;
+        version.current += 1;
+        notify();
+      }),
+    [client],
+  );
+  const current = useSyncExternalStore(subscribe, () => version.current);
+  return useCallback(
+    <T extends IntentSummaryLike>(projectId: string, intent: T, { now }: { now?: Clock } = {}) => {
+      void current;
+      const detail =
+        intent.id && WATCHED.has(intent.status)
+          ? client.getQueryData<DetailLike>(qk.intentDetail(projectId, intent.id))
+          : undefined;
+      return resolveIntentStatus(intent, detail, { now });
+    },
+    [client, current],
+  );
 }

@@ -1,6 +1,6 @@
 import type { Sprint } from '@/services/sprints';
 import type { Intent } from '@/services/intents';
-import { deriveIntentStatus } from '@/lib/statusModel';
+import { deriveIntentStatus, type DerivedIntentStatus } from '@/lib/statusModel';
 
 export type EffectiveSprintStatus =
   | 'passed'
@@ -36,14 +36,17 @@ export function intentAttention(intent: {
 /**
  * "Needs attention": a human must act — answer, resume, deal with a failure,
  * or unstick a stalled run. The one rule behind the Spaces inbox, the sidebar
- * filter and its count, and the space badges.
+ * filter and its count, and the space badges. Pass the `status` the intent's
+ * pill shows (useIntentStatusReader) so "stalled" agrees with it; without it
+ * the status is derived from the intent's own timestamps.
  */
 export function needsAttention(
   intent: Parameters<typeof intentAttention>[0] & Pick<Intent, 'updatedAt' | 'createdAt'>,
   now: number = Date.now(),
+  status: DerivedIntentStatus = deriveIntentStatus(intent, { now }),
 ): boolean {
   if (intentAttention(intent) !== null) return true;
-  return deriveIntentStatus(intent, { now }).stalled;
+  return status.stalled;
 }
 
 export function isActiveStatus(status: EffectiveSprintStatus): boolean {

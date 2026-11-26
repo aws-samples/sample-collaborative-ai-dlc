@@ -21,11 +21,12 @@ import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
 import { intentEntryPath } from '@/lib/intentEntry';
 import {
-  deriveIntentStatus,
   getStatus,
   statusFromDetail,
   useIntentStatus,
+  useIntentStatusReader,
   type DerivedIntentStatus,
+  type ResolvedIntentStatus,
 } from '@/lib/statusModel';
 import {
   getCachedIntentSummary,
@@ -39,12 +40,7 @@ import {
   PROJECT_SORT_LABELS,
   type ProjectSort,
 } from '@/hooks/useProjectSort';
-import {
-  effectiveIntentStatus,
-  isActiveStatus,
-  needsAttention,
-  type EffectiveSprintStatus,
-} from '@/lib/sprintStatus';
+import { effectiveIntentStatus, isActiveStatus, needsAttention } from '@/lib/sprintStatus';
 import {
   setLastIntentSection,
   intentSectionPath,
@@ -89,18 +85,17 @@ function readStoredFilter(): IntentFilter {
     : 'attention';
 }
 
+type ResolvedSummary = ResolvedIntentStatus<ProjectIntentSummary>;
+
 // "Needs your attention" is the Spaces inbox rule (`needsAttention`), so the
-// sidebar count and the inbox count are the same number.
-function matchesFilter(
-  intent: ProjectIntentSummary,
-  status: EffectiveSprintStatus,
-  filter: IntentFilter,
-): boolean {
+// sidebar count and the inbox count are the same number. Both filters read the
+// status the row's pill shows, never the list timestamps alone.
+function matchesFilter({ intent, status }: ResolvedSummary, filter: IntentFilter): boolean {
   switch (filter) {
     case 'attention':
-      return needsAttention(intent);
+      return needsAttention(intent, Date.now(), status);
     case 'active':
-      return isActiveStatus(status);
+      return isActiveStatus(effectiveIntentStatus({ status: status.key }));
   }
 }
 
@@ -202,13 +197,28 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
     localStorage.setItem(STORAGE_KEY, filter);
   };
 
+  // The open intent's status comes from the page's own detail (same
+  // derivation as its header); every other row reads the shared cache.
+  const ctxDetail = intentCtx?.detail;
+  const currentDerived: DerivedIntentStatus | undefined =
+    intentId && ctxDetail?.intent && ctxDetail.intent.id === intentId
+      ? statusFromDetail(ctxDetail, { lastActivityAt: intentCtx?.lastActivityAt })
+      : undefined;
+
+  // One status per intent behind the filters, their counts, the space badges
+  // and the pills.
+  const readStatus = useIntentStatusReader();
+  const resolve = (spaceId: string, intent: ProjectIntentSummary): ResolvedSummary =>
+    currentDerived && ctxDetail && spaceId === projectId && intent.id === intentId
+      ? { status: currentDerived, intent: { ...intent, ...ctxDetail.intent } }
+      : readStatus(spaceId, intent);
+  const matches = (spaceId: string, intent: ProjectIntentSummary) =>
+    matchesFilter(resolve(spaceId, intent), intentFilter);
+
   const matchingCount = projects.reduce((count, entry) => {
     if (entry.project.kind !== 'v2') return count;
     return (
-      count +
-      projectIntentList(entry).filter((intent) =>
-        matchesFilter(intent, effectiveIntentStatus(intent), intentFilter),
-      ).length
+      count + projectIntentList(entry).filter((intent) => matches(entry.project.id, intent)).length
     );
   }, 0);
 
@@ -221,14 +231,6 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
   const isOnWorkflows = location.pathname.startsWith('/workflows');
   const isOnBlocks = location.pathname.startsWith('/blocks');
 
-  // The open intent's status comes from the page's own detail (same
-  // derivation as its header); every other row reads the shared cache.
-  const ctxDetail = intentCtx?.detail;
-  const currentDerived: DerivedIntentStatus | undefined =
-    intentId && ctxDetail?.intent && ctxDetail.intent.id === intentId
-      ? statusFromDetail(ctxDetail, { lastActivityAt: intentCtx?.lastActivityAt })
-      : undefined;
-
   // The detail request said the open intent is gone: a stale list entry must
   // not keep it on screen, and no row is synthesised for it.
   const openIntentGone = Boolean(intentId && intentCtx?.notFound && !ctxDetail);
@@ -237,7 +239,7 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
     const { project } = entry;
     if (project.kind !== 'v2') return [];
     const matchingIntents = projectIntentList(entry)
-      .filter((intent) => matchesFilter(intent, effectiveIntentStatus(intent), intentFilter))
+      .filter((intent) => matches(project.id, intent))
       .filter((intent) => !(openIntentGone && project.id === projectId && intent.id === intentId))
       .toSorted((a, b) => intentActivityTime(b) - intentActivityTime(a));
     let visibleIntents = matchingIntents.slice(0, MAX_INTENTS_PER_PROJECT);
@@ -268,9 +270,7 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
   const overflowIntents = sortedProjects.flatMap((entry) => {
     const { project } = entry;
     if (project.kind !== 'v2') return [];
-    const count = projectIntentList(entry).filter((intent) =>
-      matchesFilter(intent, effectiveIntentStatus(intent), intentFilter),
-    ).length;
+    const count = projectIntentList(entry).filter((intent) => matches(project.id, intent)).length;
     const hiddenCount = count - MAX_INTENTS_PER_PROJECT;
     return hiddenCount > 0
       ? [{ projectId: project.id, projectName: project.name, count: hiddenCount }]
@@ -384,12 +384,14 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
             const { project } = entry;
             const live =
               project.kind === 'v2' &&
-              projectIntentList(entry).some((intent) => isLive(deriveIntentStatus(intent)));
+              projectIntentList(entry).some((intent) => isLive(resolve(project.id, intent).status));
             const attention =
               project.kind !== 'v2'
                 ? 0
                 : entry.intents
-                  ? entry.intents.filter((intent) => needsAttention(intent)).length
+                  ? entry.intents.filter((intent) =>
+                      matchesFilter(resolve(project.id, intent), 'attention'),
+                    ).length
                   : entry.activity.attention;
             const isSelected = projectId === project.id;
 

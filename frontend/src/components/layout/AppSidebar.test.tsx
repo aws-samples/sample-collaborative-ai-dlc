@@ -964,6 +964,46 @@ describe('AppSidebar one status truth', () => {
     expect(screen.getByLabelText('Space, 3 need attention')).toBeInTheDocument();
   });
 
+  it('does not count a run as needing attention when its cached activity is recent', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
+    const MINUTE = 60 * 1000;
+    const minutesAgo = (n: number) => new Date(Date.now() - n * MINUTE).toISOString();
+    // The list row is 45 min old, but the cached detail saw a stage start 2 min ago.
+    const intent = { id: 'busy', title: 'Busy run', status: 'RUNNING', updatedAt: minutesAgo(45) };
+    const snapshot = {
+      data: {
+        intent,
+        gates: [],
+        stages: [{ stageId: 's1', state: 'RUNNING', startedAt: minutesAgo(2) }],
+        events: [{ timestamp: minutesAgo(2) }],
+      },
+    };
+    mockCache.peek.mockImplementation((key?: unknown) =>
+      (key as readonly unknown[])[2] === 'busy' ? snapshot : undefined,
+    );
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intent,
+        intents: [intent],
+        lastIntentActivityAt: intent.updatedAt,
+        activity: { inProgress: 1, attention: 0 },
+      },
+    ];
+    renderSidebar();
+    expect(screen.getByLabelText(/intent activity filter/i)).toHaveTextContent(
+      /^Showing: Needs your attention$/,
+    );
+    expect(screen.queryByRole('link', { name: /busy run/i })).toBeNull();
+    expect(screen.queryByLabelText(/Space, \d+ needs? attention/)).toBeNull();
+    // The live dot agrees: the space reads as running.
+    expect(screen.getByTitle('Space — Agent running')).toBeInTheDocument();
+
+    // Without the cached activity the same row is stalled and needs attention.
+    mockCache.peek.mockImplementation(() => undefined);
+  });
+
   it('uses the compact, untruncated pill: "Waiting · 108 d" and "Stalled · 4 mo"', () => {
     localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
     const intents = [
