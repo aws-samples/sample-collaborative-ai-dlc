@@ -11213,6 +11213,27 @@ describe('AI-DLC release pinning', () => {
     expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 
+  it('classifies a library copy by its block id, not by an id field the client sent', async () => {
+    // updateBlock keeps a client-sent `id`, so the stored row can disagree with
+    // its key. The plan resolves the row by `blockId`, so the edit must be
+    // reported under that id rather than hidden behind the forged one.
+    const { sub, projectId, intentId } = await createPinnedIntent({
+      methodologyPins: {
+        AGENT: {
+          'aidlc-developer-agent': seedUserCopy('AGENT', 'aidlc-developer-agent', 7, {
+            id: 'not-in-this-plan',
+            description: 'Senior developer who follows the ACME standards',
+          }),
+        },
+      },
+    });
+
+    const res = await exportIntent(sub, projectId, intentId);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).incompatibleBlocks).toEqual(['AGENT:aidlc-developer-agent']);
+  });
+
   it('refuses to start when the pinned release cannot be resolved', async () => {
     installReleaseObjects({ withCatalog: false });
     const sub = `u-${randomUUID()}`;

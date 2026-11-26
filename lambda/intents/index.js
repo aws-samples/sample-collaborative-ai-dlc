@@ -1752,7 +1752,7 @@ const loadPlanStageBlock = async (stage) => {
   return Item ?? placeholder;
 };
 
-const blockKey = (block) => block.id ?? block.blockId;
+const blockKey = (block) => block.blockId ?? block.id;
 const isUserBlock = (block) => block.tenantId !== SYSTEM_TENANT;
 
 /**
