@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -19,6 +20,7 @@ import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { AidlcSettingsPanel } from '@/components/AidlcSettingsPanel';
+import { ConversationLanguageField } from '@/components/ConversationLanguageField';
 import {
   aidlcSettingsFromComposeProposal,
   AIDLC_SETTING_LABELS,
@@ -98,6 +100,7 @@ function IntentComposePageContent() {
   const setAssistAgentCli = useDiscussions()?.setAssistAgentCli;
   const userName = user?.displayName || user?.email || '';
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
+  const { readOnly } = useSpacePermissions();
 
   const [intent, setIntent] = useState<Intent | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -676,6 +679,10 @@ function IntentComposePageContent() {
       // Persist the last shared edits BEFORE launching — Start reads the
       // intent row, not the Yjs doc.
       await draft.flushDraft();
+      if (draft.isConversationLanguageRejected()) {
+        setError('Choose the output language again: the server did not accept the last one.');
+        return;
+      }
       if (!selectedCli) return;
       await intentsService.start(projectId, intentId, { agentCli: selectedCli });
       // IntentProvider stays mounted across /compose -> /intent and is keyed
@@ -802,7 +809,7 @@ function IntentComposePageContent() {
               placeholder="e.g. Add user authentication"
               className="mt-1.5 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
               singleLine
-              disabled={!draftReady}
+              disabled={readOnly || !draftReady}
             />
           </div>
 
@@ -816,7 +823,7 @@ function IntentComposePageContent() {
               rows={10}
               placeholder="Describe the intent in detail…"
               className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
-              disabled={!draftReady}
+              disabled={readOnly || !draftReady}
             />
           </div>
 
@@ -830,7 +837,13 @@ function IntentComposePageContent() {
                 data-testid="attachment-picker"
                 accept=".txt,.md,.csv,.html,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.svg"
                 multiple
-                disabled={!draftReady || starting || uploadProgress !== null || trackerImportBusy}
+                disabled={
+                  readOnly ||
+                  !draftReady ||
+                  starting ||
+                  uploadProgress !== null ||
+                  trackerImportBusy
+                }
                 onChange={(event) => handleAttachmentPick(event.target.files)}
               />
               <Button
@@ -838,6 +851,7 @@ function IntentComposePageContent() {
                 variant="outline"
                 size="sm"
                 disabled={
+                  readOnly ||
                   !draftReady ||
                   starting ||
                   uploadProgress !== null ||
@@ -875,7 +889,7 @@ function IntentComposePageContent() {
                   (location.state as { importTrackerAttachments?: boolean } | null)
                     ?.importTrackerAttachments,
                 )}
-                disabled={starting || uploadProgress !== null}
+                disabled={readOnly || starting || uploadProgress !== null}
                 onAutoImportStarted={() => {
                   const state = { ...location.state };
                   delete state.importTrackerAttachments;
@@ -921,6 +935,7 @@ function IntentComposePageContent() {
                       size="icon"
                       className="h-7 w-7"
                       disabled={
+                        readOnly ||
                         !draftReady ||
                         starting ||
                         uploadProgress !== null ||
@@ -989,7 +1004,9 @@ function IntentComposePageContent() {
                       key={cli}
                       type="button"
                       aria-pressed={selected}
-                      disabled={!draftReady || starting || capabilitiesLoading || !available}
+                      disabled={
+                        readOnly || !draftReady || starting || capabilitiesLoading || !available
+                      }
                       onClick={() => setSelectedCli(cli)}
                       className={`relative min-h-20 rounded-md border px-3 py-2.5 text-left transition-colors ${
                         selected
@@ -1064,7 +1081,7 @@ function IntentComposePageContent() {
                     // Picking a stock scope leaves any composed grid behind.
                     if (v) resetGridToScope(v);
                   }}
-                  disabled={!draftReady || scopeOptions.length === 0}
+                  disabled={readOnly || !draftReady || scopeOptions.length === 0}
                 >
                   <SelectTrigger id="draft-scope">
                     <SelectValue
@@ -1090,7 +1107,7 @@ function IntentComposePageContent() {
                     projectId={projectId}
                     intentId={intentId}
                     agentCli={selectedCli}
-                    disabled={starting || !draftReady}
+                    disabled={readOnly || starting || !draftReady}
                     onApply={applyProposal}
                   />
                 </div>
@@ -1101,9 +1118,23 @@ function IntentComposePageContent() {
           <AidlcSettingsPanel
             authored={authoredSettings}
             chosen={draft.aidlcSettings}
-            disabled={starting || !draftReady}
+            disabled={readOnly || starting || !draftReady}
             onChange={draft.setAidlcSetting}
           />
+          <ConversationLanguageField
+            value={draft.conversationLanguage}
+            disabled={starting || !draftReady}
+            onChange={draft.setConversationLanguage}
+          />
+          {draft.conversationLanguageRejection && (
+            <p className="text-xs text-destructive" data-testid="conversation-language-rejected">
+              The server did not accept the output language
+              {` "${draft.conversationLanguageRejection.tag}"`} (
+              {draft.conversationLanguageRejection.reason}), so the intent keeps{' '}
+              {draft.conversationLanguage ? `"${draft.conversationLanguage}"` : 'no language'}.
+              Choose the output language again before starting.
+            </p>
+          )}
           {withdrawnSettings.length > 0 && (
             <p className="text-xs text-amber-600" data-testid="aidlc-settings-dropped">
               This selection does not offer {withdrawnSettings.join(', ')}, so the choice recorded
@@ -1135,7 +1166,7 @@ function IntentComposePageContent() {
                     type="button"
                     className="ml-auto text-xs underline text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="grid-reset"
-                    disabled={starting || !draftReady}
+                    disabled={readOnly || starting || !draftReady}
                     onClick={() => {
                       const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
                         ? scope.replace(/-custom$/, '')
@@ -1218,7 +1249,7 @@ function IntentComposePageContent() {
                       phaseNames={phaseNames}
                       grid={effectiveGrid}
                       lockedStageIds={lockedStageIds}
-                      disabled={starting || !draftReady}
+                      disabled={readOnly || starting || !draftReady}
                       onToggle={toggleGridStage}
                     />
                   </div>
@@ -1232,6 +1263,7 @@ function IntentComposePageContent() {
               type="button"
               onClick={handleStart}
               disabled={
+                readOnly ||
                 starting ||
                 validationStartBlocked ||
                 !draftReady ||
@@ -1240,7 +1272,8 @@ function IntentComposePageContent() {
                 !draft.prompt.trim() ||
                 !scope ||
                 !selectedCli ||
-                previewErrors.length > 0
+                previewErrors.length > 0 ||
+                Boolean(draft.conversationLanguageRejection)
               }
               data-testid="start-intent"
             >

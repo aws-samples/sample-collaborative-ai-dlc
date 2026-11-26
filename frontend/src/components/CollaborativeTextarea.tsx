@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { defaultKeymap } from '@codemirror/commands';
 import { Compartment, EditorState, Prec } from '@codemirror/state';
@@ -116,7 +117,7 @@ export function CollaborativeTextarea({
   value = '',
   onChange,
   onCursorChange,
-  disabled = false,
+  disabled: disabledProp = false,
   placeholder,
   className,
   rows = 4,
@@ -124,6 +125,8 @@ export function CollaborativeTextarea({
   onFocus,
   onBlur,
 }: Props) {
+  const { readOnly } = useSpacePermissions();
+  const disabled = disabledProp || readOnly;
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onFocusRef = useRef(onFocus);

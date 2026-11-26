@@ -45,10 +45,12 @@ export const createCollaborationServer = ({
   cluster = null,
   logger = console,
   allowLoopback = false,
+  authorize = null,
+  authorizeMessage = authorize,
 }) => {
   if (enforceScope && !secret) throw new Error('REALTIME_DOC_SECRET is required');
   if (config.clusterEnabled && !cluster) throw new Error('Cluster storage is required');
-  const rooms = new RoomManager({ config, cluster, logger });
+  const rooms = new RoomManager({ config, cluster, logger, authorize: authorizeMessage });
   const upgrades = new Set();
   const peers = new Map();
   let draining = false;
@@ -188,6 +190,14 @@ export const createCollaborationServer = ({
         sub: identity.sub,
       });
       if (!access.ok && enforceScope) return reject(socket, 403);
+      const permissionTarget = {
+        sub: identity.sub,
+        scope: requiredScopeForYjsDoc(docName),
+      };
+      const permissions = authorize
+        ? await authorize(permissionTarget)
+        : { read: true, write: true };
+      if (!permissions.read) return reject(socket, 403);
       let lease = null;
       if (cluster) {
         const routed = verifyRoute(req.headers['x-yjs-route'], secret, docName, cluster.id);
@@ -205,7 +215,13 @@ export const createCollaborationServer = ({
       if (socket.destroyed || draining) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (conn) => {
         track(conn);
-        rooms.attach(room, conn, access.payload?.exp);
+        rooms.attach(
+          room,
+          conn,
+          access.payload?.exp,
+          { ...permissionTarget, spaceId: permissions.spaceId },
+          permissions,
+        );
       });
     } catch (error) {
       rejectedConnections++;

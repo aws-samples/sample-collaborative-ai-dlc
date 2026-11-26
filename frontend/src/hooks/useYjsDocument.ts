@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
@@ -42,10 +43,15 @@ export function useYjsDocument(
   // name via scopeTargetForYjsDoc (the v1 sprint/project path).
   scopeTarget?: RealtimeScopeTarget,
 ) {
+  const { readOnly, loading, documentEpoch, denyWrites, refresh } = useSpacePermissions();
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  // Recreate only on a confirmed revocation so rejected offline edits never reappear
+  // in a Viewer document or get replayed following a later promotion.
   // Intentionally keyed on documentId: a new document must get a FRESH Y.Doc even
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const doc = useMemo(() => new Y.Doc(), [documentId]);
+  const doc = useMemo(() => new Y.Doc(), [documentId, documentEpoch]);
   const currentDocRef = useRef(doc);
   currentDocRef.current = doc;
   const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
@@ -117,7 +123,7 @@ export function useYjsDocument(
   }, [awareness, userName, userColor]);
 
   useEffect(() => {
-    if (!documentId) {
+    if (!documentId || loading) {
       setSynced(false);
       setRemoteUsers(new Map());
       return;
@@ -284,7 +290,11 @@ export function useYjsDocument(
             const encoder = encoding.createEncoder();
             encoding.writeVarUint(encoder, 0);
             const syncMessageType = syncProtocol.readSyncMessage(decoder, encoder, doc, ws);
-            if (encoding.length(encoder) > 1 && ws.readyState === WebSocket.OPEN) {
+            if (
+              !readOnlyRef.current &&
+              encoding.length(encoder) > 1 &&
+              ws.readyState === WebSocket.OPEN
+            ) {
               ws.send(encoding.toUint8Array(encoder));
             }
             // Only mark synced after receiving sync step 2 (document state),
@@ -305,7 +315,12 @@ export function useYjsDocument(
           } else if (messageType === 4) {
             const subtype = decoding.readVarUint(decoder);
             const value = decoding.readVarUint(decoder);
-            if (subtype === 0) persistenceRef.current = value === 1;
+            if (subtype === 3) {
+              if (value === 0) {
+                readOnlyRef.current = true;
+                denyWrites();
+              } else if (readOnlyRef.current) refresh();
+            } else if (subtype === 0) persistenceRef.current = value === 1;
             else if (subtype === 2 && pendingFlushRef.current?.id === value) {
               const pending = pendingFlushRef.current;
               clearTimeout(pending.timer);
@@ -367,7 +382,7 @@ export function useYjsDocument(
         }));
       }
       const ws = wsRef.current;
-      if (ws && origin !== ws && ws.readyState === WebSocket.OPEN) {
+      if (!readOnlyRef.current && ws && origin !== ws && ws.readyState === WebSocket.OPEN) {
         const encoder = encoding.createEncoder();
         encoding.writeVarUint(encoder, 0);
         syncProtocol.writeUpdate(encoder, update);
@@ -488,7 +503,7 @@ export function useYjsDocument(
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, awareness, setSynced]);
+  }, [documentId, doc, awareness, setSynced, loading]);
 
   // Registered after the connection effect so its cleanup runs only after the
   // socket listeners have released the old document and awareness instance.
@@ -528,6 +543,7 @@ export function useYjsDocument(
   );
 
   const flushDocument = useCallback((): Promise<void> => {
+    if (readOnlyRef.current) return Promise.resolve();
     const expectedDoc = doc;
     const operation = flushQueueRef.current
       .catch(() => {})

@@ -468,15 +468,22 @@ For the surrounding AWS components and other storage services, see
 
 The access table stores one membership per space and stable user ID:
 `pk = SPACE#<spaceId>`, `sk = MEMBER#<userId>`. It carries `userId`,
-`membershipRole` (`owner` or `member`), creation/update timestamps, and a revision.
+`membershipRole` (`owner`, `member`, or `viewer`), creation/update timestamps, and a revision.
 Its `by-user` GSI uses `userId` / `pk`, projecting all attributes. Space member
 queries and access checks use consistent base-table reads; the user-space list
 index is eventually consistent and cannot authorize protected content.
 
-The same table records each federated user's SSO claims from their latest
-sign-in at `pk = USER#<sub>`, `sk = SSO` (provider and raw claim values, never
-calculated roles). Business roles are calculated from it with the current
-mappings; the item has no `userId`, so the `by-user` GSI skips it.
+Membership items also hold locally assigned business roles (`localRoles`) and
+excluded SSO roles (`excludedRoles`). Inherited roles are calculated at read time.
+SSO mapping additions live at `PLATFORM` / `SSO#<providerId>` in the access table;
+they combine with the Terraform baseline without storing the merged result.
+
+Each federated sign-in records the user's provider, the configured source
+attribute and the raw claim values at `pk = USER#<sub>`, `sk = SSO` (never
+calculated roles). Inherited roles are calculated from that copy with the current
+mappings and access gate, without reading Cognito, and only while its source
+attribute matches the provider's current one. The item has no `userId`, so the `by-user` GSI skips it; the
+sign-in trigger may only write `USER#` items.
 
 A separate audit table stores append-only permission changes under the same space
 partition, keyed by `AUDIT#<ISO-time>#<changeId>`. It records actor, action,
@@ -484,6 +491,8 @@ target user, before/after membership, timestamp, and change ID. Membership and
 history writes commit together in a DynamoDB transaction. Both tables have PITR,
 the installation's encryption/deletion protection, and no TTL. Space deletion
 removes access records while retaining audit history.
+Business-role and SSO-mapping changes also use revision-checked transactions with
+audit entries; platform changes use the `PLATFORM` partition.
 
 See [Space membership migration](../development/membership-migration.md) for
 installation ordering, legacy Admin conversion, pagination, and recovery.

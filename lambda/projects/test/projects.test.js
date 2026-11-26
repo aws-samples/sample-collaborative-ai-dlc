@@ -225,6 +225,54 @@ describe('OPTIONS', () => {
   });
 });
 
+describe('Viewer permissions', () => {
+  it('returns current permissions and rejects all space settings mutations', async () => {
+    const sub = `viewer-${randomUUID()}`;
+    const { id } = await createProject(`owner-${randomUUID()}`, { name: 'Readable' });
+    const request = (httpMethod, suffix = '', body = {}) =>
+      handler({
+        httpMethod,
+        path: `/projects/${id}${suffix}`,
+        pathParameters: { projectId: id },
+        body: JSON.stringify(body),
+        ...adminClaims(sub),
+      });
+    await seedMembership(id, sub, 'viewer');
+    const before = await request('GET');
+    expect(before.statusCode).toBe(200);
+    expect(JSON.parse(before.body)).toMatchObject({
+      name: 'Readable',
+      userRole: 'viewer',
+      permissions: { read: true, write: false, manage: false },
+    });
+    for (const [method, suffix, body] of [
+      ['PUT', '', { name: 'Changed' }],
+      ['DELETE', '', {}],
+      ['POST', '/repos', { url: 'owner/repo' }],
+      ['PUT', '/custom-mcp-servers', { servers: [] }],
+      ['PUT', '/custom-rules', { rules: 'Change' }],
+      ['PUT', '/environment', {}],
+    ]) {
+      const result = await request(method, suffix, body);
+      expect(result.statusCode).toBe(403);
+      expect(JSON.parse(result.body).code).toBe('SPACE_WRITE_FORBIDDEN');
+    }
+    expect(JSON.parse((await request('GET')).body)).toEqual(JSON.parse(before.body));
+    expect(await handler({ action: 'realtime-permissions', sub, scope: `project:${id}` })).toEqual({
+      spaceId: id,
+      read: true,
+      write: false,
+      manage: false,
+    });
+    await removeMembership(id, sub);
+    expect(await handler({ action: 'realtime-permissions', sub, scope: `project:${id}` })).toEqual({
+      read: false,
+      write: false,
+      manage: false,
+    });
+  });
+});
+
 describe('POST /projects', () => {
   // Every created project is v2 now, so the response always carries the v2
   // settings block with its defaults.
@@ -642,6 +690,59 @@ describe('PUT /projects/:id', () => {
         ...claims(sub),
       });
       expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('stores, returns and clears the conversation language (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Lang' });
+    const put = (conversationLanguage) =>
+      handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ conversationLanguage }),
+        ...claims(sub),
+      });
+    const get = async () =>
+      JSON.parse(
+        (await handler({ httpMethod: 'GET', pathParameters: { projectId: id }, ...claims(sub) }))
+          .body,
+      );
+
+    // Unset by default: the field is OMITTED so existing DTOs stay identical.
+    expect(await get()).not.toHaveProperty('conversationLanguage');
+
+    // Stored resolved (canonical tag + display names) from a raw tag.
+    const set = await put('ko');
+    expect(set.statusCode).toBe(200);
+    expect(JSON.parse(set.body).conversationLanguage).toEqual({
+      tag: 'ko',
+      englishName: 'Korean',
+      nativeName: '한국어',
+    });
+    expect((await get()).conversationLanguage).toEqual({
+      tag: 'ko',
+      englishName: 'Korean',
+      nativeName: '한국어',
+    });
+
+    // null clears back to unset.
+    expect((await put(null)).statusCode).toBe(200);
+    expect(await get()).not.toHaveProperty('conversationLanguage');
+  });
+
+  it('rejects an invalid conversation language with its code (#784)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Lang' });
+    for (const conversationLanguage of ['xx', 'not a tag!', 42]) {
+      const res = await handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ conversationLanguage }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe('conversation_language_invalid');
     }
   });
 

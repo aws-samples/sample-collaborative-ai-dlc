@@ -25,6 +25,7 @@ import { createCliOutputSink } from './output-normalizer.js';
 import { createUsageRecorder } from './cli/usage-recorder.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './cli/opencode-store.js';
 import { resolveStageModel } from './model-resolver.js';
+import { renderConversationLanguageBlock } from '../shared/conversation-language.js';
 import {
   hasInvokeToken,
   invokeDialectAnnex,
@@ -105,11 +106,16 @@ export const composePersonaPrompt = ({
   policy = null,
   checkpointOwner = true,
   canAsk = true,
+  // { tag, englishName, nativeName } from the intent META (#784); null renders
+  // nothing, keeping every prompt without the setting byte-identical.
+  conversationLanguage = null,
 }) => {
   const mcpRole = mcpRoleFor(role);
   const facts = roleToolFacts(mcpRole, stageId, policy, checkpointOwner, canAsk);
+  const languageBlock = renderConversationLanguageBlock(conversationLanguage);
   return [
     brief,
+    ...(languageBlock ? ['', languageBlock] : []),
     '',
     `## ${roleLabel(role)} role`,
     neutralizeTokens(persona) || `(no ${role} persona supplied)`,
@@ -182,6 +188,9 @@ export const dispatchPersona = async ({
   // sessions only run for release catalogs); the reviewer passes it explicitly
   // so an unpinned review runs uncapped.
   maxTurns = agentBlock?.maxTurns ?? null,
+  // Conversation language from the intent META (#784); stated in the persona
+  // prompt the same way the lead's stage prompt states it.
+  conversationLanguage = null,
 }) => {
   const mcpRole = mcpRoleFor(role);
   const {
@@ -236,6 +245,7 @@ export const dispatchPersona = async ({
       policy,
       checkpointOwner,
       canAsk,
+      conversationLanguage,
     });
     const mcpKwargs =
       cli === 'kiro'

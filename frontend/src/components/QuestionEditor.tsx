@@ -1,3 +1,4 @@
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useEffect, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -56,6 +57,7 @@ export default function QuestionEditor({
   onFocus,
   onBlur,
 }: Props) {
+  const { readOnly } = useSpacePermissions();
   const {
     selections,
     freeTexts,
@@ -73,7 +75,7 @@ export default function QuestionEditor({
     question.id,
     question.questions.length,
     userName,
-    onAutoSave,
+    readOnly ? undefined : onAutoSave,
   );
 
   const [submitting, setSubmitting] = useState(false);
@@ -89,7 +91,7 @@ export default function QuestionEditor({
   }, [synced]);
 
   const handleSubmit = async () => {
-    if (submitting) return;
+    if (readOnly || submitting) return;
     const answer = toStructuredAnswer();
     const allAnswered = answer.answers.every(
       (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.trim().length > 0),
@@ -151,7 +153,7 @@ export default function QuestionEditor({
             awareness={awareness}
             onSelectionChange={(indices) => setSelection(qIdx, indices)}
             onFreeTextChange={(text, cursor) => setFreeText(qIdx, text, cursor)}
-            disabled={submitting || !synced}
+            disabled={readOnly || submitting || !synced}
             onFocus={() => {
               addContributor();
               onFocus?.();
@@ -173,7 +175,7 @@ export default function QuestionEditor({
       <Button
         size="sm"
         onClick={handleSubmit}
-        disabled={!allAnswered || submitting}
+        disabled={readOnly || !allAnswered || submitting}
         className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
       >
         {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
