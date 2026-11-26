@@ -28,6 +28,7 @@ import { GateCard } from '@/components/intent/GateCard';
 import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
 import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
 import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
+import { nativeExportErrorMessage } from '@/components/intent/nativeExportError';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -314,7 +315,7 @@ export default function IntentView() {
       }
     } catch (err) {
       setDismissedError(null);
-      setActionError(err instanceof Error ? err.message : 'Failed to export workflow');
+      setActionError(nativeExportErrorMessage(err));
     } finally {
       setExporting(false);
     }
