@@ -15674,7 +15674,7 @@ describe('native engine', () => {
       expect(JSON.parse(list.body)).toEqual([expect.objectContaining({ engine: 'native' })]);
     });
 
-    it('snapshots the space settings a platform draft snapshots', async () => {
+    it('snapshots every space setting a platform draft snapshots, and no plan', async () => {
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
       const language = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
@@ -15692,31 +15692,89 @@ describe('native engine', () => {
           JSON.stringify({ docs: { type: 'http', url: 'https://docs.example/mcp' } }),
         )
         .next();
+      const body = { title: 'Same', prompt: 'Build X', branch: 'aidlc/same' };
 
-      const platform = metaOf(JSON.parse((await createIntent(sub, projectId)).body).id);
-      const native = metaOf(JSON.parse((await createNative(sub, projectId)).body).id);
+      const platform = metaOf(
+        JSON.parse((await createIntent(sub, projectId, { ...body, scope: 'feature' })).body).id,
+      );
+      const native = metaOf(JSON.parse((await createNative(sub, projectId, body)).body).id);
 
-      for (const field of [
-        'repos',
-        'repoProviders',
-        'gitProvider',
-        'cliModels',
-        'tierModels',
-        'mcpServersByTier',
-        'customRules',
-        'conversationLanguage',
-        'environment',
-        'deriveEnrichment',
-        'parkReleaseSeconds',
-        'maxParallelUnits',
-        'prStrategy',
-      ]) {
-        expect(native[field], field).toEqual(platform[field]);
+      // What a native draft does not take over: the plan of the stage engine.
+      // Every other attribute of the platform row must equal the native row's,
+      // so a setting added to the platform snapshot cannot miss the native one
+      // unnoticed.
+      const planOnly = {
+        workflowId: null,
+        workflowVersion: null,
+        aidlcRepoRef: null,
+        methodologyPins: null,
+        scope: null,
+        stageSkipping: null,
+      };
+      // Differ per intent by construction: keys, ids and timestamps.
+      const perIntent = /^(pk|sk|GSI\d(PK|SK)|executionId|intentId|startedAt|updatedAt)$/;
+      const nativeOnly = ['engine', 'primaryRepo'];
+      for (const [field, value] of Object.entries(platform)) {
+        if (perIntent.test(field) || field in planOnly) continue;
+        expect(native[field], field).toEqual(value);
       }
+      expect(native).toMatchObject(planOnly);
+      expect(
+        Object.keys(native)
+          .filter((field) => !(field in platform))
+          .toSorted(),
+      ).toEqual(nativeOnly);
       expect(native.conversationLanguage).toEqual(language);
       expect(native.mcpServersByTier.project).toHaveProperty('docs');
       expect(native.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
       expect(native.environment).toBeTruthy();
+    });
+
+    it('snapshots the PR strategy without the provider check of a platform create', async () => {
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+        .resolves({ Parameter: { Value: 'pr-per-unit' } });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy, with a CodeCommit repository: a platform
+      // create is refused, because its unit lanes need draft pull requests.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .out('HAS_REPO')
+        .property(gremlin.process.cardinality.single, 'provider', 'codecommit')
+        .next();
+      expect(JSON.parse((await createIntent(sub, projectId)).body).code).toBe(
+        'PR_STRATEGY_UNSUPPORTED',
+      );
+
+      const res = await createNative(sub, projectId);
+
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body)).toMatchObject({ engine: 'native', prStrategy: 'pr-per-unit' });
+    });
+
+    it('refuses a native create in a space whose environment is not published', async () => {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+      try {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+          .next();
+        const before = structuredClone([...procStore]);
+
+        const res = await createNative(sub, projectId);
+
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body).code).toBe('ENVIRONMENT_NOT_PUBLISHED');
+        expect([...procStore]).toEqual(before);
+      } finally {
+        vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+      }
     });
 
     it('creates a platform draft exactly as before when the request names no engine', async () => {
@@ -15783,6 +15841,22 @@ describe('native engine', () => {
         fields: [field],
       });
       expect([...procStore]).toEqual(before);
+    });
+
+    it('refuses a plan input that is null, on create and on save', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const created = await createNative(sub, projectId, { methodologyReleaseId: null });
+      expect(created.statusCode).toBe(400);
+      expect(JSON.parse(created.body).fields).toEqual(['methodologyReleaseId']);
+
+      const { id } = JSON.parse((await createNative(sub, projectId)).body);
+      const before = structuredClone(metaOf(id));
+      const saved = await patchDraft(sub, projectId, id, { title: 'Renamed', skipStageIds: null });
+      expect(saved.statusCode).toBe(400);
+      expect(JSON.parse(saved.body).fields).toEqual(['skipStageIds']);
+      expect(metaOf(id)).toEqual(before);
     });
 
     it('needs a title or a prompt, like a platform draft', async () => {
@@ -16038,6 +16112,18 @@ describe('native engine', () => {
           expect(metaOf(id)).toEqual(before);
         },
       );
+
+      it('deletes a native draft', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+
+        const res = await request(sub, projectId, id, 'DELETE');
+
+        expect(res.statusCode).toBe(204);
+        expect(metaOf(id)).toBeUndefined();
+        expect((await request(sub, projectId, id, 'GET')).statusCode).toBe(404);
+      });
 
       it('refuses to start a native draft and hands nothing to the orchestrator', async () => {
         const sub = `u-${randomUUID()}`;

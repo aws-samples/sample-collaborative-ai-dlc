@@ -819,6 +819,30 @@ const handleProjectCustomMcpServers = async (
 // project mcp-secrets bag is derived. Empty string when unconfigured.
 const mcpSecretsPrefix = () => process.env.MCP_SECRETS_SSM_PREFIX || '';
 
+// The platform's native-execution flag, for the space detail response. Every
+// open space page polls that response to refresh its permissions, so the flag
+// is read from SSM at most once per minute per warm container; a switch of the
+// flag reaches the browser within that minute. The value only tells the browser
+// what to offer. The gate is the intents Lambda, which reads the flag uncached
+// whenever a native intent is created.
+const NATIVE_EXECUTION_TTL_MS = 60_000;
+let cachedNativeExecution = null; // { value, expiresAt }
+const fetchNativeExecution = async () => {
+  if (cachedNativeExecution && Date.now() < cachedNativeExecution.expiresAt) {
+    return cachedNativeExecution.value;
+  }
+  const value = await readNativeExecution(ssm, process.env.AGENT_SETTINGS_SSM_PREFIX || '', {
+    onError: (error) =>
+      logger.warn('native-execution flag could not be read; reporting it as disabled', {
+        error: error?.name,
+      }),
+  });
+  // A failed read is cached as well, so a persistent failure costs one read and
+  // one warning per minute instead of one per poll.
+  cachedNativeExecution = { value, expiresAt: Date.now() + NATIVE_EXECUTION_TTL_MS };
+  return value;
+};
+
 // Read the Admin GLOBAL custom MCP config from SSM as a parsed object (refs-only).
 // The global config is written by the agents lambda under AGENT_SETTINGS_SSM_PREFIX.
 // Best-effort: any failure yields {}.
@@ -1498,16 +1522,9 @@ export const handler = async (event, context) => {
             ...v2Settings,
             // The platform's native-execution flag ('enabled' | 'disabled'), so
             // the browser can offer the native engine. A platform setting, not
-            // a space setting: read on this single-space response only, and
+            // a space setting: reported on this single-space response only, and
             // only for a v2 space, the kind that holds intents.
-            ...(v2Settings.kind === 'v2'
-              ? {
-                  nativeExecution: await readNativeExecution(
-                    ssm,
-                    process.env.AGENT_SETTINGS_SSM_PREFIX || '',
-                  ),
-                }
-              : {}),
+            ...(v2Settings.kind === 'v2' ? { nativeExecution: await fetchNativeExecution() } : {}),
           };
           return response(200, withLegacyTracker(project));
         }

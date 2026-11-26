@@ -3335,6 +3335,14 @@ describe('GET /projects/:id reports the native-execution flag', () => {
     handler({ httpMethod: 'GET', pathParameters: { projectId }, ...claims(sub) });
   const flagReads = () =>
     ssmMock.commandCalls(GetParameterCommand).filter((call) => call.args[0].input.Name === FLAG);
+  // The Lambda keeps the flag for a minute per warm container. Every test
+  // starts an hour after the one before, so it reads the parameter afresh.
+  let hour = 0;
+  beforeEach(() => {
+    hour += 1;
+    vi.setSystemTime(new Date(NOW.getTime() + hour * 3_600_000));
+  });
+  const aMinuteLater = () => vi.setSystemTime(new Date(Date.now() + 60_000));
 
   it('reports disabled when the parameter does not exist', async () => {
     const sub = `u-${randomUUID()}`;
@@ -3355,8 +3363,35 @@ describe('GET /projects/:id reports the native-execution flag', () => {
 
     for (const value of ['disabled', 'Enabled', 'true', '']) {
       ssmParams.set(FLAG, value);
+      aMinuteLater();
       expect(JSON.parse((await getProject(sub, id)).body).nativeExecution, value).toBe('disabled');
     }
+  });
+
+  it('reads the parameter once a minute, however often the space is polled', async () => {
+    const sub = `u-${randomUUID()}`;
+    const other = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Space' });
+    const { id: otherId } = await createProject(other, { name: 'Other' });
+    ssmParams.set(FLAG, 'enabled');
+
+    for (const [caller, projectId] of [
+      [sub, id],
+      [sub, id],
+      [other, otherId],
+    ]) {
+      expect(JSON.parse((await getProject(caller, projectId)).body).nativeExecution).toBe(
+        'enabled',
+      );
+    }
+    expect(flagReads()).toHaveLength(1);
+
+    // Switched off: the browser learns it with the first read after the minute.
+    ssmParams.delete(FLAG);
+    expect(JSON.parse((await getProject(sub, id)).body).nativeExecution).toBe('enabled');
+    aMinuteLater();
+    expect(JSON.parse((await getProject(sub, id)).body).nativeExecution).toBe('disabled');
+    expect(flagReads()).toHaveLength(2);
   });
 
   it('reports disabled and still answers when the parameter cannot be read', async () => {
@@ -3370,6 +3405,9 @@ describe('GET /projects/:id reports the native-execution flag', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ id, name: 'Space', nativeExecution: 'disabled' });
+    // A failing read is retried once a minute, not on every poll.
+    await getProject(sub, id);
+    expect(flagReads()).toHaveLength(1);
   });
 
   it.each(['member', 'viewer'])('reports the flag to a %s', async (role) => {

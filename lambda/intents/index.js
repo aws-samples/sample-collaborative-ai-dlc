@@ -7080,7 +7080,13 @@ const handleCreateNativeIntent = async ({ data, projectId, sub, g, response }) =
   // The flag is checked before the request is looked at any further, so a
   // deployment with native execution off answers every native create the same
   // way and writes nothing.
-  if ((await readNativeExecution(ssm, AGENT_SETTINGS_SSM_PREFIX())) !== 'enabled') {
+  const nativeExecution = await readNativeExecution(ssm, AGENT_SETTINGS_SSM_PREFIX(), {
+    onError: (error) =>
+      logger.warn('native-execution flag could not be read; treating it as disabled', {
+        error: error?.name,
+      }),
+  });
+  if (nativeExecution !== 'enabled') {
     return response(409, {
       error: 'Native execution is disabled',
       code: 'native_execution_disabled',

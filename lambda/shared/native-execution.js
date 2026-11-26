@@ -17,15 +17,19 @@ export const NATIVE_ENGINE = 'native';
 export const nativeExecutionParameterName = (prefix) => `${prefix}/native-execution`;
 
 // Fail-safe read: no prefix, a missing parameter, a read failure and any value
-// other than `enabled` all yield `disabled`.
-export const readNativeExecution = async (ssm, prefix) => {
+// other than `enabled` all yield `disabled`. A missing parameter is the normal
+// state of a deployment that never set the flag. Any other failure (a missing
+// IAM grant, a throttle) is handed to `onError`, so the caller can log why the
+// feature reads as off.
+export const readNativeExecution = async (ssm, prefix, { onError } = {}) => {
   if (!prefix) return 'disabled';
   try {
     const res = await ssm.send(
       new GetParameterCommand({ Name: nativeExecutionParameterName(prefix) }),
     );
     return res.Parameter?.Value === 'enabled' ? 'enabled' : 'disabled';
-  } catch {
+  } catch (error) {
+    if (error?.name !== 'ParameterNotFound') onError?.(error);
     return 'disabled';
   }
 };

@@ -68,6 +68,34 @@ describe('readNativeExecution', () => {
     await expect(readNativeExecution(ssm, PREFIX)).resolves.toBe('disabled');
   });
 
+  it('hands a failed read to onError, but not a missing parameter', async () => {
+    const onError = vi.fn();
+    const failing = (error) => ({
+      send: async () => {
+        throw error;
+      },
+    });
+    const denied = Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+    const missing = Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
+
+    await expect(readNativeExecution(failing(denied), PREFIX, { onError })).resolves.toBe(
+      'disabled',
+    );
+    expect(onError).toHaveBeenCalledExactlyOnceWith(denied);
+
+    onError.mockClear();
+    await expect(readNativeExecution(failing(missing), PREFIX, { onError })).resolves.toBe(
+      'disabled',
+    );
+    await expect(readNativeExecution(ssmReturning('enabled'), PREFIX, { onError })).resolves.toBe(
+      'enabled',
+    );
+    await expect(readNativeExecution(ssmReturning('nonsense'), PREFIX, { onError })).resolves.toBe(
+      'disabled',
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it.each(['', undefined, null])('is disabled without reading when the prefix is %j', async (p) => {
     const ssm = ssmReturning('enabled');
     await expect(readNativeExecution(ssm, p)).resolves.toBe('disabled');

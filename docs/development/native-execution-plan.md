@@ -16,15 +16,15 @@ A member runs an intent with the AI-DLC methodology itself ("native") instead of
 
 ## Terms
 
-| Term               | Meaning                                                                                                                   |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| Platform intent    | Today's v2 intent. Unchanged by this plan.                                                                                |
-| Native intent      | An intent with `engine: "native"`.                                                                                        |
-| Workspace          | The native intent's directory on EFS. It holds the repository checkouts and the CLI's conversation store.                 |
-| Turn               | One run of the coding CLI in the workspace. It ends when AI-DLC waits for a human, reports completion, or fails.          |
-| AI-DLC source      | The Git repository and ref a space takes AI-DLC from.                                                                     |
-| Primary repository | The repository that holds AI-DLC's framework files and records. AI-DLC runs from its root.                                |
-| Flag               | The SSM parameter `/<project>/<env>/native-execution`. `enabled` switches native on; anything else, or no parameter, off. |
+| Term               | Meaning                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Platform intent    | Today's v2 intent. Unchanged by this plan.                                                                                                  |
+| Native intent      | An intent with `engine: "native"`.                                                                                                          |
+| Workspace          | The native intent's directory on EFS. It holds the repository checkouts and the CLI's conversation store.                                   |
+| Turn               | One run of the coding CLI in the workspace. It ends when AI-DLC waits for a human, reports completion, or fails.                            |
+| AI-DLC source      | The Git repository and ref a space takes AI-DLC from.                                                                                       |
+| Primary repository | The repository that holds AI-DLC's framework files and records. AI-DLC runs from its root.                                                  |
+| Flag               | The SSM parameter `/<project>/<env>/native-execution`, of type `String`. `enabled` switches native on; anything else, or no parameter, off. |
 
 ## Decisions this plan is built on
 
@@ -63,18 +63,19 @@ Three consequences worth knowing before starting:
 
 Settled when a PR started, on the date given. "Plan owner" means the plan owner chose it. "Proposed" means the PR proposed it and the plan owner raised no objection; it can still be changed.
 
-| #   | PR  | Decision                                                                                                                                                                                                                                                                   | Source     |
-| --- | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| D21 | 1   | A native draft holds every repository of the space from the start, as a platform intent does. The member's `primaryRepo` is stored and comes first in `repos`. It is required when the space has several repositories. This replaces "one repository until PR 18".         | Plan owner |
-| D22 | 1   | A native draft snapshots every space setting a platform draft snapshots, except workflow, scope, release and stage skipping. Whether a native turn honours a setting is decided by the PR that uses it, or by the parity review in PR 22.                                  | Plan owner |
-| D23 | 1   | Local commits on a PR's branch are allowed as validated slices land. Push and pull request wait for the plan owner.                                                                                                                                                        | Plan owner |
-| D24 | 1   | `engine` on create: absent or `null` is a platform intent and stores nothing. `"native"` is native. Anything else is 400 `engine_invalid`. Only native rows and responses carry `engine` and `primaryRepo`.                                                                | Proposed   |
-| D25 | 1   | Refused on a native create and on PATCH of a native draft, with 400 `native_input_not_supported`: `scope`, `composedGrid`, `policyScope`, `skipStageIds`, `aidlcSettings`, `methodologyReleaseId`, `methodologyReleaseTest`, `constructionGateAutonomy`, `sparseCheckout`. | Proposed   |
-| D26 | 1   | `engine` in any PATCH body is 400 `engine_immutable`. A native draft's title, prompt and conversation language can be saved.                                                                                                                                               | Proposed   |
-| D27 | 1   | A native execution that reaches the orchestrator is refused right after `load-meta`, with reason `native_engine_unsupported`. Nothing is written, so a stray invocation cannot turn a draft into a failed intent.                                                          | Proposed   |
-| D28 | 1   | The space detail response reports `nativeExecution: "enabled" \| "disabled"`, for v2 spaces only. The space list does not report it.                                                                                                                                       | Proposed   |
-| D29 | 1   | Terraform does not create the flag's parameter. A deployment that never set it has native off.                                                                                                                                                                             | Proposed   |
-| D30 | 1   | A space without a repository cannot hold a native intent (400 `native_repository_required`), because the primary repository holds AI-DLC's records (D10).                                                                                                                  | Proposed   |
+| #   | PR  | Decision                                                                                                                                                                                                                                                                                    | Source     |
+| --- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| D21 | 1   | A native draft holds every repository of the space from the start, as a platform intent does. The member's `primaryRepo` is stored and comes first in `repos`. It is required when the space has several repositories. This replaces "one repository until PR 18".                          | Plan owner |
+| D22 | 1   | A native draft snapshots every space setting a platform draft snapshots, except workflow, scope, release and stage skipping. Whether a native turn honours a setting is decided by the PR that uses it, or by the parity review in PR 22.                                                   | Plan owner |
+| D23 | 1   | For PR 1: local commits on the branch are allowed as validated slices land. Push and pull request wait for the plan owner. Asked again when the next PR starts.                                                                                                                             | Plan owner |
+| D24 | 1   | `engine` on create: absent or `null` is a platform intent and stores nothing. `"native"` is native. Anything else is 400 `engine_invalid`. Only native rows and responses carry `engine` and `primaryRepo`.                                                                                 | Proposed   |
+| D25 | 1   | Refused on a native create and on PATCH of a native draft, with 400 `native_input_not_supported`: `scope`, `composedGrid`, `policyScope`, `skipStageIds`, `aidlcSettings`, `methodologyReleaseId`, `methodologyReleaseTest`, `constructionGateAutonomy`, `sparseCheckout`.                  | Proposed   |
+| D26 | 1   | `engine` in any PATCH body is 400 `engine_immutable`. A native draft's title, prompt and conversation language can be saved.                                                                                                                                                                | Proposed   |
+| D27 | 1   | A native execution that reaches the orchestrator is refused right after `load-meta`, with reason `native_engine_unsupported`. Nothing is written, so a stray invocation cannot turn a draft into a failed intent.                                                                           | Proposed   |
+| D28 | 1   | The space detail response reports `nativeExecution: "enabled" \| "disabled"`, for v2 spaces only. The space list does not report it.                                                                                                                                                        | Proposed   |
+| D29 | 1   | Terraform does not create the flag's parameter. A deployment that never set it has native off.                                                                                                                                                                                              | Proposed   |
+| D30 | 1   | A space without a repository cannot hold a native intent (400 `native_repository_required`), because the primary repository holds AI-DLC's records (D10).                                                                                                                                   | Proposed   |
+| D31 | 1   | The space detail response keeps the flag for one minute per warm Lambda container, because every open space page polls that response. A switch of the flag reaches the browser within that minute. Intent creation reads the flag uncached. A failed read is logged and counts as disabled. | Proposed   |
 
 ## Workspace layout
 
@@ -182,7 +183,7 @@ Each branch is based on the branch in the row above; the first is based on `main
 Backend only. Nothing visible in the UI.
 
 - **Scope:** one shared reader for the flag in `lambda/shared/`, modelled on `fetchPlatformStageSkipping` in `lambda/intents/index.js`. `engine` accepted on intent creation and stored on the execution row. `nativeExecution` on the project detail response so the browser can learn the flag. Read permission for the parameter on the Lambdas that read it. This document is committed with this PR.
-- **Built:** the reader and the engine helpers are in `lambda/shared/native-execution.js`. The intents and projects Lambdas read the flag; the orchestrator does not need it yet.
+- **Built:** the reader and the engine helpers are in `lambda/shared/native-execution.js`. The intents and projects Lambdas read the flag; the orchestrator does not need it yet. An independent review of the change led to D31.
 
 Acceptance criteria:
 
