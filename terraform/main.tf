@@ -536,6 +536,7 @@ module "neptune" {
   name_prefix             = "${var.project_name}-${var.environment}"
   vpc_id                  = module.networking.vpc_id
   vpc_cidr                = module.networking.vpc_cidr_block
+  vpc_cidr_blocks         = module.networking.vpc_cidr_blocks
   private_subnet_ids      = module.networking.private_subnet_ids
   instance_class          = "db.t3.medium"
   kms_key_arn             = var.kms_key_arn
@@ -864,6 +865,7 @@ module "agentcore" {
   # VPC's private subnets; egress via the private NAT route.
   vpc_id                  = module.networking.vpc_id
   vpc_cidr                = module.networking.vpc_cidr_block
+  vpc_cidr_blocks         = module.networking.vpc_cidr_blocks
   private_route_table_ids = module.networking.private_route_table_ids
   subnet_ids              = var.existing_private_subnet_ids
 

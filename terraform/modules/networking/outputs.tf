@@ -8,6 +8,11 @@ output "vpc_cidr_block" {
   value       = local.vpc_cidr_block
 }
 
+output "vpc_cidr_blocks" {
+  description = "IPv4 CIDR blocks of the VPC: the primary one, plus any associated secondary ones of an existing VPC"
+  value       = local.vpc_cidr_blocks
+}
+
 output "public_subnet_ids" {
   description = "IDs of the public subnets (empty when existing_vpc_id is set)"
   value       = aws_subnet.public[*].id

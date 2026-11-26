@@ -190,6 +190,12 @@ variable "vpc_cidr" {
   default     = ""
 }
 
+variable "vpc_cidr_blocks" {
+  description = "All CIDRs of the VPC, including secondary ones, for in-VPC security group rules. Empty = vpc_cidr only."
+  type        = list(string)
+  default     = []
+}
+
 variable "subnet_ids" {
   description = "Existing private subnets for the runtime ENIs, instead of dedicated subnets carved from vpc_cidr. Up to 2 in AgentCore-supported AZs are used; they need internet egress. Empty = carve dedicated subnets."
   type        = list(string)

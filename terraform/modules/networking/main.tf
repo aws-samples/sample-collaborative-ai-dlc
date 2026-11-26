@@ -13,6 +13,12 @@ locals {
   vpc_cidr_block     = local.create_vpc ? aws_vpc.main[0].cidr_block : data.aws_vpc.existing[0].cidr_block
   private_subnet_ids = local.create_vpc ? aws_subnet.private[*].id : var.existing_private_subnet_ids
 
+  # An existing VPC's subnets may sit in any of its associated CIDRs.
+  vpc_cidr_blocks = local.create_vpc ? [local.vpc_cidr_block] : sort(distinct([
+    for association in data.aws_vpc.existing[0].cidr_block_associations :
+    association.cidr_block if association.state == "associated"
+  ]))
+
   private_route_table_ids = local.create_vpc ? aws_route_table.private[*].id : distinct([
     for id in var.existing_private_subnet_ids : data.aws_route_table.existing_private[id].id
   ])

@@ -60,6 +60,11 @@ override_module {
   outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-mcp-tools-test", lambda_function_name = "test-mcp-tools-test" }
 }
 
+override_module {
+  target  = module.mcp_interceptor_lambda
+  outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-mcp-interceptor-test", lambda_function_name = "test-mcp-interceptor-test" }
+}
+
 variables {
   project_name = "test"
   environment  = "test"
@@ -85,6 +90,11 @@ run "networking_creates_vpc_by_default" {
   assert {
     condition     = length(data.aws_vpc.existing) == 0 && length(data.aws_nat_gateways.existing) == 0
     error_message = "Without existing_vpc_id the module must not look up an existing VPC."
+  }
+
+  assert {
+    condition     = length(output.vpc_cidr_blocks) == 1 && output.vpc_cidr_blocks[0] == "10.0.0.0/16"
+    error_message = "A created VPC has only its primary CIDR."
   }
 }
 
@@ -149,6 +159,82 @@ run "networking_uses_existing_vpc" {
   assert {
     condition     = length(output.public_subnet_ids) == 0 && output.internet_gateway_id == null
     error_message = "No public subnets or internet gateway are managed for an existing VPC."
+  }
+}
+
+run "networking_existing_vpc_secondary_cidrs" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    existing_vpc_id             = "vpc-0e0e0e0e0e0e0e0e0"
+    existing_private_subnet_ids = ["subnet-0a0a0a0a0a0a0a0a0"]
+  }
+
+  override_data {
+    target = data.aws_vpc.existing[0]
+    values = {
+      cidr_block = "10.20.0.0/22"
+      cidr_block_associations = [
+        { association_id = "vpc-cidr-assoc-01", cidr_block = "10.20.0.0/22", state = "associated" },
+        { association_id = "vpc-cidr-assoc-02", cidr_block = "100.64.0.0/16", state = "associated" },
+        { association_id = "vpc-cidr-assoc-03", cidr_block = "10.30.0.0/24", state = "disassociated" },
+      ]
+    }
+  }
+
+  assert {
+    condition     = output.vpc_cidr_block == "10.20.0.0/22"
+    error_message = "vpc_cidr_block must stay the primary CIDR."
+  }
+
+  assert {
+    condition     = output.vpc_cidr_blocks == tolist(["10.20.0.0/22", "100.64.0.0/16"])
+    error_message = "vpc_cidr_blocks must hold every associated CIDR and no disassociated one."
+  }
+}
+
+run "neptune_admits_vpc_cidr_by_default" {
+  command = plan
+
+  module {
+    source = "./modules/data/neptune"
+  }
+
+  variables {
+    name_prefix        = "test-test"
+    vpc_id             = "vpc-0e0e0e0e0e0e0e0e0"
+    vpc_cidr           = "10.0.0.0/16"
+    private_subnet_ids = ["subnet-0a0a0a0a0a0a0a0a0"]
+  }
+
+  assert {
+    condition     = one([for rule in aws_security_group.neptune.ingress : rule.cidr_blocks if rule.from_port == 8182]) == tolist(["10.0.0.0/16"])
+    error_message = "Without vpc_cidr_blocks, Neptune must admit vpc_cidr only."
+  }
+}
+
+run "neptune_admits_secondary_vpc_cidrs" {
+  command = plan
+
+  module {
+    source = "./modules/data/neptune"
+  }
+
+  variables {
+    name_prefix        = "test-test"
+    vpc_id             = "vpc-0e0e0e0e0e0e0e0e0"
+    vpc_cidr           = "10.20.0.0/22"
+    vpc_cidr_blocks    = ["10.20.0.0/22", "100.64.0.0/16"]
+    private_subnet_ids = ["subnet-0a0a0a0a0a0a0a0a0"]
+  }
+
+  assert {
+    condition     = one([for rule in aws_security_group.neptune.ingress : rule.cidr_blocks if rule.from_port == 8182]) == tolist(["10.20.0.0/22", "100.64.0.0/16"])
+    error_message = "Neptune must admit every VPC CIDR, including secondary ones."
   }
 }
 
@@ -324,5 +410,56 @@ run "agentcore_ignores_subnets_without_vpc_mode" {
   assert {
     condition     = length(data.aws_subnet.provided) == 0 && length(aws_subnet.agentcore) == 0
     error_message = "Outside VPC mode, subnet_ids must not be looked up or used."
+  }
+}
+
+run "agentcore_mcp_lambdas_reach_secondary_vpc_cidrs" {
+  command = plan
+
+  module {
+    source = "./modules/compute/agentcore"
+  }
+
+  variables {
+    aws_sdk_ua_app_id           = "Collaborative_AI-DLC-test"
+    powertools_service_name     = "test"
+    powertools_log_level        = "INFO"
+    aws_region                  = "us-east-1"
+    neptune_endpoint            = "neptune.example"
+    neptune_cluster_resource_id = "cluster-TEST"
+    artifacts_bucket_name       = "test-artifacts"
+    artifacts_bucket_arn        = "arn:aws:s3:::test-artifacts"
+    blocks_table_name           = "test-blocks"
+    blocks_table_arn            = "arn:aws:dynamodb:us-east-1:123456789012:table/test-blocks"
+    connections_table_name      = "test-connections"
+    connections_table_arn       = "arn:aws:dynamodb:us-east-1:123456789012:table/test-connections"
+    websocket_endpoint          = "https://ws.example"
+    websocket_execution_arn     = "arn:aws:execute-api:us-east-1:123456789012:ws1/test"
+    aidlc_repo_ref              = "main"
+    bedrock_model               = "test-model"
+    bedrock_region              = "us-east-1"
+    kms_key_arn                 = "arn:aws:kms:us-east-1:123456789012:key/test"
+    network_mode                = "VPC"
+    vpc_id                      = "vpc-0e0e0e0e0e0e0e0e0"
+    vpc_cidr                    = "10.20.0.0/22"
+    vpc_cidr_blocks             = ["10.20.0.0/22", "100.64.0.0/16"]
+    private_route_table_ids     = ["rtb-0f0f0f0f0f0f0f0f0"]
+    subnet_ids                  = ["subnet-0a0a0a0a0a0a0a0a0"]
+    enable_mcp_gateway          = true
+  }
+
+  override_data {
+    target = data.aws_subnet.provided["subnet-0a0a0a0a0a0a0a0a0"]
+    values = { availability_zone_id = "use1-az1" }
+  }
+
+  assert {
+    condition     = one([for rule in aws_security_group.mcp_tools[0].egress : rule.cidr_blocks if rule.from_port == 8182]) == tolist(["10.20.0.0/22", "100.64.0.0/16"])
+    error_message = "The MCP tools Lambda must reach Neptune in every VPC CIDR."
+  }
+
+  assert {
+    condition     = one([for rule in aws_security_group.mcp_interceptor[0].egress : rule.cidr_blocks if rule.from_port == 8182]) == tolist(["10.20.0.0/22", "100.64.0.0/16"])
+    error_message = "The MCP interceptor Lambda must reach Neptune in every VPC CIDR."
   }
 }
