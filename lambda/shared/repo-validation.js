@@ -1,3 +1,5 @@
+import { parseGitlabRepo } from './gitlab-instance.js';
+
 // Shared shell-injection guards for repo identifiers and git refs.
 //
 // These values become git clone URLs and workspace directory paths (the v2
@@ -32,6 +34,14 @@ const CODECOMMIT_REPO_ARN_PATTERN =
 // second would then be treated as a warm checkout of the first.
 const repoCheckoutPath = (value) => {
   if (typeof value !== 'string') return null;
+  if (value.startsWith('gitlab:')) {
+    try {
+      const { instance, path } = parseGitlabRepo(value);
+      return `gitlab/${instance.replace(':', '_')}/${path}`;
+    } catch {
+      return null;
+    }
+  }
   const arn = CODECOMMIT_REPO_ARN_PATTERN.exec(value);
   return arn ? `codecommit/${arn[1]}/${arn[2]}/${arn[3]}/${arn[4]}` : value;
 };

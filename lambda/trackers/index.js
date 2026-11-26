@@ -1,4 +1,6 @@
 import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
+import { parseGitlabRepo } from '../shared/gitlab-instance.js';
+import { gitlabInstanceSecrets } from '../shared/git-providers/gitlab-instance.js';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -421,10 +423,14 @@ const listTrackerConnections = async (response, userId) => {
       logger.error('Failed to read github connection', err);
       return null;
     }),
-    getGitConnection(ddb, userId, 'gitlab').catch((err) => {
-      logger.error('Failed to read gitlab connection', err);
-      return null;
-    }),
+    Promise.all(
+      [undefined, ...Object.keys(gitlabInstanceSecrets())].map((instance) =>
+        getGitConnection(ddb, userId, 'gitlab', instance).catch((err) => {
+          logger.error('Failed to read gitlab connection', err, { instance: instance ?? 'public' });
+          return null;
+        }),
+      ),
+    ),
     process.env.TRACKER_CONNECTIONS_TABLE
       ? ddb
           .send(
@@ -451,12 +457,12 @@ const listTrackerConnections = async (response, userId) => {
       scope: gitGithub.scope || null,
     });
   }
-  if (gitGitlab) {
+  for (const connection of gitGitlab.filter(Boolean)) {
     out.push({
       provider: 'gitlab-issues',
-      instance: 'public',
-      connectedAt: gitGitlab.createdAt || null,
-      scope: gitGitlab.scope || null,
+      instance: connection.instance ?? 'public',
+      connectedAt: connection.createdAt || null,
+      scope: connection.scope || null,
     });
   }
   // tracker-connections is keyed (userId, provider#instance) — Jira etc. Scan
@@ -476,11 +482,15 @@ const listTrackerConnections = async (response, userId) => {
 
 // DELETE /trackers/{provider}/{instance}
 const disconnectTracker = async (response, userId, provider, instance) => {
-  if ((provider === 'github-issues' || provider === 'gitlab-issues') && instance === 'public') {
+  const host = instance === 'public' ? undefined : instance;
+  if (
+    (provider === 'github-issues' && !host) ||
+    (provider === 'gitlab-issues' && (!host || Object.hasOwn(gitlabInstanceSecrets(), host)))
+  ) {
     // github-issues/gitlab-issues reuse the git connection. Map the tracker id
     // to its git provider and resolve the row (lazily migrating if needed).
     const gitProvider = provider === 'gitlab-issues' ? 'gitlab' : 'github';
-    const Item = await getGitConnection(ddb, userId, gitProvider);
+    const Item = await getGitConnection(ddb, userId, gitProvider, host);
     if (Item?.parameterName) {
       try {
         await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
@@ -489,10 +499,10 @@ const disconnectTracker = async (response, userId, provider, instance) => {
       }
     }
     // Remove from both the new and legacy tables.
-    await deleteGitConnection(ddb, userId, gitProvider);
+    await deleteGitConnection(ddb, userId, gitProvider, host);
     await invalidateBindingsByCredentialRef(
       ddb,
-      oauthCredentialRef(gitProvider, userId),
+      oauthCredentialRef(gitProvider, userId, host),
       'oauth_disconnected',
       { actor: userId },
     );
@@ -795,7 +805,11 @@ export const handler = async (event, context) => {
         } catch (err) {
           logger.error('Failed to probe OAuth secret', err, { providerId: id });
         }
-        return { id, label: cfg.label, instances: cfg.instances, configured };
+        const instances =
+          id === 'gitlab-issues'
+            ? [...cfg.instances, ...Object.keys(gitlabInstanceSecrets())]
+            : cfg.instances;
+        return { id, label: cfg.label, instances, configured };
       }),
     );
     return response(200, out);
@@ -907,10 +921,17 @@ export const handler = async (event, context) => {
       if (!externalProjectKey) {
         return response(400, { error: 'externalProjectKey is required' });
       }
-      // Validate provider+instance up front
+      // Validate provider+instance before probing the project's source control.
       try {
         getProvider(provider, instance);
+        if (
+          provider === 'gitlab-issues' &&
+          instance !== (parseGitlabRepo(externalProjectKey).instance ?? 'public')
+        ) {
+          return response(400, { error: 'GitLab tracker instance must match its repository' });
+        }
       } catch (err) {
+        if (err.status === 400) return response(400, { error: err.message });
         return handleProviderError(response, err);
       }
 

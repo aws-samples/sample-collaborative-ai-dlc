@@ -12,6 +12,7 @@ import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 // platform connection set by an admin, so it can never reach here.
 export interface GitConnectButtonProps {
   provider: OAuthGitProvider;
+  instance?: string;
   connected: boolean;
   reauthorizationRequired?: boolean;
   missingScopes?: string[];
@@ -49,6 +50,7 @@ const PROVIDER_META = {
 
 export function GitConnectButton({
   provider,
+  instance,
   connected,
   reauthorizationRequired = false,
   missingScopes = [],
@@ -57,7 +59,7 @@ export function GitConnectButton({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const meta = PROVIDER_META[provider];
-  const service = getGitProviderService(provider);
+  const service = getGitProviderService(provider, instance);
 
   // Operator-side OAuth-app config — disable the Connect button when the
   // deployment hasn't populated this provider's OAuth secret yet, with helper
@@ -67,11 +69,13 @@ export function GitConnectButton({
   const { providers, loading: providersLoading, failed: providersFailed } = useTrackerProviders();
   // null while loading; true if the provider reports configured OR the fetch
   // itself failed (let the user try anyway rather than block on a transient blip).
-  const configured = providersLoading
-    ? null
-    : providersFailed
-      ? true
-      : (providers.find((p) => p.id === trackerId)?.configured ?? false);
+  const configured = instance
+    ? true
+    : providersLoading
+      ? null
+      : providersFailed
+        ? true
+        : (providers.find((p) => p.id === trackerId)?.configured ?? false);
 
   const handleConnect = async () => {
     setLoading(true);

@@ -20,7 +20,12 @@ import {
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { GitConnectButton } from '@/components/GitConnectButton';
 import { useGitProviderStatus } from '@/hooks/useGitProviderStatus';
-import { isOAuthGitProvider, repoDisplayName, type GitProvider } from '@/services/gitProvider';
+import {
+  gitlabInstanceForRepo,
+  isOAuthGitProvider,
+  repoDisplayName,
+  type GitProvider,
+} from '@/services/gitProvider';
 import type { Project } from '@/services/projects';
 import {
   sourceControlService,
@@ -53,6 +58,7 @@ const readableReason = (reason: string | null) =>
 
 function ProviderBindingControl({
   provider,
+  instance,
   authType,
   confirmed,
   disabled,
@@ -60,13 +66,14 @@ function ProviderBindingControl({
   onConfirmedChange,
 }: {
   provider: GitProvider;
+  instance?: string;
   authType: SourceControlAuthType;
   confirmed: boolean;
   disabled: boolean;
   onAuthTypeChange: (value: SourceControlAuthType) => void;
   onConfirmedChange: (value: boolean) => void;
 }) {
-  const { status, loading, error, refresh } = useGitProviderStatus(provider);
+  const { status, loading, error, refresh } = useGitProviderStatus(provider, instance);
   const oauth = authType.endsWith('-oauth');
   // CodeCommit binds to the one platform connection; there is nothing per-user
   // to configure here (an admin owns the role). Rebinding re-verifies against
@@ -76,7 +83,7 @@ function ProviderBindingControl({
   return (
     <div className="space-y-3 border-t pt-3 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="w-16 text-xs font-semibold capitalize">{provider}</span>
+        <span className="w-16 text-xs font-semibold capitalize">{instance ?? provider}</span>
         <Select
           value={authType}
           onValueChange={(value) => onAuthTypeChange(value as SourceControlAuthType)}
@@ -120,6 +127,7 @@ function ProviderBindingControl({
           ) : (
             <GitConnectButton
               provider={provider}
+              instance={instance}
               connected={status?.connected ?? false}
               reauthorizationRequired={status?.reauthorizationRequired}
               missingScopes={status?.missingScopes}
@@ -134,7 +142,7 @@ function ProviderBindingControl({
               disabled={disabled}
               className="mt-0.5 h-4 w-4"
             />
-            Delegate my connected identity to all {provider} repositories in this space.
+            Delegate my connected identity to all {instance ?? provider} repositories in this space.
           </label>
         </div>
       )}
@@ -147,18 +155,21 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
   const [authTypes, setAuthTypes] = useState<Partial<Record<GitProvider, SourceControlAuthType>>>(
     {},
   );
-  const [confirmed, setConfirmed] = useState<Partial<Record<GitProvider, boolean>>>({});
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const providers = useMemo(
-    () =>
-      [
-        ...new Set((project.repos ?? []).map((repo) => repo.provider || project.gitProvider)),
-      ] as GitProvider[],
-    [project.gitProvider, project.repos],
-  );
+  const connections = useMemo(() => {
+    const distinct = new Map<string, { provider: GitProvider; instance?: string; key: string }>();
+    for (const repo of project.repos ?? []) {
+      const provider = (repo.provider || project.gitProvider) as GitProvider;
+      const instance = provider === 'gitlab' ? gitlabInstanceForRepo(repo.url) : undefined;
+      const key = instance ? `${provider}:${instance}` : provider;
+      distinct.set(key, { provider, instance, key });
+    }
+    return [...distinct.values()];
+  }, [project.gitProvider, project.repos]);
   const repositoryKey = (project.repos ?? [])
     .map((repo) => `${repo.provider}:${repo.url}`)
     .sort()
@@ -173,7 +184,7 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
       onStatusChange?.(next);
       setAuthTypes((current) => {
         const updated = { ...current };
-        for (const provider of providers) {
+        for (const { provider } of connections) {
           const existing = next.repositories.find(
             (repository) => repository.provider === provider && repository.authType,
           );
@@ -196,11 +207,11 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
 
   const bind = async () => {
     const selections: SourceControlProviderSelection = {};
-    for (const provider of providers) {
+    for (const { provider, instance, key } of connections) {
       const authType = authTypes[provider];
       if (!authType) return;
-      if (authType.endsWith('-oauth') && !confirmed[provider]) {
-        setError(`Confirm ${provider} OAuth delegation before binding.`);
+      if (authType.endsWith('-oauth') && !confirmed[key]) {
+        setError(`Confirm ${instance ?? provider} OAuth delegation before binding.`);
         return;
       }
       // codecommit-role binds to the one platform connection: no per-user role,
@@ -236,7 +247,7 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
     }
   };
 
-  const ready = status?.ready ?? providers.length === 0;
+  const ready = status?.ready ?? connections.length === 0;
 
   return (
     <SettingsCard
@@ -253,7 +264,7 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking bindings...
         </p>
-      ) : providers.length === 0 ? (
+      ) : connections.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           This space has no repositories and does not require a source-control binding.
         </p>
@@ -328,18 +339,19 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
           {canEdit && (
             <>
               <div className="space-y-3">
-                {providers.map((provider) => (
+                {connections.map(({ provider, instance, key }) => (
                   <ProviderBindingControl
-                    key={provider}
+                    key={key}
+                    instance={instance}
                     provider={provider}
                     authType={authTypes[provider] ?? defaultAuthTypeFor(provider)}
-                    confirmed={Boolean(confirmed[provider])}
+                    confirmed={Boolean(confirmed[key])}
                     disabled={saving}
                     onAuthTypeChange={(value) =>
                       setAuthTypes((current) => ({ ...current, [provider]: value }))
                     }
                     onConfirmedChange={(value) =>
-                      setConfirmed((current) => ({ ...current, [provider]: value }))
+                      setConfirmed((current) => ({ ...current, [key]: value }))
                     }
                   />
                 ))}

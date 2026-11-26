@@ -9,6 +9,7 @@ import {
   GetCommand,
   PutCommand,
   DeleteCommand,
+  UpdateCommand,
   QueryCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -395,6 +396,27 @@ describe('GET /trackers (unified listing)', () => {
     ]);
   });
 
+  it('keeps healthy GitLab connections when one instance read fails', async () => {
+    const host = 'private.example.org';
+    const previousRegistry = process.env.GITLAB_INSTANCE_SECRETS;
+    const previousTable = process.env.GIT_PROVIDER_CONNECTIONS_TABLE;
+    vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ [host]: 'private-app' }));
+    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'git-by-instance');
+    try {
+      ddbMock.on(GetCommand, { TableName: 'git-by-instance' }).callsFake(({ Key }) => {
+        if (Key.providerInstance === 'gitlab#public') throw new Error('Read failed');
+        return Key.providerInstance === `gitlab#${host}` ? { Item: { instance: host } } : {};
+      });
+      const res = await handler(baseEvent());
+      expect(JSON.parse(res.body)).toContainEqual(
+        expect.objectContaining({ provider: 'gitlab-issues', instance: host }),
+      );
+    } finally {
+      vi.stubEnv('GITLAB_INSTANCE_SECRETS', previousRegistry);
+      vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', previousTable);
+    }
+  });
+
   it('returns empty list when nothing is connected', async () => {
     ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({});
     ddbMock.on(ScanCommand, { TableName: TRACKER_TABLE }).resolves({ Items: [] });
@@ -423,6 +445,70 @@ describe('GET /trackers (unified listing)', () => {
 });
 
 describe('DELETE /trackers/{provider}/{instance}', () => {
+  describe('GitLab issues', () => {
+    const host = 'git.example.org';
+    const table = 'git-by-instance';
+    const disconnect = (instance) =>
+      handler({
+        httpMethod: 'DELETE',
+        path: `/trackers/gitlab-issues/${instance}`,
+        pathParameters: { provider: 'gitlab-issues', instance },
+        ...claims(),
+      });
+
+    beforeEach(({ onTestFinished }) => {
+      const previousRegistry = process.env.GITLAB_INSTANCE_SECRETS;
+      const previousTable = process.env.GIT_PROVIDER_CONNECTIONS_TABLE;
+      vi.stubEnv('GITLAB_INSTANCE_SECRETS', JSON.stringify({ [host]: 'private-app' }));
+      vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', table);
+      onTestFinished(() => {
+        vi.stubEnv('GITLAB_INSTANCE_SECRETS', previousRegistry);
+        vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', previousTable);
+      });
+    });
+
+    it.each(['public', host])(
+      'disconnects only the %s connection and its bindings',
+      async (instance) => {
+        for (const target of ['public', host]) {
+          const providerInstance = `gitlab#${target}`;
+          const key = { userId: 'user-1', providerInstance };
+          ddbMock.on(GetCommand, { TableName: table, Key: key }).resolves({
+            Item: { ...key, provider: 'gitlab', parameterName: `${PARAM_NAME}/${target}` },
+          });
+          const credentialRef =
+            target === 'public' ? 'oauth#gitlab#user-1' : `oauth#gitlab#user-1#${target}`;
+          ddbMock
+            .on(QueryCommand, { ExpressionAttributeValues: { ':credentialRef': credentialRef } })
+            .resolves({
+              Items: [{ projectId: target, bindingKey: 'widgets' }],
+            });
+        }
+        expect((await disconnect(instance)).statusCode).toBe(200);
+        expect(ssmMock).toHaveReceivedCommandTimes(DeleteParameterCommand, 1);
+        expect(ssmMock).toHaveReceivedCommandWith(DeleteParameterCommand, {
+          Name: `${PARAM_NAME}/${instance}`,
+        });
+        expect(ddbMock).toHaveReceivedCommandTimes(DeleteCommand, 1);
+        expect(ddbMock).toHaveReceivedCommandWith(DeleteCommand, {
+          TableName: table,
+          Key: { userId: 'user-1', providerInstance: `gitlab#${instance}` },
+        });
+        expect(ddbMock).toHaveReceivedCommandTimes(UpdateCommand, 1);
+        expect(ddbMock.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+          Key: { projectId: instance, bindingKey: 'widgets' },
+          ExpressionAttributeValues: { ':reason': 'oauth_disconnected' },
+        });
+      },
+    );
+
+    it('rejects an unregistered host before touching credentials or bindings', async () => {
+      expect((await disconnect('unknown.example.org')).statusCode).toBe(400);
+      expect(ddbMock.calls()).toHaveLength(0);
+      expect(ssmMock.calls()).toHaveLength(0);
+    });
+  });
+
   it('disconnects github-issues by deleting the SSM param + git-connections row', async () => {
     const res = await handler({
       httpMethod: 'DELETE',

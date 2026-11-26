@@ -353,6 +353,8 @@ The platform integrates with external providers as **code hosts** (GitHub, GitLa
 
 For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. Tracker integrations post delivery comments; GitHub and GitLab issues also close after all final delivery requests merge.
 
+For GitLab Self-Managed, configure an OAuth application per instance using `gitlab_instance_secrets` in Terraform. See [Register a self-managed GitLab instance](docs/using-the-platform/git-integration.md#register-a-self-managed-gitlab-instance).
+
 `<your-app-domain>` is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
 
 | Provider     | Callback URL                                             | Scopes / permissions                                                    |
