@@ -460,17 +460,11 @@ const renderReviewerReadScope = ({ unit, contracts }) => {
   ].join('\n');
 };
 
-// REVIEW_CROSS_UNIT_FINDINGS: "blocking" (default) judges a unit lane on every
-// finding; "advisory" lets its reviewer record findings owned by other units
-// apart, so they reach the human without failing a lane that may not act on
-// them (the author's unit scope forbids modifying other units).
-export const reviewCrossUnitFindings = (env = process.env) =>
-  env?.REVIEW_CROSS_UNIT_FINDINGS === 'advisory' ? 'advisory' : 'blocking';
-
-// PURE — the brief block for an advisory cross-unit review, or '' when off or
-// outside a unit lane.
-const renderCrossUnitFindings = ({ unit, crossUnitFindings }) => {
-  if (!crossUnitFindings || !unit?.slug) return '';
+// PURE — a unit lane's reviewer records findings owned by other units apart, so
+// they reach the human without failing a lane whose author may not act on them
+// (its unit scope forbids modifying other units). '' outside a unit lane.
+const renderCrossUnitFindings = ({ unit }) => {
+  if (!unit?.slug) return '';
   const deps = Array.isArray(unit.dependsOn) && unit.dependsOn.length ? unit.dependsOn : null;
   return [
     '## Findings for other units',
@@ -496,13 +490,7 @@ const renderCrossUnitFindings = ({ unit, crossUnitFindings }) => {
 // buildReviewerPrompt so runReviewer can hand this, alone, to dispatchPersona
 // as `brief` — the blindness seam (persona-dispatch.js) — while
 // buildReviewerPrompt keeps rendering the exact same full prompt below.
-const buildReviewerBrief = ({
-  stage,
-  unit = null,
-  reviewerAgent,
-  round,
-  crossUnitFindings = false,
-}) => {
+const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
   const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
   const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
   // `review_artifact` (≥2.7.0) names the ONE canonical output under review. The
@@ -519,7 +507,7 @@ const buildReviewerBrief = ({
     unit,
     contracts: contracts.length ? contracts : inputs,
   });
-  const crossUnitBlock = renderCrossUnitFindings({ unit, crossUnitFindings });
+  const crossUnitBlock = renderCrossUnitFindings({ unit });
   return [
     `# Clean-room review: ${stage.stageId}`,
     '',
@@ -574,10 +562,9 @@ const buildReviewerPrompt = ({
   // Forwarded like runReviewer's dispatchPersona call does, so this renders
   // the exact prompt the reviewer runs with when a language is set (#784).
   conversationLanguage = null,
-  crossUnitFindings = false,
 }) =>
   composePersonaPrompt({
-    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round, crossUnitFindings }),
+    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
     persona: reviewerPersona,
     knowledge,
     conversationLanguage,
@@ -672,10 +659,8 @@ const runReviewer = async ({
   // Conversation language from the intent META (#784); review findings follow
   // it like every other persona's prose.
   conversationLanguage = null,
-  // Record other units' findings apart (REVIEW_CROSS_UNIT_FINDINGS=advisory).
-  crossUnitFindings = false,
 }) => {
-  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round, crossUnitFindings });
+  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
   await store
     .appendEvent({
       executionId,
@@ -695,11 +680,7 @@ const runReviewer = async ({
     // The stage's resolved policy travels with the reviewer too: the annex's
     // checkpoint mapping is capped by the reviewer role's own tool surface, and
     // the policy is what decides the rest of the row.
-    personaScope: {
-      agentRef: reviewerAgent,
-      policy: stage.policy ?? null,
-      ...(crossUnitFindings ? { crossUnitFindings: true } : {}),
-    },
+    personaScope: { agentRef: reviewerAgent, policy: stage.policy ?? null },
     agentBlock: reviewerBlock,
     persona: reviewerPersona,
     knowledge,
@@ -5148,7 +5129,6 @@ const runStageAttempt = async (
         sectionIndex,
         publish,
         ids,
-        crossUnitFindings: Boolean(unit?.slug) && reviewCrossUnitFindings(env) === 'advisory',
       }).catch(async (e) => {
         await store
           .appendEvent({

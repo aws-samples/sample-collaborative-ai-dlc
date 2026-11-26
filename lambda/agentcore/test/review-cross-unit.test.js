@@ -3,13 +3,12 @@ import { z } from 'zod';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import { registerTools, toolSchemas, buildToolHandlers } from '../mcp/server.js';
 import { contextFromEnv } from '../mcp/startup-context.js';
-import { buildMcpConfig } from '../stage-materializer.js';
-import { dispatchPersona } from '../persona-dispatch.js';
-import { __test as runStageInternals, reviewCrossUnitFindings } from '../commands/run-stage.js';
+import { scopeFromGrantAndSession } from '../mcp/gateway-session.js';
+import { __test as runStageInternals } from '../commands/run-stage.js';
 
-// REVIEW_CROSS_UNIT_FINDINGS=advisory: a unit lane's reviewer records findings
-// owned by other units apart from the verdict, so a lane is not failed (or
-// repaired) for work its own scope forbids it to do.
+// A unit lane's reviewer records findings owned by other units apart from the
+// verdict, so a lane is not failed (or repaired) for work its own scope forbids
+// it to do.
 
 const reviewerStore = () => {
   const store = { sensorRuns: [], events: [] };
@@ -35,15 +34,6 @@ const SCOPE = {
 };
 
 const CROSS = '1. U2 must serve the shell build (owner: u2-platform-services).';
-
-describe('reviewCrossUnitFindings', () => {
-  it('is blocking unless set to advisory', () => {
-    expect(reviewCrossUnitFindings({})).toBe('blocking');
-    expect(reviewCrossUnitFindings({ REVIEW_CROSS_UNIT_FINDINGS: 'blocking' })).toBe('blocking');
-    expect(reviewCrossUnitFindings({ REVIEW_CROSS_UNIT_FINDINGS: 'off' })).toBe('blocking');
-    expect(reviewCrossUnitFindings({ REVIEW_CROSS_UNIT_FINDINGS: 'advisory' })).toBe('advisory');
-  });
-});
 
 describe('submitReview — cross-unit findings', () => {
   it('records them apart from the verdict and shows them on the timeline', async () => {
@@ -149,69 +139,39 @@ describe('submit_review tool surface', () => {
   });
 });
 
-describe('trusted scope plumbing', () => {
-  const base = { executionId: 'e', intentId: 'i', projectId: 'p', role: 'reviewer' };
+describe('trusted scope', () => {
+  const env = {
+    V2_MCP_ROLE: 'reviewer',
+    V2_EXECUTION_ID: 'e',
+    V2_PROCESS_TABLE: 't',
+    V2_INTENT_ID: 'i',
+    V2_PROJECT_ID: 'p',
+    V2_STAGE_ID: 's',
+    V2_STAGE_INSTANCE_ID: 'si',
+  };
+  const offered = (overrides) => contextFromEnv({ ...env, ...overrides }).scope.crossUnitFindings;
 
-  it('writes V2_REVIEW_CROSS_UNIT only for a reviewer scope that asks for it', () => {
-    const env = (scope) => buildMcpConfig({ mcpEntry: 'x', scope }).mcpServers.aidlc.env;
-    expect(env({ ...base, crossUnitFindings: true }).V2_REVIEW_CROSS_UNIT).toBe('1');
-    expect(env(base).V2_REVIEW_CROSS_UNIT).toBeUndefined();
-    expect(env({ ...base, role: 'author', crossUnitFindings: true }).V2_REVIEW_CROSS_UNIT).toBe(
-      undefined,
-    );
+  it('offers them to a reviewer in a unit lane only', () => {
+    expect(offered({ V2_UNIT_SLUG: 'u3' })).toBe(true);
+    expect(offered({})).toBe(false);
+    expect(offered({ V2_MCP_ROLE: 'author', V2_UNIT_SLUG: 'u3' })).toBe(false);
   });
 
-  it('reads it back for a reviewer only', () => {
-    const env = {
-      V2_MCP_ROLE: 'reviewer',
-      V2_EXECUTION_ID: 'e',
-      V2_PROCESS_TABLE: 't',
-      V2_INTENT_ID: 'i',
-      V2_PROJECT_ID: 'p',
-      V2_STAGE_ID: 's',
-      V2_STAGE_INSTANCE_ID: 'si',
+  it('takes the lane from the grant on the Gateway path, which a session cannot assert', () => {
+    const grant = {
+      mode: 'stage',
+      projectId: 'p',
+      intentId: 'i',
+      executionId: 'e',
+      stageId: 's',
+      unitSlug: 'u3',
+      sectionIndex: 0,
+      policyDigest: null,
     };
-    expect(contextFromEnv({ ...env, V2_REVIEW_CROSS_UNIT: '1' }).scope.crossUnitFindings).toBe(
-      true,
-    );
-    expect(contextFromEnv(env).scope.crossUnitFindings).toBe(false);
-    expect(
-      contextFromEnv({ ...env, V2_MCP_ROLE: 'author', V2_REVIEW_CROSS_UNIT: '1' }).scope
-        .crossUnitFindings,
-    ).toBe(false);
-  });
-
-  it('carries it from the persona scope to a reviewer session only', async () => {
-    const scopeFor = async (role, crossUnitFindings) => {
-      let captured;
-      await dispatchPersona({
-        role,
-        personaScope: { agentRef: 'a', crossUnitFindings },
-        persona: 'p',
-        knowledge: '',
-        brief: 'b',
-        cli: 'claude',
-        cliModels: {},
-        env: { BEDROCK_MODEL: 'm' },
-        workspaceDir: '/ws',
-        mcpEntry: 'x',
-        spawnFn: () => ({
-          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-          stdin: { end() {} },
-        }),
-        materializeMcpConfig: async ({ scope }) => ((captured = scope), '/ws/.aidlc/mcp.json'),
-        executionId: 'e',
-        projectId: 'p',
-        intentId: 'i',
-        stageInstanceId: 'si',
-        unitSlug: 'u3',
-        ids: () => 'sess',
-      });
-      return captured;
-    };
-    expect((await scopeFor('reviewer', true)).crossUnitFindings).toBe(true);
-    expect((await scopeFor('reviewer', false)).crossUnitFindings).toBeUndefined();
-    expect((await scopeFor('support', true)).crossUnitFindings).toBeUndefined();
+    const session = { role: 'reviewer', stageInstanceId: 'si', reviewerAgent: 'r' };
+    const scopeOf = (g) => scopeFromGrantAndSession(g, session, { processTable: 't' }).scope;
+    expect(scopeOf(grant).crossUnitFindings).toBe(true);
+    expect(scopeOf({ ...grant, unitSlug: null }).crossUnitFindings).toBe(false);
   });
 });
 
@@ -232,7 +192,7 @@ describe('reviewer brief', () => {
   const unit = { slug: 'u3-web-shell', kind: 'service', dependsOn: ['u2-platform-services'] };
 
   it('tells a lane reviewer to keep other units out of the verdict', () => {
-    const prompt = buildReviewerPrompt({ ...args, unit, crossUnitFindings: true });
+    const prompt = buildReviewerPrompt({ ...args, unit });
     expect(prompt).toContain('## Findings for other units');
     expect(prompt).toContain('may change only the unit **u3-web-shell**');
     expect(prompt).toContain('(u2-platform-services)');
@@ -240,12 +200,8 @@ describe('reviewer brief', () => {
     expect(prompt).toContain('When every finding is for another');
   });
 
-  it('is unchanged when off or outside a lane', () => {
-    const off = buildReviewerPrompt({ ...args, unit });
-    expect(off).not.toContain('## Findings for other units');
-    expect(off).toBe(buildReviewerPrompt({ ...args, unit, crossUnitFindings: false }));
-    expect(buildReviewerPrompt({ ...args, crossUnitFindings: true })).toBe(
-      buildReviewerPrompt(args),
-    );
+  it('says nothing of other units outside a lane', () => {
+    expect(buildReviewerPrompt(args)).not.toContain('## Findings for other units');
+    expect(buildReviewerPrompt(args)).not.toContain('crossUnitFindings');
   });
 });

@@ -521,8 +521,8 @@ export const toolSchemas = (z, policy = null, options = {}) => ({
   submit_review: {
     description: [
       'Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`.',
-      // Offered ONLY to a unit-lane reviewer with cross-unit findings advisory, so
-      // every other reviewer sees exactly the tool it saw before.
+      // Offered ONLY to a unit-lane reviewer, so every other reviewer sees
+      // exactly the tool it saw before.
       ...(options.crossUnitFindings
         ? [
             'Put findings whose required action belongs to another unit or to a shared contract in `crossUnitFindings`, naming the owner of each; they are shown to the human, not counted towards your verdict and not sent to this unit\u2019s author.',

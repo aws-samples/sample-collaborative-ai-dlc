@@ -886,9 +886,9 @@ export const createProcessBridge = ({
     if (normalized !== 'READY' && normalized !== 'NOT-READY') {
       throw new Error('submit_review verdict must be READY or NOT-READY');
     }
-    // Findings owned by other units (REVIEW_CROSS_UNIT_FINDINGS=advisory, unit
-    // lanes only): recorded and shown to the human, never counted towards the
-    // verdict or sent to the author. Ignored when the scope doesn't offer them.
+    // Findings owned by other units (unit-lane reviewers only): recorded and
+    // shown to the human, never counted towards the verdict or sent to the
+    // author. Ignored when the scope doesn't offer them.
     const crossUnit = scope.crossUnitFindings ? String(crossUnitFindings ?? '').trim() : '';
     const result = normalized === 'READY' ? 'PASS' : 'FAIL';
     // Identity: the TRUSTED scope identity (set by run-stage, upstream §12a's

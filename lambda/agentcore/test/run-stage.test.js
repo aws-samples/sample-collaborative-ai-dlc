@@ -6818,7 +6818,7 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
   });
 
-  describe('cross-unit review findings (REVIEW_CROSS_UNIT_FINDINGS)', () => {
+  describe('cross-unit review findings', () => {
     const laneReviewLibrary = () => {
       const lib = unitLibrary();
       lib.stagesById['code-generation'].reviewer = 'aidlc-reviewer-agent';
@@ -6830,7 +6830,7 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       };
       return lib;
     };
-    const run = async (env) => {
+    const run = async () => {
       const scopes = [];
       const prompts = [];
       const store = spyStore({ unitPlan: UNIT_PLAN });
@@ -6847,7 +6847,7 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
         unitArgs,
         unitDeps({
           store,
-          env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', ...env },
+          env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
           loadLibrary: async () => ({ workflow: unitWorkflow(), library: laneReviewLibrary() }),
           materializeMcpConfig: async ({ scope }) => (scopes.push(scope), '/ws/.aidlc/mcp.json'),
           spawnFn: (_command, cliArgs) => ({
@@ -6861,22 +6861,12 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     };
 
     it('lets a lane reviewer record other units\u2019 findings apart', async () => {
-      const { reviewer, prompt } = await run({ REVIEW_CROSS_UNIT_FINDINGS: 'advisory' });
-      expect(reviewer).toMatchObject({
-        role: 'reviewer',
-        unitSlug: 'billing',
-        crossUnitFindings: true,
-      });
+      const { reviewer, prompt } = await run();
+      // The MCP server offers crossUnitFindings from this lane scope.
+      expect(reviewer).toMatchObject({ role: 'reviewer', unitSlug: 'billing' });
       expect(prompt).toContain('## Findings for other units');
       expect(prompt).toContain('may change only the unit **billing**');
       expect(prompt).toContain('(auth)');
-    });
-
-    it('keeps the reviewer as it was by default', async () => {
-      const { reviewer, prompt } = await run({});
-      expect(reviewer.crossUnitFindings).toBeUndefined();
-      expect(prompt).toContain('Clean-room review');
-      expect(prompt).not.toContain('## Findings for other units');
     });
   });
 
