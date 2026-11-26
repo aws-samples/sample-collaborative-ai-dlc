@@ -139,23 +139,51 @@ export const readImageScanFindings = async ({
   imageUri,
   imageDigest,
   now = () => new Date().toISOString(),
+  budgetMs = SEEDING_SCAN_BUDGET_MS,
 }) => {
   const repositoryName = repositoryNameFromImageUri(imageUri);
   if (!repositoryName || !imageDigest) return null;
-  const scan = await ecrClient.send(
-    new DescribeImageScanFindingsCommand({ repositoryName, imageId: { imageDigest } }),
-  );
+  // One deadline for every page and retry: when it expires, the ECR call in
+  // flight is cancelled and the pages already read are kept as incomplete.
+  const abortSignal = AbortSignal.timeout(budgetMs);
+  const read = (nextToken) =>
+    ecrClient.send(
+      new DescribeImageScanFindingsCommand({
+        repositoryName,
+        imageId: { imageDigest },
+        ...(nextToken ? { nextToken } : {}),
+      }),
+      { abortSignal },
+    );
+  const scan = await read();
   const status = scan.imageScanStatus?.status;
   if (status !== 'COMPLETE' && status !== 'ACTIVE') return null;
-  return {
-    status,
-    severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
-    findings: summarizeScanFindings(scan),
-    findingsTruncated: Boolean(scan.nextToken),
-    evaluatedAt: now(),
-    imageDigest,
-  };
+  const result =
+    status === 'ACTIVE'
+      ? await readEnhancedScanPages({
+          firstPage: scan,
+          read,
+          maxPages: MAX_SEEDING_SCAN_PAGES,
+          keepPartialOnError: true,
+        })
+      : {
+          severityCounts: scan.imageScanFindings?.findingSeverityCounts ?? {},
+          findings: summarizeScanFindings(scan),
+          findingsTruncated: Boolean(scan.nextToken),
+        };
+  return { status, ...result, evaluatedAt: now(), imageDigest };
 };
+
+// The seeding read runs before the first request of a cold start is served,
+// so it reads fewer pages than the scan gate. A larger result, or one whose
+// later page fails, is stored as incomplete, which the UI shows as partial
+// counts; the scan gate instead retries a failed read on its next poll.
+const MAX_SEEDING_SCAN_PAGES = 5;
+// API Gateway ends a request after 29 seconds. The whole seeding read,
+// retries included, gets this share of it, so that the rest of the cold start
+// and the request itself still fit. Only an SDK retry backoff already started
+// (under a second, or a Retry-After hint of up to 5 s) runs past it.
+const SEEDING_SCAN_BUDGET_MS = 10_000;
 
 export const isUnsupportedScan = (status, description) =>
   status === 'UNSUPPORTED_IMAGE' || /UnsupportedImageError/i.test(description ?? '');
@@ -172,6 +200,45 @@ const MAX_ENHANCED_SCAN_PAGES = 50;
 // every page it read, so a Critical finding on a later page is never left
 // out for Low ones on the first.
 export const MAX_GATE_SCAN_FINDINGS = 100;
+
+// Reads an enhanced scan result from its first page on, up to maxPages.
+// With enhanced scanning the severity counts cover only the findings of the
+// returned page, and pages are not ordered by severity: add them up and keep
+// the most severe findings of every page. ECR can return a token on the last
+// page and an empty page after it, so a token alone does not mean that
+// findings were left out. `incomplete` means the page bound cut the result,
+// or, with keepPartialOnError, a later page could not be read.
+const readEnhancedScanPages = async ({ firstPage, read, maxPages, keepPartialOnError = false }) => {
+  const severityCounts = {};
+  let findings = [];
+  let page = firstPage;
+  for (let pages = 1; ; pages += 1) {
+    for (const [severity, count] of Object.entries(
+      page.imageScanFindings?.findingSeverityCounts ?? {},
+    )) {
+      severityCounts[severity] = (severityCounts[severity] ?? 0) + Number(count ?? 0);
+    }
+    findings = [...findings, ...summarizeScanFindings(page)]
+      .toSorted(compareScanFindings)
+      .slice(0, MAX_GATE_SCAN_FINDINGS + 1);
+    if (!page.nextToken || pages >= maxPages) break;
+    try {
+      page = await read(page.nextToken);
+    } catch (error) {
+      if (!keepPartialOnError) throw error;
+      // The last page read still holds its token, so the result is incomplete.
+      logger.warn('Scan findings page unavailable; keeping the pages already read', { error });
+      break;
+    }
+  }
+  const incomplete = Boolean(page.nextToken);
+  return {
+    severityCounts,
+    findings: findings.slice(0, MAX_GATE_SCAN_FINDINGS),
+    findingsTruncated: incomplete || findings.length > MAX_GATE_SCAN_FINDINGS,
+    incomplete,
+  };
+};
 
 // Reads an image's scan for the scan gate. `pending` means the result cannot
 // be judged yet and the image stays SCANNING until a later poll. `incomplete`
@@ -205,30 +272,9 @@ export const readGateScan = async ({ ecrClient, repositoryName, imageDigest, now
   if (Number.isNaN(completedAt) || now() - completedAt < ENHANCED_SCAN_SETTLE_MS) {
     return { scan, pending: true };
   }
-  // With enhanced scanning the severity counts cover only the findings of
-  // the returned page, and pages are not ordered by severity: add them up.
-  const severityCounts = {};
-  let findings = [];
-  let page = scan;
-  for (let pages = 1; ; pages += 1) {
-    for (const [severity, count] of Object.entries(
-      page.imageScanFindings?.findingSeverityCounts ?? {},
-    )) {
-      severityCounts[severity] = (severityCounts[severity] ?? 0) + Number(count ?? 0);
-    }
-    findings = [...findings, ...summarizeScanFindings(page)]
-      .toSorted(compareScanFindings)
-      .slice(0, MAX_GATE_SCAN_FINDINGS + 1);
-    if (!page.nextToken || pages >= MAX_ENHANCED_SCAN_PAGES) break;
-    page = await read(page.nextToken);
-  }
-  const incomplete = Boolean(page.nextToken);
   return {
     scan,
-    severityCounts,
-    findings: findings.slice(0, MAX_GATE_SCAN_FINDINGS),
-    findingsTruncated: incomplete || findings.length > MAX_GATE_SCAN_FINDINGS,
-    incomplete,
+    ...(await readEnhancedScanPages({ firstPage: scan, read, maxPages: MAX_ENHANCED_SCAN_PAGES })),
   };
 };
 
