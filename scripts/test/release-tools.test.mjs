@@ -250,6 +250,11 @@ test('release and main deployments use isolated protected environments and GitHu
   assert.match(deployment, /printf 'auth_domain {10}= %s\\n'/);
   assert.match(deployment, /node scripts\/sso-config\.mjs "\$sso_input" "\$AUTH_MODE"/);
   assert.match(deployment, /\$TF_ENVIRONMENT\.sso\.tfvars\.json/);
+  assert.match(deployment, /MCP_GATEWAY_CONFIG: \$\{\{ vars\.MCP_GATEWAY_CONFIG \}\}/);
+  assert.match(
+    deployment,
+    /node scripts\/gateway-config\.mjs "\$gateway_input" \\\n\s+>> "\$config_dir\/environments\/\$TF_ENVIRONMENT\.tfvars"/,
+  );
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /case "\$DEPLOY_REF_TYPE" in/);
