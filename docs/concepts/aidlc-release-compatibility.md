@@ -22,8 +22,8 @@ or changes an existing intent.
 
 The built-in profiles are pinned to exact upstream commit SHAs. The allowlist
 includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0,
-2.11.0, 2.11.1, 2.11.3 and 2.11.4 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
-allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
+2.11.0, 2.11.1, 2.11.3, 2.11.4 and 2.11.5 catalogs. No intermediate
+release is onboarded: 2.10.0 is not on the allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
 identity; an unknown tag or branch is not treated as an official release.
 
 All official profiles use the same source trust tier. Trust establishes whether
@@ -423,6 +423,37 @@ instruction. Two 2.11.4 changes need their own handling:
 | Before asking questions, a stage checks the team's catalogued documents and presents the answers they already give   | adapted        | The source is the project's team knowledge in the knowledge graph, not a document reading list. A stage checks its questions against it and does not ask the ones it answers: it lists them for confirmation at the start of its first remaining question, or, when no question remains, names them in its output. This applies to every version, not only 2.11.4. |
 | Functional Design lets a UI Unit trace to `functional-spec.md` or `frontend-components.md` instead of business rules | not reproduced | The traceability sensor reads the upstream stage graph, which is not published with the release, so it still expects business-rule ids for every Unit, as in 2.11.3.                                                                                                                                                                                               |
 
+### AI-DLC 2.11.5
+
+2.11.5 imports from the `v2.11.5` tag commit
+`30d674ed196c7051222130ce344bf513c82eff2b`. Most of the release changes the CLI
+harnesses, the engine tools and hooks, and the installer, which this runtime
+does not use; its "breaking for scripts" notes apply to the `aidlc` CLI and to
+engine commands this runtime refuses or does not run. Its authored methodology
+keeps 2.11.4's frontmatter dialect, scope settings, engine command families and
+sensor declarations, so the 2.11.4 dispositions above still apply and the
+compatibility check reports nothing newly unhonoured. Its Requirements Analysis
+`outputs` description keeps the unquoted colon and is quoted the same way.
+
+Units Generation now consumes the Refined Mockups `mockups` and
+`interaction-spec` artifacts as optional inputs, and Refined Mockups no longer
+requires Ideation mockups in its condition. Every scope plan resolves with
+them. The new `{{INVOKE}} engine` lines (`state reuse-artifact`, `recompose`,
+`log answer`, the `--agent-id` wait) and the new `{{INVOKE}} unit` lines for
+team Unit claims are in the engine's protocols only, which no prompt renders,
+so they are not read as gaps; the compatibility check scans the `engine`
+family only.
+
+The stage bodies ask for the new traceability rules, and the agent follows
+them: a story that only `library`, `spec` or `packaging` Units cover says how
+it is reached, a story kept out of every Unit is `Deferred` with a reason, and
+an `N/A` naming another Unit hands the ID to a Unit on the story's row. One
+2.11.5 change needs its own handling:
+
+| 2.11.5 behaviour                                                                                                               | Disposition    | What the platform does                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The traceability sensor verifies those rules, and on a re-run of Units Generation reports a story whose Units are all finished | not reproduced | The sensor reads the stories, the story map and the Unit Progress table from a native project's intent record directory, which the platform's workspace does not keep, so these checks do not run, as with the 2.11.4 sensor. |
+
 ## Registry, promotion, and channels
 
 Registration creates an invisible, structurally-valid record. It does not make
@@ -518,8 +549,8 @@ closure and plan checks still run, and no runtime execution check is bypassed.
 
 ### Enable pinning and promote a release
 
-The standard installer and deployment scripts publish and register all nine
-supported official versions, including 2.11.4. Preparation is idempotent, runs
+The standard installer and deployment scripts publish and register all ten
+supported official versions, including 2.11.5. Preparation is idempotent, runs
 after the baseline reseed (or after it is skipped with `--skip-seed`), and fails
 deployment if a catalog cannot be prepared; the error names the command to retry
 it. It preserves existing approvals, visibility, notes and channel choices, and
