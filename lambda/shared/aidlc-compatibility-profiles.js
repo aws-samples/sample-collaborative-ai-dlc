@@ -5,6 +5,11 @@ const OFFICIAL_AIDLC_REPOSITORY = 'awslabs/aidlc-workflows';
 
 // Exact source commits are the compatibility identity. Tags and human-readable
 // versions are labels only and must never be followed dynamically.
+//
+// `runtimeReleaseTag` names the official release whose runtime asset carries
+// this commit's native harness distributions, for releases that no longer
+// commit them at `dist/` (2.8.2 onwards). It only locates the asset: a native
+// export refuses one whose release was not built from `upstreamRef`.
 const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
   'current-stable': Object.freeze({
     id: 'current-stable',
@@ -52,6 +57,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.8.2',
     upstreamVersion: '2.8.2',
     upstreamRef: '355903d6dc8eb07d3c77180be5d40ed679d6a40f',
+    runtimeReleaseTag: 'v2.8.2',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -65,6 +71,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.9.0',
     upstreamVersion: '2.9.0',
     upstreamRef: '22f5d1b15a064c9ae80046e5b1761d5877e2f69f',
+    runtimeReleaseTag: 'v2.9.0',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -86,6 +93,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.11.0',
     upstreamVersion: '2.11.0',
     upstreamRef: '6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a',
+    runtimeReleaseTag: 'v2.11.0',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -105,6 +113,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.11.1',
     upstreamVersion: '2.11.1',
     upstreamRef: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    runtimeReleaseTag: 'v2.11.1',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -115,7 +124,9 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
   // 2.11.1's frontmatter dialect, scope settings and sensor declarations; its
   // sensor-on-request and dispatcher changes are not reproduced (see the
   // compatibility guide). The compatibility matrix verifies its full imported
-  // catalog and command fidelity before administrators can promote it.
+  // catalog and command fidelity before administrators can promote it. Its
+  // runtime is published by the preview release built from this commit; the
+  // later v2.11.3 tag names a different commit.
   'v2.11.3': Object.freeze({
     id: 'v2.11.3',
     releaseId: 'aidlc:63fd2901947ece8c5ad0cd831cdf5934a9666d47',
@@ -123,6 +134,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.11.3',
     upstreamVersion: '2.11.3',
     upstreamRef: '63fd2901947ece8c5ad0cd831cdf5934a9666d47',
+    runtimeReleaseTag: 'v2.11.3-preview.20261103.1',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -139,6 +151,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.11.4',
     upstreamVersion: '2.11.4',
     upstreamRef: '61fdb122428d86b56b7e8d598787095f2c97d3e1',
+    runtimeReleaseTag: 'v2.11.4',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',

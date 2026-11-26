@@ -10,8 +10,9 @@ import {
   extractDistributionArchive,
 } from '../shared/distribution-archive.js';
 import { projectNativeWorkspace } from '../shared/native-workspace-projector.js';
-import { fetchRepoFiles } from '../shared/repo-fetch.js';
+import { fetchReleaseRuntimeFiles, fetchRepoFiles } from '../shared/repo-fetch.js';
 import { isCommitSha } from '../shared/aidlc-ref.js';
+import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import { releaseDistributionKeys } from '../shared/release-distributions.js';
 
 const MAX_EXPORT_BYTES = 100 * 1024 * 1024;
@@ -67,6 +68,8 @@ const isTransientFetchError = (error) => {
   // prefix -- fetch() threw before any response.
   return !message.startsWith('repo-fetch:');
 };
+// repo-fetch's answer when the commit has no files under the requested prefix.
+const NO_MATCHING_FILES_RE = /^repo-fetch: no files found for prefixes /;
 
 const safeArchivePath = (value) => {
   const path = String(value ?? '').replaceAll('\\', '/');
@@ -246,35 +249,71 @@ const loadLegacyCacheEntry = async ({ s3, bucket, upstreamRef, harness }) => {
   });
 };
 
-const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) => {
-  const repoPrefix = `dist/${harness}/`;
-  let fetched;
-  try {
-    fetched = await fetchRepoFiles(upstreamRef, {
-      prefixes: [repoPrefix],
-      maxFiles: MAX_DISTRIBUTION_FILES,
-      maxRetainedBytes: MAX_DISTRIBUTION_BYTES,
-    });
-  } catch (error) {
-    // repo-fetch throws on an absent/oversized distribution AND on a missing
-    // `dist/<harness>/` (it never returns an empty map), so this is the only
-    // place either can surface. Retry only the transient class.
-    if (isTransientFetchError(error)) {
-      throw sourceUnavailable(
-        `native-export: ${harness} distribution is temporarily unavailable for ${upstreamRef}: ${error.message}`,
-        { cause: error },
-      );
-    }
-    throw new Error(
-      `native-export: ${harness} distribution could not be loaded for ${upstreamRef}: ${error.message}`,
+const distributionLoadFailure = ({ error, harness, upstreamRef, detail = '' }) => {
+  // repo-fetch throws on an absent/oversized distribution AND on a missing
+  // distribution (it never returns an empty map), so this is the only place
+  // either can surface. Retry only the transient class.
+  if (isTransientFetchError(error)) {
+    return sourceUnavailable(
+      `native-export: ${harness} distribution is temporarily unavailable for ${upstreamRef}: ${error.message}`,
       { cause: error },
     );
   }
-  const files = new Map(
-    [...fetched]
-      .filter(([path]) => path.startsWith(repoPrefix))
-      .map(([path, body]) => [safeArchivePath(path.slice(repoPrefix.length)), body]),
+  return new Error(
+    `native-export: ${harness} distribution could not be loaded for ${upstreamRef}: ${error.message}${detail}`,
+    { cause: error },
   );
+};
+
+const withoutPrefix = (fetched, prefix) =>
+  new Map(
+    [...fetched]
+      .filter(([path]) => path.startsWith(prefix))
+      .map(([path, body]) => [safeArchivePath(path.slice(prefix.length)), body]),
+  );
+
+// An official distribution is read from `dist/<harness>/` at the commit, as
+// releases up to 2.7 commit it. Later releases ship it only in their runtime
+// asset, under `runtime/<harness>/`: when the commit has no `dist/<harness>/`
+// and its profile names the release that does (`runtimeReleaseTag`), it is
+// read from there instead.
+const fetchDistributionFiles = async ({ upstreamRef, harness }) => {
+  const limits = { maxFiles: MAX_DISTRIBUTION_FILES, maxRetainedBytes: MAX_DISTRIBUTION_BYTES };
+  const repoPrefix = `dist/${harness}/`;
+  let releaseTag;
+  try {
+    const fetched = await fetchRepoFiles(upstreamRef, { prefixes: [repoPrefix], ...limits });
+    return { files: withoutPrefix(fetched, repoPrefix), source: { path: repoPrefix } };
+  } catch (error) {
+    releaseTag = profileFor(upstreamRef)?.runtimeReleaseTag;
+    const noDist = NO_MATCHING_FILES_RE.test(String(error?.message ?? ''));
+    if (!noDist || !releaseTag) {
+      throw distributionLoadFailure({
+        error,
+        harness,
+        upstreamRef,
+        detail: noDist ? '; no AI-DLC release runtime is known for this commit' : '',
+      });
+    }
+  }
+  const runtimePrefix = `runtime/${harness}/`;
+  try {
+    const fetched = await fetchReleaseRuntimeFiles(releaseTag, {
+      commit: upstreamRef,
+      prefixes: [runtimePrefix],
+      ...limits,
+    });
+    return {
+      files: withoutPrefix(fetched, runtimePrefix),
+      source: { releaseTag, path: runtimePrefix },
+    };
+  } catch (error) {
+    throw distributionLoadFailure({ error, harness, upstreamRef });
+  }
+};
+
+const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) => {
+  const { files, source } = await fetchDistributionFiles({ upstreamRef, harness });
   const workspaceLayout = detectWorkspaceLayout({ files, harness });
   const archive = await buildDistributionArchive(files);
   const manifest = {
@@ -282,6 +321,7 @@ const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) =
     ref: upstreamRef,
     harness,
     workspaceLayout,
+    source,
     archive: `${harness}.tar.gz`,
     archiveBytes: archive.length,
     archiveSha256: sha256(archive),

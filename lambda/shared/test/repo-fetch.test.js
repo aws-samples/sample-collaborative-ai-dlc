@@ -1,21 +1,24 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
 import {
   extractFiles,
   fetchCoreFiles,
+  fetchReleaseRuntimeFiles,
   fetchRepoFiles,
   responseToBuffer,
   tarballUrl,
 } from '../repo-fetch.js';
 
 // Builds a gzipped tarball whose entries are nested under a top-level
-// `<repo>-<ref>/` dir, mirroring GitHub's codeload archive layout.
+// `<repo>-<ref>/` dir, mirroring GitHub's codeload archive layout, or under
+// none when `top` is null (a release asset).
 const makeTarball = (files, top = 'aidlc-workflows-abc123') =>
   new Promise((resolve, reject) => {
     const pack = tar.pack();
     for (const [name, content] of Object.entries(files)) {
-      pack.entry({ name: `${top}/${name}` }, content);
+      pack.entry({ name: top ? `${top}/${name}` : name }, content);
     }
     pack.finalize();
     const chunks = [];
@@ -138,6 +141,122 @@ describe('fetchRepoFiles', () => {
     await expect(extractFiles(tarball, ['core/'], { maxUncompressedBytes: 1_000 })).rejects.toThrow(
       /tarball expands beyond 1000 bytes/,
     );
+  });
+});
+
+// A release runtime asset has no top-level directory, and is only trusted once
+// its release metadata names the expected commit and checksum.
+describe('fetchReleaseRuntimeFiles', () => {
+  const COMMIT = '61fdb122428d86b56b7e8d598787095f2c97d3e1';
+  const TAG = 'v2.11.4';
+  const ASSET = 'aidlc-runtime-2.11.4.tar.gz';
+  const sha256 = (body) => createHash('sha256').update(body).digest('hex');
+
+  const runtimeTarball = () =>
+    makeTarball(
+      {
+        'runtime/claude/.claude/tools/data/harness.json': '{}',
+        'runtime/codex/AGENTS.md': '# Codex',
+        'plugins/.claude-plugin/marketplace.json': '{}',
+      },
+      null,
+    );
+
+  // Serves the release assets by name; `overrides` replaces one asset's
+  // response (a body, or a status).
+  const mockRelease = async (overrides = {}) => {
+    const archive = await runtimeTarball();
+    const assets = {
+      'version.json': Buffer.from(
+        JSON.stringify({ version: '2.11.4', sourceRef: `refs/tags/${TAG}`, sourceDigest: COMMIT }),
+      ),
+      'checksums.txt': Buffer.from(
+        `${sha256(Buffer.from('{}'))}  version.json\n${sha256(archive)}  ${ASSET}\n`,
+      ),
+      [ASSET]: archive,
+      ...overrides,
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      const name = String(url).split('/').pop();
+      const asset = assets[name];
+      if (typeof asset === 'number' || asset === undefined) {
+        const status = asset ?? 404;
+        return { ok: false, status, statusText: status === 404 ? 'Not Found' : 'Error' };
+      }
+      return { ok: true, status: 200, statusText: 'OK', arrayBuffer: async () => asset };
+    });
+    return archive;
+  };
+  const requested = () => globalThis.fetch.mock.calls.map(([url]) => String(url).split('/').pop());
+
+  it('returns only the requested harness from a verified runtime asset', async () => {
+    await mockRelease();
+    const files = await fetchReleaseRuntimeFiles(TAG, {
+      commit: COMMIT,
+      prefixes: ['runtime/codex/'],
+    });
+    expect([...files.keys()]).toEqual(['runtime/codex/AGENTS.md']);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      `https://github.com/awslabs/aidlc-workflows/releases/download/${TAG}/${ASSET}`,
+      expect.objectContaining({ redirect: 'follow' }),
+    );
+    expect(globalThis.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+
+  it('refuses a release built from another commit before downloading its runtime', async () => {
+    await mockRelease({
+      'version.json': Buffer.from(
+        JSON.stringify({ version: '2.11.4', sourceDigest: 'a'.repeat(40) }),
+      ),
+    });
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+    ).rejects.toThrow(`repo-fetch: release ${TAG} was built from ${'a'.repeat(40)}, not ${COMMIT}`);
+    expect(requested()).toEqual(['version.json']);
+  });
+
+  it('refuses a runtime asset that does not match its checksum', async () => {
+    await mockRelease({ 'checksums.txt': Buffer.from(`${'0'.repeat(64)}  ${ASSET}\n`) });
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+    ).rejects.toThrow(`repo-fetch: ${ASSET} does not match its checksum in release ${TAG}`);
+  });
+
+  it('refuses a release whose checksums do not list the runtime asset', async () => {
+    await mockRelease({ 'checksums.txt': Buffer.from(`${'0'.repeat(64)}  version.json\n`) });
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+    ).rejects.toThrow(`repo-fetch: release ${TAG} checksums.txt lists no ${ASSET}`);
+    expect(requested()).not.toContain(ASSET);
+  });
+
+  it('reports a missing release or asset with its status', async () => {
+    await mockRelease({ 'version.json': 404 });
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+    ).rejects.toThrow(/version\.json returned 404 Not Found$/);
+    await mockRelease({ [ASSET]: 503 });
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+    ).rejects.toThrow(new RegExp(`${ASSET.replaceAll('.', '\\.')} returned 503`));
+  });
+
+  it('fails when the runtime asset has no files for the harness', async () => {
+    await mockRelease();
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/kiro/'] }),
+    ).rejects.toThrow(`repo-fetch: no files found for prefixes runtime/kiro/ in ${ASSET}`);
+  });
+
+  it('never reaches the network for an invalid tag or commit', async () => {
+    globalThis.fetch = vi.fn();
+    await expect(
+      fetchReleaseRuntimeFiles('v2.11.4/../../x', { commit: COMMIT, prefixes: ['runtime/'] }),
+    ).rejects.toThrow('is not an AI-DLC release tag');
+    await expect(
+      fetchReleaseRuntimeFiles(TAG, { commit: 'v2.11.4', prefixes: ['runtime/'] }),
+    ).rejects.toThrow('full commit SHA');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
 

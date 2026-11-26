@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Download workspace** works again for intents on AI-DLC 2.8.2, 2.9.0, 2.11.0, 2.11.1, 2.11.3 and 2.11.4, and for custom fork releases based on them. These releases no longer commit their native harness distributions at `dist/<harness>/`, so every export failed with `distribution could not be loaded … no files found for prefixes dist/<harness>/`. The export now reads the harness from the release's `aidlc-runtime-<version>.tar.gz` asset, found through a release tag recorded on each of these compatibility profiles. It uses the asset only when the release's `version.json` names the pinned commit and the asset matches the release's `checksums.txt`. Releases that still commit `dist/` are read as before. The asset is downloaded from `github.com` without credentials (GitHub redirects it to `release-assets.githubusercontent.com`), over the same egress path as the existing codeload download.
+
 ## [2.4.1] - 2026-11-24
 
 Hotfix for fresh installations of 2.4.0 ([#844](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/844)).

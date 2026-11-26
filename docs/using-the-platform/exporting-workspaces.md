@@ -48,6 +48,15 @@ The archive contains the selected native AI-DLC distribution and a projection of
 
 The export keeps the AI-DLC methodology revision pinned by the intent so the local workspace uses the same methodology definition as the collaborative run. It registers the intent's selected projection as a native AI-DLC scope, preserving a customized workflow instead of reverting to a standard feature scope.
 
+### Where the native distribution comes from
+
+The harness files come from the official AI-DLC repository at the pinned commit:
+
+- **Releases up to 2.7** commit them at `dist/<harness>/`, and the export reads them from there.
+- **Releases from 2.8.2** ship them only in the release's `aidlc-runtime-<version>.tar.gz` asset, under `runtime/<harness>/`. The export downloads the asset from the release its [compatibility profile](../concepts/aidlc-release-compatibility.md#profile-identity-and-trust) names. It uses the asset only when the release's `version.json` says it was built from the pinned commit and the asset matches its entry in the release's `checksums.txt`.
+
+Either way, the first export of a commit and harness stores the distribution in the deployment's artifacts bucket, and later exports reuse it. A temporary GitHub failure can be retried; a commit with no distribution, or a release that fails these checks, cannot be exported.
+
 ## What the ZIP does not contain
 
 Source repositories and source-control credentials are not bundled in the archive. The setup dialog provides commands to clone or update each repository on its declared intent branch using your own Git credentials.
@@ -90,6 +99,7 @@ An export may be unavailable when:
 - A running intent has no completed checkpoint yet.
 - The workflow used incompatible edited methodology blocks.
 - The execution contains stages from different AI-DLC methodology revisions.
+- The pinned AI-DLC commit has no native distribution for the selected harness, or its release runtime fails the checks in [Where the native distribution comes from](#where-the-native-distribution-comes-from).
 - The intent runs a custom fork release that ships no distribution for the selected harness, and its base AI-DLC release cannot be determined or a stage only the fork defines already has recorded work.
 - The intent changed while a parked-state export was being prepared. Retry to export a consistent snapshot.
 

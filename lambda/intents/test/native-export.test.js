@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { buildDistributionArchive } from '../../shared/distribution-archive.js';
-import { fetchRepoFiles } from '../../shared/repo-fetch.js';
+import { fetchReleaseRuntimeFiles, fetchRepoFiles } from '../../shared/repo-fetch.js';
 import {
   alignProjectionToDistribution,
   buildZip,
@@ -20,7 +20,9 @@ import {
 } from '../native-export.js';
 
 import { publishReleaseDistributions } from '../../shared/release-distributions.js';
+import { AIDLC_COMPATIBILITY_PROFILES } from '../../shared/aidlc-compatibility-profiles.js';
 vi.mock('../../shared/repo-fetch.js', () => ({
+  fetchReleaseRuntimeFiles: vi.fn(),
   fetchRepoFiles: vi.fn(),
 }));
 
@@ -440,6 +442,141 @@ describe('native workflow export', () => {
     const rejection = await loadRejection(cacheMissS3());
     expect(rejection).toBeInstanceOf(Error);
     expect(rejection.code).toBeUndefined();
+  });
+
+  // Releases from 2.8.2 ship their harnesses only in a release runtime asset.
+  describe('a release that ships its harnesses as a runtime asset', () => {
+    const PROFILE = AIDLC_COMPATIBILITY_PROFILES['v2.11.4'];
+    const RUNTIME_REF = PROFILE.upstreamRef;
+    const noDist = (ref) =>
+      new Error(`repo-fetch: no files found for prefixes dist/codex/ in tarball for ref ${ref}`);
+    const loadRuntime = (s3) =>
+      loadDistribution({ s3, bucket: 'artifacts', upstreamRef: RUNTIME_REF, harness: 'codex' });
+    const rejectionOf = (promise) =>
+      promise.then(
+        () => null,
+        (error) => error,
+      );
+
+    it("loads the profile's release runtime when the commit has no dist/, then reuses the cache", async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      const { body, distributionFiles } = await distribution();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockResolvedValueOnce(
+        new Map([...distributionFiles].map(([path, value]) => [`runtime/codex/${path}`, value])),
+      );
+      const s3 = memoryS3();
+
+      const result = await loadRuntime(s3);
+
+      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith('v2.11.4', {
+        commit: RUNTIME_REF,
+        prefixes: ['runtime/codex/'],
+        maxFiles: 1_000,
+        maxRetainedBytes: 20 * 1024 * 1024,
+      });
+      expect(result.files.get('AGENTS.md')).toEqual(body);
+      expect(result.workspaceLayout).toBe('spaces');
+      const manifest = JSON.parse(
+        s3.objects.get(`aidlc-distributions/${RUNTIME_REF}/codex.manifest.json`).toString('utf8'),
+      );
+      expect(manifest).toMatchObject({
+        ref: RUNTIME_REF,
+        harness: 'codex',
+        source: { releaseTag: 'v2.11.4', path: 'runtime/codex/' },
+      });
+      expect(manifest.files.map((file) => file.path)).toContain('AGENTS.md');
+
+      const cached = await loadRuntime(s3);
+      expect(cached.files.get('AGENTS.md')).toEqual(body);
+      expect(fetchRepoFiles).toHaveBeenCalledOnce();
+      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledOnce();
+    });
+
+    it('keeps reading dist/ when the commit has it', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      const { distributionFiles } = await distribution();
+      fetchRepoFiles.mockResolvedValueOnce(
+        new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+      );
+      const s3 = memoryS3();
+
+      await loadRuntime(s3);
+
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+      expect(
+        JSON.parse(
+          s3.objects.get(`aidlc-distributions/${RUNTIME_REF}/codex.manifest.json`).toString(),
+        ).source,
+      ).toEqual({ path: 'dist/codex/' });
+    });
+
+    it('refuses a commit with no dist/ and no known release runtime (409)', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(REF));
+
+      const rejection = await loadRejection(cacheMissS3());
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toMatch(/^native-export: codex distribution could not be loaded/);
+      expect(rejection.message).toContain('no AI-DLC release runtime is known for this commit');
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an identity mismatch', `repo-fetch: release v2.11.4 was built from ${REF}, not x`],
+      [
+        'a checksum mismatch',
+        'repo-fetch: aidlc-runtime-2.11.4.tar.gz does not match its checksum',
+      ],
+      ['a missing release', 'repo-fetch: https://github.com/x/version.json returned 404 Not Found'],
+      ['a missing harness', 'repo-fetch: no files found for prefixes runtime/codex/ in x'],
+    ])('refuses a release runtime with %s as deterministic (409)', async (_label, message) => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockRejectedValueOnce(new Error(message));
+      const s3 = memoryS3();
+
+      const rejection = await rejectionOf(loadRuntime(s3));
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toBe(
+        `native-export: codex distribution could not be loaded for ${RUNTIME_REF}: ${message}`,
+      );
+      expect(s3.objects.size).toBe(0);
+    });
+
+    it.each([
+      ['a 5xx', 'repo-fetch: https://github.com/x/aidlc-runtime-2.11.4.tar.gz returned 502 Bad'],
+      ['a 429', 'repo-fetch: https://github.com/x/version.json returned 429 Too Many Requests'],
+      ['a network failure', 'fetch failed'],
+    ])('tags %s fetching the release runtime as retryable (502)', async (_label, message) => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockRejectedValueOnce(new Error(message));
+
+      await expect(rejectionOf(loadRuntime(memoryS3()))).resolves.toMatchObject({
+        code: 'export_source_unavailable',
+      });
+    });
+
+    it('does not fall back to the release runtime when dist/ is only temporarily unavailable', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(
+        new Error('repo-fetch: https://codeload.github.com/x returned 503 Service Unavailable'),
+      );
+
+      await expect(rejectionOf(loadRuntime(memoryS3()))).resolves.toMatchObject({
+        code: 'export_source_unavailable',
+      });
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+    });
   });
 
   it('creates a zip buffer', async () => {
