@@ -1,5 +1,5 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { useIntent } from '@/contexts/IntentContext';
+import { useIntent, useVisibleOutputPanes } from '@/contexts/IntentContext';
 import { intentsService, type QuorumEdit, type QuorumEditPlanItem } from '@/services/intents';
 
 // Quorum-supported artifact edit sessions: the plan-approval surface and the
@@ -157,11 +157,9 @@ function QuorumEditSession({ edit }: { edit: QuorumEdit }) {
 // Live progress: the qedit output pane (durable OUTPUT# seed + live
 // agent.output tail), exactly how stage transcripts render.
 function QuorumEditProgress({ editId }: { editId: string }) {
-  const { ensureOutputs, outputBuffers, outputVersion, outputPaneStatus } = useIntent();
+  const { outputBuffers, outputVersion, outputPaneStatus } = useIntent();
   const key = `qedit-${editId}`;
-  useEffect(() => {
-    ensureOutputs(key);
-  }, [key, ensureOutputs]);
+  useVisibleOutputPanes([key]);
   // outputVersion subscribes this component to buffer appends.
   void outputVersion;
   const text = outputBuffers.get(key) ?? '';

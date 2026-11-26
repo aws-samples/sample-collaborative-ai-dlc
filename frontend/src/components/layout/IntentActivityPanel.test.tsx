@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 
 const mocks = vi.hoisted(() => ({
   ensureOutputs: vi.fn(),
+  setPaneVisible: vi.fn(),
+  hasEarlierOutput: vi.fn(() => false),
 }));
 
 vi.mock('@/contexts/IntentContext', () => ({
@@ -164,6 +166,8 @@ vi.mock('@/contexts/IntentContext', () => ({
     outputVersion: 1,
     stageNameOf: (key: string) => (key === 'si-1' ? 'Requirements Analysis' : key),
     ensureOutputs: mocks.ensureOutputs,
+    setPaneVisible: mocks.setPaneVisible,
+    hasEarlierOutput: mocks.hasEarlierOutput,
     outputPaneStatus: () => 'seeded',
   }),
 }));
@@ -181,6 +185,28 @@ import { IntentActivityPanel } from './IntentActivityPanel';
 describe('IntentActivityPanel Agent tab', () => {
   beforeEach(() => {
     mocks.ensureOutputs.mockClear();
+    mocks.setPaneVisible.mockClear();
+    mocks.hasEarlierOutput.mockReturnValue(false);
+  });
+
+  it('keeps the shown pane declared visible until the tab closes', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<IntentActivityPanel onClose={() => {}} />);
+    await user.click(screen.getByRole('tab', { name: /Agent/i }));
+    expect(mocks.setPaneVisible).toHaveBeenLastCalledWith('si-1', true);
+    unmount();
+    expect(mocks.setPaneVisible).toHaveBeenLastCalledWith('si-1', false);
+  });
+
+  it('says when older output was trimmed from the transcript', async () => {
+    mocks.hasEarlierOutput.mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<IntentActivityPanel onClose={() => {}} />);
+    await user.click(screen.getByRole('tab', { name: /Agent/i }));
+    expect(mocks.hasEarlierOutput).toHaveBeenCalledWith('si-1');
+    expect(
+      screen.getByText('Earlier output was trimmed to keep this page fast'),
+    ).toBeInTheDocument();
   });
 
   it('defaults to Progress, hides routine tool chatter, and shows Raw transcript on toggle', async () => {

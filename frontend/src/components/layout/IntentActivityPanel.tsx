@@ -173,6 +173,8 @@ function AgentTab({
     stageNameOf,
     ensureOutputs,
     outputPaneStatus,
+    setPaneVisible,
+    hasEarlierOutput,
   } = useIntent();
   const [viewMode, setViewMode] = useState<'progress' | 'raw'>('progress');
 
@@ -210,11 +212,16 @@ function AgentTab({
   const rows = displayKey ? (outputRows.get(displayKey) ?? []) : [];
 
   // Lazy transcript: seed the displayed pane's durable history on first show
-  // (covers manual selection AND follow-mode advancing to a new stage).
+  // (covers manual selection AND follow-mode advancing to a new stage), and
+  // keep it declared visible while shown so it keeps catching up.
   useEffect(() => {
-    if (displayKey) ensureOutputs(displayKey);
-  }, [displayKey, ensureOutputs]);
+    if (!displayKey) return;
+    ensureOutputs(displayKey);
+    setPaneVisible(displayKey, true);
+    return () => setPaneVisible(displayKey, false);
+  }, [displayKey, ensureOutputs, setPaneVisible]);
   const paneLoading = displayKey ? outputPaneStatus(displayKey) === 'loading' : false;
+  const earlierTrimmed = displayKey ? hasEarlierOutput(displayKey) : false;
 
   // Stick-to-bottom auto-scroll: follow appends unless the user scrolled up.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -295,6 +302,13 @@ function AgentTab({
         </div>
       </div>
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-auto p-3">
+        {earlierTrimmed && (
+          <div className="mb-3 rounded-md border bg-muted/40 px-2 py-1.5">
+            <p className="text-xs text-muted-foreground">
+              Earlier output was trimmed to keep this page fast
+            </p>
+          </div>
+        )}
         {viewMode === 'progress' ? (
           <AgentOutputTranscript
             rows={rows}

@@ -79,6 +79,7 @@ Use `refetchInterval` on the query that owns the data. Leave `refetchIntervalInB
 
 `useVisiblePoll` is reserved for non-query work such as catching up and merging independently paginated visible transcript panes. Do not introduce another timer for an ordinary query refresh.
 
+A component that renders a transcript pane declares it with `useVisibleOutputPanes` for as long as it is mounted: declared panes keep catching up and are never evicted, and each declaration is counted, so one viewer leaving does not hide a pane another still shows. When the size cap drops older rows, the transcript says so.
 
 ## Reading without retaining
 

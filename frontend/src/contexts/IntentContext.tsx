@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -155,6 +156,8 @@ interface OutputPane {
   epoch: number;
   /** Explicit visibility from setPaneVisible; undefined = recent ensureOutputs. */
   visible: boolean | undefined;
+  /** Components currently showing the pane: one hiding it leaves it visible to the rest. */
+  viewers: number;
   lastEnsuredAt: number;
   lastAccessAt: number;
 }
@@ -208,8 +211,9 @@ interface IntentContextValue {
   outputPaneStatus: (key: string) => OutputPaneStatus;
   /**
    * Declare whether a pane is on screen. Visible panes get the periodic
-   * catch-up; without a declaration a pane counts as visible for 60 s after
-   * its last ensureOutputs.
+   * catch-up and are never evicted; without a declaration a pane counts as
+   * visible for 60 s after its last ensureOutputs. Declarations are counted:
+   * every `true` needs its own `false` (see useVisibleOutputPanes).
    */
   setPaneVisible: (key: string, visible: boolean) => void;
   /**
@@ -571,13 +575,19 @@ export function IntentProvider({
   }, [projectId, intentId]);
   const reload = load;
 
+  // The transcript panes are swapped before any passive effect runs, so the
+  // consumers that seed and show a pane on mount (or on an intent switch)
+  // register it in the new intent's map rather than in the one being dropped.
+  useLayoutEffect(() => {
+    outputBufRef.current = new Map();
+    outputRowsRef.current = new Map();
+    panesRef.current = new Map();
+  }, [projectId, intentId]);
+
   useEffect(() => {
     contentSyncRef.current = { running: false, again: false };
     flightRef.current = { inflight: null, trailing: null };
     appliedRef.current = null;
-    outputBufRef.current = new Map();
-    outputRowsRef.current = new Map();
-    panesRef.current = new Map();
     setOutputVersion(0);
     setSelectedStageId(null);
     setAgentFocus(null);
@@ -657,6 +667,7 @@ export function IntentProvider({
         earlierLoading: false,
         epoch: 0,
         visible: undefined,
+        viewers: 0,
         lastEnsuredAt: 0,
         lastAccessAt: Date.now(),
       };
@@ -816,10 +827,11 @@ export function IntentProvider({
       if (!pane) return;
       const at = Date.now();
       const wasVisible = isPaneVisible(pane, at);
-      pane.visible = visible;
+      pane.viewers = visible ? pane.viewers + 1 : Math.max(0, pane.viewers - 1);
+      pane.visible = pane.viewers > 0;
       pane.lastAccessAt = at;
       if (visible && !wasVisible && pane.status === 'seeded') syncOutputs(key);
-      if (!visible && pane.earlier) {
+      if (!pane.visible && pane.earlier) {
         pane.earlier = null;
         renderPane(key);
       }
@@ -1518,6 +1530,27 @@ export function useIntent() {
     throw new Error('useIntent must be used within an IntentProvider');
   }
   return context;
+}
+
+/**
+ * Seed the transcript panes a component shows and keep them declared visible
+ * while it is mounted, so they keep catching up and are never evicted from
+ * under it (a pane without a declaration stops counting as visible 60 s after
+ * it was seeded).
+ */
+export function useVisibleOutputPanes(keys: readonly (string | null | undefined)[]) {
+  const { ensureOutputs, setPaneVisible } = useIntent();
+  const joined = keys.filter((key): key is string => !!key).join('\n');
+  useEffect(() => {
+    const shown = joined ? joined.split('\n') : [];
+    for (const key of shown) {
+      ensureOutputs(key);
+      setPaneVisible(key, true);
+    }
+    return () => {
+      for (const key of shown) setPaneVisible(key, false);
+    };
+  }, [joined, ensureOutputs, setPaneVisible]);
 }
 
 /** Safe variant that returns null when outside an IntentProvider (e.g. tests). */

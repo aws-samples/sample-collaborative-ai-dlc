@@ -59,7 +59,12 @@ vi.mock('@/services/workflows', async (importActual) => {
   };
 });
 
-import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
+import {
+  IntentProvider,
+  useIntent,
+  useVisibleOutputPanes,
+  clearIntentCache,
+} from './IntentContext';
 import { workflowsService } from '@/services/workflows';
 import { intentCompiledQuery } from '@/lib/intentEntry';
 import { qk } from '@/lib/queryKeys';
@@ -241,6 +246,12 @@ function LiveProbe() {
       ))}
     </div>
   );
+}
+
+// A transcript-rendering component: shows one pane for as long as it is mounted.
+function PaneViewer({ paneKey }: { paneKey: string }) {
+  useVisibleOutputPanes([paneKey]);
+  return null;
 }
 
 const renderLiveProbe = () =>
@@ -1564,6 +1575,97 @@ describe('IntentContext', () => {
         await vi.advanceTimersByTimeAsync(8_100);
       });
       expect(screen.getByTestId('status-si-1')).toHaveTextContent('seeded');
+    });
+
+    it('keeps four long-lived running lane panes seeded and catching up', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockImplementation(
+        async (_p: string, _i: string, params: { stageInstanceId: string }) => ({
+          outputs: [
+            { seq: 1, stageInstanceId: params.stageInstanceId, kind: 'text', content: 'x' },
+          ],
+          cursor: 1,
+        }),
+      );
+      const lanes = ['si-a', 'si-b', 'si-c', 'si-d'];
+      const view = (shown: string[]) => (
+        <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+          <Routes>
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <IntentProvider>
+                  <LiveProbe />
+                  {shown.map((key) => (
+                    <PaneViewer key={key} paneKey={key} />
+                  ))}
+                </IntentProvider>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(lanes));
+      await flush();
+      expect(screen.getByTestId('pane-status')).toHaveTextContent(
+        'seeded,seeded,seeded,seeded,unseeded',
+      );
+
+      // Long past the 60 s fallback window, with a fifth pane opened and closed.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(70_000);
+      });
+      await click('ensure-si-e');
+      await click('hide-si-e');
+      expect(screen.getByTestId('pane-status')).toHaveTextContent(
+        'seeded,seeded,seeded,seeded,seeded',
+      );
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys().toSorted()).toEqual(lanes);
+
+      // A lane that leaves the screen goes back to the hidden-pane retention.
+      rerender(view(['si-b', 'si-c', 'si-d']));
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys().toSorted()).toEqual(['si-b', 'si-c', 'si-d']);
+    });
+
+    it('keeps a pane visible while another component still shows it', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockResolvedValue({ outputs: [], cursor: 0 });
+      const view = (viewers: number) => (
+        <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+          <Routes>
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <IntentProvider>
+                  <LiveProbe />
+                  {Array.from({ length: viewers }, (_, i) => (
+                    <PaneViewer key={i} paneKey="si-1" />
+                  ))}
+                </IntentProvider>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(2));
+      await flush();
+      rerender(view(1));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(70_000);
+      });
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys()).toEqual(['si-1']);
     });
 
     it('retains at most 3 hidden transcript panes', async () => {
