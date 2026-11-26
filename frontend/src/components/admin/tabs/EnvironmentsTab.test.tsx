@@ -901,6 +901,112 @@ describe('EnvironmentsTab', () => {
     expect(screen.queryByRole('button', { name: 'Review findings' })).not.toBeInTheDocument();
   });
 
+  it('keeps the evidence open while the revisions refresh', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    const publishedDetail = {
+      environment: publishedEnvironment,
+      revisions: [publishedRevision],
+      publishedRevision,
+    };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : publishedDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    const calls = get.mock.calls.length;
+    let finishRefresh: (value: unknown) => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishRefresh = () => resolve(publishedDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+
+    expect(get).toHaveBeenCalledTimes(calls + 1);
+    expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    finishRefresh(publishedDetail);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+        'aria-disabled',
+        'false',
+      ),
+    );
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps the evidence open after a revision action reloads the environment', async () => {
+    const user = userEvent.setup();
+    const readyEnvironment = { ...custom, status: 'READY' };
+    const readyRevision = { ...revision, status: 'READY', scanFindings };
+    const readyDetail = {
+      environment: readyEnvironment,
+      revisions: [readyRevision],
+      publishedRevision: null,
+    };
+    list.mockResolvedValue([readyEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : readyDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    const calls = get.mock.calls.length;
+    let finishReload: () => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishReload = () => resolve(readyDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(calls + 1));
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    finishReload();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publish' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('shows why a refresh failed and keeps the revision on screen', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : { environment: publishedEnvironment, revisions: [publishedRevision], publishedRevision },
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    get.mockRejectedValueOnce(new Error('Service unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+
+    expect(await screen.findByText('Service unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+    await waitFor(() => expect(screen.queryByText('Service unavailable')).not.toBeInTheDocument());
+  });
+
   it('builds advanced settings with structured rows', async () => {
     const user = userEvent.setup();
     create.mockResolvedValue({

@@ -419,10 +419,11 @@ export function EnvironmentRevisionWorkspace({
   selectedRevisionId: string | null;
   onSelectRevision: (revisionId: string) => void;
   busy: string | null;
-  onRefresh: () => void;
+  onRefresh: () => Promise<unknown>;
   onRun: (name: string, action: () => Promise<unknown>) => void;
   onRequestAccept: (revision: EnvironmentRevision, critical: number, high: number) => void;
 }) {
+  const [refreshing, setRefreshing] = useState(false);
   const selectedRevision =
     detail.revisions.find((revision) => revision.revisionId === selectedRevisionId) ??
     detail.revisions[0] ??
@@ -475,9 +476,21 @@ export function EnvironmentRevisionWorkspace({
                 className="h-8 w-8"
                 title="Refresh revisions"
                 aria-label="Refresh revisions"
-                onClick={onRefresh}
+                aria-busy={refreshing}
+                // Not `disabled`, which would move keyboard focus away.
+                aria-disabled={refreshing}
+                onClick={() => {
+                  if (refreshing) return;
+                  setRefreshing(true);
+                  void onRefresh().finally(() => setRefreshing(false));
+                }}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
+                <RefreshCw
+                  className={cn(
+                    'h-3.5 w-3.5',
+                    refreshing && 'animate-spin motion-reduce:animate-none',
+                  )}
+                />
               </Button>
             </div>
             <p className="mt-1.5 flex flex-wrap gap-x-2 text-[10px] text-muted-foreground">
