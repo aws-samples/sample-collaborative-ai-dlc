@@ -20,6 +20,7 @@ import {
   defaultAgentCli,
   readDisabledClis,
 } from '../shared/agent-cli-availability.js';
+import { readNativeExecution } from '../shared/native-execution.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -1477,6 +1478,7 @@ export const handler = async (event, context) => {
           if (spacePermissions(role).write)
             await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
           const repos = await fetchRepos(g, projectId);
+          const v2Settings = readV2Settings(v);
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
@@ -1493,7 +1495,19 @@ export const handler = async (event, context) => {
             permissions: spacePermissions(role),
             trackers: trackerMaps.map(mapBinding),
             repos,
-            ...readV2Settings(v),
+            ...v2Settings,
+            // The platform's native-execution flag ('enabled' | 'disabled'), so
+            // the browser can offer the native engine. A platform setting, not
+            // a space setting: read on this single-space response only, and
+            // only for a v2 space, the kind that holds intents.
+            ...(v2Settings.kind === 'v2'
+              ? {
+                  nativeExecution: await readNativeExecution(
+                    ssm,
+                    process.env.AGENT_SETTINGS_SSM_PREFIX || '',
+                  ),
+                }
+              : {}),
           };
           return response(200, withLegacyTracker(project));
         }

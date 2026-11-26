@@ -421,6 +421,11 @@ const buildExecutionMeta = ({
   projectId,
   intentId,
   status = 'CREATED',
+  // What runs the intent (shared/native-execution.js). null is the platform's
+  // stage engine; 'native' is AI-DLC itself. Written at create and never
+  // updated: the store's update takes no `engine`. Omitted from the row when
+  // unset, so a platform intent keeps exactly the attributes it always had.
+  engine = null,
   workflowId,
   workflowVersion,
   // Commit-pinned native AI-DLC distribution used by this intent. Export
@@ -467,6 +472,10 @@ const buildExecutionMeta = ({
   // `gitProvider` as the fallback; this map preserves mixed-provider projects
   // without changing the long-standing string shape of `repos`.
   repoProviders = null,
+  // Native intents only: the one of `repos` that holds AI-DLC's framework
+  // files and records, picked by the member at create. Omitted from the row
+  // when unset.
+  primaryRepo = null,
   // The CLI selected by the user when the DRAFT is started. null while the
   // draft is being composed, or for legacy/test-harness executions that let
   // run-stage pick the first installed CLI.
@@ -622,6 +631,7 @@ const buildExecutionMeta = ({
   projectId,
   intentId,
   status,
+  ...(engine ? { engine } : {}),
   workflowId,
   workflowVersion,
   aidlcRepoRef,
@@ -646,6 +656,7 @@ const buildExecutionMeta = ({
   sparseCheckout,
   repos,
   repoProviders,
+  ...(primaryRepo ? { primaryRepo } : {}),
   gitProvider,
   agentCli,
   credentialBinding,

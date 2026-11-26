@@ -3326,3 +3326,104 @@ describe('GET/PUT /projects/:id/custom-rules', () => {
     expect(docs.every((d) => d.downloadUrl === undefined)).toBe(true);
   });
 });
+
+// ── Native execution flag (docs/development/native-execution-plan.md) ──
+
+describe('GET /projects/:id reports the native-execution flag', () => {
+  const FLAG = '/collab/dev/native-execution';
+  const getProject = (sub, projectId) =>
+    handler({ httpMethod: 'GET', pathParameters: { projectId }, ...claims(sub) });
+  const flagReads = () =>
+    ssmMock.commandCalls(GetParameterCommand).filter((call) => call.args[0].input.Name === FLAG);
+
+  it('reports disabled when the parameter does not exist', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Space' });
+
+    const res = await getProject(sub, id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).nativeExecution).toBe('disabled');
+  });
+
+  it('reports enabled only for the exact value "enabled"', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Space' });
+
+    ssmParams.set(FLAG, 'enabled');
+    expect(JSON.parse((await getProject(sub, id)).body).nativeExecution).toBe('enabled');
+
+    for (const value of ['disabled', 'Enabled', 'true', '']) {
+      ssmParams.set(FLAG, value);
+      expect(JSON.parse((await getProject(sub, id)).body).nativeExecution, value).toBe('disabled');
+    }
+  });
+
+  it('reports disabled and still answers when the parameter cannot be read', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Space' });
+    ssmMock
+      .on(GetParameterCommand, { Name: FLAG })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+
+    const res = await getProject(sub, id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ id, name: 'Space', nativeExecution: 'disabled' });
+  });
+
+  it.each(['member', 'viewer'])('reports the flag to a %s', async (role) => {
+    const owner = `u-${randomUUID()}`;
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Space' });
+    await addMember(id, sub, role);
+    ssmParams.set(FLAG, 'enabled');
+
+    const res = await getProject(sub, id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ userRole: role, nativeExecution: 'enabled' });
+  });
+
+  it('answers a non-member with 403 and does not read the flag', async () => {
+    const owner = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Space' });
+    ssmParams.set(FLAG, 'enabled');
+
+    const res = await getProject(`stranger-${randomUUID()}`, id);
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+    expect(res.body).not.toContain('nativeExecution');
+    expect(flagReads()).toHaveLength(0);
+  });
+
+  it('leaves the flag off the space list', async () => {
+    const sub = `u-${randomUUID()}`;
+    await createProject(sub, { name: 'Space' });
+    ssmParams.set(FLAG, 'enabled');
+
+    const res = await handler({ httpMethod: 'GET', ...claims(sub) });
+
+    expect(res.statusCode).toBe(200);
+    const [listed] = JSON.parse(res.body);
+    expect(listed.name).toBe('Space');
+    expect(listed).not.toHaveProperty('nativeExecution');
+    expect(flagReads()).toHaveLength(0);
+  });
+
+  it('leaves the flag off a retired v1 space, which holds no intents', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = randomUUID();
+    await g.addV('Project').property('id', projectId).property('name', 'Legacy').next();
+    await addMember(projectId, sub, 'owner');
+    ssmParams.set(FLAG, 'enabled');
+
+    const res = await getProject(sub, projectId);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ name: 'Legacy', kind: 'v1' });
+    expect(JSON.parse(res.body)).not.toHaveProperty('nativeExecution');
+    expect(flagReads()).toHaveLength(0);
+  });
+});
