@@ -446,7 +446,10 @@ describe('native workflow export', () => {
 
   // Releases from 2.8.2 ship their harnesses only in a release runtime asset.
   describe('a release that ships its harnesses as a runtime asset', () => {
-    const PROFILE = AIDLC_COMPATIBILITY_PROFILES['v2.11.4'];
+    // 2.11.3's runtime is in the preview release built from its commit; the
+    // v2.11.3 tag names a later commit.
+    const PROFILE = AIDLC_COMPATIBILITY_PROFILES['v2.11.3'];
+    const TAG = 'v2.11.3-preview.20261103.1';
     const RUNTIME_REF = PROFILE.upstreamRef;
     const noDist = (ref) =>
       new Error(`repo-fetch: no files found for prefixes dist/codex/ in tarball for ref ${ref}`);
@@ -470,7 +473,7 @@ describe('native workflow export', () => {
 
       const result = await loadRuntime(s3);
 
-      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith('v2.11.4', {
+      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith(TAG, {
         commit: RUNTIME_REF,
         prefixes: ['runtime/codex/'],
         maxFiles: 1_000,
@@ -484,7 +487,7 @@ describe('native workflow export', () => {
       expect(manifest).toMatchObject({
         ref: RUNTIME_REF,
         harness: 'codex',
-        source: { releaseTag: 'v2.11.4', path: 'runtime/codex/' },
+        source: { releaseTag: TAG, path: 'runtime/codex/' },
       });
       expect(manifest.files.map((file) => file.path)).toContain('AGENTS.md');
 
