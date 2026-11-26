@@ -1955,7 +1955,11 @@ export const runParallelSection = async (segment, toolkit) => {
             attachments,
             // A revision's first round revives a merged unit: its branch may
             // hold commits a squash or rebase merge never put on the intent
-            // branch, so the runtime restarts it from the intent branch.
+            // branch, so the runtime restarts it from the intent branch. This
+            // durable step completes before any of the revision's stages run
+            // (a replay returns its result; it re-executes only if it never
+            // checkpointed), and retry rounds (round > 0) never pass it, so it
+            // can't discard revision commits.
             ...(revive && round === 0 ? { restartFromIntent: true } : {}),
           },
           laneSession,
