@@ -725,12 +725,12 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
     // marker in its body. Reach itself is read off the ONE definition the
     // promotion guard uses — nothing here re-derives the rule from a path.
     const PATHS = Object.keys(INVOKE_LINES.files).toSorted();
-    const marker = (path) => `reach-probe-${PATHS.indexOf(path)}-end`;
-    for (const path of PATHS) {
-      expect(fixtureFiles.has(path), path).toBe(true);
+    const marker = (repoPath) => `reach-probe-${PATHS.indexOf(repoPath)}-end`;
+    for (const repoPath of PATHS) {
+      expect(fixtureFiles.has(repoPath), repoPath).toBe(true);
       fixtureFiles.set(
-        path,
-        `${fixtureFiles.get(path)}\n${INVOKE_LINES.files[path].join('\n')}\n${marker(path)}\n`,
+        repoPath,
+        `${fixtureFiles.get(repoPath)}\n${INVOKE_LINES.files[repoPath].join('\n')}\n${marker(repoPath)}\n`,
       );
     }
     const { catalog, objects } = buildReleaseBundle({ profileId: PROFILE, files: fixtureFiles });
@@ -739,7 +739,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
       blocks.map((block) => bodyByKey.get(block.bodyRef?.s3Key) ?? '').join('\n');
     const pathsIn = (blocks) => {
       const joined = bodiesOf(blocks);
-      return new Set(PATHS.filter((path) => joined.includes(marker(path))));
+      return new Set(PATHS.filter((repoPath) => joined.includes(marker(repoPath))));
     };
     const CONDUCTOR_PATH = 'core/aidlc-common/conductor.md';
     // What the promotion guard reads as prompt evidence at all: the bodies of the
@@ -788,7 +788,7 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
         .filter(([, lines]) =>
           lines.join(' ').replace(/\s+/g, ' ').includes(`{{INVOKE}} ${command}`),
         )
-        .map(([path]) => path);
+        .map(([repoPath]) => repoPath);
 
     it('finds every one of those commands in the release bodies', () => {
       for (const command of [...REFUSED, ...APPROXIMATED]) {
@@ -815,12 +815,12 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
 
     it('honours a refused command only where the annex reaches every instructing body', () => {
       for (const command of REFUSED) {
-        const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
+        const evidence = filesInvoking(command).filter((repoPath) => promptEvidence.has(repoPath));
         expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
-        for (const path of evidence) {
+        for (const repoPath of evidence) {
           expect(
-            reaching.has(path) || path === CONDUCTOR_PATH,
-            `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
+            reaching.has(repoPath) || repoPath === CONDUCTOR_PATH,
+            `${command} is instructed from ${repoPath}, which no annex-bearing prompt renders`,
           ).toBe(true);
         }
       }
@@ -830,13 +830,13 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
     // commands in its own protocol and tool sources too, and those are deliberately
     // not prompt evidence.
     it('reads no engine command out of a file no prompt renders', () => {
-      const outsideEvidence = PATHS.filter((path) => !promptEvidence.has(path));
+      const outsideEvidence = PATHS.filter((repoPath) => !promptEvidence.has(repoPath));
 
       expect(outsideEvidence).not.toEqual([]);
-      expect(outsideEvidence.every((path) => !reaching.has(path))).toBe(true);
-      expect(outsideEvidence.some((path) => path.startsWith('core/aidlc-common/protocols/'))).toBe(
-        true,
-      );
+      expect(outsideEvidence.every((repoPath) => !reaching.has(repoPath))).toBe(true);
+      expect(
+        outsideEvidence.some((repoPath) => repoPath.startsWith('core/aidlc-common/protocols/')),
+      ).toBe(true);
     });
 
     // The three approximated families are judged by the SAME reach as a refused
@@ -850,12 +850,12 @@ for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
     // refused by name (release-registry.test.js).
     it('honours an approximated command only where the annex reaches every instructing body', () => {
       for (const command of APPROXIMATED) {
-        const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
+        const evidence = filesInvoking(command).filter((repoPath) => promptEvidence.has(repoPath));
         expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
-        for (const path of evidence) {
+        for (const repoPath of evidence) {
           expect(
-            reaching.has(path) || path === CONDUCTOR_PATH,
-            `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
+            reaching.has(repoPath) || repoPath === CONDUCTOR_PATH,
+            `${command} is instructed from ${repoPath}, which no annex-bearing prompt renders`,
           ).toBe(true);
         }
         expect(

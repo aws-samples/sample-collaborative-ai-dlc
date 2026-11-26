@@ -2381,7 +2381,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
       await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
     });
 
-    const promote = async (supportState) => {
+    const promoteTo = async (supportState) => {
       const { release } = await registerRelease(registerArgs(PROFILE));
       return updateRelease({
         ...registryArgs(),
@@ -2422,7 +2422,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     });
 
     it('promotes to selectable, offers it, and resolves all eleven scope plans', async () => {
-      const stated = await promote('selectable');
+      const stated = await promoteTo('selectable');
       await updateRelease({
         ...registryArgs(),
         s3,
@@ -2446,7 +2446,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     // registry's, so `certified` and the `stable` channel it unlocks must both be
     // reachable.
     it('promotes to certified, like 2.9.0', async () => {
-      const certified = await promote('certified');
+      const certified = await promoteTo('certified');
 
       expect(certified.supportState).toBe('certified');
       expect(certified.certifiedBy).toBe('admin-1');
@@ -2454,7 +2454,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
     });
 
     it('may be pointed at by the stable channel once certified', async () => {
-      const certified = await promote('certified');
+      const certified = await promoteTo('certified');
       await updateRelease({
         ...registryArgs(),
         s3,
@@ -2568,7 +2568,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
         };
 
         it('names the command as unhonoured and refuses promotion', async () => {
-          const bundle = buildReleaseBundle({
+          const commandBundle = buildReleaseBundle({
             profile: customProfile({
               repository: SCOPE_REPOSITORY,
               sha: SCOPE_FORK_SHA,
@@ -2576,7 +2576,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
             }),
             files: scopeForkFiles(),
           });
-          await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+          await publishReleaseBundle({ s3, bucket: BUCKET, bundle: commandBundle });
 
           const { release } = await registerCustomRelease({
             ...registryArgs(),
@@ -2623,7 +2623,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
             knowledgePath,
             `${files.get(knowledgePath)}\n\nStamp it with {{INVOKE}} engine now.\n`,
           );
-          const bundle = buildReleaseBundle({
+          const commandBundle = buildReleaseBundle({
             profile: customProfile({
               repository: REPOSITORY,
               sha: KNOWLEDGE_SHA,
@@ -2631,7 +2631,7 @@ for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
             }),
             files,
           });
-          await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+          await publishReleaseBundle({ s3, bucket: BUCKET, bundle: commandBundle });
 
           const { release } = await registerCustomRelease({
             ...registryArgs(),
