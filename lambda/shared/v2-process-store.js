@@ -23,6 +23,7 @@ import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
   deliveryKey,
+  maintenanceCursorKey,
   executionMetaKey,
   outputKey,
   workflowCheckpointKey,
@@ -175,6 +176,25 @@ const pendingGrantIdSet = (grantIds) => {
   const unique = [...new Set((grantIds ?? []).filter((id) => typeof id === 'string' && id))];
   return unique.length ? new Set(unique) : null;
 };
+
+const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
+
+// Key condition for one sparse GSI3 maintenance partition, optionally starting
+// strictly after a GSI3SK. The range condition does not need the row at `after`
+// to still exist, so a sweep resumes past a row that has since left the index.
+// A sweep cursor relies on each GSI3SK being unique within its partition.
+// DynamoDB caps a sort key at 1024 bytes; a longer stored cursor is invalid.
+const MAX_CURSOR_KEY_BYTES = 1024;
+const maintenanceIndexQuery = (partition, after) =>
+  after
+    ? {
+        KeyConditionExpression: 'GSI3PK = :pk AND GSI3SK > :after',
+        ExpressionAttributeValues: { ':pk': partition, ':after': after },
+      }
+    : {
+        KeyConditionExpression: 'GSI3PK = :pk',
+        ExpressionAttributeValues: { ':pk': partition },
+      };
 
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
@@ -2947,7 +2967,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return records;
   };
 
-  const listActiveExecutions = async ({ limit = Infinity } = {}) => {
+  const listActiveExecutions = async ({ limit = Infinity, after = null } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -2955,8 +2975,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         new QueryCommand({
           TableName: table(),
           IndexName: 'GSI3',
-          KeyConditionExpression: 'GSI3PK = :pk',
-          ExpressionAttributeValues: { ':pk': ACTIVE_EXECUTIONS_INDEX_PK },
+          ...maintenanceIndexQuery(ACTIVE_EXECUTIONS_INDEX_PK, after),
           ...(Number.isFinite(limit) ? { Limit: limit - items.length } : {}),
           ExclusiveStartKey,
         }),
@@ -2967,27 +2986,74 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return items;
   };
 
-  const listStaleActiveExecutions = async ({
-    statuses = ['WAITING', 'RUNNING'],
-    nowIso,
-    timeoutSeconds,
-    limit = 100,
-  } = {}) => {
-    const nowMs = Date.parse(nowIso ?? now());
-    const timeoutMs = Number(timeoutSeconds) * 1000;
-    const legacyCutoff =
-      Number.isFinite(nowMs) && Number.isFinite(timeoutMs)
-        ? new Date(nowMs - timeoutMs).toISOString()
-        : null;
-    const statusSet = new Set(statuses);
-    const rows = await listActiveExecutions({ limit });
-    return rows
-      .filter((row) => statusSet.has(row.status))
-      .filter((row) => {
-        if (row.orchestratorExpiresAt) return row.orchestratorExpiresAt <= (nowIso ?? now());
-        return legacyCutoff ? (row.orchestratorStartedAt ?? row.startedAt) <= legacyCutoff : false;
-      })
-      .slice(0, limit);
+  // Where a scheduled sweep resumes: the last GSI3SK it claimed (null = start
+  // of the partition), the write version, and when the current lap began.
+  // version 0 means the cursor was never written. A stored cursor this code
+  // could not have written (a non-integer version, an `after` that is not a
+  // key) comes back as `invalid` from the start of the partition, so the
+  // caller replaces it instead of failing its version check on every tick.
+  const getMaintenanceCursor = async (sweep) => {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: maintenanceCursorKey(sweep),
+        ConsistentRead: true,
+      }),
+    );
+    if (!Item) return { after: null, version: 0, lapStartedAt: null };
+    const after = Item.after ?? null;
+    const valid =
+      Number.isInteger(Item.version) &&
+      Item.version > 0 &&
+      (after === null ||
+        (typeof after === 'string' && Buffer.byteLength(after) <= MAX_CURSOR_KEY_BYTES));
+    if (!valid) return { after: null, version: 0, lapStartedAt: null, invalid: true };
+    return {
+      after,
+      version: Item.version,
+      lapStartedAt: Number.isFinite(Date.parse(Item.lapStartedAt)) ? Item.lapStartedAt : null,
+    };
+  };
+
+  // Moves the cursor only if no other sweep moved it since `version` was read.
+  // Returns false when another sweep won; the caller then leaves the rows alone.
+  // `replaceInvalid` overwrites a cursor read as invalid without a condition:
+  // its stored version cannot be matched, and at worst two ticks both start
+  // the lap over.
+  const moveMaintenanceCursor = async ({
+    sweep,
+    after = null,
+    version,
+    lapStartedAt = null,
+    replaceInvalid = false,
+  }) => {
+    const condition = replaceInvalid
+      ? {}
+      : version === 0
+        ? { ConditionExpression: 'attribute_not_exists(pk)' }
+        : {
+            ConditionExpression: 'version = :version',
+            ExpressionAttributeValues: { ':version': version },
+          };
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: {
+            ...maintenanceCursorKey(sweep),
+            after,
+            version: version + 1,
+            lapStartedAt,
+            updatedAt: now(),
+          },
+          ...condition,
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
@@ -3117,7 +3183,6 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       return i < 0 ? 0 : i;
     };
     const existing = await listUnits(executionId);
-    const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
     const byLane = new Map(existing.map((r) => [laneIdOf(r), r]));
     const created = [];
     const updated = [];
@@ -3413,7 +3478,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
   };
 
-  const listUnitPrWaits = async ({ limit = 100 } = {}) => {
+  const listUnitPrWaits = async ({ limit = 100, after = null } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -3421,8 +3486,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         new QueryCommand({
           TableName: table(),
           IndexName: 'GSI3',
-          KeyConditionExpression: 'GSI3PK = :pk',
-          ExpressionAttributeValues: { ':pk': PR_WAITS_INDEX_PK },
+          ...maintenanceIndexQuery(PR_WAITS_INDEX_PK, after),
           Limit: limit - items.length,
           ExclusiveStartKey,
         }),
@@ -4195,7 +4259,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getCompletionRecords,
     listCompletionAuditPage,
     listActiveExecutions,
-    listStaleActiveExecutions,
+    getMaintenanceCursor,
+    moveMaintenanceCursor,
     patchExecutionConfig,
     putUnitPlan,
     getUnitPlan,
