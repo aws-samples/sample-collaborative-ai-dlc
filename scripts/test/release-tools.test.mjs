@@ -40,6 +40,7 @@ const run = (file, args, options = {}) =>
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
     shell: false,
+    input: options.input,
   });
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -1930,6 +1931,38 @@ test('installer refuses a password the user pool would reject before planning', 
     assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installer says why it stops when the confirmation is not yes', () => {
+  const repository = createReleaseRepository();
+  for (const [input, proceeds] of [
+    ['yy\n', false],
+    ['no\n', false],
+    ['\n', false],
+    ['', false],
+    ['yes\n', true],
+    ['Y\n', true],
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), 'aidlc-confirm-'));
+    try {
+      const env = { ...managedEnv(dir, repository), AIDLC_YES: '0' };
+      const result = run('bash', [installer, 'install', '--version', '2.0.0'], { env, input });
+      const label = JSON.stringify(input);
+      assert.equal(result.status, proceeds ? 0 : 1, `${label}: ${result.stderr}`);
+      assert.equal(
+        /Cancelled \(answer y or yes to continue\)\./.test(result.stderr),
+        !proceeds,
+        label,
+      );
+      assert.equal(
+        existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')),
+        proceeds,
+        label,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

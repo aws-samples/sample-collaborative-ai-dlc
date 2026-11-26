@@ -618,7 +618,11 @@ confirm() {
     local prompt="$1" answer
     [[ "$ASSUME_YES" == 1 ]] && return 0
     read -r -p "$prompt [y/N] " answer
-    [[ "$answer" == "y" || "$answer" == "Y" ]]
+    case "$answer" in
+        [Yy] | [Yy][Ee][Ss]) return 0 ;;
+    esac
+    echo "Cancelled (answer y or yes to continue)." >&2
+    return 1
 }
 
 confirm_destroy() {
