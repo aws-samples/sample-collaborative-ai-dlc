@@ -6,6 +6,7 @@ import {
   type GitProvider,
   type GitRepo,
 } from '../services/gitProvider';
+import { MAX_LIST_ROWS, readListPages } from '../services/pagination';
 
 // Where the repo list comes from: 'oauth' (default) lists the caller's own
 // repos via their personal connection; 'github-app' lists repos across the
@@ -37,6 +38,13 @@ interface MultiProps extends BaseProps {
 
 export type GitRepoSelectProps = SingleProps | MultiProps;
 
+// Appends the repos not already listed, keeping earlier selections resolvable.
+const mergeRepos = (current: GitRepo[], more: GitRepo[]) => {
+  const known = new Set(current.map((r) => r.id));
+  const added = more.filter((r) => !known.has(r.id));
+  return added.length ? [...current, ...added] : current;
+};
+
 export function GitRepoSelect(props: GitRepoSelectProps) {
   const { provider } = props;
   const repoSource = props.repoSource ?? 'oauth';
@@ -45,18 +53,68 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Why the list stopped short: the page cap, or a page after the first failed.
+  const [incomplete, setIncomplete] = useState<'capped' | 'failed' | null>(null);
 
   useEffect(() => {
-    const listRepos =
-      repoSource === 'github-app'
-        ? githubAppService.listRepos
-        : getGitProviderService(provider).listRepos;
+    const service = getGitProviderService(provider);
+    const listReposPage = repoSource === 'oauth' ? service.listReposPage : undefined;
     setFetching(true);
     setError(null);
-    listRepos()
-      .then(setRepos)
-      .catch((e) => setError(e.message))
-      .finally(() => setFetching(false));
+    setIncomplete(null);
+    setLoadingMore(false);
+    if (!listReposPage) {
+      const listRepos =
+        repoSource === 'github-app' ? githubAppService.listRepos : service.listRepos;
+      listRepos()
+        .then(setRepos)
+        .catch((e) => setError(e.message))
+        .finally(() => setFetching(false));
+      return;
+    }
+    // One request per page: the list shows after page 1 and grows as the
+    // next pages arrive.
+    let cancelled = false;
+    void (async () => {
+      let pagesRead = 0;
+      let done = false;
+      try {
+        const pages = readListPages((page) =>
+          listReposPage(page).then((r) =>
+            // A server that predates paging answers with the bare first page.
+            Array.isArray(r) ? { rows: r } : { rows: r.repos, nextPage: r.nextPage },
+          ),
+        );
+        for await (const page of pages) {
+          if (cancelled) return;
+          // sort=updated: a repo updated while the pages are read moves to
+          // page 1, so it can be listed twice (merged once here) or, if it
+          // moved from a page not yet read, missed until the picker reopens.
+          const { rows } = page;
+          const firstPage = pagesRead === 0;
+          setRepos((current) => (firstPage ? rows : mergeRepos(current, rows)));
+          pagesRead += 1;
+          done = page.done;
+          setFetching(false);
+          setLoadingMore(!done);
+        }
+        if (!cancelled && !done) setIncomplete('capped');
+      } catch (e) {
+        if (cancelled) return;
+        if (pagesRead === 0)
+          setError(e instanceof Error ? e.message : 'Failed to load repositories');
+        else setIncomplete('failed');
+      } finally {
+        if (!cancelled) {
+          setFetching(false);
+          setLoadingMore(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [provider, repoSource]);
 
   // Providers that cap the unfiltered list (GitLab: large group trees exceed
@@ -75,11 +133,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       searchRepos(term)
         .then((matches) => {
           if (cancelled) return;
-          setRepos((current) => {
-            const known = new Set(current.map((r) => r.id));
-            const added = matches.filter((r) => !known.has(r.id));
-            return added.length ? [...current, ...added] : current;
-          });
+          setRepos((current) => mergeRepos(current, matches));
         })
         // The unfiltered list is still usable, so a failed search is not fatal.
         .catch(() => {})
@@ -146,12 +200,14 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
         />
         <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
-            <div className="px-3 py-4 text-center text-sm text-gray-500">
+            <div role="status" className="px-3 py-4 text-center text-sm text-gray-500">
               {searching
                 ? 'Searching...'
-                : repos.length === 0
-                  ? 'No repositories available'
-                  : 'No matching repositories'}
+                : loadingMore
+                  ? 'Loading more repositories...'
+                  : repos.length === 0
+                    ? 'No repositories available'
+                    : 'No matching repositories'}
               {!searching && repos.length === 0 && emptyHint}
             </div>
           ) : (
@@ -174,6 +230,21 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
             ))
           )}
         </div>
+        {loadingMore && filtered.length > 0 && (
+          <p role="status" className="text-xs text-gray-500">
+            Loading more repositories...
+          </p>
+        )}
+        {incomplete === 'capped' && (
+          <p role="status" className="text-xs text-gray-500">
+            Showing the {MAX_LIST_ROWS.toLocaleString('en-US')} most recently updated repositories.
+          </p>
+        )}
+        {incomplete === 'failed' && (
+          <p role="alert" className="text-xs text-amber-600">
+            Some repositories could not be loaded. Reopen the picker to try again.
+          </p>
+        )}
         {selected.size > 0 && <p className="text-xs text-gray-500">{selected.size} selected</p>}
       </div>
     );

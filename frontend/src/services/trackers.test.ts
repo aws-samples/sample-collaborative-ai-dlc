@@ -49,3 +49,60 @@ describe('trackersService.listIssuePages', () => {
     expect(await iter.next()).toEqual({ value: undefined, done: true });
   });
 });
+
+describe('trackersService.listComments', () => {
+  const comment = (id: string) => ({ id, body: id });
+
+  it('reads the discussion one page per request', async () => {
+    get.mockReset();
+    get
+      .mockResolvedValueOnce({ comments: [comment('1')], nextPage: 2 })
+      .mockResolvedValueOnce({ comments: [comment('101')], nextPage: null });
+
+    const comments = await trackersService.listComments('p1', 'b1', '42');
+
+    expect(comments.map((c) => c.id)).toEqual(['1', '101']);
+    expect(get.mock.calls.map(([path]) => path)).toEqual([
+      '/projects/p1/trackers/b1/issues/42/comments?page=1',
+      '/projects/p1/trackers/b1/issues/42/comments?page=2',
+    ]);
+  });
+
+  it('keeps the comments already read when a later page fails', async () => {
+    get.mockReset();
+    get
+      .mockResolvedValueOnce({ comments: [comment('1')], nextPage: 2 })
+      .mockRejectedValueOnce(new Error('Gateway Timeout'));
+
+    expect((await trackersService.listComments('p1', 'b1', '42')).map((c) => c.id)).toEqual(['1']);
+  });
+
+  it('stops after 10 pages, the first 1,000 comments', async () => {
+    get.mockReset();
+    get.mockImplementation(async (path: string) => {
+      const page = Number(new URLSearchParams(path.split('?')[1]).get('page'));
+      return { comments: [comment(String(page))], nextPage: page + 1 };
+    });
+
+    expect(await trackersService.listComments('p1', 'b1', '42')).toHaveLength(10);
+    expect(get).toHaveBeenCalledTimes(10);
+  });
+
+  it('reads the bare first page from a server that predates paging', async () => {
+    get.mockReset();
+    get.mockResolvedValueOnce([comment('1'), comment('2')]);
+
+    expect((await trackersService.listComments('p1', 'b1', '42')).map((c) => c.id)).toEqual([
+      '1',
+      '2',
+    ]);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when page 1 fails, so the caller falls back to no comments', async () => {
+    get.mockReset();
+    get.mockRejectedValueOnce(new Error('Gateway Timeout'));
+
+    await expect(trackersService.listComments('p1', 'b1', '42')).rejects.toThrow('Gateway Timeout');
+  });
+});

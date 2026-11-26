@@ -22,6 +22,7 @@ import {
   getUserId,
 } from './git-oauth.js';
 import { getGitConnection, putGitConnection, deleteGitConnection } from './git-connection-store.js';
+import { INVALID_PAGE_ERROR, parsePageParam } from './list-page.js';
 import {
   invalidateBindingsByCredentialRef,
   oauthCredentialRef,
@@ -255,14 +256,21 @@ export const createGitHandler = (provider, routes) => {
         return response(200, { connected: !!Item, provider: Item?.provider });
       }
 
-      // GET /{provider}/repos[?q=search] — providers that support server-side
-      // search (GitLab) filter by q; the others ignore it.
+      // GET /{provider}/repos[?q=search][&page=N] — providers that support
+      // server-side search (GitLab) filter by q; the others ignore it. With
+      // page, one provider page comes back as { repos, nextPage }; a provider
+      // that lists everything in one call answers with nextPage null.
       if (httpMethod === 'GET' && path.endsWith('/repos')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
+        const page = parsePageParam(queryStringParameters?.page);
+        if (page === null) return response(400, { error: INVALID_PAGE_ERROR });
         const { ctx } = await resolveRouteCtx(userId);
         if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+        if (page !== undefined && provider.listReposPage) {
+          return response(200, await provider.listReposPage(ctx, page));
+        }
         const repos = await provider.listRepos(ctx, { search: queryStringParameters?.q });
-        return response(200, repos);
+        return response(200, page === undefined ? repos : { repos, nextPage: null });
       }
 
       // DELETE /{provider}/disconnect
