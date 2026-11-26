@@ -486,8 +486,16 @@ test('VPC Block Public Access exclusions are opt-in and scoped to the private an
   for (const body of Object.values(exclusions)) assert.doesNotMatch(body, /vpc_id/);
 
   const { private: privateExclusion, nat: natExclusion } = exclusions;
-  assert.match(privateExclusion, /count\s+= var\.vpc_block_public_access_exclusion \? 2 : 0/);
-  assert.match(privateExclusion, /subnet_id\s+= aws_subnet\.private\[count\.index\]\.id/);
+  // One exclusion per private subnet, created or existing.
+  assert.match(
+    privateExclusion,
+    /count\s+= var\.vpc_block_public_access_exclusion \? length\(local\.private_subnet_ids\) : 0/,
+  );
+  assert.match(privateExclusion, /subnet_id\s+= local\.private_subnet_ids\[count\.index\]/);
+  assert.match(
+    networking,
+    /private_subnet_ids\s+= local\.create_vpc \? aws_subnet\.private\[\*\]\.id : var\.existing_private_subnet_ids/,
+  );
   assert.match(privateExclusion, /internet_gateway_exclusion_mode = "allow-bidirectional"/);
 
   // Bidirectional mode also blocks the NAT gateways: their subnets get an
