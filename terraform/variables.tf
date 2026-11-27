@@ -61,6 +61,23 @@ variable "backup_retention_period" {
   }
 }
 
+variable "neptune_instance_class" {
+  description = "Neptune instance class. A change modifies the only instance in place and restarts it."
+  type        = string
+  default     = "db.t3.medium"
+
+  validation {
+    condition     = can(regex("^db\\.[a-z0-9]+\\.[a-z0-9]+$", var.neptune_instance_class))
+    error_message = "neptune_instance_class must be a Neptune instance class such as db.t4g.medium or db.r7g.large."
+  }
+}
+
+variable "neptune_apply_immediately" {
+  description = "Apply a Neptune instance class change during the apply instead of the next maintenance window. Until the window, every plan shows the pending change again."
+  type        = bool
+  default     = false
+}
+
 variable "skip_final_snapshot" {
   description = "Skip the final Neptune snapshot during deletion. Keep false for recoverable teardown."
   type        = bool

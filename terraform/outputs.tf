@@ -241,6 +241,11 @@ output "neptune_cluster_port" {
   value       = module.neptune.cluster_port
 }
 
+output "neptune_instance_class" {
+  description = "Neptune instance class managed by Terraform (a change pending for the maintenance window is not reflected)"
+  value       = module.neptune.instance_class
+}
+
 output "neptune_security_group_id" {
   description = "Neptune security group ID"
   value       = module.neptune.security_group_id

@@ -133,6 +133,18 @@ test('new Neptune clusters are encrypted without replacing an existing cluster',
   );
 });
 
+test('the Neptune instance class is configurable without changing existing instances', () => {
+  const variables = read('terraform/variables.tf');
+  assert.match(
+    variables,
+    /variable "neptune_instance_class" \{[\s\S]*?default\s+= "db\.t3\.medium"\s+validation \{/,
+  );
+  assert.match(variables, /variable "neptune_apply_immediately" \{[\s\S]*?default\s+= false\s*\}/);
+  const neptune = moduleBlock(read('terraform/main.tf'), 'neptune');
+  assert.match(neptune, /instance_class\s+= var\.neptune_instance_class/);
+  assert.match(neptune, /apply_immediately\s+= var\.neptune_apply_immediately/);
+});
+
 test('root KMS configuration accepts existing keys without owning their lifecycle', () => {
   const rootVariables = read('terraform/variables.tf');
   assert.doesNotMatch(rootVariables, /variable "kms_mode"/);
