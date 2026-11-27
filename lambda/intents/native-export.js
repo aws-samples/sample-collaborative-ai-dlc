@@ -197,8 +197,9 @@ const validateDistribution = async ({ archive, manifest, upstreamRef, harness })
 };
 
 // `runtimeSha256`: the profile's pin of its release runtime asset. An entry
-// cached from an asset with another digest, or before the pin existed, is a
-// miss: the asset is fetched and checked again, and the entry overwritten.
+// built from a release asset with another digest, or before the pin existed,
+// is a miss: the asset is fetched and checked again, and the entry
+// overwritten. An entry built from dist/ at the commit needs no pin.
 const loadCurrentCacheEntry = async ({ s3, bucket, upstreamRef, harness, runtimeSha256 }) => {
   const manifestBody = await readObjectIfPresent({
     s3,
@@ -207,7 +208,8 @@ const loadCurrentCacheEntry = async ({ s3, bucket, upstreamRef, harness, runtime
   });
   if (!manifestBody) return null;
   const manifest = JSON.parse(manifestBody.toString('utf8'));
-  if (runtimeSha256 && manifest?.source?.runtimeSha256 !== runtimeSha256) return null;
+  const fromRelease = Boolean(manifest?.source?.releaseTag);
+  if (runtimeSha256 && fromRelease && manifest.source.runtimeSha256 !== runtimeSha256) return null;
   const archive = await readObjectIfPresent({
     s3,
     bucket,

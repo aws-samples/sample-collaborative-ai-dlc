@@ -572,6 +572,17 @@ describe('native workflow export', () => {
         expect(cachedManifest(s3).source.runtimeSha256).toBe(PROFILE.runtimeSha256);
       });
 
+      it('serves an entry built from dist/ at the commit without fetching', async () => {
+        const s3 = await warmCache();
+        rewriteSource(s3, { path: 'dist/codex/' });
+
+        await loadRuntime(s3);
+
+        expect(fetchRepoFiles).toHaveBeenCalledOnce();
+        expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+        expect(cachedManifest(s3).source).toEqual({ path: 'dist/codex/' });
+      });
+
       it('fetches again instead of serving a legacy entry, which records no source', async () => {
         const s3 = await warmCache();
         const manifest = cachedManifest(s3);
@@ -631,7 +642,6 @@ describe('native workflow export', () => {
         'a checksum mismatch',
         'repo-fetch: aidlc-runtime-2.11.4.tar.gz does not match its checksum',
       ],
-
       ['a missing release', 'repo-fetch: https://github.com/x/version.json returned 404 Not Found'],
       ['a missing harness', 'repo-fetch: no files found for prefixes runtime/codex/ in x'],
     ])('refuses a release runtime with %s as deterministic (409)', async (_label, message) => {
