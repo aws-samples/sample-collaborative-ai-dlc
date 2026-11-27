@@ -63,6 +63,22 @@ describe('CollaborativeTextarea', () => {
     shared.doc.destroy();
   });
 
+  it('draws the focus ring on the editor host, since focus lands on the inner content', () => {
+    const shared = createSharedText();
+    const { container, unmount } = render(
+      <CollaborativeTextarea
+        yText={shared.text}
+        awareness={shared.awareness}
+        aria-label="Shared"
+      />,
+    );
+    const host = container.querySelector('[data-collaborative-editor]');
+    expect(host).toHaveClass('focus-within:ring-1', 'focus-within:ring-ring');
+    unmount();
+    shared.awareness.destroy();
+    shared.doc.destroy();
+  });
+
   it('keeps the local caret anchored when a remote insertion arrives', () => {
     const shared = createSharedText('hello world');
     const wholeValueChange = vi.fn();

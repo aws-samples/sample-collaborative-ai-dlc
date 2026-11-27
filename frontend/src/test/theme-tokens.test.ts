@@ -27,6 +27,25 @@ describe('index.css cascade layers', () => {
     expect(universal).not.toHaveLength(0);
     for (const rule of universal) expect(layerOf(rule)).toBe('base');
   });
+
+  it('keeps a focus outline in forced-colours mode, where ring box-shadows are dropped', () => {
+    const focusRules: Rule[] = [];
+    root.walkAtRules('media', (media) => {
+      if (!media.params.includes('forced-colors: active')) return;
+      media.walkRules((rule) => {
+        if (rule.selectors.some((selector) => selector.startsWith(':focus-visible'))) {
+          focusRules.push(rule);
+        }
+      });
+    });
+    expect(focusRules).toHaveLength(1);
+    const [rule] = focusRules;
+    // Unlayered, so it wins over the `outline-none` utilities.
+    expect(layerOf(rule)).toBeNull();
+    expect(rule.selectors).toContain('[data-collaborative-editor]:focus-within');
+    const outline = rule.nodes.find((decl) => decl.type === 'decl' && decl.prop === 'outline');
+    expect(outline && 'value' in outline ? outline.value : '').toMatch(/solid Highlight/);
+  });
 });
 
 // ─── Theme blocks ──────────────────────────────────────────────────────────

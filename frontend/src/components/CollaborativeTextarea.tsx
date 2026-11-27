@@ -327,7 +327,7 @@ export function CollaborativeTextarea({
         ref={hostRef}
         data-collaborative-editor
         className={cn(
-          'w-full overflow-hidden focus-within:border-ring focus-within:outline-none',
+          'w-full overflow-hidden focus-within:border-ring focus-within:outline-none focus-within:ring-1 focus-within:ring-ring',
           disabled && 'cursor-not-allowed opacity-50',
           className,
         )}

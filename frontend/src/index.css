@@ -211,6 +211,18 @@
   }
 }
 
+/* Forced-colours mode drops box-shadow, so the `ring-*` focus indicators
+   vanish and the controls that set `outline-none` show no focus at all.
+   Unlayered on purpose: it must win over the `outline-none` utilities. */
+@media (forced-colors: active) {
+  /* The editor content sits in an overflow-hidden host: outline the host. */
+  :focus-visible:not(.cm-content),
+  [data-collaborative-editor]:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 body {
   background-color: var(--background);
   color: var(--foreground);
