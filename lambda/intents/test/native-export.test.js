@@ -498,6 +498,33 @@ describe('native workflow export', () => {
       expect(fetchReleaseRuntimeFiles).toHaveBeenCalledOnce();
     });
 
+    it.each(['v2.11.4', 'v2.11.5'])(
+      'loads the %s distribution from the release built from its commit',
+      async (profileId) => {
+        fetchRepoFiles.mockReset();
+        fetchReleaseRuntimeFiles.mockReset();
+        const profile = AIDLC_COMPATIBILITY_PROFILES[profileId];
+        const { body, distributionFiles } = await distribution();
+        fetchRepoFiles.mockRejectedValueOnce(noDist(profile.upstreamRef));
+        fetchReleaseRuntimeFiles.mockResolvedValueOnce(
+          new Map([...distributionFiles].map(([path, value]) => [`runtime/codex/${path}`, value])),
+        );
+
+        const result = await loadDistribution({
+          s3: memoryS3(),
+          bucket: 'artifacts',
+          upstreamRef: profile.upstreamRef,
+          harness: 'codex',
+        });
+
+        expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith(
+          profileId,
+          expect.objectContaining({ commit: profile.upstreamRef }),
+        );
+        expect(result.files.get('AGENTS.md')).toEqual(body);
+      },
+    );
+
     it('keeps reading dist/ when the commit has it', async () => {
       fetchRepoFiles.mockReset();
       fetchReleaseRuntimeFiles.mockReset();

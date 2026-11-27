@@ -15,6 +15,7 @@ import {
   profileFor,
 } from '../aidlc-compatibility.js';
 import { parseFrontmatterStrict } from '../frontmatter.js';
+import { RELEASE_TAG_RE } from '../repo-fetch.js';
 import { AIDLC_CAPABILITIES, RUNTIME_HANDLERS, unhonouredValues } from '../aidlc-capabilities.js';
 import { CORE_FILES } from './fixtures/repo-files.js';
 
@@ -41,6 +42,41 @@ describe('AI-DLC compatibility profiles', () => {
       expect(profileFor(profile.upstreamRef)).toBe(profile);
     }
   });
+
+  // From 2.8.2 a release no longer commits dist/; a native export finds the
+  // harnesses only through the release the profile names.
+  it('names the runtime release of every profile from 2.8.2', () => {
+    const fromRuntimeAsset = (version) => {
+      const [major, minor, patch] = version.split('.').map(Number);
+      return major > 2 || (major === 2 && (minor > 8 || (minor === 8 && patch >= 2)));
+    };
+    const official = Object.values(AIDLC_COMPATIBILITY_PROFILES);
+    const withRuntime = official.filter((profile) => fromRuntimeAsset(profile.upstreamVersion));
+
+    expect(withRuntime.map((profile) => profile.id)).toContain('v2.11.5');
+    for (const profile of withRuntime) {
+      const tag = profile.runtimeReleaseTag;
+      expect(tag, profile.id).toMatch(RELEASE_TAG_RE);
+      // A tag of the same version: v2.11.3-preview.20261103.1 for 2.11.3.
+      expect(tag.replace(/^v/, '').split('-')[0], profile.id).toBe(profile.upstreamVersion);
+    }
+    // Earlier releases still commit dist/, which a native export reads.
+    for (const profile of official.filter((entry) => !withRuntime.includes(entry))) {
+      expect(profile.runtimeReleaseTag, profile.id).toBeUndefined();
+    }
+  });
+
+  // profileFor returns the first profile whose ref matches: a duplicate
+  // would hide a profile silently.
+  it.each(['upstreamRef', 'releaseId', 'runtimeReleaseTag'])(
+    'gives each profile its own %s',
+    (field) => {
+      const values = Object.values(AIDLC_COMPATIBILITY_PROFILES)
+        .map((profile) => profile[field])
+        .filter(Boolean);
+      expect(new Set(values).size).toBe(values.length);
+    },
+  );
 
   it('does not infer a profile from an unknown tag or branch', () => {
     expect(profileFor('main')).toBeNull();

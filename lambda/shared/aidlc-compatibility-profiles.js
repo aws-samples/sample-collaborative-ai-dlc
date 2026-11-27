@@ -168,6 +168,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     label: 'AI-DLC 2.11.5',
     upstreamVersion: '2.11.5',
     upstreamRef: '30d674ed196c7051222130ce344bf513c82eff2b',
+    runtimeReleaseTag: 'v2.11.5',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',

@@ -441,6 +441,7 @@ export {
   tarballUrl,
   REPO_OWNER,
   REPO_NAME,
+  RELEASE_TAG_RE,
 };
 export default {
   fetchCoreFiles,
