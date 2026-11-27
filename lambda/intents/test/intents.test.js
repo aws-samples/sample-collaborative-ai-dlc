@@ -15730,14 +15730,35 @@ describe('native engine', () => {
       expect(native.environment).toBeTruthy();
     });
 
-    it('snapshots the PR strategy without the provider check of a platform create', async () => {
+    it('snapshots the PR strategy the space resolves', async () => {
       ssmMock
         .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
         .resolves({ Parameter: { Value: 'pr-per-unit' } });
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
-      // Inherit the platform strategy, with a CodeCommit repository: a platform
-      // create is refused, because its unit lanes need draft pull requests.
+      // Inherit the platform strategy.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .next();
+
+      const res = await createNative(sub, projectId);
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent).toMatchObject({ engine: 'native', prStrategy: 'pr-per-unit' });
+      expect(metaOf(intent.id).prStrategy).toBe('pr-per-unit');
+    });
+
+    it('refuses a PR strategy the space cannot honour, as a platform create does', async () => {
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+        .resolves({ Parameter: { Value: 'pr-per-unit' } });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy, with a CodeCommit repository: PR per
+      // unit needs draft pull requests, which CodeCommit does not have.
       await g
         .V()
         .has('Project', 'id', projectId)
@@ -15745,14 +15766,15 @@ describe('native engine', () => {
         .out('HAS_REPO')
         .property(gremlin.process.cardinality.single, 'provider', 'codecommit')
         .next();
-      expect(JSON.parse((await createIntent(sub, projectId)).body).code).toBe(
-        'PR_STRATEGY_UNSUPPORTED',
-      );
+      const platform = await createIntent(sub, projectId);
+      const before = structuredClone([...procStore]);
 
       const res = await createNative(sub, projectId);
 
-      expect(res.statusCode).toBe(201);
-      expect(JSON.parse(res.body)).toMatchObject({ engine: 'native', prStrategy: 'pr-per-unit' });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual(JSON.parse(platform.body));
+      expect(JSON.parse(res.body).code).toBe('PR_STRATEGY_UNSUPPORTED');
+      expect([...procStore]).toEqual(before);
     });
 
     it('refuses a native create in a space whose environment is not published', async () => {

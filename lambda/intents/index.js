@@ -7031,6 +7031,24 @@ const resolveNewIntentEnvironment = async (cfg) => {
   }
 };
 
+// The PR strategy a new intent keeps: the space's override over the platform
+// default. Returns `{ prStrategy }`, or `{ error }` (a 409 body) when one of the
+// space's providers cannot honour it, so the refusal comes before the execution
+// exists rather than at its first unit delivery.
+const resolveNewIntentPrStrategy = async (cfg) => {
+  const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
+  try {
+    assertPrStrategySupported(
+      prStrategy,
+      (cfg.repos ?? []).map((repo) => sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders)),
+    );
+  } catch (error) {
+    if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
+    return { error: { error: error.message, code: error.code } };
+  }
+  return { prStrategy };
+};
+
 // The repositories of a native draft: every repository of the space, with the
 // member's primary one first. The primary repository holds AI-DLC's framework
 // files and records, so a space without a repository cannot hold a native
@@ -7115,6 +7133,10 @@ const handleCreateNativeIntent = async ({ data, projectId, sub, g, response }) =
   const branch = await resolveNewIntentBranch({ data, projectId, intentId: newIntentId });
   const resolvedEnvironment = await resolveNewIntentEnvironment(cfg);
   if (resolvedEnvironment.error) return response(409, resolvedEnvironment.error);
+  // A native intent delivers by this strategy as a platform intent does, so
+  // it is refused here on the same terms.
+  const resolvedPrStrategy = await resolveNewIntentPrStrategy(cfg);
+  if (resolvedPrStrategy.error) return response(409, resolvedPrStrategy.error);
   const meta = await store.createExecution({
     executionId: newIntentId,
     projectId,
@@ -7142,10 +7164,7 @@ const handleCreateNativeIntent = async ({ data, projectId, sub, g, response }) =
     deriveEnrichment: await fetchDeriveEnrichment(),
     parkReleaseSeconds: cfg.parkReleaseSeconds,
     maxParallelUnits: cfg.maxParallelUnits,
-    // Snapshotted as the space resolves it, without the provider check a
-    // platform create makes: a native intent delivers one pull request per
-    // repository at the end, whatever this value says.
-    prStrategy: effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy),
+    prStrategy: resolvedPrStrategy.prStrategy,
     source,
   });
   return response(201, mapIntent(meta));
@@ -7748,18 +7767,9 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response, ro
   const resolvedEnvironment = await resolveNewIntentEnvironment(cfg);
   if (resolvedEnvironment.error) return response(409, resolvedEnvironment.error);
   const { environment } = resolvedEnvironment;
-  // Refuse a strategy the space's providers cannot honour now, before the
-  // execution exists, rather than failing its first unit lane later.
-  const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
-  try {
-    assertPrStrategySupported(
-      prStrategy,
-      (cfg.repos ?? []).map((repo) => sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders)),
-    );
-  } catch (error) {
-    if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
-    return response(409, { error: error.message, code: error.code });
-  }
+  const resolvedPrStrategy = await resolveNewIntentPrStrategy(cfg);
+  if (resolvedPrStrategy.error) return response(409, resolvedPrStrategy.error);
+  const { prStrategy } = resolvedPrStrategy;
   // Refuse the grant the resolved methodology cannot honour, before the
   // execution exists. An unpinned intent, or a release whose closure ships no
   // construction protocol, has no authored autonomy to reproduce — accepting
