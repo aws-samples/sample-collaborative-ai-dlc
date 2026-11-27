@@ -67,7 +67,8 @@ vi.mock('@/components/intent/ArtifactHistoryDrawer', () => ({
   ArtifactHistoryDrawer: () => null,
 }));
 
-import { WorkProductsSection, countWorkProductDocuments } from './WorkProductsSection';
+import { countWorkProductDocuments } from './documentHelpers';
+import { WorkProductsSection } from './WorkProductsSection';
 
 const LONG = `# Heading\n\n${'Long-form markdown body. '.repeat(40)}`;
 
@@ -116,7 +117,6 @@ describe('WorkProductsSection — filter', () => {
       artifact.id === 'b' ? { ...artifact, supersededAt: '2026-01-03T10:00:00Z' } : artifact,
     );
     rerender(<WorkProductsSection detail={detail({ artifacts: rewound })} gates={[]} />);
-    expect(screen.getByText('5 documents')).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: 'Filter documents' })).toHaveValue('compet');
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
@@ -214,7 +214,7 @@ describe('WorkProductsSection — nothing produced (R3-16)', () => {
 });
 
 describe('countWorkProductDocuments', () => {
-  it('is the number the Work products header shows (current documents only)', () => {
+  it('counts current documents only, and the header does not repeat the number', () => {
     const artifacts = [
       ...detail().artifacts,
       { ...doc('g', 'Old draft', 'si-design', '2026-01-03T10:00:00Z'), supersededAt: 'x' },
@@ -226,6 +226,8 @@ describe('countWorkProductDocuments', () => {
     ] as IntentArtifact[];
     expect(countWorkProductDocuments(artifacts)).toBe(6);
     render(<WorkProductsSection detail={detail({ artifacts })} gates={[]} />);
-    expect(screen.getByText('6 documents')).toBeInTheDocument();
+    // The tree shows the documents; the folded branches say how many they hold.
+    expect(screen.queryByText('6 documents')).not.toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Filter documents' })).toBeInTheDocument();
   });
 });

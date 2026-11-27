@@ -56,9 +56,9 @@ export function gateTabLabel(gate: IntentGate): string {
 interface PendingQuestionsTabsProps {
   gates: IntentGate[];
   /**
-   * The selected question, owned by the page so the tabs and the outcome
-   * callout's Answer shortcuts share one selection. An id that is not pending
-   * (or null) shows the first question.
+   * The selected question, owned by the page (it defaults to the run's
+   * pending question). An id that is not pending (or null) shows the first
+   * question.
    */
   activeGateId: string | null;
   onSelectGate: (humanTaskId: string) => void;
@@ -69,8 +69,8 @@ interface PendingQuestionsTabsProps {
 
 const OVERFLOW_TRIGGER_ID = 'gate-tabs-overflow-trigger';
 
-/** DOM id of a gate's card, the anchor the outcome callout rows scroll to. */
-export const gateCardId = (humanTaskId: string) => `gate-card-${humanTaskId}`;
+/** DOM id of the selected gate's card. */
+const gateCardId = (humanTaskId: string) => `gate-card-${humanTaskId}`;
 
 export function PendingQuestionsTabs({
   gates,

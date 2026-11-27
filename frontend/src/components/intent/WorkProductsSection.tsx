@@ -22,9 +22,6 @@ export interface WorkProductsSectionProps {
 
 const FILTER_FROM_DOCUMENTS = 6;
 
-/** The "N documents" every intent surface shows: current (not superseded) documents. */
-export { countWorkProductDocuments };
-
 const NO_DOCUMENTS_COPY: Partial<Record<IntentDetail['intent']['status'], string>> = {
   FAILED: 'No documents were produced before the run failed.',
   CANCELLED: 'No documents were produced before the run was cancelled.',
@@ -81,14 +78,7 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
     <Card>
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="mr-auto flex items-baseline gap-2 text-sm">
-            Work products
-            {documentCount > 0 && (
-              <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                {documentCount} document{documentCount === 1 ? '' : 's'}
-              </span>
-            )}
-          </CardTitle>
+          <CardTitle className="mr-auto text-sm">Work products</CardTitle>
           {documentCount > 1 && (
             <TooltipProvider>
               <Tooltip>
@@ -166,7 +156,6 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
                   : 'Some stages are intentionally excluded from this scope'}
               </span>
             }
-            count={planWarnings.length}
           >
             <ul className="space-y-1 pl-5 text-xs text-muted-foreground">
               {planWarnings.map((w, i) => (

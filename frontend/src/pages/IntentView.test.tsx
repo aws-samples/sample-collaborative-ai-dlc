@@ -351,10 +351,6 @@ describe('IntentView', () => {
       expect(
         screen.queryByText(/The Space Kiro credential pinned to this run is no longer available/),
       ).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: 'Technical details' }));
-      expect(
-        screen.getByText(/The Space Kiro credential pinned to this run is no longer available/),
-      ).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
       expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
@@ -519,7 +515,9 @@ describe('IntentView', () => {
     expect((await screen.findAllByText('My intent')).length).toBeGreaterThan(0);
     expect(screen.queryByText(/never picked up/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
-    expect(screen.getByText(/^Starting · requested/)).toBeInTheDocument();
+    // The header pill says it is starting; nothing else is stacked above the work.
+    expect(screen.getAllByText(/^Starting/).length).toBeGreaterThan(0);
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
   });
 
   it('calls an unclaimed CREATED hand-off stalled past the shared stall threshold', async () => {
@@ -1812,12 +1810,12 @@ describe('IntentView', () => {
     });
 
     renderAt();
-    // Phases render as headings in workflow order; only the stage holding the
-    // newest document opens by default, so open the other stages first.
+    // Phases are the tree's top branches, in workflow order; only the stage
+    // holding the newest document opens by default, so open the other stages.
     expect((await screen.findAllByText('Construction')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Domain Entities Doc')).toBeInTheDocument();
     for (const trigger of screen
-      .getAllByRole('button', { name: /\(\d+\)$/ })
+      .getAllByRole('button', { name: /\d+ documents?$/ })
       .filter((b) => b.getAttribute('aria-expanded') === 'false')) {
       await userEvent.click(trigger);
     }
@@ -2169,7 +2167,9 @@ describe('IntentView — pending questions tabs', () => {
     renderAt();
     expect(await screen.findByText('Questions for you')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Review 6 pending actions' })).toBeNull();
-    expect(screen.getByText(/^6 decisions need your answer/)).toBeInTheDocument();
+    // The questions are the page: no block above them repeats that they are waiting.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/need your answer/)).toBeNull();
     expect(document.getElementById('pending-human-gates')).toBeInTheDocument();
     // Only one gate panel is mounted at a time (the selected tab)
     const panel = screen.getByTestId('gate-panel-h3');
@@ -2661,7 +2661,7 @@ describe('IntentView — resume after a failed gate callback', () => {
     ).toBeInTheDocument();
   });
 
-  it('offers it on the answered review page too, where the outcome callout is hidden', async () => {
+  it('offers it on the answered review page too', async () => {
     resume.mockReset().mockResolvedValue(undefined);
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
@@ -2946,7 +2946,7 @@ describe('IntentView — /review deep link truth (T4)', () => {
 
 // Audit W3/W7/O8/X7 + T1/T2/T3/O1 on Work: answer first (outcome callout),
 // one labelled actions menu, no anchor band, no window.confirm, no "live" dot.
-describe('IntentView — Work header, outcome callout and actions', () => {
+describe('IntentView — Work header, recovery line and actions', () => {
   const DAY = 24 * 60 * 60_000;
 
   beforeEach(() => {
@@ -3009,37 +3009,10 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     expect(screen.queryByRole('navigation', { name: 'Intent work shortcuts' })).toBeNull();
     expect(screen.queryByRole('link', { name: /pending action/ })).toBeNull();
 
-    const callout = document.querySelector('[data-slot="intent-outcome"]');
-    expect(callout).toHaveAttribute('data-outcome', 'waiting');
-    expect(callout).toHaveTextContent('1 decision needs your answer');
-    expect(callout).not.toHaveTextContent('108 days');
-    expect(callout).toHaveTextContent('Question h1?');
-    // The callout sits above the question card (answer first).
-    const questions = screen.getByRole('region', { name: 'Pending questions' });
-    expect(callout!.compareDocumentPosition(questions) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
-      0,
-    );
-  });
-
-  it('"Answer" in the callout selects that question in the tabs below', async () => {
-    get.mockResolvedValue({
-      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
-      gates: [waitingGate('h1', 2), waitingGate('h2', 1)],
-    });
-    renderAt();
-
-    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
-    expect(screen.queryByTestId('gate-panel-h2')).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Answer: Question h2?' }));
-    expect(await screen.findByTestId('gate-panel-h2')).toBeInTheDocument();
-    expect(screen.queryByTestId('gate-panel-h1')).toBeNull();
-
-    // Tab to the other question, then the same shortcut again: it still opens h2.
-    await userEvent.click(screen.getByRole('tab', { name: /Question h1\?/ }));
-    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Answer: Question h2?' }));
-    expect(await screen.findByTestId('gate-panel-h2')).toBeInTheDocument();
-    expect(screen.queryByTestId('gate-panel-h1')).toBeNull();
+    // D4: no outcome block on the Work page. The questions follow the header.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/needs your answer|Parked/)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
   });
 
   it('shares the Overview header: back to the space, status pill, scope badge, method version (W2 §4–5)', async () => {
@@ -3150,18 +3123,10 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     expect(await screen.findByText('Stalled · no activity for 4 months')).toBeInTheDocument();
     expect(document.querySelector('[data-pulse]')).toBeNull();
     expect(screen.queryByLabelText('live')).toBeNull();
-    const callout = document.querySelector('[data-slot="intent-outcome"]');
-    expect(callout).toHaveAttribute('data-outcome', 'stalled');
-    expect(callout).toHaveTextContent('Stalled at Intent Capture — no activity for 4 months');
-    expect(callout).toHaveTextContent(/cannot be cancelled/i);
+    // The header pill says it; the engine offers no restart for a running run,
+    // so no block repeats it above the work.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Restart/ })).toBeNull();
-    // "Check the activity" is an action, not prose: it opens the stalled
-    // stage's output (the one useful move on this page).
-    expect(screen.getByTestId('activity-tab')).toBeEmptyDOMElement();
-    await userEvent.click(
-      within(callout as HTMLElement).getByRole('button', { name: 'View activity' }),
-    );
-    expect(screen.getByTestId('activity-tab')).toHaveTextContent('si-ic');
     expect(
       screen.queryByText('Setting up workspace (cloning repositories, preparing the run)…'),
     ).toBeNull();
@@ -3189,14 +3154,11 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     renderAt();
 
     expect((await screen.findAllByText('Running')).length).toBeGreaterThan(0);
-    expect(document.querySelector('[data-slot="intent-outcome"]')).toHaveAttribute(
-      'data-outcome',
-      'running',
-    );
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
     expect(document.querySelector('[data-pulse]')).not.toBeNull();
   });
 
-  it('names the failed stage and the cause in one sentence, with the raw code one action away (T3)', async () => {
+  it('names the failed stage and the cause in one sentence, with one Restart (T3)', async () => {
     compiled.mockResolvedValue({
       graph: {
         nodes: [
@@ -3239,7 +3201,8 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.queryByText('Run failed')).toBeNull();
     expect(screen.queryByText('mode pipeline')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeInTheDocument();
+    // One action: restart from the failed stage.
+    expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Restart from Reverse Engineering' }));
     const dialog = await screen.findByRole('alertdialog', {
       name: 'Restart from Reverse Engineering?',
@@ -3251,9 +3214,10 @@ describe('IntentView — Work header, outcome callout and actions', () => {
 
   // I8 (staging): the failing stage never got a row — the only FAILED row has
   // no stageId. The pipeline bar must still paint Inception red from the
-  // failure event, both recoveries sit in the callout, and "Restart workflow"
-  // confirms before anything is posted (T3).
-  it('I8: red failed phase from the inferred stage, both resumptions visible, Restart confirmed', async () => {
+  // failure event, the one recovery is "Restart workflow" (the other AI-DLC
+  // version stays in the actions menu), and it confirms before anything is
+  // posted (T3).
+  it('I8: red failed phase from the inferred stage, one Restart, confirmed', async () => {
     sharedChannels.mockResolvedValue({ pinningEnabled: true });
     compiled.mockResolvedValue({
       graph: {
@@ -3309,11 +3273,8 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     expect(inception).toHaveAttribute('data-state', 'failed');
     expect(inception).toHaveTextContent('Failed at Reverse Engineering');
 
-    // Both recoveries without opening a menu; the version one is a link.
     expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeInTheDocument();
-    expect(
-      await screen.findByRole('link', { name: 'Start on another AI-DLC version' }),
-    ).toHaveAttribute('href', '/space/p1/intent/new?fromIntent=i1');
+    expect(screen.queryByRole('link', { name: 'Start on another AI-DLC version' })).toBeNull();
 
     await userEvent.click(screen.getByRole('button', { name: 'Restart workflow' }));
     const dialog = await screen.findByRole('alertdialog', {
@@ -3334,9 +3295,10 @@ describe('IntentView — Work header, outcome callout and actions', () => {
 
   // I3 (staging): one pending question (109 d) and a Scope Definition row still
   // WAITING_FOR_HUMAN since 137 d whose questions were all answered before the
-  // recompose. Two decisions are announced, so both rows stay visible: the
-  // gate row anchors to its card, the parked row opens the stage's output.
-  it('I3: lists both open decisions on Work; the parked stage opens its output', async () => {
+  // recompose. The page used to stack a block above the question saying
+  // "2 stages are waiting for input" and "Parked with no open question" right
+  // over the open question. It now shows the question, and nothing above it.
+  it('I3: a stage parked beside an open question adds no block above the question', async () => {
     get.mockResolvedValue({
       ...baseDetail({
         status: 'WAITING',
@@ -3371,35 +3333,15 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     });
     renderAt();
 
-    const callout = (await screen.findByText('2 stages are waiting for input')).closest(
-      '[data-slot="intent-outcome"]',
-    ) as HTMLElement;
-    // Ages live in the header pill only (R5-1).
-    expect(callout).not.toHaveTextContent(/days/);
-    const rows = within(within(callout).getByRole('list', { name: 'Open decisions' })).getAllByRole(
-      'listitem',
-    );
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent('Scope Definition');
-    expect(rows[0]).toHaveTextContent('Parked with no open question');
-    // The parked stage has no card here; its action opens the stage's output.
-    await userEvent.click(
-      within(rows[0]).getByRole('button', { name: 'View activity: Scope Definition' }),
-    );
-    expect(screen.getByTestId('activity-tab')).toHaveTextContent('si-scope');
-    expect(rows[1]).toHaveTextContent('Which gateway?');
-    // The list is not hidden on desktop: both rows are rendered, not just the headline.
-    expect(callout.className).not.toMatch(/(^|\s)\[&_ul\[aria-label\]\]:hidden/);
-
-    // Exactly one answerable card, anchored for the row's Answer action.
-    expect(screen.getByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/stages are waiting|Parked|no open question/)).toBeNull();
+    // Exactly one answerable card: the open question.
     expect(document.getElementById('gate-card-q-feas')).toBeInTheDocument();
     expect(document.getElementById('gate-card-q-scope')).toBeNull();
-    await userEvent.click(within(rows[1]).getByRole('button', { name: /^Answer/ }));
-    expect(screen.getByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
   });
 
-  it('shows the pull request at the top of a completed run (O1)', async () => {
+  it('shows the pull request of a completed run above its work products (O1)', async () => {
     get.mockResolvedValue({
       ...baseDetail({
         status: 'SUCCEEDED',
@@ -3431,9 +3373,9 @@ describe('IntentView — Work header, outcome callout and actions', () => {
     });
     renderAt();
 
-    const pr = await screen.findByRole('link', { name: /PR #57 · retail-store-cart/ });
+    const pr = await screen.findByRole('link', { name: 'Pull request #57' });
     expect(pr).toHaveAttribute('href', 'https://github.com/eipasteur/retail-store-cart/pull/57');
-    expect(screen.getByText('Completed in 42 min')).toBeInTheDocument();
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
     const products = await screen.findByText('Work products');
     expect(pr.compareDocumentPosition(products) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(screen.queryByText('SUCCEEDED')).toBeNull();

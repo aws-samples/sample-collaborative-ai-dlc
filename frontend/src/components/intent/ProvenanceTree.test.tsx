@@ -179,9 +179,10 @@ describe('ProvenanceTree — phase ordering', () => {
       phaseNameOf: (path: string) => `Phase ${path}`,
     });
 
-    const phaseIds = [...document.querySelectorAll('section[id^="provenance-phase-"]')].map(
-      (el) => el.id,
-    );
+    const phaseIds = screen
+      .getAllByRole('treeitem')
+      .map((el) => el.id)
+      .filter((id) => id.startsWith('provenance-phase-'));
     expect(phaseIds).toEqual(['provenance-phase-01', 'provenance-phase-02', 'provenance-phase-10']);
   });
 });
@@ -262,8 +263,8 @@ describe('ProvenanceTree — document ordering', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(
       screen
-        .getByRole('button', { name: 'Requirements Analysis (1)' })
-        .compareDocumentPosition(screen.getByRole('button', { name: 'Research (1)' })),
+        .getByRole('button', { name: /^Requirements Analysis/ })
+        .compareDocumentPosition(screen.getByRole('button', { name: /^Research/ })),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
@@ -360,7 +361,7 @@ describe('ProvenanceTree — focus navigation', () => {
 });
 
 describe('ProvenanceTree — artifact history', () => {
-  it('shows history on versioned documents in the redesigned work-products tree', () => {
+  it('shows history on versioned documents in the work-products tree', () => {
     const artifacts = [
       doc({ id: 'versioned', title: 'Versioned doc', versionCount: 2 }),
       doc({ id: 'current-only', title: 'Current doc', versionCount: 0 }),
@@ -634,7 +635,7 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
   });
 });
 
-describe('ProvenanceTree — progressive disclosure (W2/P8)', () => {
+describe('ProvenanceTree — a tree with levels (D5) and progressive disclosure', () => {
   const twoStages = () => ({
     artifacts: [
       doc({
@@ -662,31 +663,54 @@ describe('ProvenanceTree — progressive disclosure (W2/P8)', () => {
     ],
   });
 
-  it('renders phases as headings and one disclosure per stage with a document count', () => {
+  // D5: the old tree — a chevron per level, stages indented under their
+  // phase, documents under their stage — not phases as headings with the
+  // stages aligned on them.
+  it('renders phases and stages as nested branches with chevrons', () => {
     const { artifacts, stageRows } = twoStages();
     renderTree({ detail: { artifacts } as IntentDetail, stageRows });
 
-    expect(screen.getByRole('heading', { name: /Inception/ })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /Construction/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Research (2)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toBeInTheDocument();
-    // Phase headings are plain group headings, not collapsible controls.
-    expect(screen.queryByRole('button', { name: /Inception/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('tree', { name: 'Work products' })).toBeInTheDocument();
+    const inception = screen.getByRole('button', { name: /^Inception/ });
+    expect(inception).toHaveAttribute('aria-expanded', 'true');
+    expect(inception.querySelector('.lucide-chevron-down')).not.toBeNull();
+    expect(screen.queryByRole('heading', { name: /Inception/ })).not.toBeInTheDocument();
+
+    // The stage is inside its phase's group, one level in.
+    const phase = document.getElementById('provenance-phase-01')!;
+    const stage = document.getElementById('provenance-stage-01/research/__common__')!;
+    expect(phase.querySelector('[role="group"]')).toContainElement(stage);
+    expect(stage).toHaveAttribute('role', 'treeitem');
+    expect(stage.parentElement).toHaveClass('pl-5');
+    expect(stage.querySelector('button .lucide-chevron-right')).not.toBeNull();
+  });
+
+  it('folds a phase with everything under it and says what it holds', () => {
+    const { artifacts, stageRows } = twoStages();
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows });
+
+    const inception = screen.getByRole('button', { name: /^Inception/ });
+    expect(inception).not.toHaveTextContent('2 documents');
+    fireEvent.click(inception);
+    expect(inception).toHaveAttribute('aria-expanded', 'false');
+    expect(inception).toHaveTextContent('2 documents');
+    expect(screen.queryByRole('button', { name: /^Research/ })).not.toBeInTheDocument();
+    // The other phase is untouched.
+    expect(screen.getByText('Business logic model')).toBeInTheDocument();
   });
 
   it('opens only the stage holding the newest document; closed stages are not mounted', () => {
     const { artifacts, stageRows } = twoStages();
     renderTree({ detail: { artifacts } as IntentDetail, stageRows });
 
-    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
+    const open = screen.getByRole('button', { name: /^Functional Design/ });
+    expect(open).toHaveAttribute('aria-expanded', 'true');
+    // An open branch shows its documents; only a folded one says how many.
+    expect(open).not.toHaveTextContent(/document/);
     expect(screen.getByText('Business logic model')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Research (2)' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const folded = screen.getByRole('button', { name: /^Research/ });
+    expect(folded).toHaveAttribute('aria-expanded', 'false');
+    expect(folded).toHaveTextContent('2 documents');
     expect(screen.queryByText('Market research')).not.toBeInTheDocument();
   });
 
@@ -700,40 +724,41 @@ describe('ProvenanceTree — progressive disclosure (W2/P8)', () => {
       ],
     });
 
-    expect(screen.getByRole('button', { name: 'Research (2)' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^Research/ })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
-    expect(screen.getByRole('button', { name: 'Functional Design (1)' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^Functional Design/ })).toHaveAttribute(
       'aria-expanded',
       'false',
     );
   });
 
-  it('shows the date once per stage, not once per document', () => {
+  it('shows no date beside a document or a stage', () => {
     const { artifacts, stageRows } = twoStages();
     const { container } = renderTree({
       detail: { artifacts } as IntentDetail,
       stageRows,
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Research (2)' }));
-    // Two stage summaries, each carrying one <time>; no per-document ages.
-    expect(container.querySelectorAll('time')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: /^Research/ }));
+    expect(screen.getByText('Market research')).toBeInTheDocument();
+    expect(container.querySelectorAll('time')).toHaveLength(0);
+    expect(container).not.toHaveTextContent(/\bago\b/);
   });
 
   it('a text filter finds documents in closed stages and opens them, hiding the rest', () => {
     const { artifacts, stageRows } = twoStages();
     renderTree({ detail: { artifacts } as IntentDetail, stageRows, filter: 'competitive' });
 
-    expect(screen.getByRole('button', { name: 'Research (1)' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^Research/ })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
     expect(screen.getByText('Competitive analysis')).toBeInTheDocument();
     expect(screen.queryByText('Market research')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Functional Design/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: /Construction/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Construction/ })).not.toBeInTheDocument();
   });
 
   it('a filter with no match says so instead of showing an empty tree', () => {

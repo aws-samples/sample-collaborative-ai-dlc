@@ -18,16 +18,12 @@ import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { completionExplanation } from '@/lib/completionExplanation';
 import { resumeOrExplain, type ResumeNotice } from '@/lib/intentActions';
-import {
-  PendingQuestionsTabs,
-  gateCardId,
-  gateQuestionCount,
-} from '@/components/intent/PendingQuestionsTabs';
+import { PendingQuestionsTabs, gateQuestionCount } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
-import { IntentOutcomeCallout, openDecisions } from '@/components/intent/IntentOutcomeCallout';
+import { IntentOutcomeCallout } from '@/components/intent/IntentOutcomeCallout';
 import { IntentPageHeader } from '@/components/intent/IntentPageHeader';
 import { reshapeDisabledReason, VIEW_ONLY_REASON } from '@/lib/intentActions';
 import { IntentActionsMenu } from '@/components/intent/IntentActionsMenu';
@@ -443,10 +439,12 @@ export default function IntentView() {
   const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // One stall rule for every surface (statusModel): a CREATED hand-off nobody
-  // picked up gets "Restart workflow"; a stalled RUNNING run cannot be restarted or
-  // cancelled until the engine parks or fails it, so the callout offers nothing.
+  // picked up gets "Restart workflow"; a stalled RUNNING run cannot be restarted
+  // or cancelled until the engine parks or fails it, so the page offers nothing.
   const derived = deriveIntentStatus(intent, { lastActivityAt, gates });
-  const canStartAgain = isFailed || (intent.status === 'CREATED' && derived.stalled);
+  // The only runs this page puts a recovery line above the work for: a failed
+  // one and a hand-off that never started.
+  const needsRecovery = isFailed || (intent.status === 'CREATED' && derived.stalled);
   const isCredentialFailure =
     isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
   const credentialSettingsPath = isCredentialFailure
@@ -458,11 +456,7 @@ export default function IntentView() {
     : null;
   const workPath = `/space/${projectId}/intent/${intentId}`;
   const newVersionPath = `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`;
-  // Every decision the stage list paints yellow — pending gates AND stages
-  // still parked without one. The callout lists them when there is more than
-  // one, so a parked stage without a card is announced, never silently hidden.
-  const openDecisionCount = openDecisions({ gates, stages: detail.stages }).length;
-  const outcomeActions = {
+  const recoveryActions = {
     restartFromStage: failedStage
       ? {
           stageId: failedStage.stageId,
@@ -471,36 +465,11 @@ export default function IntentView() {
           onClick: () => void handleRestartFromStage(),
         }
       : undefined,
-    startAgain: canStartAgain
-      ? {
-          pending: starting,
-          disabled: readOnly || starting || !mayRecover,
-          onClick: () => void handleStartAgain(),
-        }
-      : undefined,
-    resume: {
-      pending: resuming,
-      disabled: readOnly || resuming || !canResume,
-      onClick: () => void handleResume(),
+    startAgain: {
+      pending: starting,
+      disabled: readOnly || starting || !mayRecover,
+      onClick: () => void handleStartAgain(),
     },
-  };
-  // A validation gate has its own review screen; a question is answered in
-  // the tabs below, so "Answer" selects that tab and brings it into view.
-  const focusGate = (gateId: string) => {
-    const gate = gates.find((g) => g.humanTaskId === gateId);
-    if (gate?.kind === 'validation') {
-      navigate(`${workPath}/review/${gateId}`);
-      return;
-    }
-    setFocusedGateId(gateId);
-    // The card's anchor exists once it is the selected one, so the scroll
-    // waits for that frame.
-    requestAnimationFrame(() => {
-      const anchor =
-        document.getElementById(gateCardId(gateId)) ??
-        document.getElementById('pending-human-gates');
-      anchor?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-    });
   };
 
   return (
@@ -539,22 +508,15 @@ export default function IntentView() {
         }
       />
 
-      {!reviewGateId && (
+      {/* No outcome block on this page: the header pill says where the run
+          stands, and the questions, the progress card and the work products are
+          the page. Only a run that needs restarting gets one line and its
+          Restart, as the failure box always did. */}
+      {!reviewGateId && needsRecovery && (
         <IntentOutcomeCallout
           detail={withStageFailure(detail)}
           lastActivityAt={lastActivityAt}
-          onAnswer={focusGate}
-          actions={outcomeActions}
-          // One open decision: its full card follows right below, so the
-          // callout keeps only the headline. Several decisions: the list stays
-          // on desktop — each gate row selects its card, a parked stage without
-          // a card opens its output. On a phone the cards are the next thing
-          // on screen, so the list is skipped there too.
-          className={
-            openDecisionCount === 1
-              ? '[&_ul[aria-label]]:hidden'
-              : '[&_ul[aria-label]]:max-md:hidden'
-          }
+          actions={recoveryActions}
         />
       )}
 
@@ -697,11 +659,9 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* The outcome callout carries the resume while the run is parked. It
-          cannot show it for a lane question whose callback failed while the
-          intent keeps RUNNING, and it is hidden on review routes, so those get
-          this notice instead. */}
-      {resumeRequired && (intent.status !== 'WAITING' || reviewGateId) && (
+      {/* A recorded answer whose callback failed: parked intent, lane question
+          of a running intent, or an answered review page alike. */}
+      {resumeRequired && (
         <Alert
           tone="warning"
           title="Your answer was saved but the run did not continue"
@@ -814,8 +774,6 @@ export default function IntentView() {
           {/* Pending human gates — tabs: one GateCard at a time */}
           {pendingGates.length > 0 && (
             <div id="pending-human-gates">
-              {/* One selection for the tabs and the callout's Answer
-                  shortcuts: whichever was used last decides the open question. */}
               <PendingQuestionsTabs
                 gates={pendingGates}
                 activeGateId={focusedGateId ?? intent.pendingHumanTaskId}
@@ -843,8 +801,8 @@ export default function IntentView() {
             </div>
           )}
 
-          {/* A stalled run must not look live: the callout above already says
-              what is known, so the pulsing progress card stays out. */}
+          {/* A stalled run must not look live: the header pill says it stalled,
+              so the pulsing progress card stays out. */}
           {pendingGates.length === 0 &&
             !noStageRowsYet &&
             isActive &&
