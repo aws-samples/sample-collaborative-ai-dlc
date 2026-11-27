@@ -156,6 +156,25 @@ describe('init-lane', () => {
     expect(calls).toEqual([`trust:${ws}`, `fetch:${ws}`]);
   });
 
+  it.each([
+    [{ restartFromIntent: true }, true],
+    [{}, false],
+  ])('passes restartFromIntent %o to the lane branch as %s', async (extra, expected) => {
+    const ws = path.join(root, 'restored-lane-ws');
+    const ensureLaneBranch = vi.fn(async () => ({ ready: true, created: false, sha: 'abc123' }));
+    const res = await initLane(basePayload(ws, extra), {
+      store: spyStore(),
+      statFn: async () => ({}),
+      trustDirectory: async () => true,
+      ensureLaneBranch,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(ensureLaneBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ restartFromIntent: expected }),
+    );
+  });
+
   it('fails before fetching when a restored checkout cannot be trusted', async () => {
     const ws = path.join(root, 'restored-lane-ws');
     const ensureLaneBranch = vi.fn();

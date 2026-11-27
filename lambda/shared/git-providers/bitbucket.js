@@ -982,6 +982,7 @@ const getPullRequestStatus = async (ctx, repoId, prId) => {
     mergeable: null, // Bitbucket doesn't expose this directly
     mergeableState: null,
     mergedAt: pr.state === 'MERGED' ? pr.updated_on : null,
+    mergeResultSha: state === 'merged' ? (pr.merge_commit?.hash ?? null) : null,
     closedAt: pr.state === 'DECLINED' ? pr.updated_on : null,
     updatedAt: pr.updated_on ?? null,
     title: pr.title ?? '',

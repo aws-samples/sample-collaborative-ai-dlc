@@ -1691,6 +1691,71 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
   });
 });
 
+describe('pull request merge result', () => {
+  const gh = getProvider('github');
+  const gl = getProvider('gitlab');
+  const bb = getProvider('bitbucket');
+  const ctx = (json) => ({ token: 't', fetchImpl: makeFetch([['/', { json }]]) });
+
+  it('github reports merge_commit_sha only once the PR is merged', async () => {
+    const pr = { number: 7, state: 'closed', head: { sha: 'head-7' }, base: { sha: 'base-7' } };
+    expect(
+      await gh.getPullRequestStatus(
+        ctx({ ...pr, merged_at: '2026-11-26T10:00:00Z', merge_commit_sha: 'squash-7' }),
+        'o/r',
+        7,
+      ),
+    ).toMatchObject({ state: 'merged', headSha: 'head-7', mergeResultSha: 'squash-7' });
+    // An open PR's merge_commit_sha is GitHub's test merge, not a delivery.
+    expect(
+      await gh.getPullRequestStatus(
+        ctx({ ...pr, state: 'open', merged_at: null, merge_commit_sha: 'test-merge' }),
+        'o/r',
+        7,
+      ),
+    ).toMatchObject({ state: 'open', mergeResultSha: null });
+  });
+
+  it('gitlab reports the merge commit, else the squash commit of a fast-forward', async () => {
+    const mr = { id: 1, iid: 7, sha: 'head-7', diff_refs: { base_sha: 'base-7' } };
+    expect(
+      await gl.getPullRequestStatus(
+        ctx({ ...mr, state: 'merged', merge_commit_sha: 'merge-7', squash_commit_sha: 'sq-7' }),
+        'g/p',
+        7,
+      ),
+    ).toMatchObject({ state: 'merged', headSha: 'head-7', mergeResultSha: 'merge-7' });
+    expect(
+      await gl.getPullRequestStatus(
+        ctx({ ...mr, state: 'merged', merge_commit_sha: null, squash_commit_sha: 'sq-7' }),
+        'g/p',
+        7,
+      ),
+    ).toMatchObject({ mergeResultSha: 'sq-7' });
+    expect(
+      await gl.getPullRequestStatus(
+        ctx({ ...mr, state: 'opened', merge_commit_sha: null }),
+        'g/p',
+        7,
+      ),
+    ).toMatchObject({ state: 'open', mergeResultSha: null });
+  });
+
+  it('bitbucket reports merge_commit.hash for a merged PR', async () => {
+    const pr = { id: 7, source: { commit: { hash: 'head-7' } }, destination: {} };
+    expect(
+      await bb.getPullRequestStatus(
+        ctx({ ...pr, state: 'MERGED', merge_commit: { hash: 'merge-7' } }),
+        'w/r',
+        7,
+      ),
+    ).toMatchObject({ state: 'merged', headSha: 'head-7', mergeResultSha: 'merge-7' });
+    expect(await bb.getPullRequestStatus(ctx({ ...pr, state: 'OPEN' }), 'w/r', 7)).toMatchObject({
+      state: 'open',
+      mergeResultSha: null,
+    });
+  });
+});
 describe('OAuth metadata', () => {
   it('exposes provider-specific secret env names and scopes', () => {
     expect(getProvider('github').oauth.secretEnvName).toBe('GITHUB_OAUTH_SECRET_NAME');

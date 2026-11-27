@@ -681,6 +681,20 @@ describe('codecommit provider: pull requests', () => {
     });
   });
 
+  it('getPullRequestStatus reports the merge commit of a merged PR', async () => {
+    const merged = pr({ status: 'CLOSED', isMerged: true });
+    merged.pullRequestTargets[0].mergeMetadata.mergeCommitId = 'ddd444';
+    const client = makeClient({ GetPullRequest: { pullRequest: merged } });
+    expect(await cc.getPullRequestStatus({ client }, ARN, 7)).toMatchObject({
+      state: 'merged',
+      headSha: 'aaa111',
+      mergeResultSha: 'ddd444',
+    });
+    const open = makeClient({ GetPullRequest: { pullRequest: pr() } });
+    expect(await cc.getPullRequestStatus({ client: open }, ARN, 7)).toMatchObject({
+      mergeResultSha: null,
+    });
+  });
   it('getPullRequestStatus returns null for an unknown PR', async () => {
     const client = makeClient({ GetPullRequest: sdkError('PullRequestDoesNotExistException') });
     expect(await cc.getPullRequestStatus({ client }, ARN, 999)).toBeNull();

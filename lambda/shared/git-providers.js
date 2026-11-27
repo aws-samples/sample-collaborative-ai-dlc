@@ -36,7 +36,9 @@
 //       with prefix; throws instead of returning a partial list
 //   deleteBranch(ctx, repoId, branch)   -> true | false when already gone
 //   createPullRequest(ctx, repoId, {...,draft?}) -> created/existing PR summary
-//   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status
+//   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status;
+//       mergeResultSha is the commit a merged PR left on its target (merge,
+//       squash or rebased head commit), null until it merges
 //   setPullRequestDraft(ctx, repoId, prRef, draft) -> normalized live status
 //   reopenPullRequest(ctx, repoId, prRef) -> normalized live status
 //   isCommitAncestor(ctx, repoId, ancestorSha, descendantRef) -> boolean
