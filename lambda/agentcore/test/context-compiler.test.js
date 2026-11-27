@@ -146,7 +146,7 @@ describe('compileContextPack', () => {
 
 describe('buildUnitPack', () => {
   it('joins mapped stories and touched contracts for one unit', () => {
-    const lines = buildUnitPack({
+    const { lines } = buildUnitPack({
       unitSlug: 'billing',
       items: [
         { label: 'StoryMapEntry', slug: 'map-billing', unit: 'billing', stories: '["s-pay"]' },
@@ -160,7 +160,7 @@ describe('buildUnitPack', () => {
   });
 
   it('lists bare story ids when story items are not derived yet', () => {
-    const lines = buildUnitPack({
+    const { lines } = buildUnitPack({
       unitSlug: 'auth',
       items: [{ label: 'StoryMapEntry', slug: 'm', unit: 'auth', stories: '["s-a","s-b"]' }],
     });
@@ -173,7 +173,7 @@ describe('buildUnitPack', () => {
   });
 
   it('lists the requirements the unit satisfies — one COVERS hop from its stories', () => {
-    const lines = buildUnitPack({
+    const { lines } = buildUnitPack({
       unitSlug: 'auth',
       items: [
         { label: 'StoryMapEntry', slug: 'm', unit: 'auth', stories: '["s-login","s-mfa"]' },
@@ -193,7 +193,7 @@ describe('buildUnitPack', () => {
   });
 
   it('renders a covered slug even when the Requirement item itself is not loaded', () => {
-    const lines = buildUnitPack({
+    const { lines } = buildUnitPack({
       unitSlug: 'auth',
       items: [
         { label: 'StoryMapEntry', slug: 'm', unit: 'auth', stories: '["s-login"]' },
@@ -232,5 +232,138 @@ describe('listProp (tolerant JSON-list props)', () => {
     expect(__test.listProp('["a","b"]')).toEqual(['a', 'b']);
     expect(__test.listProp('not json')).toEqual([]);
     expect(__test.listProp(undefined)).toEqual([]);
+  });
+});
+
+describe('compileContextPack on large graphs', () => {
+  const { SECTION_ITEM_LIMIT, ITEMS_READ_LIMIT } = __test;
+  // A getItems double that honors `limit` the way the graph writer does:
+  // the slice happens in traversal order, before any sort.
+  const itemsGraph = (rows) => ({
+    lookupArtifacts: vi.fn(async () => []),
+    getItems: vi.fn(async ({ limit = 100 } = {}) => rows.slice(0, limit)),
+  });
+  const filler = (n, prefix = 'req') =>
+    Array.from({ length: n }, (_, k) => ({
+      id: `${prefix}:i:${String(k).padStart(3, '0')}`,
+      label: 'Requirement',
+      slug: `${prefix}-${k}`,
+    }));
+  const section = (md, heading) => {
+    const start = md.indexOf(heading);
+    if (start === -1) return '';
+    const end = md.indexOf('\n### ', start + heading.length);
+    return md.slice(start, end === -1 ? undefined : end);
+  };
+
+  it('keeps the unit stories when their map entry comes after the first 50 items', async () => {
+    const rows = [
+      ...filler(99),
+      {
+        id: 'map:i:auth',
+        label: 'StoryMapEntry',
+        slug: 'map-auth',
+        unit: 'auth',
+        stories: '["s-login"]',
+      },
+      { id: 'story:i:s-login', label: 'Story', slug: 's-login', title: 'Login' },
+      ...filler(19, 'nfr'),
+    ];
+    const pack = await compileContextPack({
+      graph: itemsGraph(rows),
+      stage: { inputArtifacts: [] },
+      unit: { slug: 'auth' },
+    });
+    expect(pack.markdown).toContain('### Unit pack — auth');
+    expect(pack.markdown).toContain('- s-login — Login');
+    expect(pack.items).toBe(120);
+  });
+
+  it('lists every decision up to the section cap and counts the rest', async () => {
+    const decisions = (n) =>
+      Array.from({ length: n }, (_, k) => ({
+        id: `decision:i:${String(k).padStart(3, '0')}`,
+        label: 'Decision',
+        slug: `dec-${k}`,
+      }));
+    const exact = await compileContextPack({
+      graph: itemsGraph([...filler(60), ...decisions(SECTION_ITEM_LIMIT)]),
+      stage: { inputArtifacts: [] },
+    });
+    const exactSection = section(exact.markdown, '### Decisions');
+    expect(exactSection.match(/^- dec-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(exactSection).not.toContain('more (get_items)');
+    expect(exact).toMatchObject({ status: 'ok', omitted: 0 });
+
+    const over = await compileContextPack({
+      graph: itemsGraph([...filler(60), ...decisions(SECTION_ITEM_LIMIT + 10)]),
+      stage: { inputArtifacts: [] },
+    });
+    const overSection = section(over.markdown, '### Decisions');
+    expect(overSection.match(/^- dec-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(overSection).toContain('- … 10 more (get_items)');
+    expect(over).toMatchObject({ status: 'truncated', omitted: 10 });
+  });
+
+  it('signposts the capped derived-item index without marking the pack incomplete', async () => {
+    const pack = await compileContextPack({
+      graph: itemsGraph(filler(SECTION_ITEM_LIMIT + 5)),
+      stage: { inputArtifacts: [] },
+    });
+    expect(section(pack.markdown, '### Derived items')).toContain('- … 5 more (get_items)');
+    expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
+  });
+
+  it('renders the same pack for the same items in any traversal order', async () => {
+    const rows = [
+      ...filler(70),
+      ...Array.from({ length: 55 }, (_, k) => ({
+        id: `decision:i:${String(k).padStart(3, '0')}`,
+        label: 'Decision',
+        slug: `dec-${k}`,
+      })),
+    ];
+    const forward = await compileContextPack({ graph: itemsGraph(rows), stage: {} });
+    const reversed = await compileContextPack({ graph: itemsGraph(rows.toReversed()), stage: {} });
+    expect(reversed.markdown).toBe(forward.markdown);
+  });
+
+  it('marks the pack incomplete when the item read hits its maximum', async () => {
+    const pack = await compileContextPack({
+      graph: itemsGraph(filler(ITEMS_READ_LIMIT + 1)),
+      stage: {},
+    });
+    expect(pack.markdown).toContain(`Typed items exceed ${ITEMS_READ_LIMIT}`);
+    expect(pack.status).toBe('truncated');
+  });
+
+  it('says so when the item read fails instead of rendering an empty graph', async () => {
+    const graph = {
+      lookupArtifacts: vi.fn(async () => []),
+      getItems: vi.fn(async () => {
+        throw new Error('graph down');
+      }),
+    };
+    const pack = await compileContextPack({ graph, stage: {} });
+    expect(pack.markdown).toContain('Typed items could not be read');
+    expect(pack.status).toBe('truncated');
+  });
+
+  it('reports an empty graph as a complete pack', async () => {
+    const pack = await compileContextPack({ graph: itemsGraph([]), stage: {} });
+    expect(pack).toMatchObject({ status: 'ok', omitted: 0, items: 0, truncated: false });
+    expect(pack.markdown).not.toContain('### Decisions');
+  });
+
+  it('ends a budget-cut pack with a visible marker', async () => {
+    const pack = await compileContextPack({
+      graph: itemsGraph(filler(40)),
+      stage: {},
+      budgetBytes: 400,
+    });
+    expect(pack.truncated).toBe(true);
+    expect(pack.status).toBe('truncated');
+    expect(pack.bytes).toBeLessThanOrEqual(400);
+    expect(pack.markdown.endsWith('- … context truncated (get_items)')).toBe(true);
   });
 });

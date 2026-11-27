@@ -14,7 +14,10 @@
 //   4. Derived items — compact index of the intent's typed items, each with a
 //      one-line traceability suffix (covers/persona/depends-on refs).
 //   5. Section TOCs of the input artifacts — headings only, for navigation.
-// All reads are compact; nothing here loads full markdown bodies.
+// All reads are compact; nothing here loads full markdown bodies. Item
+// sections are capped per section with a "… N more (get_items)" line, and the
+// result carries a status ('ok' | 'truncated') so an incomplete pack is never
+// silent.
 
 // Tolerant JSON-array prop reader — shared with the graph stacks (item props
 // store lists as JSON strings).
@@ -22,7 +25,14 @@ import { jsonListProp as listProp } from '../shared/graph-rows.js';
 
 const DEFAULT_BUDGET_BYTES = 24_000;
 const TOC_HEADINGS_PER_ARTIFACT = 10;
-const ITEMS_LIMIT = 50;
+// One typed-item read per pack, at the op maximum. getItems traverses every
+// item of the intent and slices client-side, so this costs the same Gremlin
+// work as a smaller limit, and the sections below see their whole label
+// instead of whatever the traversal returned first.
+const ITEMS_READ_LIMIT = 500;
+// Per-section line cap; the rest is counted in a "… N more (get_items)" line.
+const SECTION_ITEM_LIMIT = 50;
+const TRUNCATED_MARKER = '- … context truncated (get_items)';
 
 const textBytes = (value = '') => Buffer.byteLength(String(value ?? ''), 'utf8');
 
@@ -36,6 +46,15 @@ const fitLines = (lines, budgetBytes) => {
     used += next;
   }
   return { lines: out, bytes: used, truncated: out.length < lines.length };
+};
+
+// Renders at most SECTION_ITEM_LIMIT entries and counts the rest in a visible
+// marker, so a capped section never reads as complete.
+const capLines = (entries, render) => {
+  const lines = entries.slice(0, SECTION_ITEM_LIMIT).map(render);
+  const omitted = entries.length - lines.length;
+  if (omitted > 0) lines.push(`- … ${omitted} more (get_items)`);
+  return { lines, omitted };
 };
 
 const artifactLine = (a) => {
@@ -66,7 +85,7 @@ const traceSuffix = (i) => {
 // The lane contract pack: what of the intent's typed items belongs to THIS
 // unit — its mapped stories and the contracts it touches. Pure join over the
 // compact item rows (StoryMapEntry.unit/stories, Contract.provider/consumers,
-// Story slugs). Empty sections are omitted by the caller.
+// Story slugs). Returns { lines, omitted }, or null when nothing is relevant.
 export const buildUnitPack = ({ unitSlug, items = [] }) => {
   if (!unitSlug) return null;
   const byLabel = (label) => items.filter((i) => (i.label ?? '') === label);
@@ -81,14 +100,20 @@ export const buildUnitPack = ({ unitSlug, items = [] }) => {
   );
   if (!stories.length && !contracts.length && storyIds.size === 0) return null;
   const lines = [`### Unit pack — ${unitSlug}`];
+  let omitted = 0;
+  const pushCapped = (entries, render) => {
+    const capped = capLines(entries, render);
+    lines.push(...capped.lines);
+    omitted += capped.omitted;
+  };
   if (storyIds.size) {
     lines.push(`Stories mapped to this unit (${storyIds.size}):`);
     if (stories.length) {
-      for (const s of stories) {
-        lines.push(
+      pushCapped(
+        stories,
+        (s) =>
           `- ${s.slug}${s.title ? ` — ${s.title}` : ''}${s.priority ? ` [${s.priority}]` : ''}`,
-        );
-      }
+      );
     } else {
       lines.push(`- ids: ${[...storyIds].join(', ')} (story items not derived yet)`);
     }
@@ -100,23 +125,19 @@ export const buildUnitPack = ({ unitSlug, items = [] }) => {
   const covered = [...new Set(stories.flatMap((s) => listProp(s.covers)))].toSorted();
   if (covered.length) {
     lines.push('Requirements satisfied by this unit (via story COVERS):');
-    for (const slug of covered) {
+    pushCapped(covered, (slug) => {
       const r = requirementBySlug.get(slug);
-      lines.push(
-        `- ${slug}${r?.title ? ` — ${r.title}` : ''}${r?.priority ? ` [${r.priority}]` : ''}`,
-      );
-    }
+      return `- ${slug}${r?.title ? ` — ${r.title}` : ''}${r?.priority ? ` [${r.priority}]` : ''}`;
+    });
   }
   if (contracts.length) {
     lines.push('Contracts this unit provides/consumes:');
-    for (const c of contracts) {
+    pushCapped(contracts, (c) => {
       const role = (c.provider ?? '') === unitSlug ? 'provides' : 'consumes';
-      lines.push(
-        `- ${c.slug}${c.title ? ` — ${c.title}` : ''} (${role}; provider: ${c.provider ?? '?'}, consumers: ${listProp(c.consumers).join(', ') || 'none'})`,
-      );
-    }
+      return `- ${c.slug}${c.title ? ` — ${c.title}` : ''} (${role}; provider: ${c.provider ?? '?'}, consumers: ${listProp(c.consumers).join(', ') || 'none'})`;
+    });
   }
-  return lines;
+  return { lines, omitted };
 };
 
 export const compileContextPack = async ({
@@ -125,7 +146,17 @@ export const compileContextPack = async ({
   unit = null,
   budgetBytes = DEFAULT_BUDGET_BYTES,
 } = {}) => {
-  if (!graph) return { markdown: '', bytes: 0, truncated: false, artifacts: 0, items: 0 };
+  if (!graph) {
+    return {
+      markdown: '',
+      bytes: 0,
+      truncated: false,
+      artifacts: 0,
+      items: 0,
+      status: 'ok',
+      omitted: 0,
+    };
+  }
   const needed = new Set((stage.inputArtifacts ?? []).map((i) => i.artifact).filter(Boolean));
   const artifacts = [];
   for (const artifactType of needed) {
@@ -136,8 +167,16 @@ export const compileContextPack = async ({
     String(a.artifact_type).localeCompare(String(b.artifact_type)),
   );
 
-  const typedItems = (await graph.getItems?.({ limit: ITEMS_LIMIT }).catch(() => [])) ?? [];
+  let itemsFailed = false;
+  const typedItems =
+    (await graph.getItems?.({ limit: ITEMS_READ_LIMIT }).catch(() => {
+      itemsFailed = true;
+      return [];
+    })) ?? [];
+  // Sorted after the read, so the pack does not depend on traversal order.
   const sortedItems = typedItems.toSorted((a, b) => String(a.id).localeCompare(String(b.id)));
+  // A full read may have been cut by the op maximum before this sort.
+  const itemsCapped = typedItems.length >= ITEMS_READ_LIMIT;
 
   const lines = ['## Compiled graph context', ''];
 
@@ -149,27 +188,37 @@ export const compileContextPack = async ({
     for (const a of sortedArtifacts) lines.push(artifactLine(a));
   }
 
-  // 2. Unit lane pack.
-  const unitPack = buildUnitPack({ unitSlug: unit?.slug ?? null, items: sortedItems });
-  if (unitPack) lines.push('', ...unitPack);
-
-  // 3. Decisions — cross-cutting constraints.
-  const decisions = sortedItems.filter((i) => (i.label ?? '') === 'Decision');
-  if (decisions.length) {
-    lines.push('', '### Decisions (constraints on all work)');
-    for (const d of decisions) {
-      lines.push(`- ${d.slug}${d.title ? ` — ${d.title}` : ''}${d.status ? ` [${d.status}]` : ''}`);
-    }
+  if (itemsFailed) {
+    lines.push('', '- Typed items could not be read; use `get_items` before relying on them.');
+  } else if (itemsCapped) {
+    lines.push(
+      '',
+      `- Typed items exceed ${ITEMS_READ_LIMIT}; the sections below may be incomplete (get_items).`,
+    );
   }
 
-  // 4. Derived-item index (with one-line traceability refs).
+  // 2. Unit lane pack.
+  const unitPack = buildUnitPack({ unitSlug: unit?.slug ?? null, items: sortedItems });
+  if (unitPack) lines.push('', ...unitPack.lines);
+
+  // 3. Decisions — cross-cutting constraints.
+  const decisions = capLines(
+    sortedItems.filter((i) => (i.label ?? '') === 'Decision'),
+    (d) => `- ${d.slug}${d.title ? ` — ${d.title}` : ''}${d.status ? ` [${d.status}]` : ''}`,
+  );
+  if (decisions.lines.length) {
+    lines.push('', '### Decisions (constraints on all work)', ...decisions.lines);
+  }
+
+  // 4. Derived-item index (with one-line traceability refs). A navigation
+  // index: its cap is signposted but does not mark the pack incomplete.
   if (sortedItems.length) {
-    lines.push('', '### Derived items');
-    for (const i of sortedItems) {
-      lines.push(
+    const index = capLines(
+      sortedItems,
+      (i) =>
         `- ${i.label ?? i.type ?? 'Item'} ${i.slug ?? i.id}${i.title ? ` — ${i.title}` : ''}${traceSuffix(i)}`,
-      );
-    }
+    );
+    lines.push('', '### Derived items', ...index.lines);
   }
 
   // The drill-down hint BEFORE the (droppable) TOCs so truncation never
@@ -192,14 +241,34 @@ export const compileContextPack = async ({
     }
   }
 
-  const fitted = fitLines(lines, budgetBytes);
+  // A budget cut keeps room for a marker so the agent knows the pack is cut.
+  let fitted = fitLines(lines, budgetBytes);
+  const markerBytes = textBytes(`${TRUNCATED_MARKER}\n`);
+  if (fitted.truncated && markerBytes <= budgetBytes) {
+    const kept = fitLines(lines, budgetBytes - markerBytes);
+    fitted = { ...kept, lines: [...kept.lines, TRUNCATED_MARKER], bytes: kept.bytes + markerBytes };
+  }
+  // Items the stage is told to respect in full (its unit pack, the decisions)
+  // that the pack could not carry.
+  const omitted = (unitPack?.omitted ?? 0) + decisions.omitted;
+  const incomplete = fitted.truncated || itemsFailed || itemsCapped || omitted > 0;
   return {
     markdown: fitted.lines.join('\n'),
     bytes: fitted.bytes,
     truncated: fitted.truncated,
     artifacts: artifacts.length,
     items: typedItems.length,
+    status: incomplete ? 'truncated' : 'ok',
+    omitted,
   };
 };
 
-export const __test = { fitLines, artifactLine, listProp, traceSuffix, DEFAULT_BUDGET_BYTES };
+export const __test = {
+  fitLines,
+  artifactLine,
+  listProp,
+  traceSuffix,
+  DEFAULT_BUDGET_BYTES,
+  ITEMS_READ_LIMIT,
+  SECTION_ITEM_LIMIT,
+};
