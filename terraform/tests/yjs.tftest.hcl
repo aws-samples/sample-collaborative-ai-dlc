@@ -301,6 +301,70 @@ run "builds_image_by_default" {
   }
 }
 
+run "os_packages_epoch_rebuilds_image" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables {
+    os_packages_epoch = "2026-W48"
+    docker_build_args = { HTTP_PROXY = "http://proxy.example.com:8080" }
+  }
+  assert {
+    # The task definition runs the image by tag, so only a new tag rolls out the rebuilt image.
+    condition     = output.yjs_image_tag != run.builds_image_by_default.yjs_image_tag && output.yjs_image_tag == substr(local.yjs_build_sha, 0, 16)
+    error_message = "A new OS package epoch must give the image a new tag and rebuild trigger."
+  }
+  assert {
+    condition     = local.yjs_build_sha != local.yjs_files_sha
+    error_message = "The rebuild trigger must change with the OS package epoch."
+  }
+  assert {
+    condition     = nonsensitive(local.yjs_build_args) == tomap({ HTTP_PROXY = "http://proxy.example.com:8080", OS_PACKAGES_EPOCH = "2026-W48" })
+    error_message = "The build must receive the epoch as OS_PACKAGES_EPOCH next to the configured build arguments."
+  }
+}
+
+run "same_os_packages_epoch_keeps_image" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables { os_packages_epoch = "2026-W48" }
+  assert {
+    condition     = output.yjs_image_tag == run.os_packages_epoch_rebuilds_image.yjs_image_tag
+    error_message = "The same epoch and sources must keep the image tag, so a second deploy does not rebuild."
+  }
+}
+
+run "empty_os_packages_epoch_keeps_source_hash" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  assert {
+    condition     = local.yjs_build_sha == local.yjs_files_sha && output.yjs_image_tag == substr(local.yjs_files_sha, 0, 16)
+    error_message = "Without an epoch the tag and trigger must stay the source hash, so existing deployments do not rebuild."
+  }
+  assert {
+    condition     = !contains(keys(nonsensitive(local.yjs_build_args)), "OS_PACKAGES_EPOCH")
+    error_message = "Without an epoch the build arguments must stay unchanged."
+  }
+}
+
+run "rejects_an_invalid_os_packages_epoch" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  variables { os_packages_epoch = "2026 W48; rm -rf /" }
+  expect_failures = [var.os_packages_epoch]
+}
+
 run "deploys_prebuilt_image_by_digest" {
   # The ECR lookup depends on the planned repository, so it is only read on (mock) apply.
   command = apply

@@ -47,6 +47,18 @@ variable "docker_build_args" {
   sensitive   = true
 }
 
+variable "os_packages_epoch" {
+  description = "Set to a new value to rebuild the image with current OS packages (see the root variable). Empty rebuilds only when the image sources change."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._:-]{0,64}$", var.os_packages_epoch))
+    error_message = "os_packages_epoch must be at most 64 letters, digits, dots, underscores, colons or hyphens."
+  }
+}
+
 variable "neptune_endpoint" {
   description = "Neptune cluster endpoint"
   type        = string

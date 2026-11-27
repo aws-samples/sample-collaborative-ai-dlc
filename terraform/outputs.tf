@@ -304,6 +304,11 @@ output "yjs_image_tag" {
   value       = module.yjs_server.yjs_image_tag
 }
 
+output "os_packages_epoch" {
+  description = "OS package epoch of the images built during apply; empty when they are rebuilt only on source changes"
+  value       = var.os_packages_epoch
+}
+
 output "yjs_scaling" {
   description = "Effective worker sizing, scaling bounds, and metrics"
   value       = module.yjs_server.scaling

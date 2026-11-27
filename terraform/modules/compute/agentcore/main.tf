@@ -68,9 +68,14 @@ locals {
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
   agentcore_files         = sort(setsubtract(local.agentcore_files_include, local.agentcore_files_exclude))
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
+  # The OS package epoch is part of the image identity: a new epoch gives the
+  # image a new tag and rebuilds it, and the Dockerfile ARG makes the build
+  # skip the cached OS package layer. An empty epoch keeps the source hash.
+  agentcore_build_sha  = var.os_packages_epoch == "" ? local.agentcore_files_sha : sha1("${local.agentcore_files_sha}:${var.os_packages_epoch}")
+  agentcore_build_args = var.os_packages_epoch == "" ? var.docker_build_args : merge(var.docker_build_args, { OS_PACKAGES_EPOCH = var.os_packages_epoch })
   # A pre-built image (var.image_tag) replaces the build below.
   build_image         = var.image_tag == null
-  agentcore_image_tag = local.build_image ? substr(local.agentcore_files_sha, 0, 16) : var.image_tag
+  agentcore_image_tag = local.build_image ? substr(local.agentcore_build_sha, 0, 16) : var.image_tag
 
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
@@ -234,10 +239,10 @@ module "agentcore_docker_build" {
   # AgentCore Runtime runs arm64 only.
   platform   = "linux/arm64"
   builder    = "default"
-  build_args = var.docker_build_args
+  build_args = local.agentcore_build_args
 
   triggers = {
-    dir_sha = local.agentcore_files_sha
+    dir_sha = local.agentcore_build_sha
   }
 }
 
@@ -272,10 +277,10 @@ module "agentcore_docker_build_amd64" {
   docker_file_path = "${local.agentcore_source_path}/agentcore/Dockerfile"
   platform         = "linux/amd64"
   builder          = "default"
-  build_args       = var.docker_build_args
+  build_args       = local.agentcore_build_args
 
   triggers = {
-    dir_sha = local.agentcore_files_sha
+    dir_sha = local.agentcore_build_sha
   }
 }
 
