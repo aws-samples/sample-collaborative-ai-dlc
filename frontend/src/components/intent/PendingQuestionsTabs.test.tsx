@@ -101,3 +101,32 @@ describe('PendingQuestionsTabs — keyboard navigation', () => {
     expect(screen.getByRole('tab', { name: 'Question 1?' })).toHaveFocus();
   });
 });
+
+describe('PendingQuestionsTabs — header label', () => {
+  it('reads "Questions for you" for question gates', () => {
+    renderTabs([gate()]);
+    expect(screen.getByText('Questions for you')).toBeInTheDocument();
+    expect(screen.queryByText('Review required')).not.toBeInTheDocument();
+  });
+
+  it('reads "Review required" when the selected gate is a validation gate', () => {
+    renderTabs([gate({ kind: 'validation', questions: null })]);
+    expect(screen.getByText('Review required')).toBeInTheDocument();
+    expect(screen.queryByText('Questions for you')).not.toBeInTheDocument();
+  });
+
+  it('follows the selected tab between a question and a validation gate', async () => {
+    renderTabs([gate(), gate({ humanTaskId: 'h2', kind: 'validation', questions: null })]);
+    expect(screen.getByText('Questions for you')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: /Review required/ }));
+    expect(screen.getByText('Review required', { selector: 'span.text-sm' })).toBeInTheDocument();
+  });
+
+  it('exposes the region anchor the intent header scrolls to', () => {
+    renderTabs([gate()]);
+    expect(screen.getByRole('region', { name: 'Pending questions' })).toHaveAttribute(
+      'id',
+      'pending-gates',
+    );
+  });
+});

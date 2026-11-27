@@ -1125,6 +1125,44 @@ describe('IntentView', () => {
     });
   });
 
+  it('shows a Waiting for review badge in the header only for a pending validation gate', async () => {
+    const gate = (kind: string, humanTaskId: string) => ({
+      humanTaskId,
+      stageInstanceId: 'si-a',
+      unitSlug: null,
+      kind,
+      status: 'pending',
+      prompt: 'Review stage stage-a.',
+      options: ['approve', 'request-changes'],
+      questions: null,
+      answer: null,
+      answeredBy: null,
+      answeredAt: null,
+      createdAt: null,
+    });
+    const detail = (kind: string, humanTaskId: string) => ({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: humanTaskId }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [gate(kind, humanTaskId)],
+    });
+    get.mockResolvedValue(detail('validation', 'eg-validation-si-a-0-run1'));
+    const { unmount } = renderAt();
+    expect(await screen.findByTestId('waiting-for-review-badge')).toHaveTextContent(
+      'Waiting for review',
+    );
+    expect(screen.getByRole('region', { name: 'Pending questions' })).toHaveAttribute(
+      'id',
+      'pending-gates',
+    );
+    unmount();
+    get.mockResolvedValue(detail('approval', 'eg-approval-si-a-0'));
+    renderAt();
+    expect(await screen.findByText('Review stage stage-a.')).toBeInTheDocument();
+    expect(screen.queryByTestId('waiting-for-review-badge')).not.toBeInTheDocument();
+  });
+
   it('opens a validation gate review page and approves the stage', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),

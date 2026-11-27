@@ -37,6 +37,9 @@ interface PendingQuestionsTabsProps {
   gateContext?: (gate: IntentGate) => string | null;
 }
 
+/** DOM id of the pending-gates region, so the intent header can scroll to it. */
+export const PENDING_GATES_ANCHOR_ID = 'pending-gates';
+
 const OVERFLOW_TRIGGER_ID = 'gate-tabs-overflow-trigger';
 
 export function PendingQuestionsTabs({
@@ -66,12 +69,23 @@ export function PendingQuestionsTabs({
 
   if (!selectedGate) return null;
 
+  const headerLabel = selectedGate.kind === 'validation' ? 'Review required' : 'Questions for you';
+  const headerClass =
+    selectedGate.kind === 'validation'
+      ? 'text-sm font-semibold text-foreground'
+      : 'text-sm font-medium text-muted-foreground';
+
   if (gates.length === 1) {
     return (
-      <div role="region" aria-label="Pending questions" className="space-y-2">
+      <div
+        id={PENDING_GATES_ANCHOR_ID}
+        role="region"
+        aria-label="Pending questions"
+        className="space-y-2"
+      >
         <div className="flex items-center gap-2">
           <FileQuestion className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+          <span className={headerClass}>{headerLabel}</span>
           <Badge variant="secondary" className="h-4 px-1 text-[9px]">
             1
           </Badge>
@@ -86,10 +100,15 @@ export function PendingQuestionsTabs({
   const overflowGates = needsOverflow ? gates.filter((g) => !visibleGates.includes(g)) : [];
 
   return (
-    <div role="region" aria-label="Pending questions" className="space-y-2">
+    <div
+      id={PENDING_GATES_ANCHOR_ID}
+      role="region"
+      aria-label="Pending questions"
+      className="space-y-2"
+    >
       <div className="flex items-center gap-2">
         <FileQuestion className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+        <span className={headerClass}>{headerLabel}</span>
         <Badge variant="secondary" className="h-4 px-1 text-[9px]">
           {gates.length}
         </Badge>

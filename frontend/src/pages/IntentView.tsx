@@ -17,7 +17,10 @@ import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { completionExplanation } from '@/lib/completionExplanation';
 import { ApiError } from '@/services/api';
-import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
+import {
+  PendingQuestionsTabs,
+  PENDING_GATES_ANCHOR_ID,
+} from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
@@ -474,6 +477,20 @@ export default function IntentView() {
             >
               Autonomous construction
             </Badge>
+          )}
+          {!reviewGateId && pendingGates.some((g) => g.kind === 'validation') && (
+            <button
+              type="button"
+              data-testid="waiting-for-review-badge"
+              className="shrink-0 rounded-full border border-primary/50 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+              onClick={() =>
+                document
+                  .getElementById(PENDING_GATES_ANCHOR_ID)
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }
+            >
+              Waiting for review
+            </button>
           )}
           {isActive && (
             <span
