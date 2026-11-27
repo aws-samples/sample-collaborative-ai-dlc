@@ -29,6 +29,9 @@ mock_provider "aws" {
   mock_data "aws_nat_gateway" {
     defaults = { public_ip = "203.0.113.10" }
   }
+  mock_data "aws_internet_gateway" {
+    defaults = { internet_gateway_id = "igw-0d0d0d0d0d0d0d0d0", attachments = [{ vpc_id = "vpc-0e0e0e0e0e0e0e0e0", state = "available" }] }
+  }
   mock_resource "aws_ecr_repository" {
     override_during = plan
     defaults        = { arn = "arn:aws:ecr:us-east-1:123456789012:repository/test" }
@@ -88,8 +91,8 @@ run "networking_creates_vpc_by_default" {
   }
 
   assert {
-    condition     = length(data.aws_vpc.existing) == 0 && length(data.aws_nat_gateways.existing) == 0
-    error_message = "Without existing_vpc_id the module must not look up an existing VPC."
+    condition     = length(data.aws_vpc.existing) == 0 && length(data.aws_nat_gateways.existing) == 0 && length(data.aws_internet_gateway.existing) == 0
+    error_message = "Without existing_vpc_id the module must not look up an existing VPC or its internet gateway."
   }
 
   assert {
@@ -160,6 +163,34 @@ run "networking_uses_existing_vpc" {
     condition     = length(output.public_subnet_ids) == 0 && output.internet_gateway_id == null
     error_message = "No public subnets or internet gateway are managed for an existing VPC."
   }
+
+  assert {
+    condition     = one(data.aws_internet_gateway.existing[0].filter).name == "attachment.vpc-id" && one(data.aws_internet_gateway.existing[0].filter).values == toset(["vpc-0e0e0e0e0e0e0e0e0"])
+    error_message = "The internet gateway lookup must be filtered on attachment to the existing VPC."
+  }
+}
+
+# CloudFront VPC origins need an internet gateway attached to the VPC. With no
+# gateway at all the provider lookup fails; a gateway whose attachment is not
+# available fails the postcondition.
+run "networking_existing_vpc_requires_internet_gateway" {
+  command = plan
+
+  module {
+    source = "./modules/networking"
+  }
+
+  variables {
+    existing_vpc_id             = "vpc-0e0e0e0e0e0e0e0e0"
+    existing_private_subnet_ids = ["subnet-0a0a0a0a0a0a0a0a0", "subnet-0b0b0b0b0b0b0b0b0"]
+  }
+
+  override_data {
+    target = data.aws_internet_gateway.existing[0]
+    values = { attachments = [{ vpc_id = "vpc-0e0e0e0e0e0e0e0e0", state = "detaching" }] }
+  }
+
+  expect_failures = [data.aws_internet_gateway.existing]
 }
 
 run "networking_existing_vpc_secondary_cidrs" {

@@ -21,7 +21,7 @@ variable "vpc_block_public_access_exclusion" {
 }
 
 variable "existing_vpc_id" {
-  description = "ID of an existing VPC to deploy into instead of creating one. When set, no VPC, subnets, internet or NAT gateways or route tables are created; only the default security group is created in this VPC"
+  description = "ID of an existing VPC to deploy into instead of creating one. When set, no VPC, subnets, internet or NAT gateways or route tables are created; only the default security group is created in this VPC. The VPC must have an internet gateway attached, which CloudFront VPC origins require (no routes to it are needed); planning fails otherwise"
   type        = string
   default     = null
 }

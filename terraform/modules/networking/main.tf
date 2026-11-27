@@ -61,6 +61,27 @@ data "aws_nat_gateway" "existing" {
   id = each.value
 }
 
+# CloudFront VPC origins (always used for Yjs) require an internet gateway
+# attached to the VPC, though nothing needs to route through it. Checking it
+# here fails the plan instead of leaving CloudFront to reject the VPC origin
+# at apply time. With no gateway attached at all, the lookup itself fails
+# with "no matching EC2 Internet Gateway found".
+data "aws_internet_gateway" "existing" {
+  count = local.create_vpc ? 0 : 1
+
+  filter {
+    name   = "attachment.vpc-id"
+    values = [var.existing_vpc_id]
+  }
+
+  lifecycle {
+    postcondition {
+      condition     = anytrue([for attachment in self.attachments : attachment.vpc_id == var.existing_vpc_id && attachment.state == "available"])
+      error_message = "existing_vpc_id ${var.existing_vpc_id} has no internet gateway attached. CloudFront VPC origins, used for the Yjs service, require one attached to the VPC; no routes to it are needed. See https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-vpc-origins.html#vpc-origin-prerequisites."
+    }
+  }
+}
+
 moved {
   from = aws_vpc.main
   to   = aws_vpc.main[0]
