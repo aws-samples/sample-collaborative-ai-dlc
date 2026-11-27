@@ -849,6 +849,54 @@ For advanced manual installations:
 
 A domain change needs both steps: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because the endpoint URLs are inlined into the bundle at build time.
 
+### Refresh OS packages
+
+The AgentCore and Yjs images apply the OS package fixes the distribution has
+published on top of their pinned base images, but a local Docker or Podman build
+cache keeps the packages of the first build, and Terraform rebuilds the images
+only when their sources change. To pick up newer fixes for an unchanged
+release, refresh them explicitly:
+
+```bash
+bash /tmp/aidlc-install.sh update --refresh-os-packages
+```
+
+The option implies `--reapply`. It writes the current UTC ISO week, for
+example `os_packages_epoch = "2026-W48"`, to the environment's `.tfvars` file,
+so later deployments, including a direct `terraform plan`, keep that value. A
+new value gives both images a new tag and reruns only their last layer, which
+upgrades the OS packages; the tool and dependency layers stay cached. A second
+refresh in the same week changes nothing, and a plain `update` never changes
+the value. Every deployment prints `OS package epoch: <value> (<source>)` and
+notes when the value is older than the current week.
+
+Treat a refresh like a code update:
+
+- The AgentCore runtime moves to a new version and the Yjs service replaces its
+  tasks. Run it outside working hours, with no intents running.
+- The new core image stages a Standard revision that reaches new intents only
+  after an administrator publishes it. Check its **Image check** first (see
+  [Managed tools and environments](../using-the-platform/managed-environments.md)).
+- Published environments built from an earlier core image keep its packages
+  until they are rebuilt.
+- Each refresh adds a core image to ECR; the AgentCore repository keeps them
+  (see issue #427).
+- If the deployment fails partway, run the same update again: it reuses the
+  epoch of the unfinished refresh, even in a later week.
+- The epoch is a cache key, not a snapshot: deploying an earlier value does not
+  restore the earlier images, it builds them again. To roll back, deploy the
+  previous images by tag (`agentcore_image_tag` and `yjs_image_tag`, see
+  [Pre-built container images](#pre-built-container-images)).
+
+For an advanced manual installation, pass a new value to
+`./scripts/deploy-terraform.sh dev --var os_packages_epoch=2026-W48`, or set it
+in the `.tfvars` file. Terraform gives `--var` precedence over the `.tfvars`
+file and both over `TF_VAR_os_packages_epoch`, so an exported variable is
+ignored once the file sets the key. Values are up to 64 letters, digits, dots,
+underscores, colons, or hyphens; empty (the default) rebuilds the images only on
+source changes. Pre-built images are not built during apply: refresh them in the
+pipeline that builds them.
+
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
 If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing spaces keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and space records need a one-time backfill onto the new polymorphic shape.

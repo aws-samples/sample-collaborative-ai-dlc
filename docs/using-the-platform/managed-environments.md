@@ -21,6 +21,12 @@ the scan result. A larger result, or one whose later pages are not read within
 about ten seconds, is shown as partial counts; if the first page is not read in
 that time, the check shows no scan.
 
+A deployment update that rebuilds the core image, including an
+[OS package refresh](../getting-started/setup.md#refresh-os-packages), stages a
+core update for Standard; new intents use it only after it is published.
+Environments built from an earlier core image keep its OS packages until a new
+revision is built and published.
+
 Java, Go, Rust, Maven, and Gradle are shipped as tool definitions, not as
 predefined JVM, Go, Rust, or Polyglot environments. Administrators can add other
 tools, such as a .NET SDK, without changing the application source.
