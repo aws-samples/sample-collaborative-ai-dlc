@@ -199,7 +199,7 @@ Acceptance criteria:
 - [x] If a native execution ever reaches the orchestrator, it fails closed and never loads a stage plan.
 - [x] The project detail response reports `nativeExecution`. A non-member still gets 403.
 - [x] Terraform changes are limited to the read permission. No variable, no environment wiring.
-- [ ] Dev check: with the parameter set to `enabled`, the create request stores a native draft; with the parameter removed, it returns 409. Open until this PR is merged and deployed, because dev runs `main`.
+- [x] Dev check: with the parameter set to `enabled`, the create request stores a native draft; with the parameter removed, it returns 409. Done by the plan owner on 2026-11-27 with this branch deployed to dev, before the merge. The parameter was removed again afterwards.
 
 Verify: `npx vitest run --project=intents --project=projects --project=v2-orchestrator`. In dev, set the parameter with `aws ssm put-parameter` and repeat the create request.
 
