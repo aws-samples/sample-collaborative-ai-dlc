@@ -250,6 +250,7 @@ Verify: `terraform -chdir=terraform fmt -check -recursive`, `terraform test`, re
 ### PR 4: AI-DLC source per space
 
 - **Scope:** space setting `aidlcSource` with `repository` and `ref`, stored like the other space settings in `lambda/projects/index.js`. A section in the space settings UI, shown only when the flag is enabled.
+- **To settle with the plan owner when this PR starts:** whether the setting also names plugin sources, a list of repositories and refs beside the AI-DLC source (T18). The answer changes the shape of the setting, so it comes before the setting is built.
 
 Acceptance criteria:
 
@@ -315,6 +316,7 @@ Acceptance criteria:
 
 - **Scope:** `native-prepare-start` gains the install step. It resolves the space's source to a commit, clones it, runs the source's packaging script (`bun scripts/package.ts <harness>`) inside the PR 6 scope, caches the result per space and commit, copies the harness tree into the primary repository, runs AI-DLC's own project setup, and records repository, ref, commit and version on the intent.
 - **Check first:** whether the packaging script needs network access or a dependency install, and how long clone plus packaging take in the image.
+- **To settle with the plan owner when this PR starts:** whether prepare also installs the space's AI-DLC plugins (T18). If it does, the cache and the record on the intent carry each plugin's commit beside the AI-DLC commit, and the checks named under T18 come first.
 
 Acceptance criteria:
 
@@ -547,6 +549,8 @@ Acceptance criteria:
 
 ### PR 20: Update AI-DLC on a running intent
 
+- **If plugins are taken in (T18):** the update also resolves the plugin sources again and composes them over the new AI-DLC. AI-DLC's guide asks for a plugin sync after every engine refresh.
+
 Acceptance criteria:
 
 - [ ] A member can trigger the update while the intent waits for a reply. It is refused during a turn.
@@ -642,12 +646,25 @@ Work that is postponed, so it can be followed. Whoever works on a PR, person or 
 | T15 | The orchestrator's `quorum-edit`, `cleanup-branches` and `retry-delivery` events return before the native check (D27). No native intent can reach them while it stays a draft.                                                                                       | PR 11                             |
 | T16 | `POST /delivery` and `POST /derive` are not in PR 14's list. On a native draft, `delivery` is refused only because no workflow resolves, and `derive` runs as on a platform draft.                                                                                   | PR 14; delivery retry in PR 17    |
 | T17 | Unit branches and open unit pull requests of a native intent that is cancelled, failed or deleted.                                                                                                                                                                   | Parity review, PR 23              |
+| T18 | AI-DLC plugins in native workspaces ([#916](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/916)): plugin sources per space, composed by prepare and pinned on the intent. Whether it is in the first release is open. Notes below.                | Decided when PR 4 starts          |
 
 Criteria kept for T1:
 
 - [ ] Output and token usage produced during a turn carry the stage that was current at that moment.
 - [ ] A stage's detail view shows its own output and usage.
 - [ ] The pipeline bar moves during a turn, not only at its end.
+
+Notes kept for T18. The request is [#916](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/916). What is said about AI-DLC is read from its 2.11.5 sources (`docs/reference/18-plugin-mechanism.md`) on 2026-11-27 and not tried in the image.
+
+- **What a plugin is.** AI-DLC's own way to customise the method without a fork. A plugin is a Git repository that adds stages, agents, scopes, sensors and knowledge, and adds to core stages. It is composed into an installed project, not into the AI-DLC source.
+- **What is asked.** A space names plugin sources, each a repository and a ref, under the rules of the AI-DLC source (D5; a URL containing credentials is rejected). Prepare clones them and composes them after the install. The intent records each plugin's commit beside the AI-DLC commit (D7). An update of AI-DLC resolves and composes them again.
+- **What it touches.** The space setting (PR 4). The install step, its cache and the record on the intent (PR 8). The update (PR 20). Deciding before PR 4 keeps the setting and the record from changing shape later.
+- **How AI-DLC composes.** With the `aidlc` binary, `aidlc engine plugin sync`. In an install without the binary, which is what the packaging script gives (D6), the same step is `bun <harness-dir>/tools/aidlc-plugin.ts sync`. A repository that holds the authored plugin is built first, with `aidlc-plugin-build.ts <plugin root> <harness> <out>`. Sync checks no remote registry.
+- **Checked by the issue's author.** On 2.11.4, with the binary and no Bun on `PATH`: a plugin built and composed for Kiro and for Claude Code, and doctor reported no problems. The path through the packaging script is not checked.
+- **To check in PR 8, if plugins are taken in.** The compose step on the plan's install path, in the real image and inside the workspace scope. Where a plugin goes for Claude Code: AI-DLC documents Claude Code's own plugin store with a hook at session start, and a folder inside the project for Kiro only. How a failed compose is noticed: sync exits 0 for a plugin it holds back, for example when its base plugin is missing, and reports it in its `--json` output and in doctor.
+- **Plugin code runs in the runtime.** A plugin can ship sensor scripts, doctor checks and commands. They need the workspace scope, like the packaging script of the AI-DLC source.
+- **Composed files are committed.** What compose writes into the harness directory is part of the primary repository and of its commit (D10).
+- **A base plugin is not fetched.** A plugin may build on one other plugin. AI-DLC does not fetch it, so the space has to name it as well.
 
 ## Not planned
 
