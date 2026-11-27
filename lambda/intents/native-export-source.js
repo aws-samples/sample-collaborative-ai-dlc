@@ -54,17 +54,22 @@ const resolveNativeExportSource = async ({
     sourceRepository: release.sourceRepository ?? null,
   };
   const own = await loadReleaseDistribution({ keyArgs, harness });
-  const manifest = await readManifest(keyArgs);
-  const base = manifest?.baseProfileId ? profileFor(manifest.baseProfileId) : null;
   if (own) {
+    // The manifest only supplies the dialect to parse the release's own stage
+    // files in, which only an export onto a scope the release lacks needs. A
+    // failed read must not fail an export that worked without it.
+    const ownManifest = await readManifest(keyArgs).catch(() => null);
+    const ownBase = ownManifest?.baseProfileId ? profileFor(ownManifest.baseProfileId) : null;
     return {
       upstreamRef: release.sourceSha,
       warnings: [],
       omitStagesNotInDistribution: false,
       preloadedDistribution: own,
-      frontmatterProfile: base && !base.custom ? base : null,
+      frontmatterProfile: ownBase && !ownBase.custom ? ownBase : null,
     };
   }
+  const manifest = await readManifest(keyArgs);
+  const base = manifest?.baseProfileId ? profileFor(manifest.baseProfileId) : null;
   if (!base || base.custom || !isCommitSha(base.upstreamRef)) return null;
   return {
     upstreamRef: base.upstreamRef,

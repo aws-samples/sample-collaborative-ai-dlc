@@ -97,6 +97,35 @@ describe('native export source', () => {
     expect(source.frontmatterProfile).toBeNull();
   });
 
+  it('exports its own distribution with no dialect when the manifest read fails', async () => {
+    const source = await resolveNativeExportSource({
+      meta: customMeta,
+      harness: 'kiro',
+      deploymentRef: async () => DEPLOYMENT_REF,
+      readManifest: async () => {
+        throw Object.assign(new Error('SlowDown'), { $metadata: { httpStatusCode: 503 } });
+      },
+      loadReleaseDistribution: async () => ownDistribution,
+    });
+    expect(source.upstreamRef).toBe(FORK_SHA);
+    expect(source.preloadedDistribution).toBe(ownDistribution);
+    expect(source.frontmatterProfile).toBeNull();
+  });
+
+  it('still fails a base-profile export when its manifest read fails', async () => {
+    await expect(
+      resolveNativeExportSource({
+        meta: customMeta,
+        harness: 'kiro-ide',
+        deploymentRef: async () => DEPLOYMENT_REF,
+        readManifest: async () => {
+          throw new Error('SlowDown');
+        },
+        loadReleaseDistribution: noOwn,
+      }),
+    ).rejects.toThrow('SlowDown');
+  });
+
   it("exports a custom release onto its base profile's official distribution", async () => {
     const readManifest = vi.fn(async () => ({ baseProfileId: 'v2.11.0' }));
     const source = await resolveNativeExportSource({
