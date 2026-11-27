@@ -851,7 +851,7 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           {findings.map((finding, index) => (
             <div
               key={`${finding.id}-${index}`}
-              className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[80px_minmax(0,1fr)_auto]"
+              className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[7.5rem_minmax(0,1fr)_auto]"
             >
               <Badge variant="outline" className="w-fit font-mono text-[10px]">
                 {finding.severity}
