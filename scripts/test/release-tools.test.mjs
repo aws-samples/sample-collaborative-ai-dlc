@@ -2800,10 +2800,14 @@ test('installer refreshes OS packages only on request and persists the epoch', (
     AIDLC_FAIL_PHASE: 'apply',
   });
   assert.notEqual(failed.status, 0);
-  assert.equal(readFileSync(pending, 'utf8').trim(), '2027-W01');
+  assert.match(readFileSync(pending, 'utf8'), /^2027-W01\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$/);
   const retried = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W02' });
   assert.equal(retried.status, 0, retried.stderr);
-  assert.match(retried.stdout, /Resuming the unfinished OS package refresh for epoch 2027-W01/);
+  assert.match(
+    retried.stdout,
+    /Resuming the unfinished OS package refresh for epoch 2027-W01, started \d{4}-/,
+  );
+  assert.ok(retried.stdout.includes(`delete ${pending}`), retried.stdout);
   assert.deepEqual(deployments().slice(8), [
     'plan 2027-W01',
     'apply 2027-W01',
@@ -2811,6 +2815,13 @@ test('installer refreshes OS packages only on request and persists the epoch', (
     'apply 2027-W01',
   ]);
   assert.equal(existsSync(pending), false);
+
+  // A corrupted marker is discarded instead of reaching the tfvars file.
+  writeFileSync(pending, 'not a valid epoch; rm -rf /\n');
+  const invalid = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W03' });
+  assert.equal(invalid.status, 0, invalid.stderr);
+  assert.match(invalid.stderr, /ignoring the invalid OS package refresh marker/);
+  assert.deepEqual(deployments().slice(-2), ['plan 2027-W03', 'apply 2027-W03']);
 });
 
 test('installer refuses an OS package refresh the release cannot apply', () => {

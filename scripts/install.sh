@@ -888,13 +888,21 @@ require_os_packages_epoch_support() {
 # Persists the epoch in the environment's tfvars, where both the installer and a
 # direct terraform plan read it. Called only for update --refresh-os-packages.
 refresh_os_packages_epoch() {
-    local tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars" epoch
-    if [[ -s "$OS_PACKAGES_REFRESH_PENDING" ]]; then
-        epoch="$(cat "$OS_PACKAGES_REFRESH_PENDING")"
-        echo "Resuming the unfinished OS package refresh for epoch $epoch."
-    else
+    local tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars" epoch="" started=""
+    local valid_epoch='^[A-Za-z0-9._:-]{1,64}$'
+    if [[ -f "$OS_PACKAGES_REFRESH_PENDING" ]]; then
+        { IFS= read -r epoch; IFS= read -r started; } < "$OS_PACKAGES_REFRESH_PENDING" || true
+        if [[ "$epoch" =~ $valid_epoch ]]; then
+            echo "Resuming the unfinished OS package refresh for epoch $epoch, started ${started:-at an unknown time}."
+            echo "To start a new refresh instead, delete $OS_PACKAGES_REFRESH_PENDING."
+        else
+            echo "Warning: ignoring the invalid OS package refresh marker $OS_PACKAGES_REFRESH_PENDING." >&2
+            epoch=""
+        fi
+    fi
+    if [[ -z "$epoch" ]]; then
         epoch="$(date -u +%G-W%V)"
-        printf '%s\n' "$epoch" > "$OS_PACKAGES_REFRESH_PENDING"
+        printf '%s\n%s\n' "$epoch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OS_PACKAGES_REFRESH_PENDING"
     fi
     tfvars_upsert "$tfvars" os_packages_epoch "$(hcl_string "$epoch")"
 }
