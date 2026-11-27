@@ -14,7 +14,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
-import { Alert, AlertDescription, type AlertProps } from '@/components/ui/alert';
+import { Alert, type AlertProps } from '@/components/ui/alert';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,30 +27,23 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { TechnicalDetails, type TechnicalDetailItem } from '@/components/ui/technical-details';
 import { gateTabLabel } from '@/components/intent/PendingQuestionsTabs';
 import { displayStageName } from '@/lib/displayNames';
 import { describeFailure } from '@/lib/failureReasons';
 import { formatCost, summarizeCost } from '@/lib/metricAggregation';
 import { intentAttention } from '@/lib/sprintStatus';
 import { ageLabel, deriveIntentStatus, latestActivityAt } from '@/lib/statusModel';
-import { formatAbsolute } from '@/lib/timeAgo';
 import { gitRepoSlug } from '@/services/gitProvider';
 import type { IntentDetail, IntentGate, IntentStage } from '@/services/intents';
 import { cn } from '@/lib/utils';
-import { countWorkProductDocuments } from '@/components/intent/documentHelpers';
 
 export interface IntentOutcomeLinks {
   /** Where "View activity" goes (Overview → Work). */
   details?: string;
-  /** Where "N documents" goes (the Work products tree). */
-  documents?: string;
   /** Agent output for a failed run ("Open logs"). */
   logs?: string;
   /** DRAFT: the compose page ("Continue composing"). */
   compose?: string;
-  /** FAILED: create page prefilled from this intent ("Start on another AI-DLC version"). */
-  newVersion?: string;
   /** Per-gate destination when no `onAnswer` is given (validation → /review/:id). */
   gate?: (gate: IntentGate) => string;
 }
@@ -62,8 +55,8 @@ export interface IntentOutcomeAction {
 }
 
 export interface IntentOutcomeActions {
-  /** Rewind to the failed (or, when stalled, current) stage. The label names the stage. */
-  restartFromStage?: IntentOutcomeAction;
+  /** Rewind to `stageId`; the line, the button and its confirmation name that stage. */
+  restartFromStage?: IntentOutcomeAction & { stageId: string };
   /** Run the plan again from the beginning. */
   startAgain?: IntentOutcomeAction;
   /** Re-send a recorded answer whose callback failed (`intent.resumeRequired`). */
@@ -72,6 +65,11 @@ export interface IntentOutcomeActions {
   checkDelivery?: IntentOutcomeAction;
 }
 
+/**
+ * One line that says where the run stands, with at most one action: the
+ * details (decisions, documents, errors) live on the Work page and in the
+ * stage list, not here.
+ */
 export interface IntentOutcomeCalloutProps {
   detail: IntentDetail;
   /** Injected clock for ages and durations. */
@@ -82,11 +80,8 @@ export interface IntentOutcomeCalloutProps {
   stageNameOf?: (stageId: string) => string | null | undefined;
   /** Opens the gate card in place; when absent, `links.gate` renders a link instead. */
   onAnswer?: (gateId: string) => void;
-  /**
-   * Opens the activity panel on a stage's output, in place (the Work page).
-   * When absent, `links.details` renders a link instead (the Overview page).
-   */
-  onViewActivity?: (stageInstanceId: string | null) => void;
+  /** Whether the reader may answer the gate; otherwise the line only says what is open. Default: yes. */
+  canAnswer?: (gate: IntentGate) => boolean;
   links?: IntentOutcomeLinks;
   actions?: IntentOutcomeActions;
   className?: string;
@@ -197,33 +192,42 @@ const GATE_VERB: Record<IntentGate['kind'], string> = {
   'review-verdict': 'Decide',
 };
 
+const GATE_NOUN: Record<IntentGate['kind'], string> = {
+  question: 'question',
+  validation: 'review',
+  approval: 'decision',
+  'review-verdict': 'decision',
+};
+
 export type OpenDecision =
   | { kind: 'gate'; gate: IntentGate; stage: IntentStage | undefined; since: string | null }
   | { kind: 'stage'; stage: IntentStage; since: string | null };
 
 /**
- * Everything the stage list paints yellow: pending gates, plus stages still
- * WAITING_FOR_HUMAN with no pending gate (answered or withdrawn but never
- * resumed). Oldest first; the first item's `since` is the header age.
+ * What the reader can act on, oldest first; the first item's `since` is the
+ * header age. Pending gates when there are any. Only without one do the
+ * stages still parked (WAITING_FOR_HUMAN, their gate answered or withdrawn but
+ * never resumed) count: next to an open question they are the stage it waits
+ * on, not a second decision.
  */
 export function openDecisions(detail: Pick<IntentDetail, 'stages' | 'gates'>): OpenDecision[] {
   const { stages, gates } = detail;
   const stageById = new Map(stages.map((s) => [s.stageInstanceId, s]));
-  const covered = new Set<string>();
-  const items: OpenDecision[] = [];
-  for (const gate of gates) {
-    if (gate.status !== 'pending') continue;
-    const stage = gate.stageInstanceId ? stageById.get(gate.stageInstanceId) : undefined;
-    if (gate.stageInstanceId) covered.add(gate.stageInstanceId);
-    items.push({ kind: 'gate', gate, stage, since: gate.createdAt ?? stage?.parkedAt ?? null });
-  }
-  for (const stage of stages) {
-    if (stage.state !== 'WAITING_FOR_HUMAN' || covered.has(stage.stageInstanceId)) continue;
-    items.push({
-      kind: 'stage',
-      stage,
-      since: stage.parkedAt ?? stage.updatedAt ?? stage.startedAt ?? null,
+  const items: OpenDecision[] = gates
+    .filter((gate) => gate.status === 'pending')
+    .map((gate) => {
+      const stage = gate.stageInstanceId ? stageById.get(gate.stageInstanceId) : undefined;
+      return { kind: 'gate', gate, stage, since: gate.createdAt ?? stage?.parkedAt ?? null };
     });
+  if (items.length === 0) {
+    for (const stage of stages) {
+      if (stage.state !== 'WAITING_FOR_HUMAN') continue;
+      items.push({
+        kind: 'stage',
+        stage,
+        since: stage.parkedAt ?? stage.updatedAt ?? stage.startedAt ?? null,
+      });
+    }
   }
   return items.toSorted((a, b) => (toMs(a.since) ?? Infinity) - (toMs(b.since) ?? Infinity));
 }
@@ -302,52 +306,14 @@ function LinkButton({
   );
 }
 
-function ActionRow({ children }: { children: React.ReactNode }) {
-  const items = React.Children.toArray(children).filter(Boolean);
-  if (items.length === 0) return null;
-  return <div className="flex flex-wrap items-center gap-2 pt-1">{items}</div>;
-}
-
-function Facts({ children }: { children: React.ReactNode }) {
-  const items = React.Children.toArray(children).filter(Boolean);
-  if (items.length === 0) return null;
+function ExternalLinkButton({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <ul className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-foreground">
-      {items.map((item, index) => (
-        <li key={index} className="inline-flex min-w-0 items-center gap-1.5">
-          {item}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function PullRequestFacts({ links }: { links: PullRequestLink[] }) {
-  return (
-    <>
-      {links.map((pr) => (
-        <a
-          key={pr.key}
-          href={pr.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline"
-        >
-          {pr.label}
-          <ExternalLink aria-hidden="true" className="size-3.5 text-muted-foreground" />
-        </a>
-      ))}
-    </>
-  );
-}
-
-function Branch({ name }: { name: string | null | undefined }) {
-  if (!name) return null;
-  return (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
-      <span className="text-muted-foreground">Branch</span>
-      <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{name}</code>
-    </span>
+    <Button asChild size="sm" variant="outline">
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+        <ExternalLink aria-hidden="true" className="size-3.5 text-muted-foreground" />
+      </a>
+    </Button>
   );
 }
 
@@ -357,7 +323,7 @@ export function IntentOutcomeCallout({
   lastActivityAt,
   stageNameOf,
   onAnswer,
-  onViewActivity,
+  canAnswer = () => true,
   links = {},
   actions = {},
   className,
@@ -375,16 +341,12 @@ export function IntentOutcomeCallout({
   const derived = deriveIntentStatus(intent, { now, lastActivityAt: activity, gates });
 
   let kind: IntentOutcomeKind;
-  let title: React.ReactNode;
-  let body: React.ReactNode = null;
+  let title: string;
+  let action: React.ReactNode = null;
   let pulse = false;
 
   const currentStageId =
     intent.currentStage ?? stages.find((s) => s.state === 'RUNNING')?.stageId ?? null;
-  const currentStageInstanceId =
-    stages.find((s) => s.state === 'RUNNING')?.stageInstanceId ??
-    stages.find((s) => s.stageId === currentStageId)?.stageInstanceId ??
-    null;
 
   // Every attempt's metrics: the intent's spend so far, not one run's.
   const spentSoFar = summarizeCost(detail.metrics);
@@ -402,22 +364,41 @@ export function IntentOutcomeCallout({
     description: `Agents run this stage and everything after it again, so new costs apply. Completed stages are kept; the previous attempt stays in history.${costSentence}`,
     confirm: 'Restart from this stage',
   });
-  const viewActivity = links.details ? (
-    <LinkButton to={links.details} variant="ghost">
-      View activity
-    </LinkButton>
+  // Restart from the stage when the caller allows it, else the whole workflow.
+  const restartStage = actions.restartFromStage;
+  const restartAction = () =>
+    restartStage ? (
+      <ActionButton
+        action={restartStage}
+        variant="default"
+        icon={RotateCcw}
+        confirm={restartStageConfirm(restartStage.stageId)}
+      >
+        Restart from {stageName(restartStage.stageId)}
+      </ActionButton>
+    ) : actions.startAgain ? (
+      <ActionButton
+        action={actions.startAgain}
+        variant="default"
+        icon={Play}
+        confirm={restartWorkflowConfirm}
+      >
+        Restart workflow
+      </ActionButton>
+    ) : null;
+  const pullRequest = pullRequestLinks(detail)[0];
+  const pullRequestAction = pullRequest ? (
+    <ExternalLinkButton href={pullRequest.href}>{pullRequest.label}</ExternalLinkButton>
   ) : null;
 
   switch (intent.status) {
     case 'DRAFT': {
       kind = 'draft';
       title = 'Draft — not started yet';
-      body = links.compose ? (
-        <ActionRow>
-          <LinkButton to={links.compose} variant="default">
-            Continue composing
-          </LinkButton>
-        </ActionRow>
+      action = links.compose ? (
+        <LinkButton to={links.compose} variant="default">
+          Continue composing
+        </LinkButton>
       ) : null;
       break;
     }
@@ -427,68 +408,13 @@ export function IntentOutcomeCallout({
       if (derived.stalled) {
         kind = 'stalled';
         const age = ageLabel(derived.since, now, { coarse: true });
-        const neverStarted = intent.status === 'CREATED';
-        title = neverStarted
-          ? `Stalled before the first stage — requested ${age} ago, never picked up`
-          : `Stalled${currentStageId ? ` at ${stageName(currentStageId)}` : ''} — no activity for ${age}`;
-        body = (
-          <>
-            <AlertDescription>
-              {neverStarted
-                ? 'The run was requested but no agent picked it up. '
-                : 'The engine still marks this run as running, so it cannot be cancelled yet. '}
-              {actions.restartFromStage || actions.startAgain ? (
-                'If it does not pick up again, restart it.'
-              ) : (
-                <>
-                  Check the{' '}
-                  {onViewActivity ? (
-                    <button
-                      type="button"
-                      className="-my-1 inline-block py-1 font-medium underline underline-offset-4 hover:text-foreground"
-                      aria-label="View activity"
-                      onClick={() => onViewActivity(currentStageInstanceId)}
-                    >
-                      activity
-                    </button>
-                  ) : (
-                    'activity'
-                  )}
-                  , or come back later: a cancel becomes possible once the engine parks or fails the
-                  run.
-                </>
-              )}
-            </AlertDescription>
-            <ActionRow>
-              {actions.restartFromStage && currentStageId ? (
-                <ActionButton
-                  action={actions.restartFromStage}
-                  icon={RotateCcw}
-                  confirm={restartStageConfirm(currentStageId)}
-                >
-                  Restart from {stageName(currentStageId)}
-                </ActionButton>
-              ) : null}
-              {actions.startAgain ? (
-                <ActionButton
-                  action={actions.startAgain}
-                  icon={Play}
-                  confirm={restartWorkflowConfirm}
-                >
-                  Restart workflow
-                </ActionButton>
-              ) : null}
-              {links.details ? <LinkButton to={links.details}>View activity</LinkButton> : null}
-            </ActionRow>
-            <TechnicalDetails
-              items={[
-                { label: 'Last activity', value: formatAbsolute(derived.since) },
-                { label: 'Backend status', value: intent.status, copy: true },
-                { label: 'Stage id', value: currentStageId, copy: true },
-              ]}
-            />
-          </>
-        );
+        title =
+          intent.status !== 'CREATED'
+            ? `Stalled${currentStageId ? ` at ${stageName(currentStageId)}` : ''} — no activity for ${age}`
+            : intent.orchestratorStartedAt
+              ? `Stalled while preparing the workspace — no activity for ${age}`
+              : `Stalled before the first stage — never picked up, no activity for ${age}`;
+        action = restartAction();
         break;
       }
       if (intent.status === 'CREATED') {
@@ -502,7 +428,6 @@ export function IntentOutcomeCallout({
       const age = ageLabel(activity, now);
       const working = currentStageId ? `Working on ${stageName(currentStageId)}` : 'Working';
       title = age ? `${working} · last activity ${age} ago` : working;
-      body = viewActivity ? <ActionRow>{viewActivity}</ActionRow> : null;
       break;
     }
 
@@ -510,94 +435,45 @@ export function IntentOutcomeCallout({
       const resumeRequired =
         intentAttention(intent) === 'resume' || gates.some((g) => g.resumeAvailable === true);
       const open = openDecisions(detail);
-      const count = open.length;
-      const allGates = open.every((d) => d.kind === 'gate');
-
-      const resumeBlock = resumeRequired ? (
-        <div className="space-y-1">
-          {count > 0 ? (
-            <p className="text-sm font-medium">
-              Your answer was saved but the run did not continue
-            </p>
-          ) : null}
-          <AlertDescription>
-            Resume re-sends the recorded answer. No decision is asked again.
-          </AlertDescription>
-          <ActionRow>
-            {actions.resume ? (
-              <ActionButton action={actions.resume} variant="default" icon={Play}>
-                Resume run
-              </ActionButton>
-            ) : null}
-            {count === 0 && links.details ? (
-              <LinkButton to={links.details}>View activity</LinkButton>
-            ) : null}
-          </ActionRow>
-        </div>
+      const pending = open.filter((d) => d.kind === 'gate');
+      const resumeAction = actions.resume ? (
+        <ActionButton action={actions.resume} variant="default" icon={Play}>
+          Resume run
+        </ActionButton>
       ) : null;
 
-      const decisionList =
-        count > 0 ? (
-          <ul aria-label="Open decisions" className="divide-y divide-border/60">
-            {open.map((decision) =>
-              decision.kind === 'gate' ? (
-                <GateRow
-                  key={decision.gate.humanTaskId}
-                  gate={decision.gate}
-                  stage={decision.stage}
-                  stageName={stageName}
-                  onAnswer={onAnswer}
-                  href={links.gate?.(decision.gate)}
-                />
-              ) : (
-                <ParkedStageRow
-                  key={decision.stage.stageInstanceId}
-                  stage={decision.stage}
-                  stageName={stageName}
-                  href={links.details}
-                  onViewActivity={onViewActivity}
-                />
-              ),
-            )}
-          </ul>
-        ) : null;
-
-      if (count > 0) {
+      if (pending.length > 0) {
         kind = 'waiting';
-        // The header pill carries the age; the callout only says what is open.
-        title = allGates
-          ? count === 1
-            ? '1 decision needs your answer'
-            : `${count} decisions need your answer`
-          : count === 1
-            ? '1 stage is waiting for input'
-            : `${count} stages are waiting for input`;
-        body = (
-          <>
-            {decisionList}
-            {resumeBlock}
-          </>
-        );
+        // Only the gates this reader may answer are "yours"; without any, the
+        // line says what is open and the action only opens it.
+        const mine = pending.filter((d) => canAnswer(d.gate));
+        const shown = mine.length > 0 ? mine : pending;
+        const nouns = new Set(shown.map((d) => GATE_NOUN[d.gate.kind]));
+        const noun = nouns.size === 1 ? [...nouns][0] : 'decision';
+        const count = shown.length;
+        const asked =
+          mine.length === 0
+            ? `${plural(count, noun)} waiting for an answer`
+            : count === 1
+              ? `1 ${noun} needs your answer`
+              : `${count} ${noun}s need your answer`;
+        // The pill in the header carries the age; here only what is open.
+        title = resumeRequired ? `${asked} · a saved answer did not continue` : asked;
+        action = resumeRequired
+          ? resumeAction
+          : gateAction(shown[0], stageName, onAnswer, links, mine.length > 0);
       } else if (resumeRequired) {
         kind = 'resume_required';
         title = 'Your answer was saved but the run did not continue';
-        body = resumeBlock;
+        action = resumeAction;
+      } else if (open[0]?.kind === 'stage') {
+        kind = 'waiting';
+        const parked = open[0].stage;
+        title = `Parked at ${parked.stageId ? stageName(parked.stageId) : 'a stage'} — nothing to answer`;
+        action = links.details ? <LinkButton to={links.details}>View activity</LinkButton> : null;
       } else {
         kind = 'waiting_engine';
         title = 'Waiting on the engine — no action needed from you';
-        body = (
-          <AlertDescription>
-            The run is parked between steps and will continue on its own.
-            {links.details ? (
-              <>
-                {' '}
-                <Link to={links.details} className="underline underline-offset-4">
-                  View activity
-                </Link>
-              </>
-            ) : null}
-          </AlertDescription>
-        );
       }
       break;
     }
@@ -608,52 +484,17 @@ export function IntentOutcomeCallout({
         intent.failure?.code,
         intent.failure?.message ?? intent.failureReason,
       );
-      const failedStage = stages.find((s) => s.state === 'FAILED');
-      const failedStageId = failedStage?.stageId ?? failure.stageId ?? intent.currentStage ?? null;
+      const failedStageId =
+        restartStage?.stageId ??
+        stages.find((s) => s.state === 'FAILED')?.stageId ??
+        failure.stageId ??
+        intent.currentStage ??
+        null;
       title = failedStageId
         ? `Failed at ${stageName(failedStageId)} — ${failure.sentence}`
         : `Failed before the first stage — ${failure.sentence}`;
-      const items: TechnicalDetailItem[] = [
-        { label: 'Code', value: failure.code, copy: true },
-        { label: 'Message', value: failure.technical, copy: true },
-        { label: 'Stage id', value: failedStageId, copy: true },
-      ];
-      if (failedStage?.runtimeError && failedStage.runtimeError !== failure.technical) {
-        items.push({ label: 'Runtime error', value: failedStage.runtimeError, copy: true });
-      }
-      const canRestartStage = Boolean(actions.restartFromStage && failedStageId);
-      body = (
-        <>
-          <ActionRow>
-            {actions.restartFromStage && failedStageId ? (
-              <ActionButton
-                action={actions.restartFromStage}
-                variant="default"
-                icon={RotateCcw}
-                confirm={restartStageConfirm(failedStageId)}
-              >
-                Restart from {stageName(failedStageId)}
-              </ActionButton>
-            ) : null}
-            {actions.startAgain ? (
-              <ActionButton
-                action={actions.startAgain}
-                variant={canRestartStage ? 'outline' : 'default'}
-                icon={Play}
-                confirm={restartWorkflowConfirm}
-              >
-                Restart workflow
-              </ActionButton>
-            ) : null}
-            {links.newVersion ? (
-              <LinkButton to={links.newVersion}>Start on another AI-DLC version</LinkButton>
-            ) : null}
-            {links.logs ? <LinkButton to={links.logs}>Open logs</LinkButton> : null}
-            {viewActivity}
-          </ActionRow>
-          <TechnicalDetails items={items} />
-        </>
-      );
+      action =
+        restartAction() ?? (links.logs ? <LinkButton to={links.logs}>Open logs</LinkButton> : null);
       break;
     }
 
@@ -680,42 +521,17 @@ export function IntentOutcomeCallout({
         start !== null && end !== null && end >= start
           ? `Completed in ${formatElapsed(end - start)}`
           : 'Completed';
-      const prs = pullRequestLinks(detail);
-      const documents = countWorkProductDocuments(detail.artifacts);
       const completion = detail.unitCompletion;
-      body = (
-        <>
-          <Facts>
-            <PullRequestFacts links={prs} />
-            <Branch name={intent.branch} />
-            {documents > 0 ? (
-              links.documents ? (
-                <Link
-                  to={links.documents}
-                  className="font-medium underline decoration-border underline-offset-4 hover:decoration-current"
-                >
-                  {plural(documents, 'document')}
-                </Link>
-              ) : (
-                <span>{plural(documents, 'document')}</span>
-              )
-            ) : null}
-          </Facts>
-          {completion && completion.state !== 'complete' && completion.total > 0 ? (
-            <AlertDescription>
-              {completion.integrated} of {completion.total} units integrated
-              {completion.skipped ? `, ${completion.skipped} omitted` : ''}.
-            </AlertDescription>
-          ) : null}
-          <ActionRow>
-            {actions.checkDelivery ? (
-              <ActionButton action={actions.checkDelivery} variant="ghost">
-                Check delivery
-              </ActionButton>
-            ) : null}
-          </ActionRow>
-        </>
-      );
+      if (completion && completion.state !== 'complete' && completion.total > 0) {
+        title += ` · ${completion.integrated} of ${completion.total} units integrated`;
+      }
+      action =
+        pullRequestAction ??
+        (actions.checkDelivery ? (
+          <ActionButton action={actions.checkDelivery} variant="ghost">
+            Check delivery
+          </ActionButton>
+        ) : null);
       break;
     }
 
@@ -723,27 +539,17 @@ export function IntentOutcomeCallout({
       kind = 'cancelled';
       const when = ageLabel(intent.completedAt ?? intent.updatedAt, now);
       title = when ? `Cancelled ${when} ago` : 'Cancelled';
-      const prs = pullRequestLinks(detail);
       const units = detail.units ?? [];
       const integrated =
         detail.unitCompletion?.integrated ?? units.filter((u) => u.state === 'MERGED').length;
       const total = detail.unitCompletion?.total ?? units.length;
-      const delivered = integrated > 0 || prs.length > 0;
-      body = delivered ? (
-        <>
-          <AlertDescription>
-            {integrated > 0
-              ? `${integrated} of ${total} units integrated before the run stopped.`
-              : 'A pull request was opened before the run stopped.'}
-          </AlertDescription>
-          <Facts>
-            <PullRequestFacts links={prs} />
-            <Branch name={intent.branch} />
-          </Facts>
-        </>
-      ) : (
-        <AlertDescription>Nothing was delivered.</AlertDescription>
-      );
+      title +=
+        integrated > 0
+          ? ` · ${integrated} of ${total} units integrated before the run stopped`
+          : pullRequest
+            ? ' · a pull request was opened before the run stopped'
+            : ' · nothing was delivered';
+      action = pullRequestAction;
       break;
     }
 
@@ -760,6 +566,7 @@ export function IntentOutcomeCallout({
     <Alert
       tone={surface.tone}
       title={title}
+      action={action}
       data-slot="intent-outcome"
       data-outcome={kind}
       className={cn(surface.className, className)}
@@ -769,109 +576,47 @@ export function IntentOutcomeCallout({
           className={cn(surface.iconClassName, pulse && 'motion-safe:animate-pulse')}
         />
       }
-    >
-      {body}
-    </Alert>
+    />
   );
 }
 
-const ROW_CLASS =
-  'flex flex-col gap-2 py-2 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-x-4';
-
-function RowText({ label, meta }: { label: string; meta: string }) {
-  return (
-    <div className="min-w-0 flex-1">
-      <p className="line-clamp-2 text-sm font-medium">{label}</p>
-      {meta ? <p className="text-xs text-muted-foreground">{meta}</p> : null}
-    </div>
-  );
-}
-
-function GateRow({
-  gate,
-  stage,
-  stageName,
-  onAnswer,
-  href,
-}: {
-  gate: IntentGate;
-  stage: IntentStage | undefined;
-  stageName: (stageId: string) => string;
-  onAnswer?: (gateId: string) => void;
-  href?: string;
-}) {
+// The one action of a waiting run: the oldest open gate, opened in place
+// (Work) or through its link (Overview); "View" when the reader cannot answer.
+function gateAction(
+  decision: Extract<OpenDecision, { kind: 'gate' }>,
+  stageName: (stageId: string) => string,
+  onAnswer: ((gateId: string) => void) | undefined,
+  links: IntentOutcomeLinks,
+  answerable: boolean,
+): React.ReactNode {
+  const { gate, stage } = decision;
   const stageLabel = stage?.stageId ? stageName(stage.stageId) : null;
-  const laneLabel = gate.unitSlug ? ` · ${gate.unitSlug}` : '';
   const question = gate.kind === 'question' ? gateTabLabel(gate) : gate.prompt;
   const label = question ?? (stageLabel ? `Review of ${stageLabel}` : gateTabLabel(gate));
   const subject = gate.kind === 'question' ? label : (stageLabel ?? label);
-  const verb = GATE_VERB[gate.kind];
-  const meta = gate.kind === 'question' && stageLabel ? `${stageLabel}${laneLabel}` : '';
+  const verb = answerable ? GATE_VERB[gate.kind] : 'View';
+  const variant = answerable ? 'default' : 'outline';
   const name = `${verb}: ${subject}`;
-
+  if (onAnswer) {
+    return (
+      <Button
+        type="button"
+        size="sm"
+        variant={variant}
+        aria-label={name}
+        onClick={() => onAnswer(gate.humanTaskId)}
+      >
+        {verb}
+      </Button>
+    );
+  }
+  const href = links.gate?.(gate);
+  if (!href) return null;
   return (
-    <li className={ROW_CLASS}>
-      <RowText label={label} meta={meta} />
-      {onAnswer ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="default"
-          className="self-start sm:self-auto"
-          aria-label={name}
-          onClick={() => onAnswer(gate.humanTaskId)}
-        >
-          {verb}
-        </Button>
-      ) : href ? (
-        <Button asChild size="sm" variant="default" className="self-start sm:self-auto">
-          <Link to={href} aria-label={name}>
-            {verb}
-          </Link>
-        </Button>
-      ) : null}
-    </li>
-  );
-}
-
-// A stage still parked although every question on it is answered or
-// withdrawn: counted, never hidden — there is nothing to answer, so the row
-// offers the stage's output instead of pretending a card exists for it.
-function ParkedStageRow({
-  stage,
-  stageName,
-  href,
-  onViewActivity,
-}: {
-  stage: IntentStage;
-  stageName: (stageId: string) => string;
-  href?: string;
-  onViewActivity?: (stageInstanceId: string | null) => void;
-}) {
-  const label = stage.stageId ? stageName(stage.stageId) : 'Stage';
-  const lane = stage.unitSlug ? ` · ${stage.unitSlug}` : '';
-  const name = `View activity: ${label}`;
-  return (
-    <li className={ROW_CLASS}>
-      <RowText label={`${label}${lane}`} meta="Parked with no open question" />
-      {onViewActivity ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="self-start sm:self-auto"
-          aria-label={name}
-          onClick={() => onViewActivity(stage.stageInstanceId)}
-        >
-          View activity
-        </Button>
-      ) : href ? (
-        <Button asChild size="sm" variant="outline" className="self-start sm:self-auto">
-          <Link to={href} aria-label={name}>
-            View activity
-          </Link>
-        </Button>
-      ) : null}
-    </li>
+    <Button asChild size="sm" variant={variant}>
+      <Link to={href} aria-label={name}>
+        {verb}
+      </Link>
+    </Button>
   );
 }

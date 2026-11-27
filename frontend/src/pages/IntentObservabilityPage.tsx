@@ -627,6 +627,7 @@ function IntentOverview() {
   const outcomeActions = {
     restartFromStage: failedStage
       ? {
+          stageId: failedStage.stageId,
           pending: pendingAction === 'restart',
           disabled: pendingAction !== null,
           onClick: () => void runAction('restart', () => rewindIntent(failedStage.stageId)),
@@ -718,15 +719,11 @@ function IntentOverview() {
           lastActivityAt={lastActivityAt}
           links={{
             details: workPath,
-            documents: `${workPath}#intent-work-products`,
             compose: `${workPath}/compose`,
-            newVersion: pinningEnabled && intent.status === 'FAILED' ? newVersionPath : undefined,
             gate: (gate) =>
               gate.kind === 'validation' ? `${workPath}/review/${gate.humanTaskId}` : workPath,
           }}
           actions={outcomeActions}
-          // The question is the main content of a waiting intent: show all of it.
-          className="[&_ul[aria-label]_.line-clamp-2]:line-clamp-none"
         />
 
         {answerFirst ? promptCard : null}

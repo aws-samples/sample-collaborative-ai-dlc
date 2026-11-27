@@ -449,7 +449,7 @@ describe('IntentObservabilityPage — Header', () => {
     expect(screen.getByText('137 days ago')).toBeInTheDocument();
   });
 
-  it('header age for a waiting intent is the oldest open gate or parked stage, not the newest', async () => {
+  it('header age for a waiting intent is the oldest open gate, not a stage parked beside it', async () => {
     get.mockResolvedValue(
       baseDetail(
         { status: 'WAITING', pendingHumanTaskId: 'gate-1' },
@@ -473,7 +473,7 @@ describe('IntentObservabilityPage — Header', () => {
       ),
     );
     renderPage();
-    expect(await screen.findByText('Waiting for input · 137 days')).toBeInTheDocument();
+    expect(await screen.findByText('Waiting for input · 109 days')).toBeInTheDocument();
   });
 
   it('shows the scope as a readable badge, never the raw slug', async () => {
@@ -625,7 +625,7 @@ describe('IntentObservabilityPage — Initial prompt', () => {
 });
 
 describe('IntentObservabilityPage — outcome callout (answer first)', () => {
-  it('shows the open question in full, above the prompt, with one link per decision', async () => {
+  it('names the open question above the prompt, with one Answer link', async () => {
     const question =
       'Which account recovery option should we support? Specifically: (a) email magic link, (b) SMS one-time code, (c) authenticator app, or (d) a combination of these? Please also say whether existing sessions must survive a recovery.';
     get.mockResolvedValue(
@@ -645,28 +645,24 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     renderPage();
 
-    const gatePrompt = await screen.findByText(question);
-    expect(gatePrompt.closest('[data-outcome="waiting"]')).toHaveClass(
-      '[&_ul[aria-label]_.line-clamp-2]:line-clamp-none',
-    );
+    const callout = await screen.findByText('1 question needs your answer');
     // N3: while someone has to act, the decision leads; the prompt follows it
     // (collapsed) and the progress list comes after both.
     const promptTitle = screen.getByText('Initial prompt');
     const progressTitle = screen.getByText('Execution progress');
     expect(
-      gatePrompt.compareDocumentPosition(promptTitle) & Node.DOCUMENT_POSITION_FOLLOWING,
+      callout.compareDocumentPosition(promptTitle) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       promptTitle.compareDocumentPosition(progressTitle) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(screen.getByText('1 decision needs your answer')).toBeInTheDocument();
-    expect(screen.getByText('Intent Capture')).toBeInTheDocument();
+    expect(screen.queryByText(question)).not.toBeInTheDocument();
     expect(screen.queryByText(/Intent Capture · waiting/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: `Answer: ${question}` }));
     expect(await screen.findByTestId('intent-workbench')).toBeInTheDocument();
   });
 
-  it('O3: I3 — two open gates give two links, one per decision', async () => {
+  it('O3: I3 — two open gates give one line and one link, to the oldest', async () => {
     get.mockResolvedValue(
       baseDetail(
         { status: 'WAITING', pendingHumanTaskId: 'gate-1' },
@@ -692,19 +688,16 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('2 decisions need your answer')).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    const links = within(list).getAllByRole('link', { name: /^Answer: / });
-    expect(links).toHaveLength(2);
+    expect(await screen.findByText('2 questions need your answer')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Open decisions' })).not.toBeInTheDocument();
+    const links = screen.getAllByRole('link', { name: /^Answer: / });
+    expect(links).toHaveLength(1);
     expect(links[0]).toHaveAccessibleName('Answer: Which pilot teams are in scope for the MVP?');
-    expect(links[1]).toHaveAccessibleName(
-      'Answer: What existing internal systems must the gateway integrate with?',
-    );
-    for (const link of links) expect(link).toHaveAttribute('href', '/space/p1/intent/i1');
+    expect(links[0]).toHaveAttribute('href', '/space/p1/intent/i1');
     expect(screen.queryByText(/Open workbench/)).not.toBeInTheDocument();
   });
 
-  it('O3 (staging I3): a parked stage without an open question is counted and listed', async () => {
+  it('O3 (staging I3): a stage parked beside an open question is neither counted nor listed', async () => {
     get.mockResolvedValue(
       baseDetail(
         { status: 'WAITING', pendingHumanTaskId: 'gate-1' },
@@ -733,15 +726,10 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('2 stages are waiting for input')).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    const items = within(list).getAllByRole('listitem');
-    expect(items).toHaveLength(2);
-    expect(items[0]).toHaveTextContent('Scope Definition');
-    expect(
-      within(items[0]).getByRole('link', { name: 'View activity: Scope Definition' }),
-    ).toHaveAttribute('href', '/space/p1/intent/i1');
-    expect(within(items[1]).getByRole('link', { name: /^Answer: / })).toBeInTheDocument();
+    expect(await screen.findByText('1 question needs your answer')).toBeInTheDocument();
+    expect(screen.queryByText(/stages are waiting|Parked/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /View activity/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^Answer: / })).toBeInTheDocument();
   });
 
   it('O11: a review gate is summarised as "Review <stage> · N artifacts" and links to the review', async () => {
@@ -772,7 +760,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('Review Reverse Engineering · 9 artifacts')).toBeInTheDocument();
+    expect(await screen.findByText('1 review needs your answer')).toBeInTheDocument();
     expect(screen.queryByText(/Produced artifacts/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: 'Review: Reverse Engineering' }));
     expect(await screen.findByTestId('review-page')).toBeInTheDocument();
@@ -817,10 +805,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     const callout = await screen.findByText(/^Failed at Reverse Engineering — /);
     expect(callout.closest('[data-outcome]')).toHaveAttribute('data-outcome', 'failed');
     expect(screen.queryByText('A stale question')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View activity' })).toHaveAttribute(
-      'href',
-      '/space/p1/intent/i1',
-    );
+    expect(screen.queryByRole('link', { name: 'View activity' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Restart from Reverse Engineering' }));
     expect(rewind).not.toHaveBeenCalled();
     const dialog = await screen.findByRole('alertdialog', {
@@ -873,9 +858,8 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1'));
     expect(rewind).not.toHaveBeenCalled();
-    expect(
-      await screen.findByRole('link', { name: 'Start on another AI-DLC version' }),
-    ).toHaveAttribute('href', '/space/p1/intent/new?fromIntent=i1');
+    // The other AI-DLC version is an item of the actions menu, not a second button here.
+    expect(screen.queryByRole('link', { name: 'Start on another AI-DLC version' })).toBeNull();
   });
 
   it('shows the error when a restart is refused', async () => {
@@ -893,7 +877,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     expect(await screen.findByText('Run cannot be started right now')).toBeInTheDocument();
   });
 
-  it('O1: I6 — a completed run shows its pull request, branch and documents at the top', async () => {
+  it('O1: I6 — a completed run shows its duration and the pull request as its one action', async () => {
     get.mockResolvedValue(
       baseDetail(
         {
@@ -936,13 +920,10 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
       pr.compareDocumentPosition(progressTitle) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getByText('Completed in 2 h 14 min')).toBeInTheDocument();
-    expect(screen.getByText('aidlc/cf2-v2618-express')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '7 documents' })).toHaveAttribute(
-      'href',
-      '/space/p1/intent/i1#intent-work-products',
+    expect(pr.closest('[data-outcome]')).not.toHaveTextContent(
+      /aidlc\/cf2-v2618-express|documents/,
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Check delivery' }));
-    expect(await screen.findByTestId('intent-workbench')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check delivery' })).not.toBeInTheDocument();
   });
 
   it('N3: a failed run leads with the failure, the prompt follows', async () => {
@@ -982,7 +963,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     ).toBeTruthy();
   });
 
-  it('O1: I4 — a cancelled run says what was integrated and names the branch', async () => {
+  it('O1: I4 — a cancelled run says what was integrated in its one line', async () => {
     get.mockResolvedValue(
       baseDetail(
         { status: 'CANCELLED', branch: 'aidlc/cart-badge', completedAt: agoIso(5 * DAY) },
@@ -997,9 +978,12 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('Cancelled 5 days ago')).toBeInTheDocument();
-    expect(screen.getByText('2 of 3 units integrated before the run stopped.')).toBeInTheDocument();
-    expect(screen.getByText('aidlc/cart-badge')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        'Cancelled 5 days ago · 2 of 3 units integrated before the run stopped',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('aidlc/cart-badge')).not.toBeInTheDocument();
   });
 
   it('I7: a draft points to the compose page', async () => {
@@ -1273,5 +1257,73 @@ describe('IntentObservabilityPage — switching intents', () => {
     expect(screen.queryByText('Run cannot be started right now')).toBeNull();
     expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeEnabled();
     finishRestart();
+  });
+});
+
+describe('IntentObservabilityPage — restart target', () => {
+  it('names the stage it rewinds when two stages failed', async () => {
+    rewind.mockResolvedValue({});
+    compiled.mockResolvedValue({
+      scopeGrid: {},
+      graph: {
+        nodes: [
+          { stageId: 'code-generation', phasePath: '03', order: 0 },
+          { stageId: 'build-and-test', phasePath: '03', order: 1 },
+        ],
+        edges: [],
+      },
+    });
+    get.mockResolvedValue(
+      baseDetail(
+        {
+          status: 'FAILED',
+          currentStage: 'build-and-test',
+          failure: { code: 'agent_error', message: 'agent_error: boom' },
+        },
+        {
+          // API order is the stage key order, not the plan order.
+          stages: [
+            stage('build-and-test', { state: 'FAILED' }),
+            stage('code-generation', { state: 'FAILED' }),
+          ],
+        },
+      ),
+    );
+    renderPage();
+
+    expect(await screen.findByText(/^Failed at Code Generation — /)).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Restart from Code Generation' }),
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Restart from Code Generation?',
+    });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Restart from this stage' }));
+    await waitFor(() =>
+      expect(rewind).toHaveBeenCalledWith(
+        'p1',
+        'i1',
+        expect.objectContaining({ fromStageId: 'code-generation' }),
+      ),
+    );
+  });
+});
+
+describe('IntentObservabilityPage — stalled hand-off', () => {
+  it('a stalled run the orchestrator claimed is not "never picked up"', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        orchestratorStartedAt: agoIso(45 * 60_000),
+        createdAt: agoIso(46 * 60_000),
+        updatedAt: agoIso(45 * 60_000),
+      }),
+    );
+    renderPage();
+
+    await screen.findByRole('heading', { name: 'Test Intent' });
+    const callout = document.querySelector('[data-outcome]') as HTMLElement;
+    expect(callout).toHaveTextContent('Stalled while preparing the workspace — no activity for');
+    expect(callout).not.toHaveTextContent(/never picked up|requested/);
   });
 });

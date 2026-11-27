@@ -2,20 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
-import type {
-  Intent,
-  IntentArtifact,
-  IntentDetail,
-  IntentGate,
-  IntentStage,
-  IntentUnit,
-} from '@/services/intents';
+import type { Intent, IntentDetail, IntentGate, IntentStage, IntentUnit } from '@/services/intents';
 import {
   IntentOutcomeCallout,
   openDecisions,
   type IntentOutcomeCalloutProps,
 } from './IntentOutcomeCallout';
-import { countWorkProductDocuments } from './documentHelpers';
 
 // Fixtures follow the audited staging intents (audit §5.1/§5.4): I1 one
 // waiting gate, I3 two gates of 108/136 days, I5 hung RUNNING since July,
@@ -303,93 +295,83 @@ const I3_ORPHAN_STAGE = makeDetail({
   ],
 });
 
+// One line and at most one action: every test checks the title and that the
+// callout never grows a list, a fact row or a second button.
+const actionCount = () =>
+  within(status()).queryAllByRole('button').length + within(status()).queryAllByRole('link').length;
+
 describe('IntentOutcomeCallout — WAITING', () => {
-  it('I1: names the one decision without repeating its age, and offers one Answer action', async () => {
+  it('I1: names the one question without repeating its age, and offers one Answer action', async () => {
     const onAnswer = vi.fn();
     renderCallout({ detail: I1_WAITING, onAnswer });
-    expect(status()).toHaveTextContent('1 decision needs your answer');
+    expect(status()).toHaveTextContent('1 question needs your answer');
     // The header pill carries the age; the callout never repeats it (R5-1).
     expect(status()).not.toHaveTextContent(/108 days/);
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    expect(list).toHaveTextContent('Feasibility');
-    const answers = screen.getAllByRole('button', { name: /^Answer/ });
-    expect(answers).toHaveLength(1);
-    expect(answers[0]).toHaveAccessibleName('Answer: Which LLM router should the cart use?');
-    await userEvent.click(answers[0]);
+    expect(screen.queryByRole('list')).toBeNull();
+    const answer = screen.getByRole('button', { name: /^Answer/ });
+    expect(answer).toHaveAccessibleName('Answer: Which LLM router should the cart use?');
+    expect(actionCount()).toBe(1);
+    await userEvent.click(answer);
     expect(onAnswer).toHaveBeenCalledWith('q-1');
   });
 
-  it('I3: counts two decisions, oldest first, one action per gate and no ages', () => {
+  it('I3: counts two decisions and opens the oldest one through its link, no ages, no rows', () => {
     renderCallout({
       detail: I3_TWO_GATES,
       links: { gate: (gate) => `/review/${gate.humanTaskId}` },
     });
     expect(status()).toHaveTextContent('2 decisions need your answer');
-    expect(status()).not.toHaveTextContent(/days/);
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    const items = within(list).getAllByRole('listitem');
-    expect(items).toHaveLength(2);
-    // Oldest first: the 136-day validation gate names its stage, not a slug.
-    expect(items[0]).toHaveTextContent('Scope Definition');
-    expect(within(items[0]).getByRole('link', { name: /^Review/ })).toHaveAttribute(
+    expect(status()).not.toHaveTextContent(/days|Scope Definition|Feasibility/);
+    // Oldest first: the 136-day validation gate.
+    expect(screen.getByRole('link', { name: 'Review: Scope Definition' })).toHaveAttribute(
       'href',
       '/review/q-2',
     );
-    expect(within(items[1]).getByRole('link', { name: /^Answer/ })).toHaveAttribute(
-      'href',
-      '/review/q-1',
-    );
-    expect(list.textContent).not.toMatch(/si-scope-definition|q-1|q-2/);
+    expect(actionCount()).toBe(1);
+    expect(status().textContent).not.toMatch(/si-scope-definition|q-1|q-2/);
   });
 
-  it('I3 (staging): a stage parked without an open question still counts', () => {
+  it('I3 (staging): a stage still parked next to an open question is not a second decision', () => {
     renderCallout({
       detail: I3_ORPHAN_STAGE,
       links: { details: '/space/llm/intent/675', gate: () => '/review' },
     });
-    expect(status()).toHaveTextContent('2 stages are waiting for input');
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    const items = within(list).getAllByRole('listitem');
-    expect(items).toHaveLength(2);
-    expect(items[0]).toHaveTextContent('Scope Definition');
-    // Announced and honest: there is no card for it on this page.
-    expect(items[0]).toHaveTextContent('Parked with no open question');
-    expect(
-      within(items[0]).getByRole('link', { name: 'View activity: Scope Definition' }),
-    ).toHaveAttribute('href', '/space/llm/intent/675');
-    expect(within(items[1]).getByRole('link', { name: /^Answer/ })).toBeInTheDocument();
-  });
-
-  it('I3 (Work): the parked stage opens its activity in place when the page owns the panel', async () => {
-    const onViewActivity = vi.fn();
-    const onAnswer = vi.fn();
-    renderCallout({ detail: I3_ORPHAN_STAGE, onAnswer, onViewActivity });
-    const items = within(screen.getByRole('list', { name: 'Open decisions' })).getAllByRole(
-      'listitem',
-    );
-    expect(items[0]).toHaveTextContent('Parked with no open question');
-    await userEvent.click(
-      within(items[0]).getByRole('button', { name: 'View activity: Scope Definition' }),
-    );
-    expect(onViewActivity).toHaveBeenCalledWith('si-scope-definition');
-    await userEvent.click(within(items[1]).getByRole('button', { name: /^Answer/ }));
-    expect(onAnswer).toHaveBeenCalledWith('q-1');
+    expect(status()).toHaveTextContent('1 question needs your answer');
+    expect(status()).not.toHaveTextContent(/stages|Parked/);
+    expect(screen.getByRole('link', { name: /^Answer/ })).toHaveAttribute('href', '/review');
     expect(screen.queryByRole('link', { name: /View activity/ })).toBeNull();
+    expect(actionCount()).toBe(1);
   });
 
-  it('openDecisions: oldest first, pending gates and parked stages, no double counting', () => {
+  it('a stage parked with nothing to answer says so and points at the activity', () => {
+    renderCallout({
+      detail: makeDetail({
+        intent: I3_TWO_GATES.intent,
+        stages: I3_TWO_GATES.stages,
+        gates: [makeGate({ status: 'superseded' })],
+      }),
+      links: { details: '/space/llm/intent/675' },
+    });
+    expect(status()).toHaveTextContent('Parked at Scope Definition — nothing to answer');
+    expect(screen.getByRole('link', { name: 'View activity' })).toHaveAttribute(
+      'href',
+      '/space/llm/intent/675',
+    );
+    expect(actionCount()).toBe(1);
+  });
+
+  it('openDecisions: pending gates oldest first; parked stages only when no gate is open', () => {
     const decisions = openDecisions(I3_ORPHAN_STAGE);
-    expect(decisions.map((d) => d.kind)).toEqual(['stage', 'gate']);
-    expect(decisions[0].since).toBe(daysAgo(136, 10));
-    expect(decisions[1].since).toBe(daysAgo(108, 12));
-    expect(openDecisions(I3_TWO_GATES).map((d) => d.kind)).toEqual(['gate', 'gate']);
+    expect(decisions.map((d) => d.kind)).toEqual(['gate']);
+    expect(decisions[0].since).toBe(daysAgo(108, 12));
+    expect(openDecisions(I3_TWO_GATES).map((d) => d.since)).toEqual([
+      daysAgo(136, 10),
+      daysAgo(108, 12),
+    ]);
     expect(openDecisions(I1_WAITING)).toHaveLength(1);
-  });
-
-  it('stacks the action under the question below sm and keeps it inline above', () => {
-    renderCallout({ detail: I1_WAITING, onAnswer: vi.fn() });
-    const row = within(screen.getByRole('list', { name: 'Open decisions' })).getByRole('listitem');
-    expect(row).toHaveClass('flex-col', 'sm:flex-row');
+    const parked = openDecisions({ stages: I3_TWO_GATES.stages, gates: [] });
+    expect(parked.map((d) => d.kind)).toEqual(['stage', 'stage']);
+    expect(parked[0].since).toBe(daysAgo(136, 10));
   });
 
   it('does not speculate about expiry: no "may not resume" without a backend signal', () => {
@@ -412,10 +394,11 @@ describe('IntentOutcomeCallout — WAITING', () => {
     expect(status()).toHaveTextContent('Your answer was saved but the run did not continue');
     await userEvent.click(screen.getByRole('button', { name: 'Resume run' }));
     expect(onClick).toHaveBeenCalledTimes(1);
+    expect(actionCount()).toBe(1);
   });
 
-  it("resumeRequired in one lane keeps the other lane's open decision visible", async () => {
-    const onAnswer = vi.fn();
+  it("resumeRequired in one lane names the other lane's open question and keeps Resume as the action", async () => {
+    const resume = vi.fn();
     renderCallout({
       detail: makeDetail({
         intent: makeIntent({
@@ -450,18 +433,15 @@ describe('IntentOutcomeCallout — WAITING', () => {
           }),
         ],
       }),
-      actions: { resume: { onClick: vi.fn() } },
-      onAnswer,
+      actions: { resume: { onClick: resume } },
+      onAnswer: vi.fn(),
     });
-    const callout = status();
-    expect(callout).toHaveTextContent('1 decision needs your answer');
-    expect(callout).toHaveTextContent('Your answer was saved but the run did not continue');
-    expect(screen.getByRole('button', { name: 'Resume run' })).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Open decisions' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(1);
-    expect(list).toHaveTextContent('Which API version?');
-    await userEvent.click(within(list).getByRole('button', { name: /^Answer/ }));
-    expect(onAnswer).toHaveBeenCalledWith('q-2');
+    expect(status()).toHaveTextContent(
+      '1 question needs your answer · a saved answer did not continue',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Resume run' }));
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(actionCount()).toBe(1);
   });
 
   it('WAITING with no pending gate and no resume reads as automatic, not as a human task', () => {
@@ -478,18 +458,19 @@ describe('IntentOutcomeCallout — WAITING', () => {
     expect(callout).toHaveTextContent('Waiting on the engine — no action needed from you');
     expect(callout).not.toHaveTextContent(/your answer|someone answers/i);
     expect(callout).toHaveAttribute('data-outcome', 'waiting_engine');
-    expect(screen.queryByRole('list', { name: 'Open decisions' })).toBeNull();
+    expect(actionCount()).toBe(0);
   });
 });
 
 describe('IntentOutcomeCallout — RUNNING', () => {
-  it('healthy: says what it works on and when it was last active, running tone', () => {
-    renderCallout({ detail: RUNNING_HEALTHY });
+  it('healthy: says what it works on and when it was last active, running tone, no action', () => {
+    renderCallout({ detail: RUNNING_HEALTHY, links: { details: '/work' } });
     expect(status()).toHaveTextContent('Working on Reverse Engineering · last activity 3 min ago');
     expect(status()).toHaveAttribute('data-outcome', 'running');
+    expect(actionCount()).toBe(0);
   });
 
-  it('I5 stalled: warning, coarse age, no pulse, explains why Cancel is unavailable', () => {
+  it('I5 stalled: warning, coarse age, no pulse, nothing more than the line without a restart', () => {
     renderCallout({ detail: I5_STALLED, links: { details: '/space/retail-v2/intent/c93' } });
     const callout = status();
     expect(callout).toHaveTextContent('Stalled at Intent Capture — no activity for 4 months');
@@ -497,23 +478,8 @@ describe('IntentOutcomeCallout — RUNNING', () => {
     expect(callout).toHaveAttribute('data-outcome', 'stalled');
     expect(callout.querySelector('[data-pulse]')).toBeNull();
     expect(callout.querySelector('.animate-pulse, .motion-safe\\:animate-pulse')).toBeNull();
-    expect(callout).toHaveTextContent(/cannot be cancelled/i);
-    expect(screen.getByRole('link', { name: 'View activity' })).toHaveAttribute(
-      'href',
-      '/space/retail-v2/intent/c93',
-    );
-    expect(screen.queryByRole('link', { name: 'Open details' })).toBeNull();
+    expect(actionCount()).toBe(0);
     expect(screen.queryByRole('button', { name: /Cancel/ })).toBeNull();
-  });
-
-  it('I5 stalled (Work): "activity" in the sentence opens the stalled stage output', async () => {
-    const onViewActivity = vi.fn();
-    renderCallout({ detail: I5_STALLED, onViewActivity });
-    const activity = within(status()).getByRole('button', { name: 'View activity' });
-    expect(activity).toHaveTextContent('activity');
-    await userEvent.click(activity);
-    expect(onViewActivity).toHaveBeenCalledWith(I5_STALLED.stages[0].stageInstanceId);
-    expect(screen.queryByRole('link', { name: 'View activity' })).toBeNull();
   });
 
   it('I5 stalled: offers Restart from the current stage only when the callback is provided', async () => {
@@ -526,7 +492,7 @@ describe('IntentOutcomeCallout — RUNNING', () => {
           now={NOW}
           links={{}}
           detail={I5_STALLED}
-          actions={{ restartFromStage: { onClick } }}
+          actions={{ restartFromStage: { stageId: 'intent-capture', onClick } }}
         />
       </MemoryRouter>,
     );
@@ -545,54 +511,63 @@ describe('IntentOutcomeCallout — RUNNING', () => {
 });
 
 describe('IntentOutcomeCallout — FAILED', () => {
-  it('I8: names the failed stage, the plain reason, and keeps the raw code in Technical details', async () => {
+  it('I8: names the failed stage and the plain reason, never the raw code', () => {
     renderCallout({ detail: I8_FAILED });
     expect(status()).toHaveTextContent(
       'Failed at Reverse Engineering — This stage uses a mode this platform version does not support yet.',
     );
     expect(status()).toHaveAttribute('data-tone', 'danger');
-    // The raw code is one deliberate action away, never the headline.
     expect(screen.queryByText('not_implemented', { exact: false })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: /Technical details/ }));
-    expect(screen.getByText('not_implemented')).toBeInTheDocument();
-    expect(
-      screen.getByText('stage_failed: reverse-engineering: not_implemented: mode pipeline'),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Technical details/ })).toBeNull();
+    expect(actionCount()).toBe(0);
   });
 
-  it('I8: renders only the recovery actions that are provided, each behind a confirmation', async () => {
+  it('I8: one recovery action — the stage restart when allowed, behind a confirmation', async () => {
     const restart = vi.fn();
     const startAgain = vi.fn();
     renderCallout({
       detail: I8_FAILED,
-      actions: { restartFromStage: { onClick: restart }, startAgain: { onClick: startAgain } },
+      actions: {
+        restartFromStage: { stageId: 'reverse-engineering', onClick: restart },
+        startAgain: { onClick: startAgain },
+      },
       links: { logs: '/space/retail-v2/intent/56d#output', details: '/space/retail-v2/intent/56d' },
     });
+    expect(actionCount()).toBe(1);
+    expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open logs' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Restart from Reverse Engineering' }));
-    let dialog = await screen.findByRole('alertdialog', {
+    const dialog = await screen.findByRole('alertdialog', {
       name: 'Restart from Reverse Engineering?',
     });
     expect(dialog).toHaveTextContent(/completed stages are kept/i);
     await userEvent.click(within(dialog).getByRole('button', { name: 'Restart from this stage' }));
     expect(restart).toHaveBeenCalledTimes(1);
+    expect(startAgain).not.toHaveBeenCalled();
+  });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Restart workflow' }));
-    dialog = await screen.findByRole('alertdialog', {
-      name: 'Restart this workflow from the beginning?',
+  it('falls back to Restart workflow, then to the logs link, when no stage restart is allowed', () => {
+    const { rerender } = renderCallout({
+      detail: I8_FAILED,
+      actions: { startAgain: { onClick: vi.fn() } },
+      links: { logs: '/space/retail-v2/intent/56d#output' },
     });
-    expect(dialog).toHaveTextContent(/failed run stays in history/i);
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Restart workflow' }));
-    expect(startAgain).toHaveBeenCalledTimes(1);
-
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeInTheDocument();
+    expect(actionCount()).toBe(1);
+    rerender(
+      <MemoryRouter>
+        <IntentOutcomeCallout
+          now={NOW}
+          detail={I8_FAILED}
+          links={{ logs: '/space/retail-v2/intent/56d#output' }}
+        />
+      </MemoryRouter>,
+    );
     expect(screen.getByRole('link', { name: 'Open logs' })).toHaveAttribute(
       'href',
       '/space/retail-v2/intent/56d#output',
     );
-    expect(screen.getByRole('link', { name: 'View activity' })).toHaveAttribute(
-      'href',
-      '/space/retail-v2/intent/56d',
-    );
-    expect(screen.queryByRole('button', { name: 'Start again' })).toBeNull();
+    expect(actionCount()).toBe(1);
   });
 
   it('Restart workflow: Keep run leaves the run untouched and quotes the previous cost', async () => {
@@ -619,24 +594,16 @@ describe('IntentOutcomeCallout — FAILED', () => {
         ],
       }),
       actions: { startAgain: { onClick: startAgain } },
-      links: { newVersion: '/space/retail-v2/intent/new?fromIntent=56d' },
     });
     await userEvent.click(screen.getByRole('button', { name: 'Restart workflow' }));
     const dialog = await screen.findByRole('alertdialog');
     expect(dialog).toHaveTextContent('$0.42');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Keep run' }));
     expect(startAgain).not.toHaveBeenCalled();
-    expect(screen.getByRole('link', { name: 'Start on another AI-DLC version' })).toHaveAttribute(
-      'href',
-      '/space/retail-v2/intent/new?fromIntent=56d',
-    );
   });
 
   it('Restart workflow: focus returns to the Restart button when the dialog is dismissed (WCAG 2.4.3)', async () => {
-    renderCallout({
-      detail: I8_FAILED,
-      actions: { startAgain: { onClick: vi.fn() }, restartFromStage: { onClick: vi.fn() } },
-    });
+    renderCallout({ detail: I8_FAILED, actions: { startAgain: { onClick: vi.fn() } } });
     const restart = screen.getByRole('button', { name: 'Restart workflow' });
     await userEvent.click(restart);
     const dialog = await screen.findByRole('alertdialog');
@@ -644,18 +611,19 @@ describe('IntentOutcomeCallout — FAILED', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     await waitFor(() => expect(restart).toHaveFocus());
 
-    const restartStage = screen.getByRole('button', { name: 'Restart from Reverse Engineering' });
-    await userEvent.click(restartStage);
+    await userEvent.click(restart);
     await screen.findByRole('alertdialog');
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    await waitFor(() => expect(restartStage).toHaveFocus());
+    await waitFor(() => expect(restart).toHaveFocus());
   });
 
   it('shows a pending recovery action as busy', () => {
     renderCallout({
       detail: I8_FAILED,
-      actions: { restartFromStage: { onClick: vi.fn(), pending: true } },
+      actions: {
+        restartFromStage: { stageId: 'reverse-engineering', onClick: vi.fn(), pending: true },
+      },
     });
     expect(
       screen.getByRole('button', { name: 'Restart from Reverse Engineering' }),
@@ -681,58 +649,16 @@ describe('IntentOutcomeCallout — FAILED', () => {
 });
 
 describe('IntentOutcomeCallout — SUCCEEDED', () => {
-  it('I6: duration, PR link with number, branch, and the documents link', () => {
-    renderCallout({
-      detail: I6_SUCCEEDED,
-      links: { documents: '/space/retail-v2/intent/8f0#intent-work-products' },
-    });
-    expect(status()).toHaveTextContent('Completed in 2 h 14 min');
+  it('I6: the duration and the pull request as the one action; no branch, no document count', () => {
+    renderCallout({ detail: I6_SUCCEEDED, actions: { checkDelivery: { onClick: vi.fn() } } });
+    expect(within(status()).getByRole('heading')).toHaveTextContent(/^Completed in 2 h 14 min$/);
     expect(status()).toHaveAttribute('data-tone', 'success');
     const pr = screen.getByRole('link', { name: 'PR #57 · retail-store-cart' });
     expect(pr).toHaveAttribute('href', 'https://github.com/eipasteur/retail-store-cart/pull/57');
     expect(pr).toHaveAttribute('target', '_blank');
-    expect(status()).toHaveTextContent('aidlc/cf2-v2618-express');
-    expect(screen.getByRole('link', { name: '7 documents' })).toHaveAttribute(
-      'href',
-      '/space/retail-v2/intent/8f0#intent-work-products',
-    );
-  });
-
-  it('"N documents" is the shared work-products count: code and superseded artifacts are excluded', () => {
-    const artifact = (over: Partial<IntentArtifact>): IntentArtifact => ({
-      id: 'a',
-      artifactType: 'document',
-      title: 'Doc',
-      createdByExecutionId: 'exec-1',
-      createdByStageInstanceId: null,
-      createdAt: '2026-11-19T11:00:00Z',
-      ...over,
-    });
-    const artifacts = [
-      artifact({ id: 'd1', title: 'Intent statement', artifactType: 'intent-statement' }),
-      artifact({ id: 'd2', title: 'Design notes', artifactType: 'markdown' }),
-      artifact({ id: 'd3', title: 'Code summary', artifactType: 'code-summary' }),
-      artifact({
-        id: 'c1',
-        title: 'src/cart/Badge.tsx',
-        artifactType: 'code',
-        content: 'export {}',
-      }),
-      artifact({
-        id: 'd0',
-        title: 'Intent statement (old)',
-        artifactType: 'document',
-        supersededAt: '2026-11-19T11:30:00Z',
-      }),
-    ];
-    const expected = countWorkProductDocuments(artifacts);
-    expect(expected).toBe(3);
-    renderCallout({
-      detail: makeDetail({ intent: I6_SUCCEEDED.intent, artifacts }),
-      links: { documents: '#intent-work-products' },
-    });
-    expect(screen.getByRole('link', { name: `${expected} documents` })).toBeInTheDocument();
-    expect(status()).not.toHaveTextContent(/[45] documents/);
+    expect(status()).not.toHaveTextContent(/aidlc\/cf2-v2618-express|documents/);
+    expect(screen.queryByRole('button', { name: 'Check delivery' })).toBeNull();
+    expect(actionCount()).toBe(1);
   });
 
   it('falls back to the delivery record when pullRequests is absent', () => {
@@ -762,28 +688,50 @@ describe('IntentOutcomeCallout — SUCCEEDED', () => {
     expect(screen.getByRole('link', { name: 'PR #57 · retail-store-cart' })).toBeInTheDocument();
   });
 
-  it('offers Check delivery as a secondary action when provided', async () => {
+  it('offers Check delivery only without a pull request to open', async () => {
     const onClick = vi.fn();
-    renderCallout({ detail: I6_SUCCEEDED, actions: { checkDelivery: { onClick } } });
+    renderCallout({
+      detail: makeDetail({ intent: I6_SUCCEEDED.intent }),
+      actions: { checkDelivery: { onClick } },
+    });
     await userEvent.click(screen.getByRole('button', { name: 'Check delivery' }));
     expect(onClick).toHaveBeenCalledTimes(1);
+    expect(actionCount()).toBe(1);
+  });
+
+  it('adds the partial integration to the line', () => {
+    renderCallout({
+      detail: makeDetail({
+        intent: I6_SUCCEEDED.intent,
+        unitCompletion: {
+          state: 'partial',
+          total: 3,
+          integrated: 2,
+          skipped: 1,
+          unresolved: [],
+          legacyPartial: false,
+        },
+      }),
+    });
+    expect(status()).toHaveTextContent('Completed in 2 h 14 min · 2 of 3 units integrated');
   });
 });
 
 describe('IntentOutcomeCallout — CANCELLED, DRAFT, CREATED', () => {
-  it('I4: says what was delivered before the cancel', () => {
+  it('I4: says what was delivered before the cancel, in the line', () => {
     renderCallout({ detail: I4_CANCELLED });
-    expect(status()).toHaveTextContent('Cancelled 38 days ago');
-    expect(status()).toHaveTextContent('2 of 3 units integrated');
-    expect(status()).toHaveTextContent('aidlc/cart-badge');
-    expect(status()).not.toHaveTextContent('Nothing was delivered');
+    expect(status()).toHaveTextContent(
+      'Cancelled 38 days ago · 2 of 3 units integrated before the run stopped',
+    );
+    expect(status()).not.toHaveTextContent(/aidlc\/cart-badge|nothing was delivered/);
+    expect(actionCount()).toBe(0);
   });
 
   it('cancelled with nothing integrated says so', () => {
     renderCallout({
       detail: makeDetail({ intent: makeIntent({ status: 'CANCELLED', completedAt: daysAgo(1) }) }),
     });
-    expect(status()).toHaveTextContent('Nothing was delivered');
+    expect(status()).toHaveTextContent('Cancelled 1 day ago · nothing was delivered');
   });
 
   it('DRAFT points at the compose page', () => {
@@ -796,6 +744,7 @@ describe('IntentOutcomeCallout — CANCELLED, DRAFT, CREATED', () => {
       'href',
       '/space/retail-v2/intent/d1/compose',
     );
+    expect(actionCount()).toBe(1);
   });
 
   it('CREATED reads as starting with its age', () => {
@@ -810,5 +759,80 @@ describe('IntentOutcomeCallout — CANCELLED, DRAFT, CREATED', () => {
     });
     expect(status()).toHaveTextContent('Starting · requested 2 min ago');
     expect(status()).toHaveAttribute('data-outcome', 'created');
+  });
+});
+
+describe('IntentOutcomeCallout — restart target', () => {
+  it('names the stage the caller rewinds, not the first FAILED row of the detail', async () => {
+    const onClick = vi.fn();
+    renderCallout({
+      detail: makeDetail({
+        intent: makeIntent({ status: 'FAILED', currentStage: 'build-and-test' }),
+        stages: [
+          makeStage({ stageId: 'build-and-test', state: 'FAILED' }),
+          makeStage({ stageId: 'code-generation', state: 'FAILED' }),
+        ],
+      }),
+      actions: { restartFromStage: { stageId: 'code-generation', onClick } },
+    });
+    expect(status()).toHaveTextContent(/^Failed at Code Generation — /);
+    await userEvent.click(screen.getByRole('button', { name: 'Restart from Code Generation' }));
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Restart from Code Generation?' }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('IntentOutcomeCallout — stalled hand-off', () => {
+  const created = (over: Partial<Intent>) =>
+    makeDetail({
+      intent: makeIntent({
+        status: 'CREATED',
+        currentStage: null,
+        createdAt: minutesAgo(46),
+        updatedAt: minutesAgo(45),
+        ...over,
+      }),
+    });
+
+  it('a run the orchestrator claimed is preparing its workspace, not "never picked up"', () => {
+    renderCallout({ detail: created({ orchestratorStartedAt: minutesAgo(45) }) });
+    expect(status()).toHaveTextContent('Stalled while preparing the workspace — no activity for');
+    expect(status()).not.toHaveTextContent(/never picked up|requested/);
+  });
+
+  it('an unclaimed run says it was never picked up, with the time since its last activity', () => {
+    renderCallout({ detail: created({}) });
+    expect(status()).toHaveTextContent(
+      'Stalled before the first stage — never picked up, no activity for',
+    );
+    expect(status()).not.toHaveTextContent(/requested/);
+  });
+});
+
+describe('IntentOutcomeCallout — a reader who cannot answer', () => {
+  it('says what is open and offers View instead of Answer', () => {
+    renderCallout({
+      detail: I1_WAITING,
+      canAnswer: () => false,
+      links: { gate: (gate) => `/review/${gate.humanTaskId}` },
+    });
+    expect(status()).toHaveTextContent('1 question waiting for an answer');
+    expect(status()).not.toHaveTextContent(/your answer/);
+    expect(screen.queryByRole('link', { name: /^Answer/ })).toBeNull();
+    expect(
+      screen.getByRole('link', { name: 'View: Which LLM router should the cart use?' }),
+    ).toHaveAttribute('href', '/review/q-1');
+    expect(actionCount()).toBe(1);
+  });
+
+  it('counts and opens only the gates the reader may answer', () => {
+    renderCallout({
+      detail: I3_TWO_GATES,
+      canAnswer: (gate) => gate.humanTaskId === 'q-1',
+      links: { gate: (gate) => `/review/${gate.humanTaskId}` },
+    });
+    expect(status()).toHaveTextContent('1 question needs your answer');
+    expect(screen.getByRole('link', { name: /^Answer: / })).toHaveAttribute('href', '/review/q-1');
   });
 });
