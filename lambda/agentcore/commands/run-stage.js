@@ -163,6 +163,12 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
   'agent.max-turns@v1',
 ]);
 
+// Where a refused sparse commit was saved, for the refusal summary.
+const sparsePreservation = (r) => {
+  if (r.preserved?.sha) return ` (saved to ${r.preserved.ref})`;
+  return r.preserved ? ` (not saved to ${r.preserved.ref}: ${r.preserved.error})` : '';
+};
+
 export const verifyReviewTargets = async ({
   targets = [],
   projectId,
@@ -3586,14 +3592,29 @@ const runStageAttempt = async (
     // so agents do not have to ask the human what the run is about.
     const intentMeta = await store.getExecution(executionId).catch(() => null);
     let compiledContext = '';
+    // ok | truncated | unavailable, recorded with the prompt-size sample so an
+    // incomplete pack is visible outside the prompt. Null when no pack is built.
+    let contextPack = null;
     if (openEngineGraph) {
       let contextGraph;
       try {
         contextGraph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
         const pack = await compileContextPack({ graph: contextGraph, stage, unit });
         compiledContext = pack.markdown ?? '';
+        // An injected compiler may predate the status fields.
+        contextPack = { status: pack.status ?? 'ok', omitted: pack.omitted ?? 0 };
+        if (contextPack.status !== 'ok') {
+          logger.warn('compiled context incomplete', {
+            stageInstanceId,
+            status: contextPack.status,
+            omitted: contextPack.omitted,
+            bytesTruncated: pack.truncated === true,
+          });
+        }
       } catch (e) {
         compiledContext = `## Compiled graph context\n\n- Context compiler unavailable: ${e.message}`;
+        contextPack = { status: 'unavailable', omitted: 0 };
+        logger.warn('compiled context unavailable', e, { stageInstanceId });
       } finally {
         await closeEngineGraph(contextGraph);
       }
@@ -3712,6 +3733,10 @@ const runStageAttempt = async (
         metrics: {
           promptBytes: Buffer.byteLength(prompt, 'utf8'),
           compiledContextBytes: Buffer.byteLength(compiledContext ?? '', 'utf8'),
+          ...(contextPack && {
+            contextPackStatus: contextPack.status,
+            contextItemsOmitted: contextPack.omitted,
+          }),
         },
         resolvedModel: model ?? null,
       })
@@ -4009,18 +4034,14 @@ const runStageAttempt = async (
   // through workAtRiskFailure; nothing of that repo reached the intent branch.
   // The engine pushed the refused state to a side ref so it survives a wiped
   // workspace; say where it is, or that it could not be saved.
-  const reportSparseRefusal = async (result, label) => {
-    const refused = (result.results ?? []).filter((r) => SPARSE_REJECTIONS.has(r.reason));
+  const reportSparseRefusal = async (commitResult, label) => {
+    const refused = (commitResult.results ?? []).filter((r) => SPARSE_REJECTIONS.has(r.reason));
     if (refused.length === 0) return;
-    const scope = label ? `${stageLabel} (${label})` : stageLabel;
-    const preservation = (r) => {
-      if (r.preserved?.sha) return ` (saved to ${r.preserved.ref})`;
-      return r.preserved ? ` (not saved to ${r.preserved.ref}: ${r.preserved.error})` : '';
-    };
+    const commitScope = label ? `${stageLabel} (${label})` : stageLabel;
     const detail = refused
-      .map((r) => `${r.repo}: ${r.detail ?? r.reason}${preservation(r)}`)
+      .map((r) => `${r.repo}: ${r.detail ?? r.reason}${sparsePreservation(r)}`)
       .join('; ');
-    const summary = `Engine refused to commit ${scope}: ${detail}. The changes are left uncommitted in the workspace; while it survives, a retry is told to restore them.`;
+    const summary = `Engine refused to commit ${commitScope}: ${detail}. The changes are left uncommitted in the workspace; while it survives, a retry is told to restore them.`;
     await store
       .appendEvent({
         executionId,
@@ -4047,10 +4068,10 @@ const runStageAttempt = async (
   // whether the stage's code predates its approval, so EVERY commit of the attempt
   // must publish it — a repair commit that stayed silent left the lineage check
   // judging the stage on its pre-approval commit.
-  const publishGitEvidence = async (result, { label = null } = {}) => {
-    if (!result || (!result.committed && result.ok)) return;
-    await reportSparseRefusal(result, label);
-    const failedRepos = (result.results ?? [])
+  const publishGitEvidence = async (commitResult, { label = null } = {}) => {
+    if (!commitResult || (!commitResult.committed && commitResult.ok)) return;
+    await reportSparseRefusal(commitResult, label);
+    const failedRepos = (commitResult.results ?? [])
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
       // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
       // root cause was invisible because only the reason label was recorded.
@@ -4058,17 +4079,17 @@ const runStageAttempt = async (
         (r) =>
           `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
       );
-    const scope = label ? `${stageLabel} (${label})` : stageLabel;
-    const gitSummary = result.ok
-      ? `Engine committed + pushed work for ${scope} (${(result.results ?? [])
+    const commitScope = label ? `${stageLabel} (${label})` : stageLabel;
+    const gitSummary = commitResult.ok
+      ? `Engine committed + pushed work for ${commitScope} (${(commitResult.results ?? [])
           .filter((r) => r.committed)
           .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
           .join(', ')})`
-      : `Engine push failed for ${scope}: ${failedRepos.join(', ')}`;
+      : `Engine push failed for ${commitScope}: ${failedRepos.join(', ')}`;
     await store
       .appendEvent({
         executionId,
-        type: result.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
+        type: commitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
         stageInstanceId,
         unitSlug,
         sectionIndex,
@@ -4079,7 +4100,7 @@ const runStageAttempt = async (
     // Surface a push failure live (agent.note is the timeline-note action the
     // UI already routes) — the user must see git trouble at stage N, not after
     // the whole run has burned its tokens.
-    if (!result.ok) {
+    if (!commitResult.ok) {
       await publish({
         action: 'agent.note',
         noteType: 'v2.git.push_failed',

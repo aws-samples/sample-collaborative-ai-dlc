@@ -27,6 +27,9 @@ const REGISTRY: Record<string, MetricKind> = {
   // accept, one sample per dispatch leg. The peak — not the sum — is the
   // meaningful aggregate.
   agentLaunchMs: 'gauge:max',
+  // Decision and unit-pack items a stage's compiled context left out, one
+  // sample per fresh stage run: a count, so samples sum.
+  contextItemsOmitted: 'additive',
 };
 
 export function classify(key: string): MetricKind {
