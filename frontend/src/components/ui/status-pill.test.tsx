@@ -18,6 +18,13 @@ describe('StatusPill', () => {
     expect(screen.getByText(expected)).toBeInTheDocument();
   });
 
+  it('keeps the text size and tightens the box at size xs', () => {
+    const { container } = render(<StatusPill kind="intent" status="RUNNING" size="xs" />);
+    const pill = container.firstElementChild;
+    expect(pill).toHaveClass('text-2xs', 'px-1.5', 'py-0', 'gap-1');
+    expect(pill).not.toHaveClass('px-2', 'py-0.5', 'gap-1.5');
+  });
+
   it('hides the icon from assistive technology', () => {
     const { container } = render(<StatusPill kind="stage" status="FAILED" size="md" />);
     expect(container.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');

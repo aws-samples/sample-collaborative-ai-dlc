@@ -440,7 +440,6 @@ export function AppSidebar({ onCreateSpace }: AppSidebarProps = {}) {
                 aria-hidden="true"
               />
               <span className="flex-1 truncate text-sidebar-foreground/70">
-                Showing:{' '}
                 <span className="font-medium text-sidebar-foreground/90">
                   {FILTER_LABELS[intentFilter]}
                 </span>
@@ -645,7 +644,7 @@ function SidebarIntentRow({ item, current = false }: SidebarIntentRowProps) {
               status={derived.key}
               stalled={derived.stalled}
               since={derived.since}
-              size="sm"
+              size="xs"
               compact
               className="shrink-0"
             />

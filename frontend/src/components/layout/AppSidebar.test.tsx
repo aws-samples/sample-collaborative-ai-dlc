@@ -96,13 +96,12 @@ afterEach(() => {
 });
 
 describe('AppSidebar active-work section', () => {
-  it('defaults to "Needs your attention" and says what the list is showing', () => {
+  it('defaults to "Needs your attention" and names the list without a prefix', () => {
     renderSidebar();
     const label = screen.getByLabelText(/intent activity filter/i);
     expect(label).toBeInTheDocument();
     expect(label.tagName).toBe('DIV'); // non-navigating element
-    expect(label).toHaveTextContent(/showing/i);
-    expect(label).toHaveTextContent('Needs your attention');
+    expect(label).toHaveTextContent(/^Needs your attention$/);
   });
 
   it('reflects the stored filter label', () => {
@@ -130,7 +129,7 @@ describe('AppSidebar active-work section', () => {
     ];
     renderSidebar();
     expect(screen.getByLabelText(/intent activity filter/i)).toHaveTextContent(
-      'Showing: Needs your attention · 3',
+      'Needs your attention · 3',
     );
   });
 
@@ -210,6 +209,28 @@ describe('AppSidebar active-work section', () => {
     expect(screen.getByText('Waiting Intent One')).toBeInTheDocument();
     expect(screen.getByText('Waiting Intent Two')).toBeInTheDocument();
     expect(screen.getByText('Waiting Intent Three')).toBeInTheDocument();
+  });
+
+  it('uses the compact pill size for intent rows', () => {
+    const intent = {
+      id: 'int-1',
+      title: 'Waiting One',
+      status: 'WAITING',
+      pendingHumanTaskId: 't',
+    };
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intent,
+        intents: [intent],
+        lastIntentActivityAt: null,
+        activity: { inProgress: 1, attention: 1 },
+      },
+    ];
+    renderSidebar();
+    const pill = screen.getByText('Waiting One').closest('a')!.querySelector('[data-tone]');
+    expect(pill).toHaveClass('px-1.5', 'py-0', 'text-2xs');
   });
 
   it('counts only Intents matching the selected filter', () => {
@@ -956,7 +977,7 @@ describe('AppSidebar one status truth', () => {
     ];
     renderSidebar();
     expect(screen.getByLabelText(/intent activity filter/i)).toHaveTextContent(
-      'Showing: Needs your attention · 3',
+      'Needs your attention · 3',
     );
     expect(screen.getByRole('link', { name: /stuck/i })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /healthy/i })).toBeNull();
@@ -993,7 +1014,7 @@ describe('AppSidebar one status truth', () => {
     ];
     renderSidebar();
     expect(screen.getByLabelText(/intent activity filter/i)).toHaveTextContent(
-      /^Showing: Needs your attention$/,
+      /^Needs your attention$/,
     );
     expect(screen.queryByRole('link', { name: /busy run/i })).toBeNull();
     expect(screen.queryByLabelText(/Space, \d+ needs? attention/)).toBeNull();
