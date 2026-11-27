@@ -865,10 +865,24 @@ The option implies `--reapply`. It writes the current UTC ISO week, for
 example `os_packages_epoch = "2026-W48"`, to the environment's `.tfvars` file,
 so later deployments, including a direct `terraform plan`, keep that value. A
 new value gives both images a new tag and reruns only their last layer, which
-upgrades the OS packages; the tool and dependency layers stay cached. A second
-refresh in the same week changes nothing, and a plain `update` never changes
-the value. Every deployment prints `OS package epoch: <value> (<source>)` and
-notes when the value is older than the current week.
+upgrades the OS packages; the tool and dependency layers stay cached. A plain
+`update` never changes the value. Every deployment prints
+`OS package epoch: <value> (<source>)` and notes when the value is older than
+the current week.
+
+A second refresh in the same week writes the same value and rebuilds nothing.
+To refresh again within the week, set a custom value in the `.tfvars` file, for
+example `os_packages_epoch = "2026-W48.2"`, and run `update --reapply`; the next
+`--refresh-os-packages` writes the week again and rebuilds once more.
+
+Share the `.tfvars` file among everyone who deploys the environment. A plan
+without the deployed value, for example from another machine, prints a
+`WARNING` and would rebuild both images under their source-hash tags.
+
+The first update to a release with this option rebuilds both images once,
+because their Dockerfiles change: the AgentCore runtime gets a new version, the
+Yjs service rolls out, and Standard stages a core update. That rebuild does not
+refresh the OS packages; only a non-empty epoch does.
 
 Treat a refresh like a code update:
 
@@ -882,11 +896,28 @@ Treat a refresh like a code update:
 - Each refresh adds a core image to ECR; the AgentCore repository keeps them
   (see issue #427).
 - If the deployment fails partway, run the same update again: it reuses the
-  epoch of the unfinished refresh, even in a later week.
-- The epoch is a cache key, not a snapshot: deploying an earlier value does not
-  restore the earlier images, it builds them again. To roll back, deploy the
-  previous images by tag (`agentcore_image_tag` and `yjs_image_tag`, see
-  [Pre-built container images](#pre-built-container-images)).
+  epoch of the unfinished refresh, even in a later week, and says when that
+  refresh started. To start a new refresh instead, delete
+  `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc/os-packages-refresh.pending`.
+
+The epoch is a cache key, not a snapshot: deploying an earlier value does not
+restore the earlier images, it builds them again. To be able to roll back, note
+the current tags before a refresh, in the deployed checkout (or from the image
+lists of both ECR repositories):
+
+```bash
+terraform -chdir=terraform output -raw yjs_image_tag
+terraform -chdir=terraform output -raw agentcore_image_uri
+```
+
+The AgentCore tag is the part after the colon. To roll back, set those tags as
+`agentcore_image_tag` and `yjs_image_tag` in the `.tfvars` file and deploy (see
+[Pre-built container images](#pre-built-container-images)). With
+`enable_instances_compute = true`, the AgentCore repository must also hold
+`<tag>-amd64`, which the build created next to the arm64 image. The Yjs
+repository keeps only its last 30 images. Pinned tags freeze both images: the
+epoch has no effect until the two variables are removed again, and the
+deployment summary says so.
 
 For an advanced manual installation, pass a new value to
 `./scripts/deploy-terraform.sh dev --var os_packages_epoch=2026-W48`, or set it
