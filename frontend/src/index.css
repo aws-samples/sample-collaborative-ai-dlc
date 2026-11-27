@@ -199,8 +199,12 @@
 }
 
 /* ─── Base Styles ─── */
-* {
-  border-color: var(--border);
+/* In the base layer so `border-*` colour utilities can override it: an
+   unlayered rule wins over every layered utility. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
 
 body {
