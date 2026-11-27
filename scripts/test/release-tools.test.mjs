@@ -1873,6 +1873,9 @@ const createReleaseRepository = () => {
   execFileSync('git', ['init', '-q'], { cwd: repository });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repository });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repository });
+  // Lightweight fixture tags and commits, whatever the developer's signing setup.
+  execFileSync('git', ['config', 'tag.gpgsign', 'false'], { cwd: repository });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repository });
   mkdirSync(join(repository, 'terraform/environments'), { recursive: true });
   mkdirSync(join(repository, 'scripts'), { recursive: true });
   mkdirSync(join(repository, 'config'), { recursive: true });
