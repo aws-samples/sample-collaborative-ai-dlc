@@ -40,6 +40,16 @@ describe('aggregateMetrics', () => {
     expect(out.tokensOutput).toBeUndefined();
     expect(out.contextWindowPct).toBe(70);
   });
+
+  it('sums the context items omitted per stage and skips the status text', () => {
+    const out = aggregateMetrics([
+      sample({ contextItemsOmitted: 10, contextPackStatus: 'truncated' }),
+      sample({ contextItemsOmitted: 0, contextPackStatus: 'ok' }),
+      sample({ contextItemsOmitted: 3, contextPackStatus: 'truncated' }),
+    ]);
+    expect(out.contextItemsOmitted).toBe(13);
+    expect(out).not.toHaveProperty('contextPackStatus');
+  });
 });
 
 describe('rollupAggregates', () => {
@@ -63,6 +73,7 @@ describe('registry parity with the frontend', () => {
       credits: 'additive',
       contextWindowPct: 'gauge:max',
       agentLaunchMs: 'gauge:max',
+      contextItemsOmitted: 'additive',
     });
   });
 });

@@ -17,6 +17,9 @@ const REGISTRY = {
   // accept, one sample per dispatch leg. The peak — not the sum — is the
   // meaningful aggregate (summing launch latencies is nonsense).
   agentLaunchMs: 'gauge:max',
+  // Decision and unit-pack items a stage's compiled context left out, one
+  // sample per fresh stage run: a count, so samples sum.
+  contextItemsOmitted: 'additive',
 };
 
 const classify = (key) => REGISTRY[key] ?? 'additive';
