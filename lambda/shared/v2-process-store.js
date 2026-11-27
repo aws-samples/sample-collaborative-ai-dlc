@@ -2862,6 +2862,39 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return items;
   };
 
+  // One page of listProjectExecutions: a single Query, so a request reads at
+  // most `limit` rows and 1MB however many intents the project has. `cursor`
+  // is the previous page's LastEvaluatedKey; one from another project or
+  // status filter is refused instead of being handed to DynamoDB.
+  const listProjectExecutionsPage = async ({ projectId, status = null, limit = 50, cursor }) => {
+    const pk = projectPk(projectId);
+    const prefix = status ? `STATUS#${status}#` : 'STATUS#';
+    if (
+      cursor &&
+      (cursor.GSI1PK !== pk ||
+        typeof cursor.GSI1SK !== 'string' ||
+        !cursor.GSI1SK.startsWith(prefix) ||
+        typeof cursor.pk !== 'string' ||
+        typeof cursor.sk !== 'string')
+    ) {
+      throw Object.assign(new Error('Intent list cursor is outside its project/status scope'), {
+        statusCode: 400,
+      });
+    }
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk AND begins_with(GSI1SK, :sk)',
+        ExpressionAttributeValues: { ':pk': pk, ':sk': prefix },
+        ScanIndexForward: false,
+        Limit: limit,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }),
+    );
+    return { items: page.Items ?? [], cursor: page.LastEvaluatedKey ?? null };
+  };
+
   const listCompletionAuditPage = async ({
     projectId,
     status = 'SUCCEEDED',
@@ -4256,6 +4289,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getOutputs,
     getOutputsPage,
     listProjectExecutions,
+    listProjectExecutionsPage,
     getCompletionRecords,
     listCompletionAuditPage,
     listActiveExecutions,
