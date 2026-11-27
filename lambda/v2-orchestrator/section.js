@@ -35,6 +35,10 @@
 //                       --no-ff merge-back into the intent branch (in-process
 //                       merge lock; merge-lane is idempotent) → MERGED →
 //                       lane session released.
+//   lane retry gate   — a failed lane stage first asks, on a gate owned by
+//                       the unit, retry / request-changes / leave-failed;
+//                       the lane's dependents wait. leave-failed falls
+//                       through to halt-and-ask.
 //   halt-and-ask      — a failed lane BLOCKS its dependents, independents
 //                       finish (allSettled join), then ONE gate: retry (same
 //                       branch/worktree, fresh durable round) / skip (audited;
@@ -100,6 +104,57 @@ const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 // fresh human answer — this cap only guards against a client that keeps
 // submitting garbage).
 const HALT_REASK_LIMIT = 5;
+
+const LANE_RETRY_OPTIONS = ['retry', 'request-changes', 'leave-failed'];
+
+// What a lane retry hands the stage (run-stage `retry`): the failure, git's
+// output behind it, and the human's guidance. A rejected push's commits are
+// undone first, or the retry would push the rejected content again. A failed
+// undo leaves them in place, so the next retry undoes them again and keeps the
+// rejection's output from the retry before.
+const UNDO_FAILURES = ['push_failed', 'discard_unpushed_failed'];
+export const laneRetryContext = (outcome, guidance = null, previous = null) => {
+  const undoFailed = outcome?.reason === 'discard_unpushed_failed';
+  return {
+    reason: outcome?.reason ?? 'failed',
+    detail: outcome?.detail ?? null,
+    output: outcome?.result?.output ?? (undoFailed ? (previous?.output ?? null) : null),
+    guidance,
+    discardUnpushed: UNDO_FAILURES.includes(outcome?.reason),
+  };
+};
+export const retryUndoesUnpushed = (reason) => UNDO_FAILURES.includes(reason);
+
+// The lane retry gate's text, kept apart from the gate handling.
+export const laneFailureReason = (outcome) =>
+  `${outcome?.reason ?? 'failed'}${outcome?.detail ? ` (${outcome.detail})` : ''}`;
+export const laneRetryPrompt = ({ slug, stageId, attempt, outcome, reask = false }) =>
+  [
+    `Unit ${slug} failed at ${stageId}${attempt ? ` (retry ${attempt})` : ''}: ${laneFailureReason(outcome)}`,
+    '',
+    'Its branch and completed stages are kept, and units that depend on it are waiting.',
+    '- retry: run this stage again now; the agent is told why it failed and fixes it',
+    '- request-changes: as retry, with your guidance to the agent on how to fix it',
+    '- leave-failed: end this unit; the section asks retry, skip or abort once the other units finish',
+    ...(retryUndoesUnpushed(outcome?.reason)
+      ? [
+          '',
+          'The remote rejected the push. Both retry options first undo the unpushed commits, keeping their changes in the working tree, so the agent can remove what was rejected.',
+        ]
+      : []),
+    ...(reask
+      ? [
+          '',
+          'The previous answer was not retry, request-changes or leave-failed. Please choose one.',
+        ]
+      : []),
+  ].join('\n');
+// request-changes guidance from a gate answer, or null when there is none.
+export const laneRetryGuidance = (choice, answer) => {
+  if (choice !== 'request-changes' || !answer || typeof answer !== 'object') return null;
+  const guidance = answer.feedback ?? null;
+  return typeof guidance === 'string' && guidance.trim() ? guidance : null;
+};
 
 // App-level concurrency cap: the wavefront shape
 // has no built-in maxConcurrency. Replayed (completed) lanes never re-execute
@@ -232,6 +287,9 @@ export const awaitEngineGate = async (
     loopBackNote = null,
     // Notification events only: the gate's `stage`. Defaults to engineGateLabel(name).
     stageLabel = null,
+    // A gate for one unit lane (requires unitSlug) while sibling lanes keep
+    // running: it never parks META, whose RUNNING status they still need.
+    laneGate = false,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -256,6 +314,7 @@ export const awaitEngineGate = async (
   const opened = await ctxArg.step(`gate-open-${name}`, async () => {
     // With a run, createHumanTask parks META (WAITING + pointer) in the same
     // transaction as the gate, so only an existing gate needs the park below.
+    // A lane gate checks run ownership in that transaction instead.
     let parkedWithGate = false;
     try {
       await store.createHumanTask({
@@ -268,6 +327,7 @@ export const awaitEngineGate = async (
         kind,
         prompt,
         options,
+        ...(laneGate ? { laneGate: true } : {}),
         ...(skipTargets ? { skipTargets } : {}),
         ...(recomposeTargets ? { recomposeTargets } : {}),
         ...(nextStageId !== undefined ? { nextStageId } : {}),
@@ -285,13 +345,13 @@ export const awaitEngineGate = async (
       if (error?.name !== 'ConditionalCheckFailedException') throw error;
     }
     // Park META (WAITING + pointer): the cancel endpoint and the UI badge key
-    // off it. Engine gates are barriers — no lanes are running while pending.
+    // off it. Engine gates are barriers — no lanes are running while pending —
+    // except a lane gate, which only re-checks run ownership.
     if (!parkedWithGate) {
       try {
         await store.updateExecution({
           executionId,
-          status: 'WAITING',
-          pendingHumanTaskId: humanTaskId,
+          ...(laneGate ? {} : { status: 'WAITING', pendingHumanTaskId: humanTaskId }),
           ifOrchestratorRunId: runId,
         });
       } catch (error) {
@@ -387,7 +447,7 @@ export const awaitEngineGate = async (
   });
   if (!gate || gate.status === 'superseded') return { superseded: true };
   const unparked = await ctxArg.step(`gate-unpark-${name}`, () =>
-    unparkGate(store, { executionId, humanTaskId, runId }),
+    unparkGate(store, { executionId, humanTaskId, runId, ...(laneGate ? { unitSlug } : {}) }),
   );
   if (unparked === false) return { superseded: true };
   return { gate };
@@ -524,6 +584,10 @@ export const runParallelSection = async (segment, toolkit) => {
     // Rides the run's load-meta checkpoint; histories without it replay the
     // original operation sequence.
     laneWaitPolicyVersion = 1,
+    // 'ask': a failed lane stage asks at once whether to retry it, instead of
+    // ending the lane for the section's halt-and-ask. Rides the load-meta
+    // checkpoint; histories recorded before it halt, as they did.
+    laneFailurePolicy = 'halt',
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
     deriveEnrichment = 'off',
@@ -2029,15 +2093,23 @@ export const runParallelSection = async (segment, toolkit) => {
           );
           continue;
         }
-        const outcome = await executeStage(laneCtx, stage, {
-          unitSlug: slug,
-          sectionIndex: segment.index,
-          sessionId: laneSession,
-          cloneInputs: laneCloneInputs,
-          suffix: rTag,
-          // Revision runs re-enter every lane stage with the request-changes
-          // feedback (the answered gate id) — the agent revises, not restarts.
-          ...(feedbackTaskId ? { initialResumeFrom: feedbackTaskId } : {}),
+        const outcome = await runLaneStage(laneCtx, stage, {
+          slug,
+          rTag,
+          releasePermit,
+          reacquirePermit: async () => {
+            await semaphore.acquire();
+            permitHeld = true;
+          },
+          stageOpts: {
+            unitSlug: slug,
+            sectionIndex: segment.index,
+            sessionId: laneSession,
+            cloneInputs: laneCloneInputs,
+            // Revision runs re-enter every lane stage with the request-changes
+            // feedback (the answered gate id) — the agent revises, not restarts.
+            ...(feedbackTaskId ? { initialResumeFrom: feedbackTaskId } : {}),
+          },
         });
         if (outcome.state === 'TERMINAL') return { slug, state: 'TERMINAL', value: outcome.value };
         if (outcome.state === 'FAILED') {
@@ -2331,6 +2403,121 @@ export const runParallelSection = async (segment, toolkit) => {
     }
   };
 
+  // Run one lane stage, asking at once whether to retry it when it fails
+  // (laneFailurePolicy 'ask'); leaving it failed, or a history recorded before
+  // the gate, ends the lane and halt-and-ask decides once every lane has
+  // settled. Each retry is a fresh attempt with its own durable identities
+  // (-a<n>); attempt 0 keeps the original sequence. A retry tells the agent why
+  // the last attempt failed, with any guidance from the gate. Returns
+  // executeStage's outcome, or { state: 'TERMINAL', value } from the gate.
+  const runLaneStage = async (
+    laneCtx,
+    stage,
+    { slug, rTag, stageOpts, releasePermit, reacquirePermit },
+  ) => {
+    let retry = null;
+    for (let attempt = 0; ; attempt += 1) {
+      const outcome = await executeStage(laneCtx, stage, {
+        ...stageOpts,
+        suffix: `${rTag}${attempt ? `-a${attempt}` : ''}`,
+        ...(retry ? { retry } : {}),
+      });
+      if (outcome.state !== 'FAILED' || laneFailurePolicy !== 'ask') return outcome;
+      const asked = await askLaneRetry(laneCtx, {
+        slug,
+        rTag,
+        stage,
+        attempt,
+        outcome,
+        releasePermit,
+      });
+      if (asked.terminal) return { state: 'TERMINAL', value: asked.terminal };
+      if (!asked.retry) return outcome;
+      retry = laneRetryContext(outcome, asked.guidance, retry);
+      await reacquirePermit();
+    }
+  };
+
+  // A lane stage failed — ask, on a gate owned by the unit, whether to retry
+  // that stage now. The lane keeps its branch and its
+  // completed stages, and its dependents keep waiting on its promise rather than
+  // being blocked. While the gate is open the lane frees its concurrency permit
+  // and its runtime session (the stage self-heals the checkout on retry).
+  // request-changes is a retry carrying the human's guidance for the agent.
+  // Returns { retry: true, guidance } | { retry: false } | { terminal }. Any
+  // other answer is asked again, then treated as leave-failed, which ends the
+  // lane as before so halt-and-ask still decides.
+  const askLaneRetry = async (laneCtx, { slug, rTag, stage, attempt, outcome, releasePermit }) => {
+    const tag = `${sk}-${slug}-${stage.stageId}${rTag}-a${attempt}`;
+    releasePermit();
+    await laneCtx.step(`lane-retry-wait-${tag}`, async () => {
+      try {
+        await store.updateUnitState({
+          executionId,
+          sectionIndex: segment.index,
+          slug,
+          state: 'FAILED',
+          fields: {
+            failureReason: `${stage.stageId}: ${laneFailureReason(outcome)}`,
+            blockedReason:
+              'Waiting for a decision: retry this stage, request changes, or leave it failed',
+          },
+        });
+      } catch {
+        /* lane bookkeeping must never mask the failure */
+      }
+      await releaseLaneSession(slug).catch(() => {});
+    });
+    for (let ask = 0; ; ask += 1) {
+      const gate = await awaitEngineGate(laneCtx, toolkit, {
+        name: `lane-retry-${tag}${ask ? `-q${ask}` : ''}`,
+        unitSlug: slug,
+        sectionIndex: segment.index,
+        laneGate: true,
+        stageLabel: `${stage.stageId} (${slug})`,
+        prompt: laneRetryPrompt({
+          slug,
+          stageId: stage.stageId,
+          attempt,
+          outcome,
+          reask: ask > 0,
+        }),
+        options: LANE_RETRY_OPTIONS,
+      });
+      if (gate.superseded) return { terminal: { ok: false, reason: 'retired', intentId } };
+      const choice = parseChoice(gate.gate.answer, LANE_RETRY_OPTIONS);
+      if (!choice && ask < HALT_REASK_LIMIT) continue;
+      const retry = choice === 'retry' || choice === 'request-changes';
+      await laneCtx.step(`lane-retry-decided-${tag}`, async () => {
+        try {
+          await store.updateUnitState({
+            executionId,
+            sectionIndex: segment.index,
+            slug,
+            state: retry ? 'RUNNING' : 'FAILED',
+            ...(retry ? { fromStates: ['FAILED'] } : {}),
+            fields: retry ? { failureReason: null, blockedReason: null } : { blockedReason: null },
+          });
+        } catch {
+          /* lost CAS tolerated: STAGE rows are the execution truth */
+        }
+      });
+      await emitEvent(
+        laneCtx,
+        `lane-retry-event-${tag}`,
+        retry ? 'v2.unit.retry' : 'v2.unit.retry_declined',
+        retry
+          ? `Unit ${slug}: retrying ${stage.stageId} (attempt ${attempt + 1})${
+              choice === 'request-changes' ? ' with guidance' : ''
+            }`
+          : `Unit ${slug}: ${stage.stageId} left failed; the section decides once the other units finish`,
+        { unitSlug: slug, sectionIndex: segment.index, state: retry ? 'RUNNING' : 'FAILED' },
+      );
+      if (!retry) return { retry };
+      return { retry, guidance: laneRetryGuidance(choice, gate.gate.answer) };
+    }
+  };
+
   const laneFailed = async (
     laneCtx,
     slug,
@@ -2502,6 +2689,19 @@ export const runParallelSection = async (segment, toolkit) => {
     }
   };
 
+  // Free a lane's runtime session before a retry, from either retry path (the
+  // lane retry gate and halt-and-ask). AgentCore deployments do not replace a
+  // live session, so the retry remounts the preserved workspace in a fresh
+  // session running the currently deployed image. A confirmed stop leaves no
+  // live job, so a stage row it left RUNNING (lane crash, refused duplicate
+  // start) is a dead attempt the retry could never claim: fail it. Callers run
+  // this inside their existing durable step.
+  const releaseLaneSession = async (slug) => {
+    const released = await stopSession(laneSessionIdFor(intentId, segment.index, slug));
+    if (released?.stopped || released?.notFound) await failDeadLaneAttempts(slug);
+    return released;
+  };
+
   // Run lanes + halt-and-ask rounds until every requested lane is MERGED, the
   // human skips, or a terminal exit. Returns null | terminal value.
   // Revision runs (feedbackTaskId set) revive MERGED lanes and inject the
@@ -2567,20 +2767,13 @@ export const runParallelSection = async (segment, toolkit) => {
         );
         return null;
       }
-      // retry: failed lanes + their blocked dependents from this round.
-      // AgentCore deployments do not replace an existing live session. Stop
-      // each failed lane before retrying so it remounts the preserved
-      // workspace in a fresh session running the currently deployed image.
-      // A stopped session has no live job, so a stage row it left RUNNING
-      // (lane crash, refused duplicate start) is a dead attempt the retry
-      // could never claim. Fail those rows inside the existing step.
+      // retry: failed lanes + their blocked dependents from this round. Each
+      // failed lane is released first (releaseLaneSession) inside the
+      // existing step.
       for (const slug of failed) {
-        const sessionId = laneSessionIdFor(intentId, segment.index, slug);
-        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, async () => {
-          const released = await stopSession(sessionId);
-          if (released?.stopped || released?.notFound) await failDeadLaneAttempts(slug);
-          return released;
-        });
+        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, () =>
+          releaseLaneSession(slug),
+        );
       }
       round += 1;
       toRun = [...new Set([...failed, ...toRun.filter((s) => laneState.get(s) === 'BLOCKED')])];

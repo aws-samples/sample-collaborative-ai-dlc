@@ -1241,11 +1241,16 @@ describe('WP5 sections on the real durable runner', () => {
         status: 'answered',
         answer: { mode: 'autonomous' },
       });
-      // billing's lane fails → halt-and-ask → human aborts.
+      // billing's lane fails → its retry gate → left failed → halt-and-ask →
+      // human aborts.
       await completeStage(runner, 'stage-cb-cg-s1-u-billing', {
         ok: false,
         state: 'FAILED',
         reason: 'sensor_blocked',
+      });
+      await answerEngineGate(runner, world, 'eg-lane-retry-s1-billing-cg-a0', {
+        status: 'answered',
+        answer: { decision: 'leave-failed' },
       });
       await answerEngineGate(runner, world, 'eg-halt-s1-r0', {
         status: 'answered',
@@ -1254,17 +1259,87 @@ describe('WP5 sections on the real durable runner', () => {
 
       const execution = await executionPromise;
       expect(execution.getResult()).toMatchObject({ ok: false, reason: 'section_aborted' });
-      // The skeleton's merge SURVIVED (work preserved); billing FAILED once.
+      // The skeleton's merge SURVIVED (work preserved); billing FAILED while
+      // its retry gate was open, stayed FAILED when left failed, and ended.
       expect(world.unitStates).toEqual([
         'auth:RUNNING',
         'auth:MERGING',
         'auth:MERGED',
         'billing:RUNNING',
         'billing:FAILED',
+        'billing:FAILED',
+        'billing:FAILED',
       ]);
+      expect(world.events.filter((t) => t === 'v2.unit.retry_declined')).toHaveLength(1);
       expect(world.events.filter((t) => t === 'v2.units.halt_decision')).toHaveLength(1);
       expect(world.statusWrites).toContain('FAILED');
       expect(world.statusWrites).not.toContain('SUCCEEDED');
+    },
+  );
+
+  it(
+    'a lane failure retried from its retry gate re-runs the stage and completes the run',
+    { timeout: 30_000 },
+    async () => {
+      const world = makeLaneWorld();
+      const handler = withDurableExecution((event, ctx) =>
+        __durableHandler(event, ctx, world.deps),
+      );
+      const runner = trackedRunner({ handlerFunction: handler });
+
+      const executionPromise = runner.run({
+        payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+      });
+
+      await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
+      await answerEngineGate(runner, world, 'eg-validation-gen-0');
+      await completeStage(runner, 'stage-cb-cg-s1-u-auth', {
+        ok: true,
+        state: 'SUCCEEDED',
+      });
+      await answerEngineGate(runner, world, 'eg-skeleton-s1');
+      await answerEngineGate(runner, world, 'eg-ladder-s1', {
+        status: 'answered',
+        answer: { mode: 'autonomous' },
+      });
+      await completeStage(runner, 'stage-cb-cg-s1-u-billing', {
+        ok: false,
+        state: 'FAILED',
+        reason: 'sensor_blocked',
+      });
+      await answerEngineGate(runner, world, 'eg-lane-retry-s1-billing-cg-a0', {
+        status: 'answered',
+        answer: { decision: 'retry' },
+      });
+      await completeStage(runner, 'stage-cb-cg-s1-u-billing-a1', {
+        ok: true,
+        state: 'SUCCEEDED',
+      });
+      await completeStage(runner, 'stage-cb-bt', { ok: true, state: 'SUCCEEDED' });
+
+      const execution = await executionPromise;
+      expect(execution.getResult()).toMatchObject({ ok: true, intentId: 'i1' });
+      expect(world.unitStates.filter((s) => s.startsWith('billing:'))).toEqual([
+        'billing:RUNNING',
+        'billing:FAILED',
+        'billing:RUNNING',
+        'billing:MERGING',
+        'billing:MERGED',
+      ]);
+      expect(world.events.filter((t) => t === 'v2.unit.retry')).toHaveLength(1);
+      expect(world.events).not.toContain('v2.units.halt_decision');
+      expect(world.statusWrites).toContain('SUCCEEDED');
+      // Durable identities of the retry gate, in order: the retry path's
+      // session release lives inside lane-retry-wait, adding no operation.
+      const names = execution
+        .getOperations()
+        .map((op) => op.getOperationData()?.Name)
+        .filter((name) => /^lane-retry-.*billing/.test(name ?? ''));
+      expect(names).toEqual([
+        'lane-retry-wait-s1-billing-cg-a0',
+        'lane-retry-decided-s1-billing-cg-a0',
+        'lane-retry-event-s1-billing-cg-a0',
+      ]);
     },
   );
 });

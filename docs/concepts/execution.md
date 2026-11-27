@@ -90,6 +90,25 @@ still enters halt-and-ask. Retry preserves integration; skip also omits the
 unintegrated dependent closure; abort fails the run. Partial delivery is presented
 separately from complete delivery.
 
+When a stage fails in a lane, the lane asks straight away, on a gate for that
+unit, whether to retry the failed stage, rather than waiting for every other
+lane to finish before the section's halt-and-ask gate. A retry runs
+the stage again on the same unit branch, keeping the stages already completed;
+units that depend on it wait rather than being blocked. While the gate is open
+the lane gives up its concurrency slot and its runtime session, and the gate
+parks only that unit: the intent stays running, so the other lanes carry on. `retry`
+runs the stage again, telling the agent why the last attempt failed (with git's
+output when a push was rejected) so it can fix the cause; `request-changes` does
+the same and passes on the human's feedback as guidance. When the failure was a
+rejected push, both first undo the unit branch's unpushed commits with
+`git reset --mixed` onto the remote branch: their changes stay in the working
+tree, the agent removes what the remote rejected (for example a secret flagged by
+push protection), and the stage's commit replaces them, so the rejected content
+never reaches the branch's history. Answering
+`leave-failed` ends the lane as before, so halt-and-ask still offers retry, skip
+and abort. A run started before this gate existed keeps ending the lane at the
+first failure; a repair starts a new run, which asks.
+
 Provider comments never launch agents by themselves. A space member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
 
 ## Human gates, park and resume
