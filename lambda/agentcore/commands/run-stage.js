@@ -3592,14 +3592,28 @@ const runStageAttempt = async (
     // so agents do not have to ask the human what the run is about.
     const intentMeta = await store.getExecution(executionId).catch(() => null);
     let compiledContext = '';
+    // ok | truncated | unavailable, recorded with the prompt-size sample so an
+    // incomplete pack is visible outside the prompt. Null when no pack is built.
+    let contextPack = null;
     if (openEngineGraph) {
       let contextGraph;
       try {
         contextGraph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
         const pack = await compileContextPack({ graph: contextGraph, stage, unit });
         compiledContext = pack.markdown ?? '';
+        contextPack = { status: pack.status, omitted: pack.omitted };
+        if (contextPack.status !== 'ok') {
+          logger.warn('compiled context incomplete', {
+            stageInstanceId,
+            status: contextPack.status,
+            omitted: contextPack.omitted,
+            bytesTruncated: pack.truncated === true,
+          });
+        }
       } catch (e) {
         compiledContext = `## Compiled graph context\n\n- Context compiler unavailable: ${e.message}`;
+        contextPack = { status: 'unavailable', omitted: 0 };
+        logger.warn('compiled context unavailable', e, { stageInstanceId });
       } finally {
         await closeEngineGraph(contextGraph);
       }
@@ -3718,6 +3732,10 @@ const runStageAttempt = async (
         metrics: {
           promptBytes: Buffer.byteLength(prompt, 'utf8'),
           compiledContextBytes: Buffer.byteLength(compiledContext ?? '', 'utf8'),
+          ...(contextPack && {
+            contextPackStatus: contextPack.status,
+            contextItemsOmitted: contextPack.omitted,
+          }),
         },
         resolvedModel: model ?? null,
       })

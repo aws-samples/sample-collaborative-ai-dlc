@@ -9058,6 +9058,94 @@ describe('runStage — produced-head observation', () => {
   });
 });
 
+describe('runStage — compiled context status', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+  // An engine graph whose every read resolves empty; the compiler is injected.
+  const emptyEngineGraph = async () =>
+    new Proxy(
+      { close: async () => {} },
+      { get: (target, name) => (name === 'then' ? undefined : (target[name] ?? (async () => []))) },
+    );
+  const runWithCompiler = async (compileContextPack) => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      openEngineGraph: vi.fn(emptyEngineGraph),
+      compileContextPack,
+    });
+    const res = await runStage(baseArgs, deps);
+    const sample = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.promptBytes !== undefined,
+    );
+    return { res, metrics: sample?.[1].metrics };
+  };
+
+  it('records an over-budget pack as truncated with its omitted items', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const { res, metrics } = await runWithCompiler(async () => ({
+        markdown: '## Compiled graph context',
+        truncated: true,
+        status: 'truncated',
+        omitted: 7,
+      }));
+      expect(res.ok).toBe(true);
+      expect(metrics).toMatchObject({ contextPackStatus: 'truncated', contextItemsOmitted: 7 });
+      expect(warn).toHaveBeenCalledWith(
+        'compiled context incomplete',
+        expect.objectContaining({ status: 'truncated', omitted: 7, bytesTruncated: true }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('records a compiler failure as unavailable, not only as prompt text', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const { res, metrics } = await runWithCompiler(async () => {
+        throw new Error('graph timeout');
+      });
+      expect(res.ok).toBe(true);
+      expect(metrics).toMatchObject({ contextPackStatus: 'unavailable', contextItemsOmitted: 0 });
+      expect(warn).toHaveBeenCalledWith(
+        'compiled context unavailable',
+        expect.objectContaining({ message: 'graph timeout' }),
+        expect.anything(),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('records a complete pack as ok without a warning', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const { metrics } = await runWithCompiler(async () => ({
+        markdown: '## Compiled graph context',
+        truncated: false,
+        status: 'ok',
+        omitted: 0,
+      }));
+      expect(metrics).toMatchObject({ contextPackStatus: 'ok', contextItemsOmitted: 0 });
+      expect(warn).not.toHaveBeenCalledWith('compiled context incomplete', expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves the status out when no engine graph is wired', async () => {
+    const deps = baseDeps({ spawnFn: okSpawn });
+    await runStage(baseArgs, deps);
+    const sample = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.promptBytes !== undefined,
+    );
+    expect(sample[1].metrics).not.toHaveProperty('contextPackStatus');
+  });
+});
+
 // Which sensors the intent's release is asked for a script closure. The
 // reader is bound to the resolved library's provenance, so an immutable user
 // SENSOR overlay — whose script may legitimately import the project's own
