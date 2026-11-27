@@ -451,7 +451,12 @@ export function EnvironmentRegistry() {
         selectedRevisionId={selectedRevisionId}
         onSelectRevision={setSelectedRevisionId}
         busy={busy}
-        onRefresh={() => void loadDetail(environment.environmentId, { preserveForm: isDirty })}
+        onRefresh={() => {
+          setError(null);
+          return loadDetail(environment.environmentId, { preserveForm: isDirty }).catch((reason) =>
+            setError(reason instanceof Error ? reason.message : 'Failed to load environment'),
+          );
+        }}
         onRun={(name, action) => void run(name, action, environment.environmentId, false, isDirty)}
         onRequestAccept={(revision, critical, high) =>
           requestAcceptFindings(environment, revision, critical, high)
@@ -640,7 +645,11 @@ export function EnvironmentRegistry() {
                     onAction={() => void createEnvironment()}
                   />
                 </div>
-              ) : detailLoading || !environment || !detail ? (
+              ) : // Only a newly selected environment shows the placeholder: reloading
+              // the same one in place keeps the evidence the admin opened.
+              (detailLoading && environment?.environmentId !== selectedId) ||
+                !environment ||
+                !detail ? (
                 <Skeleton className="h-[620px]" />
               ) : (
                 <div className="space-y-4">
