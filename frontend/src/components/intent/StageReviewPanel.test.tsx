@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { StageReviewPanel, orderReviewerRuns, reviewerRunVerdict } from './StageReviewPanel';
+import {
+  StageReviewPanel,
+  orderReviewerRuns,
+  reviewerRunCrossUnitFindings,
+  reviewerRunVerdict,
+} from './StageReviewPanel';
 import type { GateAnswer, IntentDetail, IntentGate, IntentSensorRun } from '@/services/intents';
 
 // The panel pulls the intent context, the graph and a Yjs-backed textarea. None
@@ -86,12 +91,12 @@ const detail = (): IntentDetail =>
 
 let onAnswer: Mock<(gate: IntentGate, input: GateAnswer) => Promise<void>>;
 
-const renderPanel = (g: IntentGate) => {
+const renderPanel = (g: IntentGate, d: IntentDetail = detail()) => {
   onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(async () => {});
   render(
     <StageReviewPanel
       gate={g}
-      detail={detail()}
+      detail={d}
       projectId="p1"
       intentId="i1"
       userName="Ada"
@@ -330,5 +335,86 @@ describe('reviewerRunVerdict', () => {
 
   it('falls back to result when detail.verdict is absent', () => {
     expect(reviewerRunVerdict(run({ detail: null, result: 'FAIL' }))).toBe('FAIL');
+  });
+});
+
+describe('reviewerRunCrossUnitFindings', () => {
+  it('returns the trimmed findings, or null when none were recorded', () => {
+    expect(reviewerRunCrossUnitFindings(run({ detail: { crossUnitFindings: '  x  ' } }))).toBe('x');
+    expect(reviewerRunCrossUnitFindings(run({ detail: { crossUnitFindings: '   ' } }))).toBeNull();
+    expect(reviewerRunCrossUnitFindings(run({ detail: { verdict: 'READY' } }))).toBeNull();
+    expect(reviewerRunCrossUnitFindings(run({ detail: null }))).toBeNull();
+  });
+});
+
+describe('StageReviewPanel — findings for other units', () => {
+  const withRuns = (sensorRuns: IntentSensorRun[]): IntentDetail =>
+    ({ ...detail(), sensorRuns }) as unknown as IntentDetail;
+
+  // The timeline event is cut at 4000 characters; the review is where the human
+  // reads the whole report, so it must render past that bound.
+  it('renders a report longer than 4000 characters in full, open by default on READY', () => {
+    const tail = 'END-OF-CROSS-UNIT-REPORT';
+    const report = `The billing unit owns the shared invoice schema. ${'x'.repeat(4500)} ${tail}`;
+    expect(report.length).toBeGreaterThan(4000);
+    renderPanel(
+      gate(),
+      withRuns([
+        run({
+          sensorRunId: 'sr-ready',
+          result: 'PASS',
+          detail: { verdict: 'READY', findings: 'Lane is fine.', crossUnitFindings: report },
+        }),
+      ]),
+    );
+
+    expect(screen.getByText('Findings for other units')).toBeInTheDocument();
+    const section = screen.getByTestId('cross-unit-run-sr-ready');
+    expect(section.textContent).toContain(tail);
+    expect(section.textContent).toContain('x'.repeat(4500));
+    expect(screen.getByText(/not counted towards the\s+verdict/)).toBeInTheDocument();
+  });
+
+  it('keeps the findings out of the verdict section and lists runs newest first', () => {
+    renderPanel(
+      gate(),
+      withRuns([
+        run({
+          sensorRunId: 'old',
+          timestamp: '2026-01-01T00:00:00Z',
+          detail: { verdict: 'READY', findings: 'Round one.', crossUnitFindings: 'Older note.' },
+        }),
+        run({
+          sensorRunId: 'new',
+          timestamp: '2026-02-01T00:00:00Z',
+          result: 'FAIL',
+          detail: {
+            verdict: 'NOT-READY',
+            findings: 'Round two.',
+            crossUnitFindings: 'Newer note.',
+          },
+        }),
+      ]),
+    );
+
+    const ids = screen
+      .getAllByTestId(/^cross-unit-run-/)
+      .map((el) => el.getAttribute('data-testid'));
+    expect(ids).toEqual(['cross-unit-run-new', 'cross-unit-run-old']);
+    // NOT-READY opens the verdict section and its newest run: the author-facing
+    // findings are there, the other units' findings are not.
+    const verdictRun = screen.getByTestId('reviewer-run-new');
+    expect(verdictRun.textContent).toContain('Round two.');
+    expect(verdictRun.textContent).not.toContain('Newer note.');
+  });
+
+  it('shows no section when no run recorded findings for other units', () => {
+    renderPanel(
+      gate(),
+      withRuns([
+        run({ detail: { verdict: 'READY', findings: 'Lane is fine.', crossUnitFindings: '  ' } }),
+      ]),
+    );
+    expect(screen.queryByText('Findings for other units')).toBeNull();
   });
 });

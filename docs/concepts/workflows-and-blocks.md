@@ -66,7 +66,7 @@ Every stage carries three independent safety nets:
 
 1. **Sensors** — deterministic checks (advisory or blocking) run by the engine after the stage exits. A blocking sensor failure fails the stage.
 2. **Reviewer** — an LLM-judged reviewer agent that renders a READY / NOT-READY verdict in a clean-room pass, with a bounded iteration count.
-   In a unit lane the reviewer judges the lane only on what its author may change. A finding whose required action is a change to another unit or a shared contract goes in a separate `crossUnitFindings` field of `submit_review`, naming the owner of each. These are recorded on the review and on the timeline (`v2.review.cross_unit`) for the human, and are not counted towards the verdict or sent to the author in a repair round. Reviews outside a lane have no such field.
+   In a unit lane the reviewer judges the lane only on what its author may change. A finding whose required action is a change to another unit or a shared contract goes in a separate `crossUnitFindings` field of `submit_review`, naming the owner of each. These are recorded on the review and on the timeline (`v2.review.cross_unit`) for the human, and are not counted towards the verdict or sent to the author in a repair round. The stage review shows them in full in an advisory "Findings for other units" section, newest first and open by default, even when the verdict is READY; the timeline entry is an attention item carrying a bounded excerpt. Reviews outside a lane have no such field.
 3. **Human validation** — an approval gate, required by default on every non-init stage. The run parks at zero compute until a human answers.
 
 Sensors receive explicit changed-file provenance. Known changes are normalized to
