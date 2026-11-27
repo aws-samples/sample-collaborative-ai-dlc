@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
+import { ApiError } from '@/services/api';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
 const projectCacheMock = vi.hoisted(() => ({
@@ -669,6 +670,25 @@ describe('IntentView', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('names the customized blocks and says export does not support them when refused', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockRejectedValue(
+      new ApiError(409, 'The workflow uses edited methodology blocks that cannot yet be exported', {
+        error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+        code: 'export_edited_blocks',
+        incompatibleBlocks: ['AGENT:acme-architect', 'RULE:acme-naming'],
+      }),
+    );
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('agent acme-architect, rule acme-naming');
+    expect(alert).toHaveTextContent('Exporting these customizations is not yet supported.');
   });
 
   it('shows the legacy-ref warning even when no workspace setup is required', async () => {

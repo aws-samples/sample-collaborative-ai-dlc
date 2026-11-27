@@ -2233,6 +2233,7 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
   if (incompatibleBlocks.length > 0) {
     return response(409, {
       error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+      code: 'export_edited_blocks',
       incompatibleBlocks,
     });
   }
@@ -2416,6 +2417,7 @@ const handleExportIntent = async ({ event, body, projectId, intentId, g, respons
     if (String(error.message ?? '').startsWith('native-export:')) {
       return response(409, {
         error: 'This workflow snapshot is not compatible with native AI-DLC export',
+        code: 'export_snapshot_incompatible',
         detail: error.message,
       });
     }
