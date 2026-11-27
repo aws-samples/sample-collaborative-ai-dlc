@@ -318,6 +318,16 @@ describe('redactEventForLogging', () => {
       state: 'open',
     });
   });
+  it('redacts a paged list continuation token in any case', () => {
+    const redacted = redactEventForLogging({
+      path: '/projects/p1/intents',
+      queryStringParameters: { paged: '1', nextToken: 'eyJwayI6IkVYRUMjeCJ9' },
+      multiValueQueryStringParameters: { NEXTTOKEN: ['eyJwayI6IkVYRUMjeCJ9'] },
+    });
+
+    expect(redacted.queryStringParameters).toEqual({ paged: '1', nextToken: '[REDACTED]' });
+    expect(redacted.multiValueQueryStringParameters).toEqual({ NEXTTOKEN: ['[REDACTED]'] });
+  });
 });
 
 describe('logSafeEventIfEnabled', () => {

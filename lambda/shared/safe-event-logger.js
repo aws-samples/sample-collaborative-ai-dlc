@@ -7,6 +7,8 @@ const SENSITIVE_QUERY_NAMES = new Set([
   'access_token',
   'api_key',
   'client_secret',
+  // Paged list continuation tokens carry DynamoDB keys of the listed rows.
+  'nexttoken',
   'refresh_token',
   'ticket',
   'token',
