@@ -2661,6 +2661,59 @@ describe('unit PR review feedback', () => {
     ).not.toHaveProperty('commentCount');
   });
 
+  it.each(['unavailable plan', 'no completed stage', 'completed stage in another section'])(
+    'rejects feedback with %s before fetching comments or updating review state',
+    async (scenario) => {
+      const owner = randomUUID();
+      const { projectId, intent } = await seedActiveReview(owner);
+      await seedStageContributor(projectId, owner, 'code');
+      if (scenario === 'unavailable plan') {
+        planSpy.loadExecutionPlan.mockResolvedValue({ valid: false });
+      } else {
+        const id = planStageInstanceId('aidlc-v2@4', 'code', 'auth', 1);
+        procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${id}`), {
+          stageId: 'code',
+          state: 'FAILED',
+        });
+        if (scenario === 'completed stage in another section') {
+          planSpy.loadExecutionPlan.mockResolvedValue({
+            valid: true,
+            plan: {
+              stages: [
+                { stageId: 'code', parallelSection: 1 },
+                { stageId: 'review', parallelSection: 2 },
+              ],
+            },
+          });
+          const otherId = planStageInstanceId('aidlc-v2@4', 'review', 'auth', 2);
+          procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${otherId}`), {
+            stageId: 'review',
+            state: 'SUCCEEDED',
+          });
+        }
+      }
+      lambdaMock.resetHistory();
+      const result = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`,
+        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+        body: JSON.stringify({ comments: [{ repository: 'owner/repo', commentId: '101' }] }),
+        ...claims(owner),
+      });
+      expect(result.statusCode).toBe(409);
+      expect(JSON.parse(result.body).error).toBe(
+        scenario === 'unavailable plan'
+          ? 'The pinned workflow plan is unavailable'
+          : 'No completed stage can address this feedback',
+      );
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+      expect([...procStore.values()].some((row) => row.sk?.startsWith('FEEDBACK#'))).toBe(false);
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#auth#owner%2Frepo')),
+      ).not.toHaveProperty('commentCount');
+    },
+  );
+
   it('refetches selectable comments and queues an idempotent versioned batch', async () => {
     sourceControlReviewComments = [
       {

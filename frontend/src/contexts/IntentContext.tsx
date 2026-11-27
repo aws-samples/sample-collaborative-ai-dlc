@@ -147,6 +147,7 @@ interface IntentContextValue {
   outputRows: Map<string, IntentOutput[]>;
   outputVersion: number;
   enforceStageRoles: boolean;
+  firstNonAutomaticStageId: string | undefined;
   mayControlStage: (stageId?: string | null) => boolean;
   stageAccess: (stageInstanceId: string | null) => StageResponsibility['access'];
   gateAccess: (gate: Pick<IntentGate, 'humanTaskId' | 'stageInstanceId'>) => {
@@ -1108,9 +1109,11 @@ export function IntentProvider({
         });
     };
     refresh();
+    const timer = setInterval(refresh, 30_000);
     window.addEventListener('focus', refresh);
     return () => {
       generation++;
+      clearInterval(timer);
       window.removeEventListener('focus', refresh);
     };
   }, [projectId, intentId, accessKey, gateIds, detail?.intent.status]);
@@ -1188,6 +1191,9 @@ export function IntentProvider({
         initializationPhasePaths,
         currentPhasePath,
         enforceStageRoles: currentAccess?.enforceStageRoles !== false,
+        firstNonAutomaticStageId: currentAccess?.stages.find(
+          (stage) => !stage.permissions?.automatic,
+        )?.stageId,
         mayControlStage: (id) =>
           project?.userRole === 'owner' ||
           !!accessFor(currentAccess?.stages.find((stage) => stage.stageId === id))?.decide,

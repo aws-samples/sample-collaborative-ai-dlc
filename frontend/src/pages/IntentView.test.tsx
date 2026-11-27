@@ -62,17 +62,9 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   }),
 }));
 
+const getResponsibilities = vi.fn();
 vi.mock('@/services/stageResponsibilities', () => ({
-  stageResponsibilitiesService: {
-    get: async () => ({
-      unattributedAccess: { decide: true, edit: true },
-      stages: ['si-a'].map((stageInstanceId) => ({
-        stageInstanceId,
-        reason: 'unmapped',
-        access: { decide: true, edit: true },
-      })),
-    }),
-  },
+  stageResponsibilitiesService: { get: (...args: unknown[]) => getResponsibilities(...args) },
 }));
 const get = vi.fn();
 const start = vi.fn();
@@ -172,6 +164,12 @@ describe('IntentView', () => {
   beforeEach(() => {
     clearIntentCache();
     get.mockReset();
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [
+        { stageInstanceId: 'si-a', reason: 'unmapped', access: { decide: true, edit: true } },
+      ],
+    });
     start.mockReset();
     rewind.mockReset();
     answerGate.mockReset();
@@ -189,6 +187,49 @@ describe('IntentView', () => {
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
     yjsMock.docs.clear();
   });
+
+  it.each([true, false])(
+    'uses the first non-automatic stage for Cancel run (decide=%s)',
+    async (decide) => {
+      projectCacheMock.role = 'member';
+      get.mockResolvedValue(baseDetail({ status: 'CREATED', currentStage: null }));
+      const stages = [
+        {
+          stageId: 'workspace-scaffold',
+          permissions: { automatic: true },
+          access: { edit: false, decide: false },
+        },
+        {
+          stageId: 'workspace-detection',
+          permissions: { automatic: true },
+          access: { edit: false, decide: false },
+        },
+        {
+          stageId: 'intent-capture',
+          permissions: { automatic: false },
+          access: { edit: decide, decide },
+        },
+        // Permission on a later stage must not grant permission to cancel.
+        {
+          stageId: 'code',
+          permissions: { automatic: false },
+          access: { edit: true, decide: true },
+        },
+      ];
+      getResponsibilities.mockResolvedValue({ stages });
+      compiled.mockResolvedValue({
+        graph: {
+          nodes: stages.map((stage, order) => ({ stageId: stage.stageId, phasePath: '01', order })),
+          edges: [],
+        },
+      });
+      renderAt();
+      await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+      if (decide)
+        expect(await screen.findByRole('menuitem', { name: 'Cancel run' })).toBeInTheDocument();
+      else expect(screen.queryByRole('menuitem', { name: 'Cancel run' })).not.toBeInTheDocument();
+    },
+  );
 
   it('DRAFT redirects to the collaborative compose page (one canonical draft UI)', async () => {
     get.mockResolvedValue(baseDetail());

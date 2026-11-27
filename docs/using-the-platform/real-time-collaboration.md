@@ -31,7 +31,9 @@ transparently refreshed while you remain a member.
 
 The server checks your stage permissions when you open or reconnect to a shared
 answer, review, or stage document. An open editor reuses that decision for up to
-30 seconds, then checks again on the next sync or save request. Offline edits
+30 seconds, then checks again on the next sync or save request. Read-only stage
+editors request a sync every 30 seconds so newly granted access takes effect
+without editing or reloading. Stage action controls also refresh every 30 seconds. Offline edits
 sync on reconnect only if you still have permission. Submitting an answer,
 approving a review, or saving a document through the API checks your current
 permissions on each request. See [Stage responsibilities](projects.md#stage-responsibilities).

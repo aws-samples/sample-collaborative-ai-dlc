@@ -432,6 +432,18 @@ export function useYjsDocument(
       setRemoteUsers(users);
     };
 
+    // A read-only editor sends no edits, so request state periodically to let
+    // the server recheck its cached stage permission.
+    const refreshStagePermission = () => {
+      const ws = wsRef.current;
+      if (!stageDocument || !readOnlyRef.current || ws?.readyState !== WebSocket.OPEN) return;
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeSyncStep1(encoder, doc);
+      ws.send(encoding.toUint8Array(encoder));
+    };
+    const permissionTimer = stageDocument ? setInterval(refreshStagePermission, 30_000) : null;
+
     // Backstop for the proactive-refresh timer above: timers are throttled in
     // hidden tabs and frozen across machine sleep, so a tab that was backgrounded
     // past the token's expiry can wake holding a socket whose refresh never fired.
@@ -441,6 +453,7 @@ export function useYjsDocument(
     // lead window (or past it) — the same threshold the timer uses.
     const refreshIfStale = () => {
       if (cancelled || document.visibilityState !== 'visible') return;
+      refreshStagePermission();
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       if (tokenExpRef.current === null || msUntilRefresh(tokenExpRef.current) > 0) return;
@@ -477,6 +490,7 @@ export function useYjsDocument(
       awarenessProt.off('change', awarenessHandler);
       awarenessProt.off('update', awarenessUpdateHandler);
       if (awarenessTimer) clearTimeout(awarenessTimer);
+      if (permissionTimer) clearInterval(permissionTimer);
       window.removeEventListener('focus', refreshIfStale);
       document.removeEventListener('visibilitychange', refreshIfStale);
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');

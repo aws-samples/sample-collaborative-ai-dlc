@@ -217,6 +217,49 @@ describe('IntentContext', () => {
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
   });
 
+  it.each(['role granted', 'enforcement disabled'])(
+    'enables an open document after %s without edits or focus changes',
+    async (change) => {
+      vi.useFakeTimers();
+      get.mockResolvedValue({
+        ...detail({ status: 'WAITING' }),
+        artifacts: [artifact('doc', { content: 'draft' })],
+      });
+      const responsibilities = (allowed: boolean) => ({
+        enforceStageRoles: !(allowed && change === 'enforcement disabled'),
+        stages: [
+          { stageId: 'code', stageInstanceId: 'si-1', access: { edit: allowed, decide: allowed } },
+        ],
+      });
+      getResponsibilities.mockResolvedValue(responsibilities(false));
+      function EditorProbe() {
+        const { detail: current } = useIntent();
+        return (
+          current?.artifacts[0] && (
+            <ArtifactEditControls artifact={current.artifacts[0]} onStartEdit={() => {}} />
+          )
+        );
+      }
+      const { unmount } = renderProvider(<EditorProbe />);
+      try {
+        await act(async () => vi.advanceTimersByTimeAsync(0));
+        expect(screen.getByRole('button', { name: 'Edit document' })).toBeDisabled();
+        const before = getResponsibilities.mock.calls.length;
+        getResponsibilities.mockResolvedValue(responsibilities(true));
+        await act(async () => vi.advanceTimersByTimeAsync(30_000));
+        expect(getResponsibilities.mock.calls.length).toBeGreaterThan(before);
+        expect(screen.getByRole('button', { name: 'Edit document' })).toBeEnabled();
+        unmount();
+        const after = getResponsibilities.mock.calls.length;
+        await act(async () => vi.advanceTimersByTimeAsync(30_000));
+        expect(getResponsibilities).toHaveBeenCalledTimes(after);
+      } finally {
+        unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([false, true])(
     'uses only the legacy grant for an unattributed document (legacy=%s)',
     async (legacy) => {

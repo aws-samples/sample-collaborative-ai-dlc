@@ -128,6 +128,7 @@ export default function IntentView() {
     stageRows,
     gateAccess,
     mayControlStage,
+    firstNonAutomaticStageId,
     stageNameOf,
   } = useIntent();
   const navigate = useNavigate();
@@ -387,7 +388,7 @@ export default function IntentView() {
   );
   const canCancel = activeStages.length
     ? activeStages.every((r) => mayControlStage(r.stageId))
-    : mayControlStage(intent.currentStage ?? stageRows[0]?.stageId);
+    : mayControlStage(intent.currentStage ?? firstNonAutomaticStageId);
   const canReshape =
     !readOnly &&
     (intent.status === 'WAITING' || isFailed) &&

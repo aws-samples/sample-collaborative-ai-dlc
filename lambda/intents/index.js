@@ -2105,6 +2105,23 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
+const authorizeUnitFeedback = async (event, meta, sectionIndex, unitSlug, response) => {
+  if (!(await enforceStageRoles(meta.projectId))) return;
+  const plan = await intentMethodology.loadPlan(meta);
+  if (!plan.valid) return response(409, { error: 'The pinned workflow plan is unavailable' });
+  const namespace = plan.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+  // The unit addresses comments in its last successfully completed stage.
+  for (const stage of plan.plan.stages.toReversed()) {
+    if (stage.parallelSection !== sectionIndex) continue;
+    const id = planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex);
+    const row = await store.getStage(meta.executionId, id, { consistentRead: true });
+    if (row?.state !== 'SUCCEEDED') continue;
+    await requireStageIds(event, meta, [stage.stageId]);
+    return;
+  }
+  return response(409, { error: 'No completed stage can address this feedback' });
+};
+
 // Authenticated unit-review selection. Provider comments are data only:
 // no webhook/comment can launch an agent. GET refreshes selectable
 // comments; POST persists a replay-safe batch that the durable lane claims.
@@ -2154,24 +2171,9 @@ const handleUnitReviewFeedback = async ({
   if (prs.length === 0) {
     return response(409, { error: 'The unit lane has no review pull requests' });
   }
-  if (httpMethod === 'POST' && (await enforceStageRoles(projectId))) {
-    const plan = await intentMethodology.loadPlan(meta);
-    if (!plan.valid) return response(409, { error: 'The pinned workflow plan is unavailable' });
-    const namespace = plan.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
-    // The unit addresses comments in its last successfully completed stage.
-    let feedbackStage;
-    for (const stage of plan.plan.stages.toReversed()) {
-      if (stage.parallelSection !== sectionIndex) continue;
-      const id = planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex);
-      const row = await store.getStage(intentId, id, { consistentRead: true });
-      if (row?.state === 'SUCCEEDED') {
-        feedbackStage = stage;
-        break;
-      }
-    }
-    if (!feedbackStage)
-      return response(409, { error: 'No completed stage can address this feedback' });
-    await requireStageIds(event, meta, [feedbackStage.stageId]);
+  if (httpMethod === 'POST') {
+    const denied = await authorizeUnitFeedback(event, meta, sectionIndex, unitSlug, response);
+    if (denied) return denied;
   }
   const fetched = [];
   for (const pr of prs) {

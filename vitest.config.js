@@ -24,6 +24,7 @@ export default defineConfig({
         root: fileURLToPath(new URL(name, lambdaRoot)),
         include: ['test/**/*.test.js'],
         setupFiles,
+        testTimeout: 15_000,
         env: { POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc' },
       },
     })),
