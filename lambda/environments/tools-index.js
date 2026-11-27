@@ -534,23 +534,57 @@ export const createToolsHandler = ({
         if (version.status !== 'SECURITY_REVIEW') {
           return response(409, { error: 'Tool version is not awaiting security review' });
         }
+        // The decision covers the image and scan the administrator saw. A
+        // recheck or rebuild after the dialog opened needs a new decision.
+        const data = parseBody(event) ?? {};
+        // A client that predates this check sends neither field.
+        if (!('imageDigest' in data) || !('scanEvaluatedAt' in data)) {
+          return response(400, {
+            error: 'Reload the page, review the current scan, and decide again.',
+            code: 'TOOL_SCAN_REVIEW_REQUIRED',
+          });
+        }
+        const reviewed = {
+          imageDigest: data.imageDigest ?? null,
+          scanEvaluatedAt: data.scanEvaluatedAt ?? null,
+        };
+        const scanChanged = response(409, {
+          error: 'The scan changed after it was shown. Review it and decide again.',
+          code: 'TOOL_SCAN_CHANGED',
+        });
+        if (
+          reviewed.imageDigest !== (version.imageDigest ?? null) ||
+          reviewed.scanEvaluatedAt !== (version.scanFindings?.evaluatedAt ?? null)
+        ) {
+          return scanChanged;
+        }
         const acceptedAt = new Date().toISOString();
-        const updated = await store.updateVersion(
-          tool.toolId,
-          version.versionId,
-          {
-            status: 'READY',
-            securityFindingsAcceptedAt: acceptedAt,
-            securityFindingsAcceptedBy: actor,
-            verification: {
-              ...version.verification,
-              securityScan: 'ACCEPTED',
-              completedAt: acceptedAt,
+        const updated = await store
+          .updateVersion(
+            tool.toolId,
+            version.versionId,
+            {
+              status: 'READY',
+              securityFindingsAcceptedAt: acceptedAt,
+              securityFindingsAcceptedBy: actor,
+              verification: {
+                ...version.verification,
+                securityScan: 'ACCEPTED',
+                completedAt: acceptedAt,
+              },
+              failure: null,
             },
-            failure: null,
-          },
-          { fromStatus: 'SECURITY_REVIEW' },
-        );
+            {
+              fromStatus: 'SECURITY_REVIEW',
+              imageDigest: reviewed.imageDigest,
+              scanEvaluatedAt: reviewed.scanEvaluatedAt,
+            },
+          )
+          .catch((error) => {
+            if (error?.name === 'ConditionalCheckFailedException') return null;
+            throw error;
+          });
+        if (!updated) return scanChanged;
         return response(200, { tool, version: updated });
       }
 

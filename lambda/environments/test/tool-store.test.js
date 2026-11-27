@@ -188,6 +188,52 @@ describe('managed tool registry store', () => {
     expect(update.ExpressionAttributeValues[':expectedImageDigest']).toBe('sha256:abc');
   });
 
+  it('updates a version only while it still holds the scan a decision was made on', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockImplementation(async (command) =>
+          command.input.Key ? { Item: { status: 'SECURITY_REVIEW' }, Attributes: {} } : {},
+        ),
+    };
+    const store = createToolStore({ ddb, tableName: 'registry', clock: () => 'now' });
+
+    await store.updateVersion(
+      'go',
+      'tv-go-1',
+      { status: 'READY' },
+      {
+        fromStatus: 'SECURITY_REVIEW',
+        imageDigest: 'sha256:abc',
+        scanEvaluatedAt: '2026-11-27T10:00:00.000Z',
+      },
+    );
+    const update = ddb.send.mock.calls.at(-1)[0].input;
+    expect(update.ConditionExpression).toBe(
+      '#status = :fromStatus AND #expectedImageDigest = :expectedImageDigest AND #expectedScan.#expectedScanEvaluatedAt = :expectedScanEvaluatedAt',
+    );
+    expect(update.ExpressionAttributeNames).toMatchObject({
+      '#expectedScan': 'scanFindings',
+      '#expectedScanEvaluatedAt': 'evaluatedAt',
+    });
+    expect(update.ExpressionAttributeValues[':expectedScanEvaluatedAt']).toBe(
+      '2026-11-27T10:00:00.000Z',
+    );
+
+    // A scan stored without a time: the decision holds only while none is recorded.
+    await store.updateVersion(
+      'go',
+      'tv-go-1',
+      { status: 'READY' },
+      { fromStatus: 'SECURITY_REVIEW', scanEvaluatedAt: null },
+    );
+    const legacy = ddb.send.mock.calls.at(-1)[0].input;
+    expect(legacy.ConditionExpression).toBe(
+      '#status = :fromStatus AND attribute_not_exists(#expectedScan.#expectedScanEvaluatedAt)',
+    );
+    expect(legacy.ExpressionAttributeValues).not.toHaveProperty(':expectedScanEvaluatedAt');
+  });
+
   it('claims the next scan check of a version under review once', async () => {
     const ddb = { send: vi.fn().mockResolvedValue({}) };
     const store = createToolStore({ ddb, tableName: 'registry' });

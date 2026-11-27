@@ -281,7 +281,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     toolId,
     versionId,
     patch,
-    { fromStatus = null, imageDigest = null } = {},
+    { fromStatus = null, imageDigest = null, scanEvaluatedAt } = {},
   ) => {
     const existing = await getVersion(toolId, versionId);
     if (!existing) throw Object.assign(new Error('Tool version not found'), { statusCode: 404 });
@@ -364,6 +364,18 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       names['#expectedImageDigest'] = 'imageDigest';
       conditions.push('#expectedImageDigest = :expectedImageDigest');
       values[':expectedImageDigest'] = imageDigest;
+    }
+    // The record still holds the scan a decision was made on (null: no
+    // scan time was recorded): a recheck in the meantime wins.
+    if (scanEvaluatedAt !== undefined) {
+      names['#expectedScan'] = 'scanFindings';
+      names['#expectedScanEvaluatedAt'] = 'evaluatedAt';
+      if (scanEvaluatedAt === null) {
+        conditions.push('attribute_not_exists(#expectedScan.#expectedScanEvaluatedAt)');
+      } else {
+        conditions.push('#expectedScan.#expectedScanEvaluatedAt = :expectedScanEvaluatedAt');
+        values[':expectedScanEvaluatedAt'] = scanEvaluatedAt;
+      }
     }
     if (conditions.length) input.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(input));

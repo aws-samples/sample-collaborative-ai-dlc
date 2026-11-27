@@ -279,6 +279,143 @@ describe('managed tool control API', () => {
     expect(store.updateVersion.mock.calls[0][3]).toEqual({ fromStatus: 'SECURITY_REVIEW' });
   });
 
+  describe('accepting the review of a tool version', () => {
+    const rust = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust');
+    const imageDigest = `sha256:${'b'.repeat(64)}`;
+    const shownAt = '2026-11-27T10:00:00.000Z';
+    // What the dialog showed: ECR could not scan the image.
+    const unavailable = {
+      toolId: 'rust',
+      versionId: 'tv-rust-1',
+      status: 'SECURITY_REVIEW',
+      definition: rust.version,
+      imageDigest,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        severityCounts: {},
+        findings: [],
+        evaluatedAt: shownAt,
+        imageDigest,
+      },
+    };
+    // What the recheck stored while the dialog was open.
+    const rescanned = {
+      ...unavailable,
+      scanFindings: {
+        status: 'ACTIVE',
+        severityCounts: { CRITICAL: 1 },
+        findings: [{ id: 'CVE-2026-9', severity: 'CRITICAL' }],
+        evaluatedAt: '2026-11-27T10:15:00.000Z',
+        imageDigest,
+      },
+    };
+    const storeWith = (version, updateVersion) => ({
+      ...baseStore(),
+      getTool: vi.fn().mockResolvedValue(rust),
+      getVersion: vi.fn().mockResolvedValue(version),
+      updateVersion:
+        updateVersion ??
+        vi.fn().mockImplementation(async (_toolId, _versionId, patch) => ({
+          ...version,
+          ...patch,
+        })),
+    });
+    const acknowledge = (store, body) =>
+      createToolsHandler({ store })({
+        httpMethod: 'POST',
+        path: '/tools/rust/versions/tv-rust-1/acknowledge',
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...claims(),
+      });
+
+    it('records the decision on the image and scan the administrator saw', async () => {
+      const store = storeWith(unavailable);
+
+      const accepted = await acknowledge(store, { imageDigest, scanEvaluatedAt: shownAt });
+
+      expect(accepted.statusCode).toBe(200);
+      expect(store.updateVersion).toHaveBeenCalledOnce();
+      expect(store.updateVersion.mock.calls[0][2]).toMatchObject({
+        status: 'READY',
+        securityFindingsAcceptedBy: expect.anything(),
+        verification: { securityScan: 'ACCEPTED' },
+      });
+      expect(store.updateVersion.mock.calls[0][3]).toEqual({
+        fromStatus: 'SECURITY_REVIEW',
+        imageDigest,
+        scanEvaluatedAt: shownAt,
+      });
+    });
+
+    it('refuses a decision on a scan the recheck has replaced', async () => {
+      const store = storeWith(rescanned);
+
+      const refused = await acknowledge(store, { imageDigest, scanEvaluatedAt: shownAt });
+
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'TOOL_SCAN_CHANGED' });
+      expect(store.updateVersion).not.toHaveBeenCalled();
+    });
+
+    it('refuses a decision on an image a rebuild has replaced', async () => {
+      const store = storeWith(unavailable);
+
+      const refused = await acknowledge(store, {
+        imageDigest: `sha256:${'c'.repeat(64)}`,
+        scanEvaluatedAt: shownAt,
+      });
+
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'TOOL_SCAN_CHANGED' });
+      expect(store.updateVersion).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no body', undefined],
+      ['a null body', null],
+      ['an empty body', {}],
+    ])('asks a client that sends %s to review the scan again', async (_label, body) => {
+      const store = storeWith(unavailable);
+
+      const refused = await acknowledge(store, body);
+
+      expect(refused.statusCode).toBe(400);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'TOOL_SCAN_REVIEW_REQUIRED' });
+      expect(store.updateVersion).not.toHaveBeenCalled();
+    });
+
+    it('records a decision on a version stored without a scan time or image', async () => {
+      const { imageDigest: _digest, ...legacy } = unavailable;
+      const { evaluatedAt: _evaluatedAt, ...legacyScan } = unavailable.scanFindings;
+      const store = storeWith({ ...legacy, scanFindings: legacyScan });
+
+      const accepted = await acknowledge(store, { imageDigest: null, scanEvaluatedAt: null });
+
+      expect(accepted.statusCode).toBe(200);
+      expect(store.updateVersion.mock.calls[0][3]).toEqual({
+        fromStatus: 'SECURITY_REVIEW',
+        imageDigest: null,
+        scanEvaluatedAt: null,
+      });
+    });
+
+    it('refuses the decision when the scan changes between the read and the write', async () => {
+      const store = storeWith(
+        unavailable,
+        vi.fn().mockRejectedValue(
+          Object.assign(new Error('The conditional request failed'), {
+            name: 'ConditionalCheckFailedException',
+          }),
+        ),
+      );
+
+      const refused = await acknowledge(store, { imageDigest, scanEvaluatedAt: shownAt });
+
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'TOOL_SCAN_CHANGED' });
+    });
+  });
+
   it('marks environments when a published version becomes recommended', async () => {
     const tool = {
       toolId: 'java',
