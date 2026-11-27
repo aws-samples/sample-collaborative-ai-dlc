@@ -1,24 +1,28 @@
 # Frontend data layer
 
-The browser uses **TanStack Query v5** for REST data. `lib/queryClient.ts` exports the application client; `main.tsx` supplies that instance through `QueryClientProvider`. TanStack owns request sharing, query state, cancellation, freshness, observers, and garbage collection. There is no application cache adapter.
+This page explains how the browser loads, keeps, and refreshes data from the REST API.
 
-Application WebSocket events and Yjs document sync remain separate transports. A WebSocket event can invalidate a query; realtime frames are not stored as query results. See the [architecture overview](architecture.md).
+The browser uses **TanStack Query v5** for REST data. `lib/queryClient.ts` creates the one shared client, and `main.tsx` passes it to the app through `QueryClientProvider`. TanStack Query does the hard parts for us: it shares identical requests, tracks loading and error state, cancels requests, decides when data is out of date, and frees data nobody uses. We do not add our own cache layer on top.
+
+The two WebSocket connections are separate from this. Application events (agent progress, notifications) can tell the cache that some data changed, but the cache never stores the events themselves. Yjs document sync does not go through the cache at all. See the [architecture overview](architecture.md).
 
 ## Query cache
 
+In TanStack Query, a _query_ is one piece of server data, stored under a _key_. Every screen that asks for the same key gets the same stored data and the same request.
+
 ### Keys
 
-Use the factories in `lib/queryKeys.ts` (`qk`) for hierarchical, request-shaped keys:
+Build keys with the helpers in `lib/queryKeys.ts` (`qk`). Keys are arrays that go from general to specific:
 
-- Space reads live under `['project', projectId, …]`.
-- Intent detail lives under `['intent', projectId, intentId, …]`.
-- Workflow detail and compilation live under `['workflow', workflowId, …]`.
+- Space data starts with `['project', projectId, …]`.
+- Intent detail starts with `['intent', projectId, intentId, …]`.
+- Workflow detail and compiled workflows start with `['workflow', workflowId, …]`.
 
-Include every parameter that changes the response. In particular, compiled-workflow keys include the version, release, importer revision, and intent-specific pin. A shared prefix permits targeted invalidation without merging distinct responses.
+Put every parameter that changes the response into the key. For example, a compiled-workflow key includes the version, the release, the importer revision, and the version an intent is pinned to. Two different responses must never share a key. Because related keys share a start, one call can refresh all of them, for example everything under one workflow.
 
-### React binding
+### Using a query in React
 
-Factories return native `queryOptions`, not a second options format. The same factory works for a screen, an imperative read, and a prefetch:
+Each helper returns a standard TanStack `queryOptions` object. The same helper works in a component, in code that needs the result once, and for loading data ahead of time:
 
 ```tsx
 const detail = useQuery(intentDetailQuery(projectId, intentId));
@@ -26,29 +30,29 @@ await queryClient.fetchQuery(intentDetailQuery(projectId, intentId));
 await queryClient.prefetchQuery(intentDetailQuery(projectId, intentId));
 ```
 
-`lib/authoringQueries.ts` and `lib/intentEntry.ts` own the shared descriptors. Each query function passes TanStack's `signal` to the transport. Keep HTTP calls in the domain service or authenticated API client; do not call a cache-backed service recursively from its own query function.
+The shared helpers live in `lib/authoringQueries.ts` and `lib/intentEntry.ts`. Each one passes TanStack's `signal` to the HTTP call, so the request can be cancelled. HTTP calls stay in the domain service or the authenticated API client. A query must not call a service that itself reads through the same cache.
 
-Use native result fields: `data`, `error`, `isPending`, `isFetching`, `isPlaceholderData`, `dataUpdatedAt`, and `refetch`.
+Read the standard result fields: `data`, `error`, `isPending`, `isFetching`, `isPlaceholderData`, `dataUpdatedAt`, and `refetch`.
 
-Use `placeholderData` for an observer-local preview, not `setQueryData` or `initialData` for incomplete server records.
+To show a preview while the real data loads (for example a row from a list), use `placeholderData`. Do not write partial server records into the cache with `setQueryData` or `initialData`.
 
-### Freshness and retention
+### How long data is kept
 
-| Policy                         | Value                         |
-| ------------------------------ | ----------------------------- |
-| Default `staleTime`            | 30 seconds                    |
-| Default inactive `gcTime`      | 60 seconds                    |
-| Inactive memory cap            | 150 queries and roughly 8 MiB |
-| Cap after 60 seconds hidden    | 50 queries and roughly 2 MiB  |
-| Automatic window-focus refetch | Disabled by default           |
+| Setting                                          | Value                    |
+| ------------------------------------------------ | ------------------------ |
+| Data counts as fresh for (`staleTime`)           | 30 seconds               |
+| Unused data is freed after (`gcTime`)            | 60 seconds               |
+| Most unused data kept                            | 150 queries, about 8 MiB |
+| Most unused data kept after 60 s in a hidden tab | 50 queries, about 2 MiB  |
+| Reload when the window gets focus                | Off by default           |
 
-`staleTime` is a freshness window, not a polling interval. `gcTime` is TanStack's inactive retention timer; when consumers configure different retention for the same key, the longest applies.
+Fresh data is used as is; older data is reloaded the next time a screen needs it. `staleTime` is not a polling interval: nothing reloads just because time passed. "Unused" means no mounted component is reading the data. If two readers ask for different `gcTime` values for the same key, the longest one wins.
 
-A small `QueryCache` subscriber additionally bounds unused data by count and approximate serialized size. It evicts the least recently used queries with **no observers and no request in flight**, where use means a data change or an observer subscribing or leaving (a fresh `fetchQuery` hit does not count); it never evicts a screen's observed data. A visibility timer tightens the cap after 60 seconds hidden. Size is measured when a stored value changes and is an estimate, not an exact measurement of heap usage.
+On top of that, a small listener in `queryClient.ts` limits how much unused data stays in memory, by count and by approximate size. When the limit is reached it removes the data that was used least recently. It only removes data that no screen is reading and that has no request running, so it never takes data away from a screen. Data counts as used when it changes or when a component starts or stops reading it; a `fetchQuery` that is answered from the cache does not count. The limit gets tighter after the tab has been hidden for 60 seconds. Size is an estimate taken when the data changes, not an exact memory measurement.
 
-### Request sharing and cancellation
+### Shared requests and cancellation
 
-TanStack shares in-flight requests for the same key. Passing its `AbortSignal` to the HTTP client enables transport cancellation. An authoritative write must not race an older read; cancel that read before installing the write result:
+If two readers ask for the same key at once, TanStack sends one request. Passing its `AbortSignal` to the HTTP client lets that request be cancelled. When a save returns the new value, an older read that is still running could finish later and overwrite it. Cancel that read before storing the saved value:
 
 ```ts
 await queryClient.cancelQueries({ queryKey, exact: true });
@@ -57,63 +61,89 @@ queryClient.setQueryData(queryKey, savedValue);
 
 ### Errors
 
-The client does not retry 401, 403, 404, or 410 responses; other failures retry once. A 403, 404, or 410 also drops the stored value, so a screen never shows data the user lost access to. Genuine session expiry is detected by the authenticated API client. Prefetch failures are speculative and must not interrupt navigation.
+A 401, 403, 404, or 410 response is not retried; any other failure is retried once. A 403, 404, or 410 also removes the stored data, so a screen never keeps showing data the user can no longer see. The authenticated API client decides when the session has really expired. A failed load-ahead (see [Loading data before a click](#loading-data-before-a-click)) is ignored and never blocks navigation.
 
-## Session isolation
+## Signing out and switching users
 
-`AuthContext` binds accepted users through `lib/persistentCache.ts` and ends that binding on logout, user switch, or expiry. The query client clears when the session ends, cancelling old queries as well as discarding their data, and `querySessionOpen` stays false until a user is bound again. The prefetch scheduler drops queued work at the same boundary.
+`AuthContext` registers the signed-in user through `lib/persistentCache.ts` and ends that registration on logout, on a user switch, or when the session expires. At that moment the query client is cleared: running requests are cancelled and all stored data is dropped. `querySessionOpen` stays false until a user signs in again. Loads that were waiting to start ahead of time are dropped too.
 
-The existing document-reload boundary remains: signing in after a session ended, or switching users, starts a new document rather than reusing the old user's modules. The persisted sidebar summary is scoped to the user and cleared at session end.
+Signing in after a session ended, or switching users, still reloads the whole page, so no code or memory from the previous user is reused. The sidebar summary saved in the browser belongs to one user and is cleared when the session ends.
 
-## Invalidation rules
+## Refreshing data after a save
 
-Domain writes go through `afterWrite(write, ...prefixes)` (`lib/afterWrite.ts`): once the write settles it invalidates each prefix and supersedes reads that started before it (cancelled and restarted, so their waiters get post-write data). Active queries refetch; inactive queries remain stale until needed.
+Saves go through `afterWrite(write, ...prefixes)` in `lib/afterWrite.ts`. When the save finishes, it marks every key under each given prefix as out of date. It also restarts any read of those keys that started before the save, so whoever waits on that read gets the data after the save. Data a screen is showing reloads at once; other data reloads the next time it is needed.
 
-- Workflow writes invalidate the workflow prefix and workflow list. The prefix covers compiled views.
-- Successful intent lifecycle writes invalidate the space's intent lists, including status-filtered lists, and re-read the spaces cache (`useProjectsCache`) that the sidebar and dashboard still read outside the query cache.
+- Workflow saves refresh the workflow's keys (including its compiled views) and the workflow list.
+- Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status. They also re-read the spaces cache (`useProjectsCache`) that the sidebar and dashboard still read outside TanStack Query.
 
-`afterWrite` refreshes in `finally`: a failed response can still follow an applied write. Intent lifecycle writes refresh only on success. Keep this decision in the service so every caller uses the same policy.
+`afterWrite` refreshes even when the save fails, because the server may have applied the change before the error. Intent changes refresh only when they succeed. Keep this choice in the service, so every caller follows the same rule.
 
-## Prefetch
+## Loading data before a click
 
-### Route registry
+When the user is about to open a page, the app starts loading that page's code and data early. By the time the click lands, much of it is already there. This is called _prefetching_.
 
-`routes/registry.ts` defines the authenticated shell routes. Each entry owns its lazy page, optional access requirement, critical query factories, dependent queries, and heavy-read policy. The page and its prefetch must use the same factory and key.
+### Which data a page needs
 
-`lib/navIntent.ts` delegates hover, focus, pointer-down, and touch handling. Hover/focus waits for a cancellable 200 ms dwell; pressing warms immediately. Repeats are deduplicated by query freshness and in-flight sharing, not by a per-link cooldown. External, disabled, download, and opted-out links are ignored. Heavy routes (the graph, an intent whose cached detail exceeds 512 KiB) load code on hover and data only when navigation is imminent. Route chunks use `lazyWithPreload` so render and warming share the same import.
+`routes/registry.ts` lists the pages inside the signed-in app. For each page it says:
 
-### Budgets and gates
+- which code to load (the page is split into its own file and loaded on demand);
+- who may open it (for example platform admins only);
+- the data the page needs first, and data that can only be loaded once that first data is known;
+- whether the page is _heavy_ (large data, see below).
 
-`lib/prefetch.ts` adds scheduling around native `queryClient.prefetchQuery`:
+The page and its prefetch use the same query helper, so they share one key and one request.
 
-- At most **two requests** run and **eight tasks** wait. Intent-priority work precedes idle work; a full queue drops speculation, never foreground requests.
-- Save-Data, 2g/slow-2g, reduced-data preference, and a closed session suppress speculative data reads. Pressing may still load code.
-- Hidden tabs do not dispatch speculative work. Idle warming also avoids devices reporting 2 GB of memory or less.
-- Idle work waits for foreground fetching to go quiet; hover and press warming do not.
-- Navigation drops obsolete queued tasks and cancels inactive requests the destination does not need. Requests already observed by a screen are not cancelled as speculation.
+### When loading starts
 
-There is no parallel speculative data store, learned-byte estimator, per-link cooldown, hit/waste registry, or token-bucket API. Prefetched data uses the same native cache and inactive memory cap as other reads.
+`lib/navIntent.ts` watches the whole document instead of adding a handler to every link. It reacts as follows:
 
-The intent detail query starts its compiled view as soon as a detail a page is reading arrives; a speculative detail leaves the compile to the route prefetch. The provider reads the shared detail, compiled, and workflow-detail (`select` phases) queries; it keeps only the transcript and artifact-body merge state of its own.
+- **Pointer rests on a link, or the link gets keyboard focus:** it waits 200 ms, then starts loading. Moving away within those 200 ms cancels it, so sweeping the mouse across a menu loads nothing.
+- **Mouse button or finger goes down on a link:** it starts at once, because the click is about to happen.
+- **Ignored:** links to other sites, links that open in another tab, downloads, disabled links, and links inside an element marked `data-prefetch="none"`.
 
-Never prefetch capability probes (they are cached foreground reads), composer execution previews (cached, foreground only), OAuth callbacks, verification endpoints, writes, realtime tokens, output transcripts, artifact content pages, or the slow on-demand space-usage aggregate. Graph and audit reads are not idle-warming candidates.
+Hovering the same link again does not send the request again: data that is still fresh, or a request that is still running, is reused.
+
+The intent graph and very large intents (cached detail over 512 KiB) are heavy. For them, hovering only loads the page's code; the data waits until the button goes down. Page code is loaded with `lazyWithPreload`, so showing the page and loading it early use the same download.
+
+### Limits
+
+`lib/prefetch.ts` decides when early loads may run, around TanStack's own `queryClient.prefetchQuery`:
+
+- At most **two** early loads run at once, and at most **eight** wait. Loads for a link the user is pointing at go before loads started when the browser is idle. When the queue is full, the last waiting load is dropped. Requests a screen makes itself are never limited or dropped.
+- No early data loads when the browser asks to save data, on a 2G connection, when the user prefers reduced data, or when nobody is signed in. Pressing a link may still load its code.
+- Nothing starts while the tab is hidden. Idle loading is also skipped on devices that report 2 GB of memory or less.
+- Idle loading waits until the current page has finished its own requests. Hover and press loading do not wait.
+- When the user navigates, waiting loads for other pages are dropped. Running early loads that the new page does not need are cancelled. A request a screen is already reading is never cancelled.
+
+Early-loaded data goes into the same cache, under the same memory limit, as any other data. There is no separate store for it.
+
+The intent detail query starts loading the compiled workflow as soon as the detail arrives for a page that shows it. When the detail was only loaded early, the page's prefetch loads the compiled workflow itself. The intent page reads the shared detail, compiled workflow, and workflow detail queries; it only keeps the live transcript and artifact text of its own.
+
+Never load these early:
+
+- capability checks and composer previews of how a workflow will run (the page asks for these itself, when it needs them);
+- OAuth callbacks and verification links;
+- saves of any kind;
+- realtime tokens;
+- agent transcripts and pages of artifact content;
+- the slow space-usage total.
+
+The graph and the audit log are never loaded while the browser is idle.
 
 ## Polling
 
-Use `refetchInterval` on the query that owns the data. Leave `refetchIntervalInBackground` false so TanStack pauses background polling. The interval may depend on query state: live intent detail uses 8 seconds, waiting intents 30 seconds, and terminal intents stop polling. Realtime invalidation remains the primary update path; polling recovers dropped events.
+To reload data on a timer, set `refetchInterval` on the query that owns it. Leave `refetchIntervalInBackground` off, so polling pauses while the tab is hidden. The interval can depend on the data: a running intent reloads every 8 seconds, a waiting intent every 30 seconds, and a finished intent stops. Realtime events are the main way data stays current; polling only catches events that were missed.
 
-`useVisiblePoll` is reserved for non-query work such as catching up and merging independently paginated visible transcript panes. Do not introduce another timer for an ordinary query refresh.
+`useVisiblePoll` is only for work that is not a query, such as catching up the transcript panes that are on screen. Do not add another timer to refresh an ordinary query.
 
-A component that renders a transcript pane declares it with `useVisibleOutputPanes` for as long as it is mounted: declared panes keep catching up and are never evicted, and each declaration is counted, so one viewer leaving does not hide a pane another still shows. When the size cap drops older rows, the transcript says so.
+## Reading data without keeping it
 
-## Reading without retaining
-
-`useQueryData(key)` uses `useSyncExternalStore`, a `QueryCache` subscription, and `getQueryData`. It does not create a query or an observer, fetch data, or extend retention. Use it for small status views that should update when data arrives without keeping it in memory.
+`useQueryData(key)` reads what is already in the cache and re-renders when it changes. It does not send a request and does not keep the data in memory longer. Use it for small status views that should update when data arrives but should not hold on to it.
 
 ## Checklist for changes
 
-- Add request-shaped keys to `qk` and a shared `queryOptions` factory. Forward `signal`; choose `staleTime` and `gcTime` deliberately.
-- Read with `useQuery`, or `fetchQuery` when an imperative caller needs the result. Use `useQueryData` only for non-retaining views.
-- Invalidate affected prefixes in services; cancel superseded reads before authoritative cache writes.
-- Register routes and their query factories once. Use normal links or `data-prefetch-href` instead of per-row hover timers.
-- Use `src/test/query.tsx` for query-owning component and hook tests. Setup creates a fresh client per test. Test application policies and request wiring rather than reimplementing TanStack's tests.
+- Add the key to `qk` and a shared `queryOptions` helper. Pass `signal` on. Choose `staleTime` and `gcTime` on purpose.
+- Read with `useQuery`, or `fetchQuery` when code needs the result once. Use `useQueryData` only to read without keeping.
+- Refresh the affected keys in the service after a save. Cancel older reads before storing a saved value.
+- Add each page and its query helpers to the route registry once. Use normal links, or `data-prefetch-href` on other elements, instead of a hover timer per row.
+- Test components and hooks that read queries with `src/test/query.tsx`. Each test gets a new client. Test our own rules and request wiring, not TanStack's behavior.

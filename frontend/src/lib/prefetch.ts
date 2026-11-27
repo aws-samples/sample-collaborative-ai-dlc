@@ -11,11 +11,14 @@ type Task = {
   notify: () => void;
   run: () => Promise<void>;
 };
+// Early loads are guesses. Two at a time keeps them from slowing the requests the
+// page itself makes; eight waiting covers a menu the user is scanning.
 let queue: Task[] = [];
 const running = new Map<string, Task>();
 let wake: ReturnType<typeof setTimeout> | undefined;
 let quietUntil = 0;
 
+// A guess that is not used is wasted data, which matters on metered or slow links.
 export function canPreloadOnHover(): boolean {
   const network = (
     navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }
@@ -28,6 +31,8 @@ export function canPreloadOnHover(): boolean {
   );
 }
 
+// Idle guesses are the least likely to be used. When memory is tight they would only
+// push out data a screen may come back to.
 export function canPrefetchAtIdle(): boolean {
   return (
     canPreloadOnHover() &&
@@ -98,11 +103,15 @@ export function prefetchQuery<T, K extends QueryKey>(
     },
     run: async () => {
       await queryClient.prefetchQuery(options);
+      // Navigation may have dropped this task while it ran; its follow-up loads
+      // would then be for a page the user has left.
       if (running.get(hash) === task) task.notify();
     },
   };
   const existing = running.get(hash) ?? queue.find((queued) => queued.hash === hash);
   if (existing) {
+    // The user now points at a link that was only queued for idle time: move it
+    // up instead of sending a second request.
     if (priority === 'intent') {
       existing.priority = priority;
       existing.ready = true;
@@ -116,6 +125,7 @@ export function prefetchQuery<T, K extends QueryKey>(
     }
     return;
   }
+  // The back of the queue holds idle guesses, the ones least likely to be used.
   if (queue.length === 8) queue.pop()?.cancelIdle?.();
   if (priority === 'intent') queue.unshift(task);
   else queue.push(task);
@@ -146,6 +156,8 @@ export function foregroundNavigation(keep: ReadonlySet<string> = new Set(), quie
   });
   for (const [hash, task] of running) {
     if (keep.has(hash)) continue;
+    // Only requests no screen reads: cancelling one a screen shows would make it
+    // start over.
     void queryClient.cancelQueries({ queryKey: task.key, exact: true, type: 'inactive' });
     running.delete(hash);
   }
@@ -153,5 +165,6 @@ export function foregroundNavigation(keep: ReadonlySet<string> = new Set(), quie
   if (queue.length) wake = setTimeout(pump, 300);
 }
 
+// Waiting loads belong to the user who queued them; none may run after sign-out.
 onUserCacheEnded(() => foregroundNavigation());
 document.addEventListener('visibilitychange', pump);

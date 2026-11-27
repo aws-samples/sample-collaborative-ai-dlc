@@ -61,12 +61,15 @@ export function installNavIntent(
     prefetchHref(target.href, { trigger, ...getContext() });
   };
   const arm = (event: Event, trigger: 'hover' | 'focus') => {
+    // A tap sends pointerover just before pointerdown; the press path handles taps.
     if (trigger === 'hover' && (event as PointerEvent).pointerType === 'touch') return;
     const target = targetOf(event.target);
     if (target?.element === armed?.element) return;
     leave();
     if (!target || !querySessionOpen) return;
     armed = target;
+    // 200 ms skips links the pointer only crosses on its way elsewhere, and still
+    // starts well before a deliberate click lands.
     timer = setTimeout(() => fire(target, trigger), 200);
   };
   const out = (event: Event) => {
@@ -75,8 +78,10 @@ export function installNavIntent(
     if (armed && related instanceof Node && armed.element.contains(related)) return;
     leave();
   };
+  // A press means the click is about to happen, so there is nothing to wait for.
   const immediate = (event: Event) => {
     const pointer = event as PointerEvent;
+    // Other buttons and modified clicks open a new tab or menu; this page stays put.
     if (
       event.type === 'pointerdown' &&
       (pointer.button !== 0 ||
