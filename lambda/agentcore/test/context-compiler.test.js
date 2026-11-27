@@ -351,6 +351,19 @@ describe('compileContextPack on large graphs', () => {
     expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
   });
 
+  it('finds the decisions and unit stories that come after the first 500 rows', async () => {
+    const rows = [...many(650, 'Persona'), ...many(20, 'Decision'), ...unitStories(30)];
+    const pack = await compileContextPack({
+      graph: graphOf(rows),
+      stage: {},
+      unit: { slug: 'auth' },
+    });
+    expect(pack.markdown.match(/^- decision-/gm)).toHaveLength(20);
+    expect(pack.markdown).toContain('### Unit pack — auth');
+    expect(pack.markdown.match(/^- story-/gm)).toHaveLength(30);
+    expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
+  });
+
   it('flags only the section whose own read hits the limit', async () => {
     const pack = await compileContextPack({
       graph: graphOf(many(ITEMS_READ_LIMIT, 'Decision')),
