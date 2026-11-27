@@ -309,6 +309,11 @@ output "os_packages_epoch" {
   value       = var.os_packages_epoch
 }
 
+output "prebuilt_images" {
+  description = "Images deployed from a pre-built tag (agentcore_image_tag, yjs_image_tag); the OS package epoch does not rebuild them"
+  value       = compact([var.agentcore_image_tag == null ? "" : "agentcore", var.yjs_image_tag == null ? "" : "yjs"])
+}
+
 output "yjs_scaling" {
   description = "Effective worker sizing, scaling bounds, and metrics"
   value       = module.yjs_server.scaling

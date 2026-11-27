@@ -164,6 +164,10 @@ test('the OS package epoch reaches every image build and refreshes only the last
     read('terraform/outputs.tf'),
     /output "os_packages_epoch" \{[^}]*value\s+= var\.os_packages_epoch/,
   );
+  assert.match(
+    read('terraform/outputs.tf'),
+    /output "prebuilt_images" \{[^}]*var\.agentcore_image_tag == null[^}]*var\.yjs_image_tag == null/,
+  );
   // The module tests override the builds, so only this guards their inputs.
   for (const [path, name, prefix] of [
     ['terraform/modules/compute/agentcore/main.tf', 'agentcore_docker_build', 'agentcore'],

@@ -117,13 +117,19 @@ if (args[0].startsWith('-chdir=')) process.chdir(args.shift().slice(7));
 const command = args[0];
 assert.equal(process.cwd(), ${JSON.stringify(join(directory, 'terraform'))});
 if (command === 'output') {
+  // The plan compares with the deployed epoch; older states lack the output.
+  if (args.at(-1) === 'os_packages_epoch' && !fs.existsSync(${JSON.stringify(join(directory, 'applied'))})) {
+    if (!process.env.FAKE_DEPLOYED_EPOCH) process.exit(1);
+    process.stdout.write(process.env.FAKE_DEPLOYED_EPOCH);
+    process.exit(0);
+  }
   assert.ok(fs.existsSync(${JSON.stringify(join(directory, 'applied'))}));
   const outputs = { environment: 'prod', aws_region: 'eu-central-1',
     user_pool_id: 'test-pool', user_pool_client_id: 'test-client', auth_mode: 'local',
     application_url: 'https://test.example.invalid', application_domain: 'test.example.invalid',
     s3_bucket_name: 'test-frontend', cloudfront_distribution_id: 'test-distribution',
     v2_executions_table_name: 'test-inventory', seed_blocks_lambda_name: 'test-seed', sso_providers: '[]',
-    os_packages_epoch: process.env.FAKE_EPOCH_OUTPUT || '' };
+    os_packages_epoch: process.env.FAKE_EPOCH_OUTPUT || '', prebuilt_images: process.env.FAKE_PREBUILT || '[]' };
   process.stdout.write(outputs[args.at(-1)] || '');
   process.exit(0);
 }
@@ -294,6 +300,38 @@ test('a tfvars epoch of the current ISO week prints no note', (t) => {
   const result = deploy(fixture, { FAKE_ISO_WEEK: '2026-W53' });
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stderr, /last refreshed/);
+});
+
+test('a plan without the deployed epoch warns before rebuilding over it', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, { FAKE_DEPLOYED_EPOCH: '2026-W48' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stderr,
+    /WARNING: the deployed images were built with OS package epoch 2026-W48/,
+  );
+  assert.match(result.stderr, /add os_packages_epoch = "2026-W48" to /);
+});
+
+test('a plan that keeps the deployed epoch does not warn', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, {
+    FAKE_DEPLOYED_EPOCH: '2026-W48',
+    TF_VAR_os_packages_epoch: '2026-W48',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /WARNING: the deployed images/);
+});
+
+test('the summary says when pinned images ignore the epoch', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, { FAKE_EPOCH_OUTPUT: '2026-W48', FAKE_PREBUILT: '["agentcore"]' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /OS packages: +epoch 2026-W48 configured; pinned images are not rebuilt \(agentcore\)/,
+  );
+  assert.doesNotMatch(result.stdout, /refreshed for epoch/);
 });
 
 test('plan/apply/preparation failures stop deployment before frontend publication', (t) => {
