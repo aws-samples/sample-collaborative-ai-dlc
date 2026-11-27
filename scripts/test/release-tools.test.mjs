@@ -680,6 +680,39 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
 });
 
+test('Terraform plan inspection destroys protected resources only when the operator allows it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
+  const plan = join(dir, 'protected.json');
+  const pool = 'module.auth.aws_cognito_user_pool.main';
+  const table = 'module.dynamodb.aws_dynamodb_table.sessions';
+  writeJson(plan, {
+    resource_changes: [
+      { address: pool, type: 'aws_cognito_user_pool', change: { actions: ['delete', 'create'] } },
+      { address: table, type: 'aws_dynamodb_table', change: { actions: ['delete'] } },
+    ],
+  });
+
+  for (const value of ['', '0', 'true']) {
+    const rejected = run('node', [inspector, plan], { env: { AIDLC_ALLOW_DESTROY: value } });
+    assert.equal(rejected.status, 1, `AIDLC_ALLOW_DESTROY=${value}`);
+    assert.match(rejected.stderr, /protected persistent resources would be destroyed/);
+    assert.match(rejected.stderr, /set AIDLC_ALLOW_DESTROY=1/);
+  }
+
+  const allowed = run('node', [inspector, plan], { env: { AIDLC_ALLOW_DESTROY: '1' } });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /AIDLC_ALLOW_DESTROY=1 is set/);
+  assert.ok(allowed.stdout.includes(`${pool} (delete, create)`));
+  assert.ok(allowed.stdout.includes(`${table} (delete)`));
+  assert.doesNotMatch(allowed.stdout, /check passed/);
+
+  // Teardown preparation is a separate mode and stays as strict as before.
+  const preparation = run('node', [inspector, plan, '--deletion-protection-only'], {
+    env: { AIDLC_ALLOW_DESTROY: '1' },
+  });
+  assert.equal(preparation.status, 1);
+});
+
 test('Terraform plan inspection allows deleting the Gateway grant retirement table, not replacing it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
   const address = 'module.agentcore.aws_dynamodb_table.gateway_grant_retirements[0]';

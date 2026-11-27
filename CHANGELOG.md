@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Deliberate removal of protected resources.** `deploy-terraform.sh` still refuses a plan that would destroy a Cognito user pool, Neptune cluster, S3 bucket or DynamoDB table, and now names the way to do it on purpose: `AIDLC_ALLOW_DESTROY=1` in the environment of the deploy script or the installer. The switch covers the whole plan and lists every protected resource it destroys. See [Setup](docs/getting-started/setup.md#advanced-manual-installation).
+
 ## [2.4.1] - 2026-11-24
 
 Hotfix for fresh installations of 2.4.0 ([#844](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/844)).
