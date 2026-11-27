@@ -438,7 +438,10 @@ scan again periodically. After enhanced scanning is turned on, a scan ECR can
 run goes through the same gate as a new build: Critical or High findings, or a
 result too large to read completely, wait for review, and anything else makes
 the version `READY`. A decision an
-administrator takes in the meantime is kept. If the image was deleted from the
+administrator takes in the meantime is kept. A decision covers the image and
+scan shown when its dialog opened: if a recheck or a rebuild replaces them
+before the administrator confirms, the platform refuses the decision, shows the
+new scan, and asks for a new decision. If the image was deleted from the
 repository, the version moves to **Needs attention** (`tool_image_not_found`)
 and offers **Retry**, which rebuilds the image.
 
