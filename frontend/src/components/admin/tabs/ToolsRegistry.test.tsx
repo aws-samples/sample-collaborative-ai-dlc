@@ -558,6 +558,7 @@ describe('ToolsRegistry', () => {
           'UnsupportedImageError: The operating system and/or package manager are not supported.',
         severityCounts: {},
         findings: [],
+        evaluatedAt: '2026-11-27T10:00:00.000Z',
       },
     };
     list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
@@ -583,7 +584,65 @@ describe('ToolsRegistry', () => {
       'Continue only when you trust the publisher and download source.',
     );
     await user.click(screen.getByRole('button', { name: 'Continue after review' }));
-    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1', {
+      imageDigest: publishedVersion.imageDigest,
+      scanEvaluatedAt: '2026-11-27T10:00:00.000Z',
+    });
+  });
+
+  it('shows the new scan when it changed while the continue dialog was open', async () => {
+    const user = userEvent.setup();
+    const imageDigest = `sha256:${'d'.repeat(64)}`;
+    const unavailable = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      imageDigest,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        description: null,
+        severityCounts: {},
+        findings: [],
+        evaluatedAt: '2026-11-27T10:00:00.000Z',
+      },
+    };
+    const rescanned = {
+      ...unavailable,
+      scanFindings: {
+        status: 'ACTIVE',
+        severityCounts: { CRITICAL: 1 },
+        findings: [
+          {
+            id: 'CVE-2026-9',
+            severity: 'CRITICAL',
+            packageName: 'openssl',
+            packageVersion: '3.0.0',
+            uri: null,
+          },
+        ],
+        findingsTruncated: false,
+        evaluatedAt: '2026-11-27T10:15:00.000Z',
+      },
+    };
+    list
+      .mockResolvedValueOnce([{ ...goTool, versions: [unavailable] }])
+      .mockResolvedValue([{ ...goTool, versions: [rescanned] }]);
+    acceptFindings.mockRejectedValueOnce(
+      new ApiError(409, 'The scan changed after it was shown. Review it and decide again.', {
+        error: 'The scan changed after it was shown. Review it and decide again.',
+        code: 'TOOL_SCAN_CHANGED',
+      }),
+    );
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Continue without scan' }));
+    await user.click(screen.getByRole('button', { name: 'Continue after review' }));
+
+    expect(
+      await screen.findByText('The scan changed after it was shown. Review it and decide again.'),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('CVE-2026-9')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue without scan' })).not.toBeInTheDocument();
+    expect(acceptFindings).toHaveBeenCalledOnce();
   });
 
   it('says ECR could not scan a tool image when it gave no reason', async () => {
@@ -671,7 +730,10 @@ describe('ToolsRegistry', () => {
       'The part it read holds 1 Critical and 0 High package findings',
     );
     await user.click(screen.getByRole('button', { name: 'Accept findings' }));
-    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1', {
+      imageDigest,
+      scanEvaluatedAt: null,
+    });
   });
 
   it('shows an accepted ECR scan limitation as resolved evidence', async () => {

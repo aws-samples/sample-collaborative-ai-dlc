@@ -1828,7 +1828,21 @@ export function ToolsRegistry() {
           : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
       actionLabel: scanUnsupported ? 'Continue after review' : 'Accept findings',
       onConfirm: () =>
-        void run('accept', () => toolsService.acceptFindings(tool.toolId, version.versionId)),
+        void run('accept', async () => {
+          try {
+            await toolsService.acceptFindings(tool.toolId, version.versionId, {
+              imageDigest: version.imageDigest ?? null,
+              scanEvaluatedAt: version.scanFindings?.evaluatedAt ?? null,
+            });
+          } catch (reason) {
+            // The scan changed while the dialog was open: show the current
+            // one so the administrator reviews it before deciding again.
+            if (reason instanceof ApiError && reason.body?.code === 'TOOL_SCAN_CHANGED') {
+              await load(tool.toolId, version.versionId).catch(() => undefined);
+            }
+            throw reason;
+          }
+        }),
     });
   };
 
