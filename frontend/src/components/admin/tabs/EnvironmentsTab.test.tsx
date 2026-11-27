@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -1278,31 +1278,143 @@ describe('EnvironmentsTab', () => {
       expect(screen.queryByRole('heading', { name: 'Custom older read' })).not.toBeInTheDocument();
     });
 
-    it('shows the poll answer when it supersedes a pending refresh', async () => {
-      const user = userEvent.setup();
+    // Runs the 8-second poll the screen registered last, as the timer would:
+    // the screen registers a new one when the unsaved state changes.
+    const capturePoll = async (...reads: Promise<ReturnType<typeof customDetail>>[]) => {
       const setIntervalSpy = vi.spyOn(window, 'setInterval');
-      readCustomAs(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      onTestFinished(() => setIntervalSpy.mockRestore());
+      readCustomAs(...reads);
       render(<EnvironmentsTab />);
       expect(await screen.findByRole('heading', { name: 'Custom' })).toBeInTheDocument();
-      const poll = setIntervalSpy.mock.calls.findLast(([, delay]) => delay === 8000)?.[0];
-      setIntervalSpy.mockRestore();
-      expect(poll).toBeTypeOf('function');
+      const latestPoll = () =>
+        setIntervalSpy.mock.calls.findLast(([, delay]) => delay === 8000)?.[0];
+      expect(latestPoll()).toBeTypeOf('function');
+      return () => act(() => (latestPoll() as () => void)());
+    };
+    const customReads = () =>
+      get.mock.calls.filter(([environmentId]) => environmentId === 'custom');
+
+    it('does not start a poll while a refresh is pending', async () => {
+      const user = userEvent.setup();
+      const poll = await capturePoll(Promise.resolve(customDetail('Custom', 'BUILDING')));
 
       const refresh = deferred<ReturnType<typeof customDetail>>();
-      const polled = deferred<ReturnType<typeof customDetail>>();
-      readCustomAs(refresh.promise, polled.promise);
+      readCustomAs(refresh.promise);
       await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
-      expect(screen.queryByRole('heading', { name: 'Custom' })).not.toBeInTheDocument();
-      act(() => (poll as () => void)());
+      const readsBeforePoll = customReads().length;
+      poll();
+      expect(customReads()).toHaveLength(readsBeforePoll);
 
-      polled.resolve(customDetail('Custom polled read', 'BUILDING'));
-      expect(
-        await screen.findByRole('heading', { name: 'Custom polled read' }),
-      ).toBeInTheDocument();
       refresh.resolve(customDetail('Custom refreshed read', 'BUILDING'));
-      await settle();
+      expect(
+        await screen.findByRole('heading', { name: 'Custom refreshed read' }),
+      ).toBeInTheDocument();
+    });
 
-      expect(screen.getByRole('heading', { name: 'Custom polled read' })).toBeInTheDocument();
+    it('shows poll answers that keep arriving after the next poll is due', async () => {
+      const poll = await capturePoll(Promise.resolve(customDetail('Custom', 'BUILDING')));
+
+      // Every read takes longer than the 8-second interval (polls at 8, 16,
+      // 24 and 32 s; answers at 17, 25 and 33 s).
+      const pending: ReturnType<typeof deferred<ReturnType<typeof customDetail>>>[] = [];
+      get.mockImplementation((environmentId: string) => {
+        if (environmentId === 'standard') return Promise.resolve(standardDetail);
+        const read = deferred<ReturnType<typeof customDetail>>();
+        pending.push(read);
+        return read.promise;
+      });
+      const answerOldest = () =>
+        act(async () => pending.shift()?.resolve(customDetail('Custom', 'READY')));
+      poll();
+      poll();
+      await answerOldest();
+      poll();
+      await answerOldest();
+      poll();
+      await answerOldest();
+
+      expect(await screen.findByRole('button', { name: 'Publish' })).toBeInTheDocument();
+    });
+
+    const savedDetail = {
+      environment: { ...custom, name: 'Renamed', currentRevisionId: 'r-2' },
+      revisions: [
+        { ...revision, revisionId: 'r-2', status: 'DRAFT' },
+        { ...revision, status: 'BUILDING' },
+      ],
+      publishedRevision: null,
+    };
+    const buildingDetail = {
+      environment: custom,
+      revisions: [{ ...revision, status: 'BUILDING' }],
+      publishedRevision: null,
+    };
+    const saveRename = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(screen.getByRole('tab', { name: /Definition/ }));
+      const name = screen.getByLabelText('Name');
+      await user.clear(name);
+      await user.type(name, 'Renamed');
+      await user.click(screen.getByRole('button', { name: 'Save as new revision' }));
+      await waitFor(() => expect(update).toHaveBeenCalled());
+    };
+    const expectSavedRevision = async (user: ReturnType<typeof userEvent.setup>) => {
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Save as new revision' })).toBeDisabled(),
+      );
+      expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('tab', { name: /Revisions/ }));
+      expect(screen.getByRole('combobox', { name: 'Revision' })).toHaveTextContent('r-2');
+    };
+    type Read = Promise<ReturnType<typeof customDetail>>;
+
+    it('selects the saved revision when a poll comes due during the save refresh', async () => {
+      const user = userEvent.setup();
+      const poll = await capturePoll(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      update.mockResolvedValue({});
+      const saveRefresh = deferred<typeof savedDetail>();
+      const pollRead = deferred<typeof buildingDetail>();
+      readCustomAs(saveRefresh.promise as Read, pollRead.promise as Read);
+
+      await saveRename(user);
+      await waitFor(() => expect(customReads().length).toBeGreaterThan(1));
+      poll();
+      // The poll answers first, with the revision that was building.
+      await act(async () => pollRead.resolve(buildingDetail));
+      await act(async () => saveRefresh.resolve(savedDetail));
+
+      await expectSavedRevision(user);
+    });
+
+    it('selects the saved revision when a poll read was pending before the save', async () => {
+      const user = userEvent.setup();
+      const poll = await capturePoll(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      update.mockResolvedValue({});
+      const pollRead = deferred<typeof buildingDetail>();
+      const saveRefresh = deferred<typeof savedDetail>();
+      readCustomAs(pollRead.promise as Read, saveRefresh.promise as Read);
+
+      poll();
+      await saveRename(user);
+      await act(async () => pollRead.resolve(buildingDetail));
+      await act(async () => saveRefresh.resolve(savedDetail));
+
+      await expectSavedRevision(user);
+    });
+
+    it('does not start a poll while the save itself is in flight', async () => {
+      const user = userEvent.setup();
+      const poll = await capturePoll(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      const saving = deferred<object>();
+      update.mockReturnValue(saving.promise);
+      readCustomAs(Promise.resolve(savedDetail) as Read);
+
+      await saveRename(user);
+      const readsBeforePoll = customReads().length;
+      poll();
+      expect(customReads()).toHaveLength(readsBeforePoll);
+      await act(async () => saving.resolve({}));
+
+      await expectSavedRevision(user);
     });
 
     it('ignores a read of an environment that is no longer selected', async () => {

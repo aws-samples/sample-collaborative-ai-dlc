@@ -132,6 +132,11 @@ export function EnvironmentRegistry() {
   // and an older answer, or one for an environment no longer shown, must not
   // replace a newer one or reset the form.
   const detailRequest = useRef(0);
+  // The background poll waits while a detail read or an action and its
+  // refresh are in flight: starting a read then would supersede an answer
+  // still on its way (a slow poll, or the read that selects a saved revision).
+  const pendingDetailReads = useRef(0);
+  const actionPending = useRef(false);
 
   const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
     setForm(next);
@@ -174,6 +179,7 @@ export function EnvironmentRegistry() {
       const request = ++detailRequest.current;
       const isLatest = () => request === detailRequest.current;
       if (showLoading) setDetailLoading(true);
+      pendingDetailReads.current += 1;
       try {
         const value = await environmentsService.get(environmentId);
         if (!isLatest()) return null;
@@ -209,6 +215,7 @@ export function EnvironmentRegistry() {
         if (!isLatest()) return null;
         throw reason;
       } finally {
+        pendingDetailReads.current -= 1;
         // The latest read also clears a spinner left by a read it superseded.
         if (isLatest()) setDetailLoading(false);
       }
@@ -280,6 +287,7 @@ export function EnvironmentRegistry() {
   useEffect(() => {
     if (!selectedId || !selectedRevision || !isActiveRevision(selectedRevision)) return;
     const timer = window.setInterval(() => {
+      if (pendingDetailReads.current > 0 || actionPending.current) return;
       void Promise.all([
         loadDetail(selectedId, {
           showLoading: false,
@@ -342,6 +350,7 @@ export function EnvironmentRegistry() {
   ) => {
     setBusy(name);
     setError(null);
+    actionPending.current = true;
     try {
       await action();
       await Promise.all([loadList(preferredId ?? undefined), loadDefault()]);
@@ -349,6 +358,7 @@ export function EnvironmentRegistry() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Environment action failed');
     } finally {
+      actionPending.current = false;
       setBusy(null);
     }
   };
@@ -356,6 +366,7 @@ export function EnvironmentRegistry() {
   const createEnvironment = async () => {
     setBusy('create');
     setError(null);
+    actionPending.current = true;
     try {
       const result = await environmentsService.create({
         ...(form.environmentId.trim() ? { environmentId: form.environmentId.trim() } : {}),
@@ -373,6 +384,7 @@ export function EnvironmentRegistry() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Environment action failed');
     } finally {
+      actionPending.current = false;
       setBusy(null);
     }
   };
