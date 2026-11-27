@@ -9,6 +9,7 @@ import {
 import type { Intent, IntentDetail } from '@/services/intents';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Alert } from '@/components/ui/alert';
 import { EmptyState, ErrorState } from '@/components/ui/empty-state';
 import { StatusPill } from '@/components/ui/status-pill';
 import { cn } from '@/lib/utils';
@@ -258,6 +259,53 @@ function WaitingForYou({ items, now }: { items: InboxItem[]; now: number }) {
   );
 }
 
+// Each space's intents load on their own. A space still loading, or whose list
+// failed to load, has not been checked: My work must not call itself complete.
+function uncheckedSpaces(projects: readonly ProjectWithSprint[]) {
+  const v2 = projects.filter((p) => p.project.kind === 'v2');
+  return {
+    loading: v2.filter((p) => p.activityLoading && !p.activityError),
+    failed: v2.filter((p) => p.activityError),
+  };
+}
+
+function spaceNames(projects: readonly ProjectWithSprint[]): string {
+  const names = projects.map((p) => p.project.name);
+  return names.length <= 3
+    ? names.join(', ')
+    : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
+}
+
+function IncompleteNotice({
+  unchecked,
+  onRetry,
+}: {
+  unchecked: ReturnType<typeof uncheckedSpaces>;
+  onRetry: () => void;
+}) {
+  if (unchecked.failed.length)
+    return (
+      <Alert
+        tone="warning"
+        className="mb-4"
+        action={
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            Retry
+          </Button>
+        }
+      >
+        This list may be incomplete. Couldn't load the intents of {spaceNames(unchecked.failed)}.
+      </Alert>
+    );
+  if (unchecked.loading.length)
+    return (
+      <Alert className="mb-4">
+        This list may be incomplete. Still loading the intents of {spaceNames(unchecked.loading)}.
+      </Alert>
+    );
+  return null;
+}
+
 function InboxSkeleton() {
   return (
     <div
@@ -296,6 +344,8 @@ export default function Dashboard() {
       deriveInbox(portfolio, now, (projectId, intent) => readStatus(projectId, intent, { now })),
     [portfolio, now, readStatus],
   );
+  const unchecked = useMemo(() => uncheckedSpaces(portfolio), [portfolio]);
+  const complete = !unchecked.loading.length && !unchecked.failed.length;
   useOfferIdleCandidates(
     'page',
     inbox
@@ -343,6 +393,15 @@ export default function Dashboard() {
             </Button>
           }
         />
+      ) : inbox.length === 0 && unchecked.failed.length ? (
+        <ErrorState
+          headingLevel={2}
+          title="Couldn't check every space"
+          description={`Couldn't load the intents of ${spaceNames(unchecked.failed)}, so some work may be missing here.`}
+          onRetry={() => refresh()}
+        />
+      ) : inbox.length === 0 && !complete ? (
+        <InboxSkeleton />
       ) : inbox.length === 0 ? (
         <EmptyState
           headingLevel={2}
@@ -358,7 +417,10 @@ export default function Dashboard() {
           }
         />
       ) : (
-        <WaitingForYou items={inbox} now={now} />
+        <>
+          <IncompleteNotice unchecked={unchecked} onRetry={() => refresh()} />
+          <WaitingForYou items={inbox} now={now} />
+        </>
       )}
     </div>
   );

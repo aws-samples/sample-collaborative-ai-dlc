@@ -44,6 +44,7 @@ import {
 } from '@/hooks/useProjectsCache';
 import {
   useProjectSort,
+  projectAttentionRank,
   projectComparator,
   PROJECT_SORT_LABELS,
   type ProjectSort,
@@ -174,20 +175,15 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
 
   const sortedProjects = useMemo(() => {
     const cmp = projectComparator(projectSort);
-    return projects.toSorted((a, b) =>
-      cmp(
-        {
-          name: a.project.name,
-          createdAt: a.project.createdAt,
-          lastActivityAt: projectLastActivityAt(a),
-        },
-        {
-          name: b.project.name,
-          createdAt: b.project.createdAt,
-          lastActivityAt: projectLastActivityAt(b),
-        },
-      ),
-    );
+    // Same fields as the Spaces page: without the rank, "Needs attention
+    // first" would order by activity alone.
+    const fields = (entry: ProjectWithSprint) => ({
+      name: entry.project.name,
+      createdAt: entry.project.createdAt,
+      lastActivityAt: projectLastActivityAt(entry),
+      attentionRank: projectAttentionRank(projectIntentList(entry)),
+    });
+    return projects.toSorted((a, b) => cmp(fields(a), fields(b)));
   }, [projects, projectSort]);
 
   const [showCreateProject, setShowCreateProject] = useState(false);

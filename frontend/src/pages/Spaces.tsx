@@ -6,7 +6,7 @@ import {
   projectLastActivityAt,
   type ProjectWithSprint,
 } from '@/hooks/useProjectsCache';
-import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { useOpenCreateSpace } from '@/components/layout/createSpaceDialog';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { Card, CardContent } from '@/components/ui/card';
 import { RowActions } from '@/components/RowActions';
@@ -343,7 +343,6 @@ export default function SpacesRoute() {
 
 function Spaces() {
   const { projects: portfolio, loading, error, refresh, invalidate } = useProjectsCache();
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -391,7 +390,7 @@ function Spaces() {
     [portfolio, now, readStatus],
   );
 
-  const openCreate = () => setShowCreateModal(true);
+  const openCreate = useOpenCreateSpace();
 
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
@@ -638,11 +637,6 @@ function Spaces() {
           />
         )}
       </div>
-
-      {/* Create modal */}
-      {showCreateModal && (
-        <CreateProjectModal onClose={() => setShowCreateModal(false)} onCreated={refresh} />
-      )}
 
       {/* Delete confirmation */}
       <AlertDialog

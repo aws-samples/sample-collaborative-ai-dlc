@@ -52,6 +52,7 @@ vi.mock('@/components/CreateProjectModal', async () => {
       return (
         <div role="dialog" aria-label="Create space">
           <span data-testid="create-space-step">Step {step}</span>
+          <input aria-label="Space name" />
           <button type="button" onClick={() => setStep((s) => s + 1)}>
             Next
           </button>
@@ -64,7 +65,10 @@ vi.mock('@/components/CreateProjectModal', async () => {
   };
 });
 
+import { useState, type ReactNode } from 'react';
 import Spaces from './Spaces';
+import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { CreateSpaceContext } from '@/components/layout/createSpaceDialog';
 import { queryClient } from '@/lib/queryClient';
 import { setProjectSort } from '@/hooks/useProjectSort';
 
@@ -122,16 +126,30 @@ function CurrentLocation() {
   return <span data-testid="current-location">{pathname + search}</span>;
 }
 
-const renderSpaces = (entries: string[] = ['/spaces']) =>
-  render(
-    <MemoryRouter initialEntries={entries}>
+// Stands in for AppShell, which owns the Create space dialog above the routes.
+function Shell({ children }: { children: ReactNode }) {
+  const [creating, setCreating] = useState(false);
+  return (
+    <CreateSpaceContext.Provider value={() => setCreating(true)}>
+      {children}
+      {creating && <CreateProjectModal onClose={() => setCreating(false)} onCreated={() => {}} />}
+    </CreateSpaceContext.Provider>
+  );
+}
+
+const spacesTree = (entries: string[]) => (
+  <MemoryRouter initialEntries={entries}>
+    <Shell>
       <CurrentLocation />
       <Routes>
         <Route path="/spaces" element={<Spaces />} />
         <Route path="/dashboard" element={<p>My work page</p>} />
       </Routes>
-    </MemoryRouter>,
-  );
+    </Shell>
+  </MemoryRouter>
+);
+
+const renderSpaces = (entries: string[] = ['/spaces']) => render(spacesTree(entries));
 
 beforeEach(() => {
   layout.panelsInline = false;
@@ -274,28 +292,31 @@ describe('Work status', () => {
 });
 
 describe('Create space dialog', () => {
-  it('N16: stays mounted with its step when the viewport crosses a breakpoint', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    fixtures.projects = [space('retail', 'Retail', [])];
-    renderSpaces();
-    await user.click(screen.getByRole('button', { name: /New space/ }));
-    const dialog = screen.getByRole('dialog', { name: 'Create space' });
-    await user.click(within(dialog).getByRole('button', { name: 'Next' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Next' }));
-    expect(within(dialog).getByTestId('create-space-step')).toHaveTextContent('Step 3');
+  it.each(['New space', 'Create your first space'])(
+    'opens the shell\'s dialog from "%s", which keeps its step and values when the page redirects on a wide layout',
+    async (button) => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      fixtures.projects = button === 'New space' ? [space('retail', 'Retail', [])] : [];
+      const { rerender } = renderSpaces();
+      await user.click(screen.getByRole('button', { name: button }));
+      const dialog = screen.getByRole('dialog', { name: 'Create space' });
+      await user.click(within(dialog).getByRole('button', { name: 'Next' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Next' }));
+      await user.type(within(dialog).getByRole('textbox', { name: 'Space name' }), 'Payments');
 
-    // Narrow, then wide again: the dialog and its progress survive both flips.
-    for (const width of [390, 1440]) {
-      window.innerWidth = width;
-      window.dispatchEvent(new Event('resize'));
-      await vi.advanceTimersByTimeAsync(50);
+      // Wide layout: /spaces redirects to My work and the page unmounts.
+      layout.panelsInline = true;
+      rerender(spacesTree(['/spaces']));
+      expect(screen.getByText('My work page')).toBeInTheDocument();
       const same = screen.getByRole('dialog', { name: 'Create space' });
       expect(same).toBe(dialog);
       expect(within(same).getByTestId('create-space-step')).toHaveTextContent('Step 3');
-    }
-    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog', { name: 'Create space' })).not.toBeInTheDocument();
-  });
+      expect(within(same).getByRole('textbox', { name: 'Space name' })).toHaveValue('Payments');
+
+      await user.click(within(same).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog', { name: 'Create space' })).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('Spaces table', () => {

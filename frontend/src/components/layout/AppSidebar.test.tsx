@@ -56,6 +56,7 @@ vi.mock('@/services/intents', () => ({ intentsService: { get: vi.fn() } }));
 
 import { AppSidebar, INTENTS_PAGE_SIZE, type AppSidebarProps } from './AppSidebar';
 import { resetSidebarSpacesCache } from '@/hooks/useSidebarSpaces';
+import { setProjectSort } from '@/hooks/useProjectSort';
 import { installNavIntent } from '@/lib/navIntent';
 import { queryClient } from '@/lib/queryClient';
 let cacheSubscribe: ReturnType<typeof vi.spyOn>;
@@ -446,6 +447,45 @@ describe('AppSidebar pinned and all spaces', () => {
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('1 question · 1 failed · 1 stalled · 1 running');
     expect(tooltip).toHaveTextContent('Last activity 3d ago');
+  });
+
+  it('puts an older space waiting for an answer before a newer quiet one under "Needs attention first"', () => {
+    setProjectSort('attention');
+    mockProjects.projects = [
+      v2Space('p1', 'Quiet', [{ id: 'q1', title: 'Busy', status: 'RUNNING', updatedAt: ago(0) }], {
+        lastIntentActivityAt: ago(0),
+      }),
+      v2Space(
+        'p2',
+        'Asking',
+        [
+          {
+            id: 'a1',
+            title: 'Question',
+            status: 'WAITING',
+            pendingHumanTaskId: 'task-1',
+            updatedAt: ago(5),
+          },
+        ],
+        { lastIntentActivityAt: ago(5) },
+      ),
+    ];
+    renderSidebar();
+    const asking = screen.getByRole('link', { name: /^Asking/ });
+    const quiet = screen.getByRole('link', { name: /^Quiet/ });
+    expect(asking.compareDocumentPosition(quiet) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    try {
+      act(() => setProjectSort('activity'));
+      expect(
+        screen
+          .getByRole('link', { name: /^Quiet/ })
+          .compareDocumentPosition(screen.getByRole('link', { name: /^Asking/ })) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    } finally {
+      act(() => setProjectSort('attention'));
+    }
   });
 
   it('opens the space page from the name and the sort menu stays a button', () => {

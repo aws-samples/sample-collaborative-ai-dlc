@@ -182,6 +182,56 @@ describe('My work — branding and states', () => {
     expect(screen.queryByRole('button', { name: /new space/i })).not.toBeInTheDocument();
   });
 
+  describe('while a space has not been checked', () => {
+    const quiet = () => space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))]);
+    const asking = () =>
+      space('ask', 'Asking', [intent('q1', 'WAITING', hoursAgo(2), { pendingHumanTaskId: 't1' })]);
+
+    it('does not give the all-clear while a space is still loading', () => {
+      fixtures.projects = [quiet(), { ...space('slow', 'Slow', []), activityLoading: true }];
+      renderDashboard();
+      expect(screen.queryByText('Nothing needs you right now')).not.toBeInTheDocument();
+      expect(screen.getByRole('status', { name: 'Loading your work' })).toBeInTheDocument();
+    });
+
+    it('says which space failed and offers Retry instead of the all-clear', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      fixtures.projects = [quiet(), { ...space('down', 'Down', []), activityError: true }];
+      renderDashboard();
+      expect(screen.queryByText('Nothing needs you right now')).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { level: 2, name: "Couldn't check every space" }),
+      ).toBeVisible();
+      expect(screen.getByText(/Couldn't load the intents of Down/)).toBeVisible();
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(fixtures.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the known work and says the list is incomplete when another space failed', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      fixtures.projects = [asking(), { ...space('down', 'Down', []), activityError: true }];
+      renderDashboard();
+      expect(screen.getByText('Intent q1')).toBeVisible();
+      const notice = screen
+        .getByText(/This list may be incomplete/)
+        .closest<HTMLElement>('[data-tone="warning"]')!;
+      expect(notice).toHaveTextContent(
+        "This list may be incomplete. Couldn't load the intents of Down.",
+      );
+      await user.click(within(notice).getByRole('button', { name: 'Retry' }));
+      expect(fixtures.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the known work and says which space is still loading', () => {
+      fixtures.projects = [asking(), { ...space('slow', 'Slow', []), activityLoading: true }];
+      renderDashboard();
+      expect(screen.getByText('Intent q1')).toBeVisible();
+      expect(
+        screen.getByText('This list may be incomplete. Still loading the intents of Slow.'),
+      ).toBeVisible();
+    });
+  });
+
   it('offers the Spaces page on narrow screens, where the drawer does not list spaces', () => {
     layout.panelsInline = false;
     fixtures.projects = [space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))])];

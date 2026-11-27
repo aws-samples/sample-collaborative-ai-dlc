@@ -260,6 +260,7 @@ vi.mock('@/hooks/useResizablePanel', () => ({
 }));
 
 import { AppShell } from './AppShell';
+import { useOpenCreateSpace } from './createSpaceDialog';
 
 function CurrentLocation() {
   const { pathname, search } = useLocation();
@@ -271,6 +272,15 @@ function HistoryBackButton() {
   return (
     <button data-testid="go-back" onClick={() => navigate(-1)}>
       Back
+    </button>
+  );
+}
+
+function CreateSpaceOpener() {
+  const openCreateSpace = useOpenCreateSpace();
+  return (
+    <button type="button" onClick={openCreateSpace}>
+      Start a space
     </button>
   );
 }
@@ -316,6 +326,7 @@ function renderAtRoute(path: string) {
             }
           />
           <Route path="/spaces" element={<CurrentLocation />} />
+          <Route path="/opener" element={<CreateSpaceOpener />} />
           <Route path="*" element={<div>page</div>} />
         </Route>
       </Routes>
@@ -419,6 +430,15 @@ describe('AppShell Create space dialog (R3-8)', () => {
     expect(screen.getByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Create space' })).toBeNull();
+  });
+
+  it('opens its dialog for a page that asks through useOpenCreateSpace, across layout changes', async () => {
+    renderAtRoute('/opener');
+    await userEvent.click(screen.getByRole('button', { name: 'Start a space' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create space' });
+    setPanelsInline(false);
+    setPanelsInline(true);
+    expect(screen.getByRole('dialog', { name: 'Create space' })).toBe(dialog);
   });
 
   it('opens the dialog from ?reopenCreateSpace=1 on the page the reader lands on and clears the flag', async () => {
@@ -706,7 +726,8 @@ describe('AppShell keyboard access', () => {
     expect(sidebarHandle).toHaveAttribute('aria-controls', 'app-sidebar');
     expect(sidebarHandle).toHaveAttribute('aria-valuenow', '380');
     expect(sidebarHandle).toHaveAttribute('aria-valuemin', '200');
-    expect(sidebarHandle).toHaveAttribute('aria-valuemax', '420');
+    // The reachable maximum (420 px capped to 30 vw), not the configured one.
+    expect(sidebarHandle).toHaveAttribute('aria-valuemax', '540');
     expect(sidebarHandle).toHaveAttribute('aria-valuetext', '380 pixels');
     expect(sidebarHandle.className).toMatch(/focus-visible:ring-2/);
 
