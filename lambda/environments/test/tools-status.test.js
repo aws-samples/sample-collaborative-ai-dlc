@@ -696,6 +696,83 @@ describe('managed tool build status', () => {
       expect(next.ecr.send).not.toHaveBeenCalled();
     });
 
+    it('fails a version whose image was deleted, so it is not checked again', async () => {
+      const store = storeWith(unsupportedVersion());
+      const { result } = await poll(
+        store,
+        Object.assign(new Error('image not found'), { name: 'ImageNotFoundException' }),
+      );
+
+      expect(result.rechecked).toEqual(['missing']);
+      expect(store.updateVersion).toHaveBeenCalledWith(
+        initialVersion.toolId,
+        initialVersion.versionId,
+        {
+          status: 'FAILED',
+          failure: expect.objectContaining({
+            reason: 'tool_image_not_found',
+            failedAt: new Date(NOW).toISOString(),
+          }),
+        },
+        { fromStatus: 'SECURITY_REVIEW', imageDigest: digest },
+      );
+      expect(store.version().status).toBe('FAILED');
+      const next = await poll(store, enhancedScan([]), NOW + UNAVAILABLE_SCAN_RECHECK_MS);
+      expect(next.ecr.send).not.toHaveBeenCalled();
+    });
+
+    it('keeps a rebuild started before a deleted image is noticed', async () => {
+      const store = storeWith(unsupportedVersion());
+      const missing = Object.assign(new Error('image not found'), {
+        name: 'ImageNotFoundException',
+      });
+      const { result } = await poll(store, () => {
+        store.records.set(initialVersion.versionId, {
+          ...store.version(),
+          status: 'QUEUED',
+          imageDigest: null,
+        });
+        return missing;
+      });
+
+      expect(result.rechecked).toEqual(['superseded']);
+      expect(store.version().status).toBe('QUEUED');
+    });
+
+    it('keeps a new image that replaced a deleted one in the meantime', async () => {
+      const store = storeWith(unsupportedVersion());
+      const { result } = await poll(store, () => {
+        store.records.set(initialVersion.versionId, {
+          ...store.version(),
+          imageDigest: `sha256:${'c'.repeat(64)}`,
+        });
+        return Object.assign(new Error('image not found'), { name: 'ImageNotFoundException' });
+      });
+
+      expect(result.rechecked).toEqual(['superseded']);
+      expect(store.version().status).toBe('SECURITY_REVIEW');
+    });
+
+    it('checks a deleted image again when failing the version is throttled', async () => {
+      const store = storeWith(unsupportedVersion());
+      store.updateVersion.mockRejectedValueOnce(
+        Object.assign(new Error('throttled'), { name: 'ThrottlingException' }),
+      );
+      const { result } = await poll(
+        store,
+        Object.assign(new Error('image not found'), { name: 'ImageNotFoundException' }),
+      );
+
+      expect(result.rechecked).toEqual(['failed']);
+      expect(store.version().status).toBe('SECURITY_REVIEW');
+      const next = await poll(
+        store,
+        Object.assign(new Error('image not found'), { name: 'ImageNotFoundException' }),
+        NOW + UNAVAILABLE_SCAN_RECHECK_MS,
+      );
+      expect(next.result.rechecked).toEqual(['missing']);
+    });
+
     it('waits while an enhanced scan is still settling, until the next interval', async () => {
       const store = storeWith(unsupportedVersion());
       const settling = enhancedScan([high]);

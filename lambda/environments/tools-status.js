@@ -236,7 +236,34 @@ const recheckUnavailableScan = async ({ store, version, ecrClient, now, budgetMs
       imageDigest: version.imageDigest,
       now,
       abortSignal: AbortSignal.timeout(budgetMs),
+    }).catch((error) => {
+      if (error?.name === 'ImageNotFoundException') return null;
+      throw error;
     });
+    if (gateScan === null) {
+      // The image was deleted: no later scan can clear the review, and the
+      // version cannot be published without it. Fail it so the next poll
+      // stops checking and the version offers a rebuild.
+      await store.updateVersion(
+        version.toolId,
+        version.versionId,
+        {
+          status: 'FAILED',
+          failure: {
+            reason: 'tool_image_not_found',
+            detail: 'The tool image is no longer in the repository. Rebuild the version.',
+            failedAt: new Date(now()).toISOString(),
+          },
+        },
+        { fromStatus: 'SECURITY_REVIEW', imageDigest: version.imageDigest },
+      );
+      logger.warn('Managed tool image is missing; version failed', {
+        toolId: version.toolId,
+        versionId: version.versionId,
+        imageDigest: version.imageDigest,
+      });
+      return 'missing';
+    }
     if (gateScan.pending) return outcome('pending');
     const scanStatus = gateScan.scan.imageScanStatus?.status;
     const scanDescription = gateScan.scan.imageScanStatus?.description ?? null;
