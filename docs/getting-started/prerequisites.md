@@ -190,6 +190,19 @@ automatically. On paths using this authentication, a failure stops deployment
 before apply or retired-task changes. Keep BuildKit enabled: the locked provider's
 legacy builder does not forward this auth session.
 
+### Neptune instance class
+
+The Neptune instance class defaults to `db.t3.medium` and is set with `neptune_instance_class`. The burstable `db.t3.medium` and `db.t4g.medium` classes have 2 vCPUs and 4 GiB of memory; AWS offers them for development and testing, [not for production](https://docs.aws.amazon.com/neptune/latest/userguide/instance-types.html). For production, set a memory-optimized class such as `db.r7g.large` and watch `FreeableMemory` and `BufferCacheHitRatio`.
+
+Setting `neptune_instance_class` to a different class modifies the instance in place. The cluster has a single instance, so the graph database is unavailable for several minutes while it restarts:
+
+- By default the change waits for the cluster's weekly maintenance window, and every plan shows it again until then. Set `neptune_apply_immediately = true` to restart during the apply instead, ideally when no intent is running.
+- The deployment plan check prints a warning for the class change.
+- Keep `neptune_instance_class` set once changed. Removing it returns the instance to `db.t3.medium`, which restarts it again, and does not cancel a change still pending for the maintenance window.
+- To roll back, set the previous class. That restarts the instance again.
+
+Take a manual cluster snapshot before changing the class, because Neptune stores the canonical artifact content.
+
 ### KMS permissions for infrastructure encryption
 
 The example tfvars leaves `kms_key_arn` empty. DynamoDB remains encrypted at rest with the AWS-owned key, a new Neptune cluster is encrypted with the AWS managed `aws/rds` key, and the deployment principal does not need KMS administration permissions.
