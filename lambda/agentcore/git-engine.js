@@ -181,6 +181,7 @@ const withAuthenticatedRemote = async (
     repo,
     projectId,
     executionId,
+    stageCallbackId = null,
     gitProvider,
     requiredAccess,
     urls = {},
@@ -208,6 +209,7 @@ const withAuthenticatedRemote = async (
       provider: gitProvider,
       repository: repo,
       requiredAccess,
+      ...(stageCallbackId ? { stageCallbackId } : {}),
     },
     ({ env }) => operation(env),
   );
@@ -216,6 +218,7 @@ const withAuthenticatedRemote = async (
 const resolveCommitterFor = async ({
   projectId,
   executionId,
+  stageCallbackId = null,
   gitProvider,
   repo,
   urls = {},
@@ -227,6 +230,7 @@ const resolveCommitterFor = async ({
     projectId,
     provider: gitProvider,
     repository: repo,
+    ...(stageCallbackId ? { stageCallbackId } : {}),
   });
 };
 
@@ -773,6 +777,7 @@ export const pushBranch = async ({
   gitProvider,
   projectId,
   executionId,
+  stageCallbackId = null,
   attempts = 3,
   urls = {},
   git = runGit,
@@ -794,6 +799,7 @@ export const pushBranch = async ({
         repo,
         projectId,
         executionId,
+        stageCallbackId,
         gitProvider,
         requiredAccess: 'write',
         urls,
@@ -1729,6 +1735,7 @@ const preserveRefusedState = async ({
   gitProvider,
   projectId,
   executionId,
+  stageCallbackId = null,
   urls,
   git,
   withGitCredential,
@@ -1765,6 +1772,7 @@ const preserveRefusedState = async ({
         repo,
         projectId,
         executionId,
+        stageCallbackId,
         gitProvider,
         requiredAccess: 'write',
         urls,
@@ -1801,6 +1809,9 @@ export const commitAndPushAll = async ({
   repoProviders = null,
   projectId,
   executionId,
+  // The attempt pushing. A grant-less runtime declares it so the broker can
+  // serve the park-exit push (docs/concepts/execution.md, Source control).
+  stageCallbackId = null,
   message,
   messages = null, // { [repoUrl]: message } — overrides `message` for those repos
   author = null,
@@ -1828,6 +1839,7 @@ export const commitAndPushAll = async ({
       const committer = await resolveCommitterFor({
         projectId,
         executionId,
+        stageCallbackId,
         gitProvider: provider,
         repo: url,
         urls,
@@ -1865,6 +1877,7 @@ export const commitAndPushAll = async ({
                 gitProvider: provider,
                 projectId,
                 executionId,
+                stageCallbackId,
                 urls,
                 git,
                 withGitCredential,
@@ -1903,6 +1916,7 @@ export const commitAndPushAll = async ({
         gitProvider: provider,
         projectId,
         executionId,
+        stageCallbackId,
         urls,
         git,
         withGitCredential,

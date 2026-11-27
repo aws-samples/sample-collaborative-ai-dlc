@@ -4542,6 +4542,9 @@ const runStageAttempt = async (
     repoProviders,
     projectId,
     executionId,
+    // A park exit pushes after META is WAITING; the broker serves that push
+    // only to the attempt that owns the parked gate.
+    stageCallbackId,
     author: gitAuthor,
     refusedRefPrefix,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md

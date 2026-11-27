@@ -12,7 +12,7 @@ esac
 `;
 
 const request = async (
-  { executionId, projectId, provider, repository, requiredAccess },
+  { executionId, projectId, provider, repository, requiredAccess, stageCallbackId },
   broker = invokeCredentialBroker,
 ) => {
   if (!executionId || !projectId || !provider || !repository) {
@@ -20,9 +20,13 @@ const request = async (
       code: 'INVALID_CREDENTIAL_CONTEXT',
     });
   }
+  // The grant names the stage attempt. Without one, the attempt declares itself
+  // so the broker can serve its own park-exit push and nothing else.
   const authority = process.env.ENGINE_DATA_FUNCTION
     ? { action: 'source-control', gatewayGrant: currentGatewayGrant() }
-    : {};
+    : stageCallbackId
+      ? { stageCallbackId }
+      : {};
   return broker({ executionId, projectId, provider, repository, requiredAccess, ...authority });
 };
 

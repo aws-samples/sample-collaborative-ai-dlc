@@ -271,6 +271,38 @@ describe('Git provenance reaches exact sensors and traceability', () => {
     },
   );
 
+  it('declares the stage attempt on the committer lookup and the push', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'parked.ts'), 'export const parked = true;\n');
+    const withGitCredential = vi.fn((_context, operation) => operation({ env: {} }));
+    const resolveGitCommitter = vi.fn(async () => null);
+    const result = await commitAndPushAll({
+      repos: ['acme/api'],
+      workspaceDir: work,
+      branch: 'main',
+      gitProvider: 'github',
+      projectId: 'p',
+      executionId: 'e',
+      stageCallbackId: 'cb-1',
+      message: 'park exit',
+      withGitCredential,
+      resolveGitCommitter,
+    });
+    expect(result.results[0]).toMatchObject({ committed: true, pushed: true });
+    const attempt = {
+      executionId: 'e',
+      projectId: 'p',
+      provider: 'github',
+      repository: 'acme/api',
+      stageCallbackId: 'cb-1',
+    };
+    expect(resolveGitCommitter).toHaveBeenCalledWith(attempt);
+    expect(withGitCredential).toHaveBeenCalledWith(
+      { ...attempt, requiredAccess: 'write' },
+      expect.any(Function),
+    );
+  });
+
   it.each([
     [1, false],
     [42, false],

@@ -59,7 +59,9 @@ describe('credential broker authorization', () => {
     }
   });
 
-  it.each(['DRAFT', 'FAILED', 'CANCELLED', 'SUCCEEDED'])(
+  // WAITING included: a request that names no stage attempt (neither a stage
+  // grant nor a declared stageCallbackId) gets no park-exit push window.
+  it.each(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED'])(
     'denies credential resolution for terminal/inactive status %s',
     async (status) => {
       ddbMock.on(GetCommand, { TableName: 'process' }).resolves({
