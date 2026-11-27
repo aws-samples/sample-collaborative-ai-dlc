@@ -54,14 +54,18 @@ const SEVERITY_ORDER = new Map([
   ['UNDEFINED', 6],
 ]);
 
+// Numbers compare as numbers (CVE-2026-6238 before CVE-2026-58055, version
+// 2.9 before 2.10), and the order does not depend on the runtime's locale.
+const findingCollator = new Intl.Collator('en', { numeric: true });
+
 // Most severe first. One vulnerability often affects several packages
 // (openssl and libssl, say): the package breaks the tie, so the order never
 // depends on ECR's.
 export const compareScanFindings = (left, right) =>
   (SEVERITY_ORDER.get(left.severity) ?? 99) - (SEVERITY_ORDER.get(right.severity) ?? 99) ||
-  left.id.localeCompare(right.id) ||
-  String(left.packageName ?? '').localeCompare(String(right.packageName ?? '')) ||
-  String(left.packageVersion ?? '').localeCompare(String(right.packageVersion ?? ''));
+  findingCollator.compare(left.id, right.id) ||
+  findingCollator.compare(String(left.packageName ?? ''), String(right.packageName ?? '')) ||
+  findingCollator.compare(String(left.packageVersion ?? ''), String(right.packageVersion ?? ''));
 
 // Finding links come from vulnerability feeds and the UI renders them as
 // links: keep only https URLs.
