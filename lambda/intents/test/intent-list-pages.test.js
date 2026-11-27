@@ -105,10 +105,62 @@ describe('listProjectExecutionsPage', () => {
       [{ projectId }, foreign],
       [{ projectId, status: 'FAILED' }, created],
       [{ projectId }, { ...created, sk: undefined }],
+      // DynamoDB refuses these with a ValidationException (a 500 before).
+      [{ projectId }, { ...created, extra: 'x' }],
+      ...['pk', 'sk', 'GSI1SK'].map((key) => [{ projectId }, { ...created, [key]: '' }]),
+      [{ projectId }, 'not-an-object'],
     ]) {
       await expect(
         store.listProjectExecutionsPage({ ...query, limit: 1, cursor }),
       ).rejects.toMatchObject({ statusCode: 400 });
     }
+  });
+
+  it(
+    'ends with an empty page when the rows fill the last page exactly',
+    async () => {
+      for (const count of [50, 100]) {
+        const projectId = randomUUID();
+        const ids = await seed(projectId, count);
+        const pages = await readAll({ projectId, limit: 50 });
+        // DynamoDB returns a cursor after a full page; the client follows it.
+        expect(pages.map((items) => items.length)).toEqual([...Array(count / 50).fill(50), 0]);
+        expect(
+          pages
+            .flat()
+            .map((item) => item.executionId)
+            .toSorted(),
+        ).toEqual(ids.toSorted());
+      }
+    },
+    SEED_TIMEOUT_MS,
+  );
+
+  it('an intent whose status changes between pages can be skipped or repeated', async () => {
+    // GSI1 sorts by status first, so a status change moves the row within the
+    // list. Pages read before the change do not see it: the row shows up again
+    // on the next full refresh (eventual consistency of the paged list).
+    const projectId = randomUUID();
+    const running = await seed(projectId, 2, 'RUNNING');
+    const created = await seed(projectId, 2);
+    const first = await store.listProjectExecutionsPage({ projectId, limit: 2 });
+    expect(first.items.map((item) => item.executionId).toSorted()).toEqual(running.toSorted());
+
+    // A CREATED row moves ahead of the cursor (SUCCEEDED sorts before RUNNING
+    // in this newest-first order) and a RUNNING row already read moves behind it.
+    await store.updateExecution({ executionId: created[0], status: 'SUCCEEDED' });
+    await store.updateExecution({ executionId: running[0], status: 'CANCELLED' });
+    const second = await store.listProjectExecutionsPage({
+      projectId,
+      limit: 50,
+      cursor: first.cursor,
+    });
+    expect(second.items.map((item) => item.executionId).toSorted()).toEqual(
+      [created[1], running[0]].toSorted(),
+    );
+    expect(second.cursor).toBeNull();
+
+    const refreshed = await readAll({ projectId, limit: 50 });
+    expect(refreshed.flat()).toHaveLength(4);
   });
 });

@@ -1528,6 +1528,36 @@ describe('createProcessStore', () => {
     expect(ddb.commandCalls(QueryCommand)).toHaveLength(1);
   });
 
+  it('listProjectExecutionsPage resumes from the four cursor keys and maps a refused key to 400', async () => {
+    const cursor = {
+      pk: 'EXEC#e1',
+      sk: 'META',
+      GSI1PK: 'PROJECT#p1',
+      GSI1SK: 'STATUS#RUNNING#STARTED#t#EXEC#e1',
+    };
+    ddb.on(QueryCommand).resolvesOnce({ Items: [{ sk: 'META', executionId: 'e2' }] });
+    const page = await store.listProjectExecutionsPage({ projectId: 'p1', limit: 50, cursor });
+    expect(page).toEqual({ items: [{ sk: 'META', executionId: 'e2' }], cursor: null });
+    const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input).toMatchObject({ IndexName: 'GSI1', Limit: 50, ExclusiveStartKey: cursor });
+    // The same key condition as the drained list, so both read the same rows.
+    expect(input.KeyConditionExpression).toBe('GSI1PK = :pk');
+
+    ddb.reset();
+    ddb.on(QueryCommand).rejects(
+      Object.assign(new Error('The provided starting key is invalid'), {
+        name: 'ValidationException',
+      }),
+    );
+    await expect(
+      store.listProjectExecutionsPage({ projectId: 'p1', limit: 50, cursor }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    // Without a cursor the error is not the caller's and stays a 500.
+    await expect(store.listProjectExecutionsPage({ projectId: 'p1', limit: 50 })).rejects.toThrow(
+      'The provided starting key is invalid',
+    );
+  });
+
   it('listUnits drains every Query page (lanes must never be invisible to the scheduler)', async () => {
     ddb
       .on(QueryCommand)
