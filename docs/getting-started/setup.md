@@ -2,6 +2,73 @@
 
 This guide takes you from zero to a running instance of AIDLC Collaborative. The platform requires AWS infrastructure for authentication, APIs, and agent execution, so setup involves both local configuration and cloud deployment.
 
+## Terraform variables at a glance
+
+All 60 deployment inputs are listed below. Select a variable for its default, allowed values, behavior, and examples on this page. For a first installation, start with [Managed installation](#managed-installation) or [Advanced manual installation](#advanced-manual-installation). See [Terraform variable details](#terraform-variable-details) for where to save configuration changes.
+
+| Variable                                                                                      | Description                                                                  |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`acm_certificate_arn`](#acm_certificate_arn)                                                 | Existing us-east-1 certificate for the application hostnames.                |
+| [`agentcore_image_tag`](#agentcore_image_tag)                                                 | Use a pre-built AgentCore ECR image instead of a local build.                |
+| [`aidlc_custom_source_gitlab_token_secret_arn`](#aidlc_custom_source_gitlab_token_secret_arn) | Token secret for importing private GitLab methodology releases.              |
+| [`aidlc_custom_source_gitlab_url`](#aidlc_custom_source_gitlab_url)                           | GitLab origin for importing custom methodology releases.                     |
+| [`aidlc_release_pinning`](#aidlc_release_pinning)                                             | Enable methodology-version selection for new intents.                        |
+| [`aidlc_repo_ref`](#aidlc_repo_ref)                                                           | Upstream methodology ref used by the baseline seed and runtime.              |
+| [`app_domain`](#app_domain)                                                                   | Canonical custom application hostname.                                       |
+| [`app_domain_aliases`](#app_domain_aliases)                                                   | Additional hostnames served by the application distribution.                 |
+| [`auth_access_token_validity_minutes`](#auth_access_token_validity_minutes)                   | Lifetime of newly issued Cognito access tokens.                              |
+| [`auth_certificate_arn`](#auth_certificate_arn)                                               | Existing us-east-1 certificate for the managed-login hostname.               |
+| [`auth_domain`](#auth_domain)                                                                 | Custom hostname to provision for Cognito managed login.                      |
+| [`auth_domain_active`](#auth_domain_active)                                                   | Select the prepared custom hostname for login.                               |
+| [`auth_id_token_validity_minutes`](#auth_id_token_validity_minutes)                           | Lifetime of Cognito ID tokens used by the web app.                           |
+| [`auth_mode`](#auth_mode)                                                                     | Choose local login, enterprise SSO, or both.                                 |
+| [`auth_refresh_token_validity_hours`](#auth_refresh_token_validity_hours)                     | How long Cognito permits token refresh after sign-in.                        |
+| [`auth_route53_zone_id`](#auth_route53_zone_id)                                               | Hosted zone for the custom managed-login hostname.                           |
+| [`aws_region`](#aws_region)                                                                   | AWS Region for the platform infrastructure.                                  |
+| [`backup_retention_period`](#backup_retention_period)                                         | Days to retain automated Neptune backups.                                    |
+| [`bedrock_gateway_disable_content_type_guard`](#bedrock_gateway_disable_content_type_guard)   | Relax Claude Code's streaming-header check for a gateway.                    |
+| [`bedrock_gateway_url`](#bedrock_gateway_url)                                                 | Optional HTTPS Bedrock gateway for Claude Code in Keys mode.                 |
+| [`bedrock_model`](#bedrock_model)                                                             | Primary Bedrock model and initial OpenCode model default.                    |
+| [`bedrock_model_aliases`](#bedrock_model_aliases)                                             | Override the opus, sonnet, and haiku model targets.                          |
+| [`bedrock_region`](#bedrock_region)                                                           | Region for Bedrock inference and model discovery.                            |
+| [`codex_model`](#codex_model)                                                                 | Initial Codex-on-Bedrock default model.                                      |
+| [`deletion_protection`](#deletion_protection)                                                 | Protect durable tables, Neptune, and Cognito from deletion.                  |
+| [`disabled_clis`](#disabled_clis)                                                             | Agent CLIs unavailable for new intents at initial setup.                     |
+| [`dns_role_arn`](#dns_role_arn)                                                               | Role to assume for application and login DNS records.                        |
+| [`docker_build_args`](#docker_build_args)                                                     | Arguments, such as proxy settings, for local container builds.               |
+| [`enable_engine_data`](#enable_engine_data)                                                   | Route runtime data and credential operations through verifying services.     |
+| [`enable_instances_compute`](#enable_instances_compute)                                       | Enable AgentCore Instances capacity for managed environments.                |
+| [`enable_mcp_gateway`](#enable_mcp_gateway)                                                   | Serve built-in MCP tools through a grant-verifying Gateway.                  |
+| [`enable_waf`](#enable_waf)                                                                   | Enable WAF protections and the REST API origin-secret restriction.           |
+| [`enforce_runtime_grants`](#enforce_runtime_grants)                                           | Reject legacy runtime requests and retire direct data permissions.           |
+| [`environment`](#environment)                                                                 | Deployment name; only prod selects production behavior.                      |
+| [`extra_tags`](#extra_tags)                                                                   | Additional AWS provider default tags.                                        |
+| [`gitlab_instance_secrets`](#gitlab_instance_secrets)                                         | Register self-managed GitLab OAuth applications by hostname.                 |
+| [`iam_permissions_boundary_arn`](#iam_permissions_boundary_arn)                               | Existing permissions boundary for deployment-created IAM roles.              |
+| [`iam_role_path`](#iam_role_path)                                                             | Organization path for deployment-created IAM roles.                          |
+| [`instances_allowed_instance_types`](#instances_allowed_instance_types)                       | Allowed x86_64 EC2 types for Instances capacity.                             |
+| [`instances_allowed_instance_types_arm64`](#instances_allowed_instance_types_arm64)           | Allowed Graviton EC2 types for Instances capacity.                           |
+| [`instances_workspace_gib`](#instances_workspace_gib)                                         | Persistent workspace size for new Instances capacity providers.              |
+| [`kms_key_arn`](#kms_key_arn)                                                                 | Existing customer-managed encryption key for supported resources.            |
+| [`lambda_vpc_scope`](#lambda_vpc_scope)                                                       | Choose which Lambda functions use the private VPC subnets.                   |
+| [`mcp_gateway_custom_targets`](#mcp_gateway_custom_targets)                                   | Customer MCP endpoints, credentials, and space/stage/tool allow rules.       |
+| [`neptune_apply_immediately`](#neptune_apply_immediately)                                     | Apply a Neptune resize now or at the maintenance window.                     |
+| [`neptune_instance_class`](#neptune_instance_class)                                           | Capacity of the single Neptune database instance.                            |
+| [`notification_event_bus_name`](#notification_event_bus_name)                                 | Name of the notification event bus to create.                                |
+| [`notification_event_source`](#notification_event_source)                                     | Event source string that notification consumers match.                       |
+| [`notification_events_enabled`](#notification_events_enabled)                                 | Publish platform activity to a new EventBridge bus.                          |
+| [`powertools_log_event`](#powertools_log_event)                                               | Enable sanitized incoming API-event logging.                                 |
+| [`powertools_log_level`](#powertools_log_level)                                               | Minimum severity for Powertools structured logs.                             |
+| [`pr_title_tracker_key`](#pr_title_tracker_key)                                               | Prefix intent PR titles with their source Jira issue key.                    |
+| [`project_name`](#project_name)                                                               | Resource-name prefix and Project tag for the deployment.                     |
+| [`route53_zone_id`](#route53_zone_id)                                                         | Hosted zone for application DNS and optional certificate validation.         |
+| [`runtime_mcp_credentials`](#runtime_mcp_credentials)                                         | Allow direct custom MCP servers or require Gateway targets.                  |
+| [`skip_final_snapshot`](#skip_final_snapshot)                                                 | Skip the final Neptune snapshot during non-production teardown.              |
+| [`sso_providers`](#sso_providers)                                                             | Enterprise OIDC/SAML providers, claims, and role/access mappings.            |
+| [`vpc_block_public_access_exclusion`](#vpc_block_public_access_exclusion)                     | Allow CloudFront origin access and NAT egress under VPC Block Public Access. |
+| [`yjs_image_tag`](#yjs_image_tag)                                                             | Use a pre-built Yjs ECR image instead of a local build.                      |
+| [`yjs_scaling`](#yjs_scaling)                                                                 | Size, safeguard, and optionally autoscale collaboration workers.             |
+
 !!! warning "V1 sprints in v2"
 
     V1 sprints are view-only in v2. Continue active v1 work with the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0), then upgrade after the sprint is complete.
@@ -123,7 +190,7 @@ The certificate **must be in `us-east-1`** regardless of the deployment region, 
 
 #### Bring your own certificate
 
-For centrally managed, imported, wildcard or private-CA certificates, and for DNS that lives outside Route53 or in another AWS account. The certificate must already be `ISSUED`.
+For centrally managed, imported, or wildcard certificates, and for DNS that lives outside Route53 or in another AWS account. The certificate must already be `ISSUED` in the deployment account and `us-east-1`, cover every hostname, and chain to a publicly trusted certificate authority supported by CloudFront. A private-CA certificate trusted only by your organization's browsers does not meet CloudFront's [alternate-domain requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html).
 
 ```bash
 bash /tmp/aidlc-install.sh install \
@@ -139,7 +206,7 @@ The installer prints the DNS records to create when it finishes. Add `--hosted-z
 
 #### Terraform-managed certificate
 
-Requires the Route53 hosted zone to be in the same account. Terraform requests the certificate, publishes the validation records, waits for issuance, and creates the A/AAAA alias records.
+The installer uses a Route53 hosted zone in the deployment account. Terraform requests the certificate, publishes the validation records, waits for issuance, and creates the A/AAAA alias records. For cross-account Route53 with a manual deployment, also set [dns_role_arn](#dns_role_arn).
 
 ```bash
 bash /tmp/aidlc-install.sh install \
@@ -215,7 +282,7 @@ Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v
 
 !!! warning "A production environment must be named exactly `prod`"
 
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger default Yjs collaboration containers, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run. DynamoDB, Neptune and Cognito deletion protection is controlled separately by [deletion_protection](#deletion_protection), which defaults to `true` in every environment.
 
     A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
 
@@ -865,6 +932,696 @@ Operators have two equivalent paths, both idempotent:
   ```
 
 Both paths share the same shared core, so the result is identical. Migration is **never** automatic — operators run it on demand. See [Git and Tracker Integration → Migrating from legacy issue integration](../using-the-platform/git-integration.md#migrating-from-legacy-issue-integration) for full context, including why nothing is removed and the migration tooling stays deployed permanently.
+
+## Terraform variable details
+
+These are all inputs declared in the deployment's root `terraform/*.tf` files, including `variables.tf` and `yjs.tf`. Inputs inside `terraform/modules/` are wired by the deployment; they are not additional settings you can put in an environment's `.tfvars`.
+
+For a managed installation, edit `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc/terraform/environments/<environment>.tfvars`, then run `bash /tmp/aidlc-install.sh update --reapply`. Use installer options for the environment, region, application domain, and SSO configuration that the installer manages. For a manual installation, edit `terraform/environments/<environment>.tfvars` and run `./scripts/deploy-terraform.sh <environment>`. Changes to frontend URLs or authentication also require `./scripts/deploy-frontend.sh <environment>`; the managed installer performs both steps.
+
+Examples below are HCL assignments for that file. Replace example hostnames, resource IDs, and ARNs with your own. Omit a setting to use its declared default; `""`, `[]`, `{}`, and `null` have the specific meanings described below. A value in a `.tfvars` file takes precedence over `TF_VAR_*`; see [command-line overrides](#without-the-installer) for `--var`. Defaults here come from the source declarations, so an existing environment file or an administrator's saved setting can differ.
+
+### Deployment identity and networking
+
+#### `aws_region`
+
+**Type:** string. **Default:** `"us-east-1"`.
+
+Choose an AWS Region that supports the platform's required services, including AgentCore. For example, `aws_region = "eu-central-1"` places the regional infrastructure in Frankfurt. This is a Region name, not an AWS profile or an Availability Zone. There is no fixed Terraform allowlist; check [prerequisites](prerequisites.md) for service availability. CloudFront certificates still use `us-east-1`, and [Bedrock inference](#bedrock_region) can use a different Region.
+
+#### `project_name`
+
+**Type:** string. **Default:** `"collaborative-ai-dlc"`.
+
+The deployment's resource-name prefix and `Project` tag, not the name of an individual space. For example, `project_name = "team-aidlc"` produces names such as `team-aidlc-agentcore-dev`. Use a short lowercase name with letters, digits, and hyphens that fits the named AWS resources; Terraform has no single length validation covering all of them. Choose it before installation: changing it later can replace resources.
+
+#### `environment`
+
+**Type:** string. **Default:** `"dev"`.
+
+`"prod"` selects production behavior: two NAT gateways, longer log retention, larger default Yjs containers, production S3 lifecycle rules, and buckets that cannot be force-destroyed. Automated destroy scripts refuse it, and `skip_final_snapshot = true` is rejected. Every other name, including `"dev"`, `"test"`, and `"production"`, selects non-production behavior. Database deletion protection is controlled separately by [deletion_protection](#deletion_protection), which defaults to `true` in every environment.
+
+Example: `environment = "prod"` for production; `environment = "test"` for a disposable test deployment. Use the same name in your environment files and deployment command. Renaming an existing environment can replace resources.
+
+#### `lambda_vpc_scope`
+
+**Type:** string. **Default:** `"required"`.
+
+| Value             | Behavior                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `"required"`      | Only Lambdas needing private resources join the VPC; source-control, trackers, and the VPC AgentCore runtime already use NAT egress.   |
+| `"public-egress"` | Also routes OAuth connectors, the credential broker, and seed-blocks through NAT, useful for provider IP allowlists or private GitLab. |
+| `"all"`           | Places every Lambda in the private subnets, adding a dependency on the VPC's outbound connectivity for public services.                |
+
+Example: `lambda_vpc_scope = "public-egress"`. Allowlist every NAT address printed by deployment: one for non-production, two for `prod`. See [static egress IPs](../using-the-platform/git-integration.md#static-egress-ips).
+
+#### `vpc_block_public_access_exclusion`
+
+**Type:** bool. **Default:** `false`.
+
+`false` creates no VPC Block Public Access exclusions. `true` creates bidirectional exclusions for the two private subnets used by the Yjs origin and egress-only exclusions for the public NAT subnets. For example, use `vpc_block_public_access_exclusion = true` when account-level Block Public Access prevents CloudFront from reaching the internal Yjs ALB or prevents NAT egress. The account must allow exclusions; this setting does not override an organization policy. Subnet routing and security groups still apply. See [troubleshooting](#troubleshooting) for recovery after a failed VPC Origin create.
+
+### Logging, encryption, and data protection
+
+#### `powertools_log_level`
+
+**Type:** string. **Default:** `"INFO"`.
+
+Allowed values are case-sensitive. `DEBUG` includes diagnostic messages; `INFO` includes normal operation messages; `WARN` keeps warnings and more severe messages; `ERROR` keeps errors and critical messages; `CRITICAL` keeps only critical messages; `SILENT` suppresses Powertools logger output. Each level except `SILENT` includes higher-severity messages. This does not suppress every log written directly by a dependency or CLI.
+
+Example: `powertools_log_level = "DEBUG"` while diagnosing a problem, then restore `"INFO"` to reduce log volume.
+
+#### `powertools_log_event`
+
+**Type:** bool. **Default:** `false`.
+
+`false` leaves incoming-event logging off. `true` enables the shared logger's sanitized incoming API-event logging, useful when diagnosing request handling. Example: `powertools_log_event = true`. Sanitization is not a reason to put credentials or sensitive application content in requests unnecessarily; enable it only where the additional logging is appropriate.
+
+#### `kms_key_arn`
+
+**Type:** string. **Default:** `""`.
+
+`""` keeps the AWS encryption defaults for resources wired to this setting. A full customer-managed KMS **key** ARN selects your existing key for those resources, including DynamoDB and new Neptune clusters; aliases are rejected. The key must be usable in the deployment Region and its policy must permit the relevant services and roles. This is not a global override for every encrypted resource.
+
+Example: `kms_key_arn = "arn:aws:kms:eu-central-1:111122223333:key/12345678-1234-1234-1234-123456789abc"`. Existing Neptune clusters keep their original encryption and key: changing this input does not re-encrypt or replace them.
+
+#### `deletion_protection`
+
+**Type:** bool. **Default:** `true`.
+
+`true` enables deletion protection on durable DynamoDB tables, Neptune, and the Cognito user pool in every environment. `false` allows those protection settings to be removed; it does not itself delete data or disable the other production teardown safeguards.
+
+Example: `deletion_protection = true` for normal operation. Use `false` only as part of a deliberate [teardown](#destroy-infrastructure) after verifying backups; protection must be removed in an apply before destruction.
+
+#### `backup_retention_period`
+
+**Type:** number. **Default:** `7`.
+
+Number of days Neptune retains automated backups. Use a whole number from **7 through 35**; larger values retain a longer recovery window. This does not configure DynamoDB or S3 retention.
+
+Example: `backup_retention_period = 14` keeps two weeks of automated Neptune backups.
+
+#### `neptune_instance_class`
+
+**Type:** string. **Default:** `"db.t3.medium"`.
+
+Choose a Neptune instance class available for the engine version and Region, such as `"db.t4g.medium"` or `"db.r7g.large"`. Terraform checks the `db.<family>.<size>` form; AWS determines which classes are actually supported. Larger classes provide more capacity at higher cost.
+
+Example: `neptune_instance_class = "db.r7g.large"`. Resizing modifies and restarts the **only** instance, interrupting graph access. Schedule it with [neptune_apply_immediately](#neptune_apply_immediately).
+
+#### `neptune_apply_immediately`
+
+**Type:** bool. **Default:** `false`.
+
+`false` defers an instance-class change to Neptune's next maintenance window; plans continue showing the pending change until then. `true` applies it during the current apply, including the restart.
+
+Example: `neptune_apply_immediately = true` for an agreed immediate resize. It does not make resizing interruption-free.
+
+#### `skip_final_snapshot`
+
+**Type:** bool. **Default:** `false`.
+
+`false` creates a final Neptune snapshot when the cluster is deleted. `true` skips that last recovery copy and is allowed only outside `prod`. It does not bypass [deletion_protection](#deletion_protection).
+
+Example: `skip_final_snapshot = false` for recoverable teardown. Use `true` only for a disposable non-production database whose contents are no longer needed.
+
+### Models and agent CLIs
+
+#### `bedrock_model`
+
+**Type:** string. **Default:** `"us.anthropic.claude-sonnet-4-6"`.
+
+The primary Bedrock model/inference profile ID supplied to the runtime. It also seeds OpenCode's default as `amazon-bedrock/<id>` when the CLI-model settings are first created; later applies preserve defaults saved in **Admin → Agents**. Workflow and tier model selections can override the fallback.
+
+Use an ID served in [bedrock_region](#bedrock_region), with the appropriate `us.`, `eu.`, `apac.`, or supported `global.` prefix. Terraform does not enumerate models or verify access. Example: `bedrock_model = "eu.anthropic.claude-sonnet-4-6"` with `bedrock_region = "eu-central-1"`. An empty string omits the initial OpenCode default; it does not disable Bedrock or provision model access.
+
+#### `bedrock_region`
+
+**Type:** string. **Default:** `""`.
+
+`""` uses `aws_region`. A Region name selects a different location for Bedrock inference and model discovery without moving the platform infrastructure. Bedrock API keys are regional, so the Region must match the key and the models you can access.
+
+Example: `bedrock_region = "us-west-2"` when the application runs in Europe but its Bedrock key and model access are in Oregon. Select matching model IDs as well.
+
+#### `bedrock_gateway_url`
+
+**Type:** string. **Default:** `""`.
+
+`""` sends inference to Amazon Bedrock. An HTTPS URL sends Claude Code's Bedrock requests in **Keys** mode to a gateway accepting Bedrock InvokeModel requests with `Authorization: Bearer <key>`. The URL can include a port and path, but cannot contain credentials, whitespace, a query, or a fragment.
+
+Example: `bedrock_gateway_url = "https://bedrock.example.com"` and save the gateway's key through the platform's credential settings. With this configured, every Bedrock key at platform, space, or personal scope is treated as a gateway key; OpenCode and Codex are unavailable with a key because they require AWS endpoints. **IAM** mode continues to call AWS. Set the Region and model selections to values the gateway serves.
+
+The gateway must use a publicly trusted HTTPS certificate and be reachable from the runtime's VPC. Before adding, changing, or removing it on an existing deployment, follow the [Bedrock gateway rollout](../using-the-platform/bedrock-gateway.md#step-2-prepare-a-deployment-that-is-in-use): finish or cancel affected intents, clear saved keys that belong to the old endpoint, and rebuild managed environment revisions. Existing revisions retain their gateway setting, and a mismatch refuses the key. The deploy script blocks gateway changes while intents are started, running, or parked; direct Terraform skips that check.
+
+#### `bedrock_gateway_disable_content_type_guard`
+
+**Type:** bool. **Default:** `false`.
+
+`false` keeps Claude Code's check that streamed Bedrock responses have Content-Type `application/vnd.amazon.eventstream`. `true` disables that check for a gateway that changes the header; it does not convert a different streaming format into Bedrock's format. Ignored without `bedrock_gateway_url`.
+
+Example: `bedrock_gateway_disable_content_type_guard = true` only for that compatibility problem. Prefer a gateway that preserves the original header.
+
+#### `bedrock_model_aliases`
+
+**Type:** map(string). **Default:** `{}`.
+
+Maps any of the three keys `opus`, `sonnet`, and `haiku` to model IDs. `{}` keeps built-in targets; omitted keys keep their built-in target. Values must be non-empty and contain no whitespace. An `anthropic.` ID receives the inference Region's geographic prefix; other IDs, including `global.` IDs, are used as written. The mapping applies both to workflow blocks naming aliases and to Claude Code's subagents and background calls.
+
+Example, when the account or gateway serves a different Haiku target:
+
+```hcl
+bedrock_model_aliases = {
+  haiku = "eu.anthropic.claude-haiku-5-5"
+}
+```
+
+Set every alias whose default target is unavailable in your account or gateway.
+
+#### `codex_model`
+
+**Type:** string. **Default:** `"openai.gpt-5.5"`.
+
+Seeds the Codex-on-Bedrock default on the **first** creation of the CLI-model settings. Use an exact `openai.<model-name>` ID, with letters, digits, dots, underscores, or hyphens in the model name; `""` leaves no pinned Codex default. This does not enable or select Codex.
+
+Example: `codex_model = "openai.gpt-5.5"`. Later changes belong in **Admin → Agents**, because Terraform preserves the saved CLI-model settings on subsequent applies.
+
+#### `disabled_clis`
+
+**Type:** list(string). **Default:** `[]`.
+
+`[]` enables all four CLI choices initially. List any of `"kiro"`, `"claude"`, `"opencode"`, and `"codex"` to prevent selecting them for new intents; at least one must remain enabled. Existing intents retain their pinned choices. This value seeds the setting only on its first creation; use **Admin → Agents** afterward.
+
+Example: `disabled_clis = ["kiro", "opencode", "codex"]` initially offers only Claude Code.
+
+### Methodology and Git integrations
+
+#### `aidlc_repo_ref`
+
+**Type:** string. **Default:** `"83ed7a812c4024904f2c5e4d744e28077e0a5acd"`.
+
+The commit SHA, tag, or branch of `awslabs/aidlc-workflows` used by the baseline block seed and AgentCore runtime. A commit SHA gives repeatable content; a moving branch can resolve to different content later. Keep the seed and runtime on the same compatible version and run the normal deployment reseed when changing it.
+
+Example: `aidlc_repo_ref = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"` pins the shipped baseline. Use [aidlc_release_pinning](#aidlc_release_pinning) for catalog-based version selection on new intents.
+
+#### `aidlc_release_pinning`
+
+**Type:** string. **Default:** `"on"`.
+
+`"on"` enables AI-DLC version selection for new intents; standard deployment prepares the supported catalogs. The configured baseline remains in use until Stable is selected. `"off"` opts out of that selection. Existing intents keep their captured version in either case.
+
+Example: `aidlc_release_pinning = "off"` to keep new work on the configured baseline without offering release selection. These are strings, not booleans.
+
+#### `aidlc_custom_source_gitlab_url`
+
+**Type:** string. **Default:** `"https://gitlab.com"`.
+
+The GitLab instance from which custom methodology releases named `gitlab:<namespace>/<project>` are imported. Use an HTTPS origin, optionally with a port or trailing slash, but without a project path, credentials, query, or fragment. It does not register a GitLab source-control connection.
+
+Example: `aidlc_custom_source_gitlab_url = "https://gitlab.example.com"` makes `gitlab:team/aidlc-workflows` imports read that instance.
+
+#### `aidlc_custom_source_gitlab_token_secret_arn`
+
+**Type:** string. **Default:** `""`.
+
+`""` supports imports from public GitLab projects only. A Secrets Manager secret ARN supplies a token with `read_api` access for private custom methodology releases on `aidlc_custom_source_gitlab_url`. Create the token secret beforehand; put its ARN, not the token, in Terraform.
+
+Example: `aidlc_custom_source_gitlab_token_secret_arn = "arn:aws:secretsmanager:eu-central-1:111122223333:secret:aidlc/release-import-AbCdEf"`. This token is separate from users' GitLab OAuth connections.
+
+#### `gitlab_instance_secrets`
+
+**Type:** map(string). **Default:** `{}`.
+
+Registers self-managed GitLab hosts and their existing OAuth-application secret ARNs. `{}` registers none; GitLab.com remains configured through **Admin → Trackers**. Each secret must contain JSON string fields `client_id` and `client_secret` and be in the deployment account and Region.
+
+Keys are lowercase DNS hostnames, without `https://` or a path. DNS labels must be 1–63 letters/digits/hyphens, with no leading or trailing hyphen, and the hostname at most 253 characters. Do not use `gitlab.com` or `public`. Include `:<port>` only for a non-default port from 1–65535; omit `:443`. Values are exact Secrets Manager ARNs.
+
+```hcl
+gitlab_instance_secrets = {
+  "gitlab.example.com" = "arn:aws:secretsmanager:eu-central-1:111122223333:secret:aidlc/gitlab-AbCdEf"
+}
+```
+
+Register the OAuth app and provide network access as described in [self-managed GitLab setup](../using-the-platform/git-integration.md#register-a-self-managed-gitlab-instance). Disconnect users before removing an instance.
+
+#### `pr_title_tracker_key`
+
+**Type:** bool. **Default:** `false`.
+
+`false` leaves intent pull-request titles unchanged. `true` prefixes the Jira issue key when the intent originated from Jira: for example, `Fix invoice rounding` becomes `[ABC-12] Fix invoice rounding`. Intents without a Jira source issue keep their title.
+
+Example: `pr_title_tracker_key = true` when your review process expects the Jira key in PR titles.
+
+### Container builds and Instances compute
+
+#### `docker_build_args`
+
+**Type:** map(string), sensitive. **Default:** `{}`.
+
+Passes build arguments to local Docker image builds. `{}` adds none. For example, supply standard proxy arguments when the build environment needs a proxy:
+
+```hcl
+docker_build_args = {
+  HTTPS_PROXY = "http://proxy.example.com:8080"
+  NO_PROXY    = "localhost,127.0.0.1"
+}
+```
+
+Only arguments understood by Docker or the Dockerfiles have an effect; these do not configure runtime networking. Deployment scripts also detect standard proxy environment variables unless `TF_VAR_docker_build_args` is set. A `.tfvars` value wins over that environment value. Sensitive marking hides CLI output, but values remain in saved plans and state. See [managed installation](#managed-installation) for proxy setup.
+
+#### `agentcore_image_tag`
+
+**Type:** string or null. **Default:** `null`.
+
+`null` builds AgentCore locally during apply. An existing ECR tag uses a pre-built ARM64 image from `<project_name>-agentcore-<environment>`. When `enable_instances_compute = true`, also publish an AMD64 image under `<tag>-amd64`. Tags are resolved to digests during planning; a missing tag fails the plan.
+
+Example: `agentcore_image_tag = "1.2.3"` uses `1.2.3` and, when required, `1.2.3-amd64`. Supply a tag, not a repository URL or digest; `""` is not the build-default sentinel. See [pre-built container images](#pre-built-container-images) for repository bootstrap and retention.
+
+#### `yjs_image_tag`
+
+**Type:** string or null. **Default:** `null`.
+
+`null` builds the Yjs collaboration server locally during apply. An existing ECR tag uses the pre-built AMD64 image from `<project_name>-yjs-server-<environment>`, resolved to a digest during planning. A missing tag fails the plan.
+
+Example: `yjs_image_tag = "1.2.3"`. Supply a tag; use `null`, not `""`, to return to local builds. This choice is independent of `agentcore_image_tag`.
+
+#### `enable_instances_compute`
+
+**Type:** bool. **Default:** `false`.
+
+`false` leaves managed environments on the default compute options without provisioning platform-managed Instances capacity providers. `true` enables AgentCore Instances, which run on managed EC2 capacity and support x86_64 and ARM64 environments with larger persistent workspaces. It also requires the additional AMD64 AgentCore image. It does not move existing runtimes to a new compute type.
+
+Example: `enable_instances_compute = true`, then create an Instances environment using the appropriate architecture and instance-type list.
+
+#### `instances_allowed_instance_types`
+
+**Type:** list(string). **Default:** `["m6i.large"]`.
+
+The x86_64 EC2 types the platform-managed Instances capacity provider can use when Instances compute is enabled. Choose non-burstable x86_64 types supported by AgentCore Instances in your Region; the `t` families are not supported. This is a capacity allowlist, not a request for one instance of every listed type.
+
+Example: `instances_allowed_instance_types = ["m6i.large", "m6i.xlarge"]`. Keep the list non-empty when enabling Instances and use the separate ARM64 list for Graviton capacity. AWS, rather than this root variable, validates service and Region availability.
+
+#### `instances_allowed_instance_types_arm64`
+
+**Type:** list(string). **Default:** `["m7g.large"]`.
+
+The corresponding allowlist for ARM64/Graviton Instances capacity. Use supported non-burstable ARM64 families; an x86_64 type cannot run an ARM64 environment. It has no effect while Instances compute is disabled.
+
+Example: `instances_allowed_instance_types_arm64 = ["m7g.large", "m7g.xlarge"]`. Keep it non-empty when enabling Instances; actual availability depends on AgentCore Instances in the Region.
+
+#### `instances_workspace_gib`
+
+**Type:** number. **Default:** `50`.
+
+A positive whole number of GiB for each Instances session's persistent EBS workspace. It replaces the default microVM's fixed 1 GiB session storage only for Instances compute. Larger values give builds more disk space and increase storage cost.
+
+Example: `instances_workspace_gib = 100`. A change creates a new capacity provider; existing runtimes retain their old provider and volume configuration. It does not resize active workspaces.
+
+### Collaboration workers
+
+#### `yjs_scaling`
+
+**Type:** object. **Default:** `{}`.
+
+Controls the Yjs collaboration server's Fargate workers, memory safeguards, and optional document sharding. `{}` runs one standalone worker: 256 CPU units/512 MiB outside production, or 1024 CPU units/2048 MiB in `prod`. All fields are optional.
+
+| Field                      | Default               | Allowed values and behavior                                                                                                                                              |
+| -------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cluster_enabled`          | `false`               | `false` uses one standalone document owner and REST autosaves; `true` distributes document ownership across workers and recovers binary checkpoints from S3.             |
+| `mode_transition`          | `false`               | `true` stops old tasks before starting new ones during a standalone/cluster transition; requires one fixed worker and no autoscaling. Return to `false` after migration. |
+| `cpu`                      | Environment-dependent | Fargate CPU units per worker; choose a CPU/memory pair below. `null` keeps the environment default.                                                                      |
+| `memory`                   | Environment-dependent | MiB per worker; choose a CPU/memory pair below. `null` keeps the environment default.                                                                                    |
+| `desired_count`            | `1`                   | Whole number from 1–64 for fixed capacity; values above 1 require cluster mode. Autoscaling bounds govern capacity when autoscaling is configured.                       |
+| `max_connections`          | `2000`                | Maximum admitted connections per worker; positive whole number.                                                                                                          |
+| `max_documents`            | `256`                 | Maximum loaded documents per worker; positive whole number.                                                                                                              |
+| `max_document_bytes`       | `8388608` (8 MiB)     | Maximum encoded size of one document; positive whole number of bytes.                                                                                                    |
+| `max_total_document_bytes` | `67108864` (64 MiB)   | Total encoded-document budget per worker; positive whole number of bytes, at least `max_document_bytes`.                                                                 |
+| `max_buffered_bytes`       | `16777216` (16 MiB)   | Socket-buffer limit in bytes; positive whole number, at least `max_document_bytes + 1024` for framing.                                                                   |
+| `alarm_actions`            | `[]`                  | Existing CloudWatch alarm-action ARNs, typically SNS topics; `[]` sends no alarm notifications. The same actions run for alarm and recovery transitions.                 |
+| `autoscaling`              | `null`                | Omit or use `null` for fixed capacity; `{}` enables scaling with the default bounds below and requires cluster mode.                                                     |
+| `autoscaling.min_capacity` | `2`                   | Minimum workers, a whole number at least 2 and no greater than `max_capacity`.                                                                                           |
+| `autoscaling.max_capacity` | `8`                   | Maximum workers, a whole number between `min_capacity` and 64.                                                                                                           |
+
+Supported CPU/memory pairs in this deployment:
+
+| CPU units | vCPUs | Memory (MiB)                      |
+| --------- | ----- | --------------------------------- |
+| `256`     | 0.25  | `512`, `1024`, or `2048`          |
+| `512`     | 0.5   | `1024`–`4096` in steps of `1024`  |
+| `1024`    | 1     | `2048`–`8192` in steps of `1024`  |
+| `2048`    | 2     | `4096`–`16384` in steps of `1024` |
+| `4096`    | 4     | `8192`–`30720` in steps of `1024` |
+
+Example: enlarge the standalone worker without changing its storage mode:
+
+```hcl
+yjs_scaling = {
+  cpu    = 1024
+  memory = 2048
+}
+```
+
+After completing the cluster transition, this example scales between two and eight workers:
+
+```hcl
+yjs_scaling = {
+  cluster_enabled = true
+  cpu             = 1024
+  memory          = 2048
+  autoscaling = {
+    min_capacity = 2
+    max_capacity = 8
+  }
+}
+```
+
+For fixed clustered capacity, replace `autoscaling` with `desired_count = 4`. Scaling tracks CPU, memory, and connection/document/buffer pressure. More workers help with more documents; one busy document still has one owner. Encoded size is smaller than runtime memory use, and workers also reject loads/updates above 85% of configured memory.
+
+**For an existing deployment, migrate before scaling:** have editors save and close, apply `cluster_enabled = true`, `mode_transition = true`, and `desired_count = 1` without autoscaling, then verify checkpoint recovery. Set `mode_transition = false` in the next apply before increasing capacity. Returning to standalone needs a maintenance window because it cannot read cluster checkpoints. Follow [Yjs operations](../development/yjs-operations.md#enable-expand-and-roll-back) for rollout, recovery, and load testing.
+
+### Web protection and application domains
+
+#### `enable_waf`
+
+**Type:** bool. **Default:** `false`.
+
+`false` creates no WAF ACLs or REST origin-header restriction. `true` creates a CloudFront ACL and a regional ACL shared by API Gateway and Cognito, with managed protections and a REST API rule requiring CloudFront's generated origin secret. Direct REST calls without that header are blocked even with a valid JWT. The WebSocket API is unaffected by that REST rule.
+
+Example: `enable_waf = true`. Review costs and exercise your normal requests before enabling it; see [AWS WAF](#aws-waf) for rule behavior, including building-block body exceptions.
+
+#### `app_domain`
+
+**Type:** string. **Default:** `""`.
+
+`""` uses the generated CloudFront hostname. Otherwise use one bare lowercase hostname, such as `app_domain = "aidlc.example.com"`, without a scheme, port, path, or wildcard. It becomes the canonical application URL for frontend endpoints and OAuth redirects.
+
+Set either `acm_certificate_arn` or `route53_zone_id` with it. Apply infrastructure, register updated provider callback URLs, and rebuild/deploy the frontend. See [custom domain](#custom-domain) for the complete sequence.
+
+#### `app_domain_aliases`
+
+**Type:** list(string). **Default:** `[]`.
+
+`[]` adds no aliases. Additional bare lowercase hostnames serve the same CloudFront distribution and enter the CORS allowlist; OAuth callbacks still use `app_domain`. Requires a non-empty `app_domain` and a certificate covering every hostname.
+
+Example: `app_domain_aliases = ["www.aidlc.example.com"]`. Aliases do not create independent deployments or make their hostnames canonical.
+
+#### `acm_certificate_arn`
+
+**Type:** string. **Default:** `""`.
+
+With `app_domain` set, `""` requests and DNS-validates a certificate using `route53_zone_id`. An existing ACM certificate ARN uses that certificate instead; it must be **ISSUED**, in the **deployment account** and **us-east-1**, and cover the canonical hostname and all aliases. It must chain to a publicly trusted CA supported by CloudFront. The zone ID is then optional.
+
+Example: `acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/12345678-1234-1234-1234-123456789abc"`. You can import a suitable public certificate into ACM; distributing a private CA to browsers alone is insufficient. Keep this empty when `app_domain` is empty.
+
+#### `route53_zone_id`
+
+**Type:** string. **Default:** `""`.
+
+`""` leaves application DNS under your control and requires an existing certificate when using a custom domain. A hosted-zone ID creates A/AAAA aliases for `app_domain` and its aliases, plus certificate-validation records if Terraform requests the certificate. The zone must contain those names.
+
+Example: `route53_zone_id = "Z1234567890ABC"`. For a zone in another account, also set [dns_role_arn](#dns_role_arn). This does not configure the separate managed-login domain's DNS.
+
+#### `dns_role_arn`
+
+**Type:** string. **Default:** `""`.
+
+`""` manages DNS with the deployment credentials. An IAM role ARN makes the DNS provider assume that role for records in both `route53_zone_id` and `auth_route53_zone_id`. The deployment identity needs permission to assume it, its trust policy must allow that identity, and the role needs access to the relevant zones.
+
+Example: `dns_role_arn = "arn:aws:iam::444455556666:role/aidlc-dns"` for centrally managed Route53. Both configured zones must be accessible through this one role. It does not move the application or certificate into the DNS account.
+
+### Login, SSO, and session lifetimes
+
+#### `auth_mode`
+
+**Type:** string. **Default:** `"local"`.
+
+| Value        | Behavior                                                                                             |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| `"local"`    | Cognito email/password login; `sso_providers` must be empty.                                         |
+| `"hybrid"`   | Enterprise provider buttons and a separate Cognito-account form; requires at least one SSO provider. |
+| `"sso-only"` | Enterprise provider buttons only; requires providers and at least one `platform-admin` role mapping. |
+
+Example: `auth_mode = "hybrid"` with the provider example below. Verify an SSO administrator can sign in before selecting `"sso-only"`. Rebuild/deploy the frontend after changing authentication configuration. The [enterprise SSO guide](enterprise-sso.md) covers installer provider files and the bootstrap sequence.
+
+#### `sso_providers`
+
+**Type:** map(object), sensitive. **Default:** `{}`.
+
+`{}` defines no enterprise providers and is required in local mode. Each map key is a provider name: 1–32 letters, digits, underscores, or hyphens, starting with a letter; `COGNITO` is reserved in any case. The fields below use Terraform names; the installer's JSON provider file uses the different field names documented in [Provider file](enterprise-sso.md#provider-file).
+
+| Field                           | Allowed values and behavior                                                                                                                                |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `display_name`                  | Required string; label shown on the login page, e.g. `"Company SSO"`.                                                                                      |
+| `type`                          | Required `"oidc"` or `"saml"` (case-insensitive).                                                                                                          |
+| `issuer_url`                    | OIDC issuer URL; required for OIDC, default `""`.                                                                                                          |
+| `client_id`                     | OIDC application's client ID; required for OIDC, default `""`.                                                                                             |
+| `client_secret_arn`             | Existing Secrets Manager ARN for the OIDC client secret; required for OIDC, default `""`.                                                                  |
+| `scopes`                        | OIDC scopes; defaults to `["openid", "email", "profile"]` and must include `"openid"` for OIDC.                                                            |
+| `metadata_url` / `metadata_xml` | SAML metadata URL or literal XML. Defaults to `""` for both; SAML requires exactly one to be non-empty.                                                    |
+| `email_claim`                   | Required exact claim/attribute containing the email address, e.g. `"email"`.                                                                               |
+| `name_claim`                    | Optional display-name claim; `""` means no name mapping.                                                                                                   |
+| `role_claim`                    | Optional group/role claim; required when role mappings or access gates are set. Default `""`.                                                              |
+| `role_mappings`                 | Map from platform/business role ID to a list of exact, case-sensitive IdP values. `{}` grants no mapped roles; an empty list grants nothing for that role. |
+| `required_claim_values`         | List of allowed values in `role_claim`. `[]` adds no access gate; a non-empty list requires at least one match for every user, including admins.           |
+
+Allowed role-mapping keys are `platform-admin`, `product-owner`, `business-analyst`, `architect`, `ux-ui-designer`, `developer`, `qa-tester`, `security-compliance`, `operations-devops`, and `delivery-manager`. Claim values must not be blank. Business roles describe responsibilities; they do not grant space membership or administration rights.
+
+OIDC example (create the client and secret first):
+
+```hcl
+auth_mode = "hybrid"
+sso_providers = {
+  CorporateOIDC = {
+    display_name      = "Company SSO"
+    type              = "oidc"
+    issuer_url        = "https://idp.example.com"
+    client_id         = "aidlc-web"
+    client_secret_arn = "arn:aws:secretsmanager:eu-central-1:111122223333:secret:aidlc/oidc-AbCdEf"
+    email_claim       = "email"
+    name_claim        = "name"
+    role_claim        = "groups"
+    role_mappings     = { "platform-admin" = ["aidlc-admins"] }
+  }
+}
+```
+
+SAML alternative (use instead of, or as another entry alongside, the OIDC provider):
+
+```hcl
+auth_mode = "hybrid"
+sso_providers = {
+  CorporateSAML = {
+    display_name = "Company SAML"
+    type         = "saml"
+    metadata_url = "https://idp.example.com/saml/metadata"
+    email_claim  = "email"
+  }
+}
+```
+
+The SAML example permits hybrid login without granting platform-admin. For SSO-only, add a working administrator mapping. Configure the IdP to always send the role claim, even when empty, so Cognito cannot retain removed group memberships. Secret ARNs keep plaintext out of the input file, but Terraform reads OIDC secrets during provisioning and sensitive values can remain in state. See [role and access mapping](enterprise-sso.md#role-and-access-mapping).
+
+#### `auth_access_token_validity_minutes`
+
+**Type:** number. **Default:** `60`.
+
+Whole minutes from **5 through 1440** for new Cognito access tokens, in both local and federated login. A shorter lifetime causes more frequent refreshes while a valid refresh token exists; it does not force a fresh IdP login each time.
+
+Example: `auth_access_token_validity_minutes = 15`. Already-issued tokens keep their original expiry.
+
+#### `auth_id_token_validity_minutes`
+
+**Type:** number. **Default:** `60`.
+
+Whole minutes from **5 through 1440** for new Cognito ID tokens, which the browser sends to the REST API and realtime services. Shorter tokens reduce the remaining lifetime of the last token issued before refresh access ends.
+
+Example: `auth_id_token_validity_minutes = 15`. Already-issued tokens keep their original expiry; shortening this is not immediate session revocation.
+
+#### `auth_refresh_token_validity_hours`
+
+**Type:** number or null. **Default:** `null`.
+
+`null` selects **168 hours (7 days)** in local mode or **24 hours** in either SSO mode. Otherwise use a whole number from **1 through 87600** hours. After this period Cognito stops permitting refreshes, but the last issued ID token remains valid until its own expiry.
+
+Example: `auth_refresh_token_validity_hours = 8` with a 15-minute ID token allows API access for up to 8 hours 15 minutes after sign-in. Refresh does not recheck the upstream IdP, and already-open realtime connections are not forcibly closed at token expiry. See [token lifetimes](enterprise-sso.md#token-lifetimes) when choosing a limit for access after an IdP removal.
+
+#### `auth_domain`
+
+**Type:** string. **Default:** `""`.
+
+`""` keeps Cognito's generated managed-login hostname. A bare lowercase hostname provisions a custom login domain, separate from the application domain and aliases. Its parent must already have a public DNS A record, and an issued `us-east-1` certificate must cover it.
+
+Example: `auth_domain = "auth.aidlc.example.com"` with `auth_certificate_arn` set. Provisioning does not select the new hostname for login until [auth_domain_active](#auth_domain_active) is `true`.
+
+#### `auth_domain_active`
+
+**Type:** bool. **Default:** `false`.
+
+`false` keeps the generated Cognito domain selected, even if a custom one is provisioned. `true` selects `auth_domain` for login and federation outputs. It requires a non-empty custom domain with working DNS and registered custom IdP callbacks.
+
+Example: first apply `auth_domain_active = false`, test DNS/certificate and register callbacks, then apply `auth_domain_active = true` and rebuild/deploy the frontend. Setting it back to `false` and redeploying the frontend rolls back the login origin without deleting the domain. Follow the [custom managed-login domain sequence](enterprise-sso.md#custom-managed-login-domain).
+
+#### `auth_route53_zone_id`
+
+**Type:** string. **Default:** `""`.
+
+`""` leaves login DNS under your control; point the hostname at the `auth_dns_target` output. A public hosted-zone ID creates A/AAAA aliases when `auth_domain` is also set. This value is independent of `route53_zone_id`, even if both hostnames share a zone.
+
+Example: `auth_route53_zone_id = "Z1234567890ABC"`. For cross-account DNS, set `dns_role_arn` as well.
+
+#### `auth_certificate_arn`
+
+**Type:** string. **Default:** `""`.
+
+`""` reuses the explicitly supplied `acm_certificate_arn`, which must also cover the login hostname. It does **not** reuse a certificate Terraform requested automatically for the application. Otherwise supply an issued ACM certificate ARN in `us-east-1` covering `auth_domain`.
+
+Example: `auth_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/87654321-4321-4321-4321-cba987654321"`. A non-empty value requires `auth_domain`; Terraform does not request a new Cognito-domain certificate for you.
+
+### Organization tags and IAM
+
+#### `extra_tags`
+
+**Type:** map(string). **Default:** `{}`.
+
+Adds AWS provider default tags where supported. `{}` adds none. `Environment` and `Project` always come from their dedicated variables and override the same keys here. Provider default tags do not automatically cover resources managed through other providers.
+
+Example: `extra_tags = { CostCenter = "engineering", Owner = "platform-team" }`.
+
+#### `iam_role_path`
+
+**Type:** string. **Default:** `"/"`.
+
+The path for IAM roles created by the deployment. `"/"` uses the root path; a value such as `"/org/product/"` groups roles under an organization path. It must start and end with `/`; each component may contain letters, digits, `+`, `=`, `,`, `.`, `@`, `_`, or `-`.
+
+Example: `iam_role_path = "/org/aidlc/"`. Choose this at installation when your account requires it. Changing role paths on an existing deployment can replace roles and changes their ARNs.
+
+#### `iam_permissions_boundary_arn`
+
+**Type:** string. **Default:** `""`.
+
+`""` attaches no permissions boundary. An IAM managed-policy ARN attaches that existing boundary to the roles the deployment creates. A boundary limits what role policies can grant; it grants nothing by itself. It must allow the service actions this deployment needs, including any enabled Gateway features.
+
+Example: `iam_permissions_boundary_arn = "arn:aws:iam::111122223333:policy/aidlc-boundary"`. Terraform does not create the policy or validate that its contents permit a working deployment.
+
+### Gateway and runtime access
+
+The following settings change where agent operations run and how their access is checked. On an existing deployment, follow the rollout steps below; enabling every flag in a single apply can break sessions using older runtime versions.
+
+#### `enable_mcp_gateway`
+
+**Type:** bool. **Default:** `false`.
+
+`false` runs the built-in MCP tools inside the agent runtime. `true` serves them through AgentCore Gateway, where every call is checked against a signed execution grant. The standard deployment already uses the required VPC runtime mode; `network_mode` is an internal module input, not another root `.tfvars` variable.
+
+Example: `enable_mcp_gateway = true`. This alone does not remove the runtime role's direct data permissions.
+
+Before enabling it on an existing deployment, stop new starts and retries, let running executions finish or park, then cancel parked and queued executions. Apply, then rewind cancelled work to its current stage (the first stage if none had started) to obtain grants. The deployment script refuses the switch while executions are started, running, or parked; direct Terraform does not perform that safeguard. See [agent runtime architecture](../concepts/architecture.md#agent-runtime).
+
+#### `enable_engine_data`
+
+**Type:** bool. **Default:** `false`.
+
+`false` keeps the runtime's existing direct data clients. `true` routes process state, graph, methodology, blob reads, and broadcasts through the grant-verifying engine-data Lambda; credentials go through the broker and provider review operations through the source-control runtime alias. Requires `enable_mcp_gateway = true`. This prepares grant enforcement but keeps legacy broker request shapes working until enforcement is enabled.
+
+```hcl
+enable_mcp_gateway = true
+enable_engine_data = true
+```
+
+Drain executions as described above before enabling **or disabling** engine-data. When disabling, also stop remaining runtime sessions after apply or let them expire: warm sessions may still call the removed service.
+
+#### `enforce_runtime_grants`
+
+**Type:** bool. **Default:** `false`.
+
+`false` permits legacy-shaped broker requests from old runtimes and logs them as `LEGACY_RUNTIME_REQUEST`; requests carrying the new authority fields are still fully checked. `true` rejects legacy requests and removes the runtime role's direct Neptune, DynamoDB, S3, SSM, WebSocket, and DynamoDB KMS access, along with its unqualified source-control invocation grant. Requires `enable_engine_data = true`.
+
+Example: `enforce_runtime_grants = true` **only after** engine-data is deployed, every core and managed runtime image includes its client, and legacy request counts have drained to zero. Turning it back to `false` restores those direct permissions and legacy compatibility.
+
+#### `runtime_mcp_credentials`
+
+**Type:** string. **Default:** `"allow"`.
+
+`"allow"` permits space/platform custom MCP servers and resolves their secrets into the runtime. `"gateway_only"` refuses direct custom MCP servers and keeps their credentials out of the microVM; customer servers must instead use `mcp_gateway_custom_targets`. It requires `enable_mcp_gateway`, `enable_engine_data`, and `enforce_runtime_grants` all set to `true`.
+
+Example: `runtime_mcp_credentials = "gateway_only"` after those prerequisite rollouts. First remove direct servers and clear their secrets in space/platform settings, register needed Gateway targets, and finish or restart intents that pinned direct servers. Otherwise starts/retries are refused or stages fail. Git tokens and model credentials still reach the runtime. See the [Gateway-only profile](../using-the-platform/customer-mcp-servers.md#gateway-only-profile).
+
+#### `mcp_gateway_custom_targets`
+
+**Type:** map(object). **Default:** `{}` (null is not allowed).
+
+`{}` adds no customer servers. Each entry adds a remote MCP target behind the Gateway and requires `enable_mcp_gateway = true`. Names are 1–32 lowercase letters/digits with single hyphens between them; `aidlc` is reserved. Treat names as immutable because tools are named `<target>___<tool>`.
+
+| Field                          | Allowed values and behavior                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `endpoint`                     | Required HTTPS URL for a Streamable HTTP MCP server.                                                                                                                     |
+| `description`                  | Optional text describing the target.                                                                                                                                     |
+| `auth.type`                    | Required `"oauth"` for client-credentials OAuth or `"api_key"` for API-key injection.                                                                                    |
+| `auth.credential_provider_arn` | Required existing AgentCore Identity provider ARN in the deployment account/Region, matching the auth type. Use the returned `bedrock-agentcore` ARN, not an `acps` ARN. |
+| `auth.secret_arn`              | Required Secrets Manager ARN returned for that provider's secret. No plaintext credential belongs in this map.                                                           |
+| `auth.scopes`                  | OAuth only; defaults to `[]`. At most 100 strings of 1–64 characters; request the scopes your server requires.                                                           |
+| `auth.custom_parameters`       | OAuth only; optional token parameters such as `audience` or `resource`. At most 10 entries, non-blank keys of 1–256 characters and values of 1–2048 characters.          |
+| `auth.credential_location`     | API key only; `"HEADER"` or `"QUERY_PARAMETER"`. Omit to use the service's default placement.                                                                            |
+| `auth.parameter_name`          | API key only; header or query parameter name, e.g. `"X-Api-Key"`.                                                                                                        |
+| `auth.prefix`                  | API key only; optional value prefix, e.g. `"Bearer"`.                                                                                                                    |
+| `allow.project_ids`            | Required non-empty list of exact space IDs from `/space/<id>`; these spaces may call the target.                                                                         |
+| `allow.stage_ids`              | Omit or use `null` for all stages, or a non-empty list of exact workflow stage block IDs.                                                                                |
+| `allow.tools`                  | Omit or use `null` for all target tools, or a non-empty list of server tool names without the `<target>___` prefix.                                                      |
+| `private_endpoint`             | Omit for a publicly reachable endpoint; otherwise specify exactly one of the private endpoint objects below.                                                             |
+
+For `private_endpoint.managed_vpc_resource`, provide `vpc_identifier`, `subnet_ids`, and `endpoint_ip_address_type` (`"IPV4"` or `"IPV6"`). Optional `security_group_ids` selects the gateway's security groups; omitting it uses the VPC default group. Optional `routing_domain` routes through an intermediate domain, such as an internal load balancer, instead of the target domain. This selects VPC Lattice managed connectivity into your VPC. Alternatively, `private_endpoint.self_managed_lattice_resource` takes the required `resource_configuration_identifier` of an existing Lattice resource configuration. AWS validates the network identifiers and availability.
+
+API-key example; create the Identity provider first and use its returned ARNs:
+
+```hcl
+enable_mcp_gateway = true
+mcp_gateway_custom_targets = {
+  knowledge = {
+    endpoint = "https://mcp.example.com/mcp"
+    auth = {
+      type                    = "api_key"
+      credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:111122223333:token-vault/default/apikeycredentialprovider/knowledge"
+      secret_arn              = "arn:aws:secretsmanager:eu-central-1:111122223333:secret:knowledge-AbCdEf"
+      credential_location     = "HEADER"
+      parameter_name          = "X-Api-Key"
+    }
+    allow = {
+      project_ids = ["<space-id>"]
+      stage_ids   = ["requirements-analysis"]
+      tools       = ["search"]
+    }
+  }
+}
+```
+
+For OAuth, use `type = "oauth"` with the provider's `.../oauth2credentialprovider/<name>` ARN, its secret ARN, and the required scopes; omit the API-key placement fields. The [customer MCP guide](../using-the-platform/customer-mcp-servers.md#add-a-target) includes provider creation and both authentication examples.
+
+Only stage sessions can call these targets; discussion and conflict sessions cannot. IDs must match real spaces/stages, lists cannot contain blank values, and the encoded allow rules must stay under 2 KB. The server must be reachable during apply because Gateway synchronizes its tools. Access/endpoint/provider changes apply to running stages on their next call. Sessions already running when the first target is added need a new session to receive the customer-tool entry.
+
+### Notification integrations
+
+#### `notification_events_enabled`
+
+**Type:** bool. **Default:** `false`.
+
+`false` creates no notification bus and publishes no notification feed. `true` creates an EventBridge bus and enables best-effort events for `discussion.message`, `discussion.resolved`, `gate.pending`, and `space.created`. It does not create rules, targets, or a chat integration; configure consumers separately.
+
+Example: `notification_events_enabled = true`. Events may be missed or duplicated, so consumers must deduplicate and reconcile if completeness matters. See [notification events](../using-the-platform/notification-events.md).
+
+#### `notification_event_bus_name`
+
+**Type:** string. **Default:** `""`.
+
+When notifications are enabled, `""` creates `<project_name>-<environment>-events`. Otherwise supply 1–256 letters, digits, dots, underscores, or hyphens for the bus to create. This names a Terraform-managed bus; it does not automatically adopt an existing bus. Ignored while notifications are disabled.
+
+Example: `notification_event_bus_name = "team-aidlc-events"`. Changing it requires consumers to use the new bus.
+
+#### `notification_event_source`
+
+**Type:** string. **Default:** `"collaborative-ai-dlc"`.
+
+The `source` value on notification events, used in EventBridge rule patterns. Allowed: 1–256 letters, digits, dots, underscores, or hyphens, without the reserved `aws.` prefix. It affects published events only when notifications are enabled.
+
+Example: `notification_event_source = "com.example.aidlc"`. Match the same string in your rules; changing it without updating consumers stops those rules matching new events.
 
 ## Destroy infrastructure
 
