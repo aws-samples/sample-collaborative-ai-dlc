@@ -235,6 +235,27 @@ const installDdbFakes = () => {
     if (input.IndexName === 'GSI1') {
       items = items.filter((i) => i.GSI1PK === values[':pk']);
       if (values[':sk']) items = items.filter((i) => (i.GSI1SK || '').startsWith(values[':sk']));
+      // Index order, Limit and ExclusiveStartKey, as DynamoDB pages a project's list.
+      items.sort((a, b) => (a.GSI1SK || '').localeCompare(b.GSI1SK || ''));
+      if (input.ScanIndexForward === false) items.reverse();
+      const start = input.ExclusiveStartKey
+        ? items.findIndex((i) => i.GSI1SK === input.ExclusiveStartKey.GSI1SK) + 1
+        : 0;
+      const page = items.slice(start, input.Limit ? start + input.Limit : undefined);
+      const last = page.at(-1);
+      return {
+        Items: page.map((i) => ({ ...i })),
+        ...(last && start + page.length < items.length
+          ? {
+              LastEvaluatedKey: {
+                pk: last.pk,
+                sk: last.sk,
+                GSI1PK: last.GSI1PK,
+                GSI1SK: last.GSI1SK,
+              },
+            }
+          : {}),
+      };
     } else if (input.IndexName === 'GSI3') {
       items = items.filter((i) => i.GSI3PK === values[':pk']);
       items.sort((a, b) => (a.GSI3SK || '').localeCompare(b.GSI3SK || ''));
@@ -4734,6 +4755,131 @@ describe('GET list + detail', () => {
     expect(dto.intent.id).toBe(intent.id);
     expect(dto.stages).toEqual([]);
     expect(dto.artifacts).toEqual([]);
+  });
+
+  describe('paged list (paged=1)', () => {
+    // META rows as the store indexes them. Every row shares one startedAt so
+    // page boundaries fall between equal timestamps (ties break on the id).
+    const seedMetas = (projectId, count, status = 'SUCCEEDED') => {
+      const ids = [];
+      for (let i = 0; i < count; i++) {
+        const id = `${status.toLowerCase()}-${String(i).padStart(3, '0')}-${randomUUID()}`;
+        ids.push(id);
+        procStore.set(keyOf(`EXEC#${id}`, 'META'), {
+          pk: `EXEC#${id}`,
+          sk: 'META',
+          executionId: id,
+          intentId: id,
+          projectId,
+          status,
+          title: `Intent ${i}`,
+          startedAt: '2026-11-01T00:00:00.000Z',
+          GSI1PK: `PROJECT#${projectId}`,
+          GSI1SK: `STATUS#${status}#STARTED#2026-11-01T00:00:00.000Z#EXEC#${id}`,
+        });
+      }
+      return ids;
+    };
+    const listPage = (sub, projectId, query) =>
+      handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents`,
+        pathParameters: { projectId },
+        queryStringParameters: query,
+        ...claims(sub),
+      });
+    const readAllPages = async (sub, projectId, query = {}) => {
+      const pages = [];
+      let nextToken;
+      do {
+        const res = await listPage(sub, projectId, {
+          ...query,
+          paged: '1',
+          ...(nextToken ? { nextToken } : {}),
+        });
+        expect(res.statusCode).toBe(200);
+        const body = JSON.parse(res.body);
+        pages.push(body.items);
+        nextToken = body.nextToken;
+      } while (nextToken && pages.length < 10);
+      return pages;
+    };
+
+    it('reaches every intent past the first 100, a bounded page at a time', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const ids = [...seedMetas(projectId, 61), ...seedMetas(projectId, 40, 'FAILED')];
+
+      const pages = await readAllPages(sub, projectId);
+      expect(pages.map((p) => p.length)).toEqual([50, 50, 1]);
+      const listed = pages.flat().map((i) => i.id);
+      expect(new Set(listed).size).toBe(101);
+      expect(listed.toSorted()).toEqual(ids.toSorted());
+
+      // A client deployed before the paged contract still gets the bare array.
+      const legacy = await listPage(sub, projectId, undefined);
+      expect(JSON.parse(legacy.body)).toHaveLength(100);
+    });
+
+    it('pages within a status filter', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedMetas(projectId, 3);
+      const failed = seedMetas(projectId, 51, 'FAILED');
+      const pages = await readAllPages(sub, projectId, { status: 'FAILED' });
+      expect(pages.map((p) => p.length)).toEqual([50, 1]);
+      expect(
+        pages
+          .flat()
+          .map((i) => i.id)
+          .toSorted(),
+      ).toEqual(failed.toSorted());
+    });
+
+    it('returns an empty page with no token for a Space without intents', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await listPage(sub, projectId, { paged: '1' });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ items: [], nextToken: null });
+    });
+
+    it('refuses a malformed token or one from another Space or status', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const otherProjectId = await seedV2Project(sub);
+      seedMetas(projectId, 51);
+      seedMetas(otherProjectId, 51);
+      const firstPage = async (pid, query = {}) =>
+        JSON.parse((await listPage(sub, pid, { ...query, paged: '1' })).body).nextToken;
+      const foreign = await firstPage(otherProjectId);
+      const succeededOnly = await firstPage(projectId, { status: 'SUCCEEDED' });
+      expect(foreign).toEqual(expect.any(String));
+
+      for (const [nextToken, query] of [
+        ['not-base64-json', {}],
+        [Buffer.from('[1]').toString('base64url'), {}],
+        [Buffer.from('{"pk":"EXEC#x"}').toString('base64url'), {}],
+        [foreign, {}],
+        [succeededOnly, { status: 'FAILED' }],
+      ]) {
+        const res = await listPage(sub, projectId, { ...query, paged: '1', nextToken });
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toBe('Invalid continuation token');
+      }
+    });
+
+    it('403s a non-member, with or without a token', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedMetas(projectId, 51);
+      const { nextToken } = JSON.parse((await listPage(sub, projectId, { paged: '1' })).body);
+      const outsider = `outsider-${randomUUID()}`;
+      for (const query of [{ paged: '1' }, { paged: '1', nextToken }]) {
+        const res = await listPage(outsider, projectId, query);
+        expect(res.statusCode).toBe(403);
+      }
+    });
   });
 
   it('returns the full assembled DTO shape with cliModels/parkReleaseSeconds', async () => {

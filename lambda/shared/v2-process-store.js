@@ -196,6 +196,13 @@ const maintenanceIndexQuery = (partition, after) =>
         ExpressionAttributeValues: { ':pk': partition },
       };
 
+// Paged intents list cursor: GSI1's LastEvaluatedKey, nothing else.
+const LIST_CURSOR_KEYS = ['GSI1PK', 'GSI1SK', 'pk', 'sk'];
+const invalidListCursor = () =>
+  Object.assign(new Error('Intent list cursor is outside its project/status scope'), {
+    statusCode: 400,
+  });
+
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const ddb = retryTransactionConflicts(client);
@@ -2829,6 +2836,19 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return input ? queryUntilBytes(ddb, input, maxBytes) : { items: [], more: false };
   };
 
+  // A project's executions on GSI1, optionally one status. Shared by the
+  // drained and the paged list so both read the same rows.
+  const projectExecutionsQuery = (projectId, status) => ({
+    TableName: table(),
+    IndexName: 'GSI1',
+    KeyConditionExpression: status ? 'GSI1PK = :pk AND begins_with(GSI1SK, :sk)' : 'GSI1PK = :pk',
+    ExpressionAttributeValues: {
+      ':pk': projectPk(projectId),
+      ...(status ? { ':sk': `STATUS#${status}#` } : {}),
+    },
+    ScanIndexForward: false, // newest first within a status
+  });
+
   // List a project's executions (intents) newest-first via GSI1. Optionally
   // filter to a single status. Returns the META rows only — the intents list
   // view doesn't need the full per-execution record set. Paginated up to
@@ -2836,30 +2856,54 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // unbounded user prompt — without the drain, a project with large prompts
   // would silently list fewer intents than exist.
   const listProjectExecutions = async ({ projectId, status = null, limit = 100 } = {}) => {
-    const values = { ':pk': projectPk(projectId) };
-    let keyCond = 'GSI1PK = :pk';
-    if (status) {
-      keyCond += ' AND begins_with(GSI1SK, :sk)';
-      values[':sk'] = `STATUS#${status}#`;
-    }
+    const query = projectExecutionsQuery(projectId, status);
     const items = [];
     let ExclusiveStartKey;
     do {
       const page = await ddb.send(
-        new QueryCommand({
-          TableName: table(),
-          IndexName: 'GSI1',
-          KeyConditionExpression: keyCond,
-          ExpressionAttributeValues: values,
-          ScanIndexForward: false, // newest first
-          Limit: limit - items.length,
-          ExclusiveStartKey,
-        }),
+        new QueryCommand({ ...query, Limit: limit - items.length, ExclusiveStartKey }),
       );
       items.push(...(page.Items ?? []));
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey && items.length < limit);
     return items;
+  };
+
+  // One page of listProjectExecutions: a single Query, so a request reads at
+  // most `limit` rows and 1MB however many intents the project has. `cursor`
+  // is the previous page's LastEvaluatedKey. Only its four key attributes are
+  // accepted, and one from another project or status filter is refused
+  // instead of being handed to DynamoDB.
+  const listProjectExecutionsPage = async ({ projectId, status = null, limit = 50, cursor }) => {
+    let ExclusiveStartKey;
+    if (cursor) {
+      const keys = Object.keys(cursor).toSorted();
+      if (
+        keys.length !== LIST_CURSOR_KEYS.length ||
+        !LIST_CURSOR_KEYS.every((key, i) => keys[i] === key) ||
+        !LIST_CURSOR_KEYS.every((key) => typeof cursor[key] === 'string' && cursor[key]) ||
+        cursor.GSI1PK !== projectPk(projectId) ||
+        !cursor.GSI1SK.startsWith(status ? `STATUS#${status}#` : 'STATUS#')
+      ) {
+        throw invalidListCursor();
+      }
+      ExclusiveStartKey = Object.fromEntries(LIST_CURSOR_KEYS.map((key) => [key, cursor[key]]));
+    }
+    let page;
+    try {
+      page = await ddb.send(
+        new QueryCommand({
+          ...projectExecutionsQuery(projectId, status),
+          Limit: limit,
+          ExclusiveStartKey,
+        }),
+      );
+    } catch (err) {
+      // A well-formed key DynamoDB still refuses (an invalid starting key).
+      if (ExclusiveStartKey && err?.name === 'ValidationException') throw invalidListCursor();
+      throw err;
+    }
+    return { items: page.Items ?? [], cursor: page.LastEvaluatedKey ?? null };
   };
 
   const listCompletionAuditPage = async ({
@@ -4256,6 +4300,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getOutputs,
     getOutputsPage,
     listProjectExecutions,
+    listProjectExecutionsPage,
     getCompletionRecords,
     listCompletionAuditPage,
     listActiveExecutions,

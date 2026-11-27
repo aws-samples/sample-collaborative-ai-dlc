@@ -6573,11 +6573,49 @@ const handleProjectMetrics = async ({ projectId, response }) => {
   });
 };
 
+const INTENT_LIST_PAGE_SIZE = 50;
+
+const decodeIntentListToken = (token) => {
+  try {
+    const cursor = JSON.parse(Buffer.from(token, 'base64url').toString());
+    if (cursor && typeof cursor === 'object' && !Array.isArray(cursor)) return cursor;
+  } catch {
+    // Reported below as an invalid token.
+  }
+  return null;
+};
+
 const handleListIntents = async ({ event, projectId, response }) => {
-  // GET list — META rows for the project, newest first.
-  const status = event.queryStringParameters?.status || null;
-  const metas = await store.listProjectExecutions({ projectId, status });
-  return response(200, metas.map(mapIntent));
+  // GET list — META rows for the project, in GSI1 order (grouped by status).
+  const query = event.queryStringParameters ?? {};
+  const status = query.status || null;
+  // Without paged=1 the response stays the first 100 rows as a bare array,
+  // for clients deployed before the paged contract.
+  if (query.paged !== '1') {
+    const metas = await store.listProjectExecutions({ projectId, status });
+    return response(200, metas.map(mapIntent));
+  }
+  let cursor;
+  if (query.nextToken) {
+    cursor = decodeIntentListToken(query.nextToken);
+    if (!cursor) return response(400, { error: 'Invalid continuation token' });
+  }
+  let page;
+  try {
+    page = await store.listProjectExecutionsPage({
+      projectId,
+      status,
+      limit: INTENT_LIST_PAGE_SIZE,
+      cursor,
+    });
+  } catch (err) {
+    if (err.statusCode === 400) return response(400, { error: 'Invalid continuation token' });
+    throw err;
+  }
+  return response(200, {
+    items: page.items.map(mapIntent),
+    nextToken: page.cursor ? Buffer.from(JSON.stringify(page.cursor)).toString('base64url') : null,
+  });
 };
 
 const validateAdminReleaseTest = (event, data) => {

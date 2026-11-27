@@ -79,6 +79,14 @@ Project and member lists still return arrays for older clients. Clients sending
 A newly added space can take time to appear in the list, but protected operations
 check the current membership directly.
 
+A Space's intents list (`GET /projects/{projectId}/intents`, optionally with `status`)
+follows the same contract: without `paged=1` it returns the first 100 intents as an
+array; with `paged=1` it returns `{ items, nextToken }`, at most 50 intents per page.
+Follow `nextToken` until it is `null`, even after an empty page. A token that is
+malformed or belongs to another Space or `status` filter gets `400`. An intent whose
+status changes while a client is between pages can be skipped or repeated in that
+pass; the next full read lists it once.
+
 Legacy `admin` mutation inputs are accepted as `owner`. Current roles are Owner,
 Member, and Viewer. Membership history is available through
 `GET /projects/{projectId}/membership-history` with `from`, `to`, and `nextToken`;
