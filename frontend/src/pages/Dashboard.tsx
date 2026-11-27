@@ -280,6 +280,13 @@ export default function Dashboard() {
                 <Plus className="h-4 w-4" />
                 Create Your First Space
               </Button>
+              <Button
+                variant="link"
+                onClick={() => navigate('/browse-spaces')}
+                className="mt-2 text-sm"
+              >
+                Or browse spaces you can ask to join
+              </Button>
             </CardContent>
           </Card>
         ) : filteredProjects.length === 0 ? (

@@ -50,6 +50,11 @@ import { getVal, projectTrackersFoldStep, mapBinding } from '../shared/trackers.
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import {
+  listDiscoverableSpaces,
+  normalizeDirectoryInput,
+  readDirectorySettings,
+} from './space-directory.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import {
   GatewayGrantRetirementError,
@@ -1488,6 +1493,7 @@ export const handler = async (event, context) => {
             trackers: trackerMaps.map(mapBinding),
             repos,
             ...readV2Settings(v),
+            ...readDirectorySettings(v),
           };
           return response(200, withLegacyTracker(project));
         }
@@ -1496,6 +1502,25 @@ export const handler = async (event, context) => {
         // Trackers fold into the same traversal so we don't fan out into N+1
         // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
+
+        // The space directory: discoverable spaces for any signed-in user.
+        if (event.queryStringParameters?.discoverable === '1') {
+          const spaces = await listDiscoverableSpaces({
+            g,
+            store: membershipStore,
+            userId,
+            onError: (failures) =>
+              logger.error('Discoverable spaces failed to load and were omitted', {
+                count: failures.length,
+                spaces: failures.map(({ spaceId, error }) => ({
+                  spaceId,
+                  error: error?.name,
+                  message: error?.message,
+                })),
+              }),
+          });
+          return response(200, spaces);
+        }
 
         const paged = event.queryStringParameters?.paged === '1';
         const projects = [];
@@ -1543,6 +1568,7 @@ export const handler = async (event, context) => {
                 trackers: trackerMaps.map(mapBinding),
                 repos,
                 ...readV2Settings(v),
+                ...readDirectorySettings(v),
               });
             }),
           );
@@ -1811,6 +1837,9 @@ export const handler = async (event, context) => {
         }
 
         const data = JSON.parse(body);
+        // Validated before any write, so a bad value changes nothing.
+        const directory = normalizeDirectoryInput(data);
+        if (!directory.valid) return response(400, { error: directory.error });
         if (data.name) {
           await g
             .V()
@@ -2008,6 +2037,26 @@ export const handler = async (event, context) => {
             )
             .next();
         }
+        if (directory.value.description !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'description', directory.value.description)
+            .next();
+        }
+        if (directory.value.discoverable !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'discoverable',
+              directory.value.discoverable ? 'true' : 'false',
+            )
+            .next();
+          // Hidden again: nobody can be waiting on a space they can no longer find.
+          if (!directory.value.discoverable) await membershipStore.deleteSpaceRequests(projectId);
+        }
         // Stamp updated_at on every successful settings change so lists can
         // sort by recency.
         const updatedAt = new Date().toISOString();
@@ -2019,6 +2068,7 @@ export const handler = async (event, context) => {
         return response(200, {
           id: projectId,
           ...data,
+          ...directory.value,
           updatedAt,
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
           ...(normalizedTierModels !== undefined ? { tierModels: normalizedTierModels } : {}),

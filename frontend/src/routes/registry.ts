@@ -28,6 +28,10 @@ export const APP_ROUTES: readonly RouteEntry[] = [
     page: pages.Dashboard,
   },
   {
+    path: '/browse-spaces',
+    page: pages.BrowseSpaces,
+  },
+  {
     path: '/account/settings',
     page: pages.AccountSettings,
   },

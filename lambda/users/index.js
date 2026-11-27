@@ -18,6 +18,7 @@ import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
 import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
+import { handleAccessRequests } from './access-requests.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -80,9 +81,12 @@ export const handler = async (event, context) => {
     const actorId = event.requestContext?.authorizer?.claims?.sub;
     if (!actorId) return response(401, { error: 'Unauthorized' });
     const actorRole = await fetchMembershipRole(g, projectId, actorId);
+    const route = event.resource || event.path || '';
+    // Non-members may ask to join, so this is answered before the member check.
+    if (/\/access-requests(\/|$)/.test(route))
+      return await handleAccessRequests({ g, event, response, projectId, actorId, actorRole });
     if (!actorRole) return response(403, { error: 'Access denied' });
 
-    const route = event.resource || event.path || '';
     if (route.endsWith('/stage-responsibilities')) {
       if (httpMethod !== 'GET') return response(405, { error: 'Method not allowed' });
       return response(
@@ -221,6 +225,8 @@ export const handler = async (event, context) => {
       role,
       before,
       action: { POST: 'member-added', PUT: 'role-changed', DELETE: 'member-removed' }[httpMethod],
+      // Adding someone directly settles any request they had open.
+      ...(httpMethod === 'POST' ? { accessRequest: 'clear' } : {}),
     });
     return httpMethod === 'DELETE'
       ? response(204, null)

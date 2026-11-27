@@ -22,6 +22,7 @@ import {
 import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { SpaceDiscoveryCard } from './SpaceDiscoveryCard';
 
 interface Props {
   project: Project;
@@ -134,6 +135,8 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
           )}
         </div>
       </SettingsCard>
+
+      <SpaceDiscoveryCard project={project} canEdit={canEdit} onProjectUpdated={onProjectUpdated} />
 
       <SettingsCard
         icon={<SlidersHorizontal />}

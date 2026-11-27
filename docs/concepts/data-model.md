@@ -485,6 +485,16 @@ mappings and access gate, without reading Cognito, and only while its source
 attribute matches the provider's current one. The item has no `userId`, so the `by-user` GSI skips it; the
 sign-in trigger may only write `USER#` items.
 
+A pending request to join a discoverable space is stored in the same partition:
+`pk = SPACE#<spaceId>`, `sk = REQUEST#<userId>`, with `requesterId`, the
+requester's email, an optional message and `createdAt`. It has no `userId`
+attribute, so it never appears in the `by-user` index or counts as membership.
+Approving one adds the membership and removes the request in one transaction;
+declining one removes it. Both decisions are written to the audit table
+(`access-request-approved`, `access-request-declined`). Requests are removed
+when the requester is added directly, when the space stops being discoverable,
+and when it is deleted.
+
 A separate audit table stores append-only permission changes under the same space
 partition, keyed by `AUDIT#<ISO-time>#<changeId>`. It records actor, action,
 target user, before/after membership, timestamp, and change ID. Membership and

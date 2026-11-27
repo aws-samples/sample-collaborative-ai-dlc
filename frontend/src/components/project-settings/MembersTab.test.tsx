@@ -8,6 +8,9 @@ const listAssignableUsers = vi.hoisted(() => vi.fn());
 const addMember = vi.hoisted(() => vi.fn());
 const removeMember = vi.hoisted(() => vi.fn());
 const listBusinessRoles = vi.hoisted(() => vi.fn());
+const listAccessRequests = vi.hoisted(() =>
+  vi.fn((..._args: unknown[]): Promise<unknown[]> => Promise.resolve([])),
+);
 const updateMemberBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberExcludedRoles = vi.hoisted(() => vi.fn());
 const getResponsibilities = vi.hoisted(() => vi.fn());
@@ -26,6 +29,7 @@ vi.mock('@/services/projects', () => ({
     listBusinessRoles: (...args: unknown[]) => listBusinessRoles(...args),
     updateMemberBusinessRoles: (...args: unknown[]) => updateMemberBusinessRoles(...args),
     updateMemberExcludedRoles: (...args: unknown[]) => updateMemberExcludedRoles(...args),
+    listAccessRequests: (...args: unknown[]) => listAccessRequests(...args),
   },
 }));
 
@@ -44,6 +48,7 @@ beforeEach(() => {
   window.HTMLElement.prototype.setPointerCapture = vi.fn();
   window.HTMLElement.prototype.releasePointerCapture = vi.fn();
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  listAccessRequests.mockReset().mockResolvedValue([]);
   listMembers
     .mockReset()
     .mockResolvedValue([{ userId: 'existing-sub', email: 'existing@example.com', role: 'member' }]);
@@ -653,5 +658,28 @@ describe('MembersTab assignable identity picker', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add Member' })).not.toBeInTheDocument();
     expect(screen.queryByTitle('Remove member')).not.toBeInTheDocument();
+  });
+
+  it('shows pending access requests to Owners only', async () => {
+    listAccessRequests.mockResolvedValue([
+      {
+        userId: 'asker',
+        email: 'asker@example.com',
+        message: '',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    const { unmount } = render(<MembersTab projectId="project-1" userRole="owner" />);
+    expect(await screen.findByText('Access requests')).toBeInTheDocument();
+    expect(screen.getByText('asker@example.com')).toBeInTheDocument();
+    unmount();
+    listAccessRequests.mockClear();
+    for (const role of ['member', 'viewer'] as const) {
+      const view = render(<MembersTab projectId="project-1" userRole={role} />);
+      await screen.findByText('existing@example.com');
+      expect(screen.queryByText('Access requests')).not.toBeInTheDocument();
+      view.unmount();
+    }
+    expect(listAccessRequests).not.toHaveBeenCalled();
   });
 });

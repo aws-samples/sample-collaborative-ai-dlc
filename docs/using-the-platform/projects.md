@@ -35,6 +35,9 @@ Non-members have no access to a space's intents, discussions, or real-time chann
 Viewers see “You have view-only access to this space.” Editing and execution
 controls are disabled.
 
+An Owner can make a space [discoverable](#browse-spaces-and-access-requests) so
+other people can find it and ask to join.
+
 Existing space Admins become Owners during update. Space Owner and Platform Admin
 remain separate roles. Several Owners are allowed; removing or demoting an Owner
 requires another Owner in the space.
@@ -55,6 +58,7 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 ### General
 
 - **Space Name** — rename the space.
+- **Discovery** — **Discoverable** lists the space in [Browse spaces](#browse-spaces-and-access-requests), and **Description** (up to 500 characters) says what it is for. Off by default. Turning it off cancels any pending access requests.
 - **Runtime** — the space's execution profile. A badge shows the pinned workflow (default `aidlc-v2`). Settings:
   - **Park release (seconds)** — how long an agent session stays warm after parking on a human question before it is stopped (0–900, default 300). Lower values save compute; higher values make near-instant answers resume faster.
   - **Max parallel units** — concurrency cap for parallel construction lanes (0 = unbounded, limited only by the unit dependency graph).
@@ -69,6 +73,10 @@ accounts by provider and includes only enabled accounts that can sign in.
 Removing a member revokes API access and further collaborative edits immediately.
 Existing notification sessions expire within ten minutes. Re-adding someone does
 not restore their locally assigned roles or delegated integration access.
+
+Owners see an **Access requests** card above the member list while anyone is
+waiting. Pick the role (Member by default) and choose **Approve** to add the
+person, or **Decline**. Adding someone directly also settles their request.
 
 #### Business roles
 
@@ -130,6 +138,21 @@ for publication, selection, and snapshot behavior.
 ### Trackers
 
 - **Tracker bindings** — bind GitHub Issues, GitLab Issues, or one or more Jira Cloud projects so intents can be started from issues. See [Binding a tracker to a space](git-integration.md#binding-a-tracker-to-a-space).
+
+## Browse spaces and access requests
+
+**Browse spaces** in the sidebar lists every discoverable space, for anyone
+signed in. Each entry shows the space's name, description and Owners' email
+addresses, and nothing else: its intents, workflows, knowledge and discussions
+stay members-only. Spaces you belong to are marked **Joined**.
+
+Choose **Request access** to ask the Owners to add you, with an optional
+message of up to 500 characters. They see your email address and message in
+**Space Settings → Members**. You can have one open request per space, and you
+can withdraw it while it is pending. If it is declined, you can ask again.
+
+With [notification events](notification-events.md) on, a request publishes
+`space.access.requested` and a decision publishes `space.access.decided`.
 
 ## Settings snapshots
 

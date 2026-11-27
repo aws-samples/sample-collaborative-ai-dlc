@@ -54,6 +54,7 @@ import {
 } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { businessRoleIcon } from './businessRoleIcons';
+import { AccessRequestsCard } from './AccessRequestsCard';
 import { StageResponsibilitiesTable } from '@/components/stage-responsibilities/StageResponsibilitiesTable';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
@@ -331,6 +332,13 @@ function MembersTabContent({ projectId, userRole }: Props) {
 
   return (
     <div className="space-y-6">
+      {canManageMembers && (
+        <AccessRequestsCard
+          projectId={projectId}
+          onApproved={load}
+          reloadKey={members.map((m) => m.userId).join(',')}
+        />
+      )}
       <SettingsCard
         icon={<Users />}
         title="Members"
