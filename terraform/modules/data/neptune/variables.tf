@@ -19,9 +19,20 @@ variable "private_subnet_ids" {
 }
 
 variable "instance_class" {
-  description = "Neptune instance class"
+  description = "Neptune instance class. A change modifies the only instance in place and restarts it."
   type        = string
   default     = "db.t3.medium"
+
+  validation {
+    condition     = can(regex("^db\\.[a-z0-9]+\\.[a-z0-9]+$", var.instance_class))
+    error_message = "instance_class must be a Neptune instance class such as db.t4g.medium or db.r6g.large."
+  }
+}
+
+variable "apply_immediately" {
+  description = "Apply an instance class change during the apply instead of the next maintenance window. Until the window, every plan shows the pending change again."
+  type        = bool
+  default     = false
 }
 
 variable "kms_key_arn" {

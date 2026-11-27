@@ -77,6 +77,7 @@ resource "aws_neptune_cluster_instance" "main" {
   cluster_identifier = aws_neptune_cluster.main.id
   engine             = "neptune"
   instance_class     = var.instance_class
+  apply_immediately  = var.apply_immediately
 
   tags = var.tags
 }

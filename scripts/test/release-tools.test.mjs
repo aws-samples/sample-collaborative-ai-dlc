@@ -703,6 +703,71 @@ test('Terraform plan inspection allows deleting the Gateway grant retirement tab
   assert.match(rejected.stderr, /protected persistent resources/);
 });
 
+test('Terraform plan inspection warns when the Neptune instance class changes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-neptune-class-plan-'));
+  const planWith = (name, before, after, afterUnknown = {}) => {
+    const path = join(dir, `${name}.json`);
+    writeJson(path, {
+      resource_changes: [
+        {
+          address: 'module.neptune.aws_neptune_cluster_instance.main',
+          type: 'aws_neptune_cluster_instance',
+          change: { actions: ['update'], before, after, after_unknown: afterUnknown },
+        },
+      ],
+    });
+    return path;
+  };
+
+  const queued = run('node', [
+    inspector,
+    planWith(
+      'queued',
+      { instance_class: 'db.t3.medium', apply_immediately: false },
+      { instance_class: 'db.r7g.large', apply_immediately: false },
+    ),
+  ]);
+  assert.equal(queued.status, 0, queued.stderr);
+  assert.match(
+    queued.stderr,
+    /changes from db\.t3\.medium to db\.r7g\.large; the graph database restarts at the next maintenance window/,
+  );
+
+  const immediate = run('node', [
+    inspector,
+    planWith(
+      'immediate',
+      { instance_class: 'db.t3.medium', apply_immediately: false },
+      { instance_class: 'db.t4g.medium', apply_immediately: true },
+    ),
+  ]);
+  assert.equal(immediate.status, 0, immediate.stderr);
+  assert.match(immediate.stderr, /restarts during this apply/);
+
+  const unknown = run('node', [
+    inspector,
+    planWith(
+      'unknown',
+      { instance_class: 'db.t3.medium', apply_immediately: false },
+      { apply_immediately: false },
+      { instance_class: true },
+    ),
+  ]);
+  assert.equal(unknown.status, 0, unknown.stderr);
+  assert.match(unknown.stderr, /to a class known after apply; the graph database restarts/);
+
+  const unchanged = run('node', [
+    inspector,
+    planWith(
+      'unchanged',
+      { instance_class: 'db.t3.medium', apply_immediately: false },
+      { instance_class: 'db.t3.medium', apply_immediately: true },
+    ),
+  ]);
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.doesNotMatch(unchanged.stderr, /graph database restarts/);
+});
+
 test('Terraform teardown preparation only permits existing-resource protection updates', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-teardown-plan-'));
   const address = 'module.dynamodb.aws_dynamodb_table.sessions';

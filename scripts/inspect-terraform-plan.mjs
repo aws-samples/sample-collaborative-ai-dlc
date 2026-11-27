@@ -114,4 +114,18 @@ if (rejected.length) {
   process.exit(1);
 }
 
+// A class change on the cluster's only instance restarts it, during the apply
+// or at the next maintenance window, and every plan repeats it until then.
+for (const change of plan.resource_changes || []) {
+  if (change.type !== 'aws_neptune_cluster_instance') continue;
+  if (!isDeepStrictEqual(change.change?.actions, ['update'])) continue;
+  const { before, after, after_unknown: afterUnknown } = change.change;
+  if (!afterUnknown?.instance_class && before?.instance_class === after?.instance_class) continue;
+  const target = afterUnknown?.instance_class ? 'a class known after apply' : after?.instance_class;
+  const when = after?.apply_immediately ? 'during this apply' : 'at the next maintenance window';
+  console.warn(
+    `Warning: ${change.address} changes from ${before?.instance_class} to ${target}; the graph database restarts ${when} and is unavailable for several minutes.`,
+  );
+}
+
 console.log('Terraform plan destruction check passed.');
