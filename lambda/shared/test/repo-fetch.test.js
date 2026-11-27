@@ -189,12 +189,18 @@ describe('fetchReleaseRuntimeFiles', () => {
   };
   const requested = () => globalThis.fetch.mock.calls.map(([url]) => String(url).split('/').pop());
 
-  it('returns only the requested harness from a verified runtime asset', async () => {
-    await mockRelease();
-    const files = await fetchReleaseRuntimeFiles(TAG, {
+  // The profile's pin of the served archive, unless a test pins another.
+  const fetchRuntime = (archive, options = {}) =>
+    fetchReleaseRuntimeFiles(TAG, {
       commit: COMMIT,
+      sha256: sha256(archive),
       prefixes: ['runtime/codex/'],
+      ...options,
     });
+
+  it('returns only the requested harness from a verified runtime asset', async () => {
+    const archive = await mockRelease();
+    const files = await fetchRuntime(archive);
     expect([...files.keys()]).toEqual(['runtime/codex/AGENTS.md']);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       `https://github.com/awslabs/aidlc-workflows/releases/download/${TAG}/${ASSET}`,
@@ -204,48 +210,66 @@ describe('fetchReleaseRuntimeFiles', () => {
   });
 
   it('refuses a release built from another commit before downloading its runtime', async () => {
-    await mockRelease({
+    const archive = await mockRelease({
       'version.json': Buffer.from(
         JSON.stringify({ version: '2.11.4', sourceDigest: 'a'.repeat(40) }),
       ),
     });
-    await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
-    ).rejects.toThrow(`repo-fetch: release ${TAG} was built from ${'a'.repeat(40)}, not ${COMMIT}`);
+    await expect(fetchRuntime(archive)).rejects.toThrow(
+      `repo-fetch: release ${TAG} was built from ${'a'.repeat(40)}, not ${COMMIT}`,
+    );
     expect(requested()).toEqual(['version.json']);
   });
 
   it('refuses a runtime asset that does not match its checksum', async () => {
-    await mockRelease({ 'checksums.txt': Buffer.from(`${'0'.repeat(64)}  ${ASSET}\n`) });
+    const pinned = '0'.repeat(64);
+    await mockRelease({ 'checksums.txt': Buffer.from(`${pinned}  ${ASSET}\n`) });
     await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
+      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, sha256: pinned, prefixes: ['runtime/'] }),
     ).rejects.toThrow(`repo-fetch: ${ASSET} does not match its checksum in release ${TAG}`);
   });
 
+  it('refuses a runtime asset replaced together with its checksum', async () => {
+    const reviewed = await runtimeTarball();
+    const replaced = await makeTarball({ 'runtime/codex/AGENTS.md': '# Replaced' }, null);
+    await mockRelease({
+      [ASSET]: replaced,
+      'checksums.txt': Buffer.from(`${sha256(replaced)}  ${ASSET}\n`),
+    });
+    await expect(fetchRuntime(reviewed)).rejects.toThrow(
+      `repo-fetch: release ${TAG} checksums.txt lists ${sha256(replaced)} for ${ASSET}, not the pinned ${sha256(reviewed)}`,
+    );
+    expect(requested()).not.toContain(ASSET);
+  });
+
   it('refuses a release whose checksums do not list the runtime asset', async () => {
-    await mockRelease({ 'checksums.txt': Buffer.from(`${'0'.repeat(64)}  version.json\n`) });
-    await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
-    ).rejects.toThrow(`repo-fetch: release ${TAG} checksums.txt lists no ${ASSET}`);
+    const archive = await mockRelease({
+      'checksums.txt': Buffer.from(`${'0'.repeat(64)}  version.json\n`),
+    });
+    await expect(fetchRuntime(archive)).rejects.toThrow(
+      `repo-fetch: release ${TAG} checksums.txt lists no ${ASSET}`,
+    );
     expect(requested()).not.toContain(ASSET);
   });
 
   it('reports a missing release or asset with its status', async () => {
-    await mockRelease({ 'version.json': 404 });
-    await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
-    ).rejects.toThrow(/version\.json returned 404 Not Found$/);
-    await mockRelease({ [ASSET]: 503 });
-    await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/codex/'] }),
-    ).rejects.toThrow(new RegExp(`${ASSET.replaceAll('.', '\\.')} returned 503`));
+    let archive = await mockRelease({ 'version.json': 404 });
+    await expect(fetchRuntime(archive)).rejects.toThrow(/version\.json returned 404 Not Found$/);
+    archive = await runtimeTarball();
+    await mockRelease({
+      [ASSET]: 503,
+      'checksums.txt': Buffer.from(`${sha256(archive)}  ${ASSET}\n`),
+    });
+    await expect(fetchRuntime(archive)).rejects.toThrow(
+      new RegExp(`${ASSET.replaceAll('.', '\\.')} returned 503`),
+    );
   });
 
   it('fails when the runtime asset has no files for the harness', async () => {
-    await mockRelease();
-    await expect(
-      fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, prefixes: ['runtime/kiro/'] }),
-    ).rejects.toThrow(`repo-fetch: no files found for prefixes runtime/kiro/ in ${ASSET}`);
+    const archive = await mockRelease();
+    await expect(fetchRuntime(archive, { prefixes: ['runtime/kiro/'] })).rejects.toThrow(
+      `repo-fetch: no files found for prefixes runtime/kiro/ in ${ASSET}`,
+    );
   });
 
   it('never reaches the network for an invalid tag or commit', async () => {
@@ -256,6 +280,11 @@ describe('fetchReleaseRuntimeFiles', () => {
     await expect(
       fetchReleaseRuntimeFiles(TAG, { commit: 'v2.11.4', prefixes: ['runtime/'] }),
     ).rejects.toThrow('full commit SHA');
+    for (const pin of [undefined, 'A'.repeat(64), 'a'.repeat(63)]) {
+      await expect(
+        fetchReleaseRuntimeFiles(TAG, { commit: COMMIT, sha256: pin, prefixes: ['runtime/'] }),
+      ).rejects.toThrow('pinned SHA-256');
+    }
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

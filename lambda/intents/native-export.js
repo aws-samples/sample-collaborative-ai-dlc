@@ -282,11 +282,12 @@ const fetchDistributionFiles = async ({ upstreamRef, harness }) => {
   const limits = { maxFiles: MAX_DISTRIBUTION_FILES, maxRetainedBytes: MAX_DISTRIBUTION_BYTES };
   const repoPrefix = `dist/${harness}/`;
   let releaseTag;
+  let runtimeSha256;
   try {
     const fetched = await fetchRepoFiles(upstreamRef, { prefixes: [repoPrefix], ...limits });
     return { files: withoutPrefix(fetched, repoPrefix), source: { path: repoPrefix } };
   } catch (error) {
-    releaseTag = profileFor(upstreamRef)?.runtimeReleaseTag;
+    ({ runtimeReleaseTag: releaseTag, runtimeSha256 } = profileFor(upstreamRef) ?? {});
     const noDist = NO_MATCHING_FILES_RE.test(String(error?.message ?? ''));
     if (!noDist || !releaseTag) {
       throw distributionLoadFailure({
@@ -301,6 +302,7 @@ const fetchDistributionFiles = async ({ upstreamRef, harness }) => {
   try {
     const fetched = await fetchReleaseRuntimeFiles(releaseTag, {
       commit: upstreamRef,
+      sha256: runtimeSha256,
       prefixes: [runtimePrefix],
       ...limits,
     });

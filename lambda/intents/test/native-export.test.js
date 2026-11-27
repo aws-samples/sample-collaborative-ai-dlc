@@ -476,6 +476,7 @@ describe('native workflow export', () => {
 
       expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith(TAG, {
         commit: RUNTIME_REF,
+        sha256: PROFILE.runtimeSha256,
         prefixes: ['runtime/codex/'],
         maxFiles: 1_000,
         maxRetainedBytes: 20 * 1024 * 1024,
@@ -519,7 +520,7 @@ describe('native workflow export', () => {
 
         expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith(
           profileId,
-          expect.objectContaining({ commit: profile.upstreamRef }),
+          expect.objectContaining({ commit: profile.upstreamRef, sha256: profile.runtimeSha256 }),
         );
         expect(result.files.get('AGENTS.md')).toEqual(body);
       },
@@ -562,6 +563,10 @@ describe('native workflow export', () => {
       [
         'a checksum mismatch',
         'repo-fetch: aidlc-runtime-2.11.4.tar.gz does not match its checksum',
+      ],
+      [
+        'an asset replaced together with its checksum',
+        `repo-fetch: release v2.11.4 checksums.txt lists ${'1'.repeat(64)} for aidlc-runtime-2.11.4.tar.gz, not the pinned ${'2'.repeat(64)}`,
       ],
       ['a missing release', 'repo-fetch: https://github.com/x/version.json returned 404 Not Found'],
       ['a missing harness', 'repo-fetch: no files found for prefixes runtime/codex/ in x'],

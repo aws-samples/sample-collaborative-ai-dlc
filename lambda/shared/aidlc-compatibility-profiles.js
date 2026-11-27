@@ -10,6 +10,9 @@ const OFFICIAL_AIDLC_REPOSITORY = 'awslabs/aidlc-workflows';
 // this commit's native harness distributions, for releases that no longer
 // commit them at `dist/` (2.8.2 onwards). It only locates the asset: a native
 // export refuses one whose release was not built from `upstreamRef`.
+// `runtimeSha256` is the SHA-256 of that asset (aidlc-runtime-<version>.tar.gz),
+// reviewed with the profile: the export refuses any other asset, even one
+// whose release checksums.txt was replaced with it.
 const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
   'current-stable': Object.freeze({
     id: 'current-stable',
@@ -58,6 +61,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.8.2',
     upstreamRef: '355903d6dc8eb07d3c77180be5d40ed679d6a40f',
     runtimeReleaseTag: 'v2.8.2',
+    runtimeSha256: '6d020cd60a66673dd20149e6155c99bba77930e829265e531c11eba6f71eb572',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -72,6 +76,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.9.0',
     upstreamRef: '22f5d1b15a064c9ae80046e5b1761d5877e2f69f',
     runtimeReleaseTag: 'v2.9.0',
+    runtimeSha256: 'e66e864ac4c29f30024c32cab579eea3e0142a303596d2192b1c88b4ad69b25b',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -94,6 +99,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.11.0',
     upstreamRef: '6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a',
     runtimeReleaseTag: 'v2.11.0',
+    runtimeSha256: '68906435223b47d6dfda59d79def78974d7b37e38b5649a56402a0007a41fad4',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -114,6 +120,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.11.1',
     upstreamRef: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
     runtimeReleaseTag: 'v2.11.1',
+    runtimeSha256: '9f213c8254e646123b3f4bcefe347a61c95c72fee9fda4bf9afab42ccb20f44a',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -135,6 +142,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.11.3',
     upstreamRef: '63fd2901947ece8c5ad0cd831cdf5934a9666d47',
     runtimeReleaseTag: 'v2.11.3-preview.20261103.1',
+    runtimeSha256: 'c45402ec491a9b7b899a5b6082e55f89ee132241e589ecc507f8337550b71d35',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -152,6 +160,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.11.4',
     upstreamRef: '61fdb122428d86b56b7e8d598787095f2c97d3e1',
     runtimeReleaseTag: 'v2.11.4',
+    runtimeSha256: '7ce9fff012b50a88730bac76d45e8509a269a5385968fdf2f4fcf33f30696335',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
@@ -169,6 +178,7 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     upstreamVersion: '2.11.5',
     upstreamRef: '30d674ed196c7051222130ce344bf513c82eff2b',
     runtimeReleaseTag: 'v2.11.5',
+    runtimeSha256: '5812f60f263b6b41d555bc57040c33c803100476a8378075bcd1568b48f69bed',
     upstreamChannel: 'stable',
     compatibilityStatus: 'candidate',
     frontmatterDialect: 'invoke-template-v1',
