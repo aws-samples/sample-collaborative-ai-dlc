@@ -127,6 +127,11 @@ export function EnvironmentRegistry() {
   // Default environment for new spaces; null until loaded (or if unavailable).
   const [defaultEnvironmentId, setDefaultEnvironmentId] = useState<string | null>(null);
   const loadedEnvironmentId = useRef<string | null>(null);
+  // Numbers each detail read. Only the latest one may update the screen: the
+  // poll, a refresh, a revision action and a change of selection can overlap,
+  // and an older answer, or one for an environment no longer shown, must not
+  // replace a newer one or reset the form.
+  const detailRequest = useRef(0);
 
   const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
     setForm(next);
@@ -166,9 +171,12 @@ export function EnvironmentRegistry() {
       } = {},
     ) => {
       const { showLoading = true, preferCurrent = false, preserveForm = false } = options;
+      const request = ++detailRequest.current;
+      const isLatest = () => request === detailRequest.current;
       if (showLoading) setDetailLoading(true);
       try {
         const value = await environmentsService.get(environmentId);
+        if (!isLatest()) return null;
         const current =
           value.revisions.find(
             (revision) => revision.revisionId === value.environment.currentRevisionId,
@@ -197,8 +205,12 @@ export function EnvironmentRegistry() {
         const keepForm = typeof preserveForm === 'function' ? preserveForm() : preserveForm;
         if (!keepForm) setFormAndBaseline(formFromRevision(value.environment, current));
         return value;
+      } catch (reason) {
+        if (!isLatest()) return null;
+        throw reason;
       } finally {
-        if (showLoading) setDetailLoading(false);
+        // The latest read also clears a spinner left by a read it superseded.
+        if (isLatest()) setDetailLoading(false);
       }
     },
     [setFormAndBaseline],
@@ -384,6 +396,7 @@ export function EnvironmentRegistry() {
     const next = emptyEnvironmentForm();
     setCreating(true);
     setDetail(null);
+    detailRequest.current += 1;
     loadedEnvironmentId.current = null;
     setWorkspace('definition');
     setFormAndBaseline(next);

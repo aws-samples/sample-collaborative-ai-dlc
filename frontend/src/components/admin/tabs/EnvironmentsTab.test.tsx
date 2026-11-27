@@ -1228,6 +1228,134 @@ describe('EnvironmentsTab', () => {
     expect(screen.queryByText(/Reset/)).not.toBeInTheDocument();
   });
 
+  describe('overlapping detail reads', () => {
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<T>((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      return { promise, resolve, reject };
+    };
+    const customDetail = (name: string, status = 'DRAFT') => ({
+      environment: { ...custom, name },
+      revisions: [{ ...revision, status }],
+      publishedRevision: null,
+    });
+    const settle = () => act(async () => await new Promise((done) => setTimeout(done, 0)));
+    // Answers the next reads of the custom environment in order; the base
+    // environment read of the form keeps answering immediately.
+    const readCustomAs = (...reads: Promise<ReturnType<typeof customDetail>>[]) =>
+      get.mockImplementation((environmentId: string) =>
+        environmentId === 'standard'
+          ? Promise.resolve(standardDetail)
+          : (reads.shift() ?? Promise.resolve(customDetail('Custom'))),
+      );
+
+    it('keeps the newer read when an older poll answers last', async () => {
+      const user = userEvent.setup();
+      const setIntervalSpy = vi.spyOn(window, 'setInterval');
+      readCustomAs(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      render(<EnvironmentsTab />);
+      expect(await screen.findByRole('heading', { name: 'Custom' })).toBeInTheDocument();
+      const poll = setIntervalSpy.mock.calls.findLast(([, delay]) => delay === 8000)?.[0];
+      setIntervalSpy.mockRestore();
+      expect(poll).toBeTypeOf('function');
+
+      const older = deferred<ReturnType<typeof customDetail>>();
+      const newer = deferred<ReturnType<typeof customDetail>>();
+      readCustomAs(older.promise, newer.promise);
+      act(() => (poll as () => void)());
+      await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+
+      newer.resolve(customDetail('Custom newer read', 'BUILDING'));
+      expect(await screen.findByRole('heading', { name: 'Custom newer read' })).toBeInTheDocument();
+      older.resolve(customDetail('Custom older read', 'BUILDING'));
+      await settle();
+
+      expect(screen.getByRole('heading', { name: 'Custom newer read' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Custom older read' })).not.toBeInTheDocument();
+    });
+
+    it('shows the poll answer when it supersedes a pending refresh', async () => {
+      const user = userEvent.setup();
+      const setIntervalSpy = vi.spyOn(window, 'setInterval');
+      readCustomAs(Promise.resolve(customDetail('Custom', 'BUILDING')));
+      render(<EnvironmentsTab />);
+      expect(await screen.findByRole('heading', { name: 'Custom' })).toBeInTheDocument();
+      const poll = setIntervalSpy.mock.calls.findLast(([, delay]) => delay === 8000)?.[0];
+      setIntervalSpy.mockRestore();
+      expect(poll).toBeTypeOf('function');
+
+      const refresh = deferred<ReturnType<typeof customDetail>>();
+      const polled = deferred<ReturnType<typeof customDetail>>();
+      readCustomAs(refresh.promise, polled.promise);
+      await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+      expect(screen.queryByRole('heading', { name: 'Custom' })).not.toBeInTheDocument();
+      act(() => (poll as () => void)());
+
+      polled.resolve(customDetail('Custom polled read', 'BUILDING'));
+      expect(
+        await screen.findByRole('heading', { name: 'Custom polled read' }),
+      ).toBeInTheDocument();
+      refresh.resolve(customDetail('Custom refreshed read', 'BUILDING'));
+      await settle();
+
+      expect(screen.getByRole('heading', { name: 'Custom polled read' })).toBeInTheDocument();
+    });
+
+    it('ignores a read of an environment that is no longer selected', async () => {
+      const user = userEvent.setup();
+      const pending = deferred<ReturnType<typeof customDetail>>();
+      readCustomAs(pending.promise);
+      render(<EnvironmentsTab />);
+
+      await user.click(await screen.findByRole('button', { name: /Standard Node\/Python/ }));
+      expect(
+        await screen.findByRole('heading', { name: 'Standard Node/Python' }),
+      ).toBeInTheDocument();
+      pending.resolve(customDetail('Custom'));
+      await settle();
+
+      expect(screen.getByRole('heading', { name: 'Standard Node/Python' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Custom' })).not.toBeInTheDocument();
+    });
+
+    it('keeps the create form when a pending read answers', async () => {
+      const user = userEvent.setup();
+      const pending = deferred<ReturnType<typeof customDetail>>();
+      list.mockResolvedValue([custom]);
+      readCustomAs(pending.promise);
+      render(<EnvironmentsTab />);
+
+      await user.click(await screen.findByRole('button', { name: 'New environment' }));
+      await user.type(screen.getByLabelText('Name'), 'Team image');
+      pending.resolve(customDetail('Custom'));
+      await settle();
+
+      expect(screen.getByRole('heading', { name: 'Create an environment' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Name')).toHaveValue('Team image');
+    });
+
+    it('does not report the failure of a read that was superseded', async () => {
+      const user = userEvent.setup();
+      const pending = deferred<ReturnType<typeof customDetail>>();
+      readCustomAs(pending.promise);
+      render(<EnvironmentsTab />);
+
+      await user.click(await screen.findByRole('button', { name: /Standard Node\/Python/ }));
+      expect(
+        await screen.findByRole('heading', { name: 'Standard Node/Python' }),
+      ).toBeInTheDocument();
+      pending.reject(new Error('Custom read failed'));
+      await settle();
+
+      expect(screen.queryByText('Custom read failed')).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Standard Node/Python' })).toBeInTheDocument();
+    });
+  });
+
   describe('default environment for new spaces', () => {
     const teamBase = {
       ...custom,
