@@ -28,3 +28,25 @@ describe('index.css cascade layers', () => {
     for (const rule of universal) expect(layerOf(rule)).toBe('base');
   });
 });
+
+// ─── Theme blocks ──────────────────────────────────────────────────────────
+
+type Vars = Record<string, string>;
+
+const declarationsOf = (selector: string): Vars => {
+  const vars: Vars = {};
+  root.each((node) => {
+    if (node.type !== 'rule' || node.selector !== selector) return;
+    node.walkDecls((decl) => {
+      vars[decl.prop] = decl.value;
+    });
+  });
+  return vars;
+};
+
+describe('index.css colour scheme', () => {
+  it('tells the browser which scheme each theme uses for native controls and selection', () => {
+    expect(declarationsOf(':root')['color-scheme']).toBe('light');
+    expect(declarationsOf('.dark')['color-scheme']).toBe('dark');
+  });
+});
