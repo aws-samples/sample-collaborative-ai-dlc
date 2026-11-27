@@ -35,3 +35,8 @@ output "security_group_id" {
   description = "Neptune security group ID"
   value       = aws_security_group.neptune.id
 }
+
+output "instance_class" {
+  description = "Neptune instance class managed by Terraform"
+  value       = aws_neptune_cluster_instance.main.instance_class
+}
