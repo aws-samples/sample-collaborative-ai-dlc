@@ -49,9 +49,15 @@ Each such profile also pins the SHA-256 of that runtime asset
 `checksums.txt` comes from the same release, so a replaced asset can arrive
 with a matching checksum; the pin is reviewed with the profile, like the
 commit. The export refuses an asset whose digest, or whose `checksums.txt`
-entry, differs from the pin. To add a profile, take the digest from the
-release's `checksums.txt` and check it against a downloaded copy
-(`shasum -a 256 aidlc-runtime-<version>.tar.gz`).
+entry, differs from the pin, and a distribution it cached from another asset
+or before the pin existed is fetched and checked again. A pin changes only
+through a reviewed change to the profile. To add one, confirm the digest
+independently of the release page: hash a separate download locally
+(`shasum -a 256 aidlc-runtime-<version>.tar.gz`), or check the release
+attestation when one exists, and compare it with `checksums.txt`. A custom
+fork's own releases are not pinned: an export uses the distribution captured
+when the release was imported, or the pinned official distribution of its
+base profile.
 
 A custom fork names the official profile whose frontmatter dialect it uses (for
 example `v2.9.0`); that base grants no trust. It is recorded `T0` and
