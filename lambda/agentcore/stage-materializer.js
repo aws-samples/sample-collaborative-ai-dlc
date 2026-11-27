@@ -10,7 +10,20 @@
 // The PROMPT ASSEMBLY is a pure function (no fs/network) so it is unit-tested in
 // isolation; the workspace write is the thin effectful shell.
 
-import { writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rm,
+  rmdir,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -1358,6 +1371,58 @@ const CLI_RULES_DIR = {
   codex: path.join('.aidlc', 'codex-instructions'),
 };
 
+// Both clients discover nested Markdown. A private directory avoids collisions
+// with repository rules. Its .gitignore also protects the generated file when
+// the native directory is a symlink into a tracked part of the checkout.
+const NATIVE_RULE_IGNORE = '/aidlc-rules.md\n/.gitignore\n';
+
+const materializeNativeStageRules = async ({ workspaceDir, cli, hasRules }) => {
+  if (cli !== 'claude' && cli !== 'kiro') return;
+  const root = await realpath(workspaceDir);
+  const rulesPath = path.join(root, '.aidlc', 'rules.md');
+  let rulesDir = root;
+  for (const segment of CLI_RULES_DIR[cli].split(path.sep)) {
+    const next = path.join(rulesDir, segment);
+    if (hasRules) await mkdir(next, { recursive: true });
+    const resolved = await realpath(next).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    if (!resolved) return;
+    const relative = path.relative(root, resolved);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      if (!hasRules) return;
+      throw new Error(`Native rule directory points outside the workspace: ${next}`);
+    }
+    rulesDir = resolved;
+  }
+  const entries = await readdir(rulesDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('aidlc-stage-')) continue;
+    const generatedDir = path.join(rulesDir, entry.name);
+    const file = path.join(generatedDir, 'aidlc-rules.md');
+    const info = await lstat(file).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    if (!info?.isSymbolicLink() || path.resolve(generatedDir, await readlink(file)) !== rulesPath)
+      continue;
+    if (hasRules) return;
+    await unlink(file);
+    // Remove only the two files we created. A user-added file keeps the directory.
+    const ignore = path.join(generatedDir, '.gitignore');
+    if ((await readFile(ignore, 'utf8').catch(() => null)) === NATIVE_RULE_IGNORE)
+      await unlink(ignore);
+    await rmdir(generatedDir).catch((error) => {
+      if (error.code !== 'ENOTEMPTY' && error.code !== 'EEXIST') throw error;
+    });
+  }
+  if (!hasRules) return;
+  const generatedDir = await mkdtemp(path.join(rulesDir, 'aidlc-stage-'));
+  await writeFile(path.join(generatedDir, '.gitignore'), NATIVE_RULE_IGNORE, { flag: 'wx' });
+  // AgentCore managed session storage supports symbolic links, but not hard links.
+  // Resolve through the workspace's actual path even when accessed via a junction.
+  await symlink(rulesPath, path.join(generatedDir, 'aidlc-rules.md'), 'file');
+};
+
 // Sanitize an uploaded rule filename and resolve its destination inside
 // `rulesDir`, prefixed `custom--` to namespace it from any other rules. Strips
 // path separators (path.basename), enforces `.md`, and verifies the resolved
@@ -1428,7 +1493,13 @@ export const materializeStage = async ({
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
 
-  if (rulesDoc) await writeFile(path.join(aidlcDir, 'rules.md'), rulesDoc, 'utf8');
+  const rulesPath = path.join(aidlcDir, 'rules.md');
+  if (rulesDoc) await writeFile(rulesPath, rulesDoc, 'utf8');
+  await materializeNativeStageRules({
+    workspaceDir,
+    cli: cli ?? 'claude',
+    hasRules: Boolean(rulesDoc),
+  });
 
   await materializeCustomRules({ workspaceDir, cli, customRules });
 
@@ -1458,5 +1529,5 @@ export const materializeStage = async ({
     sparseCheckout,
     sparseRefusals,
   });
-  return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
+  return { prompt, ...cliContext, rulesPath: rulesDoc ? rulesPath : null };
 };
