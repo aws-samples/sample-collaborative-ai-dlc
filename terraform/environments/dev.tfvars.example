@@ -7,6 +7,11 @@ deletion_protection     = true
 backup_retention_period = 7
 skip_final_snapshot     = false
 
+# Neptune instance class (default db.t3.medium). A change restarts the
+# instance; see docs/getting-started/prerequisites.md before setting it.
+# neptune_instance_class    = "db.r7g.large"
+# neptune_apply_immediately = false
+
 # Optional existing customer-managed key. Leave empty to use service-owned
 # encryption. See docs/getting-started/prerequisites.md before supplying an ARN.
 kms_key_arn = ""
