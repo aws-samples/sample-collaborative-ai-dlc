@@ -144,6 +144,18 @@ describe.each(Object.entries(themes))('%s theme contrast', (_name, vars) => {
     expect(contrast(selection, card)).toBeGreaterThanOrEqual(1.3);
   });
 
+  it('marks the chosen answer of an agent question with 3:1 non-text contrast', () => {
+    const primary = token(vars, '--primary');
+    const NON_TEXT = 3;
+    // Selected option border, on the card and on its own bg-primary/10 tint.
+    expect(contrast(primary, card)).toBeGreaterThanOrEqual(NON_TEXT);
+    expect(contrast(primary, over(primary, 0.1, card))).toBeGreaterThanOrEqual(NON_TEXT);
+    // Radio dot and check mark on the filled indicator.
+    expect(contrast(token(vars, '--primary-foreground'), primary)).toBeGreaterThanOrEqual(NON_TEXT);
+    // Boundary of an unselected indicator.
+    expect(contrast(token(vars, '--muted-foreground'), card)).toBeGreaterThanOrEqual(NON_TEXT);
+  });
+
   it.each([
     ['bg-destructive', 1],
     ['bg-destructive/90', 0.9],

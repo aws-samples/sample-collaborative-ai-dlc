@@ -364,7 +364,7 @@ function StructuredQuestionBlock({
                 className={cn(
                   'flex items-start gap-2 p-2 rounded-md border cursor-pointer transition-colors',
                   isSelected
-                    ? 'bg-primary/10 border-primary/30'
+                    ? 'border-2 border-primary bg-primary/10 p-[7px]'
                     : 'bg-card border-border hover:border-foreground/20 hover:bg-accent/50',
                   disabled && 'opacity-50 cursor-not-allowed',
                 )}
@@ -375,21 +375,23 @@ function StructuredQuestionBlock({
                     <span
                       className={cn(
                         'w-4 h-4 rounded-full border-2 flex items-center justify-center',
-                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/30',
+                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground',
                       )}
                     >
-                      {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-primary-foreground" />
+                      )}
                     </span>
                   ) : (
                     <span
                       className={cn(
                         'w-4 h-4 rounded border-2 flex items-center justify-center',
-                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/30',
+                        isSelected ? 'border-primary bg-primary' : 'border-muted-foreground',
                       )}
                     >
                       {isSelected && (
                         <svg
-                          className="w-2.5 h-2.5 text-white"
+                          className="w-2.5 h-2.5 text-primary-foreground"
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
@@ -441,7 +443,9 @@ function StructuredQuestionBlock({
           <div
             className={cn(
               'p-2 rounded-md border transition-colors',
-              isOtherActive ? 'bg-primary/10 border-primary/30' : 'bg-card border-border',
+              isOtherActive
+                ? 'border-2 border-primary bg-primary/10 p-[7px]'
+                : 'bg-card border-border',
             )}
           >
             <label className="flex items-start gap-2 cursor-pointer" onClick={handleOtherToggle}>
@@ -452,23 +456,23 @@ function StructuredQuestionBlock({
                       'w-4 h-4 rounded-full border-2 flex items-center justify-center',
                       isOtherActive && selectedOptions.length === 0
                         ? 'border-primary bg-primary'
-                        : 'border-muted-foreground/30',
+                        : 'border-muted-foreground',
                     )}
                   >
                     {isOtherActive && selectedOptions.length === 0 && (
-                      <span className="w-2 h-2 rounded-full bg-white" />
+                      <span className="w-2 h-2 rounded-full bg-primary-foreground" />
                     )}
                   </span>
                 ) : (
                   <span
                     className={cn(
                       'w-4 h-4 rounded border-2 flex items-center justify-center',
-                      isOtherActive ? 'border-primary bg-primary' : 'border-muted-foreground/30',
+                      isOtherActive ? 'border-primary bg-primary' : 'border-muted-foreground',
                     )}
                   >
                     {isOtherActive && (
                       <svg
-                        className="w-2.5 h-2.5 text-white"
+                        className="w-2.5 h-2.5 text-primary-foreground"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
