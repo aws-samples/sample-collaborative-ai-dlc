@@ -28,6 +28,8 @@ interface Props {
   onClear?: () => void;
   clearing?: boolean;
   disabled?: boolean;
+  /** Focus the input on mount, for a field that opens in place of the button that asked for it. */
+  autoFocus?: boolean;
 }
 
 const GUARDED_PARAMS = ['tab'] as const;
@@ -46,6 +48,7 @@ export function SecretField({
   onClear,
   clearing = false,
   disabled = false,
+  autoFocus = false,
 }: Props) {
   useUnsavedChangesGuard(value.length > 0, { guardSearchParams: GUARDED_PARAMS });
   const warningId = `${id}-warning`;
@@ -81,6 +84,7 @@ export function SecretField({
         className="font-mono text-sm h-9"
         autoComplete="off"
         disabled={disabled}
+        autoFocus={autoFocus}
         aria-describedby={warningText ? warningId : undefined}
       />
       {helpText && <p className="text-2xs text-muted-foreground">{helpText}</p>}

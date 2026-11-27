@@ -413,11 +413,12 @@ export const agentsService = {
   },
 
   async updatePersonalCredentials(update: AgentCredentialUpdate): Promise<{ saved: boolean }> {
-    try {
-      return await api.put<{ saved: boolean }>('/users/me/agent-credentials', update);
-    } finally {
-      void queryClient.invalidateQueries({ queryKey: qk.personalCredentials() });
-    }
+    // A read started before this write could otherwise land after it and show
+    // the old key status (for example "Set" right after Clear).
+    return afterWrite(
+      api.put<{ saved: boolean }>('/users/me/agent-credentials', update),
+      qk.personalCredentials(),
+    );
   },
 
   async getProjectCredentials(
@@ -431,11 +432,10 @@ export const agentsService = {
     projectId: string,
     update: AgentCredentialUpdate,
   ): Promise<{ saved: boolean }> {
-    try {
-      return await api.put<{ saved: boolean }>(`/projects/${projectId}/agent-credentials`, update);
-    } finally {
-      void queryClient.invalidateQueries({ queryKey: qk.projectCredentials(projectId) });
-    }
+    return afterWrite(
+      api.put<{ saved: boolean }>(`/projects/${projectId}/agent-credentials`, update),
+      qk.projectCredentials(projectId),
+    );
   },
 
   async previewCredentialUpdate(

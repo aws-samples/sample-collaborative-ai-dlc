@@ -327,7 +327,13 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   return (
     <div className="space-y-6">
       {canEdit && (
-        <AgentCredentialScopeCard key={project.id} scope="space" projectId={project.id} />
+        <AgentCredentialScopeCard
+          key={project.id}
+          scope="space"
+          projectId={project.id}
+          presentation="disclosure"
+          requiredProviders={[AGENT_CLI_METADATA[project.agentCli ?? 'kiro'].credentialProvider]}
+        />
       )}
 
       <SettingsCard

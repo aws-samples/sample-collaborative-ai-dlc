@@ -149,6 +149,9 @@ function cachedCredentials(scope: Scope, projectId?: string): AgentCredentialSta
   return snapshot?.data;
 }
 
+const loadErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'Failed to load agent credentials';
+
 const fallbackOf = (scope: Scope, status: AgentCredentialStatus | undefined) =>
   scope === 'space' && status
     ? ((status as SpaceAgentCredentialStatus).platformFallback ?? null)
@@ -186,11 +189,24 @@ export function AgentCredentialScopeCard({
   // Fields open for editing. A stored secret is a summary row with Rotate and
   // Clear; a missing one a row with Add. The input appears on request only.
   const [editing, setEditing] = useState<Partial<Record<SecretName, boolean>>>({});
+  // The input replaces its row's Rotate/Add button, and Cancel or a save removes
+  // the input again: focus returns to the row of the field last opened so
+  // keyboard and screen reader users keep their place.
+  const rowButtons = useRef<Partial<Record<SecretName, HTMLButtonElement | null>>>({});
+  const lastOpened = useRef<SecretName | null>(null);
+  const [focusRow, setFocusRow] = useState<SecretName | null>(null);
+  const closeEditing = () => {
+    setEditing({});
+    setFocusRow(lastOpened.current);
+  };
   const [saving, setSaving] = useState(false);
   const [clearingSecret, setClearingSecret] = useState<SecretName | null>(null);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
   const [note, setNote] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // A failed read is reported apart from save results: with a record already
+  // shown, it means the shown status may be out of date, not that a save failed.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!isCurrentIdentity()) return false;
@@ -231,18 +247,36 @@ export function AgentCredentialScopeCard({
     setSaveResult(null);
     setNote(null);
     setErrorMessage(null);
+    setLoadError(null);
     load()
       .catch((error) => {
         if (!isCurrentIdentity()) return;
         console.error(`Failed to load ${scope} agent credentials:`, error);
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Failed to load agent credentials',
-        );
+        setLoadError(loadErrorMessage(error));
       })
       .finally(() => {
         if (isCurrentIdentity()) setLoading(false);
       });
   }, [identity, isCurrentIdentity, load, projectId, scope]);
+
+  // Rereads after a save or on Retry. False when the read failed (reported in
+  // loadError) or the card moved to another scope meanwhile.
+  const reload = async (): Promise<boolean> => {
+    setLoadError(null);
+    try {
+      return await load();
+    } catch (error) {
+      if (isCurrentIdentity()) setLoadError(loadErrorMessage(error));
+      return false;
+    }
+  };
+
+  const retryLoad = () => {
+    if (!settings) setLoading(true);
+    void reload().finally(() => {
+      if (isCurrentIdentity()) setLoading(false);
+    });
+  };
 
   const write = (value: AgentCredentialUpdate) => {
     if (scope === 'platform') return agentsService.updateSettings(value);
@@ -284,11 +318,12 @@ export function AgentCredentialScopeCard({
       if (bearerToken !== '') value.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') value.kiroApiKey = kiroApiKey;
       const result = await update(value);
-      if (!result.saved) return;
-      if (!isCurrentIdentity() || !(await load())) return;
+      if (!result.saved || !isCurrentIdentity()) return;
+      await reload();
+      if (!isCurrentIdentity()) return;
       setBearerToken('');
       setKiroApiKey('');
-      setEditing({});
+      closeEditing();
       setNote(result.note ?? null);
       setSaveResult('saved');
     } catch (error) {
@@ -315,8 +350,9 @@ export function AgentCredentialScopeCard({
     setErrorMessage(null);
     try {
       const result = await update({ [field]: '' });
-      if (!result.saved) return;
-      if (!isCurrentIdentity() || !(await load())) return;
+      if (!result.saved || !isCurrentIdentity()) return;
+      await reload();
+      if (!isCurrentIdentity()) return;
       if (field === 'bedrockBearerToken') setBearerToken('');
       else setKiroApiKey('');
       setEditing((current) => ({ ...current, [field]: false }));
@@ -349,8 +385,9 @@ export function AgentCredentialScopeCard({
       setPendingReview(null);
       setBearerToken('');
       setKiroApiKey('');
-      setEditing({});
-      await load();
+      closeEditing();
+      await reload();
+      if (!isCurrentIdentity()) return;
       setNote(savedNote(scope, pendingReview.update, false));
       setSaveResult('saved');
     } catch (error) {
@@ -415,6 +452,9 @@ export function AgentCredentialScopeCard({
       : missingProviders[0] === 'kiro'
         ? 'Kiro key missing'
         : 'Bedrock key missing';
+  const platformHasKey = Boolean(
+    platformFallback?.bedrockBearerTokenSet || platformFallback?.kiroApiKeySet,
+  );
 
   const statusBadge =
     !loading &&
@@ -441,10 +481,17 @@ export function AgentCredentialScopeCard({
         notOkLabel="Not set: shared keys are used"
       />
     ) : scope === 'space' ? (
+      // A key of the space's own does not help when the agents need the other one.
       <ConfigStatusBadge
-        ok={configuredCount > 0}
+        ok={configuredCount > 0 && missingProviders.length === 0}
         okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
-        notOkLabel={missingProviders.length ? missingLabel : 'Uses platform keys'}
+        notOkLabel={
+          missingProviders.length
+            ? missingLabel
+            : platformHasKey
+              ? 'Uses platform keys'
+              : 'No keys set'
+        }
         notOkTone={missingProviders.length ? 'warning' : 'neutral'}
       />
     ) : (
@@ -462,6 +509,12 @@ export function AgentCredentialScopeCard({
 
   const anyEditing = Boolean(editing.bedrockBearerToken || editing.kiroApiKey);
   const busy = saving || clearingSecret !== null;
+  // A busy row's button is disabled and cannot take focus yet.
+  useEffect(() => {
+    if (!focusRow || busy) return;
+    rowButtons.current[focusRow]?.focus();
+    setFocusRow(null);
+  }, [busy, focusRow]);
   const keyRow = (input: {
     field: SecretName;
     label: string;
@@ -483,8 +536,12 @@ export function AgentCredentialScopeCard({
           size="xs"
           variant="outline"
           aria-label={`${input.isSet ? 'Rotate' : 'Add'} ${input.shortName}`}
+          ref={(button) => {
+            rowButtons.current[input.field] = button;
+          }}
           disabled={busy}
           onClick={() => {
+            lastOpened.current = input.field;
             setEditing((current) => ({ ...current, [input.field]: true }));
             setSaveResult(null);
             setNote(null);
@@ -524,39 +581,35 @@ export function AgentCredentialScopeCard({
       <Skeleton className="mt-4 h-4 w-40" />
       <Skeleton className="h-9 w-full" />
     </div>
-  ) : !settings && errorMessage ? (
+  ) : !settings && loadError ? (
     <div
       role="alert"
       className="flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5"
     >
       <p className="flex items-center gap-2 text-xs text-destructive">
         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-        {errorMessage}
+        {loadError}
       </p>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          setLoading(true);
-          setErrorMessage(null);
-          load()
-            .catch((error) => {
-              if (!isCurrentIdentity()) return;
-              setErrorMessage(
-                error instanceof Error ? error.message : 'Failed to load agent credentials',
-              );
-            })
-            .finally(() => {
-              if (isCurrentIdentity()) setLoading(false);
-            });
-        }}
-      >
+      <Button type="button" variant="outline" size="sm" onClick={retryLoad}>
         Retry
       </Button>
     </div>
   ) : (
     <div className="space-y-5">
+      {loadError && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5"
+        >
+          <p className="flex items-start gap-2 text-xs text-destructive">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>Couldn't refresh credentials. What is shown may be out of date. {loadError}</span>
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={retryLoad}>
+            Retry
+          </Button>
+        </div>
+      )}
       {authentication && (
         <AgentAuthenticationModeSettings
           key={`${identity}:${authentication.policy.revision}`}
@@ -601,6 +654,7 @@ export function AgentCredentialScopeCard({
           onClear={() => clearSecret('bedrockBearerToken')}
           clearing={clearingSecret === 'bedrockBearerToken'}
           disabled={busy}
+          autoFocus
           helpText={bedrockHelp}
           warningText={agentCredentialFormatWarning(
             'bedrockBearerToken',
@@ -633,6 +687,7 @@ export function AgentCredentialScopeCard({
           onClear={() => clearSecret('kiroApiKey')}
           clearing={clearingSecret === 'kiroApiKey'}
           disabled={busy}
+          autoFocus
           helpText={kiroHelp}
           warningText={agentCredentialFormatWarning('kiroApiKey', kiroApiKey, Boolean(gatewayHost))}
         />
@@ -678,7 +733,7 @@ export function AgentCredentialScopeCard({
                 className="mt-1"
                 disabled={busy}
                 onClick={() => {
-                  setEditing({});
+                  closeEditing();
                   setBearerToken('');
                   setKiroApiKey('');
                   setPendingReview(null);
@@ -687,15 +742,12 @@ export function AgentCredentialScopeCard({
                 Cancel
               </Button>
             </div>
+          ) : saveResult === 'error' ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errorMessage || 'Failed to save'}
+            </p>
           ) : (
-            (saveResult || errorMessage) &&
-            (saveResult === 'error' ? (
-              <p role="alert" className="text-xs text-destructive">
-                {errorMessage || 'Failed to save'}
-              </p>
-            ) : (
-              <p className="text-xs text-agent-success">Saved</p>
-            ))
+            saveResult === 'saved' && <p className="text-xs text-agent-success">Saved</p>
           )}
           {note && (
             <p role="status" className="text-xs text-muted-foreground">

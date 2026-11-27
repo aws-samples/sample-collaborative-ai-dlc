@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@/test/query';
+import { act, render, screen, waitFor, within } from '@/test/query';
 import { ApiError } from '@/services/api';
 import userEvent from '@testing-library/user-event';
 import type { AgentAuthenticationView } from '@/services/agents';
@@ -36,6 +36,8 @@ vi.mock('./agent-auth/registry', () => {
 });
 
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
+import { queryClient } from '@/lib/queryClient';
+import { qk } from '@/lib/queryKeys';
 
 // Stored and missing keys are summary rows; the input appears after Add/Rotate.
 const BEDROCK = /^(Add|Rotate) Bedrock key$/;
@@ -315,6 +317,82 @@ describe('AgentCredentialScopeCard', () => {
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
   });
 
+  it('reports a failed refresh of shown credentials with Retry, not as Saved', async () => {
+    queryClient.setQueryData(qk.personalCredentials(), {
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+    });
+    getPersonalCredentials
+      .mockRejectedValueOnce(new Error('Credential service unavailable'))
+      .mockResolvedValueOnce({ bedrockBearerTokenSet: true, kiroApiKeySet: false });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't refresh credentials");
+    expect(alert).toHaveTextContent('Credential service unavailable');
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+    // The shown record stays.
+    expect(screen.getByText('Using your own Bedrock key')).toBeInTheDocument();
+
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  });
+
+  it('says Saved after a successful save, and a failed reread after it is a refresh problem', async () => {
+    getPersonalCredentials
+      .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: false })
+      .mockRejectedValueOnce(new Error('Credential service unavailable'));
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    await user.type(await openField(user, KIRO, /Kiro API Key/), 'kiro-key');
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't refresh credentials");
+    expect(screen.queryByText(/Failed to save/)).not.toBeInTheDocument();
+  });
+
+  describe('keyboard focus', () => {
+    it('moves into the input a row opens and back to that row on Cancel', async () => {
+      getPersonalCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: true,
+        kiroApiKeySet: false,
+      });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      (await screen.findByRole('button', { name: 'Rotate Bedrock key' })).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.getByLabelText(/Bedrock Bearer Token/)).toHaveFocus();
+
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.getByRole('button', { name: 'Rotate Bedrock key' })).toHaveFocus();
+    });
+
+    it('returns to the saved row once the save succeeds', async () => {
+      getPersonalCredentials
+        .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: false })
+        .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: true });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      (await screen.findByRole('button', { name: 'Add Kiro key' })).focus();
+      await user.keyboard('{Enter}');
+      const input = screen.getByLabelText(/Kiro API Key/);
+      expect(input).toHaveFocus();
+      await user.type(input, 'kiro-key');
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toHaveFocus(),
+      );
+    });
+  });
+
   describe('in a connection mode', () => {
     const connectionView = (
       overrides: Partial<AgentAuthenticationView> = {},
@@ -534,6 +612,46 @@ describe('AgentCredentialScopeCard', () => {
       const status = await screen.findByText('Uses platform keys');
       expect(status).toHaveAttribute('data-tone', 'neutral');
       expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
+    });
+
+    it('does not claim platform keys when the platform has none', async () => {
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      });
+      const { rerender } = render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+      expect(await screen.findByText('No keys set')).toBeInTheDocument();
+      expect(screen.queryByText('Uses platform keys')).not.toBeInTheDocument();
+
+      rerender(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock']}
+        />,
+      );
+      expect(await screen.findByText('Bedrock key missing')).toHaveAttribute(
+        'data-tone',
+        'warning',
+      );
+    });
+
+    it("names the missing key even when the space has a key the agents don't use", async () => {
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: true,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      });
+      render(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock']}
+        />,
+      );
+      expect(await screen.findByText('Bedrock key missing')).toBeInTheDocument();
+      expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
     });
 
     it('warns only when an enabled CLI has no key at any level', async () => {
