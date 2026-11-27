@@ -429,11 +429,12 @@ jobs:
 
           # Optional Gateway rollout variables (enable_mcp_gateway, customer
           # MCP targets, ...). They hold provider and secret ARNs, no secrets.
+          # A JSON variable file, which deploy-terraform.sh includes in the plan.
           if [[ -n "$MCP_GATEWAY_CONFIG" ]]; then
             gateway_input="$config_dir/mcp-gateway-config.json"
             printf '%s' "$MCP_GATEWAY_CONFIG" > "$gateway_input"
             node scripts/gateway-config.mjs "$gateway_input" \
-              >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+              > "$config_dir/environments/$TF_ENVIRONMENT.gateway.tfvars.json"
             rm -f "$gateway_input"
           fi
 

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { loadGatewayConfig, normalizeGatewayConfig, toTfvars } from '../gateway-config.mjs';
+import { loadGatewayConfig, normalizeGatewayConfig, toTfvarsJson } from '../gateway-config.mjs';
 
 const script = new URL('../gateway-config.mjs', import.meta.url).pathname;
 const run = (contents) => {
@@ -30,24 +30,73 @@ const target = {
   allow: { project_ids: ['space-1'], tools: ['find_component'] },
 };
 
-test('emits one tfvars assignment per supplied Gateway variable, in a stable order', () => {
-  const tfvars = toTfvars(
+test('emits a JSON variable file with the supplied Gateway variables, in a stable order', () => {
+  const json = toTfvarsJson(
     normalizeGatewayConfig({
       mcp_gateway_custom_targets: { codekb: target },
       runtime_mcp_credentials: 'gateway_only',
       enable_mcp_gateway: true,
     }),
   );
-  const lines = tfvars.trimEnd().split('\n');
-  assert.equal(lines.length, 3);
-  assert.equal(lines[0], 'enable_mcp_gateway = true');
-  assert.equal(lines[1], 'runtime_mcp_credentials = "gateway_only"');
-  assert.equal(lines[2], `mcp_gateway_custom_targets = ${JSON.stringify({ codekb: target })}`);
+  assert.ok(json.endsWith('\n'));
+  const parsed = JSON.parse(json);
+  assert.deepEqual(Object.keys(parsed), [
+    'enable_mcp_gateway',
+    'runtime_mcp_credentials',
+    'mcp_gateway_custom_targets',
+  ]);
+  assert.deepEqual(parsed.mcp_gateway_custom_targets, { codekb: target });
 });
 
 test('an empty object configures nothing', () => {
-  assert.equal(toTfvars(normalizeGatewayConfig({})), '');
+  assert.deepEqual(JSON.parse(toTfvarsJson(normalizeGatewayConfig({}))), {});
 });
+
+const terraformAvailable = spawnSync('terraform', ['version'], { encoding: 'utf8' }).status === 0;
+
+test(
+  'Terraform reads template sequences in descriptions and tool schemas literally',
+  { skip: !terraformAvailable && 'terraform is not on PATH' },
+  () => {
+    const description = 'Expand ${workspace} in a path; %{ if x }y%{ endif }';
+    const toolSchema = JSON.stringify([
+      { name: 'expand', description, inputSchema: { type: 'object' } },
+    ]);
+    const config = normalizeGatewayConfig({
+      enable_mcp_gateway: true,
+      mcp_gateway_custom_targets: {
+        codekb: {
+          description,
+          lambda: {
+            function_arn: 'arn:aws:lambda:eu-central-1:111122223333:function:codekb-tools',
+            tool_schema: toolSchema,
+          },
+          allow: { project_ids: ['space-1'] },
+        },
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'aidlc-gateway-tfvars-'));
+    try {
+      writeFileSync(
+        join(dir, 'main.tf'),
+        'variable "enable_mcp_gateway" {\n  type = bool\n}\n' +
+          'variable "mcp_gateway_custom_targets" {\n  type = any\n}\n',
+      );
+      writeFileSync(join(dir, 'prod.gateway.tfvars.json'), toTfvarsJson(config));
+      const result = spawnSync(
+        'terraform',
+        [`-chdir=${dir}`, 'console', '-var-file=prod.gateway.tfvars.json'],
+        { encoding: 'utf8', input: 'jsonencode(var.mcp_gateway_custom_targets)\n' },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const read = JSON.parse(JSON.parse(result.stdout.trim()));
+      assert.equal(read.codekb.description, description);
+      assert.equal(read.codekb.lambda.tool_schema, toolSchema);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test('rejects keys outside the Gateway rollout variables', () => {
   assert.throws(
@@ -84,8 +133,11 @@ test('malformed JSON does not disclose input fragments', () => {
   });
 });
 
-test('the CLI prints tfvars for a valid configuration', () => {
+test('the CLI prints the JSON variable file for a valid configuration', () => {
   const result = run(JSON.stringify({ enable_mcp_gateway: true, enable_engine_data: false }));
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, 'enable_mcp_gateway = true\nenable_engine_data = false\n');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    enable_mcp_gateway: true,
+    enable_engine_data: false,
+  });
 });

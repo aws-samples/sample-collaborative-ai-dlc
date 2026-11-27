@@ -80,6 +80,7 @@ fi
 CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-$TF_DIR}"
 TFVARS_FILE="${AIDLC_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.tfvars}"
 SSO_TFVARS_FILE="${AIDLC_SSO_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.sso.tfvars.json}"
+GATEWAY_TFVARS_FILE="${AIDLC_GATEWAY_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.gateway.tfvars.json}"
 BACKEND_FILE="${AIDLC_BACKEND_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.s3.tfbackend}"
 if [[ "$PLAN_FILE" != /* ]]; then
     PLAN_FILE="$(pwd)/$PLAN_FILE"
@@ -312,6 +313,7 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
     echo "Planning deployment..."
     TF_VAR_FILE_ARGS=(-var-file="$TFVARS_FILE")
     [[ -f "$SSO_TFVARS_FILE" ]] && TF_VAR_FILE_ARGS+=(-var-file="$SSO_TFVARS_FILE")
+    [[ -f "$GATEWAY_TFVARS_FILE" ]] && TF_VAR_FILE_ARGS+=(-var-file="$GATEWAY_TFVARS_FILE")
     terraform plan "${TF_VAR_FILE_ARGS[@]}" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
     inspect_plan "$PLAN_FILE"
     if [[ "$PHASE" == "plan" ]]; then

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Turns the demo deployments' MCP_GATEWAY_CONFIG JSON into tfvars assignments.
+// Turns the demo deployments' MCP_GATEWAY_CONFIG JSON into a Terraform JSON
+// variable file (deploy-terraform.sh passes <environment>.gateway.tfvars.json).
 // Only the Gateway rollout variables are accepted; Terraform's own validations
 // in terraform/variables.tf and modules/compute/agentcore/variables.tf check
 // their values. The input holds provider and secret ARNs, never secret values.
@@ -36,12 +37,9 @@ export const normalizeGatewayConfig = (input) => {
   );
 };
 
-// JSON values are valid HCL expressions, so each assignment can be appended to
-// the generated tfvars file next to the other workflow-supplied variables.
-export const toTfvars = (config) =>
-  Object.entries(config)
-    .map(([key, value]) => `${key} = ${JSON.stringify(value)}\n`)
-    .join('');
+// A JSON variable file, not HCL: Terraform reads its strings literally, so
+// tool descriptions may contain `${...}` or `%{...}`.
+export const toTfvarsJson = (config) => `${JSON.stringify(config, null, 2)}\n`;
 
 export const loadGatewayConfig = (path) => {
   let input;
@@ -64,7 +62,7 @@ if (
     process.exit(2);
   }
   try {
-    process.stdout.write(toTfvars(loadGatewayConfig(path)));
+    process.stdout.write(toTfvarsJson(loadGatewayConfig(path)));
   } catch (error) {
     console.error(`Invalid MCP Gateway configuration: ${error.message}`);
     process.exit(2);

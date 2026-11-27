@@ -199,6 +199,7 @@ run "customer_targets_behind_the_gateway" {
   assert {
     condition = (
       output.runtime_environment_variables["AIDLC_MCP_GATEWAY_CUSTOM_TARGETS"] == "true" &&
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_LAMBDA_TARGETS") &&
       !anytrue([for v in values(output.runtime_environment_variables) : strcontains(v, "mcp.confluence.example.com") || strcontains(v, "token-vault") || strcontains(v, "secretsmanager")])
     )
     error_message = "The runtime only learns that customer targets exist, never their endpoints or credential providers."
@@ -228,7 +229,8 @@ run "no_customer_targets_by_default" {
     condition = (
       length(aws_bedrockagentcore_gateway_target.custom) == 0 &&
       length(aws_iam_role_policy.mcp_gateway_custom_targets) == 0 &&
-      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_CUSTOM_TARGETS")
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_CUSTOM_TARGETS") &&
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_LAMBDA_TARGETS")
     )
     error_message = "Without customer targets nothing changes."
   }
@@ -814,6 +816,13 @@ run "customer_lambda_target_behind_the_gateway" {
   assert {
     condition     = jsondecode(local.mcp_gateway_custom_targets_registry).codekb == { projectIds = ["p-1", "p-2"], stageIds = null, tools = null }
     error_message = "The interceptor enforces the Lambda target's allow rule like any customer target."
+  }
+  assert {
+    condition = (
+      output.runtime_environment_variables["AIDLC_MCP_GATEWAY_LAMBDA_TARGETS"] == "codekb" &&
+      !anytrue([for v in values(output.runtime_environment_variables) : strcontains(v, "arn:aws:lambda")])
+    )
+    error_message = "The runtime learns the Lambda target names, to unwrap their results, and never their function ARNs."
   }
 }
 

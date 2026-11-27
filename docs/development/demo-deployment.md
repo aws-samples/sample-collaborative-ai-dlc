@@ -98,7 +98,7 @@ For SAML, demo secrets must use `metadata.url` or inline `metadata.xml`. The wor
 
 The optional `MCP_GATEWAY_CONFIG` environment variable carries the
 [MCP Gateway](../concepts/architecture.md#agent-runtime) rollout variables as one JSON object. The workflow validates it with
-`scripts/gateway-config.mjs` and appends it to `prod.tfvars`. Only these keys are accepted:
+`scripts/gateway-config.mjs` and writes it as `prod.gateway.tfvars.json`, which the deployment plan includes. Strings are read literally, so tool descriptions may contain `${...}`. Only these keys are accepted:
 
 | Key                          | Terraform variable                                                                                    |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
