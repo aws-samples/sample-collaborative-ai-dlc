@@ -1,14 +1,26 @@
 import { describe, it, expect, vi } from 'vitest';
 import { compileContextPack, buildUnitPack, __test } from '../context-compiler.js';
 
+// A getItems double that filters by label or artifact type and applies
+// `limit` in traversal order, before any sort, as the graph writer does.
+const labelItems = (rows) =>
+  vi.fn(async ({ itemType = null, artifactType = null, limit = 100 } = {}) =>
+    rows
+      .filter((r) => !itemType || r.label === itemType)
+      .filter((r) => !artifactType || r.artifact_type === artifactType)
+      .slice(0, limit),
+  );
+
 describe('compileContextPack', () => {
   it('renders a bounded deterministic pack from graph artifacts and items', async () => {
     const graph = {
       lookupArtifacts: vi.fn(async ({ artifactType }) => [
         { id: `${artifactType}-1`, artifact_type: artifactType, title: 'Title', contentLength: 42 },
       ]),
-      getItems: vi.fn(async () => [
-        { id: 'story:i:s1', label: 'Story', slug: 's1', title: 'Login' },
+      getItems: labelItems([
+        { id: 'decision:i:d1', label: 'Decision', slug: 'd1', title: 'Use tokens' },
+        { id: 'story:i:s1', label: 'Story', slug: 's1', title: 'Login', artifact_type: 'stories' },
+        { id: 'persona:i:p1', label: 'Persona', slug: 'p1', artifact_type: 'personas' },
       ]),
     };
     const pack = await compileContextPack({
@@ -18,9 +30,13 @@ describe('compileContextPack', () => {
     });
     expect(pack.markdown).toContain('## Compiled graph context');
     expect(pack.markdown).toContain('requirements (requirements-1)');
+    expect(pack.markdown).toContain('- d1 — Use tokens');
+    expect(pack.markdown).toContain('### Derived items — stories');
     expect(pack.markdown).toContain('Story s1');
+    // Items of artifacts the stage does not read stay behind get_items.
+    expect(pack.markdown).not.toContain('p1');
     expect(pack.artifacts).toBe(2);
-    expect(pack.items).toBe(1);
+    expect(pack.items).toBe(2);
   });
 
   it('honors the byte budget', async () => {
@@ -102,7 +118,7 @@ describe('compileContextPack', () => {
   it('includes the unit lane pack when a unit is in scope', async () => {
     const graph = {
       lookupArtifacts: vi.fn(async () => []),
-      getItems: vi.fn(async () => [
+      getItems: labelItems([
         {
           id: 'i1',
           label: 'StoryMapEntry',
@@ -131,11 +147,10 @@ describe('compileContextPack', () => {
     expect(pack.markdown).toContain('### Unit pack — auth');
     expect(pack.markdown).toContain('- s-login — Login [must-have]');
     expect(pack.markdown).toContain('c-auth-api — Auth API (provides');
-    // The unrelated contract stays out of the UNIT PACK (it still shows in the
-    // full derived-items index below it).
+    // The unrelated contract stays out of the unit pack.
     const unitPackSection = pack.markdown.slice(
       pack.markdown.indexOf('### Unit pack'),
-      pack.markdown.indexOf('### Derived items'),
+      pack.markdown.indexOf('Use MCP drill-down'),
     );
     expect(unitPackSection).not.toContain('c-unrelated');
     // Non-lane runs get no unit section.
@@ -165,6 +180,17 @@ describe('buildUnitPack', () => {
       items: [{ label: 'StoryMapEntry', slug: 'm', unit: 'auth', stories: '["s-a","s-b"]' }],
     });
     expect(lines.join('\n')).toContain('ids: s-a, s-b (story items not derived yet)');
+  });
+
+  it('caps the bare story ids and counts the rest', () => {
+    const ids = Array.from({ length: 60 }, (_, k) => `s-${String(k).padStart(2, '0')}`);
+    const pack = buildUnitPack({
+      unitSlug: 'auth',
+      items: [{ label: 'StoryMapEntry', slug: 'm', unit: 'auth', stories: JSON.stringify(ids) }],
+    });
+    expect(pack.lines.join('\n')).toContain('s-49 … 10 more (story items not derived yet)');
+    expect(pack.lines.join('\n')).not.toContain('s-50');
+    expect(pack.omitted).toBe(10);
   });
 
   it('returns null with no unit or nothing relevant', () => {
@@ -204,7 +230,7 @@ describe('buildUnitPack', () => {
   });
 });
 
-describe('traceSuffix (derived-item index traceability line)', () => {
+describe('traceSuffix (derived-item and unit-pack story traceability line)', () => {
   it('renders covers/persona/depends-on for stories and depends-on for components', () => {
     expect(
       __test.traceSuffix({
@@ -219,7 +245,7 @@ describe('traceSuffix (derived-item index traceability line)', () => {
     );
   });
 
-  it('is empty for items without refs (index stays compact)', () => {
+  it('is empty for items without refs (line stays compact)', () => {
     expect(__test.traceSuffix({ label: 'Story' })).toBe('');
     expect(__test.traceSuffix({ label: 'Requirement', covers: '["x"]' })).toBe('');
     expect(__test.traceSuffix({ label: 'Persona' })).toBe('');
@@ -236,108 +262,142 @@ describe('listProp (tolerant JSON-list props)', () => {
 });
 
 describe('compileContextPack on large graphs', () => {
-  const { SECTION_ITEM_LIMIT, ITEMS_READ_LIMIT } = __test;
-  // A getItems double that honors `limit` the way the graph writer does:
-  // the slice happens in traversal order, before any sort.
-  const itemsGraph = (rows) => ({
+  const { SECTION_ITEM_LIMIT, ITEMS_PER_LABEL } = __test;
+  const graphOf = (rows) => ({
     lookupArtifacts: vi.fn(async () => []),
-    getItems: vi.fn(async ({ limit = 100 } = {}) => rows.slice(0, limit)),
+    getItems: labelItems(rows),
   });
-  const filler = (n, prefix = 'req') =>
+  const many = (n, label, extra = () => ({})) =>
     Array.from({ length: n }, (_, k) => ({
-      id: `${prefix}:i:${String(k).padStart(3, '0')}`,
-      label: 'Requirement',
-      slug: `${prefix}-${k}`,
+      id: `${label.toLowerCase()}:i:${String(k).padStart(3, '0')}`,
+      label,
+      slug: `${label.toLowerCase()}-${k}`,
+      ...extra(k),
     }));
   const section = (md, heading) => {
     const start = md.indexOf(heading);
     if (start === -1) return '';
-    const end = md.indexOf('\n### ', start + heading.length);
+    const end = md.indexOf('\n\n', start + heading.length);
     return md.slice(start, end === -1 ? undefined : end);
   };
+  const unitStories = (n, extra = () => ({})) => [
+    {
+      id: 'storymapentry:i:auth',
+      label: 'StoryMapEntry',
+      slug: 'map-auth',
+      unit: 'auth',
+      stories: JSON.stringify(Array.from({ length: n }, (_, k) => `story-${k}`)),
+    },
+    ...many(n, 'Story', extra),
+  ];
 
   it('keeps the unit stories when their map entry comes after the first 50 items', async () => {
-    const rows = [
-      ...filler(99),
-      {
-        id: 'map:i:auth',
-        label: 'StoryMapEntry',
-        slug: 'map-auth',
-        unit: 'auth',
-        stories: '["s-login"]',
-      },
-      { id: 'story:i:s-login', label: 'Story', slug: 's-login', title: 'Login' },
-      ...filler(19, 'nfr'),
-    ];
+    const rows = [...many(99, 'Requirement'), ...unitStories(1), ...many(19, 'Persona')];
     const pack = await compileContextPack({
-      graph: itemsGraph(rows),
+      graph: graphOf(rows),
       stage: { inputArtifacts: [] },
       unit: { slug: 'auth' },
     });
     expect(pack.markdown).toContain('### Unit pack — auth');
-    expect(pack.markdown).toContain('- s-login — Login');
-    expect(pack.items).toBe(120);
+    expect(pack.markdown).toContain('- story-0');
+    expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
+  });
+
+  it('reads Decision on every run, the unit-pack labels on lane runs, and each input type', async () => {
+    const plain = graphOf([]);
+    await compileContextPack({ graph: plain, stage: {} });
+    expect(plain.getItems.mock.calls.map(([a]) => a)).toEqual([
+      { itemType: 'Decision', limit: ITEMS_PER_LABEL + 1 },
+    ]);
+    const reader = graphOf([]);
+    await compileContextPack({
+      graph: reader,
+      stage: { inputArtifacts: [{ artifact: 'stories' }, { artifact: 'requirements' }] },
+    });
+    expect(reader.getItems.mock.calls.map(([a]) => a)).toEqual([
+      { itemType: 'Decision', limit: ITEMS_PER_LABEL + 1 },
+      { artifactType: 'requirements', limit: ITEMS_PER_LABEL + 1 },
+      { artifactType: 'stories', limit: ITEMS_PER_LABEL + 1 },
+    ]);
+    const lane = graphOf([]);
+    await compileContextPack({ graph: lane, stage: {}, unit: { slug: 'auth' } });
+    expect(lane.getItems.mock.calls.map(([a]) => a.itemType)).toEqual([
+      'Decision',
+      'StoryMapEntry',
+      'Story',
+      'Requirement',
+      'Contract',
+    ]);
   });
 
   it('lists every decision up to the section cap and counts the rest', async () => {
-    const decisions = (n) =>
-      Array.from({ length: n }, (_, k) => ({
-        id: `decision:i:${String(k).padStart(3, '0')}`,
-        label: 'Decision',
-        slug: `dec-${k}`,
-      }));
     const exact = await compileContextPack({
-      graph: itemsGraph([...filler(60), ...decisions(SECTION_ITEM_LIMIT)]),
-      stage: { inputArtifacts: [] },
+      graph: graphOf([...many(60, 'Requirement'), ...many(SECTION_ITEM_LIMIT, 'Decision')]),
+      stage: {},
     });
     const exactSection = section(exact.markdown, '### Decisions');
-    expect(exactSection.match(/^- dec-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(exactSection.match(/^- decision-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
     expect(exactSection).not.toContain('more (get_items)');
     expect(exact).toMatchObject({ status: 'ok', omitted: 0 });
 
     const over = await compileContextPack({
-      graph: itemsGraph([...filler(60), ...decisions(SECTION_ITEM_LIMIT + 10)]),
-      stage: { inputArtifacts: [] },
+      graph: graphOf(many(SECTION_ITEM_LIMIT + 10, 'Decision')),
+      stage: {},
     });
     const overSection = section(over.markdown, '### Decisions');
-    expect(overSection.match(/^- dec-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(overSection.match(/^- decision-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
     expect(overSection).toContain('- … 10 more (get_items)');
     expect(over).toMatchObject({ status: 'truncated', omitted: 10 });
   });
 
-  it('signposts the capped derived-item index without marking the pack incomplete', async () => {
+  it('signposts the capped input-artifact index without marking the pack incomplete', async () => {
     const pack = await compileContextPack({
-      graph: itemsGraph(filler(SECTION_ITEM_LIMIT + 5)),
-      stage: { inputArtifacts: [] },
+      graph: graphOf(
+        many(SECTION_ITEM_LIMIT + 5, 'Requirement', () => ({ artifact_type: 'reqs' })),
+      ),
+      stage: { inputArtifacts: [{ artifact: 'reqs' }] },
     });
-    expect(section(pack.markdown, '### Derived items')).toContain('- … 5 more (get_items)');
+    const index = section(pack.markdown, '### Derived items — reqs');
+    expect(index.match(/^- Requirement /gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(index).toContain('- … 5 more (get_items)');
     expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
   });
 
+  it('caps the unit stories and counts the rest', async () => {
+    const pack = await compileContextPack({
+      graph: graphOf(unitStories(60)),
+      stage: {},
+      unit: { slug: 'auth' },
+    });
+    expect(pack.markdown.match(/^- story-/gm)).toHaveLength(SECTION_ITEM_LIMIT);
+    expect(pack.markdown).toContain('- … 10 more (get_items)');
+    expect(pack).toMatchObject({ status: 'truncated', omitted: 10 });
+  });
+
   it('renders the same pack for the same items in any traversal order', async () => {
-    const rows = [
-      ...filler(70),
-      ...Array.from({ length: 55 }, (_, k) => ({
-        id: `decision:i:${String(k).padStart(3, '0')}`,
-        label: 'Decision',
-        slug: `dec-${k}`,
-      })),
-    ];
-    const forward = await compileContextPack({ graph: itemsGraph(rows), stage: {} });
-    const reversed = await compileContextPack({ graph: itemsGraph(rows.toReversed()), stage: {} });
+    const rows = [...many(55, 'Decision'), ...unitStories(70), ...many(70, 'Requirement')];
+    const run = (graphRows) =>
+      compileContextPack({ graph: graphOf(graphRows), stage: {}, unit: { slug: 'auth' } });
+    const forward = await run(rows);
+    const reversed = await run(rows.toReversed());
     expect(reversed.markdown).toBe(forward.markdown);
   });
 
-  it('marks the pack incomplete when the item read hits its maximum', async () => {
-    const pack = await compileContextPack({
-      graph: itemsGraph(filler(ITEMS_READ_LIMIT + 1)),
+  it('flags a label only when it has more items than one read carries', async () => {
+    const atLimit = await compileContextPack({
+      graph: graphOf(many(ITEMS_PER_LABEL, 'Decision')),
       stage: {},
     });
-    expect(pack.markdown).toContain(`Typed items exceed ${ITEMS_READ_LIMIT}`);
-    expect(pack.status).toBe('truncated');
+    expect(atLimit.markdown).not.toContain('More than');
+    const over = await compileContextPack({
+      graph: graphOf(many(ITEMS_PER_LABEL + 1, 'Decision')),
+      stage: {},
+    });
+    expect(over.markdown).toContain(`More than ${ITEMS_PER_LABEL} Decision items`);
+    expect(over.status).toBe('truncated');
   });
 
-  it('says so when the item read fails instead of rendering an empty graph', async () => {
+  it('reports a failed item read as unavailable', async () => {
     const graph = {
       lookupArtifacts: vi.fn(async () => []),
       getItems: vi.fn(async () => {
@@ -345,19 +405,52 @@ describe('compileContextPack on large graphs', () => {
       }),
     };
     const pack = await compileContextPack({ graph, stage: {} });
-    expect(pack.markdown).toContain('Typed items could not be read');
+    expect(pack.markdown).toContain('Could not read Decision items');
+    expect(pack.status).toBe('unavailable');
+  });
+
+  it('reports a failed artifact lookup as unavailable', async () => {
+    const graph = {
+      lookupArtifacts: vi.fn(async () => {
+        throw new Error('graph down');
+      }),
+      getItems: labelItems([]),
+    };
+    const pack = await compileContextPack({
+      graph,
+      stage: { inputArtifacts: [{ artifact: 'requirements' }] },
+    });
+    expect(pack.markdown).toContain('Could not read the requirements input artifacts');
+    expect(pack.status).toBe('unavailable');
+  });
+
+  it('reports a failed TOC read as truncated', async () => {
+    const graph = {
+      lookupArtifacts: vi.fn(async () => [
+        { id: 'req-1', artifact_type: 'requirements', contentLength: 10 },
+      ]),
+      getItems: labelItems([]),
+      getArtifactToc: vi.fn(async () => {
+        throw new Error('graph down');
+      }),
+    };
+    const pack = await compileContextPack({
+      graph,
+      stage: { inputArtifacts: [{ artifact: 'requirements' }] },
+    });
     expect(pack.status).toBe('truncated');
   });
 
   it('reports an empty graph as a complete pack', async () => {
-    const pack = await compileContextPack({ graph: itemsGraph([]), stage: {} });
+    const pack = await compileContextPack({ graph: graphOf([]), stage: {}, unit: { slug: 'a' } });
     expect(pack).toMatchObject({ status: 'ok', omitted: 0, items: 0, truncated: false });
     expect(pack.markdown).not.toContain('### Decisions');
+    expect(pack.markdown).not.toContain('### Unit pack');
   });
 
   it('ends a budget-cut pack with a visible marker', async () => {
     const pack = await compileContextPack({
-      graph: itemsGraph(filler(40)),
+      graph: graphOf(many(40, 'Decision')),
       stage: {},
       budgetBytes: 400,
     });
@@ -365,5 +458,26 @@ describe('compileContextPack on large graphs', () => {
     expect(pack.status).toBe('truncated');
     expect(pack.bytes).toBeLessThanOrEqual(400);
     expect(pack.markdown.endsWith('- … context truncated (get_items)')).toBe(true);
+  });
+
+  it('keeps every decision under the default budget and counts the unit items it cuts', async () => {
+    const long = 'x'.repeat(180);
+    const rows = [
+      ...many(50, 'Decision', () => ({ title: 'Short decision' })),
+      ...unitStories(50, (k) => ({ title: long, covers: `["requirement-${k}"]` })),
+      ...many(50, 'Requirement', () => ({ title: long })),
+      ...many(50, 'Contract', () => ({ title: long, provider: 'auth' })),
+    ];
+    const pack = await compileContextPack({
+      graph: graphOf(rows),
+      stage: {},
+      unit: { slug: 'auth' },
+    });
+    expect(pack.truncated).toBe(true);
+    expect(pack.markdown.match(/^- decision-/gm)).toHaveLength(50);
+    const unitLines = pack.markdown.match(/^- (story|requirement|contract)-/gm) ?? [];
+    expect(unitLines.length).toBeLessThan(150);
+    expect(pack.omitted).toBe(150 - unitLines.length);
+    expect(pack.status).toBe('truncated');
   });
 });
