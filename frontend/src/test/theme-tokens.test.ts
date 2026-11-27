@@ -50,3 +50,79 @@ describe('index.css colour scheme', () => {
     expect(declarationsOf('.dark')['color-scheme']).toBe('dark');
   });
 });
+
+// ─── Contrast (WCAG 2.x) ───────────────────────────────────────────────────
+
+type Rgb = readonly [number, number, number];
+
+const light = declarationsOf(':root');
+const dark = { ...light, ...declarationsOf('.dark') };
+const themes = { light, dark };
+
+const toSrgb = (linear: number) =>
+  linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055;
+const clamp = (value: number) => Math.min(1, Math.max(0, value));
+
+/** `oklch(L C H)` → sRGB in [0, 1] (CSS Color 4 matrices, clipped). */
+const oklch = (value: string): Rgb => {
+  const match = value.match(/^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/);
+  if (!match) throw new Error(`not an opaque oklch() colour: ${value}`);
+  const [L, C, H] = match.slice(1).map(Number);
+  const a = C * Math.cos((H * Math.PI) / 180);
+  const b = C * Math.sin((H * Math.PI) / 180);
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ].map((c) => clamp(toSrgb(c))) as unknown as Rgb;
+};
+
+const token = (vars: Record<string, string>, name: string): Rgb => {
+  const value = vars[name];
+  if (!value) throw new Error(`index.css: ${name} is not defined`);
+  return oklch(value);
+};
+
+/** `colour/alpha` painted over an opaque backdrop. */
+const over = (colour: Rgb, alpha: number, backdrop: Rgb): Rgb =>
+  colour.map((c, i) => c * alpha + backdrop[i] * (1 - alpha)) as unknown as Rgb;
+
+const luminance = (rgb: Rgb) => {
+  const [r, g, b] = rgb.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+const contrast = (a: Rgb, b: Rgb) => {
+  const [hi, lo] = [luminance(a), luminance(b)].toSorted((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+const AA_TEXT = 4.5;
+
+describe.each(Object.entries(themes))('%s theme contrast', (_name, vars) => {
+  const background = token(vars, '--background');
+  const card = token(vars, '--card');
+  const destructive = token(vars, '--destructive');
+
+  it.each([
+    ['text-destructive on the page', background],
+    ['text-destructive on a card', card],
+    ['text-destructive on bg-destructive/5 over a card', over(destructive, 0.05, card)],
+    ['text-destructive on bg-destructive/10 over the page', over(destructive, 0.1, background)],
+    ['text-destructive on bg-destructive/10 over a card', over(destructive, 0.1, card)],
+  ])('%s reads at AA', (_pair, surface) => {
+    expect(contrast(destructive, surface)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  it.each([
+    ['bg-destructive', 1],
+    ['bg-destructive/90', 0.9],
+    ['bg-destructive/80', 0.8],
+  ])('text-destructive-foreground on %s reads at AA', (_fill, alpha) => {
+    const fill = over(destructive, alpha, background);
+    expect(contrast(token(vars, '--destructive-foreground'), fill)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+});
