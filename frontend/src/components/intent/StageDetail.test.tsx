@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router';
 import { StageDetail } from './StageDetail';
 
 const mocks = vi.hoisted(() => ({
@@ -21,6 +22,8 @@ vi.mock('@/contexts/IntentContext', () => ({
   stageRowKey: (row: { stageId: string; stageInstanceId: string | null }) =>
     row.stageInstanceId ?? row.stageId,
   useIntent: () => ({
+    projectId: 'p1',
+    intentId: 'i1',
     detail: g.intentDetail ?? null,
     mayControlStage: () => true,
     stageEdges: g.intentStageEdges ?? [],
@@ -94,7 +97,7 @@ const cases = [
   },
 ] as const;
 
-const diagnosticsButton = () => screen.getByRole('button', { name: /^Diagnostics/ });
+const detailsButton = () => screen.getByRole('button', { name: /^Details/ });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,7 +132,7 @@ describe('StageDetail', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Show 1 more document' }));
     expect(screen.getAllByRole('button', { name: /^Document doc-\d$/ })).toHaveLength(7);
-    await userEvent.click(diagnosticsButton());
+    await userEvent.click(detailsButton());
     expect(screen.getByText('Superseded document history')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Document old-doc/ })).toHaveTextContent(
       'superseded',
@@ -159,7 +162,7 @@ describe('StageDetail', () => {
     render(<StageDetail row={row} />);
 
     expect(screen.queryByRole('region', { name: 'Recorded documents' })).not.toBeInTheDocument();
-    await userEvent.click(diagnosticsButton());
+    await userEvent.click(detailsButton());
     expect(screen.getByText('Planned outputs')).toBeInTheDocument();
     expect(screen.getByText('Design Document')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Upstream document/ })).not.toBeInTheDocument();
@@ -203,7 +206,7 @@ describe('StageDetail', () => {
     expect(within(execution).getByText('1.5K')).toBeInTheDocument();
     expect(within(execution).getByText('$0.42')).toBeInTheDocument();
     expect(screen.queryByText('88K')).not.toBeInTheDocument();
-    expect(diagnosticsButton()).toHaveAttribute('aria-expanded', 'false');
+    expect(detailsButton()).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Assembled prompts')).not.toBeInTheDocument();
   });
 
@@ -251,8 +254,8 @@ describe('StageDetail', () => {
     expect(within(execution).getByText('152.0K')).toBeInTheDocument();
   });
 
-  // O5: restart is a stage action, confirmed in a dialog; diagnostics keep only wiring.
-  it('offers Restart from this stage outside Diagnostics and confirms it in a dialog', async () => {
+  // O5: restart is a stage action, confirmed in a dialog; details keep only wiring.
+  it('offers Restart from this stage outside Details and confirms it in a dialog', async () => {
     mocks.rewindIntent.mockResolvedValueOnce(undefined);
     g.intentDetail = {
       intent: { status: 'FAILED' },
@@ -268,7 +271,7 @@ describe('StageDetail', () => {
 
     render(<StageDetail row={{ ...row, cli: 'claude', resolvedModel: 'planned-model' }} />);
 
-    expect(diagnosticsButton()).toHaveAttribute('aria-expanded', 'false');
+    expect(detailsButton()).toHaveAttribute('aria-expanded', 'false');
     const restart = screen.getByRole('button', { name: 'Restart from this stage' });
     expect(restart).toBeVisible();
     expect(screen.queryByText('Runtime')).not.toBeInTheDocument();
@@ -284,7 +287,7 @@ describe('StageDetail', () => {
 
     expect(mocks.rewindIntent).toHaveBeenCalledWith('type-check', 'Use the SQS queues');
 
-    await userEvent.click(diagnosticsButton());
+    await userEvent.click(detailsButton());
     expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Restart from this stage' })).toHaveLength(1);
@@ -336,10 +339,91 @@ describe('StageDetail', () => {
   });
 
   // O4/O5: gates read as a status, away from the action row.
-  it('shows a stage gate as a human label with the shared gate status', () => {
+  // D6: a stage with four gates used to show four pills ("Question · Answered"
+  // twice, "Question · Withdrawn", "Question · Waiting for answer") beside a
+  // three-part duration. By default: the one thing to do, and its action.
+  it('shows one line and one action for the open question, and counts the earlier ones under Details', async () => {
+    const DAY = 86_400_000;
+    const gate = (humanTaskId: string, status: string) => ({
+      humanTaskId,
+      stageInstanceId: 'instance-1',
+      kind: 'question',
+      status,
+      prompt: null,
+      options: null,
+    });
+    g.stageGates = [
+      gate('q-1', 'answered'),
+      gate('q-2', 'answered'),
+      gate('q-3', 'superseded'),
+      gate('q-4', 'pending'),
+    ];
+    g.intentDetail = { intent: { status: 'WAITING' }, metrics: [] };
+
+    render(
+      <MemoryRouter>
+        <StageDetail
+          row={{
+            ...row,
+            state: 'WAITING_FOR_HUMAN',
+            startedAt: new Date(Date.now() - 110 * DAY - 96_000).toISOString(),
+            parkedAt: new Date(Date.now() - 110 * DAY).toISOString(),
+          }}
+          durationInHeading
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('1 question waiting for you')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Answer' })).toHaveAttribute(
+      'href',
+      '/space/p1/intent/i1',
+    );
+    for (const pill of ['Answered', 'Withdrawn', 'Waiting for answer', 'Question']) {
+      expect(screen.queryByText(pill)).not.toBeInTheDocument();
+    }
+    // The row heading carries the one duration; no split by default.
+    expect(screen.queryByText(/active/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/110/)).not.toBeInTheDocument();
+
+    const details = detailsButton();
+    expect(details).toHaveAttribute('aria-expanded', 'false');
+    expect(details).toHaveAccessibleDescription('Timing · Earlier questions · Check history');
+    await userEvent.click(details);
+    expect(screen.getByText('2 answered · 1 withdrawn')).toBeInTheDocument();
+    expect(screen.getByText(/1m 36s active, 110d \d+h waiting on answers/)).toBeInTheDocument();
+  });
+
+  it('sends a pending review to its review page', () => {
     g.stageGates = [
       {
-        humanTaskId: 'q-1',
+        humanTaskId: 'v-1',
+        stageInstanceId: 'instance-1',
+        kind: 'validation',
+        status: 'pending',
+        prompt: null,
+        options: null,
+      },
+    ];
+    g.intentDetail = { intent: { status: 'WAITING' }, metrics: [] };
+
+    render(
+      <MemoryRouter>
+        <StageDetail row={{ ...row, state: 'WAITING_FOR_HUMAN' }} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('1 review waiting for you')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review' })).toHaveAttribute(
+      'href',
+      '/space/p1/intent/i1/review/v-1',
+    );
+  });
+
+  it('keeps a finished stage quiet about its gates: no line, no pill, a count under Details', async () => {
+    g.stageGates = [
+      {
+        humanTaskId: 'v-1',
         stageInstanceId: 'instance-1',
         kind: 'validation',
         status: 'approved',
@@ -347,13 +431,60 @@ describe('StageDetail', () => {
         options: null,
       },
     ];
-    g.intentDetail = { intent: { status: 'FAILED' }, metrics: [] };
+    g.intentDetail = { intent: { status: 'SUCCEEDED' }, metrics: [] };
 
-    render(<StageDetail row={row} />);
+    render(<StageDetail row={{ ...row, state: 'SUCCEEDED' }} />);
 
-    expect(screen.getByText('Validation')).toBeInTheDocument();
-    expect(screen.getByText('Approved')).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for you/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Approved')).not.toBeInTheDocument();
     expect(screen.queryByText('validation · approved')).not.toBeInTheDocument();
+
+    await userEvent.click(detailsButton());
+    expect(screen.getByText('Earlier reviews')).toBeInTheDocument();
+    expect(screen.getByText('1 approved')).toBeInTheDocument();
+  });
+
+  it('gives one human duration when the heading has none', () => {
+    const DAY = 86_400_000;
+    g.stageGates = [
+      {
+        humanTaskId: 'q-1',
+        stageInstanceId: 'instance-1',
+        kind: 'question',
+        status: 'pending',
+        prompt: null,
+        options: null,
+      },
+    ];
+    g.intentDetail = { intent: { status: 'WAITING' }, metrics: [] };
+
+    const { unmount } = render(
+      <MemoryRouter>
+        <StageDetail
+          row={{
+            ...row,
+            state: 'WAITING_FOR_HUMAN',
+            startedAt: new Date(Date.now() - 111 * DAY).toISOString(),
+            parkedAt: new Date(Date.now() - 110 * DAY - 3_600_000).toISOString(),
+          }}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Waiting for an answer for 110 days')).toBeInTheDocument();
+    unmount();
+
+    g.stageGates = [];
+    render(
+      <StageDetail
+        row={{
+          ...row,
+          state: 'SUCCEEDED',
+          startedAt: '2026-01-01T00:00:00Z',
+          completedAt: '2026-01-03T02:00:00Z',
+        }}
+      />,
+    );
+    expect(screen.getByText('Took 2d 2h')).toBeInTheDocument();
   });
 
   // T3 / O4: the failure reads as a sentence; the raw code is one action away.
@@ -394,8 +525,8 @@ describe('StageDetail', () => {
     expect(screen.queryByText(/Attempt/)).not.toBeInTheDocument();
   });
 
-  // The Diagnostics disclosure says what is inside instead of an unexplained count.
-  it('summarises what the diagnostics hold instead of counting unrelated rows', () => {
+  // The Details disclosure names what is inside; the numbers are one click away.
+  it('names what the details hold instead of counting rows', () => {
     g.intentDetail = { intent: { status: 'FAILED' }, metrics: [] };
     g.intentStageEdges = [
       { from: 'requirements-analysis', to: 'type-check', kind: 'data', artifact: 'requirements' },
@@ -404,11 +535,11 @@ describe('StageDetail', () => {
 
     render(<StageDetail row={{ ...row, cli: 'claude' }} />);
 
-    const button = diagnosticsButton();
-    expect(button).toHaveAccessibleName('Diagnostics');
+    const button = detailsButton();
+    expect(button).toHaveAccessibleName('Details');
     expect(button).not.toHaveTextContent(/\(\d+\)/);
     expect(button).toHaveAccessibleDescription(
-      'Runtime · 1 planned input · 1 output · 1 check run',
+      'Runtime · Planned inputs and outputs · Check history',
     );
   });
 
@@ -428,7 +559,7 @@ describe('StageDetail', () => {
       expect(flag!).toHaveTextContent(testCase.explanation);
       expect(flag!).not.toHaveTextContent('type-check');
 
-      await userEvent.click(diagnosticsButton());
+      await userEvent.click(detailsButton());
       fireEvent.focus(
         screen.getByText('Type Check', { selector: '[data-tone] *' }).closest('[data-tone]')!,
       );

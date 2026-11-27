@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Disclosure } from '@/components/ui/disclosure';
 import { StatusPill } from '@/components/ui/status-pill';
@@ -7,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { SensorChips } from '@/components/intent/SensorChips';
-import { StageDetail, stageTokenTotal, useStageExecution } from '@/components/intent/StageDetail';
+import { StageDetail, useStageExecution } from '@/components/intent/StageDetail';
 import {
   Loader2,
   RotateCcw,
@@ -23,10 +22,9 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion';
 import { Progress } from '@/components/ui/progress';
-import { displayModels, displayStageName, humanizeSlug } from '@/lib/displayNames';
+import { displayStageName, humanizeSlug } from '@/lib/displayNames';
 import { describeFailure } from '@/lib/failureReasons';
 import { SETTLED_STATES, withInferredFailure } from '@/components/intent/inferredFailure';
-import { formatCost, formatTokens } from '@/lib/metricAggregation';
 import { TONE_CLASSES, ageLabel, deriveIntentStatus } from '@/lib/statusModel';
 import { formatAbsolute } from '@/lib/timeAgo';
 import { IntentStageDependencies } from '@/components/intent/IntentPhaseDiagram';
@@ -54,6 +52,10 @@ function hasGroupFailure(rows: IntentStageRow[]): boolean {
 // one row per unit lane, each independently selectable. Stages the intent's
 // scope leaves out are listed once, folded, so the counters above only ever
 // count what this run will execute.
+//
+// What is open by default follows the run: the stage that needs the reader
+// (waiting, else failed, else running or stalled) shows its detail, and its
+// phase is open; finished stages and phases stay folded until asked for.
 export function IntentStageList() {
   const {
     stageRows,
@@ -133,6 +135,37 @@ export function IntentStageList() {
     const gi = groups.findIndex((g) => g.rows.some((r) => stageRowKey(r) === selectedStageId));
     return gi < 0 ? null : `${groups[gi].phase ?? 'no-phase'}-${gi}`;
   }, [groups, selectedStageId]);
+
+  // The stage worth reading without a click. An explicit selection wins, and
+  // folding the default keeps it folded until another stage takes its place.
+  // A waiting stage with an open question comes before one whose questions
+  // were all answered but which is still parked.
+  const defaultStageKey = useMemo(() => {
+    const pick =
+      rows.find(
+        (r) =>
+          r.state === 'WAITING_FOR_HUMAN' &&
+          gates.some((g) => g.status === 'pending' && g.stageInstanceId === r.stageInstanceId),
+      ) ??
+      rows.find((r) => r.state === 'WAITING_FOR_HUMAN') ??
+      rows.find((r) => r.state === 'FAILED') ??
+      rows.find((r) => r.state === 'RUNNING') ??
+      (stalledSince !== null
+        ? rows.find((r) => r.stageId === currentStage && !SETTLED_STATES.has(r.state))
+        : undefined);
+    return pick ? stageRowKey(pick) : null;
+  }, [currentStage, gates, rows, stalledSince]);
+  const [foldedDefault, setFoldedDefault] = useState<string | null>(null);
+  const openStageKey =
+    selectedStageId ?? (defaultStageKey !== foldedDefault ? defaultStageKey : null);
+  const toggleStage = (key: string) => {
+    if (openStageKey === key) {
+      if (key === defaultStageKey) setFoldedDefault(key);
+      setSelectedStageId(null);
+    } else {
+      setSelectedStageId(key);
+    }
+  };
 
   const [openItems, setOpenItems] = useState<string[]>(() =>
     selectedGroupKey ? [...new Set([...defaultOpenKeys, selectedGroupKey])] : defaultOpenKeys,
@@ -229,8 +262,9 @@ export function IntentStageList() {
                   rows={g.rows}
                   currentStage={currentStage}
                   stalledSince={stalledSince}
+                  openStageKey={openStageKey}
                   selectedStageId={selectedStageId}
-                  setSelectedStageId={setSelectedStageId}
+                  onToggle={toggleStage}
                   sensorsByStage={sensorsByStage}
                 />
               </AccordionContent>
@@ -258,12 +292,7 @@ export function IntentStageList() {
                 className="flex min-w-0 items-center justify-between gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground"
               >
                 <span className="truncate">{displayStageName(stage.stageId)}</span>
-                <span className="flex shrink-0 items-center gap-2 text-2xs">
-                  {stage.phase}
-                  <span className={cn('rounded-full px-1.5 py-0.5', TONE_CLASSES.neutral.pill)}>
-                    Not selected
-                  </span>
-                </span>
+                <span className="shrink-0 text-2xs">{stage.phase}</span>
               </li>
             ))}
           </ul>
@@ -311,15 +340,18 @@ function PhaseRows({
   rows,
   currentStage,
   stalledSince,
+  openStageKey,
   selectedStageId,
-  setSelectedStageId,
+  onToggle,
   sensorsByStage,
 }: {
   rows: IntentStageRow[];
   currentStage: string | null;
   stalledSince: string | null;
+  /** The stage whose detail is shown: the selection, else the default. */
+  openStageKey: string | null;
   selectedStageId: string | null;
-  setSelectedStageId: (key: string | null) => void;
+  onToggle: (key: string) => void;
   sensorsByStage: Map<string, IntentSensorRun[]>;
 }) {
   const segments = useMemo(() => segmentRows(rows), [rows]);
@@ -332,8 +364,9 @@ function PhaseRows({
         row={row}
         current={current}
         stalledSince={current && !SETTLED_STATES.has(row.state) ? stalledSince : null}
-        selected={selectedStageId === key}
-        onToggle={() => setSelectedStageId(selectedStageId === key ? null : key)}
+        selected={openStageKey === key}
+        scrollIntoView={selectedStageId === key}
+        onToggle={() => onToggle(key)}
         sensors={row.stageInstanceId ? (sensorsByStage.get(row.stageInstanceId) ?? []) : []}
       />
     );
@@ -371,32 +404,15 @@ function PhaseRows({
 // (the API 409s while RUNNING).
 const RETRYABLE_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
 
-function stageSummary(
+// The one fact a folded row carries besides its name and outcome: what the
+// stage produced. Model, tokens, cost, timings and attempts are in its detail.
+function stageKeyFact(
   row: IntentStageRow,
   execution: ReturnType<typeof useStageExecution>,
 ): string | null {
   if (row.state === 'PENDING' || row.state === 'SKIPPED') return null;
-  const parts: string[] = [];
   const docs = execution.currentArtifacts.length;
-  if (docs > 0) parts.push(`${docs} ${docs === 1 ? 'document' : 'documents'}`);
-  if (execution.usedModels.length > 0) parts.push(displayModels(execution.usedModels));
-  const tokens = stageTokenTotal(execution.stageMetrics);
-  if (tokens !== null && tokens > 0) parts.push(`${formatTokens(tokens)} tokens`);
-  if (execution.stageCost?.priced) {
-    parts.push(
-      `${execution.stageCost.estimated ? '≈' : ''}${formatCost(
-        execution.stageCost.totalCost,
-        execution.stageCost.currency,
-      )}`,
-    );
-  }
-  return parts.length ? parts.join(' · ') : null;
-}
-
-// A rewind bumps `attempt` on every reset row, including stages that never
-// ran; only a stage that actually started has attempts worth showing.
-function attemptRan(row: IntentStageRow): boolean {
-  return row.attempt > 1 && (row.startedAt !== null || row.state !== 'PENDING');
+  return docs > 0 ? `${docs} ${docs === 1 ? 'document' : 'documents'}` : null;
 }
 
 function StalledStagePill({ since }: { since: string }) {
@@ -421,6 +437,7 @@ function StageRow({
   current,
   stalledSince,
   selected,
+  scrollIntoView,
   onToggle,
   sensors,
 }: {
@@ -428,20 +445,25 @@ function StageRow({
   current: boolean;
   stalledSince: string | null;
   selected: boolean;
+  /** Bring the detail into view: for a stage the reader picked, not one open by default. */
+  scrollIntoView: boolean;
   onToggle: () => void;
   sensors: IntentSensorRun[];
 }) {
   const { detail, rewindIntent, mayControlStage } = useIntent();
   useTick(row.state === 'RUNNING');
-  // A parked stage reads its wait like every other surface ("110 days", the
-  // header's grammar) rather than a stopwatch ("110d 19h"); finished and
-  // running stages keep the precise duration.
+  // One duration, and only while it is still growing: a parked stage reads its
+  // wait like every other surface ("110 days", the header's grammar) rather
+  // than a stopwatch ("110d 19h"), a running stage its elapsed time. How long
+  // a finished stage took is in its detail.
   const duration =
     row.state === 'WAITING_FOR_HUMAN'
       ? ageLabel(row.parkedAt ?? row.startedAt) || null
-      : formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
+      : row.state === 'RUNNING'
+        ? formatDuration(row.startedAt, null)
+        : null;
   const execution = useStageExecution(row);
-  const summary = selected ? null : stageSummary(row, execution);
+  const summary = selected ? null : stageKeyFact(row, execution);
   const stageName = displayStageName(row.stageId);
   const failure = row.runtimeError ? describeFailure(undefined, row.runtimeError) : null;
   const canRetry =
@@ -453,8 +475,8 @@ function StageRow({
   const [retryError, setRetryError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (selected) containerRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [selected]);
+    if (scrollIntoView) containerRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [scrollIntoView]);
   const handleRetry = async () => {
     if (retrying) return;
     setRetrying(true);
@@ -492,11 +514,6 @@ function StageRow({
           </span>
           <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
             {!selected && <SensorChips summary runs={sensors} />}
-            {attemptRan(row) && (
-              <Badge variant="secondary" size="sm">
-                Attempt {row.attempt}
-              </Badge>
-            )}
             {duration && (
               <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">
                 {duration}

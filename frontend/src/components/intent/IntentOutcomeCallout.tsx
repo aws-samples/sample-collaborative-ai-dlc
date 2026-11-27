@@ -185,14 +185,14 @@ function pullRequestLinks(detail: IntentDetail): PullRequestLink[] {
   return links;
 }
 
-const GATE_VERB: Record<IntentGate['kind'], string> = {
+export const GATE_VERB: Record<IntentGate['kind'], string> = {
   question: 'Answer',
   validation: 'Review',
   approval: 'Decide',
   'review-verdict': 'Decide',
 };
 
-const GATE_NOUN: Record<IntentGate['kind'], string> = {
+export const GATE_NOUN: Record<IntentGate['kind'], string> = {
   question: 'question',
   validation: 'review',
   approval: 'decision',

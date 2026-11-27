@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Disclosure } from '@/components/ui/disclosure';
 import { StatusPill } from '@/components/ui/status-pill';
@@ -30,6 +31,7 @@ import {
   ArrowUpRight,
   FileText,
   Loader2,
+  MessageCircleQuestion,
   RotateCcw,
   ScrollText,
 } from 'lucide-react';
@@ -37,9 +39,10 @@ import { aggregateMetrics, summarizeCost, type CostSummary } from '@/lib/metricA
 import { displayCli, displayStageName, humanizeSlug, stripCommonSuffix } from '@/lib/displayNames';
 import { StageUsage } from '@/components/intent/UsageMetrics';
 import { useReturnFocus } from '@/components/intent/useReturnFocus';
-import { deriveSensorStatus, getStatus } from '@/lib/statusModel';
+import { GATE_NOUN, GATE_VERB } from '@/components/intent/IntentOutcomeCallout';
+import { ageLabel, deriveSensorStatus, getStatus } from '@/lib/statusModel';
 import { describeFailure } from '@/lib/failureReasons';
-import type { IntentArtifact, IntentMetric } from '@/services/intents';
+import type { IntentArtifact, IntentGate, IntentMetric } from '@/services/intents';
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -104,14 +107,27 @@ export function useStageExecution(row: IntentStageRow): StageExecution {
   };
 }
 
-export function stageTokenTotal(metrics: Record<string, number>): number | null {
-  const parts = [
-    metrics.tokensInput,
-    metrics.tokensOutput,
-    metrics.tokensCacheRead,
-    metrics.tokensCacheWrite,
-  ].filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
-  return parts.length ? parts.reduce((sum, n) => sum + n, 0) : null;
+// What a stage's open gates ask for, as one noun: "question", "review", or
+// "decision" when they differ.
+function gateNoun(gates: IntentGate[]): string {
+  const nouns = new Set(gates.map((gate) => GATE_NOUN[gate.kind]));
+  return nouns.size === 1 ? [...nouns][0] : 'decision';
+}
+
+/** "1 question waiting for you" — the one line a stage shows about its open gates. */
+export function openGateLine(gates: IntentGate[]): string {
+  return `${plural(gates.length, gateNoun(gates))} waiting for you`;
+}
+
+// Closed gates are history: a count per outcome ("2 answered · 1 withdrawn"),
+// never one pill per gate.
+function closedGateLine(gates: IntentGate[]): string {
+  const counts = new Map<string, number>();
+  for (const gate of gates) {
+    const label = getStatus('gate', gate.status).label.toLowerCase();
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts].map(([label, count]) => `${count} ${label}`).join(' · ');
 }
 
 function artifactLabel(artifact: IntentArtifact): string {
@@ -253,9 +269,11 @@ function RestartDialog({
 }
 
 // Drill-down for one stage, shared by the list (inline expansion) and the
-// graph (below-canvas panel): timing, recorded documents, execution usage,
-// checks needing attention, gates, actions (output, retry, restart) and — one
-// action away — runtime, planned wiring and the full check history.
+// graph (below-canvas panel). By default only what matters now: the open
+// question with its action, the failure, recorded documents, execution usage,
+// checks needing attention and the stage actions (output, retry, restart).
+// One action away, under Details: the active/waiting time split, earlier
+// questions as a count, runtime, planned wiring and the full check history.
 export function StageDetail({
   row,
   durationInHeading = false,
@@ -264,6 +282,8 @@ export function StageDetail({
   durationInHeading?: boolean;
 }) {
   const {
+    projectId,
+    intentId,
     detail,
     stageEdges,
     stageRows,
@@ -359,20 +379,46 @@ export function StageDetail({
     : Math.min(currentArtifacts.length, PRIMARY_ARTIFACT_COUNT);
   const hiddenArtifactCount = Math.max(0, currentArtifacts.length - PRIMARY_ARTIFACT_COUNT);
   const stageGates = instanceId ? gates.filter((g) => g.stageInstanceId === instanceId) : [];
+  // Only an open gate is shown by default, as one line with its action; the
+  // answered and withdrawn ones are history, counted under Details.
+  const openGates = stageGates.filter((g) => g.status === 'pending');
+  const closedGates = stageGates.filter((g) => g.status !== 'pending');
+  const nextGate = openGates[0] ?? null;
+  const workPath = `/space/${projectId}/intent/${intentId}`;
   const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
   const durations = stageDurations(row);
-  const hasDiagnostics =
-    groupedDeps.size > 0 ||
-    produces.length > 0 ||
+  // One human duration, and only where the row heading does not already carry
+  // it; the active/waiting split is under Details.
+  const waitedFor = ageLabel(row.parkedAt ?? row.startedAt) || durations?.total;
+  const waitingOn = nextGate
+    ? { question: 'an answer', review: 'a review', decision: 'a decision' }[gateNoun(openGates)]
+    : null;
+  const timing = !durations
+    ? null
+    : row.state === 'RUNNING'
+      ? `Running for ${durations.total}`
+      : row.state === 'WAITING_FOR_HUMAN'
+        ? `Waiting${waitingOn ? ` for ${waitingOn}` : ''} for ${waitedFor}`
+        : `Took ${durations.total}`;
+  const timeSplit = durations?.waiting
+    ? `${durations.total} in total: ${durations.active} active, ${durations.waiting} waiting on answers`
+    : null;
+  const hasPlan = groupedDeps.size > 0 || produces.length > 0;
+  const hasDetails =
+    !!timeSplit ||
+    closedGates.length > 0 ||
+    hasPlan ||
     sensors.length > 0 ||
     !!row.cli ||
     supersededArtifacts.length > 0;
-  const diagnosticsSummary = [
+  // Names what is inside, without counts: the numbers are one click away.
+  const detailsSummary = [
+    timeSplit ? 'Timing' : null,
+    closedGates.length > 0 ? `Earlier ${gateNoun(closedGates)}s` : null,
     row.cli ? 'Runtime' : null,
-    groupedDeps.size > 0 ? plural(groupedDeps.size, 'planned input') : null,
-    produces.length > 0 ? plural(produces.length, 'output') : null,
-    sensors.length > 0 ? plural(sensors.length, 'check run') : null,
-    supersededArtifacts.length > 0 ? plural(supersededArtifacts.length, 'earlier version') : null,
+    hasPlan ? 'Planned inputs and outputs' : null,
+    sensors.length > 0 ? 'Check history' : null,
+    supersededArtifacts.length > 0 ? 'Earlier versions' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -381,36 +427,33 @@ export function StageDetail({
 
   return (
     <div className="space-y-3 rounded-b-md border border-t-0 bg-muted/20 px-3 py-3 text-sm">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        {durations && (!durationInHeading || durations.waiting) && (
-          <span>
-            {row.state === 'RUNNING'
-              ? 'Running for '
-              : row.state === 'WAITING_FOR_HUMAN'
-                ? 'Open for '
-                : 'Took '}
-            <span className="font-medium text-foreground">{durations.total}</span>
-            {durations.waiting && (
-              <>
-                {' '}
-                (<span className="font-medium text-foreground">
-                  {durations.active}
-                </span> active,{' '}
-                <span className="font-medium text-foreground">{durations.waiting}</span> waiting on
-                answers)
-              </>
-            )}
-          </span>
-        )}
-        {attemptRan && <span>Attempt {row.attempt}</span>}
-        {!row.planned && <span className="italic">not in the compiled plan</span>}
-        {stageGates.map((g) => (
-          <span key={g.humanTaskId} className="inline-flex items-center gap-1.5">
-            {humanizeSlug(g.kind)}
-            <StatusPill kind="gate" status={g.status} />
-          </span>
-        ))}
-      </div>
+      {nextGate && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-agent-waiting/30 bg-agent-waiting/[0.05] px-2.5 py-2">
+          <p className="flex min-w-0 items-center gap-2 text-xs font-medium text-agent-waiting-fg">
+            <MessageCircleQuestion aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+            {openGateLine(openGates)}
+          </p>
+          <Button asChild size="xs">
+            <Link
+              to={
+                nextGate.kind === 'validation'
+                  ? `${workPath}/review/${nextGate.humanTaskId}`
+                  : workPath
+              }
+            >
+              {GATE_VERB[nextGate.kind]}
+            </Link>
+          </Button>
+        </div>
+      )}
+
+      {((timing && !durationInHeading) || attemptRan || !row.planned) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {timing && !durationInHeading && <span>{timing}</span>}
+          {attemptRan && <span>Attempt {row.attempt}</span>}
+          {!row.planned && <span className="italic">not in the compiled plan</span>}
+        </div>
+      )}
 
       {failure && (
         <div className="space-y-1 rounded border border-agent-error/30 bg-agent-error/10 px-2.5 py-2 text-xs">
@@ -528,14 +571,30 @@ export function StageDetail({
 
       {canRewind && <RestartDialog row={row} open={restartOpen} onOpenChange={setRestartOpen} />}
 
-      {hasDiagnostics && (
+      {hasDetails && (
         <Disclosure
-          title="Diagnostics"
-          summary={<span className="hidden sm:inline">{diagnosticsSummary}</span>}
+          title="Details"
+          summary={<span className="hidden sm:inline">{detailsSummary}</span>}
           variant="row"
           className="rounded-md border"
           contentClassName="space-y-3"
         >
+          {timeSplit && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Timing</p>
+              <p className="text-xs">{timeSplit}</p>
+            </div>
+          )}
+
+          {closedGates.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">
+                Earlier {gateNoun(closedGates)}s
+              </p>
+              <p className="text-xs">{closedGateLine(closedGates)}</p>
+            </div>
+          )}
+
           {row.cli && (
             <div>
               <p className="text-xs font-medium text-muted-foreground">Runtime</p>
@@ -543,7 +602,7 @@ export function StageDetail({
             </div>
           )}
 
-          {(groupedDeps.size > 0 || produces.length > 0) && (
+          {hasPlan && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {groupedDeps.size > 0 && (
                 <div className="space-y-1">

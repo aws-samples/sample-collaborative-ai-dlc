@@ -273,7 +273,7 @@ describe('SensorChips', () => {
     );
   });
 
-  it('summarises attention-worthy checks as counts with a tooltip that names them', async () => {
+  it('summarises a collapsed row as the checks holding the stage, named in its title and never a tab stop', () => {
     render(
       <SensorChips
         summary
@@ -290,20 +290,26 @@ describe('SensorChips', () => {
         ]}
       />,
     );
-    const advisory = screen.getByText('2 advisory checks');
-    expect(advisory.closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral');
     expect(screen.getByText('1 blocking check').closest('[data-tone]')).toHaveAttribute(
       'data-tone',
       'danger',
     );
+    // Advisory misses do not hold the stage: no pill for them on a row.
+    expect(screen.queryByText(/advisory/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Required Sections/)).not.toBeInTheDocument();
 
-    await userEvent.tab();
-    await userEvent.tab();
-    const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Upstream Coverage');
-    expect(tooltip).toHaveTextContent('Intent Statement');
-    expect(tooltip).toHaveTextContent(/does not block/i);
+    // It sits inside the stage row's button: not focusable, no tooltip.
+    const pill = screen.getByText('1 blocking check').closest('[data-tone]');
+    expect(pill).not.toHaveAttribute('tabindex');
+    expect(pill?.getAttribute('title')).toContain('Type Check');
+    expect(pill?.getAttribute('title')).not.toContain('Upstream Coverage');
+  });
+
+  it('renders nothing in summary mode when only advisory checks missed', () => {
+    const { container } = render(
+      <SensorChips summary runs={[run({ result: 'INCONCLUSIVE', held: false })]} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('renders nothing in summary mode when every check passed', () => {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router';
 import { IntentStageList } from './IntentStageList';
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ type Globals = {
   intentSelectedStageId?: string | null;
   intentLastActivityAt?: string | null;
   intentPhaseNames?: Record<string, string>;
+  intentGates?: unknown[];
 };
 const g = globalThis as Globals;
 
@@ -33,7 +35,7 @@ vi.mock('@/contexts/IntentContext', () => ({
     workflowPhases: null,
     initializationPhasePaths: new Set<string>(),
     stageEdges: [],
-    gates: [],
+    gates: g.intentGates ?? [],
     lastActivityAt: g.intentLastActivityAt ?? null,
     outputBuffers: new Map(),
     selectedStageId: g.intentSelectedStageId ?? null,
@@ -84,6 +86,7 @@ beforeEach(() => {
   g.intentSelectedStageId = null;
   g.intentLastActivityAt = null;
   g.intentPhaseNames = undefined;
+  g.intentGates = [];
 });
 
 describe('IntentStageList', () => {
@@ -121,8 +124,103 @@ describe('IntentStageList', () => {
     render(<IntentStageList />);
     expect(screen.getByText('110 days')).toBeInTheDocument();
     expect(screen.queryByText(/^11[01]d \d+h$/)).toBeNull();
-    // A finished stage keeps its precise duration.
-    expect(screen.getByText('2d 2h')).toBeInTheDocument();
+    // How long a finished stage took is in its detail, not on its row.
+    expect(screen.queryByText('2d 2h')).toBeNull();
+  });
+
+  // D6: what is open follows the run. The stage that needs the reader shows
+  // its detail without a click; finished stages stay folded.
+  it('opens the waiting stage by default, without scrolling to it, and keeps it folded once folded', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    g.intentStageRows = [
+      row('SUCCEEDED', { stageId: 'reverse-engineering', stageInstanceId: 'si-re' }),
+      row('FAILED', { stageId: 'code-generation', stageInstanceId: 'si-cg' }),
+      row('WAITING_FOR_HUMAN', { stageId: 'requirements-analysis', stageInstanceId: 'si-ra' }),
+    ];
+    g.intentArtifactsByStage = new Map([
+      ['si-ra', [{ id: 'a1', title: 'Requirements', supersededAt: null }]],
+    ]);
+    g.intentStageDetail = { intent: { status: 'WAITING', currentStage: null }, metrics: [] };
+
+    render(<IntentStageList />);
+
+    const waiting = screen.getByRole('button', { name: /^Requirements Analysis/ });
+    expect(waiting).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('region', { name: 'Recorded documents' })).toBeVisible();
+    expect(screen.getByRole('button', { name: /^Reverse Engineering/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.getByRole('button', { name: /^Code Generation/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await userEvent.click(waiting);
+    expect(waiting).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Recorded documents' })).not.toBeInTheDocument();
+  });
+
+  // I3 (staging): Scope Definition still parked with its question answered,
+  // Feasibility parked on the open question. The open question's stage opens.
+  it('opens the waiting stage with an open question before one whose questions were answered (I3)', () => {
+    const DAY = 86_400_000;
+    g.intentStageRows = [
+      row('WAITING_FOR_HUMAN', {
+        stageId: 'scope-definition',
+        stageInstanceId: 'si-scope',
+        phase: 'ideation',
+        parkedAt: new Date(Date.now() - 137 * DAY).toISOString(),
+      }),
+      row('WAITING_FOR_HUMAN', {
+        stageId: 'feasibility',
+        stageInstanceId: 'si-feas',
+        phase: 'ideation',
+        parkedAt: new Date(Date.now() - 109 * DAY).toISOString(),
+      }),
+    ];
+    g.intentGates = [
+      { humanTaskId: 'q-scope', kind: 'question', stageInstanceId: 'si-scope', status: 'answered' },
+      { humanTaskId: 'q-feas', kind: 'question', stageInstanceId: 'si-feas', status: 'pending' },
+    ];
+    g.intentStageDetail = {
+      intent: { status: 'WAITING', currentStage: 'feasibility', pendingHumanTaskId: 'q-feas' },
+      metrics: [],
+    };
+
+    render(
+      <MemoryRouter>
+        <IntentStageList />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: /^Feasibility/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: /^Scope Definition/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('opens no stage of a run that finished', () => {
+    g.intentStageRows = [
+      row('SUCCEEDED', { stageId: 'reverse-engineering', stageInstanceId: 'si-re' }),
+      row('SUCCEEDED', { stageId: 'requirements-analysis', stageInstanceId: 'si-ra' }),
+    ];
+    g.intentStageDetail = { intent: { status: 'SUCCEEDED', currentStage: null }, metrics: [] };
+
+    render(<IntentStageList />);
+
+    // The phase itself is folded: no stage row is on screen until it is opened.
+    expect(screen.getByRole('button', { name: /^Build/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('button', { name: /^Reverse Engineering/ })).not.toBeInTheDocument();
   });
 
   it('uses a separate native retry button and reports retry failure', async () => {
@@ -130,6 +228,12 @@ describe('IntentStageList', () => {
     g.intentStageRows = [row('FAILED')];
 
     render(<IntentStageList />);
+
+    // The failed stage is open by default and offers Retry in its detail; the
+    // row's own retry button is for a folded row.
+    expect(screen.getByRole('button', { name: 'Retry stage' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry stage Build Stage' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^Build Stage/ }));
 
     const retry = screen.getByRole('button', { name: 'Retry stage Build Stage' });
     expect(retry.closest('button')).toBe(retry);
@@ -166,8 +270,9 @@ describe('IntentStageList', () => {
     expect(pill).toHaveAttribute('data-tone', 'danger');
   });
 
-  // O4: the collapsed row carries a one-line summary of what the stage produced.
-  it('summarises a finished stage inline: documents, readable model, tokens and cost', () => {
+  // O4 / D6: a folded row carries one fact about what the stage produced; the
+  // model, tokens and cost are in its detail.
+  it('gives a finished stage one fact on its row and keeps usage for its detail', () => {
     g.intentStageRows = [
       row('SUCCEEDED', { stageId: 'reverse-engineering', stageInstanceId: 'si-re' }),
       row('WAITING_FOR_HUMAN', { stageId: 'requirements-analysis', stageInstanceId: 'si-ra' }),
@@ -198,8 +303,9 @@ describe('IntentStageList', () => {
     render(<IntentStageList />);
 
     const rowButton = screen.getByRole('button', { name: /^Reverse Engineering/ });
-    expect(rowButton).toHaveTextContent('2 documents · Claude Opus 4.6 · 152.0K tokens · $0.03');
-    expect(rowButton).not.toHaveTextContent('us.anthropic');
+    expect(rowButton).toHaveTextContent('2 documents');
+    expect(rowButton).not.toHaveTextContent(/Claude|tokens|\$0\.03|us\.anthropic/);
+    expect(screen.queryByText('Claude Opus 4.6')).not.toBeInTheDocument();
   });
 
   // T5: one denominator — in-scope stages — with the rest findable but folded.
@@ -272,10 +378,12 @@ describe('IntentStageList', () => {
       'data-tone',
       'danger',
     );
-    // The row explains the failure in plain words; the raw code stays in the detail.
-    expect(failed).toHaveTextContent(
-      'This stage uses a mode this platform version does not support yet.',
-    );
+    // The failed stage is open: its detail explains the failure in plain words
+    // and keeps the raw code behind the technical details.
+    expect(failed).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByText('This stage uses a mode this platform version does not support yet.'),
+    ).toBeInTheDocument();
     expect(failed).not.toHaveTextContent('not_implemented');
     expect(failed).not.toHaveTextContent('stage_failed');
     expect(screen.getByLabelText('Phase has a failed stage')).toBeInTheDocument();
@@ -284,8 +392,9 @@ describe('IntentStageList', () => {
 
   // I5: a rewind bumps `attempt` on every reset row, including stages that
   // never ran. "Attempt 3 · Not started" is a contradiction; only a stage that
-  // actually ran shows its attempt, and the stage the stalled engine is on
-  // says so with a date instead of "Not started".
+  // actually ran shows its attempt (in its detail, not as a badge on the row),
+  // and the stage the stalled engine is on says so with a date instead of
+  // "Not started".
   it('shows attempts only for stages that ran and names the stalled stage with its date', async () => {
     g.intentStageRows = [
       row('PENDING', {
@@ -341,7 +450,9 @@ describe('IntentStageList', () => {
     expect(pill).toHaveAttribute('data-tone', 'warning');
 
     const ran = screen.getByRole('button', { name: /^Market Research/ });
-    expect(within(ran).getByText('Attempt 2')).toBeInTheDocument();
+    expect(ran).not.toHaveTextContent('Attempt');
+    expect(ran).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Attempt 2')).toBeInTheDocument();
   });
 
   // 5f3847ee: live rows outside the plan arrive in arbitrary order, so one
@@ -477,8 +588,9 @@ describe('IntentStageList', () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
-  // AU2: an advisory miss is a neutral count, not a red warning.
-  it('shows advisory sensor findings as a neutral count and blocking ones in red', () => {
+  // AU2 / D6: a folded row flags only a check that holds the stage; an
+  // advisory miss is named in the stage detail, not counted on the row.
+  it('flags a blocking check on a folded row and names an advisory miss only in the detail', () => {
     g.intentStageRows = [
       row('WAITING_FOR_HUMAN', { stageId: 'reverse-engineering', stageInstanceId: 'si-re' }),
       row('FAILED', { stageId: 'build-and-test', stageInstanceId: 'si-bt' }),
@@ -518,9 +630,10 @@ describe('IntentStageList', () => {
 
     render(<IntentStageList />);
 
-    const advisory = screen.getByText('1 advisory check');
-    expect(advisory.closest('[data-tone]')).toHaveAttribute('data-tone', 'neutral');
-    expect(screen.queryByText('upstream-coverage')).not.toBeInTheDocument();
+    expect(screen.queryByText(/advisory check/)).not.toBeInTheDocument();
+    // The waiting stage is open: its detail names the advisory miss.
+    expect(screen.getByText('Checks needing attention')).toBeInTheDocument();
+    expect(screen.getByText('Upstream Coverage')).toBeInTheDocument();
     const blocking = screen.getByText('1 blocking check');
     expect(blocking.closest('[data-tone]')).toHaveAttribute('data-tone', 'danger');
   });

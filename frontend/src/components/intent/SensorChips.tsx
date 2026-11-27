@@ -120,52 +120,33 @@ function SensorTooltip({ children, lines }: { children: ReactNode; lines: string
   );
 }
 
-const Pill = forwardRef<HTMLSpanElement, { tone: StatusTone } & HTMLAttributes<HTMLSpanElement>>(
-  function Pill({ tone, className, children, ...props }, ref) {
-    return (
-      <span
-        ref={ref}
-        data-tone={tone}
-        tabIndex={0}
-        className={cn(
-          'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-2xs font-medium',
-          'cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          TONE_CLASSES[tone].pill,
-          className,
-        )}
-        {...props}
-      >
-        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
-        {children}
-      </span>
-    );
-  },
-);
-
-function CountPill({
-  count,
-  statusKey,
-  lines,
-}: {
-  count: number;
-  statusKey: 'advisory' | 'blocking';
-  lines: string[];
-}) {
-  const entry = getStatus('sensor', statusKey);
-  const noun = statusKey === 'blocking' ? 'blocking check' : 'advisory check';
+const Pill = forwardRef<
+  HTMLSpanElement,
+  { tone: StatusTone; focusable?: boolean } & HTMLAttributes<HTMLSpanElement>
+>(function Pill({ tone, focusable = true, className, children, ...props }, ref) {
   return (
-    <SensorTooltip lines={[...lines, entry.help]}>
-      <Pill tone={entry.tone}>
-        {count} {noun}
-        {count === 1 ? '' : 's'}
-      </Pill>
-    </SensorTooltip>
+    <span
+      ref={ref}
+      data-tone={tone}
+      tabIndex={focusable ? 0 : undefined}
+      className={cn(
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-2xs font-medium',
+        'cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        TONE_CLASSES[tone].pill,
+        className,
+      )}
+      {...props}
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+      {children}
+    </span>
   );
-}
+});
 
-// Latest verdict per sensor. `summary` folds attention-worthy verdicts into
-// at most two counts ("1 blocking check", "2 advisory checks") for a collapsed
-// row; the full mode names every sensor with its registry status.
+// Latest verdict per sensor. `summary` is for a collapsed row and shows only
+// what holds the stage: one "1 blocking check" pill, nothing otherwise
+// (advisory misses are listed in the stage detail). The full mode names every
+// sensor with its registry status.
 export function SensorChips({
   runs,
   summary = false,
@@ -179,27 +160,20 @@ export function SensorChips({
   if (latest.length === 0) return null;
 
   if (summary) {
-    const attention = latest.filter(sensorNeedsAttention);
-    const blocking = attention.filter((r) => r.held);
-    const advisory = attention.filter((r) => !r.held);
-    if (attention.length === 0) return null;
+    const blocking = latest.filter((r) => sensorNeedsAttention(r) && r.held);
+    if (blocking.length === 0) return null;
+    const entry = getStatus('sensor', 'blocking');
+    // The row is itself a button: no tab stop or tooltip inside it, the names
+    // go in `title` (the stage detail lists them in full).
     return (
-      <span className={cn('inline-flex flex-wrap items-center gap-1', className)}>
-        {blocking.length > 0 && (
-          <CountPill
-            count={blocking.length}
-            statusKey="blocking"
-            lines={blocking.map(sensorLine)}
-          />
-        )}
-        {advisory.length > 0 && (
-          <CountPill
-            count={advisory.length}
-            statusKey="advisory"
-            lines={advisory.map(sensorLine)}
-          />
-        )}
-      </span>
+      <Pill
+        tone={entry.tone}
+        focusable={false}
+        title={[...blocking.map(sensorLine), entry.help].join('\n')}
+        className={className}
+      >
+        {blocking.length} blocking check{blocking.length === 1 ? '' : 's'}
+      </Pill>
     );
   }
 
