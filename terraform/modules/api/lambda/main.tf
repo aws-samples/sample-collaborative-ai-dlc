@@ -3438,8 +3438,6 @@ locals {
     var.enable_mcp_gateway ? {
       GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
   } : {}, local.runtime_mcp_policy_env)
-
-  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 module "intents_lambda" {
@@ -3472,6 +3470,8 @@ module "intents_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = local.intents_environment
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
