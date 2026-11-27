@@ -2394,7 +2394,7 @@ export const runParallelSection = async (segment, toolkit) => {
       } catch {
         /* lane bookkeeping must never mask the failure */
       }
-      await stopSession(laneSessionIdFor(intentId, segment.index, slug)).catch(() => {});
+      await releaseLaneSession(slug).catch(() => {});
     });
     for (let ask = 0; ; ask += 1) {
       const gate = await awaitEngineGate(laneCtx, toolkit, {
@@ -2635,6 +2635,19 @@ export const runParallelSection = async (segment, toolkit) => {
     }
   };
 
+  // Free a lane's runtime session before a retry, from either retry path (the
+  // lane retry gate and halt-and-ask). AgentCore deployments do not replace a
+  // live session, so the retry remounts the preserved workspace in a fresh
+  // session running the currently deployed image. A confirmed stop leaves no
+  // live job, so a stage row it left RUNNING (lane crash, refused duplicate
+  // start) is a dead attempt the retry could never claim: fail it. Callers run
+  // this inside their existing durable step.
+  const releaseLaneSession = async (slug) => {
+    const released = await stopSession(laneSessionIdFor(intentId, segment.index, slug));
+    if (released?.stopped || released?.notFound) await failDeadLaneAttempts(slug);
+    return released;
+  };
+
   // Run lanes + halt-and-ask rounds until every requested lane is MERGED, the
   // human skips, or a terminal exit. Returns null | terminal value.
   // Revision runs (feedbackTaskId set) revive MERGED lanes and inject the
@@ -2700,20 +2713,13 @@ export const runParallelSection = async (segment, toolkit) => {
         );
         return null;
       }
-      // retry: failed lanes + their blocked dependents from this round.
-      // AgentCore deployments do not replace an existing live session. Stop
-      // each failed lane before retrying so it remounts the preserved
-      // workspace in a fresh session running the currently deployed image.
-      // A stopped session has no live job, so a stage row it left RUNNING
-      // (lane crash, refused duplicate start) is a dead attempt the retry
-      // could never claim. Fail those rows inside the existing step.
+      // retry: failed lanes + their blocked dependents from this round. Each
+      // failed lane is released first (releaseLaneSession) inside the
+      // existing step.
       for (const slug of failed) {
-        const sessionId = laneSessionIdFor(intentId, segment.index, slug);
-        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, async () => {
-          const released = await stopSession(sessionId);
-          if (released?.stopped || released?.notFound) await failDeadLaneAttempts(slug);
-          return released;
-        });
+        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, () =>
+          releaseLaneSession(slug),
+        );
       }
       round += 1;
       toRun = [...new Set([...failed, ...toRun.filter((s) => laneState.get(s) === 'BLOCKED')])];

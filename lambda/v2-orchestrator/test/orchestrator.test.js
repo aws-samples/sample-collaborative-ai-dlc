@@ -3781,6 +3781,65 @@ describe('WP5 — engine-gate decisions', () => {
       expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(false);
     });
 
+    it.each([
+      [{ stopped: true }, true],
+      [{ stopped: false, notFound: true }, true],
+      [{ stopped: false, error: 'throttled' }, false],
+    ])(
+      'an immediate retry releases a dead lane attempt after stopping %o',
+      async (stopResult, released) => {
+        deps.store.getHumanTask = answers({
+          'eg-lane-retry-s1-billing-cg-a0': { answer: { decision: 'retry' } },
+          'eg-lane-retry-s1-billing-cg-a1': { answer: { decision: 'leave-failed' } },
+          'eg-halt': { answer: { decision: 'abort' } },
+        });
+        // The failed attempt left billing's cg RUNNING under a callback the
+        // lane no longer waits on (lane crash / refused duplicate start).
+        let staleRow = true;
+        const billingCg = planStageInstanceId('aidlc-v2@1', 'cg', 'billing', 1);
+        deps.store.getStage = vi.fn(async (_e, stageInstanceId) =>
+          staleRow && stageInstanceId === billingCg
+            ? { state: 'RUNNING', stageCallbackId: 'cb-stale' }
+            : null,
+        );
+        deps.store.failRunningStageAttempt = vi.fn(async (args) => {
+          if (args.stageCallbackId === 'cb-stale') staleRow = false;
+          return null;
+        });
+        deps.stopSession = vi.fn(async () => stopResult);
+        let cgBillingAttempts = 0;
+        deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+          if (payload.command === 'init-ws-start') return { ok: true };
+          if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+          if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
+            cgBillingAttempts += 1;
+            // The worker cannot claim a row RUNNING under another callback.
+            if (cgBillingAttempts === 1 || staleRow)
+              return { ok: false, state: 'FAILED', reason: 'stage_attempt_conflict' };
+          }
+          return { ok: true, state: 'SUCCEEDED' };
+        });
+        const res = await start();
+        const releases = deps.store.failRunningStageAttempt.mock.calls
+          .map(([args]) => args)
+          .filter((args) => args.stageCallbackId === 'cb-stale');
+        if (released) {
+          expect(releases).toEqual([
+            expect.objectContaining({ stageInstanceId: billingCg, runtimeError: 'lane_released' }),
+          ]);
+          // The first retry claims the stage; halt-and-ask is never needed.
+          expect(res.ok).toBe(true);
+          expect(cgBillingAttempts).toBe(2);
+          expect(gatesCreated().some((id) => id.startsWith('eg-halt'))).toBe(false);
+        } else {
+          // A session that may still run the old job is never released.
+          expect(releases).toEqual([]);
+          expect(cgBillingAttempts).toBe(2);
+          expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+        }
+      },
+    );
+
     it('keeps halting for a run whose load-meta checkpoint predates the gate', async () => {
       // Replay a load-meta result recorded before laneFailurePolicy existed.
       const step = ctx.step;
