@@ -438,7 +438,9 @@ scan again periodically. After enhanced scanning is turned on, a scan ECR can
 run goes through the same gate as a new build: Critical or High findings, or a
 result too large to read completely, wait for review, and anything else makes
 the version `READY`. A decision an
-administrator takes in the meantime is kept.
+administrator takes in the meantime is kept. If the image was deleted from the
+repository, the version moves to **Needs attention** (`tool_image_not_found`)
+and offers **Retry**, which rebuilds the image.
 
 Acceptance does not publish the version. The findings and acceptance record
 remain visible after publication and in every environment revision that
