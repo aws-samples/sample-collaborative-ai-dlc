@@ -9136,6 +9136,46 @@ describe('runStage — compiled context status', () => {
     }
   });
 
+  it('defaults the status fields of a compiler that does not return them', async () => {
+    const { metrics } = await runWithCompiler(async () => ({
+      markdown: '## Compiled graph context',
+    }));
+    expect(metrics).toMatchObject({ contextPackStatus: 'ok', contextItemsOmitted: 0 });
+  });
+
+  it('records what the real compiler left out of a graph with 60 decisions', async () => {
+    const decisions = Array.from({ length: 60 }, (_, k) => ({
+      id: `decision:i:${String(k).padStart(2, '0')}`,
+      label: 'Decision',
+      slug: `dec-${k}`,
+    }));
+    const graph = async () =>
+      new Proxy(
+        {
+          close: async () => {},
+          getItems: async ({ itemType }) => (itemType === 'Decision' ? decisions : []),
+        },
+        {
+          get: (target, name) => (name === 'then' ? undefined : (target[name] ?? (async () => []))),
+        },
+      );
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const deps = baseDeps({ spawnFn: okSpawn, openEngineGraph: vi.fn(graph) });
+      const res = await runStage(baseArgs, deps);
+      expect(res.ok).toBe(true);
+      const sample = deps.store.calls.find(
+        (c) => c[0] === 'recordMetric' && c[1].metrics?.promptBytes !== undefined,
+      );
+      expect(sample[1].metrics).toMatchObject({
+        contextPackStatus: 'truncated',
+        contextItemsOmitted: 10,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('leaves the status out when no engine graph is wired', async () => {
     const deps = baseDeps({ spawnFn: okSpawn });
     await runStage(baseArgs, deps);

@@ -3601,7 +3601,8 @@ const runStageAttempt = async (
         contextGraph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
         const pack = await compileContextPack({ graph: contextGraph, stage, unit });
         compiledContext = pack.markdown ?? '';
-        contextPack = { status: pack.status, omitted: pack.omitted };
+        // An injected compiler may predate the status fields.
+        contextPack = { status: pack.status ?? 'ok', omitted: pack.omitted ?? 0 };
         if (contextPack.status !== 'ok') {
           logger.warn('compiled context incomplete', {
             stageInstanceId,
