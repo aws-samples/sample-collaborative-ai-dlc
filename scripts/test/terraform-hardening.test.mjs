@@ -183,6 +183,11 @@ test('the OS package epoch reaches every image build and refreshes only the last
     const refresh = runs.at(-1);
     // Last RUN, so a new epoch leaves the tool and dependency layers cached.
     assert.ok(refresh.includes('${OS_PACKAGES_EPOCH}') && refresh.includes(upgrade), path);
+    // Without an epoch (CI, pre-built images) the layer must not change anything.
+    assert.ok(
+      refresh.startsWith('if [ -n "${OS_PACKAGES_EPOCH}" ]; then'),
+      `${path} must skip the refresh without an epoch`,
+    );
     assert.ok(
       dockerfile.search(/^ARG OS_PACKAGES_EPOCH=""$/m) < dockerfile.lastIndexOf('\nRUN '),
       path,
