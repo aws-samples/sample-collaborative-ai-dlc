@@ -128,8 +128,8 @@ executed a run.
 
 Each fresh stage run also records how complete its compiled graph context was,
 next to the prompt size: `contextPackStatus` is `ok`, `truncated` (a section
-cap or the byte budget left decisions or unit-pack items out, or a navigation
-read failed) or `unavailable` (the compiler or a graph read it depends on
+cap left decisions or unit-pack items out, the byte budget cut the pack, or a
+navigation read failed) or `unavailable` (the compiler or a graph read it depends on
 failed), and `contextItemsOmitted` counts the decisions and unit-pack items
 left out. The prompt itself says what was cut and points the agent to
 `get_items`.
