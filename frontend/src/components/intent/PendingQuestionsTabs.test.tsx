@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { useState } from 'react';
 import { render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { PendingQuestionsTabs, countQuestions, gateTabLabel } from './PendingQuestionsTabs';
@@ -24,15 +25,22 @@ const makeGates = (count: number): IntentGate[] =>
     }),
   );
 
-const renderTabs = (gates: IntentGate[], over: Record<string, unknown> = {}) =>
-  render(
+// The page owns the selection; this harness plays that part.
+function Tabs({ gates, ...over }: { gates: IntentGate[] } & Record<string, unknown>) {
+  const [active, setActive] = useState<string | null>(gates[0]?.humanTaskId ?? null);
+  return (
     <PendingQuestionsTabs
       gates={gates}
-      activeGateId={gates[0]?.humanTaskId ?? null}
+      activeGateId={active}
+      onSelectGate={setActive}
       renderGateCard={(g) => <div data-testid={`card-${g.humanTaskId}`} />}
       {...over}
-    />,
+    />
   );
+}
+
+const renderTabs = (gates: IntentGate[], over: Record<string, unknown> = {}) =>
+  render(<Tabs gates={gates} {...over} />);
 
 describe('gateTabLabel', () => {
   it('prefers the prompt', () => {

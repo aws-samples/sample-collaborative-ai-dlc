@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@/test/query';
 import type { IntentArtifact, IntentDetail } from '@/services/intents';
 import type { IntentStageRow } from '@/contexts/IntentContext';
@@ -42,12 +42,13 @@ const stageRows: IntentStageRow[] = [
   },
 ];
 
+const ctx = vi.hoisted(() => ({ intentId: 'i1' }));
 vi.mock('@/contexts/IntentContext', () => ({
   useIntent: () => ({
     openArtifactPreview: vi.fn(),
     openItemPreview: vi.fn(),
     projectId: 'p1',
-    intentId: 'i1',
+    intentId: ctx.intentId,
     stageRows,
     phaseNameOf: (path: string) => ({ '01': 'Inception', '02': 'Construction' })[path] ?? path,
   }),
@@ -99,6 +100,43 @@ const detail = (over: Partial<IntentDetail> = {}): IntentDetail =>
   }) as unknown as IntentDetail;
 
 describe('WorkProductsSection — filter', () => {
+  beforeEach(() => {
+    ctx.intentId = 'i1';
+  });
+
+  it('keeps the filter field while a filter is active after a rewind drops a document', () => {
+    const { rerender } = render(<WorkProductsSection detail={detail()} gates={[]} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter documents' }), {
+      target: { value: 'compet' },
+    });
+    expect(screen.getByText('Competitive analysis')).toBeInTheDocument();
+
+    // The rewind supersedes the matching document: five current ones remain.
+    const rewound = detail().artifacts.map((artifact) =>
+      artifact.id === 'b' ? { ...artifact, supersededAt: '2026-01-03T10:00:00Z' } : artifact,
+    );
+    rerender(<WorkProductsSection detail={detail({ artifacts: rewound })} gates={[]} />);
+    expect(screen.getByText('5 documents')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Filter documents' })).toHaveValue('compet');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }));
+    expect(screen.queryByRole('searchbox', { name: 'Filter documents' })).not.toBeInTheDocument();
+    expect(screen.getByText('Business rules')).toBeInTheDocument();
+  });
+
+  it('starts unfiltered on another intent', () => {
+    const { rerender } = render(<WorkProductsSection detail={detail()} gates={[]} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter documents' }), {
+      target: { value: 'compet' },
+    });
+    expect(screen.queryByText('Business rules')).not.toBeInTheDocument();
+
+    ctx.intentId = 'i2';
+    rerender(<WorkProductsSection detail={detail()} gates={[]} />);
+    expect(screen.getByRole('searchbox', { name: 'Filter documents' })).toHaveValue('');
+    expect(screen.getByText('Business rules')).toBeInTheDocument();
+  });
+
   it('filters documents across closed stages and clears back to the default view', () => {
     render(<WorkProductsSection detail={detail()} gates={[]} />);
 

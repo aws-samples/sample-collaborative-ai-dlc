@@ -86,6 +86,7 @@ const answerGate = vi.fn();
 const repair = vi.fn();
 const exportWorkflow = vi.fn();
 const cancel = vi.fn();
+const resume = vi.fn();
 const del = vi.fn();
 const writeText = vi.fn();
 const graph = vi.fn();
@@ -100,6 +101,7 @@ vi.mock('@/services/intents', () => ({
     repair: (...a: unknown[]) => repair(...a),
     exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
     cancel: (...a: unknown[]) => cancel(...a),
+    resume: (...a: unknown[]) => resume(...a),
     delete: (...a: unknown[]) => del(...a),
     outputs: () => Promise.resolve({ outputs: [], cursor: 0, more: false }),
     // Knowledge graph feeding the popovers/derived-items section — empty
@@ -2659,6 +2661,20 @@ describe('IntentView — resume after a failed gate callback', () => {
     ).toBeInTheDocument();
   });
 
+  it('offers it on the answered review page too, where the outcome callout is hidden', async () => {
+    resume.mockReset().mockResolvedValue(undefined);
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+      gates: [answered()],
+    });
+    renderAt('/space/p1/intent/i1/review/h1');
+
+    expect(await screen.findByText('This review is no longer pending')).toBeInTheDocument();
+    expect(screen.getByText('Your answer was saved but the run did not continue')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Resume run' }));
+    expect(resume).toHaveBeenCalledWith('p1', 'i1');
+  });
+
   it('does not offer it once the intent is no longer waiting', async () => {
     get.mockResolvedValue(baseDetail({ status: 'CANCELLED', resumeRequired: marker }));
     renderAt();
@@ -3014,6 +3030,13 @@ describe('IntentView — Work header, outcome callout and actions', () => {
 
     expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
     expect(screen.queryByTestId('gate-panel-h2')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Answer: Question h2?' }));
+    expect(await screen.findByTestId('gate-panel-h2')).toBeInTheDocument();
+    expect(screen.queryByTestId('gate-panel-h1')).toBeNull();
+
+    // Tab to the other question, then the same shortcut again: it still opens h2.
+    await userEvent.click(screen.getByRole('tab', { name: /Question h1\?/ }));
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Answer: Question h2?' }));
     expect(await screen.findByTestId('gate-panel-h2')).toBeInTheDocument();
     expect(screen.queryByTestId('gate-panel-h1')).toBeNull();

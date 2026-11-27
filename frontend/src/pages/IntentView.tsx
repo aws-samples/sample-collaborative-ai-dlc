@@ -493,8 +493,8 @@ export default function IntentView() {
       return;
     }
     setFocusedGateId(gateId);
-    // The tabs re-seed on the next render; the card's anchor exists once it
-    // is the selected one, so the scroll waits for that frame.
+    // The card's anchor exists once it is the selected one, so the scroll
+    // waits for that frame.
     requestAnimationFrame(() => {
       const anchor =
         document.getElementById(gateCardId(gateId)) ??
@@ -697,10 +697,11 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* The outcome callout carries the resume while the run is parked; a lane
-          question whose callback failed while the intent keeps RUNNING is the
-          one case it cannot show, so it gets its own notice here. */}
-      {resumeRequired && intent.status !== 'WAITING' && (
+      {/* The outcome callout carries the resume while the run is parked. It
+          cannot show it for a lane question whose callback failed while the
+          intent keeps RUNNING, and it is hidden on review routes, so those get
+          this notice instead. */}
+      {resumeRequired && (intent.status !== 'WAITING' || reviewGateId) && (
         <Alert
           tone="warning"
           title="Your answer was saved but the run did not continue"
@@ -813,12 +814,12 @@ export default function IntentView() {
           {/* Pending human gates — tabs: one GateCard at a time */}
           {pendingGates.length > 0 && (
             <div id="pending-human-gates">
-              {/* The tabs keep their own selection once mounted; a new key
-                  re-seeds it with the gate chosen in the outcome callout. */}
+              {/* One selection for the tabs and the callout's Answer
+                  shortcuts: whichever was used last decides the open question. */}
               <PendingQuestionsTabs
-                key={focusedGateId ?? 'default'}
                 gates={pendingGates}
                 activeGateId={focusedGateId ?? intent.pendingHumanTaskId}
+                onSelectGate={setFocusedGateId}
                 gateContext={(gate) => {
                   // stageNameOf falls back to the raw instance id when the stage
                   // row is unknown — no prefix beats an opaque id on the tab.

@@ -39,7 +39,10 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   const questionGates = useMemo(() => gates.filter((g) => g.kind === 'question'), [gates]);
   const steering = detail.steering ?? [];
   const [documentOrder, setDocumentOrderState] = useState(getDocumentOrder);
-  const [filter, setFilter] = useState('');
+  // The filter belongs to one intent: switching intents starts unfiltered.
+  const [filterState, setFilterState] = useState({ intentId, value: '' });
+  const filter = filterState.intentId === intentId ? filterState.value : '';
+  const setFilter = (value: string) => setFilterState({ intentId, value });
   const newestFirst = documentOrder === 'newest-first';
   const documentCount = useMemo(
     () => countWorkProductDocuments(detail.artifacts),
@@ -70,7 +73,9 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
 
   const planWarnings = detail.intent.planWarnings ?? [];
   const showPlanWarnings = planWarnings.length > 0 && detail.intent.status !== 'SUCCEEDED';
-  const showFilter = documentCount >= FILTER_FROM_DOCUMENTS;
+  // An active filter keeps its field (and Clear) even when a rewind drops the
+  // count below the threshold; otherwise it would hide documents with no way back.
+  const showFilter = documentCount >= FILTER_FROM_DOCUMENTS || filter !== '';
 
   return (
     <Card>

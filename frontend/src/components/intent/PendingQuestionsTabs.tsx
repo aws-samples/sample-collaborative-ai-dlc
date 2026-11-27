@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useId } from 'react';
 import { FileQuestion, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { IntentGate } from '@/services/intents';
@@ -55,7 +55,13 @@ export function gateTabLabel(gate: IntentGate): string {
 
 interface PendingQuestionsTabsProps {
   gates: IntentGate[];
+  /**
+   * The selected question, owned by the page so the tabs and the outcome
+   * callout's Answer shortcuts share one selection. An id that is not pending
+   * (or null) shows the first question.
+   */
   activeGateId: string | null;
+  onSelectGate: (humanTaskId: string) => void;
   renderGateCard: (gate: IntentGate) => React.ReactNode;
   /** Short scan context per tab (stage name, unit lane) — null hides the prefix. */
   gateContext?: (gate: IntentGate) => string | null;
@@ -69,30 +75,15 @@ export const gateCardId = (humanTaskId: string) => `gate-card-${humanTaskId}`;
 export function PendingQuestionsTabs({
   gates,
   activeGateId,
+  onSelectGate: setSelectedId,
   renderGateCard,
   gateContext,
 }: PendingQuestionsTabsProps) {
   const headingId = useId();
-  const [selectedId, setSelectedId] = useState<string>(
-    () => activeGateId ?? gates[0]?.humanTaskId ?? '',
-  );
-
-  // Stable string signature for gate-set identity (avoids object/Set deps).
-  // NUL delimiter — cannot appear in task ids, so splits are always exact.
-  const gateIdSig = gates.map((g) => g.humanTaskId).join('\u0000');
-
-  useEffect(() => {
-    setSelectedId((current) => {
-      const ids = gateIdSig.split('\u0000');
-      if (ids.includes(current)) return current;
-      if (activeGateId && ids.includes(activeGateId)) return activeGateId;
-      return ids[0] ?? '';
-    });
-  }, [activeGateId, gateIdSig]);
-
-  const selectedGate = gates.find((g) => g.humanTaskId === selectedId) ?? gates[0] ?? null;
+  const selectedGate = gates.find((g) => g.humanTaskId === activeGateId) ?? gates[0] ?? null;
 
   if (!selectedGate) return null;
+  const selectedId = selectedGate.humanTaskId;
 
   const heading = <QuestionsHeading id={headingId} count={countQuestions(gates)} />;
   const regionProps = { role: 'region' as const, 'aria-label': 'Pending questions' };
