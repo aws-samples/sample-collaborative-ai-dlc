@@ -311,7 +311,7 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
             {findings.map((finding, index) => (
               <div
                 key={`${finding.id}-${index}`}
-                className="grid gap-2 px-3 py-2.5 sm:grid-cols-[90px_minmax(0,1fr)_auto]"
+                className="grid gap-2 px-3 py-2.5 sm:grid-cols-[7.5rem_minmax(0,1fr)_auto]"
               >
                 <Badge
                   variant="outline"
