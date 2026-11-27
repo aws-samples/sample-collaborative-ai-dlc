@@ -489,7 +489,7 @@ describe('native workflow export', () => {
       expect(manifest).toMatchObject({
         ref: RUNTIME_REF,
         harness: 'codex',
-        source: { releaseTag: TAG, path: 'runtime/codex/' },
+        source: { releaseTag: TAG, runtimeSha256: PROFILE.runtimeSha256, path: 'runtime/codex/' },
       });
       expect(manifest.files.map((file) => file.path)).toContain('AGENTS.md');
 
@@ -525,6 +525,73 @@ describe('native workflow export', () => {
         expect(result.files.get('AGENTS.md')).toEqual(body);
       },
     );
+
+    // A cache entry written before the pin, or from an asset with another
+    // digest, must not be served: the asset is fetched and checked again.
+    describe('a cached runtime distribution', () => {
+      const manifestKey = `aidlc-distributions/${RUNTIME_REF}/codex.manifest.json`;
+      const warmCache = async () => {
+        fetchRepoFiles.mockReset();
+        fetchReleaseRuntimeFiles.mockReset();
+        const { distributionFiles } = await distribution();
+        const runtimeFiles = new Map(
+          [...distributionFiles].map(([path, value]) => [`runtime/codex/${path}`, value]),
+        );
+        fetchRepoFiles.mockRejectedValue(noDist(RUNTIME_REF));
+        fetchReleaseRuntimeFiles.mockResolvedValue(runtimeFiles);
+        const s3 = memoryS3();
+        await loadRuntime(s3);
+        fetchReleaseRuntimeFiles.mockClear();
+        return s3;
+      };
+      const cachedManifest = (s3) => JSON.parse(s3.objects.get(manifestKey).toString('utf8'));
+      const rewriteSource = (s3, source) =>
+        s3.objects.set(manifestKey, Buffer.from(JSON.stringify({ ...cachedManifest(s3), source })));
+
+      it('serves an entry cached from the pinned asset without fetching', async () => {
+        const s3 = await warmCache();
+
+        await loadRuntime(s3);
+
+        expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['before the pin existed', { releaseTag: TAG, path: 'runtime/codex/' }],
+        [
+          'from an asset with another digest',
+          { releaseTag: TAG, runtimeSha256: 'f'.repeat(64), path: 'runtime/codex/' },
+        ],
+      ])('fetches again and overwrites an entry cached %s', async (_label, source) => {
+        const s3 = await warmCache();
+        rewriteSource(s3, source);
+
+        await loadRuntime(s3);
+
+        expect(fetchReleaseRuntimeFiles).toHaveBeenCalledOnce();
+        expect(cachedManifest(s3).source.runtimeSha256).toBe(PROFILE.runtimeSha256);
+      });
+
+      it('fetches again instead of serving a legacy entry, which records no source', async () => {
+        const s3 = await warmCache();
+        const manifest = cachedManifest(s3);
+        s3.objects.delete(manifestKey);
+        s3.objects.set(
+          `aidlc-distributions/${RUNTIME_REF}/manifest.json`,
+          Buffer.from(
+            JSON.stringify({
+              ref: RUNTIME_REF,
+              harnesses: { codex: { ...manifest, available: true } },
+            }),
+          ),
+        );
+
+        await loadRuntime(s3);
+
+        expect(fetchReleaseRuntimeFiles).toHaveBeenCalledOnce();
+        expect(cachedManifest(s3).source.runtimeSha256).toBe(PROFILE.runtimeSha256);
+      });
+    });
 
     it('keeps reading dist/ when the commit has it', async () => {
       fetchRepoFiles.mockReset();
@@ -564,10 +631,7 @@ describe('native workflow export', () => {
         'a checksum mismatch',
         'repo-fetch: aidlc-runtime-2.11.4.tar.gz does not match its checksum',
       ],
-      [
-        'an asset replaced together with its checksum',
-        `repo-fetch: release v2.11.4 checksums.txt lists ${'1'.repeat(64)} for aidlc-runtime-2.11.4.tar.gz, not the pinned ${'2'.repeat(64)}`,
-      ],
+
       ['a missing release', 'repo-fetch: https://github.com/x/version.json returned 404 Not Found'],
       ['a missing harness', 'repo-fetch: no files found for prefixes runtime/codex/ in x'],
     ])('refuses a release runtime with %s as deterministic (409)', async (_label, message) => {
