@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Archive, Boxes, Plus, RotateCw, Search, Star, TriangleAlert } from 'lucide-react';
 import {
   AlertDialog,
@@ -157,7 +157,13 @@ export function EnvironmentRegistry() {
   const loadDetail = useCallback(
     async (
       environmentId: string,
-      options: { showLoading?: boolean; preferCurrent?: boolean; preserveForm?: boolean } = {},
+      options: {
+        showLoading?: boolean;
+        preferCurrent?: boolean;
+        // A function is asked when the response arrives, so edits made while
+        // the request was pending are kept.
+        preserveForm?: boolean | (() => boolean);
+      } = {},
     ) => {
       const { showLoading = true, preferCurrent = false, preserveForm = false } = options;
       if (showLoading) setDetailLoading(true);
@@ -188,7 +194,8 @@ export function EnvironmentRegistry() {
               ? selected
               : (current?.revisionId ?? null),
         );
-        if (!preserveForm) setFormAndBaseline(formFromRevision(value.environment, current));
+        const keepForm = typeof preserveForm === 'function' ? preserveForm() : preserveForm;
+        if (!keepForm) setFormAndBaseline(formFromRevision(value.environment, current));
         return value;
       } finally {
         if (showLoading) setDetailLoading(false);
@@ -252,6 +259,11 @@ export function EnvironmentRegistry() {
     [detail, selectedRevisionId],
   );
   const isDirty = formFingerprint(form) !== savedFormFingerprint;
+  // Read by a refresh or poll when its response arrives, not when it starts.
+  const isDirtyRef = useRef(isDirty);
+  useLayoutEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
 
   useEffect(() => {
     if (!selectedId || !selectedRevision || !isActiveRevision(selectedRevision)) return;
@@ -259,13 +271,13 @@ export function EnvironmentRegistry() {
       void Promise.all([
         loadDetail(selectedId, {
           showLoading: false,
-          preserveForm: isDirty,
+          preserveForm: () => isDirtyRef.current,
         }),
         loadList(selectedId),
       ]).catch(() => undefined);
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [isDirty, loadDetail, loadList, selectedId, selectedRevision]);
+  }, [loadDetail, loadList, selectedId, selectedRevision]);
 
   const currentRevision =
     detail?.revisions.find(
@@ -453,7 +465,9 @@ export function EnvironmentRegistry() {
         busy={busy}
         onRefresh={() => {
           setError(null);
-          return loadDetail(environment.environmentId, { preserveForm: isDirty }).catch((reason) =>
+          return loadDetail(environment.environmentId, {
+            preserveForm: () => isDirtyRef.current,
+          }).catch((reason) =>
             setError(reason instanceof Error ? reason.message : 'Failed to load environment'),
           );
         }}

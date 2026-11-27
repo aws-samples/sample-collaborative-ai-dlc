@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -1031,6 +1031,86 @@ describe('EnvironmentsTab', () => {
       'aria-expanded',
       'true',
     );
+  });
+
+  it('keeps definition edits made while the revisions refresh', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    const publishedDetail = {
+      environment: publishedEnvironment,
+      revisions: [publishedRevision],
+      publishedRevision,
+    };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : publishedDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await screen.findByRole('button', { name: 'Refresh revisions' });
+    let finishRefresh: () => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishRefresh = () => resolve(publishedDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+    await user.click(screen.getByRole('tab', { name: /Definition/ }));
+    const name = screen.getByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Edited during refresh');
+
+    finishRefresh();
+    await user.click(screen.getByRole('tab', { name: /Revisions/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+        'aria-disabled',
+        'false',
+      ),
+    );
+    await user.click(screen.getByRole('tab', { name: /Definition/ }));
+
+    expect(screen.getByLabelText('Name')).toHaveValue('Edited during refresh');
+  });
+
+  it('keeps definition edits made while a status poll is pending', async () => {
+    const user = userEvent.setup();
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    const buildingEnvironment = { ...custom, status: 'BUILDING' };
+    const buildingRevision = { ...revision, status: 'BUILDING' };
+    const buildingDetail = {
+      environment: buildingEnvironment,
+      revisions: [buildingRevision],
+      publishedRevision: null,
+    };
+    list.mockResolvedValue([buildingEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : buildingDetail,
+    );
+    const poll = () => {
+      const call = setIntervalSpy.mock.calls.filter(([, delay]) => delay === 8000).at(-1);
+      if (!call) throw new Error('No status poll is registered');
+      (call[0] as () => void)();
+    };
+
+    try {
+      render(<EnvironmentsTab />);
+      await screen.findByRole('button', { name: 'Refresh revisions' });
+      let finishPoll: () => void = () => undefined;
+      get.mockImplementationOnce(
+        () => new Promise((resolve) => (finishPoll = () => resolve(buildingDetail))),
+      );
+      act(poll);
+      await user.click(screen.getByRole('tab', { name: /Definition/ }));
+      const name = screen.getByLabelText('Name');
+      await user.clear(name);
+      await user.type(name, 'Edited during poll');
+
+      await act(async () => finishPoll());
+
+      expect(screen.getByLabelText('Name')).toHaveValue('Edited during poll');
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it('keeps the evidence open after a revision action reloads the environment', async () => {
