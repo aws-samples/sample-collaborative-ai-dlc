@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { passwordPolicyError } from './passwordPolicy';
+import passwordCases from './passwordPolicyCases.json';
 
 describe('passwordPolicyError', () => {
   it('accepts a password that meets the user pool policy', () => {
@@ -19,5 +20,10 @@ describe('passwordPolicyError', () => {
     ['Password-1234 ', 'start or end with a space'],
   ])('rejects %s', (password, reason) => {
     expect(passwordPolicyError(password)).toContain(reason);
+  });
+
+  // The installer runs the same cases (scripts/test/release-tools.test.mjs).
+  it.each(passwordCases)('matches the shared case: $case', ({ password, valid }) => {
+    expect(passwordPolicyError(password) === null).toBe(valid);
   });
 });

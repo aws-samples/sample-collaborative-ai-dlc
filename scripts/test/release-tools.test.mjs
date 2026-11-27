@@ -40,6 +40,7 @@ const run = (file, args, options = {}) =>
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
     shell: false,
+    input: options.input,
   });
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -1948,6 +1949,87 @@ const managedEnv = (dir, repository) => {
     AIDLC_ADMIN_PASSWORD: 'NotStored123!',
   };
 };
+
+const passwordCases = JSON.parse(
+  readFileSync(join(root, 'frontend/src/lib/passwordPolicyCases.json'), 'utf8'),
+);
+
+test('installer password check matches the UI policy cases in any locale', () => {
+  const validator = readFileSync(installer, 'utf8').match(
+    /^validate_password\(\) \([\s\S]*?^\)$/m,
+  )?.[0];
+  assert.ok(validator, 'validate_password must be a subshell function in install.sh');
+  // A missing locale falls back to C silently, which would not test the pin.
+  const normalize = (name) => name.toLowerCase().replace(/[-_.]/g, '');
+  const available = new Set(
+    execFileSync('locale', ['-a'], { encoding: 'utf8' }).split('\n').map(normalize),
+  );
+  const locales = ['C', 'C.UTF-8', 'en_US.UTF-8'].filter((name) => available.has(normalize(name)));
+  assert.ok(
+    locales.some((name) => name !== 'C'),
+    'a UTF-8 locale is required for this test',
+  );
+  for (const locale of locales) {
+    for (const { password, valid, case: name } of passwordCases) {
+      const result = run('bash', ['-c', `${validator}\nvalidate_password "$1"`, 'bash', password], {
+        env: { LC_ALL: locale },
+      });
+      assert.equal(
+        result.status === 0,
+        valid,
+        `${name} (${JSON.stringify(password)}, LC_ALL=${locale})`,
+      );
+    }
+  }
+});
+
+test('installer refuses a password the user pool would reject before planning', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-password-'));
+  try {
+    const env = {
+      ...managedEnv(dir, createReleaseRepository()),
+      AIDLC_ADMIN_PASSWORD: 'Password1234€',
+    };
+    const result = run('bash', [installer, 'install', '--version', '2.0.0'], { env });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /AIDLC_ADMIN_PASSWORD does not meet the Cognito password policy/);
+    assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installer says why it stops when the confirmation is not yes', () => {
+  const repository = createReleaseRepository();
+  for (const [input, proceeds] of [
+    ['yy\n', false],
+    ['no\n', false],
+    ['\n', false],
+    ['', false],
+    ['yes\n', true],
+    ['Y\n', true],
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), 'aidlc-confirm-'));
+    try {
+      const env = { ...managedEnv(dir, repository), AIDLC_YES: '0' };
+      const result = run('bash', [installer, 'install', '--version', '2.0.0'], { env, input });
+      const label = JSON.stringify(input);
+      assert.equal(result.status, proceeds ? 0 : 1, `${label}: ${result.stderr}`);
+      assert.equal(
+        /Cancelled \(answer y or yes to continue\)\./.test(result.stderr),
+        !proceeds,
+        label,
+      );
+      assert.equal(
+        existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')),
+        proceeds,
+        label,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 test('installer selects a newer preview release by default', () => {
   const repository = createReleaseRepository();
