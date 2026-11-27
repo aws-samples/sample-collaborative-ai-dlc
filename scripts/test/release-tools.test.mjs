@@ -2824,6 +2824,28 @@ test('installer refreshes OS packages only on request and persists the epoch', (
   assert.deepEqual(deployments().slice(-2), ['plan 2027-W03', 'apply 2027-W03']);
 });
 
+test('tfvars_upsert appends on a new line when the file lacks a final newline', () => {
+  const upsert = readFileSync(installer, 'utf8').match(/^tfvars_upsert\(\) \{[\s\S]*?^\}$/m)?.[0];
+  assert.ok(upsert, 'tfvars_upsert must be a function in install.sh');
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-upsert-'));
+  const file = join(dir, 'dev.tfvars');
+  for (const [initial, expected] of [
+    ['region = "a"', 'region = "a"\nos_packages_epoch = "2026-W48"\n'],
+    ['region = "a"\n', 'region = "a"\nos_packages_epoch = "2026-W48"\n'],
+    ['', 'os_packages_epoch = "2026-W48"\n'],
+  ]) {
+    writeFileSync(file, initial);
+    const result = run('bash', [
+      '-c',
+      `${upsert}\ntfvars_upsert "$1" os_packages_epoch '"2026-W48"'`,
+      'upsert',
+      file,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(file, 'utf8'), expected);
+  }
+});
+
 test('installer refuses an OS package refresh the release cannot apply', () => {
   const repository = createReleaseRepository();
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-os-refresh-old-'));

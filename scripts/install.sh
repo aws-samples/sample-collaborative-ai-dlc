@@ -869,6 +869,8 @@ tfvars_upsert() {
         sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${escaped_value}|" "$file"
         rm -f "$file.bak"
     else
+        # A last line without a newline would otherwise absorb the assignment.
+        [[ -s "$file" && -n "$(tail -c 1 "$file")" ]] && printf '\n' >> "$file"
         printf '%s = %s\n' "$key" "$value" >> "$file"
     fi
 }
