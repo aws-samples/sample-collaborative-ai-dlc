@@ -25,7 +25,7 @@ On large screens the sidebar has a **My work** entry and two sections:
 
 On narrow screens the drawer offers **My work**, **Spaces**, and the intents that need you or are running.
 
-Open a space to see its intents grouped by what to do next: decisions and runs that need resuming come first, then failures, then running work; finished intents are collapsed. Select anywhere on an intent row to open it. Use the filters and the sort control for a narrower or chronological list; the choice is kept in the address so it can be shared. An intent in an automatic wait does not ask for your input.
+Open a space to see its intents in one list ordered by what to do next: failures come first, then decisions and runs that need resuming, then running work, then finished intents. The list shows 20 at a time. Select anywhere on an intent row to open it; **New intent** sits by the list. Use the filters or the search for a narrower list; the filter, the search and the page are kept in the address, so Back returns to them and a link shares them. An intent in an automatic wait does not ask for your input. **Activity & cost** counts the intents and the average time to completion from the list; owners can compute the total and average tokens and cost, a read of every run that can take up to a minute.
 
 ## Creating a space
 

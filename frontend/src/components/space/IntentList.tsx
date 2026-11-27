@@ -1,54 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpDown, Search } from 'lucide-react';
+import { useSearchParams } from 'react-router';
+import { Search } from 'lucide-react';
 import type { Intent } from '@/services/intents';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Disclosure } from '@/components/ui/disclosure';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
 import { useIntentStatusReader, type DerivedIntentStatus } from '@/lib/statusModel';
-import { cn } from '@/lib/utils';
+import { formatCount } from '@/lib/format';
 import { IntentRow } from './IntentRow';
 import {
-  INTENT_SORT_LABELS,
   SPACE_FILTER_LABELS,
   intentGroup,
   matchesIntentQuery,
   matchesSpaceFilter,
   needsAttention,
   orderIntents,
-  type IntentSort,
+  SPACE_FILTER_PARAM,
   type SpaceFilter,
 } from './intentGrouping';
 
-const INTENT_SORT_KEY = 'aidlc.intentSort';
 const IDLE_PREFETCH_MAX = 2;
-const SORT_OPTIONS: readonly IntentSort[] = ['attention', 'updated', 'created', 'title'];
 const FILTER_CHIPS: readonly SpaceFilter[] = ['all', 'active', 'needs-attention', 'finished'];
+// Chips that say what needs doing carry their count; the others stay plain.
+const COUNTED_CHIPS: ReadonlySet<SpaceFilter> = new Set(['needs-attention', 'failed']);
+// One page of rows; the list is already in the browser, so paging is instant.
+export const INTENTS_PER_PAGE = 20;
+// The page (1-based) and the search text live in the address, replaced rather
+// than pushed, so Back from an intent returns to the same rows.
+export const INTENT_PAGE_PARAM = 'page';
+const QUERY_PARAM = 'q';
 
-function loadIntentSort(): IntentSort {
-  try {
-    const value = localStorage.getItem(INTENT_SORT_KEY);
-    return SORT_OPTIONS.includes(value as IntentSort) ? (value as IntentSort) : 'attention';
-  } catch {
-    return 'attention';
-  }
-}
-
-function saveIntentSort(value: IntentSort): void {
-  try {
-    localStorage.setItem(INTENT_SORT_KEY, value);
-  } catch {
-    /* persistence is best-effort */
-  }
+function parsePage(value: string | null): number {
+  const page = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(page) && page > 1 ? page - 1 : 0;
 }
 
 // The first rows waiting for a person that scroll into view are offered to the
@@ -88,8 +74,8 @@ export interface IntentListProps {
   onFilterChange: (filter: SpaceFilter) => void;
   rowActions?: (intent: Intent) => React.ReactNode;
   deletingId?: string | null;
-  /** The "New intent" button shown when nothing is live (finished rows stay listed below). */
-  idleAction?: React.ReactNode;
+  /** The list's own action ("New intent"), at the end of the filter row. */
+  action?: React.ReactNode;
   now?: number;
 }
 
@@ -100,16 +86,39 @@ export function IntentList({
   onFilterChange,
   rowActions,
   deletingId,
-  idleAction,
+  action,
   now = Date.now(),
 }: IntentListProps) {
-  const [sort, setSort] = useState<IntentSort>(loadIntentSort);
-  const [query, setQuery] = useState('');
-  const changeSort = useCallback((value: string) => {
-    if (!SORT_OPTIONS.includes(value as IntentSort)) return;
-    setSort(value as IntentSort);
-    saveIntentSort(value as IntentSort);
-  }, []);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get(QUERY_PARAM) ?? '';
+  const page = parsePage(searchParams.get(INTENT_PAGE_PARAM));
+  const replaceParams = useCallback(
+    (update: (params: URLSearchParams) => void) =>
+      setSearchParams(
+        (previous) => {
+          const params = new URLSearchParams(previous);
+          update(params);
+          return params;
+        },
+        { replace: true },
+      ),
+    [setSearchParams],
+  );
+  const setPage = useCallback(
+    (next: number) =>
+      replaceParams((params) => {
+        if (next > 0) params.set(INTENT_PAGE_PARAM, String(next + 1));
+        else params.delete(INTENT_PAGE_PARAM);
+      }),
+    [replaceParams],
+  );
+  // A new search starts at the first page (a new filter does too: the page drops it).
+  const setQuery = (text: string) =>
+    replaceParams((params) => {
+      if (text) params.set(QUERY_PARAM, text);
+      else params.delete(QUERY_PARAM);
+      params.delete(INTENT_PAGE_PARAM);
+    });
 
   // Groups, filters and counts read each intent as its row's pill does: the
   // cached detail when it is current, else the list summary.
@@ -137,33 +146,29 @@ export function IntentList({
     return tally;
   }, [intents, statusOf, now]);
 
-  const { visible, finished } = useMemo(() => {
-    const matching = orderIntents(intents, sort, now).filter(
-      (intent) =>
-        matchesSpaceFilter(intent, filter, now, statusOf(intent)) &&
-        matchesIntentQuery(intent, query),
-    );
-    if (filter !== 'all') return { visible: matching, finished: [] as Intent[] };
-    return {
-      visible: matching.filter((intent) => intentGroup(intent, now) !== 'finished'),
-      finished: matching.filter((intent) => intentGroup(intent, now) === 'finished'),
-    };
-  }, [intents, statusOf, sort, filter, query, now]);
+  const matching = useMemo(
+    () =>
+      orderIntents(intents, now).filter(
+        (intent) =>
+          matchesSpaceFilter(intent, filter, now, statusOf(intent)) &&
+          matchesIntentQuery(intent, query),
+      ),
+    [intents, statusOf, filter, query, now],
+  );
+
+  // A shrinking list never leaves the reader on an empty page, and the clamp
+  // is written back so the list does not jump to the old page when it grows.
+  const pageCount = Math.max(1, Math.ceil(matching.length / INTENTS_PER_PAGE));
+  const current = Math.min(page, pageCount - 1);
+  useEffect(() => {
+    if (current !== page) setPage(current);
+  }, [current, page, setPage]);
+  const start = current * INTENTS_PER_PAGE;
+  const visible = matching.slice(start, start + INTENTS_PER_PAGE);
 
   const listRef = useIdleCandidateRows(projectId, visible.length > 0);
   const hasActiveFilter = filter !== 'all' || query.trim() !== '';
   const chips = filter === 'failed' ? [...FILTER_CHIPS, 'failed' as const] : FILTER_CHIPS;
-
-  const renderRow = (intent: Intent) => (
-    <IntentRow
-      key={intent.id}
-      projectId={projectId}
-      intent={intent}
-      now={now}
-      deleting={deletingId === intent.id}
-      actions={rowActions?.(intent)}
-    />
-  );
 
   return (
     <div className="space-y-3">
@@ -197,7 +202,7 @@ export function IntentList({
           {chips.map((chip) => (
             <ToggleGroupItem key={chip} value={chip} className="h-8 gap-1.5 px-2.5 text-xs">
               {SPACE_FILTER_LABELS[chip]}
-              {chip !== 'all' ? (
+              {COUNTED_CHIPS.has(chip) && counts[chip] > 0 ? (
                 <>
                   {' '}
                   <span className="tabular-nums font-normal opacity-80">{counts[chip]}</span>
@@ -206,27 +211,10 @@ export function IntentList({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="ml-auto gap-1.5 whitespace-nowrap">
-              <ArrowUpDown aria-hidden="true" className="text-muted-foreground" />
-              <span className="sr-only">Sort intents:</span>
-              {INTENT_SORT_LABELS[sort]}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuRadioGroup value={sort} onValueChange={changeSort}>
-              {SORT_OPTIONS.map((option) => (
-                <DropdownMenuRadioItem key={option} value={option}>
-                  {INTENT_SORT_LABELS[option]}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {action ? <div className="ml-auto">{action}</div> : null}
       </div>
 
-      {visible.length === 0 && finished.length === 0 ? (
+      {matching.length === 0 ? (
         <EmptyState
           size="section"
           title="No intents match these filters"
@@ -236,10 +224,15 @@ export function IntentList({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setQuery('');
-                  onFilterChange('all');
-                }}
+                // One history entry, like a filter chip: no filter, search or page.
+                onClick={() =>
+                  setSearchParams((previous) => {
+                    const params = new URLSearchParams(previous);
+                    for (const key of [SPACE_FILTER_PARAM, QUERY_PARAM, INTENT_PAGE_PARAM])
+                      params.delete(key);
+                    return params;
+                  })
+                }
               >
                 Clear filters
               </Button>
@@ -248,40 +241,50 @@ export function IntentList({
         />
       ) : (
         <>
-          {visible.length > 0 ? (
-            <ul
-              ref={listRef}
-              aria-label="Intents"
-              className={cn(
-                'divide-y overflow-hidden rounded-lg border bg-card text-card-foreground',
-              )}
+          <ul
+            ref={listRef}
+            aria-label="Intents"
+            className="divide-y overflow-hidden rounded-lg border bg-card text-card-foreground"
+          >
+            {visible.map((intent) => (
+              <IntentRow
+                key={intent.id}
+                projectId={projectId}
+                intent={intent}
+                now={now}
+                deleting={deletingId === intent.id}
+                actions={rowActions?.(intent)}
+              />
+            ))}
+          </ul>
+          {pageCount > 1 ? (
+            <nav
+              aria-label="Intent pages"
+              className="flex items-center justify-between gap-3 text-xs text-muted-foreground"
             >
-              {visible.map(renderRow)}
-            </ul>
-          ) : null}
-          {visible.length === 0 ? (
-            <EmptyState
-              size="section"
-              title="Nothing is running or waiting for you in this space"
-              description="Every intent here has finished. Start a new one when you have the next thing to build."
-              action={idleAction}
-            />
-          ) : null}
-          {finished.length > 0 ? (
-            <Disclosure
-              variant="row"
-              title={`${finished.length} finished`}
-              summary="Completed and cancelled"
-              defaultOpen={visible.length === 0}
-              contentClassName="px-0 pb-0 pt-2"
-            >
-              <ul
-                aria-label="Finished intents"
-                className="divide-y overflow-hidden rounded-lg border bg-card text-card-foreground"
-              >
-                {finished.map(renderRow)}
-              </ul>
-            </Disclosure>
+              <span className="tabular-nums">
+                {formatCount(start + 1)}–{formatCount(start + visible.length)} of{' '}
+                {formatCount(matching.length)}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={current === 0}
+                  onClick={() => setPage(current - 1)}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={current >= pageCount - 1}
+                  onClick={() => setPage(current + 1)}
+                >
+                  Next
+                </Button>
+              </span>
+            </nav>
           ) : null}
         </>
       )}

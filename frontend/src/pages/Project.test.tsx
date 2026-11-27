@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
+import { MemoryRouter, Routes, Route, useLocation, useNavigate } from 'react-router';
 
 const useProjectCache = vi.fn();
 const useProjectSprintsCache = vi.fn((): { sprints: unknown[] } => ({ sprints: [] }));
@@ -37,11 +37,14 @@ vi.mock('@/services/intents', () => ({
 vi.mock('@/services/projects', () => ({ projectsService: {} }));
 vi.mock('@/services/api', () => ({ api: { get: vi.fn() } }));
 vi.mock('@/App', () => ({ preloadRoute: vi.fn() }));
-const layout = vi.hoisted(() => ({ panelsInline: false }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
+const permissions = vi.hoisted(() => ({ readOnly: false }));
+vi.mock('@/contexts/SpacePermissionsContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/contexts/SpacePermissionsContext')>();
+  return {
+    ...actual,
+    useSpacePermissions: () => ({ ...actual.useSpacePermissions(), ...permissions }),
+  };
+});
 
 import Project from './Project';
 import { queryClient } from '@/lib/queryClient';
@@ -53,7 +56,15 @@ function NewIntentStub() {
 
 function LocationProbe() {
   const location = useLocation();
-  return <span data-testid="location">{location.pathname + location.search}</span>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <span data-testid="location">{location.pathname + location.search}</span>
+      <button type="button" onClick={() => navigate(-1)}>
+        Back
+      </button>
+    </>
+  );
 }
 
 const V2_PROJECT = {
@@ -116,7 +127,7 @@ function setIntents(intents: unknown[] | undefined, extra: Partial<typeof spaceI
 }
 
 beforeEach(() => {
-  layout.panelsInline = false;
+  permissions.readOnly = false;
   useProjectCache.mockReset();
   list.mockReset().mockResolvedValue([]);
   deleteIntent.mockReset().mockResolvedValue(undefined);
@@ -172,19 +183,7 @@ describe('Project page — v2 routing', () => {
     expect(screen.queryByText('Space not found')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refresh).toHaveBeenCalledOnce();
-    expect(screen.getByRole('link', { name: 'Back to spaces' })).toHaveAttribute('href', '/spaces');
-  });
-
-  it('sends the reader back to My work on large screens, where the sidebar lists the spaces', async () => {
-    layout.panelsInline = true;
-    useProjectCache.mockReturnValue({
-      project: null,
-      loading: false,
-      error: 'Network unavailable',
-      refresh: vi.fn(),
-    });
-    renderProject();
-    expect(await screen.findByRole('link', { name: 'Back to My work' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Back to spaces' })).toHaveAttribute(
       'href',
       '/dashboard',
     );
@@ -244,27 +243,29 @@ describe('Project page — v2 routing', () => {
     expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
   });
 
-  it('shows Settings as a direct secondary button next to New intent and names the default workflow', () => {
+  it('keeps Settings in the header, New intent by the intents list, and names the default workflow', () => {
     useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
     setIntents([intent('one', 'RUNNING', hoursAgo(1))]);
     renderProject();
     const settings = screen.getByRole('link', { name: 'Settings' });
     expect(settings).toHaveAttribute('href', '/space/p1/settings');
+    expect(screen.getByRole('banner').contains(settings)).toBe(true);
     const newIntent = screen.getByRole('button', { name: 'New intent' });
+    expect(screen.getByRole('banner').contains(newIntent)).toBe(false);
+    const filters = screen.getByRole('group', { name: 'Show intents' });
     expect(
-      settings.compareDocumentPosition(newIntent) & Node.DOCUMENT_POSITION_FOLLOWING,
+      filters.compareDocumentPosition(newIntent) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getByTestId('space-workflow')).toHaveTextContent('Workflow · AI-DLC v2');
   });
 
-  it('moves the New intent action into the empty state when nothing is live', () => {
+  it('lists finished intents in the same list, with New intent still by the list', () => {
     useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
     setIntents([intent('done', 'SUCCEEDED', hoursAgo(24 * 3), { title: 'Done one' })]);
     renderProject();
     expect(screen.getAllByRole('button', { name: 'New intent' })).toHaveLength(1);
-    expect(
-      screen.getByText('Nothing is running or waiting for you in this space'),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Done one' })).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing is running/)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
   });
 
@@ -348,7 +349,7 @@ describe('Project page — ordering, filters and scale (S1)', () => {
     );
   }
 
-  it('orders needs input → failed → active (running included) → drafts and collapses finished rows', async () => {
+  it('orders failed → needs input → active (running included) → drafts → finished in one list', () => {
     useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
     setIntents([
       intent('cancelled', 'CANCELLED', hoursAgo(1)),
@@ -361,15 +362,14 @@ describe('Project page — ordering, filters and scale (S1)', () => {
     renderProject();
     const rows = within(screen.getByRole('list', { name: 'Intents' })).getAllByRole('link');
     expect(rows.map((a) => a.textContent)).toEqual([
-      'Intent question',
       'Intent failed',
+      'Intent question',
       'Intent running',
       'Intent draft',
+      'Intent cancelled',
+      'Intent done',
     ]);
-    expect(screen.queryByText('Intent cancelled')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /2 finished/ }));
-    expect(screen.getByText('Intent cancelled')).toBeVisible();
-    expect(screen.getByText('Intent done')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /finished/ })).not.toBeInTheDocument();
   });
 
   it('does not show a "loaded" count badge next to the Intents heading', () => {
@@ -401,6 +401,48 @@ describe('Project page — ordering, filters and scale (S1)', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/space/p1?filter=needs-attention');
     await userEvent.click(screen.getByRole('radio', { name: 'All' }));
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/space\/p1$/);
+  });
+
+  it('returns to the previous filter on Back', async () => {
+    useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
+    setIntents([
+      intent('running', 'RUNNING', hoursAgo(0.1)),
+      intent('question', 'WAITING', hoursAgo(6), { pendingHumanTaskId: 'gate' }),
+    ]);
+    renderProject('/space/p1?filter=active');
+    await userEvent.click(screen.getByRole('radio', { name: /Needs your attention/ }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/space/p1?filter=needs-attention');
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/space/p1?filter=active');
+  });
+
+  it('keeps the page and the search in the address, so Back from an intent returns to them', async () => {
+    useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
+    setIntents(makeIntents(26));
+    renderProject();
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Filter intents' }), 'Intent i-');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/space/p1?q=Intent+i-&page=2');
+    const pager = screen.getByRole('navigation', { name: 'Intent pages' });
+    expect(pager).toHaveTextContent('21–26 of 26');
+
+    await userEvent.click(screen.getByRole('link', { name: 'Intent i-25' }));
+    expect(screen.queryByRole('list', { name: 'Intents' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/space/p1?q=Intent+i-&page=2');
+    expect(screen.getByRole('searchbox', { name: 'Filter intents' })).toHaveValue('Intent i-');
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '21–26 of 26',
+    );
+
+    // A filter chip starts again at the first page.
+    await userEvent.click(screen.getByRole('radio', { name: 'Finished' }));
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/space/p1?q=Intent+i-&filter=finished',
+    );
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '1–20 of 26',
+    );
   });
 
   it('does not request the WAITING supplement below the API cap', () => {
@@ -477,10 +519,6 @@ describe('Project page — Intent row actions', () => {
     ]);
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     renderProject();
-    expect(screen.getByRole('button', { name: /1 finished/ })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
 
     const intentLink = screen.getByRole('link', { name: 'Keyboard accessible intent' });
     expect(intentLink).toHaveAttribute('href', '/space/p1/intent/intent-row/observability');
@@ -520,6 +558,41 @@ describe('Project page — Intent row actions', () => {
     expect(screen.queryByRole('menuitem', { name: 'Delete intent' })).not.toBeInTheDocument();
   });
 
+  it('gives a Viewer no Cancel run or Close failed run, while a member keeps them', async () => {
+    useProjectCache.mockReturnValue({
+      project: { ...V2_PROJECT, userRole: 'viewer' },
+      loading: false,
+    });
+    permissions.readOnly = true;
+    setIntents([
+      intent('f1', 'FAILED', hoursAgo(5), { title: 'Broken build', currentStage: 'build' }),
+      intent('r1', 'RUNNING', hoursAgo(0.1), { title: 'Live run' }),
+    ]);
+    const { unmount } = renderProject();
+    expect(screen.getByRole('button', { name: 'New intent' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for intent Broken build' }));
+    expect(screen.getByRole('menuitem', { name: 'View overview' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Close failed run/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Delete intent/ })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for intent Live run' }));
+    expect(screen.queryByRole('menuitem', { name: /Cancel run/ })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    unmount();
+
+    useProjectCache.mockReturnValue({
+      project: { ...V2_PROJECT, userRole: 'member' },
+      loading: false,
+    });
+    permissions.readOnly = false;
+    renderProject();
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for intent Broken build' }));
+    expect(screen.getByRole('menuitem', { name: 'Close failed run' })).toBeEnabled();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for intent Live run' }));
+    expect(screen.getByRole('menuitem', { name: /Cancel run/ })).toBeInTheDocument();
+  });
+
   it('renders the menu on every row; Cancel is disabled with the reason where the backend refuses it', async () => {
     useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
     setIntents([
@@ -532,7 +605,6 @@ describe('Project page — Intent row actions', () => {
       intent('done', 'SUCCEEDED', hoursAgo(2), { title: 'Done one' }),
     ]);
     renderProject();
-    await userEvent.click(screen.getByRole('button', { name: /1 finished/ }));
     expect(screen.getAllByRole('button', { name: /Actions for intent/ })).toHaveLength(4);
 
     await userEvent.click(screen.getByRole('button', { name: 'Actions for intent Stalled run' }));
@@ -636,13 +708,16 @@ describe('Project page — Intent row actions', () => {
     invalidate.mockRestore();
   });
 
-  it('shows the activity row from the loaded list, keeps the slow usage read behind "Load usage", and drops the section when the space is empty', () => {
+  it('shows the activity from the loaded list, keeps the slow usage read behind one explained button, and drops the section when the space is empty', () => {
     useProjectCache.mockReturnValue({ project: V2_PROJECT, loading: false });
     setIntents([intent('one', 'RUNNING', hoursAgo(1))]);
     const { unmount } = renderProject();
     const activity = screen.getByRole('region', { name: 'Activity & cost' });
-    expect(within(activity).getByTestId('space-activity-count')).toHaveTextContent('None');
-    expect(within(activity).getByRole('button', { name: 'Load usage' })).toBeInTheDocument();
+    expect(within(activity).getByTestId('space-activity-count')).toHaveTextContent('1');
+    expect(
+      within(activity).getByRole('button', { name: 'Compute tokens and cost' }),
+    ).toBeInTheDocument();
+    expect(activity).toHaveTextContent('Reads the usage of every run; can take up to a minute.');
     expect(
       within(activity).queryByRole('status', { name: /Loading usage/ }),
     ).not.toBeInTheDocument();

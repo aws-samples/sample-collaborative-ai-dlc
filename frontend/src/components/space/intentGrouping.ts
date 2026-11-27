@@ -7,9 +7,11 @@ export type GroupableIntent = Pick<Intent, 'id' | 'status' | 'title' | 'createdA
 
 export type IntentGroup = 'attention' | 'failed' | 'active' | 'draft' | 'finished';
 
+// The space page's one order: what needs someone first (errors, then open
+// questions and resumes), then live work, drafts, and finished runs.
 const GROUP_RANK: Record<IntentGroup, number> = {
-  attention: 0,
-  failed: 1,
+  failed: 0,
+  attention: 1,
   active: 2,
   draft: 3,
   finished: 4,
@@ -33,15 +35,6 @@ export function intentGroup(intent: GroupableIntent, _now: number = Date.now()):
 
 export const LIVE_STATUSES = new Set<Intent['status']>(['RUNNING', 'CREATED', 'WAITING']);
 
-export type IntentSort = 'attention' | 'updated' | 'created' | 'title';
-
-export const INTENT_SORT_LABELS: Record<IntentSort, string> = {
-  attention: 'Needs your attention first',
-  updated: 'Last updated',
-  created: 'Recently created',
-  title: 'Title (A–Z)',
-};
-
 const time = (value: string | null | undefined) => {
   if (!value) return 0;
   const ms = Date.parse(value);
@@ -52,30 +45,17 @@ export function latestIntentActivity(intent: GroupableIntent): number {
   return Math.max(time(intent.updatedAt), time(intent.completedAt), time(intent.createdAt));
 }
 
+/** Group order (GROUP_RANK), newest activity first inside a group. */
 export function orderIntents<T extends GroupableIntent>(
   intents: readonly T[],
-  sort: IntentSort,
   now: number = Date.now(),
 ): T[] {
-  const byActivity = (a: T, b: T) =>
-    latestIntentActivity(b) - latestIntentActivity(a) || a.id.localeCompare(b.id);
-  return intents.toSorted((a, b) => {
-    switch (sort) {
-      case 'title':
-        return (
-          (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }) ||
-          byActivity(a, b)
-        );
-      case 'created':
-        return time(b.createdAt) - time(a.createdAt) || byActivity(a, b);
-      case 'attention':
-        return (
-          GROUP_RANK[intentGroup(a, now)] - GROUP_RANK[intentGroup(b, now)] || byActivity(a, b)
-        );
-      default:
-        return byActivity(a, b);
-    }
-  });
+  return intents.toSorted(
+    (a, b) =>
+      GROUP_RANK[intentGroup(a, now)] - GROUP_RANK[intentGroup(b, now)] ||
+      latestIntentActivity(b) - latestIntentActivity(a) ||
+      a.id.localeCompare(b.id),
+  );
 }
 
 export type SpaceFilter = 'all' | 'active' | 'needs-attention' | 'failed' | 'finished';
@@ -95,6 +75,9 @@ export const SPACE_FILTER_LABELS: Record<SpaceFilter, string> = {
   failed: 'Failed',
   finished: 'Finished',
 };
+
+/** The space page's address keeps the filter under this search parameter. */
+export const SPACE_FILTER_PARAM = 'filter';
 
 export function parseSpaceFilter(value: string | null | undefined): SpaceFilter {
   return SPACE_FILTERS.includes(value as SpaceFilter) ? (value as SpaceFilter) : 'all';

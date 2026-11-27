@@ -1,7 +1,6 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router';
-import { usePanelsInline, spacesHomePath } from '@/hooks/usePanelsInline';
 import { formatAbsolute } from '@/lib/timeAgo';
 import { useProjectCache, useProjectSprintsCache, useSpaceIntents } from '@/hooks/useProjectsCache';
 import { type Project as ProjectType } from '@/services/projects';
@@ -41,18 +40,21 @@ import { displayPhase, humanizeSlug } from '@/lib/displayNames';
 import { queryClient } from '@/lib/queryClient';
 import { qk } from '@/lib/queryKeys';
 import { useQuery } from '@tanstack/react-query';
-import { IntentList } from '@/components/space/IntentList';
+import { INTENT_PAGE_PARAM, IntentList } from '@/components/space/IntentList';
 import { SpaceActivityCost } from '@/components/space/SpaceActivityCost';
 import { intentRowTitle } from '@/components/space/IntentRow';
 import { cancelConfirmationCopy } from '@/components/intent/IntentActionsMenu';
 import { SpaceIntentActions } from '@/components/space/SpaceIntentActions';
-import { intentGroup, parseSpaceFilter, type SpaceFilter } from '@/components/space/intentGrouping';
+import {
+  SPACE_FILTER_PARAM,
+  parseSpaceFilter,
+  type SpaceFilter,
+} from '@/components/space/intentGrouping';
 
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
   const navigate = useNavigate();
-  const spacesHome = spacesHomePath(usePanelsInline());
   const {
     project,
     loading: projectLoading,
@@ -89,9 +91,7 @@ export default function Project() {
             Retry
           </Button>
           <Button asChild variant="outline">
-            <Link to={spacesHome}>
-              {spacesHome === '/dashboard' ? 'Back to My work' : 'Back to spaces'}
-            </Link>
+            <Link to="/dashboard">Back to spaces</Link>
           </Button>
         </div>
       </div>
@@ -106,9 +106,7 @@ export default function Project() {
           This space may have been removed, or you may no longer have access to it.
         </p>
         <Button asChild variant="outline">
-          <Link to={spacesHome}>
-            {spacesHome === '/dashboard' ? 'Back to My work' : 'Back to spaces'}
-          </Link>
+          <Link to="/dashboard">Back to spaces</Link>
         </Button>
       </div>
     );
@@ -265,18 +263,18 @@ function IntentsView({
 }) {
   const { intents, loading, error, updatedAt, refresh } = useSpaceIntents(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
-  const filter = parseSpaceFilter(searchParams.get('filter'));
+  const filter = parseSpaceFilter(searchParams.get(SPACE_FILTER_PARAM));
   const setFilter = useCallback(
     (next: SpaceFilter) => {
-      setSearchParams(
-        (previous) => {
-          const params = new URLSearchParams(previous);
-          if (next === 'all') params.delete('filter');
-          else params.set('filter', next);
-          return params;
-        },
-        { replace: true },
-      );
+      // Each filter is a history entry, so Back restores the previous one; a
+      // new filter starts at the first page.
+      setSearchParams((previous) => {
+        const params = new URLSearchParams(previous);
+        if (next === 'all') params.delete(SPACE_FILTER_PARAM);
+        else params.set(SPACE_FILTER_PARAM, next);
+        params.delete(INTENT_PAGE_PARAM);
+        return params;
+      });
     },
     [setSearchParams],
   );
@@ -389,12 +387,6 @@ function IntentsView({
       }}
     />
   );
-  // The primary action lives in the empty state when nothing is live, so the
-  // page never shows two "New intent" buttons.
-  const nothingLive =
-    filter === 'all' &&
-    allIntents !== undefined &&
-    allIntents.every((intent) => intentGroup(intent) === 'finished');
   const newIntentButton = (
     <Button disabled={readOnly} onClick={() => onNavigate(newIntentPath)} className="gap-1.5">
       <Plus aria-hidden="true" />
@@ -428,15 +420,12 @@ function IntentsView({
           </span>
         }
         primaryAction={
-          <>
-            <Button asChild variant="outline" className="gap-1.5">
-              <Link to={settingsPath}>
-                <Settings aria-hidden="true" />
-                {isOwner ? 'Settings' : 'View settings'}
-              </Link>
-            </Button>
-            {nothingLive ? null : newIntentButton}
-          </>
+          <Button asChild variant="outline" className="gap-1.5">
+            <Link to={settingsPath}>
+              <Settings aria-hidden="true" />
+              {isOwner ? 'Settings' : 'View settings'}
+            </Link>
+          </Button>
         }
       />
 
@@ -492,7 +481,7 @@ function IntentsView({
               onFilterChange={setFilter}
               rowActions={rowActions}
               deletingId={deletingIntent}
-              idleAction={newIntentButton}
+              action={newIntentButton}
             />
             {capped && (
               <p

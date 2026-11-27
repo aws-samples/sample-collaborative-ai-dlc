@@ -49,7 +49,7 @@ describe('intentGroup', () => {
   });
 });
 
-describe('orderIntents (attention sort)', () => {
+describe('orderIntents (the one order)', () => {
   const rows = [
     intent('cancelled-recent', 'CANCELLED', hoursAgo(1)),
     intent('running-old', 'RUNNING', hoursAgo(24 * 120)),
@@ -61,10 +61,10 @@ describe('orderIntents (attention sort)', () => {
     intent('question-new', 'WAITING', hoursAgo(5), { pendingHumanTaskId: 'gate-2' }),
   ];
 
-  it('orders every needs-input row before failures, before active work, before drafts, before finished', () => {
-    const ordered = orderIntents(rows, 'attention', NOW);
+  it('orders failures before needs-input rows, before active work, before drafts, before finished', () => {
+    const ordered = orderIntents(rows, NOW);
     const groups = ordered.map((row) => intentGroup(row, NOW));
-    const rank = ['attention', 'failed', 'active', 'draft', 'finished'];
+    const rank = ['failed', 'attention', 'active', 'draft', 'finished'];
     const ranks = groups.map((g) => rank.indexOf(g));
     expect(ranks).toEqual(ranks.toSorted((a, b) => a - b));
     // Recent cancellations never precede running work.
@@ -74,15 +74,18 @@ describe('orderIntents (attention sort)', () => {
   });
 
   it('sorts by latest activity (newest first) inside a group', () => {
-    const ids = orderIntents(rows, 'attention', NOW).map((row) => row.id);
+    const ids = orderIntents(rows, NOW).map((row) => row.id);
     expect(ids.indexOf('question-new')).toBeLessThan(ids.indexOf('question-old'));
     expect(ids.indexOf('running-fresh')).toBeLessThan(ids.indexOf('running-old'));
     expect(ids.indexOf('cancelled-recent')).toBeLessThan(ids.indexOf('done-recent'));
   });
 
-  it('supports plain chronological and title sorts', () => {
-    expect(orderIntents(rows, 'updated', NOW)[0].id).toBe('running-fresh');
-    expect(orderIntents(rows, 'title', NOW).map((row) => row.id)[0]).toBe('cancelled-recent');
+  it('puts the failure first even when a question is newer', () => {
+    expect(
+      orderIntents(rows, NOW)
+        .map((row) => row.id)
+        .slice(0, 3),
+    ).toEqual(['failed', 'question-new', 'question-old']);
   });
 });
 

@@ -77,48 +77,95 @@ describe('IntentList ordering (S1)', () => {
     queryClient.clear();
   });
 
-  it('shows needs-input, then failed, then active (including stalled running), then drafts; finished stay collapsed', () => {
+  it('shows one list: failed, then needs-input, then active (including stalled running), drafts, finished', () => {
     renderList();
     expect(rowTitles()).toEqual([
+      'Intent failed-1',
       'Intent question-new',
       'Intent question-old',
-      'Intent failed-1',
       'Intent running-fresh',
       'Intent running-hung',
       'Untitled draft',
+      'Intent cancelled-1',
+      'Intent done-1',
     ]);
-    expect(screen.queryByText('Intent cancelled-1')).not.toBeInTheDocument();
-    const finished = screen.getByRole('button', { name: /2 finished/ });
-    expect(finished).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: /finished/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Sort intents/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Intent pages' })).not.toBeInTheDocument();
   });
 
-  it('reveals finished rows (latest activity first) when the finished group is opened', async () => {
-    renderList();
-    await userEvent.click(screen.getByRole('button', { name: /2 finished/ }));
-    expect(screen.getByText('Intent cancelled-1')).toBeVisible();
-    const finishedList = screen.getByRole('list', { name: 'Finished intents' });
-    expect(
-      within(finishedList)
-        .getAllByRole('link')
-        .map((a) => a.textContent),
-    ).toEqual(['Intent cancelled-1', 'Intent done-1']);
+  it('keeps its action at the end of the filter row', () => {
+    renderList({ action: <button type="button">New intent</button> });
+    expect(screen.getByRole('button', { name: 'New intent' })).toBeInTheDocument();
   });
 });
 
-describe('IntentList when nothing is live', () => {
+describe('IntentList pages', () => {
+  const many = Array.from({ length: 45 }, (_, index) =>
+    intent(`run-${String(index).padStart(2, '0')}`, 'SUCCEEDED', hoursAgo(index + 1)),
+  );
+
   beforeEach(() => {
     localStorage.clear();
     queryClient.clear();
   });
 
-  it('says so and opens the finished group by default instead of an empty page', () => {
-    renderList({ intents: [ROWS[0], ROWS[2]] });
-    expect(screen.getByText(/Nothing is running or waiting for you/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /2 finished/ })).toHaveAttribute(
-      'aria-expanded',
-      'true',
+  it('shows 20 rows at a time and says where the reader is', async () => {
+    renderList({ intents: [...ROWS, ...many] });
+    expect(rowTitles()).toHaveLength(20);
+    expect(rowTitles()[0]).toBe('Intent failed-1');
+    const pages = screen.getByRole('navigation', { name: 'Intent pages' });
+    expect(pages).toHaveTextContent('1–20 of 53');
+    expect(within(pages).getByRole('button', { name: 'Previous' })).toBeDisabled();
+
+    await userEvent.click(within(pages).getByRole('button', { name: 'Next' }));
+    expect(pages).toHaveTextContent('21–40 of 53');
+    expect(rowTitles()[0]).toBe('Intent run-12');
+    await userEvent.click(within(pages).getByRole('button', { name: 'Next' }));
+    expect(pages).toHaveTextContent('41–53 of 53');
+    expect(rowTitles()).toHaveLength(13);
+    expect(within(pages).getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('starts a new search at the first page', async () => {
+    renderList({ intents: [...ROWS, ...many] });
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '21–40 of 53',
     );
-    expect(screen.getByRole('list', { name: 'Finished intents' })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Filter intents' }), 'run-');
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '1–20 of 45',
+    );
+  });
+
+  it('keeps the clamped page when the list shrinks, so it does not jump back when it grows', async () => {
+    const list = (intents: typeof ROWS) => (
+      <MemoryRouter>
+        <IntentList
+          projectId="p1"
+          intents={intents}
+          filter="all"
+          onFilterChange={vi.fn()}
+          now={NOW}
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = renderList({ intents: [...ROWS, ...many] });
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '41–53 of 53',
+    );
+
+    rerender(list([...ROWS, ...many.slice(0, 7)]));
+    expect(rowTitles()).toHaveLength(15);
+    expect(screen.queryByRole('navigation', { name: 'Intent pages' })).not.toBeInTheDocument();
+
+    rerender(list([...ROWS, ...many]));
+    expect(screen.getByRole('navigation', { name: 'Intent pages' })).toHaveTextContent(
+      '1–20 of 53',
+    );
   });
 });
 
@@ -190,9 +237,8 @@ describe('IntentList rows (S2, S5, T1–T3, W9)', () => {
     expect(unknown).not.toHaveTextContent(/decision/);
   });
 
-  it('keeps one date grammar with the Spaces inbox: terminal rows carry their verb and an age ("59 days ago"), never an absolute date (R3-6)', async () => {
+  it('keeps one date grammar with the Spaces inbox: terminal rows carry their verb and an age ("59 days ago"), never an absolute date (R3-6)', () => {
     renderList();
-    await userEvent.click(screen.getByRole('button', { name: /2 finished/ }));
     const done = screen.getByRole('link', { name: 'Intent done-1' }).closest('li')!;
     expect(within(done).getByTestId('intent-row-meta')).toHaveTextContent(/^Completed 2 h ago$/);
     expect(within(done).getByTestId('intent-row-meta').querySelector('time')).toHaveAttribute(
@@ -313,28 +359,33 @@ describe('IntentList rows (S2, S5, T1–T3, W9)', () => {
   });
 });
 
-describe('IntentList filters and sort (S1, S6)', () => {
+describe('IntentList filters (S1, S6)', () => {
   beforeEach(() => {
     localStorage.clear();
     queryClient.clear();
   });
   afterEach(() => vi.useRealTimers());
 
-  it('offers All / Active / Needs your attention / Finished with counts and reports the choice', async () => {
+  it('offers All / Active / Needs your attention / Finished, counts only what needs doing, and reports the choice', async () => {
     const { onFilterChange } = renderList();
     const group = screen.getByRole('group', { name: 'Show intents' });
     expect(within(group).getByRole('radio', { name: 'All' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
-    expect(within(group).getByRole('radio', { name: 'Active 4' })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: 'Active' })).toBeInTheDocument();
     // 2 questions + 1 failed + 1 stalled run: a stuck run needs a human too.
     expect(
       within(group).getByRole('radio', { name: 'Needs your attention 4' }),
     ).toBeInTheDocument();
-    expect(within(group).getByRole('radio', { name: 'Finished 2' })).toBeInTheDocument();
-    await userEvent.click(within(group).getByRole('radio', { name: 'Finished 2' }));
+    expect(within(group).getByRole('radio', { name: 'Finished' })).toBeInTheDocument();
+    await userEvent.click(within(group).getByRole('radio', { name: 'Finished' }));
     expect(onFilterChange).toHaveBeenCalledWith('finished');
+  });
+
+  it('shows no count on Needs your attention when nothing does', () => {
+    renderList({ intents: [ROWS[0], ROWS[2]] });
+    expect(screen.getByRole('radio', { name: 'Needs your attention' })).toBeInTheDocument();
   });
 
   it('does not count or list a run as needing attention when its cached activity is recent', () => {
@@ -364,16 +415,5 @@ describe('IntentList filters and sort (S1, S6)', () => {
     expect(screen.getByText('No intents match these filters')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(screen.getByRole('link', { name: 'Intent question-new' })).toBeInTheDocument();
-  });
-
-  it('exposes the sort as a labelled menu whose current value is never truncated', async () => {
-    renderList();
-    const sort = screen.getByRole('button', { name: /Sort intents/ });
-    expect(sort).toHaveTextContent('Needs your attention first');
-    await userEvent.click(sort);
-    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Last updated' }));
-    expect(screen.getByRole('button', { name: /Sort intents/ })).toHaveTextContent('Last updated');
-    expect(rowTitles()[0]).toBe('Intent running-fresh');
-    expect(localStorage.getItem('aidlc.intentSort')).toBe('updated');
   });
 });
