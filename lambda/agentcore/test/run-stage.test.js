@@ -9153,7 +9153,7 @@ describe('runStage — compiled context status', () => {
       new Proxy(
         {
           close: async () => {},
-          getItems: async ({ itemType }) => (itemType === 'Decision' ? decisions : []),
+          getItems: async ({ itemType }) => (!itemType || itemType === 'Decision' ? decisions : []),
         },
         {
           get: (target, name) => (name === 'then' ? undefined : (target[name] ?? (async () => []))),

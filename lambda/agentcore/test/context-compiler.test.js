@@ -262,7 +262,7 @@ describe('listProp (tolerant JSON-list props)', () => {
 });
 
 describe('compileContextPack on large graphs', () => {
-  const { SECTION_ITEM_LIMIT, ITEMS_PER_LABEL } = __test;
+  const { SECTION_ITEM_LIMIT, ITEMS_READ_LIMIT } = __test;
   const graphOf = (rows) => ({
     lookupArtifacts: vi.fn(async () => []),
     getItems: labelItems(rows),
@@ -303,31 +303,88 @@ describe('compileContextPack on large graphs', () => {
     expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
   });
 
-  it('reads Decision on every run, the unit-pack labels on lane runs, and each input type', async () => {
-    const plain = graphOf([]);
-    await compileContextPack({ graph: plain, stage: {} });
-    expect(plain.getItems.mock.calls.map(([a]) => a)).toEqual([
-      { itemType: 'Decision', limit: ITEMS_PER_LABEL + 1 },
-    ]);
-    const reader = graphOf([]);
-    await compileContextPack({
-      graph: reader,
-      stage: { inputArtifacts: [{ artifact: 'stories' }, { artifact: 'requirements' }] },
+  it('reads the items once when the intent has fewer than the read limit', async () => {
+    const rows = [
+      ...many(ITEMS_READ_LIMIT - 61, 'Requirement', () => ({ artifact_type: 'reqs' })),
+      ...many(10, 'Decision'),
+      ...unitStories(49),
+    ];
+    const graph = graphOf(rows);
+    const pack = await compileContextPack({
+      graph,
+      stage: { inputArtifacts: [{ artifact: 'reqs' }] },
+      unit: { slug: 'auth' },
     });
-    expect(reader.getItems.mock.calls.map(([a]) => a)).toEqual([
-      { itemType: 'Decision', limit: ITEMS_PER_LABEL + 1 },
-      { artifactType: 'requirements', limit: ITEMS_PER_LABEL + 1 },
-      { artifactType: 'stories', limit: ITEMS_PER_LABEL + 1 },
+    expect(graph.getItems).toHaveBeenCalledTimes(1);
+    expect(graph.getItems).toHaveBeenCalledWith({ limit: ITEMS_READ_LIMIT });
+    expect(pack.markdown.match(/^- decision-/gm)).toHaveLength(10);
+    expect(pack.markdown).toContain('### Derived items — reqs');
+    expect(pack.markdown).toContain('- story-48');
+  });
+
+  it('reads each section on its own when the first read is at the limit', async () => {
+    const rows = [
+      ...many(ITEMS_READ_LIMIT - 60, 'Requirement', () => ({ artifact_type: 'reqs' })),
+      ...many(10, 'Decision'),
+      ...unitStories(49),
+    ];
+    expect(rows).toHaveLength(ITEMS_READ_LIMIT);
+    const graph = graphOf(rows);
+    const pack = await compileContextPack({
+      graph,
+      stage: { inputArtifacts: [{ artifact: 'reqs' }] },
+      unit: { slug: 'auth' },
+    });
+    expect(graph.getItems.mock.calls.map(([a]) => a)).toEqual([
+      { limit: ITEMS_READ_LIMIT },
+      { itemType: 'Decision', limit: ITEMS_READ_LIMIT },
+      { itemType: 'StoryMapEntry', limit: ITEMS_READ_LIMIT },
+      { itemType: 'Story', limit: ITEMS_READ_LIMIT },
+      { itemType: 'Requirement', limit: ITEMS_READ_LIMIT },
+      { itemType: 'Contract', limit: ITEMS_READ_LIMIT },
+      { artifactType: 'reqs', limit: ITEMS_READ_LIMIT },
     ]);
-    const lane = graphOf([]);
-    await compileContextPack({ graph: lane, stage: {}, unit: { slug: 'auth' } });
-    expect(lane.getItems.mock.calls.map(([a]) => a.itemType)).toEqual([
-      'Decision',
-      'StoryMapEntry',
-      'Story',
-      'Requirement',
-      'Contract',
-    ]);
+    // Every section read stayed under the limit: nothing is flagged.
+    expect(pack.markdown).not.toContain('reached the read limit');
+    expect(pack.markdown.match(/^- decision-/gm)).toHaveLength(10);
+    expect(pack.markdown).toContain('- story-48');
+    expect(pack).toMatchObject({ status: 'ok', omitted: 0 });
+  });
+
+  it('flags only the section whose own read hits the limit', async () => {
+    const pack = await compileContextPack({
+      graph: graphOf(many(ITEMS_READ_LIMIT, 'Decision')),
+      stage: {},
+    });
+    expect(pack.markdown).toContain(`Decision items reached the read limit of ${ITEMS_READ_LIMIT}`);
+    expect(pack.status).toBe('truncated');
+  });
+
+  it('reports a failed first item read as unavailable without retrying', async () => {
+    const graph = {
+      lookupArtifacts: vi.fn(async () => []),
+      getItems: vi.fn(async () => {
+        throw new Error('graph down');
+      }),
+    };
+    const pack = await compileContextPack({ graph, stage: {}, unit: { slug: 'auth' } });
+    expect(graph.getItems).toHaveBeenCalledTimes(1);
+    expect(pack.markdown).toContain('Could not read derived items');
+    expect(pack.status).toBe('unavailable');
+  });
+
+  it('reports a failed section read as unavailable', async () => {
+    const rows = many(ITEMS_READ_LIMIT, 'Requirement');
+    const graph = {
+      lookupArtifacts: vi.fn(async () => []),
+      getItems: vi.fn(async ({ itemType } = {}) => {
+        if (itemType === 'Decision') throw new Error('graph down');
+        return rows;
+      }),
+    };
+    const pack = await compileContextPack({ graph, stage: {} });
+    expect(pack.markdown).toContain('Could not read Decision items');
+    expect(pack.status).toBe('unavailable');
   });
 
   it('lists every decision up to the section cap and counts the rest', async () => {
@@ -381,32 +438,6 @@ describe('compileContextPack on large graphs', () => {
     const forward = await run(rows);
     const reversed = await run(rows.toReversed());
     expect(reversed.markdown).toBe(forward.markdown);
-  });
-
-  it('flags a label only when it has more items than one read carries', async () => {
-    const atLimit = await compileContextPack({
-      graph: graphOf(many(ITEMS_PER_LABEL, 'Decision')),
-      stage: {},
-    });
-    expect(atLimit.markdown).not.toContain('More than');
-    const over = await compileContextPack({
-      graph: graphOf(many(ITEMS_PER_LABEL + 1, 'Decision')),
-      stage: {},
-    });
-    expect(over.markdown).toContain(`More than ${ITEMS_PER_LABEL} Decision items`);
-    expect(over.status).toBe('truncated');
-  });
-
-  it('reports a failed item read as unavailable', async () => {
-    const graph = {
-      lookupArtifacts: vi.fn(async () => []),
-      getItems: vi.fn(async () => {
-        throw new Error('graph down');
-      }),
-    };
-    const pack = await compileContextPack({ graph, stage: {} });
-    expect(pack.markdown).toContain('Could not read Decision items');
-    expect(pack.status).toBe('unavailable');
   });
 
   it('reports a failed artifact lookup as unavailable', async () => {

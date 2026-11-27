@@ -15,10 +15,10 @@
 //      stage's input artifacts produced, each with a one-line traceability
 //      suffix (covers/persona/depends-on refs).
 //   5. Section TOCs of the input artifacts — headings only, for navigation.
-// All reads are compact; nothing here loads full markdown bodies. Items are
-// read per label (Decision, plus the unit-pack labels on lane runs) and per
-// input artifact type, so a section never depends on which other items the
-// graph holds. Sections are
+// All reads are compact; nothing here loads full markdown bodies. Items come
+// from one read of the intent; when that read is at the op maximum, each
+// section is read on its own (per label or input artifact type), so a section
+// never depends on which other items the graph holds. Sections are
 // capped with a "… N more (get_items)" line, and the result carries a status
 // ('ok' | 'truncated' | 'unavailable') and the number of decision and
 // unit-pack items left out, so an incomplete pack is never silent.
@@ -29,9 +29,8 @@ import { jsonListProp as listProp } from '../shared/graph-rows.js';
 
 const DEFAULT_BUDGET_BYTES = 24_000;
 const TOC_HEADINGS_PER_ARTIFACT = 10;
-// Items used per label. Each read asks for one more (the op maximum, 500), so
-// a label with exactly this many items is not reported as cut.
-const ITEMS_PER_LABEL = 499;
+// The getItems op maximum. A read that returns this many rows may be cut.
+const ITEMS_READ_LIMIT = 500;
 const UNIT_PACK_LABELS = ['StoryMapEntry', 'Story', 'Requirement', 'Contract'];
 // Per-section line cap; the rest is counted in a "… N more (get_items)" line.
 const SECTION_ITEM_LIMIT = 50;
@@ -202,35 +201,54 @@ export const compileContextPack = async ({
     String(a.artifact_type).localeCompare(String(b.artifact_type)),
   );
 
-  // One read per label or artifact type, filtered in the traversal: the cap
-  // applies to that read only, and the rows are sorted after the read, so
-  // traversal order never picks the survivors.
+  // Items: one read of the whole intent (two traversals, the common case). A
+  // read below the op maximum is complete and every section is built from it.
+  // A read AT the maximum may have been cut in traversal order, so only then
+  // each section is read on its own, filtered in the traversal, and flagged
+  // only if that read also hits the maximum. Rows are sorted after every read,
+  // so traversal order never picks the survivors.
   const failedReads = [];
   const cutReads = [];
-  const readItems = async (filter, what) => {
+  const fetchItems = async (filter, what) => {
     if (!graph.getItems) return [];
-    let rows;
     try {
-      rows = (await graph.getItems({ ...filter, limit: ITEMS_PER_LABEL + 1 })) ?? [];
+      return (await graph.getItems({ ...filter, limit: ITEMS_READ_LIMIT })) ?? [];
     } catch {
       failedReads.push(what);
-      return [];
+      return null;
     }
-    if (rows.length > ITEMS_PER_LABEL) cutReads.push(what);
-    return rows.toSorted(byId).slice(0, ITEMS_PER_LABEL);
   };
-  const decisionItems = await readItems({ itemType: 'Decision' }, 'Decision items');
-  const unitItems = [];
-  if (unit?.slug) {
-    for (const itemType of UNIT_PACK_LABELS) {
-      unitItems.push(...(await readItems({ itemType }, `${itemType} items`)));
+  let decisionItems = [];
+  let unitItems = [];
+  let inputItems = [];
+  const all = await fetchItems({}, 'derived items');
+  if (all && all.length < ITEMS_READ_LIMIT) {
+    const sorted = all.toSorted(byId);
+    decisionItems = sorted.filter((i) => i.label === 'Decision');
+    if (unit?.slug) unitItems = sorted.filter((i) => UNIT_PACK_LABELS.includes(i.label));
+    inputItems = [...needed].toSorted().map((artifactType) => ({
+      artifactType,
+      rows: sorted.filter((i) => i.artifact_type === artifactType),
+    }));
+  } else if (all) {
+    const readSection = async (filter, what) => {
+      const rows = await fetchItems(filter, what);
+      if (!rows) return [];
+      if (rows.length >= ITEMS_READ_LIMIT) cutReads.push(what);
+      return rows.toSorted(byId);
+    };
+    decisionItems = await readSection({ itemType: 'Decision' }, 'Decision items');
+    if (unit?.slug) {
+      for (const itemType of UNIT_PACK_LABELS) {
+        unitItems.push(...(await readSection({ itemType }, `${itemType} items`)));
+      }
+    }
+    for (const artifactType of [...needed].toSorted()) {
+      const rows = await readSection({ artifactType }, `items of the ${artifactType} artifacts`);
+      inputItems.push({ artifactType, rows });
     }
   }
-  const inputItems = [];
-  for (const artifactType of [...needed].toSorted()) {
-    const rows = await readItems({ artifactType }, `items of the ${artifactType} artifacts`);
-    if (rows.length) inputItems.push({ artifactType, rows });
-  }
+  inputItems = inputItems.filter(({ rows }) => rows.length);
   if (failedReads.length) unavailable = true;
   if (cutReads.length) incomplete = true;
 
@@ -258,7 +276,7 @@ export const compileContextPack = async ({
   if (cutReads.length) {
     push(
       '',
-      `- More than ${ITEMS_PER_LABEL} ${cutReads.join(', ')}; the sections below may be incomplete (get_items).`,
+      `- ${cutReads.join(', ')} reached the read limit of ${ITEMS_READ_LIMIT}; the sections below may be incomplete (get_items).`,
     );
   }
 
@@ -355,6 +373,6 @@ export const __test = {
   listProp,
   traceSuffix,
   DEFAULT_BUDGET_BYTES,
-  ITEMS_PER_LABEL,
+  ITEMS_READ_LIMIT,
   SECTION_ITEM_LIMIT,
 };
