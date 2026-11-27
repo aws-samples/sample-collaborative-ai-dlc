@@ -30,7 +30,6 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useProjectsCache, type ProjectIntentSummary } from '@/hooks/useProjectsCache';
-import { usePanelsInline } from '@/hooks/usePanelsInline';
 import { useAuth } from '@/contexts/AuthContext';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { StatusPill } from '@/components/ui/status-pill';
@@ -51,23 +50,20 @@ interface PageEntry {
   icon: LucideIcon;
   keywords: string[];
   adminOnly?: boolean;
-  /** A page that only exists where the sidebar does not already serve its purpose. */
-  narrowOnly?: boolean;
 }
 
 const PAGES: PageEntry[] = [
   {
-    label: 'My work',
+    label: 'Spaces',
     path: '/dashboard',
-    icon: Inbox,
-    keywords: ['dashboard', 'home', 'inbox', 'attention', 'questions'],
+    icon: LayoutDashboard,
+    keywords: ['dashboard', 'home', 'projects', 'list'],
   },
   {
-    label: 'Spaces',
-    path: '/spaces',
-    icon: LayoutDashboard,
-    keywords: ['projects', 'list'],
-    narrowOnly: true,
+    label: 'My work',
+    path: '/my-work',
+    icon: Inbox,
+    keywords: ['inbox', 'attention', 'questions'],
   },
   {
     label: 'Workflows',
@@ -252,10 +248,7 @@ export function CommandPalette({ open, onOpenChange, onCreateSpace }: CommandPal
     [projects],
   );
 
-  const panelsInline = usePanelsInline();
-  const pages = PAGES.filter(
-    (page) => (!page.adminOnly || isPlatformAdmin) && (!page.narrowOnly || !panelsInline),
-  );
+  const pages = PAGES.filter((page) => !page.adminOnly || isPlatformAdmin);
 
   // Pointer hover is covered by the shell's delegated listener (each item
   // carries data-prefetch-href). Arrow keys move cmdk's selection without

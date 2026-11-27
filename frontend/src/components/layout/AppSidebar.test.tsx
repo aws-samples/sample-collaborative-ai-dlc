@@ -75,6 +75,7 @@ function renderSidebar(path = '/dashboard', props: Partial<AppSidebarProps> = {}
       <Routes>
         <Route path="/dashboard" element={sidebar} />
         <Route path="/spaces" element={sidebar} />
+        <Route path="/my-work" element={sidebar} />
         <Route path="/space/:projectId" element={sidebar} />
         <Route path="/space/:projectId/intent/:intentId" element={sidebar} />
         <Route path="/space/:projectId/intent/:intentId/observability" element={sidebar} />
@@ -132,17 +133,23 @@ afterEach(() => {
 });
 
 describe('AppSidebar primary navigation', () => {
-  it('starts with "My work" as a real link marked current; the sidebar itself is the list of spaces', () => {
+  it('starts with "My work" as a real link, current on its own page; the Spaces row is current on the dashboard', () => {
     mockProjects.projects = [v2Space('p1', 'Alpha', [])];
-    renderSidebar('/dashboard');
+    const view = renderSidebar('/my-work');
     const nav = screen.getByRole('navigation', { name: 'Primary' });
     const myWork = within(nav).getByRole('link', { name: 'My work' });
-    expect(myWork).toHaveAttribute('href', '/dashboard');
+    expect(myWork).toHaveAttribute('href', '/my-work');
     expect(myWork).toHaveAttribute('aria-current', 'page');
-    // No link to a Spaces page and no "All spaces" header on large screens.
-    expect(screen.queryByRole('link', { name: 'Spaces' })).toBeNull();
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
+    expect(spaces).toHaveAttribute('href', '/dashboard');
+    expect(spaces).not.toHaveAttribute('aria-current');
     expect(screen.queryByText('All spaces')).toBeNull();
     expect(screen.getAllByText('Spaces')).toHaveLength(1);
+
+    view.unmount();
+    renderSidebar('/dashboard');
+    expect(screen.getByRole('link', { name: 'My work' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: 'Spaces' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('gives My work, Pinned and Spaces one row style: icon, label, same size and padding', () => {
@@ -151,7 +158,7 @@ describe('AppSidebar primary navigation', () => {
     renderSidebar('/space/p1');
     fireEvent.click(screen.getByRole('button', { name: 'Pin Beta' }));
     const myWork = screen.getByRole('link', { name: 'My work' });
-    const spaces = screen.getByRole('button', { name: /^Spaces/ });
+    const spaces = screen.getByRole('link', { name: 'Spaces' });
     const pinned = screen.getByRole('button', { name: /^Pinned/ });
     for (const row of [myWork, spaces, pinned]) {
       expect(row.querySelector('svg')).not.toBeNull();
@@ -160,27 +167,38 @@ describe('AppSidebar primary navigation', () => {
     }
   });
 
-  it('toggles the list of spaces from the Spaces row without navigating', () => {
+  it('opens the Spaces dashboard from the Spaces label; the chevron only folds the list', () => {
     mockProjects.projects = [v2Space('p1', 'Alpha', [])];
     renderSidebar('/space/p1');
-    const toggle = screen.getByRole('button', { name: /^Spaces/ });
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const chevron = screen.getByRole('button', { name: 'Collapse spaces' });
+    expect(chevron).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('link', { name: 'Alpha' })).toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(chevron);
+    expect(screen.getByRole('button', { name: 'Expand spaces' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
     expect(screen.queryByRole('link', { name: 'Alpha' })).toBeNull();
     expect(screen.getByTestId('current-path')).toHaveTextContent('/space/p1');
-    fireEvent.click(toggle);
+
+    fireEvent.click(screen.getByRole('link', { name: 'Spaces' }));
+    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
+    // Navigating does not unfold the list; the label does once the reader is there.
+    expect(screen.queryByRole('link', { name: 'Alpha' })).toBeNull();
+    fireEvent.click(screen.getByRole('link', { name: 'Spaces' }));
     expect(screen.getByRole('link', { name: 'Alpha' })).toBeInTheDocument();
+    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
+    fireEvent.click(screen.getByRole('link', { name: 'Spaces' }));
+    expect(screen.queryByRole('link', { name: 'Alpha' })).toBeNull();
   });
 
-  it('shows no count on the Spaces row, open or collapsed', () => {
+  it('shows no count or age on the Spaces row, open or collapsed', () => {
     mockProjects.projects = [v2Space('p1', 'Alpha', []), v2Space('p2', 'Beta', [])];
     renderSidebar();
-    const toggle = screen.getByRole('button', { name: /^Spaces/ });
-    expect(toggle).toHaveTextContent(/^Spaces$/);
-    fireEvent.click(toggle);
-    expect(toggle).toHaveTextContent(/^Spaces$/);
+    const label = screen.getByRole('link', { name: 'Spaces' });
+    expect(label).toHaveTextContent(/^Spaces$/);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse spaces' }));
+    expect(label).toHaveTextContent(/^Spaces$/);
   });
 
   it('uses the compact pill size for intent rows', () => {
@@ -225,8 +243,9 @@ describe('AppSidebar primary navigation', () => {
 
   it('keeps the sort control and a larger, bolder New space button at the end of the Spaces row, both focusable', () => {
     renderSidebar();
-    const toggle = screen.getByRole('button', { name: /^Spaces/ });
-    const row = toggle.parentElement!;
+    const toggle = screen.getByRole('link', { name: 'Spaces' });
+    // Label + chevron share one wrapper; the actions sit after it in the row.
+    const row = toggle.parentElement!.parentElement!;
     const sort = within(row).getByRole('button', { name: 'Sort spaces' });
     const create = within(row).getByRole('button', { name: 'New space' });
     expect(sort.className).toContain('h-6');
@@ -234,9 +253,10 @@ describe('AppSidebar primary navigation', () => {
     expect(create.className).toContain('w-7');
     expect(create.querySelector('svg')).toHaveAttribute('stroke-width', '2.5');
     expect(create.compareDocumentPosition(sort) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    // The chevron follows the word, inside the toggle, not at the row's end.
-    const label = within(toggle).getByText('Spaces');
-    expect(label.nextElementSibling?.tagName.toLowerCase()).toBe('svg');
+    // The chevron follows the word as its own button, not at the row's end.
+    const chevron = within(row).getByRole('button', { name: 'Collapse spaces' });
+    expect(toggle.nextElementSibling).toBe(chevron);
+    expect(chevron.compareDocumentPosition(sort) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Hover-revealed on fine pointers, but part of the tab order regardless.
     for (const action of [sort, create]) {
       action.focus();
@@ -281,7 +301,7 @@ describe('AppSidebar pinned and all spaces', () => {
       within(spaces)
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Alpha', 'Beta', 'Gamma']);
+    ).toEqual(['Spaces', 'Alpha', 'Beta', 'Gamma']);
   });
 
   it('pins and unpins from the space row and persists the choice per user', () => {
@@ -303,7 +323,7 @@ describe('AppSidebar pinned and all spaces', () => {
       within(rest)
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Alpha', 'Gamma']);
+    ).toEqual(['Spaces', 'Alpha', 'Gamma']);
 
     // The same user sees the pin again on a fresh mount…
     first.unmount();
@@ -362,7 +382,7 @@ describe('AppSidebar pinned and all spaces', () => {
     expect(toggle).toHaveTextContent(/^Pinned$/);
     expect(within(pinned).queryByRole('link', { name: 'Beta' })).toBeNull();
     // The other section is untouched.
-    expect(screen.getByRole('button', { name: /^Spaces/ })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Collapse spaces' })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
@@ -393,11 +413,11 @@ describe('AppSidebar pinned and all spaces', () => {
     mockProjects.projects = three();
     const view = renderSidebar();
     fireEvent.click(screen.getByRole('button', { name: 'Pin Gamma' }));
-    const toggle = screen.getByRole('button', { name: /^Spaces/ });
+    const toggle = screen.getByRole('button', { name: 'Collapse spaces' });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveTextContent(/^Spaces$/);
+    expect(screen.getByRole('link', { name: 'Spaces' })).toHaveTextContent(/^Spaces$/);
     expect(screen.queryByRole('link', { name: 'Alpha' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Beta' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Gamma' })).toBeInTheDocument();
@@ -405,7 +425,7 @@ describe('AppSidebar pinned and all spaces', () => {
     view.unmount();
     resetSidebarSpacesCache();
     renderSidebar();
-    expect(screen.getByRole('button', { name: /^Spaces/ })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Expand spaces' })).toHaveAttribute(
       'aria-expanded',
       'false',
     );
@@ -413,7 +433,7 @@ describe('AppSidebar pinned and all spaces', () => {
     expect(screen.getByRole('link', { name: 'Gamma' })).toBeInTheDocument();
   });
 
-  it('shows the relative last activity under a space with work, and the counts in a tooltip', async () => {
+  it('keeps a space row to its name; the counts and last activity are in its tooltip', async () => {
     mockProjects.projects = [
       v2Space(
         'p1',
@@ -439,9 +459,11 @@ describe('AppSidebar pinned and all spaces', () => {
       v2Space('p2', 'Empty', []),
     ];
     renderSidebar();
+    // The name and the live dot; no age line under the name.
     const retail = screen.getByRole('link', { name: /^Retail/ });
-    expect(retail).toHaveTextContent('3d ago');
-    expect(screen.getByRole('link', { name: 'Empty' })).not.toHaveTextContent(/ago/);
+    expect(retail).toHaveTextContent(/^Retail$/);
+    expect(retail).not.toHaveTextContent(/ago/);
+    expect(screen.getByRole('link', { name: 'Empty' })).toHaveTextContent(/^Empty$/);
     fireEvent.pointerMove(retail);
     fireEvent.focus(retail);
     const tooltip = await screen.findByRole('tooltip');
@@ -551,10 +573,12 @@ describe('AppSidebar expanded space', () => {
     renderSidebar();
     expect(screen.queryByText('Newest running')).toBeNull();
     expandSpace('Space');
-    const links = screen
+    const rows = screen
       .getAllByRole('link')
-      .filter((link) => link.getAttribute('href')?.includes('/intent/'))
-      .map((link) => link.getAttribute('href'));
+      .filter((link) => link.getAttribute('href')?.includes('/intent/'));
+    // Nested under their space, rows don't repeat its name.
+    for (const row of rows) expect(row).not.toHaveTextContent('Space');
+    const links = rows.map((link) => link.getAttribute('href'));
     expect(links).toEqual([
       '/space/p1/intent/new/observability',
       '/space/p1/intent/draft/observability',
@@ -739,11 +763,8 @@ describe('AppSidebar drawer (narrow screens)', () => {
     ];
     renderSidebar('/dashboard', { variant: 'drawer' });
     const nav = screen.getByRole('navigation', { name: 'Primary' });
-    expect(within(nav).getByRole('link', { name: 'My work' })).toHaveAttribute(
-      'href',
-      '/dashboard',
-    );
-    expect(within(nav).getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/spaces');
+    expect(within(nav).getByRole('link', { name: 'My work' })).toHaveAttribute('href', '/my-work');
+    expect(within(nav).getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/dashboard');
     expect(screen.queryByRole('link', { name: 'Retail' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Platform' })).toBeNull();
     expect(screen.queryByRole('region', { name: /spaces/i })).toBeNull();
@@ -1433,7 +1454,7 @@ describe('AppSidebar authoring group', () => {
     mockAuth.isPlatformAdmin = true;
     mockProjects.projects = [v2Space('p1', 'Retail', [])];
     renderSidebar('/space/p1');
-    expect(screen.getByRole('link', { name: 'My work' })).toHaveAttribute('href', '/dashboard');
+    expect(screen.getByRole('link', { name: 'My work' })).toHaveAttribute('href', '/my-work');
     expect(screen.getByRole('link', { name: 'Retail' })).toHaveAttribute('href', '/space/p1');
     expect(screen.getByRole('link', { name: 'Workflows' })).toHaveAttribute('href', '/workflows');
     expect(screen.getByRole('link', { name: 'Block Library' })).toHaveAttribute(
@@ -1445,7 +1466,10 @@ describe('AppSidebar authoring group', () => {
       '/admin',
     );
     // Menus, dialogs and toggles stay buttons.
-    expect(screen.getByRole('button', { name: /^Spaces/ })).toHaveAttribute('aria-expanded');
+    expect(screen.getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/dashboard');
+    expect(screen.getByRole('button', { name: 'Collapse spaces' })).toHaveAttribute(
+      'aria-expanded',
+    );
     expect(screen.getByRole('button', { name: 'Sort spaces' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New space' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Collapse Retail' })).toBeInTheDocument();
@@ -1467,6 +1491,6 @@ describe('AppSidebar authoring group', () => {
     fireEvent.click(graph);
     expect(screen.getByTestId('current-path')).toHaveTextContent('/space/p1/intent/i1/graph');
     fireEvent.click(screen.getByRole('link', { name: 'My work' }));
-    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
+    expect(screen.getByTestId('current-path')).toHaveTextContent('/my-work');
   });
 });

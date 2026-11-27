@@ -463,20 +463,17 @@ describe('AppShell Create space dialog (R3-8)', () => {
     );
   });
 
-  it('leaves the flag alone on /spaces on large screens: the route carries it to My work', () => {
-    renderAtRoute('/spaces?reopenCreateSpace=1');
-    expect(screen.queryByRole('dialog', { name: 'Create space' })).toBeNull();
-    expect(screen.getByTestId('current-location')).toHaveTextContent('/spaces?reopenCreateSpace=1');
-  });
-
-  it('opens the dialog on /spaces on narrow screens, where the page renders', async () => {
-    setViewport(false);
-    renderAtRoute('/spaces?reopenCreateSpace=1');
-    expect(await screen.findByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByTestId('current-location')).toHaveTextContent(/^\/spaces$/),
-    );
-  });
+  it.each([true, false])(
+    'opens the dialog on /spaces whatever the layout (inline: %s)',
+    async (inline) => {
+      setViewport(inline);
+      renderAtRoute('/spaces?reopenCreateSpace=1');
+      expect(await screen.findByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByTestId('current-location')).toHaveTextContent(/^\/spaces$/),
+      );
+    },
+  );
 });
 
 describe('AppShell panel default behavior', () => {

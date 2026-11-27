@@ -27,7 +27,6 @@ import { intentSectionPath } from '@/lib/intentSectionPreference';
 import { intentRowMetaText } from '@/components/space/intentRowMeta';
 import { useQueryData } from '@/hooks/useQueryData';
 import { useOfferIdleCandidates } from '@/hooks/useIdleNext';
-import { spacesHomePath, usePanelsInline } from '@/hooks/usePanelsInline';
 
 const INBOX_CAP = 5;
 const INBOX_CAP_NARROW = 3;
@@ -262,7 +261,8 @@ function WaitingForYou({ items, now }: { items: InboxItem[]; now: number }) {
 // Each space's intents load on their own. A space still loading, or whose list
 // failed to load, has not been checked: My work must not call itself complete.
 function uncheckedSpaces(projects: readonly ProjectWithSprint[]) {
-  const v2 = projects.filter((p) => p.project.kind === 'v2');
+  // Viewer spaces are never listed (see deriveInbox), so they can't hold the list back.
+  const v2 = projects.filter((p) => p.project.kind === 'v2' && p.project.userRole !== 'viewer');
   return {
     loading: v2.filter((p) => p.activityLoading && !p.activityError),
     failed: v2.filter((p) => p.activityError),
@@ -329,10 +329,9 @@ function InboxSkeleton() {
 }
 
 // My work: everything that needs the reader across their spaces. The spaces
-// themselves are in the sidebar on large screens and on /spaces otherwise; a
+// themselves are on the Spaces dashboard and in the sidebar; a
 // `?reopenCreateSpace=1` link is the shell's to handle.
-export default function Dashboard() {
-  const panelsInline = usePanelsInline();
+export default function MyWork() {
   const { projects: portfolio, loading, error, refresh } = useProjectsCache();
 
   // The portfolio re-renders on every 30 s poll, so one clock per render is
@@ -387,9 +386,7 @@ export default function Dashboard() {
           description="A space connects a repository to a workflow so your team can run intents on it."
           action={
             <Button asChild className="gap-2">
-              <Link to={`${spacesHomePath(panelsInline)}?reopenCreateSpace=1`}>
-                Create your first space
-              </Link>
+              <Link to="/dashboard?reopenCreateSpace=1">Create your first space</Link>
             </Button>
           }
         />
@@ -409,11 +406,9 @@ export default function Dashboard() {
           title="Nothing needs you right now"
           description="Intents waiting for an answer or a resume, failed runs and stalled runs show up here."
           action={
-            panelsInline ? undefined : (
-              <Button asChild variant="outline">
-                <Link to="/spaces">Browse spaces</Link>
-              </Button>
-            )
+            <Button asChild variant="outline">
+              <Link to="/dashboard">Browse spaces</Link>
+            </Button>
           }
         />
       ) : (

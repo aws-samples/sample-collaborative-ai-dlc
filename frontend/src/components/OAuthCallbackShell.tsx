@@ -7,8 +7,7 @@ import { Card } from '@/components/ui/card';
 type Status = 'loading' | 'success' | 'error' | 'custom';
 
 const BACK_LABELS: Record<string, string> = {
-  '/dashboard': 'Back to My work',
-  '/spaces': 'Back to spaces',
+  '/dashboard': 'Back to spaces',
 };
 
 interface Props {
@@ -17,7 +16,7 @@ interface Props {
   loadingMessage?: string;
   successMessage?: string;
   errorMessage?: string | null;
-  /** For `error`, from `useOAuthReturnPath`: the space settings, or where the spaces are in the reader's layout. */
+  /** For `error`, from `useOAuthReturnPath`: the space settings, or the Spaces dashboard. */
   backTo?: string;
   // For multi-step callbacks (e.g. Jira's site picker) callers render their
   // own UI alongside the standard shell. Provide it as `children` and pass

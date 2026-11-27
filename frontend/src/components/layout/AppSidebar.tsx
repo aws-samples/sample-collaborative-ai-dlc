@@ -142,8 +142,9 @@ export interface AppSidebarProps {
   onCreateSpace?: () => void;
   /**
    * `drawer` (narrow screens): My work, a link to the Spaces page and the
-   * intents that need the reader or are active. Inline (large screens) the
-   * sidebar is the list of spaces, so there is no Spaces page link.
+   * intents that need the reader or are active. Inline (large screens): My
+   * work, then the Pinned and Spaces sections; the Spaces label is the link to
+   * the Spaces page.
    */
   variant?: 'inline' | 'drawer';
 }
@@ -192,8 +193,8 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
   const feedFailed =
     Boolean(error) || projects.some((entry) => entry.project.kind === 'v2' && entry.activityError);
 
-  const isOnMyWork = location.pathname === '/dashboard';
-  const isOnSpaces = location.pathname === '/spaces';
+  const isOnMyWork = location.pathname === '/my-work';
+  const isOnSpaces = location.pathname === '/dashboard' || location.pathname === '/spaces';
   // The space page itself (not an intent under it): its row's title then
   // folds the space instead of reloading the page the reader is on.
   const onSpacePage = (id: string) => location.pathname === `/space/${id}`;
@@ -310,12 +311,15 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
     if (!entry) return [];
     const active = activeByProject.get(id) ?? [];
     const limit = (pages[id] ?? 1) * INTENTS_PAGE_SIZE;
-    const rows = active.slice(0, limit).map((intent) => toItem(entry.project, intent));
+    // Nested under their space: the row doesn't repeat the space's name.
+    const rows = active
+      .slice(0, limit)
+      .map((intent) => ({ ...toItem(entry.project, intent), subtitle: '' }));
     if (currentItem && currentItem.intentMeta.projectId === id) {
       const inRows = rows.some(
         (row) => row.intentMeta.intentId === currentItem.intentMeta.intentId,
       );
-      if (!inRows) return [currentItem, ...rows];
+      if (!inRows) return [{ ...currentItem, subtitle: '' }, ...rows];
       return rows.map((row) =>
         row.intentMeta.intentId === currentItem.intentMeta.intentId
           ? { ...row, derived: currentDerived }
@@ -419,9 +423,14 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
     <TooltipProvider delayDuration={300}>
       <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
         <nav aria-label="Primary" className="flex flex-col gap-0.5 px-3 pt-3 pb-0.5">
-          <PrimaryLink to="/dashboard" icon={Inbox} label="My work" current={isOnMyWork} />
+          <PrimaryLink to="/my-work" icon={Inbox} label="My work" current={isOnMyWork} />
           {variant === 'drawer' && (
-            <PrimaryLink to="/spaces" icon={LayoutDashboard} label="Spaces" current={isOnSpaces} />
+            <PrimaryLink
+              to="/dashboard"
+              icon={LayoutDashboard}
+              label="Spaces"
+              current={isOnSpaces}
+            />
           )}
         </nav>
 
@@ -478,6 +487,8 @@ export function AppSidebar({ onCreateSpace, variant = 'inline' }: AppSidebarProp
                     id="sidebar-spaces"
                     icon={LayoutDashboard}
                     label="Spaces"
+                    href="/dashboard"
+                    current={isOnSpaces}
                     collapsed={sidebarSpaces.spacesCollapsed}
                     onToggle={() =>
                       sidebarSpaces.setSpacesCollapsed(!sidebarSpaces.spacesCollapsed)
@@ -621,44 +632,89 @@ function PrimaryLink({
   );
 }
 
-// Pinned and Spaces: the row toggles its list; the chevron sits by the label.
+// Pinned: the row toggles its list; the chevron sits by the label. Spaces has
+// a page (`href`): the label opens it, opens the list again once there, and
+// only the chevron toggles — the rule the space rows already follow.
 function SectionHeader({
   id,
   icon: Icon,
   label,
+  href,
+  current = false,
   collapsed,
   onToggle,
 }: {
   id: string;
   icon: LucideIcon;
   label: string;
+  href?: string;
+  current?: boolean;
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  return (
-    <button
-      type="button"
-      id={id}
-      aria-expanded={!collapsed}
-      aria-controls={`${id}-list`}
-      onClick={onToggle}
+  const rowClass = cn(
+    SECTION_ROW_CLASS,
+    'flex-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+    current
+      ? 'bg-sidebar-accent text-sidebar-foreground'
+      : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+  );
+  // Open sections hide their chevron until hovered, like the row actions;
+  // a folded section keeps it as the cue that there is more.
+  const chevron = (
+    <ChevronDown
+      aria-hidden="true"
       className={cn(
-        SECTION_ROW_CLASS,
-        'flex-1 text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
+        'h-3.5 w-3.5 shrink-0 text-sidebar-foreground/50 transition-transform',
+        collapsed ? '-rotate-90' : REVEAL_ON_HOVER.section,
       )}
-    >
-      <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-      <span className="truncate">{label}</span>
-      <ChevronDown
-        aria-hidden="true"
-        className={cn(
-          '-ml-1 h-3.5 w-3.5 shrink-0 text-sidebar-foreground/50 transition-transform',
-          // Open sections hide their chevron until hovered, like the row actions;
-          // a folded section keeps it as the cue that there is more.
-          collapsed ? '-rotate-90' : REVEAL_ON_HOVER.section,
-        )}
-      />
-    </button>
+    />
+  );
+  if (!href) {
+    return (
+      <button
+        type="button"
+        id={id}
+        aria-expanded={!collapsed}
+        aria-controls={`${id}-list`}
+        onClick={onToggle}
+        className={rowClass}
+      >
+        <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span className="truncate">{label}</span>
+        <span className="-ml-1 flex">{chevron}</span>
+      </button>
+    );
+  }
+  // Label and chevron share the row's free space, so the chevron sits right
+  // after the word, as on Pinned.
+  return (
+    <div className="flex min-w-0 flex-1 items-center">
+      <Link
+        to={href}
+        id={id}
+        aria-current={current ? 'page' : undefined}
+        onClick={(event) => {
+          if (!current) return;
+          event.preventDefault();
+          onToggle();
+        }}
+        className={cn(rowClass, 'flex-none')}
+      >
+        <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span className="truncate">{label}</span>
+      </Link>
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-controls={`${id}-list`}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${label.toLowerCase()}`}
+        onClick={onToggle}
+        className="-ml-1 flex h-7 w-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/50 hover:text-sidebar-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+      >
+        {chevron}
+      </button>
+    </div>
   );
 }
 
@@ -716,11 +772,6 @@ function SpaceRow({
   const isV2 = project.kind === 'v2';
   const live = isV2 && summary.running > 0;
   const lastActivity = projectLastActivityAt(entry);
-  // The age line earns its row only when the space has work to date it.
-  const activityText =
-    isV2 && lastActivity && projectIntentList(entry).length > 0
-      ? formatRelative(lastActivity, { now })
-      : null;
   const parts = isV2 ? spaceSignalParts(summary) : ['Legacy · read-only'];
   const hint = [
     project.name,
@@ -759,11 +810,6 @@ function SpaceRow({
                 >
                   {project.name}
                 </span>
-                {activityText && (
-                  <span className="block truncate text-2xs text-sidebar-foreground/55">
-                    {activityText}
-                  </span>
-                )}
               </span>
               {live && (
                 <span
@@ -907,9 +953,11 @@ function SidebarIntentRow({ item, current = false }: SidebarIntentRowProps) {
               className="shrink-0"
             />
           )}
-          <span className="min-w-0 truncate text-2xs text-sidebar-foreground/70">
-            {item.subtitle}
-          </span>
+          {item.subtitle && (
+            <span className="min-w-0 truncate text-2xs text-sidebar-foreground/70">
+              {item.subtitle}
+            </span>
+          )}
         </span>
       </span>
     </Link>

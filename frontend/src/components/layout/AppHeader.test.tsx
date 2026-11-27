@@ -48,13 +48,6 @@ const routePrefetch = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/routePrefetch', () => routePrefetch);
 
-// Narrow by default: the Spaces page exists there, so the trail can link to it.
-const layout = vi.hoisted(() => ({ panelsInline: false }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
-
 vi.mock('@/components/domain/PresenceAvatars', () => ({
   PresenceAvatars: () => null,
 }));
@@ -90,7 +83,6 @@ function renderHeader(path: string) {
 }
 
 beforeEach(() => {
-  layout.panelsInline = false;
   authState.isPlatformAdmin = false;
   projectState.project = { id: 'p1', name: 'retail-v2' };
   intentState.detail = {
@@ -185,19 +177,9 @@ describe('AppHeader breadcrumb', () => {
     renderHeader('/space/p1');
 
     const back = screen.getByRole('link', { name: 'Back to Spaces' });
-    expect(back).toHaveAttribute('href', '/spaces');
+    expect(back).toHaveAttribute('href', '/dashboard');
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
-    expect(within(nav).getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/spaces');
-  });
-
-  it('keeps the "Spaces" root as plain text on large screens, where the sidebar lists spaces', () => {
-    layout.panelsInline = true;
-    renderHeader('/space/p1');
-
-    const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
-    expect(within(nav).getByText('Spaces')).toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'Spaces' })).not.toBeInTheDocument();
-    expect(within(nav).queryAllByRole('link')).toHaveLength(0);
+    expect(within(nav).getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/dashboard');
     within(nav)
       .getAllByText('retail-v2')
       .forEach((crumb) => expect(crumb).toHaveAttribute('aria-current', 'page'));
@@ -249,8 +231,9 @@ describe('AppHeader breadcrumb', () => {
   });
 
   it.each([
-    ['/dashboard', 'My work'],
+    ['/dashboard', 'Spaces'],
     ['/spaces', 'Spaces'],
+    ['/my-work', 'My work'],
   ])('shows the page name alone when there is no parent: %s', (path, label) => {
     renderHeader(path);
 

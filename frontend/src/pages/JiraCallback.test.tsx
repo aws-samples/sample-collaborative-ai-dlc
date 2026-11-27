@@ -12,17 +12,9 @@ vi.mock('react-router', async (importOriginal) => ({
 vi.mock('@/services/trackers', () => ({
   trackersService: { finalizeJiraConnection: vi.fn() },
 }));
-// Narrow by default: the Spaces page is the fallback destination there.
-const layout = vi.hoisted(() => ({ panelsInline: false }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
-
 const returnPath = '/space/project-1/settings?tab=trackers&addJiraProject=1';
 
 beforeEach(() => {
-  layout.panelsInline = false;
   vi.useFakeTimers();
   navigate.mockReset();
   sessionStorage.clear();
@@ -131,7 +123,7 @@ describe('Jira authorization return', () => {
       });
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       expect(navigate).toHaveBeenCalledExactlyOnceWith(
-        path === returnPath ? '/space/project-1/settings?tab=trackers' : '/spaces',
+        path === returnPath ? '/space/project-1/settings?tab=trackers' : '/dashboard',
         { replace: true },
       );
       expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
@@ -140,21 +132,14 @@ describe('Jira authorization return', () => {
   );
 
   it.each([null, '//example.com', 'https://example.com'])(
-    'uses the Spaces page for a missing or external return path: %s',
+    'uses the Spaces dashboard for a missing or external return path: %s',
     async (path) => {
       if (path) sessionStorage.setItem('oauth_return_to', path);
       await showCallback({ success: true });
       await act(async () => vi.advanceTimersByTime(1200));
-      expect(navigate).toHaveBeenCalledWith('/spaces', { replace: true });
+      expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
     },
   );
-
-  it('returns to My work on large screens, where the sidebar lists the spaces', async () => {
-    layout.panelsInline = true;
-    await showCallback({ success: true });
-    await act(async () => vi.advanceTimersByTime(1200));
-    expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
-  });
 
   it('keeps authorization errors visible without returning to restart the flow', async () => {
     sessionStorage.setItem('oauth_return_to', returnPath);

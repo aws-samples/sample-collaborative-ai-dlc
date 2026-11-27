@@ -1,19 +1,10 @@
 import { StrictMode } from 'react';
 import { render, screen, waitFor } from '@/test/query';
 import { MemoryRouter, useLocation } from 'react-router';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-
-const layout = vi.hoisted(() => ({ panelsInline: false }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
+import { afterEach, expect, it, vi } from 'vitest';
 
 import { GitOAuthCallback } from './GitOAuthCallback';
 
-beforeEach(() => {
-  layout.panelsInline = false;
-});
 afterEach(() => {
   vi.unstubAllGlobals();
   sessionStorage.clear();
@@ -58,24 +49,17 @@ it('exchanges a single-use code once when effects replay, and keeps query values
   expect(exchange.mock.calls[0][0]).toContain('code=sample%2Bcode&state=a%26b');
 });
 
-it.each([
-  [false, '/spaces'],
-  [true, '/dashboard'],
-])(
-  'without a settings page to resume, continues the Create space flow where the spaces are (inline: %s)',
-  async (panelsInline, home) => {
-    layout.panelsInline = panelsInline;
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ success: true }) }));
-    show('code=sample&state=s');
-    await waitFor(
-      () =>
-        expect(screen.getByTestId('current-location')).toHaveTextContent(
-          `${home}?reopenCreateSpace=1&gitProvider=github`,
-        ),
-      { timeout: 3000 },
-    );
-  },
-);
+it('without a settings page to resume, continues the Create space flow on the Spaces dashboard', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ success: true }) }));
+  show('code=sample&state=s');
+  await waitFor(
+    () =>
+      expect(screen.getByTestId('current-location')).toHaveTextContent(
+        '/dashboard?reopenCreateSpace=1&gitProvider=github',
+      ),
+    { timeout: 3000 },
+  );
+});
 
 it('carries the self-managed GitLab instance back to the Create space flow', async () => {
   vi.stubGlobal(
@@ -93,17 +77,16 @@ it('carries the self-managed GitLab instance back to the Create space flow', asy
   await waitFor(
     () =>
       expect(screen.getByTestId('current-location')).toHaveTextContent(
-        '/spaces?reopenCreateSpace=1&gitProvider=gitlab&gitlabInstance=git.example.org',
+        '/dashboard?reopenCreateSpace=1&gitProvider=gitlab&gitlabInstance=git.example.org',
       ),
     { timeout: 3000 },
   );
 });
 
 it('labels the error return by its destination', () => {
-  layout.panelsInline = true;
   vi.stubGlobal('fetch', vi.fn());
   show('error=access_denied');
-  expect(screen.getByRole('link', { name: 'Back to My work' })).toHaveAttribute(
+  expect(screen.getByRole('link', { name: 'Back to spaces' })).toHaveAttribute(
     'href',
     '/dashboard',
   );

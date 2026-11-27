@@ -3,13 +3,6 @@ import { render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 
-// The page exists for narrow screens; large screens get the sidebar's list.
-const layout = vi.hoisted(() => ({ panelsInline: false }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
-
 const fixtures = vi.hoisted(() => ({
   projects: [] as unknown[],
   loading: false,
@@ -143,16 +136,17 @@ const spacesTree = (entries: string[]) => (
       <CurrentLocation />
       <Routes>
         <Route path="/spaces" element={<Spaces />} />
-        <Route path="/dashboard" element={<p>My work page</p>} />
+        <Route path="/dashboard" element={<Spaces />} />
       </Routes>
     </Shell>
   </MemoryRouter>
 );
 
-const renderSpaces = (entries: string[] = ['/spaces']) => render(spacesTree(entries));
+const renderSpaces = (entries: string[] = ['/dashboard']) => render(spacesTree(entries));
+// The table is the remembered alternative to the cards.
+const rememberListView = () => localStorage.setItem('aidlc-spaces-view', 'list');
 
 beforeEach(() => {
-  layout.panelsInline = false;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(NOW);
   localStorage.clear();
@@ -200,6 +194,7 @@ describe('Spaces — states', () => {
   });
 
   it('lists spaces only: the inbox lives on My work', () => {
+    rememberListView();
     fixtures.projects = [
       space('retail', 'Retail', [
         intent('q1', 'WAITING', daysAgo(108), { pendingHumanTaskId: 'task-1' }),
@@ -214,29 +209,16 @@ describe('Spaces — states', () => {
 
   it('leaves a reopenCreateSpace link to the shell, which owns the Create space dialog', () => {
     fixtures.projects = [space('retail', 'Retail', [])];
-    renderSpaces(['/spaces?reopenCreateSpace=1&gitProvider=github']);
+    renderSpaces(['/dashboard?reopenCreateSpace=1&gitProvider=github']);
     expect(screen.getByRole('heading', { level: 1, name: 'Spaces' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Create space' })).not.toBeInTheDocument();
   });
-});
 
-describe('Spaces — layout', () => {
-  it('renders on narrow screens, where the sidebar drawer does not list spaces', () => {
+  it.each(['/dashboard', '/spaces'])('is the same page at %s, never a redirect', (path) => {
     fixtures.projects = [space('retail', 'Retail', [])];
-    renderSpaces();
-    expect(screen.getByRole('table', { name: 'Spaces' })).toBeInTheDocument();
-    expect(screen.getByTestId('current-location')).toHaveTextContent('/spaces');
-  });
-
-  it('redirects to My work on large screens and keeps the query for the shell', () => {
-    layout.panelsInline = true;
-    fixtures.projects = [space('retail', 'Retail', [])];
-    renderSpaces(['/spaces?reopenCreateSpace=1&gitProvider=github']);
-    expect(screen.getByText('My work page')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { level: 1, name: 'Spaces' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('current-location')).toHaveTextContent(
-      '/dashboard?reopenCreateSpace=1&gitProvider=github',
-    );
+    renderSpaces([`${path}?reopenCreateSpace=1`]);
+    expect(screen.getByRole('heading', { level: 1, name: 'Spaces' })).toBeInTheDocument();
+    expect(screen.getByTestId('current-location')).toHaveTextContent(`${path}?reopenCreateSpace=1`);
   });
 });
 
@@ -257,6 +239,7 @@ describe('Work status', () => {
   const quiet = () => space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))]);
 
   it('splits each space signal into clickable pills and never counts a stalled run as live', () => {
+    rememberListView();
     fixtures.projects = [quiet(), platform(), retail()];
     renderSpaces();
     const table = screen.getByRole('table', { name: 'Spaces' });
@@ -293,7 +276,7 @@ describe('Work status', () => {
 
 describe('Create space dialog', () => {
   it.each(['New space', 'Create your first space'])(
-    'opens the shell\'s dialog from "%s", which keeps its step and values when the page redirects on a wide layout',
+    'opens the shell\'s dialog from "%s", which keeps its step and values across a re-render',
     async (button) => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       fixtures.projects = button === 'New space' ? [space('retail', 'Retail', [])] : [];
@@ -304,10 +287,7 @@ describe('Create space dialog', () => {
       await user.click(within(dialog).getByRole('button', { name: 'Next' }));
       await user.type(within(dialog).getByRole('textbox', { name: 'Space name' }), 'Payments');
 
-      // Wide layout: /spaces redirects to My work and the page unmounts.
-      layout.panelsInline = true;
-      rerender(spacesTree(['/spaces']));
-      expect(screen.getByText('My work page')).toBeInTheDocument();
+      rerender(spacesTree(['/dashboard']));
       const same = screen.getByRole('dialog', { name: 'Create space' });
       expect(same).toBe(dialog);
       expect(within(same).getByTestId('create-space-step')).toHaveTextContent('Step 3');
@@ -319,8 +299,71 @@ describe('Create space dialog', () => {
   );
 });
 
+describe('Spaces cards', () => {
+  it("are the default view and fold each space's open intents behind one line, what needs someone first", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    fixtures.projects = [
+      space('retail', 'Retail', [
+        intent('r1', 'RUNNING', hoursAgo(0.1)),
+        intent('q1', 'WAITING', daysAgo(108), { pendingHumanTaskId: 'task-1' }),
+        intent('s1', 'SUCCEEDED', daysAgo(1)),
+        intent('r2', 'RUNNING', hoursAgo(0.2)),
+        intent('r3', 'RUNNING', hoursAgo(0.3)),
+        intent('r4', 'RUNNING', hoursAgo(0.4)),
+        intent('r5', 'RUNNING', hoursAgo(0.5)),
+        intent('r6', 'RUNNING', hoursAgo(1)),
+      ]),
+      space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))]),
+    ];
+    renderSpaces();
+    expect(screen.queryByRole('table', { name: 'Spaces' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Retail' })).toHaveAttribute('href', '/space/retail');
+    // Owners keep Delete on the card, whatever the screen size.
+    await user.click(screen.getByRole('button', { name: 'Actions for space Retail' }));
+    expect(screen.getByRole('menuitem', { name: 'Delete space' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    // Folded by default: no intent rows until asked; a quiet space has no line.
+    const toggle = screen.getByRole('button', { name: '7 active intents' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('link', { name: /Intent q1/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /active intent/ })).toBe(toggle);
+
+    await user.click(toggle);
+    const rows = screen.getAllByRole('link', { name: /^Intent / });
+    // The question first, then the newest runs; five at most, each with its pill.
+    expect(rows.map((row) => row.getAttribute('href'))).toEqual([
+      '/space/retail/intent/q1',
+      '/space/retail/intent/r1/observability',
+      '/space/retail/intent/r2/observability',
+      '/space/retail/intent/r3/observability',
+      '/space/retail/intent/r4/observability',
+    ]);
+    expect(rows[0]).toHaveTextContent('Waiting for input');
+    expect(rows[1]).toHaveTextContent('Running');
+    expect(screen.getByRole('link', { name: '2 more in the space' })).toHaveAttribute(
+      'href',
+      '/space/retail',
+    );
+  });
+  it('shows a resume-needed intent as "Needs resume", the same pill as My work and the space row', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    fixtures.projects = [
+      space('platform', 'Platform', [
+        intent('q2', 'WAITING', daysAgo(10), { resumeRequired: true }),
+      ]),
+    ];
+    renderSpaces();
+    await user.click(screen.getByRole('button', { name: '1 active intent' }));
+    const row = screen.getByRole('link', { name: /Intent q2/ });
+    expect(row).toHaveTextContent('Needs resume');
+    expect(row).not.toHaveTextContent('Waiting for input');
+  });
+});
+
 describe('Spaces table', () => {
-  it('is the default view, shows the role only when not Owner and uses relative times', () => {
+  it('is the remembered alternative, shows the role only when not Owner and uses relative times', () => {
+    rememberListView();
     fixtures.projects = [
       space('retail', 'Retail', [intent('s1', 'SUCCEEDED', daysAgo(1))]),
       space('platform', 'Platform', [intent('s2', 'SUCCEEDED', daysAgo(40))], {
@@ -363,14 +406,16 @@ describe('Spaces table', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('switches to the optional grid view and remembers it', async () => {
+  it('is chosen from the cards and remembered', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     fixtures.projects = [space('retail', 'Retail', [intent('s1', 'SUCCEEDED', daysAgo(1))])];
     renderSpaces();
+    expect(screen.queryByRole('table', { name: 'Spaces' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'List view' }));
     expect(screen.getByRole('table', { name: 'Spaces' })).toBeInTheDocument();
+    expect(localStorage.getItem('aidlc-spaces-view')).toBe('list');
     await user.click(screen.getByRole('button', { name: 'Grid view' }));
     expect(screen.queryByRole('table', { name: 'Spaces' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Retail' })).toHaveAttribute('href', '/space/retail');
     expect(localStorage.getItem('aidlc-spaces-view')).toBe('grid');
   });
 
@@ -382,6 +427,8 @@ describe('Spaces table', () => {
     await user.click(screen.getByRole('button', { name: 'Actions for space Retail' }));
     await user.click(screen.getByRole('menuitem', { name: 'Delete space' }));
     const dialog = screen.getByRole('alertdialog');
+    // Names the space, so a delete from the wrong card is caught here.
+    expect(within(dialog).getByRole('heading', { name: 'Delete Retail?' })).toBeInTheDocument();
     expect(dialog).toHaveTextContent(/running or waiting work/);
     await user.click(within(dialog).getByRole('button', { name: 'Delete space' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Space still in use');

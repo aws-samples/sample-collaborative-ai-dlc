@@ -73,15 +73,21 @@ const intentSections = (ctx: RouteCtx) => {
 
 export const APP_ROUTES: readonly RouteEntry[] = [
   {
-    // My work: the default page after login. Portfolio lists are shell-owned
-    // and always warm; the inbox offers its first answerable rows.
+    // The Spaces dashboard: the default page after login. Portfolio lists are
+    // shell-owned and always warm.
     path: '/dashboard',
-    page: pages.Dashboard,
-    idleNext: () => idleCandidates('page').slice(0, 2),
+    page: pages.Spaces,
   },
   {
+    // The same page under its older name.
     path: '/spaces',
     page: pages.Spaces,
+  },
+  {
+    // My work: the inbox offers its first answerable rows.
+    path: '/my-work',
+    page: pages.MyWork,
+    idleNext: () => idleCandidates('page').slice(0, 2),
   },
   {
     path: '/account/settings',

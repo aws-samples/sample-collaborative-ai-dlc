@@ -14,7 +14,7 @@ export const AppShell = lazyWithPreload(() =>
 export const SprintLayout = lazyWithPreload(() =>
   import('@/components/layout/SprintLayout').then((m) => ({ default: m.SprintLayout })),
 );
-export const Dashboard = lazyWithPreload(() => import('@/pages/Dashboard'));
+export const MyWork = lazyWithPreload(() => import('@/pages/MyWork'));
 export const Spaces = lazyWithPreload(() => import('@/pages/Spaces'));
 export const Project = lazyWithPreload(() => import('@/pages/Project'));
 export const ProjectSettings = lazyWithPreload(() => import('@/pages/ProjectSettings'));

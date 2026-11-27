@@ -1,12 +1,9 @@
 import { useEffect, useState } from 'react';
-import { spacesHomePath, usePanelsInline } from './usePanelsInline';
 
 // A successful connection resumes the picker; a denial returns to settings
 // without automatically starting the interrupted connection again. Without a
-// settings page to return to, the reader goes back to where the spaces are in
-// their layout (My work on large screens, the Spaces page otherwise).
+// settings page to return to, the reader goes back to the Spaces dashboard.
 export function useOAuthReturnPath() {
-  const panelsInline = usePanelsInline();
   const [returnTo] = useState(() => {
     const saved = sessionStorage.getItem('oauth_return_to');
     if (!saved?.startsWith('/space/')) return null;
@@ -19,7 +16,7 @@ export function useOAuthReturnPath() {
   useEffect(() => {
     sessionStorage.removeItem('oauth_return_to');
   }, []);
-  if (!returnTo) return { resume: null, back: spacesHomePath(panelsInline) };
+  if (!returnTo) return { resume: null, back: '/dashboard' };
   const back = new URL(returnTo);
   back.searchParams.delete('reconnectJiraBinding');
   back.searchParams.delete('addJiraProject');

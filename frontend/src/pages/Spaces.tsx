@@ -1,9 +1,10 @@
 import { createElement, useState, useMemo } from 'react';
-import { Link, Navigate, useLocation } from 'react-router';
+import { Link } from 'react-router';
 import { projectsService } from '@/services/projects';
 import {
   useProjectsCache,
   projectLastActivityAt,
+  type ProjectIntentSummary,
   type ProjectWithSprint,
 } from '@/hooks/useProjectsCache';
 import { useOpenCreateSpace } from '@/components/layout/createSpaceDialog';
@@ -18,6 +19,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert } from '@/components/ui/alert';
 import { EmptyState, ErrorState } from '@/components/ui/empty-state';
 import { RelativeTime } from '@/components/ui/relative-time';
+import { Disclosure } from '@/components/ui/disclosure';
+import { StatusPill } from '@/components/ui/status-pill';
 import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
 import {
   Select,
@@ -47,10 +50,17 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { usePanelsInline } from '@/hooks/usePanelsInline';
+import { intentEntryPath } from '@/lib/intentEntry';
+import { intentAttention } from '@/lib/sprintStatus';
 import { PageHeader } from '@/components/ui/page-header';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { TONE_CLASSES, useIntentStatusReader, type StatusTone } from '@/lib/statusModel';
+import {
+  TONE_CLASSES,
+  useIntentStatusReader,
+  type DerivedIntentStatus,
+  type ResolvedIntentStatus,
+  type StatusTone,
+} from '@/lib/statusModel';
 import {
   deriveSpaceSignals,
   hasOpenWork,
@@ -162,6 +172,109 @@ function SpaceSignalPills({ projectId, signals }: { projectId: string; signals: 
   );
 }
 
+// What a card can say about its open intents without repeating the sidebar:
+// one folded line, the rows (what needs someone first, then the newest) only on
+// demand and capped; the space page has the rest.
+const PREVIEW_INTENTS = 5;
+
+interface OpenIntent {
+  id: string;
+  title: string;
+  status: DerivedIntentStatus;
+  /** Needs a resume: the same pill as My work and the space row. */
+  resume: boolean;
+  /** Where the intent needs the reader (its Work page) or its overview. */
+  path: string;
+}
+
+const OPEN_RANK = (intent: ProjectIntentSummary) => (intentAttention(intent) ? 0 : 1);
+const intentTime = (intent: ProjectIntentSummary) =>
+  Date.parse(intent.updatedAt ?? intent.createdAt ?? '') || 0;
+
+function openIntentsOf(
+  projectId: string,
+  intents: readonly ProjectIntentSummary[],
+  statusOf: (intent: ProjectIntentSummary) => ResolvedIntentStatus<ProjectIntentSummary>,
+): OpenIntent[] {
+  return intents
+    .filter((intent) => intent.status !== 'SUCCEEDED' && intent.status !== 'CANCELLED')
+    .toSorted((a, b) => OPEN_RANK(a) - OPEN_RANK(b) || intentTime(b) - intentTime(a))
+    .map((summary) => {
+      const { status, intent } = statusOf(summary);
+      return {
+        id: summary.id,
+        title: summary.title || 'Untitled intent',
+        status,
+        resume: intentAttention(intent) === 'resume',
+        path: intentEntryPath(projectId, { ...intent, id: summary.id }),
+      };
+    });
+}
+
+function OpenIntentsPreview({
+  projectId,
+  intents,
+  now,
+}: {
+  projectId: string;
+  intents: readonly OpenIntent[];
+  now: number;
+}) {
+  if (intents.length === 0) return null;
+  const shown = intents.slice(0, PREVIEW_INTENTS);
+  return (
+    <Disclosure
+      variant="inline"
+      title={plural(intents.length, 'active intent')}
+      className="relative z-10 mb-2.5 block"
+      contentClassName="pt-1.5"
+    >
+      <ul className="flex flex-col gap-1">
+        {shown.map(({ id, title, path, status, resume }) => (
+          <li key={id}>
+            <Link
+              to={path}
+              className="flex min-w-0 items-center gap-2 rounded-sm text-xs hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <span className="min-w-0 flex-1 truncate">{title}</span>
+              {resume ? (
+                <StatusPill
+                  kind="gate"
+                  status="resume_required"
+                  size="xs"
+                  compact
+                  className="shrink-0"
+                />
+              ) : (
+                <StatusPill
+                  kind="intent"
+                  status={status.key}
+                  stalled={status.stalled}
+                  since={status.since}
+                  size="xs"
+                  compact
+                  now={now}
+                  className="shrink-0"
+                />
+              )}
+            </Link>
+          </li>
+        ))}
+        {intents.length > shown.length && (
+          <li>
+            <Link
+              to={`/space/${projectId}`}
+              className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+            >
+              {intents.length - shown.length} more in the space
+            </Link>
+          </li>
+        )}
+      </ul>
+    </Disclosure>
+  );
+}
+
 function SpaceActions({
   project,
   onDelete,
@@ -242,6 +355,7 @@ type DashboardProject = ProjectWithSprint['project'] & {
   attentionRank: number;
   hasActiveWork: boolean;
   signals: SpaceSignals;
+  openIntents: OpenIntent[];
 };
 
 const projectDate = (p: DashboardProject, sortBy: ProjectSort) =>
@@ -330,18 +444,10 @@ function SpaceRowActions({
   );
 }
 
-// The list of spaces is a page only where the sidebar does not list them
-// (narrow screens, drawer). On large screens the route sends the reader to My
-// work, keeping the query so a `?reopenCreateSpace=1` link still opens the
-// shell's Create space dialog there.
-export default function SpacesRoute() {
-  const panelsInline = usePanelsInline();
-  const { search } = useLocation();
-  if (panelsInline) return <Navigate to={{ pathname: '/dashboard', search }} replace />;
-  return <Spaces />;
-}
-
-function Spaces() {
+// The Spaces dashboard, the page after sign-in: the spaces as cards (or a
+// table, remembered per browser). A `?reopenCreateSpace=1` link is the
+// shell's to handle.
+export default function Spaces() {
   const { projects: portfolio, loading, error, refresh, invalidate } = useProjectsCache();
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -349,9 +455,9 @@ function Spaces() {
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     try {
-      return localStorage.getItem('aidlc-spaces-view') === 'grid' ? 'grid' : 'list';
+      return localStorage.getItem('aidlc-spaces-view') === 'list' ? 'list' : 'grid';
     } catch {
-      return 'list';
+      return 'grid';
     }
   });
   function changeView(mode: 'grid' | 'list') {
@@ -375,9 +481,9 @@ function Spaces() {
   const projects = useMemo<DashboardProject[]>(
     () =>
       portfolio.map((p) => {
-        const signals = deriveSpaceSignals(p.intents, now, (intent) =>
-          readStatus(p.project.id, intent, { now }),
-        );
+        const statusOf = (intent: ProjectIntentSummary) =>
+          readStatus(p.project.id, intent, { now });
+        const signals = deriveSpaceSignals(p.intents, now, statusOf);
         return {
           ...p.project,
           lastActivityAt: projectLastActivityAt(p),
@@ -385,6 +491,7 @@ function Spaces() {
           // The delete dialog warns when live or parked work will be cancelled.
           hasActiveWork: hasOpenWork({ ...signals, failed: 0 }),
           signals,
+          openIntents: openIntentsOf(p.project.id, p.intents, statusOf),
         };
       }),
     [portfolio, now, readStatus],
@@ -419,10 +526,11 @@ function Spaces() {
 
   // Whether the project pending delete confirmation has live/parked work, so the
   // dialog can warn that deleting will cancel it.
-  const confirmDeleteHasActiveWork = useMemo(
-    () => !!confirmDelete && !!projects.find((p) => p.id === confirmDelete)?.hasActiveWork,
+  const confirmDeleteProject = useMemo(
+    () => (confirmDelete ? projects.find((p) => p.id === confirmDelete) : undefined),
     [confirmDelete, projects],
   );
+  const confirmDeleteHasActiveWork = !!confirmDeleteProject?.hasActiveWork;
 
   const requestDelete = (projectId: string) => {
     setDeleteError(null);
@@ -611,6 +719,12 @@ function Spaces() {
                       </div>
                     )}
 
+                    <OpenIntentsPreview
+                      projectId={project.id}
+                      intents={project.openIntents}
+                      now={now}
+                    />
+
                     <div className="text-xs text-muted-foreground">
                       <RelativeTime
                         value={projectDate(project, sortBy)}
@@ -645,7 +759,9 @@ function Spaces() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete space</AlertDialogTitle>
+            <AlertDialogTitle>
+              {confirmDeleteProject ? `Delete ${confirmDeleteProject.name}?` : 'Delete space'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete this space? This action cannot be undone. Every intent
               — with all of its artifacts, questions, discussions, run history and usage metrics —

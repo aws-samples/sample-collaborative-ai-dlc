@@ -15,17 +15,19 @@ A space is the workspace where intents run. It represents a product, service, or
 
 ## Finding your way
 
-The sidebar has three sections:
+You land on the **Spaces** dashboard after signing in. It shows your spaces as cards (switch to a table from the view buttons; the choice is remembered): each card names the repository, what needs someone, and folds its active intents behind one line. Space owners delete a space from the card's menu.
 
-- **My work** is the page you land on after signing in. It lists every intent that needs you, across your spaces: questions and resumes first, then failed runs, then runs that have stalled. Each row says what it waits on and in which space, and opens the intent where you are needed.
+On large screens the sidebar has a **My work** entry and two sections:
+
+- **My work** lists every intent that needs you, across your spaces: questions and resumes first, then failed runs, then runs that have stalled. Each row says what it waits on and in which space, and opens the intent where you are needed. Spaces where you are a Viewer are not listed.
 - **Pinned** appears once you **Pin** a space from its row; the pin is remembered for your account in this browser.
-- **Spaces** lists the rest of your spaces. Click the row to collapse or expand the list; its right end holds the sort menu and **New space**. Expand a space to see its active intents, most recent first, five at a time with **Show more**; finished intents stay on the space page. Hover a space for its work status counts.
+- **Spaces** lists the rest of your spaces. Its label opens the Spaces dashboard; click it again there to fold or unfold the list. The chevron next to the label folds or unfolds the list without leaving the page you are on. The right end of the row holds the sort menu and **New space**. Expand a space to see its active intents, most recent first, five at a time with **Show more**; finished intents stay on the space page. Hover a space for its work status counts.
 
-On narrow screens the drawer offers **My work**, **Spaces**, and the intents that need you or are running. **Spaces** there opens a page listing your spaces as a table with their work status, repository, your role when you are not the owner, and last activity; search, sort, and switch to a grid from there. On large screens that page is not needed and sends you to **My work**: the sidebar is the list.
+On narrow screens the drawer offers **My work**, **Spaces**, and the intents that need you or are running.
 
 ## Creating a space
 
-Choose **New space** at the end of the sidebar's **Spaces** row (or on the Spaces page on narrow screens). Enter a name, pick the code host (**GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**), connect your account if prompted, and select the repository. CodeCommit needs no connection step: once a platform admin has set the CodeCommit connection, you pick repositories from the usual list; if it is not configured yet, you can still select it, but a note asks you to contact a platform admin and **Next** stays disabled. You can optionally enable the provider's issue tracker in the same step. See [Git and Tracker Integration](git-integration.md) for details on connections and auth modes.
+Choose **New space** on the Spaces dashboard or at the end of the sidebar's **Spaces** row. Enter a name, pick the code host (**GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**), connect your account if prompted, and select the repository. CodeCommit needs no connection step: once a platform admin has set the CodeCommit connection, you pick repositories from the usual list; if it is not configured yet, you can still select it, but a note asks you to contact a platform admin and **Next** stays disabled. You can optionally enable the provider's issue tracker in the same step. See [Git and Tracker Integration](git-integration.md) for details on connections and auth modes.
 
 ## Roles and permissions
 

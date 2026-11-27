@@ -195,12 +195,8 @@ export function AppShell() {
   }, []);
   const { refresh: refreshProjects } = useProjectsCache();
   const [searchParams, setSearchParams] = useSearchParams();
-  const onSpacesList = location.pathname === '/spaces';
   useEffect(() => {
     if (searchParams.get('reopenCreateSpace') !== '1') return;
-    // On large screens /spaces redirects to My work with its query intact: let
-    // the flag travel with it instead of stripping it here first.
-    if (panelsInline && onSpacesList) return;
     const provider = searchParams.get('gitProvider');
     setCreateSpaceProvider(isGitProvider(provider) ? provider : '');
     setCreateSpaceInstance(searchParams.get('gitlabInstance') || undefined);
@@ -210,7 +206,7 @@ export function AppShell() {
     rest.delete('gitProvider');
     rest.delete('gitlabInstance');
     setSearchParams(rest, { replace: true });
-  }, [searchParams, setSearchParams, panelsInline, onSpacesList]);
+  }, [searchParams, setSearchParams]);
 
   // On a project page (not in a sprint) the activity panel surfaces the
   // latest active sprint so it stays useful outside a sprint context.

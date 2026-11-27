@@ -28,14 +28,9 @@ vi.mock('@/hooks/useProjectsCache', () => ({
     p.project.lastActivityAt ?? null,
 }));
 vi.mock('@/App', () => ({ preloadRoute: fixtures.preloadRoute }));
-// Large screens list the spaces in the sidebar; narrow ones have the Spaces page.
-const layout = vi.hoisted(() => ({ panelsInline: true }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
-import Dashboard from './Dashboard';
+import MyWork from './MyWork';
 import { APP_ROUTES } from '@/routes/registry';
+import * as pages from '@/routes/pages';
 import { queryClient } from '@/lib/queryClient';
 import * as prefetchScheduler from '@/lib/prefetch';
 import { qk } from '@/lib/queryKeys';
@@ -98,12 +93,11 @@ function CurrentPath() {
 const renderDashboard = () =>
   render(
     <MemoryRouter>
-      <Dashboard />
+      <MyWork />
     </MemoryRouter>,
   );
 
 beforeEach(() => {
-  layout.panelsInline = true;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(NOW);
   localStorage.clear();
@@ -127,22 +121,13 @@ describe('My work — branding and states', () => {
     renderDashboard();
     expect(screen.getByRole('heading', { level: 1, name: 'My work' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 2, name: 'No spaces yet' })).toBeVisible();
-    // Large screens: the shell opens the dialog right here.
+    // The Spaces dashboard's shell opens the dialog on arrival.
     expect(screen.getByRole('link', { name: 'Create your first space' })).toHaveAttribute(
       'href',
       '/dashboard?reopenCreateSpace=1',
     );
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /needs your attention/i })).not.toBeInTheDocument();
-  });
-
-  it('sends a new user on a narrow screen to the Spaces page to create their first space', () => {
-    layout.panelsInline = false;
-    renderDashboard();
-    expect(screen.getByRole('link', { name: 'Create your first space' })).toHaveAttribute(
-      'href',
-      '/spaces?reopenCreateSpace=1',
-    );
   });
 
   it('shows skeleton rows while loading instead of flashing an empty state', () => {
@@ -168,7 +153,7 @@ describe('My work — branding and states', () => {
     expect(fixtures.refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('says when nothing needs the reader, never a table of spaces; the sidebar lists them', () => {
+  it('says when nothing needs the reader, never a table of spaces; the Spaces dashboard has them', () => {
     fixtures.projects = [space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))])];
     renderDashboard();
     expect(
@@ -177,7 +162,10 @@ describe('My work — branding and states', () => {
         name: 'Nothing needs you right now',
       }),
     ).toBeVisible();
-    expect(screen.queryByRole('link', { name: 'Browse spaces' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Browse spaces' })).toHaveAttribute(
+      'href',
+      '/dashboard',
+    );
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /new space/i })).not.toBeInTheDocument();
   });
@@ -222,6 +210,17 @@ describe('My work — branding and states', () => {
       expect(fixtures.refresh).toHaveBeenCalledTimes(1);
     });
 
+    it('does not wait on or warn about a Viewer space, whose intents it never lists', () => {
+      fixtures.projects = [
+        quiet(),
+        { ...space('ro', 'ReadOnly', [], { userRole: 'viewer' }), activityError: true },
+        { ...space('ro2', 'ReadOnlySlow', [], { userRole: 'viewer' }), activityLoading: true },
+      ];
+      renderDashboard();
+      expect(screen.getByText('Nothing needs you right now')).toBeVisible();
+      expect(screen.queryByText(/This list may be incomplete/)).not.toBeInTheDocument();
+    });
+
     it('keeps the known work and says which space is still loading', () => {
       fixtures.projects = [asking(), { ...space('slow', 'Slow', []), activityLoading: true }];
       renderDashboard();
@@ -232,27 +231,22 @@ describe('My work — branding and states', () => {
     });
   });
 
-  it('offers the Spaces page on narrow screens, where the drawer does not list spaces', () => {
-    layout.panelsInline = false;
-    fixtures.projects = [space('quiet', 'Quiet', [intent('s2', 'SUCCEEDED', hoursAgo(1))])];
-    renderDashboard();
-    expect(screen.getByRole('link', { name: 'Browse spaces' })).toHaveAttribute('href', '/spaces');
-  });
-
-  it('is the default page after login and stays put on a create-space link: the shell opens the dialog', () => {
+  it('is its own page at /my-work, not the page after login, and stays put on a create-space link: the shell opens the dialog', () => {
     expect(APP_ROUTES[0]).toMatchObject({ path: '/dashboard' });
+    expect(APP_ROUTES[0].page).not.toBe(pages.MyWork);
+    expect(APP_ROUTES.find((route) => route.path === '/my-work')?.page).toBe(pages.MyWork);
     render(
-      <MemoryRouter initialEntries={['/dashboard?reopenCreateSpace=1&gitProvider=github']}>
+      <MemoryRouter initialEntries={['/my-work?reopenCreateSpace=1&gitProvider=github']}>
         <CurrentPath />
         <Routes>
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/spaces" element={<p>Spaces page</p>} />
+          <Route path="/my-work" element={<MyWork />} />
+          <Route path="/dashboard" element={<p>Spaces page</p>} />
         </Routes>
       </MemoryRouter>,
     );
     expect(screen.getByRole('heading', { level: 1, name: 'My work' })).toBeInTheDocument();
     expect(screen.queryByText('Spaces page')).not.toBeInTheDocument();
-    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
+    expect(screen.getByTestId('current-path')).toHaveTextContent('/my-work');
   });
 
   describe('logo', () => {

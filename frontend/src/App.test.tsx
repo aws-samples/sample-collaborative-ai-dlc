@@ -17,9 +17,13 @@ vi.mock('./components/ProtectedRoute', () => ({
 vi.mock('./components/layout/AppShell', () => ({ AppShell: () => <Outlet /> }));
 vi.mock('./pages/Login', () => ({ default: () => null }));
 vi.mock('./pages/AuthCallback', () => ({ default: () => null }));
-vi.mock('./pages/Dashboard', () => {
-  loaded.add('Dashboard');
-  return { default: () => <p>Dashboard page</p> };
+vi.mock('./pages/Spaces', () => {
+  loaded.add('Spaces');
+  return { default: () => <p>Spaces page</p> };
+});
+vi.mock('./pages/MyWork', () => {
+  loaded.add('MyWork');
+  return { default: () => <p>My work page</p> };
 });
 vi.mock('./pages/Project', () => {
   loaded.add('Project');
@@ -84,11 +88,13 @@ describe('App', () => {
   it('shows the layout-shaped route fallback while a page chunk loads', async () => {
     render(<App />);
     expect(screen.getByRole('status', { name: 'Loading page' })).toBeInTheDocument();
-    expect(await screen.findByText('Dashboard page')).toBeInTheDocument();
+    expect(await screen.findByText('Spaces page')).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: 'Loading page' })).not.toBeInTheDocument();
   });
 
   it.each([
+    ['/dashboard', 'Spaces'],
+    ['/my-work', 'MyWork'],
     ['/space/p1', 'Project'],
     ['/space/p1/intent/i1', 'IntentView'],
     ['/space/p1/intent/i1/review/h1', 'IntentView'],
@@ -105,6 +111,8 @@ describe('App', () => {
   });
 
   it.each([
+    ['/spaces', 'Spaces page'],
+    ['/my-work', 'My work page'],
     ['/space/p1', 'Project page'],
     ['/space/p1/intent/new', 'New intent page'],
     ['/space/p1/intent/i1', 'Intent view page'],

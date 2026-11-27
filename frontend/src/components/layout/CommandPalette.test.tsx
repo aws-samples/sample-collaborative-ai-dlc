@@ -3,11 +3,6 @@ import { act, fireEvent, render, screen, within } from '@/test/query';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 
 const mockAuth = vi.hoisted(() => ({ isPlatformAdmin: true }));
-const layout = vi.hoisted(() => ({ panelsInline: true }));
-vi.mock('@/hooks/usePanelsInline', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/hooks/usePanelsInline')>()),
-  usePanelsInline: () => layout.panelsInline,
-}));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => mockAuth,
 }));
@@ -73,7 +68,6 @@ function typeSearch(text: string) {
 const FOUR_MONTHS_AGO = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
 
 beforeEach(() => {
-  layout.panelsInline = true;
   vi.spyOn(queryClient, 'getQueryData').mockImplementation(
     (key) => (mockCache.peek(key) as { data?: unknown } | undefined)?.data,
   );
@@ -334,12 +328,12 @@ describe('CommandPalette pages', () => {
     expect(screen.getByRole('option', { name: /source control/i })).toBeInTheDocument();
   });
 
-  it('lists My work, authoring, every admin tab and account settings; Spaces is the sidebar on large screens', () => {
+  it('lists Spaces, My work, authoring, every admin tab and account settings', () => {
     renderPalette();
     const pages = screen.getByRole('group', { name: 'Pages' });
-    expect(within(pages).getByRole('option', { name: 'My work' })).toBeInTheDocument();
-    expect(within(pages).queryByRole('option', { name: 'Spaces' })).not.toBeInTheDocument();
     for (const name of [
+      'Spaces',
+      'My work',
       'Workflows',
       'Block library',
       'Admin › Users',
@@ -380,11 +374,13 @@ describe('CommandPalette actions', () => {
     expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
   });
 
-  it('offers the Spaces page on narrow screens, where the drawer does not list spaces', () => {
-    layout.panelsInline = false;
+  it.each([
+    ['Spaces', '/dashboard'],
+    ['My work', '/my-work'],
+  ])('opens %s at %s', (name, path) => {
     renderPalette();
     const pages = screen.getByRole('group', { name: 'Pages' });
-    fireEvent.click(within(pages).getByRole('option', { name: 'Spaces' }));
-    expect(screen.getByTestId('current-path')).toHaveTextContent('/spaces');
+    fireEvent.click(within(pages).getByRole('option', { name }));
+    expect(screen.getByTestId('current-path')).toHaveTextContent(path);
   });
 });
