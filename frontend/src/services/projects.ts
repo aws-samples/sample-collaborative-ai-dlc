@@ -96,6 +96,10 @@ export interface Project {
   // Conversation language for agent prose (#784). Omitted when unset (agents
   // keep the default behaviour: no language instruction).
   conversationLanguage?: ConversationLanguage | null;
+  // Space directory: a discoverable space is listed, with its description and
+  // Owners, for people who are not members so they can ask to join.
+  description?: string;
+  discoverable?: boolean;
 }
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
@@ -158,7 +162,27 @@ export interface UpdateProjectInput {
   // A raw BCP 47 tag ('ko'); the backend resolves and stores the display
   // names. null clears the setting.
   conversationLanguage?: string | null;
+  description?: string;
+  discoverable?: boolean;
 }
+
+// A discoverable space as anyone signed in sees it, and where they stand.
+export interface DiscoverableSpace {
+  id: string;
+  name: string;
+  description: string;
+  owners: { email: string }[];
+  access: 'member' | 'pending' | 'none';
+}
+
+export interface AccessRequest {
+  userId: string;
+  email: string;
+  message: string;
+  createdAt: string;
+}
+
+export type AccessDecision = 'approve' | 'decline';
 
 export interface AddRepoInput {
   url: string;
@@ -268,6 +292,35 @@ export const projectsService = {
     api.put<Member>(`/projects/${projectId}/members/${userId}`, { role }),
   removeMember: (projectId: string, userId: string) =>
     api.delete(`/projects/${projectId}/members/${userId}`),
+
+  // Space directory and access requests
+  listDiscoverable: () => api.get<DiscoverableSpace[]>('/projects?discoverable=1'),
+  requestAccess: (projectId: string, message?: string) =>
+    api.post<AccessRequest>(`/projects/${projectId}/access-requests`, { message }),
+  withdrawAccessRequest: (projectId: string, userId: string) =>
+    api.delete(`/projects/${projectId}/access-requests/${userId}`),
+  listAccessRequests: async (projectId: string) => {
+    const items: AccessRequest[] = [];
+    let nextToken: string | null = null;
+    do {
+      const page: { items: AccessRequest[]; nextToken: string | null } = await api.get(
+        `/projects/${projectId}/access-requests${nextToken ? `?nextToken=${encodeURIComponent(nextToken)}` : ''}`,
+      );
+      items.push(...page.items);
+      nextToken = page.nextToken;
+    } while (nextToken);
+    return items;
+  },
+  decideAccessRequest: (
+    projectId: string,
+    userId: string,
+    decision: AccessDecision,
+    role?: ProjectRole,
+  ) =>
+    api.put<{ decision: 'approved' | 'declined'; role?: ProjectRole }>(
+      `/projects/${projectId}/access-requests/${userId}`,
+      { decision, ...(role ? { role } : {}) },
+    ),
 
   // Identities currently eligible for project assignment
   listAssignableUsers: () => api.get<AssignableUser[]>('/users'),

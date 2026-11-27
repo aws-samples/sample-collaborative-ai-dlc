@@ -118,3 +118,35 @@ describe('projectsService v2 create/update payloads', () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('projectsService space directory and access requests', () => {
+  beforeEach(() => {
+    put.mockReset().mockResolvedValue({});
+    get.mockReset();
+  });
+
+  it('reads the directory and follows every access-request page', async () => {
+    get.mockResolvedValueOnce([]);
+    await projectsService.listDiscoverable();
+    expect(get).toHaveBeenLastCalledWith('/projects?discoverable=1');
+
+    get
+      .mockResolvedValueOnce({ items: [{ userId: 'a' }], nextToken: 't 1' })
+      .mockResolvedValueOnce({ items: [{ userId: 'b' }], nextToken: null });
+    const requests = await projectsService.listAccessRequests('p1');
+    expect(requests.map((r) => r.userId)).toEqual(['a', 'b']);
+    expect(get).toHaveBeenCalledWith('/projects/p1/access-requests?nextToken=t%201');
+  });
+
+  it('sends the role only with an approval', async () => {
+    await projectsService.decideAccessRequest('p1', 'u1', 'approve', 'owner');
+    expect(put).toHaveBeenLastCalledWith('/projects/p1/access-requests/u1', {
+      decision: 'approve',
+      role: 'owner',
+    });
+    await projectsService.decideAccessRequest('p1', 'u1', 'decline');
+    expect(put).toHaveBeenLastCalledWith('/projects/p1/access-requests/u1', {
+      decision: 'decline',
+    });
+  });
+});

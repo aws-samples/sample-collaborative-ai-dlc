@@ -6,6 +6,7 @@ import {
 } from './business-roles.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -16,6 +17,13 @@ import {
 export const membershipKey = (spaceId, userId) => ({
   pk: `SPACE#${spaceId}`,
   sk: `MEMBER#${userId}`,
+});
+
+// A pending request to join a discoverable space. It stores `requesterId`, not
+// `userId`, so it stays out of the by-user index and never counts as membership.
+export const accessRequestKey = (spaceId, requesterId) => ({
+  pk: `SPACE#${spaceId}`,
+  sk: `REQUEST#${requesterId}`,
 });
 
 // Business-role mappings saved from the Platform admin UI: one item per
@@ -93,6 +101,22 @@ export const createMembershipStore = ({
       { pk: `SPACE#${spaceId}` },
       token,
     );
+  const listOwners = (spaceId, token) =>
+    query(
+      {
+        TableName: accessTable,
+        ConsistentRead: true,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        FilterExpression: 'membershipRole = :owner',
+        ExpressionAttributeValues: {
+          ':pk': `SPACE#${spaceId}`,
+          ':prefix': 'MEMBER#',
+          ':owner': 'owner',
+        },
+      },
+      { pk: `SPACE#${spaceId}` },
+      token,
+    );
   const listUserSpaces = (userId, token) =>
     query(
       {
@@ -149,6 +173,9 @@ export const createMembershipStore = ({
     migration = false,
     localRoles,
     excludedRoles,
+    // 'clear' drops any pending access request with the change; 'approve'
+    // also requires one, so a withdrawn request can't be approved.
+    accessRequest,
   }) => {
     if (role !== null && !validRole(role)) throw new Error('Invalid membership role');
     // Role-list updates change exactly one field and leave membership intact.
@@ -225,6 +252,15 @@ export const createMembershipStore = ({
         },
       },
     ];
+    if (accessRequest) {
+      writes.push({
+        Delete: {
+          TableName: accessTable,
+          Key: accessRequestKey(spaceId, userId),
+          ...(accessRequest === 'approve' ? { ConditionExpression: 'attribute_exists(pk)' } : {}),
+        },
+      });
+    }
     // Fence the actor's authority with the mutation, except for self-demotion/removal
     // where the membership write checks Owner access and revision on that record.
     if (!migration && action !== 'space-created' && actorId !== userId) {
@@ -445,6 +481,147 @@ export const createMembershipStore = ({
     );
     return result.Item || null;
   };
+  const getRequest = async (spaceId, requesterId) => {
+    if (!spaceId || !requesterId) return null;
+    const result = await ddb.send(
+      new GetCommand({
+        TableName: accessTable,
+        Key: accessRequestKey(spaceId, requesterId),
+        ConsistentRead: true,
+      }),
+    );
+    return result.Item || null;
+  };
+  const listRequests = (spaceId, token) =>
+    query(
+      {
+        TableName: accessTable,
+        ConsistentRead: true,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        ExpressionAttributeValues: { ':pk': `SPACE#${spaceId}`, ':prefix': 'REQUEST#' },
+      },
+      { pk: `SPACE#${spaceId}` },
+      token,
+    );
+  // One open request per person per space: a second one is a 409.
+  const createRequest = async ({ spaceId, requesterId, email = '', message = '' }) => {
+    const item = {
+      ...accessRequestKey(spaceId, requesterId),
+      spaceId,
+      requesterId,
+      email,
+      message,
+      createdAt: now(),
+    };
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: accessTable,
+          Item: item,
+          ConditionExpression: 'attribute_not_exists(pk)',
+        }),
+      );
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException')
+        throw Object.assign(new Error('You already have a pending request for this space'), {
+          statusCode: 409,
+        });
+      throw error;
+    }
+    return item;
+  };
+  // Returns false when there was no request to remove.
+  const withdrawRequest = async (spaceId, requesterId) => {
+    try {
+      await ddb.send(
+        new DeleteCommand({
+          TableName: accessTable,
+          Key: accessRequestKey(spaceId, requesterId),
+          ConditionExpression: 'attribute_exists(pk)',
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
+  };
+  // Removes the request and records the decision in the space's history, fenced
+  // on the deciding Owner still being an Owner.
+  const declineRequest = async ({
+    spaceId,
+    requesterId,
+    actorId,
+    request,
+    changeId = randomUUID(),
+  }) => {
+    const timestamp = now();
+    const key = accessRequestKey(spaceId, requesterId);
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: accessTable,
+                Key: key,
+                ConditionExpression: 'attribute_exists(pk)',
+              },
+            },
+            {
+              Put: {
+                TableName: auditTable,
+                Item: {
+                  pk: key.pk,
+                  sk: `AUDIT#${timestamp}#${changeId}`,
+                  spaceId,
+                  actorId,
+                  action: 'access-request-declined',
+                  targetUserId: requesterId,
+                  // History is readable by every Member: not the email or message.
+                  before: { requesterId, createdAt: request?.createdAt ?? null },
+                  after: null,
+                  timestamp,
+                  changeId,
+                },
+                ConditionExpression: 'attribute_not_exists(pk)',
+              },
+            },
+            {
+              ConditionCheck: {
+                TableName: accessTable,
+                Key: membershipKey(spaceId, actorId),
+                ConditionExpression: 'membershipRole = :owner',
+                ExpressionAttributeValues: { ':owner': 'owner' },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (
+        error.name === 'TransactionCanceledException' &&
+        error.CancellationReasons?.some((r) => r.Code === 'ConditionalCheckFailed')
+      )
+        throw conflict();
+      throw error;
+    }
+  };
+  const deleteSpaceRequests = async (spaceId) => {
+    let nextToken;
+    do {
+      const page = await listRequests(spaceId, nextToken);
+      for (const request of page.items) {
+        await ddb.send(
+          new DeleteCommand({
+            TableName: accessTable,
+            Key: accessRequestKey(spaceId, request.requesterId),
+          }),
+        );
+      }
+      nextToken = page.nextToken;
+    } while (nextToken);
+  };
   // Keep the deleting owner until every other page has drained. A failed batch
   // leaves that owner's permission intact so the existing delete can be retried.
   const deleteSpaceMembers = async (
@@ -452,6 +629,7 @@ export const createMembershipStore = ({
     actorId,
     { keepActor = false, beforeRemove = async () => {} } = {},
   ) => {
+    await deleteSpaceRequests(spaceId);
     let nextToken;
     do {
       const page = await listMembers(spaceId, nextToken);
@@ -487,6 +665,7 @@ export const createMembershipStore = ({
   return {
     get,
     listMembers,
+    listOwners,
     listUserSpaces,
     listHistory,
     hasOtherOwner,
@@ -500,6 +679,12 @@ export const createMembershipStore = ({
     backfillSsoClaims,
     getSsoClaims,
     deleteSpaceMembers,
+    getRequest,
+    listRequests,
+    createRequest,
+    withdrawRequest,
+    declineRequest,
+    deleteSpaceRequests,
   };
 };
 
@@ -510,4 +695,21 @@ export const membershipStore = createMembershipStore();
 export const fetchMembershipRole = async (g, spaceId, userId, store = membershipStore) => {
   if (!userId || !(await g.V().has('Project', 'id', spaceId).hasNext())) return null;
   return (await store.get(spaceId, userId))?.membershipRole || null;
+};
+
+// A space's Owners with the email on their User vertex ('' when unknown).
+export const listOwnerContacts = async (g, spaceId, store) => {
+  const ownerIds = [];
+  let nextToken;
+  do {
+    const page = await store.listOwners(spaceId, nextToken);
+    ownerIds.push(...page.items.map((m) => m.userId));
+    nextToken = page.nextToken;
+  } while (nextToken);
+  return Promise.all(
+    ownerIds.map(async (userId) => {
+      const email = await g.V().has('User', 'id', userId).values('email').next();
+      return { userId, email: email.value || '' };
+    }),
+  );
 };

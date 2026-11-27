@@ -205,6 +205,59 @@ module "cors_business_roles" {
 }
 
 # -----------------------------------------------------------------------------
+# /projects/{projectId}/access-requests: asking to join a discoverable space
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "access_requests" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "access-requests"
+}
+
+resource "aws_api_gateway_resource" "access_request" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.access_requests.id
+  path_part   = "{userId}"
+}
+
+locals {
+  access_request_routes = {
+    list     = { resource = aws_api_gateway_resource.access_requests.id, method = "GET" }
+    create   = { resource = aws_api_gateway_resource.access_requests.id, method = "POST" }
+    decide   = { resource = aws_api_gateway_resource.access_request.id, method = "PUT" }
+    withdraw = { resource = aws_api_gateway_resource.access_request.id, method = "DELETE" }
+  }
+}
+
+resource "aws_api_gateway_method" "access_requests" {
+  for_each      = local.access_request_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "access_requests" {
+  for_each                = local.access_request_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.access_requests[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.users_lambda_invoke_arn
+}
+
+module "cors_access_requests" {
+  for_each = {
+    collection = aws_api_gateway_resource.access_requests.id
+    item       = aws_api_gateway_resource.access_request.id
+  }
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = each.value
+}
+
+# -----------------------------------------------------------------------------
 # /projects/{projectId}/sprints Resource
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_resource" "sprints" {

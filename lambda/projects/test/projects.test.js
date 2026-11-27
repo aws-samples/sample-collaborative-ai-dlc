@@ -1,5 +1,6 @@
 import { seedMembership, removeMembership } from '../../../test/seed-membership.js';
 import { membershipStore } from '../../shared/space-membership.js';
+import { listDiscoverableSpaces } from '../space-directory.js';
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
@@ -3262,5 +3263,129 @@ describe('GET/PUT /projects/:id/custom-rules', () => {
     const docs = JSON.parse(res.body).customRules;
     expect(docs).toEqual([{ filename: 'standards.md' }]);
     expect(docs.every((d) => d.downloadUrl === undefined)).toBe(true);
+  });
+});
+
+describe('space directory', () => {
+  const put = (sub, id, data) =>
+    handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify(data),
+      ...claims(sub),
+    });
+  const getOne = async (sub, id) =>
+    JSON.parse(
+      (await handler({ httpMethod: 'GET', pathParameters: { projectId: id }, ...claims(sub) }))
+        .body,
+    );
+  const directory = async (sub) => {
+    const res = await handler({
+      httpMethod: 'GET',
+      queryStringParameters: { discoverable: '1' },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.body);
+  };
+
+  it('keeps new spaces private with no description', async () => {
+    const owner = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Private' });
+    expect(await getOne(owner, id)).toMatchObject({ discoverable: false, description: '' });
+    expect((await directory(`u-${randomUUID()}`)).some((s) => s.id === id)).toBe(false);
+  });
+
+  it('lets an Owner publish a space, and lists only its name, description and Owners', async () => {
+    const owner = `u-${randomUUID()}`;
+    const member = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Payments' });
+    await addMember(id, member, 'member');
+    const res = await put(owner, id, { discoverable: true, description: '  Card payments team  ' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      discoverable: true,
+      description: 'Card payments team',
+    });
+    expect(await getOne(owner, id)).toMatchObject({
+      discoverable: true,
+      description: 'Card payments team',
+    });
+    const listed = (await directory(`u-${randomUUID()}`)).find((s) => s.id === id);
+    expect(listed).toEqual({
+      id,
+      name: 'Payments',
+      description: 'Card payments team',
+      owners: [{ email: `${owner}@x` }],
+      access: 'none',
+    });
+    expect((await directory(member)).find((s) => s.id === id).access).toBe('member');
+    const viewer = `u-${randomUUID()}`;
+    await addMember(id, viewer, 'viewer');
+    expect((await directory(viewer)).find((s) => s.id === id).access).toBe('member');
+    expect((await put(viewer, id, { discoverable: false })).statusCode).toBe(403);
+  });
+
+  it('leaves out a space it cannot read instead of failing the directory', async () => {
+    const owner = `u-${randomUUID()}`;
+    const { id: broken } = await createProject(owner, { name: 'Broken' });
+    const { id: fine } = await createProject(owner, { name: 'Fine' });
+    await put(owner, broken, { discoverable: true });
+    await put(owner, fine, { discoverable: true });
+    const listOwners = membershipStore.listOwners;
+    const spy = vi
+      .spyOn(membershipStore, 'listOwners')
+      .mockImplementation((spaceId, token) =>
+        spaceId === broken ? Promise.reject(new Error('throttled')) : listOwners(spaceId, token),
+      );
+    try {
+      const ids = (await directory(`u-${randomUUID()}`)).map((s) => s.id);
+      expect(ids).toContain(fine);
+      expect(ids).not.toContain(broken);
+      const onError = vi.fn();
+      await listDiscoverableSpaces({ g, store: membershipStore, userId: owner, onError });
+      expect(onError).toHaveBeenCalledWith([{ spaceId: broken, error: expect.any(Error) }]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('rejects invalid directory settings before changing anything', async () => {
+    const owner = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Before' });
+    for (const data of [
+      { name: 'After', discoverable: 'yes' },
+      { name: 'After', description: 7 },
+      { name: 'After', description: 'x'.repeat(501) },
+    ]) {
+      expect((await put(owner, id, data)).statusCode).toBe(400);
+    }
+    expect(await getOne(owner, id)).toMatchObject({ name: 'Before', discoverable: false });
+    const member = `u-${randomUUID()}`;
+    await addMember(id, member, 'member');
+    expect((await put(member, id, { discoverable: true })).statusCode).toBe(403);
+  });
+
+  it('shows a pending request, and drops requests when the space is hidden or deleted', async () => {
+    const owner = `u-${randomUUID()}`;
+    const requester = `u-${randomUUID()}`;
+    const { id } = await createProject(owner, { name: 'Hidden later' });
+    await put(owner, id, { discoverable: true });
+    await membershipStore.createRequest({ spaceId: id, requesterId: requester });
+    expect((await directory(requester)).find((s) => s.id === id).access).toBe('pending');
+
+    expect((await put(owner, id, { discoverable: false })).statusCode).toBe(200);
+    expect(await membershipStore.getRequest(id, requester)).toBeNull();
+    expect((await directory(requester)).some((s) => s.id === id)).toBe(false);
+
+    await put(owner, id, { discoverable: true });
+    await membershipStore.createRequest({ spaceId: id, requesterId: requester });
+    const deleted = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(owner),
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(await membershipStore.getRequest(id, requester)).toBeNull();
   });
 });

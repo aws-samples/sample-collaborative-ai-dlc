@@ -14,7 +14,7 @@ notification_event_bus_name = ""                     # empty: <project_name>-<en
 notification_event_source   = "collaborative-ai-dlc" # the events' source, for rule patterns
 ```
 
-The deployment creates the bus and lets the publishing Lambdas (projects, discussions and the v2 orchestrator) put events on it. It creates no rules or targets. Add your own, in this deployment or another, matching on the source and detail types below. The bus name and ARN are in the `notification_event_bus_name` and `notification_event_bus_arn` outputs.
+The deployment creates the bus and lets the publishing Lambdas (projects, users, discussions and the v2 orchestrator) put events on it. It creates no rules or targets. Add your own, in this deployment or another, matching on the source and detail types below. The bus name and ARN are in the `notification_event_bus_name` and `notification_event_bus_arn` outputs.
 
 ## Delivery
 
@@ -47,6 +47,31 @@ A space (project) was created. `eventId` is the space's id.
 | `gitProvider`                   | the space's git provider, for example `github` or `gitlab` |
 | `repoCount`                     | repositories attached at creation                          |
 | `createdAt`                     | ISO 8601 timestamp                                         |
+
+### `space.access.requested`
+
+Someone who is not a member asked to join a [discoverable space](projects.md#browse-spaces-and-access-requests). `eventId` is `<projectId>:<requesterId>:<requestedAt>`.
+
+| Field                           | Description                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `projectId`, `name`             | the space and its name                                                                        |
+| `requesterId`, `requesterEmail` | who asked                                                                                     |
+| `message`                       | their message, or an empty string (up to 500 characters)                                      |
+| `owners`                        | the space's Owners when it was asked, `[{ userId, email }]`, or null if they couldn't be read |
+| `requestedAt`                   | ISO 8601 timestamp                                                                            |
+
+### `space.access.decided`
+
+An Owner approved or declined an access request. `eventId` is `decision:<projectId>:<requesterId>:<requestedAt>`, using the request's own time, so each request has one decision. A request that is withdrawn, settled by adding the person directly, or cancelled because the space stopped being discoverable or was deleted, publishes no event.
+
+| Field                           | Description                                               |
+| ------------------------------- | --------------------------------------------------------- |
+| `projectId`, `name`             | the space and its name                                    |
+| `requesterId`, `requesterEmail` | who asked                                                 |
+| `decision`                      | `approved` or `declined`                                  |
+| `role`                          | the role granted (`owner`, `member` or `viewer`), or null |
+| `decidedById`, `decidedByEmail` | the Owner who decided                                     |
+| `decidedAt`                     | ISO 8601 timestamp                                        |
 
 ### `gate.pending`
 

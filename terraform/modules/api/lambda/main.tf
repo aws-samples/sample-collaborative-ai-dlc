@@ -16,6 +16,8 @@ locals {
     projects        = aws_iam_role.neptune_artifacts.id
     discussions     = aws_iam_role.discussions.id
     v2_orchestrator = aws_iam_role.v2_orchestrator.id
+    # Space access requests (space.access.requested, space.access.decided).
+    users = aws_iam_role.users.id
   } : {}
 
   partition            = data.aws_partition.current.partition
@@ -1682,7 +1684,9 @@ module "projects_lambda" {
 }
 
 locals {
-  users_environment = {
+  # The notification settings count toward the 4 KB environment check in
+  # membership.tf.
+  users_environment = merge({
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
@@ -1697,7 +1701,7 @@ locals {
     ENVIRONMENT                   = var.environment
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
     SSO_ROLE_CONFIG               = var.sso_role_config
-  }
+  }, local.notification_event_env)
 }
 
 # Users Lambda
