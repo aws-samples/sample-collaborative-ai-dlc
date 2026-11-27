@@ -92,6 +92,7 @@
   --border: oklch(0.915 0.006 286);
   --input: oklch(0.915 0.006 286);
   --ring: oklch(0.553 0.013 286);
+  --selection: oklch(0.87 0.04 286);
 
   /* Charts */
   --chart-1: oklch(0.646 0.222 41.116);
@@ -157,6 +158,7 @@
   --border: oklch(0.28 0.014 286);
   --input: oklch(0.28 0.014 286);
   --ring: oklch(0.553 0.013 286);
+  --selection: oklch(0.4 0.03 286);
 
   /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);

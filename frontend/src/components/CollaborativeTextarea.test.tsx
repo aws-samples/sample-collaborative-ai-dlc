@@ -38,6 +38,31 @@ const createSharedText = (initial = '', name = 'Test user', color = '#3b82f6') =
 };
 
 describe('CollaborativeTextarea', () => {
+  it('styles the focused selection with the theme token, not the CodeMirror base colour', () => {
+    const shared = createSharedText('hello world');
+    const { unmount } = render(
+      <CollaborativeTextarea
+        yText={shared.text}
+        awareness={shared.awareness}
+        aria-label="Shared"
+      />,
+    );
+    const css = [
+      ...[...document.querySelectorAll('style')].map((style) => style.textContent ?? ''),
+      ...(document.adoptedStyleSheets ?? []).flatMap((sheet) =>
+        [...sheet.cssRules].map((rule) => rule.cssText),
+      ),
+    ].join('\n');
+    // Same selector as the base theme's focused rule (#d7d4f0), so this override
+    // wins on specificity; jsdom cannot compute that, the browser check does.
+    expect(css).toMatch(
+      /\.cm-focused > \.cm-scroller > \.cm-selectionLayer \.cm-selectionBackground[^{]*\{[^}]*var\(--selection\)/,
+    );
+    unmount();
+    shared.awareness.destroy();
+    shared.doc.destroy();
+  });
+
   it('keeps the local caret anchored when a remote insertion arrives', () => {
     const shared = createSharedText('hello world');
     const wholeValueChange = vi.fn();

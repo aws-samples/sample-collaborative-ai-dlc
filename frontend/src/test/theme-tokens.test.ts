@@ -117,6 +117,14 @@ describe.each(Object.entries(themes))('%s theme contrast', (_name, vars) => {
     expect(contrast(destructive, surface)).toBeGreaterThanOrEqual(AA_TEXT);
   });
 
+  it('keeps text readable on the collaborative editor selection', () => {
+    const selection = token(vars, '--selection');
+    expect(contrast(token(vars, '--foreground'), selection)).toBeGreaterThanOrEqual(AA_TEXT);
+    // The highlight itself must stay visible against the surfaces editors sit on.
+    expect(contrast(selection, background)).toBeGreaterThanOrEqual(1.3);
+    expect(contrast(selection, card)).toBeGreaterThanOrEqual(1.3);
+  });
+
   it.each([
     ['bg-destructive', 1],
     ['bg-destructive/90', 0.9],
