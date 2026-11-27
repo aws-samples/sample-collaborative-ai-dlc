@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runGit, fetchOrigin } from '../git-engine.js';
+import { runGit, fetchOrigin, mergeBranchNoFf } from '../git-engine.js';
 import { laneSyncEvent, syncLaneWithIntent } from '../lane-sync.js';
 
 // Real git spawns can be slow on busy CI machines.
@@ -51,7 +51,7 @@ const setup = async () => {
   return { remote, work };
 };
 
-const sync = (remote, work, overrides = {}) =>
+const sync = (remote, work, overrides = {}, deps = {}) =>
   syncLaneWithIntent(
     {
       projectId: 'p1',
@@ -64,7 +64,7 @@ const sync = (remote, work, overrides = {}) =>
       workspaceDir: work,
       ...overrides,
     },
-    { env: {}, urlsFor: () => urls(remote) },
+    { env: {}, urlsFor: () => urls(remote), ...deps },
   );
 
 const remoteHead = async (remote, branch) =>
@@ -202,31 +202,47 @@ describe('syncLaneWithIntent', () => {
     expect((await git(['rev-parse', 'HEAD'], work)).stdout.trim()).toBe(local);
   });
 
-  it('puts the lane back when its push is rejected, keeping commits others pushed', async () => {
+  it('puts the lane back when its push loses a race, keeping commits others pushed', async () => {
     const { remote, work } = await setup();
     await commitOnRemote(remote, INTENT, 'filestore.txt', 'ranged read\n');
-    // Someone pushes to the unit branch, then the remote rejects the sync's push
-    // (as it would after a race between our fetch and our push).
-    await commitOnRemote(remote, UNIT, 'human.txt', 'pushed by a person\n');
-    const humanHead = await remoteHead(remote, UNIT);
     const before = (await git(['rev-parse', 'HEAD'], work)).stdout.trim();
-    const hook = path.join(remote, 'hooks', 'pre-receive');
-    await writeFile(hook, '#!/bin/sh\necho "rejected for the test" >&2\nexit 1\n', {
-      mode: 0o755,
-    });
+    // A real race: after the sync has fetched and merged, and just before its
+    // first push, a person pushes to the unit branch. Every push the sync then
+    // makes is a genuine non-fast-forward. (The engine Git runner disables
+    // hooks, so a pre-receive hook on the remote cannot stand in for this.)
+    let humanHead = null;
+    const pushes = [];
+    const racingGit = async (args, opts) => {
+      if (args[0] === 'push') {
+        if (!humanHead) {
+          await commitOnRemote(remote, UNIT, 'human.txt', 'pushed by a person\n');
+          humanHead = await remoteHead(remote, UNIT);
+        }
+        const push = await runGit(args, opts);
+        pushes.push(push.exitCode);
+        return push;
+      }
+      return runGit(args, opts);
+    };
+    const racingMerge = (opts) =>
+      mergeBranchNoFf({ ...opts, git: racingGit, sleep: async () => {} });
 
-    const res = await sync(remote, work);
+    const res = await sync(remote, work, {}, { mergeBranchNoFf: racingMerge });
 
+    expect(pushes).toHaveLength(3);
+    expect(pushes.every((code) => code !== 0)).toBe(true);
+    expect(res.synced).toBe(false);
     expect(res.results).toEqual([
       expect.objectContaining({ repo: 'o/r', outcome: 'failed', reason: 'push_failed' }),
     ]);
     expect(await remoteHead(remote, UNIT)).toBe(humanHead);
     expect((await git(['rev-parse', 'HEAD'], work)).stdout.trim()).toBe(before);
+    expect((await git(['branch', '--show-current'], work)).stdout.trim()).toBe(UNIT);
     expect((await git(['status', '--porcelain'], work)).stdout.trim()).toBe('');
-    // The next sync, once the remote accepts pushes, takes the person's commit too.
-    await rm(hook);
+    // The next sync, with no race, takes the person's commit too.
     const retry = await sync(remote, work);
     expect(retry.results[0].outcome).toBe('merged');
+    expect(await remoteHead(remote, UNIT)).toBe(retry.results[0].sha);
     expect(await readFile(path.join(work, 'human.txt'), 'utf8')).toBe('pushed by a person\n');
     expect(await readFile(path.join(work, 'filestore.txt'), 'utf8')).toBe('ranged read\n');
     const ancestor = await git(['merge-base', '--is-ancestor', humanHead, 'HEAD'], work);
