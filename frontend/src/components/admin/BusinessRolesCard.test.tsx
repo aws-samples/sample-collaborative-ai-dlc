@@ -4,6 +4,12 @@ import userEvent from '@testing-library/user-event';
 
 const get = vi.hoisted(() => vi.fn());
 const save = vi.hoisted(() => vi.fn());
+const getEnforcement = vi.hoisted(() => vi.fn());
+const updateSettings = vi.hoisted(() => vi.fn());
+
+vi.mock('@/services/agents', () => ({
+  agentsService: { getStageRoleEnforcement: getEnforcement, updateSettings },
+}));
 
 vi.mock('@/services/ssoRoleMappings', () => ({
   ssoRoleMappingsService: {
@@ -12,7 +18,7 @@ vi.mock('@/services/ssoRoleMappings', () => ({
   },
 }));
 
-import { SsoRoleMappingsCard } from './SsoRoleMappingsCard';
+import { BusinessRolesCard } from './BusinessRolesCard';
 
 const businessRoles = [
   { id: 'architect', name: 'Architect' },
@@ -22,9 +28,29 @@ const businessRoles = [
 beforeEach(() => {
   get.mockReset();
   save.mockReset();
+  getEnforcement.mockReset().mockResolvedValue({ enforceStageRoles: false });
+  updateSettings.mockReset();
 });
 
-describe('SsoRoleMappingsCard', () => {
+describe('BusinessRolesCard', () => {
+  it('lets an admin toggle enforcement without an SSO provider and keeps the saved value on error', async () => {
+    get.mockResolvedValue({ providers: [], businessRoles });
+    updateSettings
+      .mockResolvedValueOnce({ saved: true })
+      .mockRejectedValueOnce(new Error('unavailable'));
+    const user = userEvent.setup();
+    render(<BusinessRolesCard />);
+    const toggle = await screen.findByRole('switch', { name: 'Enforce business roles' });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith({ enforceStageRoles: true });
+    await waitFor(() => expect(toggle).toBeChecked());
+    await user.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith({ enforceStageRoles: false });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save');
+    expect(toggle).toBeChecked();
+  });
+
   it('keeps Terraform values read-only and saves only additions, including values present in both sources', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue({
@@ -48,7 +74,7 @@ describe('SsoRoleMappingsCard', () => {
       effectiveRoleMappings: { developer: ['Engineering', 'Shared'] },
       revision: 'rev-2',
     });
-    render(<SsoRoleMappingsCard />);
+    render(<BusinessRolesCard />);
     const editButton = await screen.findByRole('button', { name: 'Edit IdP values for Developer' });
     expect(within(screen.getByRole('table')).getAllByText('Read-only')).toHaveLength(2);
     await user.click(editButton);
@@ -90,8 +116,12 @@ describe('SsoRoleMappingsCard', () => {
       effectiveRoleMappings: { developer: ['Contractors', 'Engineering'] },
       revision: 'rev-2',
     });
-    render(<SsoRoleMappingsCard />);
-    expect(await screen.findByText('Entra ID')).toBeInTheDocument();
+    render(<BusinessRolesCard />);
+    const mappings = await screen.findByRole('region', { name: 'SSO mappings' });
+    expect(within(mappings).getByText('Entra ID')).toBeInTheDocument();
+    expect(within(mappings).getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Enforce business roles' })).not.toBeChecked();
+    expect(within(mappings).queryByRole('switch')).not.toBeInTheDocument();
     // One connection: shown directly, no selector.
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.getByText('groups')).toBeInTheDocument();
@@ -128,7 +158,7 @@ describe('SsoRoleMappingsCard', () => {
       ],
       businessRoles,
     });
-    render(<SsoRoleMappingsCard />);
+    render(<BusinessRolesCard />);
     await user.click(
       await screen.findByRole('button', {
         name: 'Edit IdP values for Developer',
@@ -181,7 +211,7 @@ describe('SsoRoleMappingsCard', () => {
       ],
       businessRoles,
     });
-    render(<SsoRoleMappingsCard />);
+    render(<BusinessRolesCard />);
     const selector = await screen.findByRole('combobox', {
       name: 'SSO connection',
     });
@@ -195,11 +225,16 @@ describe('SsoRoleMappingsCard', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('explains when no SSO connection is configured', async () => {
+  it('shows where to assign roles manually and omits SSO mappings when there are no providers', async () => {
     get.mockResolvedValue({ providers: [], businessRoles });
-    render(<SsoRoleMappingsCard />);
+    render(<BusinessRolesCard />);
     expect(
-      await screen.findByText(/No enterprise SSO connection is configured/),
+      await screen.findByText(
+        'Space Owners can assign business roles in Space Settings → Members.',
+      ),
     ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Business roles' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'SSO mappings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });

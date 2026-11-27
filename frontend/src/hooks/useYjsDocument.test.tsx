@@ -136,6 +136,53 @@ describe('useYjsDocument', () => {
     },
   );
 
+  it('refreshes a read-only stage grant without edits and stops polling after access is granted', async () => {
+    const { result, unmount } = renderHook(() => useYjsDocument('intent-sq-i1-gate1', 'Alice'));
+    await waitFor(() => expect(instances).toHaveLength(1));
+    vi.useFakeTimers();
+    const permission = (ws: MockWebSocket, write: number) =>
+      deliver(ws, 4, (encoder) => {
+        encoding.writeVarUint(encoder, 3);
+        encoding.writeVarUint(encoder, write);
+      });
+    await act(async () => {
+      instances[0].open();
+      permission(instances[0], 0);
+    });
+    const deniedSocket = instances.at(-1)!;
+    act(() => {
+      deniedSocket.open();
+      permission(deniedSocket, 0);
+      completeSync(deniedSocket, result.current.doc);
+    });
+    expect(result.current.documentReadOnly).toBe(true);
+    const syncRequests = (ws: MockWebSocket) => ws.sent.filter((bytes) => bytes[0] === 0);
+    const before = syncRequests(deniedSocket).length;
+    await act(async () => vi.advanceTimersByTimeAsync(29_999));
+    expect(syncRequests(deniedSocket)).toHaveLength(before);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(syncRequests(deniedSocket)).toHaveLength(before + 1);
+    // The periodic message is a state request, never a document update.
+    const decoder = decoding.createDecoder(syncRequests(deniedSocket).at(-1)!);
+    expect(decoding.readVarUint(decoder)).toBe(0);
+    expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsSyncStep1);
+    expect(result.current.localRevision).toBe(0);
+    await act(async () => permission(deniedSocket, 1));
+    expect(result.current.documentReadOnly).toBe(false);
+    const grantedSocket = instances.at(-1)!;
+    act(() => {
+      grantedSocket.open();
+      completeSync(grantedSocket, result.current.doc);
+    });
+    const grantedBefore = syncRequests(grantedSocket).length;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(syncRequests(grantedSocket)).toHaveLength(grantedBefore);
+    const requestsAtUnmount = syncRequests(deniedSocket).length;
+    unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(syncRequests(deniedSocket)).toHaveLength(requestsAtUnmount);
+  });
+
   it('publishes the current user awareness state as soon as the socket opens', async () => {
     const { result, unmount } = renderHook(
       () => useYjsDocument('inception-project-1', 'Alice', '#3b82f6'),

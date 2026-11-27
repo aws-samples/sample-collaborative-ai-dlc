@@ -33,7 +33,8 @@ vi.setConfig({ testTimeout: 30_000 });
 
 let root; // scratch dir per test: <root>/remote.git (bare), <root>/work (clone)
 
-const git = (args, cwd) => runGit(args, { cwd });
+// Fixture history does not need signatures from the developer's local GPG setup.
+const git = (args, cwd) => runGit(['-c', 'commit.gpgsign=false', ...args], { cwd });
 
 const initRemoteAndClone = async ({ withInitialCommit = true } = {}) => {
   const remote = path.join(root, 'remote.git');

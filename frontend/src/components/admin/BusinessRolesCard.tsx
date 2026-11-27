@@ -1,10 +1,3 @@
-// Admin "Business role mappings" card — maps enterprise IdP values (groups,
-// roles, or IDs received through the connection's configured source attribute)
-// to the fixed business-role catalog. One mapping per configured SSO
-// connection; a provider selector appears only when several are configured.
-// Values are entered manually and must match the received value exactly,
-// including case — the platform does not verify they exist in the IdP.
-
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +27,7 @@ import {
   type SsoMappingsResponse,
 } from '@/services/ssoRoleMappings';
 import { SettingsCard } from '@/components/settings/SettingsCard';
+import { StageRoleEnforcementSwitch } from './StageRoleEnforcementSwitch';
 import { businessRoleIcon } from '@/components/project-settings/businessRoleIcons';
 
 const BusinessRoleIcon = ({ id }: { id: string }) => {
@@ -41,7 +35,7 @@ const BusinessRoleIcon = ({ id }: { id: string }) => {
   return <Icon aria-hidden="true" className="h-3 w-3 shrink-0 text-muted-foreground" />;
 };
 
-export function SsoRoleMappingsCard() {
+export function BusinessRolesCard() {
   const [data, setData] = useState<SsoMappingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -139,10 +133,11 @@ export function SsoRoleMappingsCard() {
   return (
     <SettingsCard
       icon={<Building2 />}
-      title="Business role mappings"
-      description="Map company groups or roles received through enterprise SSO to business roles. People signing in through the connection receive the mapped roles; Space Owners can add or exclude roles per space."
+      title="Business roles"
+      description="Business roles describe who contributes to each workflow stage and who makes decisions."
     >
-      <div className="space-y-3">
+      <StageRoleEnforcementSwitch />
+      <div className="mt-4">
         {loading ? (
           <div className="space-y-2">
             <Skeleton className="h-9 w-full" />
@@ -154,11 +149,19 @@ export function SsoRoleMappingsCard() {
           </p>
         ) : !data || data.providers.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No enterprise SSO connection is configured. Business roles can still be assigned by
-            Space Owners in each space.
+            Space Owners can assign business roles in Space Settings → Members.
           </p>
         ) : (
-          <>
+          <section aria-labelledby="sso-mappings-heading" className="space-y-3 border-t pt-4">
+            <div>
+              <h4 id="sso-mappings-heading" className="text-sm font-semibold">
+                SSO mappings
+              </h4>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Map groups or roles from your identity provider to business roles. Space Owners can
+                adjust assignments in Space Settings → Members.
+              </p>
+            </div>
             {data.providers.length > 1 ? (
               <div className="space-y-1.5">
                 <Label htmlFor="sso-mapping-provider">SSO connection</Label>
@@ -266,7 +269,7 @@ export function SsoRoleMappingsCard() {
                 </table>
               </div>
             )}
-          </>
+          </section>
         )}
       </div>
 

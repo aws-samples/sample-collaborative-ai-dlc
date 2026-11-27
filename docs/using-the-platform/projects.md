@@ -66,16 +66,18 @@ Add or remove members and assign their space access (Owner / Member / Viewer).
 Enterprise users appear after their first successful sign-in. The picker labels
 accounts by provider and includes only enabled accounts that can sign in.
 
-Removing a member revokes API access and further collaborative edits immediately.
-Existing notification sessions expire within ten minutes. Re-adding someone does
-not restore their locally assigned roles or delegated integration access.
+Removing a member revokes API access immediately. An open stage editor can accept
+edits for up to 30 more seconds. Reconnecting checks access again, including
+before syncing offline edits. Existing notification sessions expire within ten
+minutes. Re-adding someone does not restore their locally assigned roles or
+delegated integration access.
 
 #### Business roles
 
 Business roles describe responsibilities, such as Developer, Architect, or
-Product Owner. They do not grant access or override Viewer restrictions;
-gates and execution do not check them yet. The same person can have different
-roles in each space.
+Product Owner. A stage uses these roles to determine who can edit and decide
+among the space's Owners and Members. The same person can have different roles
+in each space.
 
 Everyone can see roles in the member list. Owners can select a member's roles
 to edit them:
@@ -94,11 +96,29 @@ and **Contributors** for the space's workflow. It updates when you save member
 roles. Click the crossed-out user icon or unassigned-role count to see missing
 assignments.
 
-When no Decision Makers are assigned, Contributors decide; if neither group is
+**Enforce business roles** follows the [platform default](platform-settings.md#users) until a Space Owner
+turns the switch on or off in this space. That choice applies to new and in-progress intents and
+persists when the platform default changes. Select **Use platform default** to follow it again.
+With enforcement off, Owners and Members can edit and decide.
+Viewers retain read-only access, and Owner-only actions still require an Owner.
+
+With enforcement on, when no Decision Makers are assigned, Contributors decide; if neither group is
 assigned, Owners decide. Viewers are excluded.
 
-Stage restrictions are not yet enforced. Existing access restrictions and
-workflow gates still apply.
+Decision Makers and Contributors can edit the shared draft. The people who can
+decide can also submit answers, revise a previous answer, and change saved
+documents for that stage. Other Members can still participate in discussions.
+Open **Who can act?** on a question or stage review to see who can help.
+
+When a stage has no role mapping, including on older intents, Owners and Members
+can edit and decide. Only an Owner can grant autonomy or accept an option to
+override a blocking finding when the workflow offers it.
+
+Owners and Members can start a new intent with any selected stages, even if
+they have no business roles. If several units fail and Collab asks whether
+to retry, skip, or stop the section, an Owner or someone who can decide for
+all affected stages can answer. A question from a single stage uses that
+stage’s own responsibilities.
 
 ### Agent
 

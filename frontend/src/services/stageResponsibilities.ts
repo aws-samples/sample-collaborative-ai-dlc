@@ -12,6 +12,7 @@ export interface StageResponsibility {
   stageId: string;
   stageInstanceId: string | null;
   gateIds: string[];
+  access?: { edit: boolean; decide: boolean };
   name: string;
   phasePath?: string | null;
   permissions: StagePermissions | null;
@@ -21,7 +22,14 @@ export interface StageResponsibility {
   decisionMakers: ResponsiblePerson[];
   contributors: ResponsiblePerson[];
 }
+export type GateResponsibility = Pick<
+  StageResponsibility,
+  'access' | 'contributors' | 'decisionMakers'
+> & { reason: StageResponsibility['reason'] | 'section' };
 export interface StageResponsibilities {
+  enforceStageRoles?: boolean;
+  sectionGates?: Record<string, GateResponsibility>;
+  unattributedAccess?: StageResponsibility['access'];
   previewOnly: boolean;
   workflowId: string;
   workflowVersion: number;
@@ -38,6 +46,7 @@ export const stageResponsibilitiesService = {
       scope?: string;
       intentId?: string;
       stageInstanceId?: string;
+      actorAccess?: boolean;
     } = {},
   ) => {
     const params = new URLSearchParams();

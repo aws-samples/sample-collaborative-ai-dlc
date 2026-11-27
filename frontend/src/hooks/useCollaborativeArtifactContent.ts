@@ -52,6 +52,7 @@ export function useCollaborativeArtifactContent({
     localRevision,
     flushDocument,
     beforeDisconnect,
+    documentReadOnly,
   } = useYjsDocument(docId, userName, userColor, {
     intentId,
     projectId,
@@ -133,13 +134,14 @@ export function useCollaborativeArtifactContent({
   }, [onAutoSave, readSaveVersion, onSaveError, flushDocument, doc]);
 
   const { flush } = useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
-    enabled: enabled && synced && !!onAutoSave,
+    enabled: enabled && synced && !documentReadOnly && !!onAutoSave,
     skipInitial: true,
     resetKey: doc,
     beforeDisconnect,
   });
 
   return {
+    documentReadOnly,
     content,
     contentText: doc.getText('content'),
     setContent,

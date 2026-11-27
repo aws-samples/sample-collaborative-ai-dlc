@@ -1,3 +1,6 @@
+vi.mock('@/contexts/SpacePermissionsContext', () => ({
+  useSpacePermissions: () => ({ readOnly: false, role: 'owner' }),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';

@@ -1,5 +1,5 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Loader2, Pencil, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -37,20 +37,20 @@ const ACTIVE_QEDIT_STATES = new Set(['PLANNING', 'AWAITING_APPROVAL', 'APPLYING'
 
 /** Why editing is currently unavailable, or null when it is allowed. */
 export function useArtifactEditability(artifact: IntentArtifact): string | null {
-  const { detail } = useIntent();
+  const { detail, stageAccess } = useIntent();
   const { readOnly } = useSpacePermissions();
-  return useMemo(() => {
-    if (readOnly) return 'You have view-only access to this space.';
-    if (artifact.supersededAt) return 'Superseded by a rewind — edit its replacement instead';
-    const status = detail?.intent.status;
-    if (status && !EDITABLE_INTENT_STATUSES.has(status)) {
-      return `The run is ${status} — wait for the stage to park or finish before editing`;
-    }
-    if ((detail?.quorumEdits ?? []).some((q) => ACTIVE_QEDIT_STATES.has(q.state))) {
-      return 'A Quorum edit is in progress for this intent';
-    }
-    return null;
-  }, [artifact.supersededAt, detail, readOnly]);
+  if (readOnly) return 'You have view-only access to this space.';
+  if (!stageAccess(artifact.createdByStageInstanceId)?.decide)
+    return 'You need decision permission for this stage to edit the document.';
+  if (artifact.supersededAt) return 'Superseded by a rewind — edit its replacement instead';
+  const status = detail?.intent.status;
+  if (status && !EDITABLE_INTENT_STATUSES.has(status)) {
+    return `The run is ${status} — wait for the stage to park or finish before editing`;
+  }
+  if ((detail?.quorumEdits ?? []).some((q) => ACTIVE_QEDIT_STATES.has(q.state))) {
+    return 'A Quorum edit is in progress for this intent';
+  }
+  return null;
 }
 
 /** Drift badge + one-click "mark verified". Renders nothing when not stale. */
@@ -61,8 +61,9 @@ export function ArtifactStaleBadge({
   artifact: IntentArtifact;
   className?: string;
 }) {
-  const { projectId, intentId, reload } = useIntent();
-  const { readOnly } = useSpacePermissions();
+  const { projectId, intentId, reload, stageAccess } = useIntent();
+  const { readOnly: spaceReadOnly } = useSpacePermissions();
+  const readOnly = spaceReadOnly || !stageAccess(artifact.createdByStageInstanceId)?.decide;
   const [verifying, setVerifying] = useState(false);
   if (!artifact.staleSince) return null;
 

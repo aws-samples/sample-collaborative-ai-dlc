@@ -4,7 +4,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
-import { signRealtimeToken, requiredScopeForYjsDoc } from '../realtime-token.js';
+import { signRealtimeToken, requiredScopeForYjsDoc } from '../../shared/realtime-token.js';
 import { scopeKey } from '../cluster.js';
 import { persistenceMessage, FLUSH, SAVED, CAPABILITY } from '../protocol.js';
 

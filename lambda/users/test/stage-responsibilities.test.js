@@ -66,6 +66,78 @@ beforeEach(() => {
   releaseWorkflow.current = null;
 });
 
+it('shows a section decision only to Owners and members who can decide for all its stages', async () => {
+  const stages = ['product-owner', 'business-analyst'].map((role) => ({
+    sk: `V#3#PLACEMENT#${role}`,
+    stageId: role,
+    parallelSection: 1,
+    permissions: { decisionMakerRoles: [role], contributorRoles: [] },
+  }));
+  loadPlan.mockResolvedValue({ valid: true, plan: { stages } });
+  ddb.send.mockImplementation(async ({ input }) => {
+    if (input.Key)
+      return {
+        Item:
+          input.Key.sk === 'META'
+            ? { projectId: 'space', workflowId: 'flow', workflowVersion: 3 }
+            : null,
+      };
+    if (input.ExpressionAttributeValues[':pk'].startsWith('WF#'))
+      return {
+        Items: [{ sk: 'V#3#META', cedarPolicies: generateStagePolicies(stages) }, ...stages],
+      };
+    return {
+      Items:
+        input.ExpressionAttributeValues[':prefix'] === 'HUMAN#'
+          ? [{ humanTaskId: 'retry', sectionIndex: 1, stageInstanceId: null }]
+          : [],
+    };
+  });
+  store.listMembers.mockResolvedValue({
+    items: [
+      { userId: 'owner', membershipRole: 'owner' },
+      { userId: 'product', membershipRole: 'member', localRoles: ['product-owner'] },
+      {
+        userId: 'both',
+        membershipRole: 'member',
+        localRoles: ['product-owner', 'business-analyst'],
+      },
+    ],
+    nextToken: null,
+  });
+  const result = await load({
+    ...event,
+    queryStringParameters: { intentId: 'intent', actorAccess: 'true' },
+    requestContext: { authorizer: { claims: { sub: 'product' } } },
+  });
+  expect(result.sectionGates.retry.access).toEqual({ edit: false, decide: false });
+  expect(result.sectionGates.retry.decisionMakers.map((m) => m.userId)).toEqual(['owner', 'both']);
+});
+
+it.each([
+  ['owner', true],
+  ['member', true],
+  ['viewer', false],
+])('uses the %s space rights for an existing intent in advisory mode', async (actorRole, write) => {
+  const request = {
+    pathParameters: { projectId: 'space' },
+    queryStringParameters: { intentId: 'intent', actorAccess: 'true' },
+  };
+  const meta = { projectId: 'space', workflowId: 'flow', workflowVersion: 1 };
+  ddb.send.mockImplementation(async ({ input }) => ({
+    Item: input.Key.sk === 'META' ? meta : { enabled: input.Key.pk !== 'SPACE#space' },
+  }));
+  const loadActor = () =>
+    getStageResponsibilities({ event: request, g, ddb, store, resolveRoles, actorRole });
+  expect(await loadActor()).toMatchObject({
+    enforceStageRoles: false,
+    unattributedAccess: { edit: write, decide: write },
+  });
+  expect(store.listMembers).not.toHaveBeenCalled();
+  meta.projectId = 'another-space';
+  await expect(loadActor()).rejects.toMatchObject({ statusCode: 404 });
+});
+
 describe('release-pinned intents', () => {
   const upstreamWorkflow = {
     id: 'aidlc-v2',
@@ -79,6 +151,11 @@ describe('release-pinned intents', () => {
     methodologyRelease: { releaseId: 'aidlc-v2.11.3', importerRevision: 5 },
   };
   const request = { ...event, queryStringParameters: { intentId: 'intent' } };
+  const actorRequest = {
+    ...request,
+    queryStringParameters: { ...request.queryStringParameters, actorAccess: 'true' },
+    requestContext: { authorizer: { claims: { sub: 'po' } } },
+  };
   beforeEach(() => {
     vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts');
     loadPlan.mockResolvedValue({
@@ -119,6 +196,48 @@ describe('release-pinned intents', () => {
       message: expect.stringContaining('predates stage responsibilities'),
     });
     expect(store.listMembers).not.toHaveBeenCalled();
+  });
+
+  it('keeps member access on a draft pinned before responsibilities, without loading a plan', async () => {
+    releaseWorkflow.current = upstreamWorkflow;
+    ddb.send.mockResolvedValue({ Item: { ...pinnedMeta, status: 'DRAFT' } });
+    const result = await load(actorRequest);
+    const access = { edit: true, decide: true };
+    expect(result).toMatchObject({
+      stages: [{ stageInstanceId: null, access }],
+      sectionGates: {},
+      unattributedAccess: access,
+    });
+    expect(loadPlan).not.toHaveBeenCalled();
+  });
+
+  it('includes past instances and unselected placements only when looking up actor access', async () => {
+    releaseWorkflow.current = withStageResponsibilities({
+      workflow: {
+        ...upstreamWorkflow,
+        placements: [...upstreamWorkflow.placements, { stageId: 'extra', order: 2 }],
+      },
+      blocks: {},
+    }).workflow;
+    ddb.send.mockImplementation(async ({ input }) => {
+      if (input.Key) return { Item: input.Key.sk === 'META' ? pinnedMeta : undefined };
+      const rows = {
+        'STAGE#': [{ sk: 'STAGE#past', stageId: 'requirements-analysis', unitSlug: 'old-unit' }],
+        'HUMAN#': [{ humanTaskId: 'answered', stageInstanceId: 'past' }],
+      };
+      return { Items: rows[input.ExpressionAttributeValues[':prefix']] };
+    });
+    const preview = await load(request);
+    expect(preview.stages.map((stage) => stage.stageInstanceId)).toEqual(['si-req']);
+    expect(preview.stages[0]).not.toHaveProperty('access');
+    expect(preview).not.toHaveProperty('sectionGates');
+    const actor = await load(actorRequest);
+    expect(actor.stages).toMatchObject([
+      { stageInstanceId: 'si-req', access: { decide: true } },
+      { stageInstanceId: 'past', gateIds: ['answered'], access: { decide: true } },
+      { stageId: 'extra', stageInstanceId: null },
+    ]);
+    expect(actor).not.toHaveProperty('unattributedAccess');
   });
 });
 

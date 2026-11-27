@@ -3,6 +3,11 @@ import type { GitProvider } from './gitProvider';
 import type { ProjectEnvironmentAssignment } from './environments';
 
 export type ProjectRole = 'owner' | 'member' | 'viewer';
+export interface SpaceStageRoleEnforcement {
+  platformDefault: boolean;
+  override: boolean | null;
+  enforceStageRoles: boolean;
+}
 export interface SpacePermissions {
   read: boolean;
   write: boolean;
@@ -251,6 +256,10 @@ export const projectsService = {
     api.delete(`/projects/${projectId}/repos?url=${encodeURIComponent(repoUrl)}`),
 
   // Members
+  getStageRoleEnforcement: (projectId: string) =>
+    api.get<SpaceStageRoleEnforcement>(`/projects/${projectId}?section=stageRoles`),
+  setStageRoleEnforcement: (projectId: string, override: boolean | null) =>
+    api.put<SpaceStageRoleEnforcement>(`/projects/${projectId}?section=stageRoles`, { override }),
   listMembers: (projectId: string) => listPages<Member>(`/projects/${projectId}/members`),
   listBusinessRoles: (projectId: string) =>
     api.get<BusinessRole[]>(`/projects/${projectId}/business-roles`),

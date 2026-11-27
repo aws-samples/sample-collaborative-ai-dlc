@@ -54,6 +54,7 @@ import {
 } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { businessRoleIcon } from './businessRoleIcons';
+import { SpaceStageRoleSwitch } from './SpaceStageRoleSwitch';
 import { StageResponsibilitiesTable } from '@/components/stage-responsibilities/StageResponsibilitiesTable';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
@@ -483,8 +484,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
             </div>
           )}
           <p className="text-xs text-muted-foreground">
-            Business roles describe responsibilities for now. They do not grant space access or
-            restrict actions. Only Space Owners can change them.
+            Space Owners can manage business role assignments here.
           </p>
 
           {/* Role legend */}
@@ -512,6 +512,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
         title="Stage responsibilities"
         description="Decision Makers and Contributors for this space's workflow."
       >
+        <SpaceStageRoleSwitch projectId={projectId} canManage={canManageMembers} />
         <StageResponsibilitiesTable
           projectId={projectId}
           refreshVersion={responsibilitiesVersion}
@@ -530,7 +531,7 @@ function MembersTabContent({ projectId, userRole }: Props) {
             <DialogTitle>Edit business roles</DialogTitle>
             <DialogDescription>
               Responsibilities in this space for {editingMember?.email || editingMember?.userId}.
-              Business roles do not change Owner or Member access.
+              Changing business roles keeps this person’s space access level.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">

@@ -54,7 +54,7 @@ locals {
   yjs_files_include = setunion([for f in local.path_include : fileset(local.yjs_source_path, f)]...)
   yjs_files_exclude = setunion([for f in local.path_exclude : fileset(local.yjs_source_path, f)]...)
   yjs_files         = sort(setsubtract(local.yjs_files_include, local.yjs_files_exclude))
-  yjs_shared_files  = ["space-permissions.js", "space-membership.js", "business-roles.js", "business-role-catalog.json", "policies/space.cedar"]
+  yjs_shared_files  = ["space-permissions.js", "space-membership.js", "business-roles.js", "business-role-catalog.json", "policies/space.cedar", "realtime-token.js"]
   yjs_files_sha = sha1(join("", concat(
     [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")],
     [for f in local.yjs_shared_files : filesha1("${local.yjs_source_path}/../shared/${f}")]
@@ -219,6 +219,11 @@ resource "aws_iam_role_policy" "ecs_task" {
       },
       {
         Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = var.stage_permissions_function_arn
+      },
+      {
+        Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
         Resource = var.access_table_arn
       },
@@ -261,6 +266,7 @@ resource "aws_ecs_task_definition" "yjs_server" {
       protocol      = "tcp"
     }]
     environment = concat([
+      { name = "STAGE_PERMISSIONS_FUNCTION", value = var.stage_permissions_function_arn },
       { name = "SPACE_PERMISSIONS_FUNCTION", value = var.space_permissions_function_arn },
       { name = "ACCESS_TABLE", value = var.access_table_name },
       {

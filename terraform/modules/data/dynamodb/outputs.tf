@@ -96,7 +96,8 @@ output "environment_registry_table_arn" {
 }
 
 output "access_table_name" {
-  value = aws_dynamodb_table.access.name
+  value      = aws_dynamodb_table.access.name
+  depends_on = [aws_dynamodb_table_item.stage_role_enforcement]
 }
 
 output "access_table_arn" {

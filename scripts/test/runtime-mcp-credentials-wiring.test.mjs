@@ -25,9 +25,15 @@ test('the enforcing Lambdas receive the profile only when it is gateway_only', (
     'intents_lambda',
     'v2_orchestrator_lambda',
   ]) {
+    const lambda = block(lambdas, 'module', name);
+    // An environment kept in a local (to check its size) is read from there.
+    const local = lambda.match(/environment_variables = local\.(\w+)/)?.[1];
+    const environment = local
+      ? read(lambdas).match(new RegExp(`^locals \\{\\s*${local} = [\\s\\S]*?^\\}`, 'm'))?.[0]
+      : lambda.match(/environment_variables = [\s\S]*/)?.[0];
     assert.match(
-      block(lambdas, 'module', name),
-      /environment_variables = merge\([\s\S]*local\.runtime_mcp_policy_env,?\s*\)/,
+      environment ?? '',
+      /= merge\([\s\S]*local\.runtime_mcp_policy_env,?\s*\)/,
       `${name} must receive RUNTIME_MCP_CREDENTIALS`,
     );
   }

@@ -33,6 +33,7 @@ export interface WaitingCardProps {
   gates: ReturnType<typeof useIntent>['gates'];
   stageRows: ReturnType<typeof useIntent>['stageRows'];
   stageNameOf: ReturnType<typeof useIntent>['stageNameOf'];
+  mayControlStage: ReturnType<typeof useIntent>['mayControlStage'];
   rewindIntent: ReturnType<typeof useIntent>['rewindIntent'];
 }
 
@@ -42,6 +43,7 @@ export function WaitingCard({
   stageRows,
   stageNameOf,
   rewindIntent,
+  mayControlStage,
 }: WaitingCardProps) {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [guidanceOpen, setGuidanceOpen] = useState(false);
@@ -140,7 +142,7 @@ export function WaitingCard({
           variant="outline"
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          disabled={rewinding || !stageId}
+          disabled={rewinding || !stageId || !mayControlStage(stageId)}
           onClick={() => {
             setRewindError(null);
             setConfirmRestart(true);
@@ -153,7 +155,7 @@ export function WaitingCard({
           variant="outline"
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          disabled={rewinding || !stageId}
+          disabled={rewinding || !stageId || !mayControlStage(stageId)}
           onClick={() => {
             setRewindError(null);
             setGuidanceOpen(true);

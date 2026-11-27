@@ -1,8 +1,37 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMembershipStore } from '../../shared/space-membership.js';
 import { createPermissionLookup, createMembershipLookup } from '../permissions.js';
+import { requiredScopeForYjsDoc } from '../../shared/realtime-token.js';
 
 describe('current permission lookup', () => {
+  const intentId = 'b1e0f2a4-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
+  it.each([
+    [`intent-sq-${intentId}-question`, 'intents'],
+    [`intent-review-${intentId}-review`, 'intents'],
+    [`intent-artifact-${intentId}-market-research-epoch-legacy`, 'intents'],
+    [`intent-discussion-${intentId}-thread`, 'projects'],
+    [`intent-presence-${intentId}`, 'projects'],
+    [`intent-draft-${intentId}`, 'projects'],
+  ])('routes %s to %s with its token scope', async (docName, functionName) => {
+    const client = {
+      send: vi.fn().mockResolvedValue({ Payload: Buffer.from('{"read":false,"write":false}') }),
+    };
+    const lookup = createPermissionLookup({
+      client,
+      functionName: 'projects',
+      stageFunction: 'intents',
+    });
+    await lookup({ sub: 'u', scope: requiredScopeForYjsDoc(docName), docName });
+    const { input } = client.send.mock.calls[0][0];
+    expect(input.FunctionName).toBe(functionName);
+    expect(JSON.parse(Buffer.from(input.Payload))).toEqual({
+      action: 'realtime-permissions',
+      sub: 'u',
+      scope: `intent:${intentId}`,
+      ...(functionName === 'intents' && { docName }),
+    });
+  });
+
   it('passes verified identity and scope and consumes the backend decisions', async () => {
     const permissions = { read: true, write: false, manage: false, spaceId: 'p' };
     const client = {

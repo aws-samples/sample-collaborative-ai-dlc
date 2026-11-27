@@ -44,14 +44,19 @@ export function useYjsDocument(
   scopeTarget?: RealtimeScopeTarget,
 ) {
   const { readOnly, loading, documentEpoch, denyWrites, refresh } = useSpacePermissions();
+  const spaceReadOnlyRef = useRef(readOnly);
+  spaceReadOnlyRef.current = readOnly;
   const readOnlyRef = useRef(readOnly);
-  readOnlyRef.current = readOnly;
+  const [documentAccess, setDocumentAccess] = useState({ id: documentId, denied: false, epoch: 0 });
+  const documentDenied = documentAccess.id === documentId && documentAccess.denied;
+  const stageDocument = /^intent-(?:sq|review|artifact)-/.test(documentId ?? '');
+  readOnlyRef.current = readOnly || documentDenied;
   // Recreate only on a confirmed revocation so rejected offline edits never reappear
   // in a Viewer document or get replayed following a later promotion.
   // Intentionally keyed on documentId: a new document must get a FRESH Y.Doc even
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const doc = useMemo(() => new Y.Doc(), [documentId, documentEpoch]);
+  const doc = useMemo(() => new Y.Doc(), [documentId, documentEpoch, documentAccess.epoch]);
   const currentDocRef = useRef(doc);
   currentDocRef.current = doc;
   const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
@@ -316,7 +321,15 @@ export function useYjsDocument(
             const subtype = decoding.readVarUint(decoder);
             const value = decoding.readVarUint(decoder);
             if (subtype === 3) {
-              if (value === 0) {
+              if (stageDocument) {
+                if (currentDocRef.current !== doc) return;
+                const denied = value === 0;
+                readOnlyRef.current = spaceReadOnlyRef.current || denied;
+                setDocumentAccess((previous) => {
+                  if (previous.id === documentId && previous.denied === denied) return previous;
+                  return { id: documentId, denied, epoch: previous.epoch + 1 };
+                });
+              } else if (value === 0) {
                 readOnlyRef.current = true;
                 denyWrites();
               } else if (readOnlyRef.current) refresh();
@@ -419,6 +432,18 @@ export function useYjsDocument(
       setRemoteUsers(users);
     };
 
+    // A read-only editor sends no edits, so request state periodically to let
+    // the server recheck its cached stage permission.
+    const refreshStagePermission = () => {
+      const ws = wsRef.current;
+      if (!stageDocument || !readOnlyRef.current || ws?.readyState !== WebSocket.OPEN) return;
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeSyncStep1(encoder, doc);
+      ws.send(encoding.toUint8Array(encoder));
+    };
+    const permissionTimer = stageDocument ? setInterval(refreshStagePermission, 30_000) : null;
+
     // Backstop for the proactive-refresh timer above: timers are throttled in
     // hidden tabs and frozen across machine sleep, so a tab that was backgrounded
     // past the token's expiry can wake holding a socket whose refresh never fired.
@@ -428,6 +453,7 @@ export function useYjsDocument(
     // lead window (or past it) — the same threshold the timer uses.
     const refreshIfStale = () => {
       if (cancelled || document.visibilityState !== 'visible') return;
+      refreshStagePermission();
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       if (tokenExpRef.current === null || msUntilRefresh(tokenExpRef.current) > 0) return;
@@ -464,6 +490,7 @@ export function useYjsDocument(
       awarenessProt.off('change', awarenessHandler);
       awarenessProt.off('update', awarenessUpdateHandler);
       if (awarenessTimer) clearTimeout(awarenessTimer);
+      if (permissionTimer) clearInterval(permissionTimer);
       window.removeEventListener('focus', refreshIfStale);
       document.removeEventListener('visibilitychange', refreshIfStale);
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');
@@ -543,6 +570,8 @@ export function useYjsDocument(
   );
 
   const flushDocument = useCallback((): Promise<void> => {
+    if (readOnlyRef.current && stageDocument)
+      return Promise.reject(new Error('This stage document is read-only.'));
     if (readOnlyRef.current) return Promise.resolve();
     const expectedDoc = doc;
     const operation = flushQueueRef.current
@@ -582,6 +611,7 @@ export function useYjsDocument(
     flushSequenceRef,
     flushQueueRef,
     pendingFlushRef,
+    stageDocument,
   ]);
 
   const localRevision = localChange.doc === doc ? localChange.revision : 0;
@@ -592,6 +622,7 @@ export function useYjsDocument(
     remoteUsers,
     setCursor,
     localRevision,
+    documentReadOnly: readOnly || documentDenied,
     flushDocument,
     beforeDisconnect,
   };

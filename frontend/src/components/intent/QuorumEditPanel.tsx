@@ -182,8 +182,22 @@ function QuorumEditProgress({ editId }: { editId: string }) {
 }
 
 function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
-  const { projectId, intentId, openArtifactPreview, reload } = useIntent();
-  const { readOnly } = useSpacePermissions();
+  const {
+    projectId,
+    intentId,
+    openArtifactPreview,
+    reload,
+    detail,
+    stageAccess,
+    enforceStageRoles,
+  } = useIntent();
+  const { readOnly: spaceReadOnly } = useSpacePermissions();
+  const canDecide = (id: string) => {
+    if (enforceStageRoles === false) return true;
+    const artifact = detail?.artifacts.find((a) => a.id === id);
+    return !!artifact && stageAccess(artifact.createdByStageInstanceId)?.decide;
+  };
+  const readOnly = spaceReadOnly || !canDecide(edit.artifactId);
   const items = useMemo(() => edit.plan?.items ?? [], [edit.plan]);
   // Everything starts included: updates apply, verify-unaffected clears the
   // drift marker with Quorum's rationale. Excluded items stay marked stale.
@@ -250,7 +264,11 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
         <Button
           size="sm"
           className="h-7 shrink-0 gap-1.5"
-          disabled={readOnly || submitting != null}
+          disabled={
+            readOnly ||
+            submitting != null ||
+            items.some((i) => !excluded.has(i.artifactId) && !canDecide(i.artifactId))
+          }
           onClick={() => decide('approve')}
         >
           {submitting === 'approve' ? (

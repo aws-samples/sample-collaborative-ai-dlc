@@ -13,6 +13,7 @@ vi.mock('@/services/workflows', () => ({ workflowsService: { list: mocks.workflo
 
 const preview: StageResponsibilities = {
   previewOnly: true,
+  enforceStageRoles: false,
   workflowId: 'flow',
   workflowVersion: 3,
   roles: [
@@ -163,6 +164,7 @@ describe('Stage responsibilities', () => {
     mocks.get.mockResolvedValue({
       ...preview,
       previewOnly: false,
+      enforceStageRoles: true,
       stages: [
         { ...preview.stages[0], stageInstanceId: 'unit-a-requirements', gateIds: ['gate-a'] },
       ],
@@ -175,7 +177,7 @@ describe('Stage responsibilities', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.getByText('flow · Version 3')).toBeInTheDocument();
-    expect(screen.queryByText(/Stage restrictions are not yet enabled/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Business role enforcement is off.')).not.toBeInTheDocument();
   });
 
   it('discards a late result when switching intents', async () => {
@@ -204,15 +206,14 @@ describe('Stage responsibilities', () => {
     const { rerender } = render(
       <StageResponsibilitiesTable projectId="space" refreshVersion={0} />,
     );
-    await screen.findByText('flow · Version 3');
+    await screen.findByText('Selected by backend');
     expect(mocks.get).toHaveBeenCalledWith('space', {});
     expect(mocks.project).not.toHaveBeenCalled();
     expect(mocks.workflows).not.toHaveBeenCalled();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
-    expect(screen.getByText('flow · Version 3')).toBeInTheDocument();
-    expect(screen.getByText(/Stage restrictions are not yet enabled/)).toBeInTheDocument();
+    expect(screen.queryByText('flow · Version 3')).not.toBeInTheDocument();
     expect(
       screen.getByRole('columnheader', {
         name: 'Contributors (Fallbacks when no Decision Makers)',
@@ -240,8 +241,7 @@ describe('Stage responsibilities', () => {
     expect(screen.queryByText(/\(Unassigned\)/)).not.toBeInTheDocument();
     mocks.get.mockResolvedValue({ ...preview, stages: [] });
     rerender(<StageResponsibilitiesTable projectId="space" refreshVersion={1} />);
-    await screen.findByText('flow · Version 3');
-    expect(screen.queryByText('Selected by backend')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Selected by backend')).not.toBeInTheDocument());
     expect(mocks.get).toHaveBeenCalledTimes(2);
   });
 

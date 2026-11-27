@@ -46,6 +46,17 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'P', userRole: 'owner' } }),
 }));
 
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: {
+    get: async () => ({
+      stages: ['si-bt'].map((stageInstanceId) => ({
+        stageInstanceId,
+        reason: 'unmapped',
+        access: { decide: true, edit: true },
+      })),
+    }),
+  },
+}));
 const get = vi.fn();
 const answerGate = vi.fn();
 const graph = vi.fn();

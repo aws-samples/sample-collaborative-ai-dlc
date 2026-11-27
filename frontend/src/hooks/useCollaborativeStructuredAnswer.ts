@@ -52,6 +52,7 @@ export function useCollaborativeStructuredAnswer(
     localRevision,
     flushDocument,
     beforeDisconnect,
+    documentReadOnly,
   } = useYjsDocument(docId, userName, generateColor(userName), scopeTargetFor(scope));
 
   const [selections, setSelections] = useState<Map<number, number[]>>(new Map());
@@ -220,13 +221,15 @@ export function useCollaborativeStructuredAnswer(
   );
 
   useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
-    enabled: synced && !!onAutoSave,
+    enabled: synced && !documentReadOnly && !!onAutoSave,
     skipInitial: true,
     resetKey: doc,
     beforeDisconnect,
   });
 
   return {
+    doc,
+    documentReadOnly,
     selections,
     freeTexts,
     setSelection,

@@ -1,3 +1,6 @@
+import { useCollaborativeReviewFeedback } from '@/hooks/useCollaborativeReviewFeedback';
+import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
+import { StagePermissionNotice } from './StagePermissionNotice';
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -43,13 +46,22 @@ export interface GateCardProps {
 
 export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
   const navigate = useNavigate();
-  const { readOnly } = useSpacePermissions();
+  const { readOnly: spaceReadOnly, role } = useSpacePermissions();
   const {
+    gateAccess,
     stageNameOf: gateStageNameOf,
     detail,
     openArtifactPreview,
     openItemPreview,
   } = useIntent();
+  const permission = gateAccess(gate);
+  const readOnly = spaceReadOnly || !permission.access?.decide;
+  const cannotEdit = spaceReadOnly || !permission.access?.edit;
+  const optionDisabled = (option: string) =>
+    ['override-and-approve', 'grant-autonomy', 'autonomous'].includes(option)
+      ? role !== 'owner'
+      : readOnly;
+  const notice = <StagePermissionNotice {...permission} />;
   // Shared graph cache: lets references such as FR2.4 or dec-session-tokens in a question
   // link to the matching artifact or derived-item preview.
   const { derivedItems } = useIntentGraph(projectId, intentId);
@@ -60,7 +72,17 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
   // Free-text feedback for engine gates offering 'request-changes' (skeleton /
   // batch revision loops): sent as { decision, feedback } so the engine
   // re-runs the increment with it and re-asks.
-  const [feedback, setFeedback] = useState('');
+  const { feedback, getFeedback, setFeedback, feedbackText, awareness, synced, documentReadOnly } =
+    useCollaborativeReviewFeedback({
+      projectId,
+      intentId,
+      humanTaskId: gate.humanTaskId,
+      userName,
+      enabled:
+        gate.status === 'pending' &&
+        Array.isArray(gate.options) &&
+        gate.options.some((opt) => typeof opt === 'string' && /^request-changes/i.test(opt)),
+    });
   const question = useMemo<Question | null>(() => {
     let parsed: Question['questions'];
     try {
@@ -159,12 +181,13 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
     return (
       <Card>
         <CardContent className="space-y-2 py-3">
+          {notice}
           <p className="text-sm font-medium">{gate.prompt || 'Review verdict required'}</p>
           <div className="flex flex-wrap gap-2">
             {options.length > 0 ? (
               options.map((opt) => (
                 <Button
-                  disabled={readOnly}
+                  disabled={optionDisabled(opt)}
                   key={opt}
                   size="sm"
                   variant="outline"
@@ -222,6 +245,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
     return (
       <Card>
         <CardContent className="space-y-2 py-3">
+          {notice}
           {gate.unitSlug && (
             <Badge variant="outline" className="px-1.5 py-0 text-[9px] font-normal">
               unit {gate.unitSlug}
@@ -242,11 +266,13 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               >
                 Request-changes feedback (optional)
               </Label>
-              <Textarea
-                disabled={readOnly}
+              <CollaborativeTextarea
+                yText={feedbackText}
+                awareness={awareness}
+                disabled={cannotEdit || documentReadOnly || !synced}
                 id={`gate-feedback-${gate.humanTaskId}`}
                 value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
+                onChange={setFeedback}
                 placeholder="What should change before you can approve? Sent with 'request-changes' — the engine revises the increment with this feedback and asks again."
                 rows={2}
                 className="text-xs"
@@ -257,7 +283,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             {options.length > 0 ? (
               options.map((opt) => (
                 <Button
-                  disabled={readOnly}
+                  disabled={optionDisabled(opt)}
                   key={opt}
                   size="sm"
                   variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
@@ -265,8 +291,8 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                     onAnswer(gate, {
                       answer: {
                         decision: opt,
-                        ...(/^request-changes/i.test(opt) && feedback.trim()
-                          ? { feedback: feedback.trim() }
+                        ...(/^request-changes/i.test(opt) && getFeedback().trim()
+                          ? { feedback: getFeedback().trim() }
                           : {}),
                       },
                       status: engineGateStatusFor(opt),
@@ -293,7 +319,10 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
 
   return (
     <div>
+      {notice}
       <QuestionEditor
+        canEdit={!cannotEdit}
+        canSubmit={!readOnly}
         question={question}
         references={references}
         scope={{ kind: 'intent', id: intentId, projectId }}

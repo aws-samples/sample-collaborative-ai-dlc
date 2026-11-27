@@ -302,6 +302,7 @@ export interface McpVerifyResponse {
 }
 
 export interface AgentSettingsUpdate {
+  enforceStageRoles?: boolean;
   reviewId?: string;
   /** New bearer token value. Pass empty string to clear. Omit to leave unchanged. */
   bedrockBearerToken?: string;
@@ -352,6 +353,9 @@ export const agentsService = {
 
   // Agent settings — Bedrock bearer token, Kiro API key + default CLI models
   // (SSM-backed)
+  getStageRoleEnforcement: () =>
+    api.get<{ enforceStageRoles: boolean }>('/agents/settings?section=stageRoles'),
+
   async getSettings(): Promise<AgentSettings> {
     return api.get('/agents/settings');
   },

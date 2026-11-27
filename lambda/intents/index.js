@@ -1,3 +1,4 @@
+import { readSpaceStageRoleEnforcement } from '../shared/stage-role-enforcement.js';
 import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
 import { validateSparseCheckout } from '../shared/sparse-checkout.js';
@@ -83,7 +84,7 @@ import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { fetchMembershipRole } from '../shared/space-membership.js';
-import { signRealtimeToken } from '../shared/realtime-token.js';
+import { parseStageDocument, signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
 import { validateMcpServers, validateMcpServersJson } from '../shared/mcp-validator.js';
@@ -99,6 +100,12 @@ import {
   listMergedBlocks,
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
+import {
+  isSectionGate,
+  sectionGateRoleAccess,
+  sectionGateStageIds,
+} from '../shared/stage-responsibilities.js';
+import { mayActOnStages } from '../shared/intent-stage-permissions.js';
 import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import {
@@ -1165,11 +1172,13 @@ const fetchPullRequests = async (g, intentId) => {
   }));
 };
 
+const fetchArtifactRow = async (g, intentId, artifactId) =>
+  artifactRowFromEntries(await readIntentArtifactEntries(g, intentId), intentId, artifactId);
+
 // One artifact by id, scoped to the intent (agent-chosen artifact ids are only
 // unique within an intent — a bare id match could bind to a foreign intent's
 // same-id vertex). Compact shape for the edit routes.
-const fetchArtifactRow = async (g, intentId, artifactId) => {
-  const rows = await readIntentArtifactEntries(g, intentId);
+const artifactRowFromEntries = (rows, intentId, artifactId) => {
   const logicalKeys = new Set(
     rows
       .filter((row) => row.id === artifactId || artifactAliases(row).includes(artifactId))
@@ -1182,6 +1191,7 @@ const fetchArtifactRow = async (g, intentId, artifactId) => {
   return {
     id: row.id,
     vertexId: row.vertexId,
+    stageInstanceId: row.created_by_stage_instance_id ?? null,
     artifactType: row.artifact_type ?? null,
     title: row.title ?? null,
     supersededAt: row.superseded_at ?? null,
@@ -1882,6 +1892,122 @@ const intentMethodology = createIntentMethodologyLoader({
   bucket: ARTIFACTS_BUCKET,
 });
 
+const enforceStageRoles = async (projectId) =>
+  (await readSpaceStageRoleEnforcement(ddb, projectId)).enforceStageRoles;
+
+const stageForbidden = () =>
+  Object.assign(new Error('You do not have permission for this stage.'), {
+    code: 'STAGE_PERMISSION_DENIED',
+  });
+
+const requireStageIds = async (event, meta, stageIds) => {
+  if (
+    !(await mayActOnStages({
+      ddb,
+      s3,
+      meta,
+      stageIds,
+      userId: getResponder(event).sub,
+      action: 'decide',
+    }))
+  )
+    throw stageForbidden();
+};
+
+const requireStageDecision = async (event, meta, intentId, stageInstances) => {
+  const stages = await Promise.all(
+    [...new Set(stageInstances)].map((id) =>
+      id ? store.getStage(intentId, id, { consistentRead: true }) : null,
+    ),
+  );
+  await requireStageIds(
+    event,
+    meta,
+    stages.map((stage) => stage?.stageId),
+  );
+};
+
+const requireArtifactStageDecision = async (event, meta, intentId, artifact) => {
+  if (await enforceStageRoles(meta.projectId))
+    await requireStageDecision(event, meta, intentId, [artifact.stageInstanceId]);
+};
+
+const mayActOnGate = async ({ meta, intentId, gate, userId, role, action }) => {
+  if (!spacePermissions(role).write) return false;
+  if (!(await enforceStageRoles(meta.projectId))) return true;
+  let stageIds;
+  if (isSectionGate(gate)) {
+    const roleAccess = sectionGateRoleAccess(role);
+    if (roleAccess !== undefined) return roleAccess;
+    const plan = await intentMethodology.loadPlan(meta);
+    if (!plan.valid) return false;
+    const unitPlan = await store.getUnitPlan(intentId, { consistentRead: true });
+    stageIds = sectionGateStageIds(gate, plan.plan.stages, unitPlan);
+  } else {
+    const stage =
+      gate.stageInstanceId &&
+      (await store.getStage(intentId, gate.stageInstanceId, { consistentRead: true }));
+    stageIds = [stage?.stageId];
+  }
+  return mayActOnStages({ ddb, s3, meta, stageIds, userId, action, membershipRole: role });
+};
+
+// Internal Yjs invocation: the service supplies the verified subject, token scope and room name.
+const stageDocumentPermissions = async (g, { sub, scope, docName }) => {
+  const denied = { read: false, write: false, manage: false };
+  const doc = parseStageDocument(docName);
+  if (!doc?.target || scope !== `intent:${doc.intentId}` || !sub) return denied;
+  const { kind, intentId, target } = doc;
+  const meta = await store.getExecution(intentId, { consistentRead: true });
+  if (!meta) return denied;
+  const role = await fetchMembershipRole(g, meta.projectId, sub);
+  const permissions = spacePermissions(role);
+  if (!permissions.read) return denied;
+  const access = { ...permissions, spaceId: meta.projectId, write: false };
+  let stageInstance;
+  if (kind === 'artifact') {
+    const epochMatch = /^(.+)-epoch-(legacy|[\da-f-]{36})$/i.exec(target);
+    if (!epochMatch) return denied;
+    const [, artifactId, epoch] = epochMatch;
+    const artifact = await fetchArtifactRow(g, intentId, artifactId);
+    if (
+      !artifact ||
+      artifact.id !== artifactId ||
+      (artifact.collaborationEpoch ?? 'legacy') !== epoch
+    )
+      return denied;
+    if (
+      artifact.supersededAt ||
+      editBlockReason({ meta, quorumEdits: await store.listQuorumEdits(intentId) })
+    )
+      return access;
+    stageInstance = artifact.stageInstanceId;
+  } else {
+    const gate = await store.getHumanTask(intentId, target, { consistentRead: true });
+    if (!gate) return denied;
+    if (gate.status !== 'pending') return access;
+    access.write =
+      permissions.write &&
+      (await mayActOnGate({ meta, intentId, gate, userId: sub, role, action: 'edit' }));
+    return access;
+  }
+  if (!permissions.write) return access;
+  if (!(await enforceStageRoles(meta.projectId))) return { ...access, write: true };
+  const stage = stageInstance
+    ? await store.getStage(intentId, stageInstance, { consistentRead: true })
+    : null;
+  access.write = await mayActOnStages({
+    ddb,
+    s3,
+    meta,
+    stageIds: [stage?.stageId],
+    userId: sub,
+    action: 'decide',
+    membershipRole: role,
+  });
+  return access;
+};
+
 const methodologyRefsMatch = (planResult, expectedRef) => {
   const refs = planResult?.methodologySourceRefs ?? [];
   return refs.length === 1 && refs[0] === expectedRef;
@@ -1980,6 +2106,23 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
+const authorizeUnitFeedback = async (event, meta, sectionIndex, unitSlug, response) => {
+  if (!(await enforceStageRoles(meta.projectId))) return;
+  const plan = await intentMethodology.loadPlan(meta);
+  if (!plan.valid) return response(409, { error: 'The pinned workflow plan is unavailable' });
+  const namespace = plan.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+  // The unit addresses comments in its last successfully completed stage.
+  for (const stage of plan.plan.stages.toReversed()) {
+    if (stage.parallelSection !== sectionIndex) continue;
+    const id = planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex);
+    const row = await store.getStage(meta.executionId, id, { consistentRead: true });
+    if (row?.state !== 'SUCCEEDED') continue;
+    await requireStageIds(event, meta, [stage.stageId]);
+    return;
+  }
+  return response(409, { error: 'No completed stage can address this feedback' });
+};
+
 // Authenticated unit-review selection. Provider comments are data only:
 // no webhook/comment can launch an agent. GET refreshes selectable
 // comments; POST persists a replay-safe batch that the durable lane claims.
@@ -2028,6 +2171,10 @@ const handleUnitReviewFeedback = async ({
   );
   if (prs.length === 0) {
     return response(409, { error: 'The unit lane has no review pull requests' });
+  }
+  if (httpMethod === 'POST') {
+    const denied = await authorizeUnitFeedback(event, meta, sectionIndex, unitSlug, response);
+    if (denied) return denied;
   }
   const fetched = [];
   for (const pr of prs) {
@@ -2594,6 +2741,7 @@ const handleArtifactContentUpdate = async ({
       code: 'artifact_replaced',
     });
   }
+  await requireArtifactStageDecision(event, records.meta, intentId, artifact);
   const htmlRefusal = htmlArtifactRefusal(artifact.artifactType, data.content);
   if (htmlRefusal) return response(400, { error: htmlRefusal, code: 'html_not_allowed' });
   if (
@@ -2777,6 +2925,7 @@ const handleArtifactVerify = async ({
   }
   const artifact = await fetchArtifactRow(g, intentId, artifactId);
   if (!artifact) return response(404, { error: 'Artifact not found' });
+  await requireArtifactStageDecision(event, meta, intentId, artifact);
   const responder = getResponder(event);
   const result = await verifyArtifact({
     g,
@@ -2847,6 +2996,7 @@ const handleArtifactQuorumEdit = async ({
   if (artifact.supersededAt) {
     return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
   }
+  await requireArtifactStageDecision(event, records.meta, intentId, artifact);
   if (!ORCHESTRATOR_FN()) {
     return response(500, { error: 'V2_ORCHESTRATOR_FUNCTION not configured' });
   }
@@ -2906,7 +3056,15 @@ const handleArtifactQuorumEdit = async ({
 // artifacts. CAS on AWAITING_APPROVAL (a double decision loses), then the
 // suspended durable callback is completed — the same resume-by-callback
 // pattern as gate answers.
-const handleQuorumEditDecision = async ({ event, body, projectId, intentId, editId, response }) => {
+const handleQuorumEditDecision = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  editId,
+  g,
+  response,
+}) => {
   const data = body ? JSON.parse(body) : {};
   const decision =
     data.decision === 'approve' ? 'approve' : data.decision === 'reject' ? 'reject' : null;
@@ -2933,6 +3091,20 @@ const handleQuorumEditDecision = async ({ event, body, projectId, intentId, edit
         ? data.approvedArtifactIds.filter((id) => planIdSet.has(id))
         : planIds
       : [];
+  if (await enforceStageRoles(projectId)) {
+    const entries = await readIntentArtifactEntries(g, intentId);
+    const targets = [...new Set([edit.artifactId, ...approvedArtifactIds])].map((id) =>
+      artifactRowFromEntries(entries, intentId, id),
+    );
+    if (targets.some((artifact) => !artifact))
+      return response(404, { error: 'A Quorum document was not found in this intent' });
+    await requireStageDecision(
+      event,
+      meta,
+      intentId,
+      targets.map((artifact) => artifact?.stageInstanceId),
+    );
+  }
   const updated = await store.updateQuorumEdit({
     executionId: intentId,
     editId,
@@ -2976,7 +3148,16 @@ const handleQuorumEditDecision = async ({ event, body, projectId, intentId, edit
 };
 
 // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
-const handleGateAnswer = async ({ event, body, projectId, intentId, humanTaskId, g, response }) => {
+const handleGateAnswer = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  humanTaskId,
+  g,
+  role,
+  response,
+}) => {
   const data = body ? JSON.parse(body) : {};
   const gate = await store.getHumanTask(intentId, humanTaskId);
   if (!gate) return response(404, { error: 'Gate not found' });
@@ -3063,6 +3244,39 @@ const handleGateAnswer = async ({ event, body, projectId, intentId, humanTaskId,
     }
     data.answer = { ...data.answer, reason };
   }
+  const grantsSectionAutonomy =
+    isSectionGate(gate) &&
+    gate.kind === 'approval' &&
+    Array.isArray(gate.options) &&
+    gate.options.includes('autonomous') &&
+    parseChoice(data.answer, CONSTRUCTION_AUTONOMY_MODES) === 'autonomous';
+  // Use the choice Collab actually applies. A secondary answer field must not
+  // turn an ordinary stage decision into an Owner-only workflow option.
+  const appliedChoice = offered && parseChoice(data.answer, offered);
+  const ownerDecision =
+    grantsSectionAutonomy ||
+    appliedChoice === 'override-and-approve' ||
+    appliedChoice === GRANT_AUTONOMY_OPTION;
+  const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+  if (
+    overrideChosen &&
+    (!Array.isArray(gate.options) || !gate.options.includes('override-and-approve'))
+  )
+    return response(400, { error: 'This gate did not offer that option' });
+  if (ownerDecision && role !== 'owner') throw stageForbidden();
+  if (!ownerDecision || steeringMessage) {
+    if (
+      !(await mayActOnGate({
+        meta,
+        intentId,
+        gate,
+        userId: getResponder(event).sub,
+        role,
+        action: 'decide',
+      }))
+    )
+      throw stageForbidden();
+  }
   // A live Quorum edit is mutating this intent's artifacts; answering the
   // gate would resume the parked stage RIGHT INTO those writes. The run is
   // already parked — waiting for the edit to finish costs nothing (mirror
@@ -3081,7 +3295,6 @@ const handleGateAnswer = async ({ event, body, projectId, intentId, humanTaskId,
   // than one pending gate; answer the one addressed by the URL, never blindly
   // META.pendingHumanTaskId.
   const responder = getResponder(event);
-  const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
   const answerInput = {
     executionId: intentId,
     humanTaskId,
@@ -3228,7 +3441,7 @@ const handleGateAnswer = async ({ event, body, projectId, intentId, humanTaskId,
 // a retried request is harmless. An expired callback runs the same repair the
 // answer path runs, which lands the intent in FAILED — recoverable by the
 // existing rewind API — instead of leaving it parked forever.
-const handleResumeIntent = async ({ event, projectId, intentId, response }) => {
+const handleResumeIntent = async ({ event, projectId, intentId, response, role }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
@@ -3260,9 +3473,18 @@ const handleResumeIntent = async ({ event, projectId, intentId, response }) => {
         callbackId: gate.callbackId,
       }) ?? Promise.resolve()
     ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
+  const allowed = [];
+  for (const gate of owed) {
+    if (
+      role === 'owner' ||
+      (await mayActOnGate({ meta, intentId, gate, userId: responder.sub, role, action: 'decide' }))
+    )
+      allowed.push(gate);
+  }
+  if (owed.length && !allowed.length) throw stageForbidden();
   let resumed = 0;
   let retryable = null;
-  for (const gate of owed) {
+  for (const gate of allowed) {
     try {
       await resumeDurableCallback(gate.callbackId, gate.answer ?? null);
     } catch (err) {
@@ -3313,7 +3535,9 @@ const handleResumeIntent = async ({ event, projectId, intentId, response }) => {
   // The marker is cleared once nothing it could stand for is still owed;
   // the conditional write keeps a marker a concurrent answer just set.
   const current =
-    marker && !retryable
+    marker &&
+    !retryable &&
+    !owed.some((gate) => gate.humanTaskId === marker.humanTaskId && !allowed.includes(gate))
       ? await store
           .updateExecution({
             executionId: intentId,
@@ -3341,7 +3565,16 @@ const handleResumeIntent = async ({ event, projectId, intentId, response }) => {
 // Correct an already-given answer (docs/v2-steering.md). The original answer
 // is immutable — the correction is a STEER row delivered at the next
 // deterministic injection point (gate resume or fresh stage start).
-const handleGateRevise = async ({ event, body, projectId, intentId, humanTaskId, g, response }) => {
+const handleGateRevise = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  humanTaskId,
+  role,
+  g,
+  response,
+}) => {
   const data = body ? JSON.parse(body) : {};
   const message = typeof data.message === 'string' ? data.message.trim() : '';
   if (!message) return response(400, { error: 'message is required' });
@@ -3357,6 +3590,17 @@ const handleGateRevise = async ({ event, body, projectId, intentId, humanTaskId,
   if (['SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
     return response(409, { error: `Intent is ${meta.status}; nothing left to steer` });
   }
+  if (
+    !(await mayActOnGate({
+      meta,
+      intentId,
+      gate,
+      userId: getResponder(event).sub,
+      role,
+      action: 'decide',
+    }))
+  )
+    throw stageForbidden();
   const responder = getResponder(event);
   const steer = await store.createSteering({
     executionId: intentId,
@@ -3403,7 +3647,7 @@ const validationIntentDenied = (event, meta, response) => {
   return denied ? response(denied.statusCode, { error: denied.error, code: denied.code }) : null;
 };
 
-const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response }) => {
+const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response, role }) => {
   const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
@@ -3498,6 +3742,14 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
     }
     skipOverride = normalized; // null clears, array replaces
   }
+  if (
+    meta.status === 'FAILED' &&
+    meta.currentStage &&
+    role !== 'owner' &&
+    (await enforceStageRoles(projectId))
+  ) {
+    await requireStageIds(event, meta, [meta.currentStage]);
+  }
   if (skipOverride !== undefined || gridOverride !== undefined) {
     const effectiveGrid = gridOverride !== undefined ? gridOverride : meta.composedGrid;
     // The grid absorbs redundant overlay skips (composed-grid.js) — the
@@ -3508,17 +3760,17 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
       effectiveGrid,
     );
     if (effectiveGrid) skipOverride = effectiveSkips;
-    const planCheck = await intentMethodology.loadPlan(meta, {
+    const startPlan = await intentMethodology.loadPlan(meta, {
       skipStageIds: effectiveSkips ?? null,
       composedGrid: effectiveGrid ?? null,
     });
-    if (!planCheck.valid) {
+    if (!startPlan.valid) {
       return response(400, {
         error:
           gridOverride !== undefined
             ? `The composed stage grid is not runnable for workflow "${meta.workflowId}"`
             : `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
-        errors: planCheck.errors ?? [],
+        errors: startPlan.errors ?? [],
       });
     }
   }
@@ -3640,7 +3892,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
 // pending gate, wakes the suspended orchestrator with a cancel sentinel
 // (it sees the superseded gate and exits without touching META), then
 // flips META → CANCELLED.
-const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
+const handleCancelIntent = async ({ event, projectId, intentId, response, role }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
@@ -3648,6 +3900,22 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
   const CANCELLABLE = new Set(['WAITING', 'CREATED', 'FAILED']);
   if (!CANCELLABLE.has(meta.status)) {
     return response(409, { error: `Intent is ${meta.status}, cannot cancel` });
+  }
+  if (role !== 'owner' && (await enforceStageRoles(projectId))) {
+    const records = await store.getExecutionRecords(intentId, {
+      includeOutputs: false,
+      consistentRead: true,
+    });
+    const active = records.stages.filter((r) => ['RUNNING', 'WAITING_FOR_HUMAN'].includes(r.state));
+    let ids = active.map((r) => r.stageId);
+    if (!ids.length)
+      ids = [
+        meta.currentStage ??
+          (await intentMethodology.loadPlan(meta)).plan?.stages.find(
+            (stage) => !stage.permissions?.automatic,
+          )?.stageId,
+      ];
+    await requireStageIds(event, meta, ids);
   }
   const responder = getResponder(event);
   const retirementRefused = await retireExecutionGrantsOrRefuse(intentId, 'cancelled', response, {
@@ -5507,7 +5775,7 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
 // supersedes the artifacts those stages produced (kept for lineage), records
 // the guidance as a rewind STEER row (injected into the restarted stage's
 // prompt), and relaunches the orchestrator at that stage.
-const handleRewindIntent = async ({ event, body, projectId, intentId, g, response }) => {
+const handleRewindIntent = async ({ event, body, projectId, intentId, g, response, role }) => {
   const data = body ? JSON.parse(body) : {};
   const requestedFromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
   // Guidance is OPTIONAL: with guidance this is a steering rewind (a
@@ -5603,6 +5871,8 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
       }
     }
   }
+  if (role !== 'owner' && (await enforceStageRoles(projectId)))
+    await requireStageIds(event, meta, [fromStageId]);
   const resetStages = stages.slice(idx);
   // Per-unit instance expansion (docs/v2-parallel.md WP4): a `forEach:
   // unit-of-work` stage has one STAGE row (and one artifact provenance id)
@@ -5905,7 +6175,7 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
 //   - unit-lane stages are frozen once the unit plan is promoted (lanes
 //     are reshaped at the fan-out approval's skip matrix);
 //   - the new grid must resolve STRICTLY (no starved required inputs).
-const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, response }) => {
+const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, response, role }) => {
   const data = body ? JSON.parse(body) : {};
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -6025,6 +6295,8 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
       error: 'Nothing left to run under the recomposed grid — every remaining stage is done',
     });
   }
+  if (role !== 'owner' && (await enforceStageRoles(projectId)))
+    await requireStageIds(event, meta, [fromStage.stageId]);
   const responder = getResponder(event);
   const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
   if (sourceControlBlocked) return sourceControlBlocked;
@@ -6686,7 +6958,7 @@ const resolveIntentRelease = async ({ requestedReleaseId, forAdminTest }) => {
   }
 };
 
-const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) => {
+const handleCreateIntent = async ({ event, body, projectId, sub, g, response, role }) => {
   // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
   const data = body ? JSON.parse(body) : {};
   const releaseTest = validateAdminReleaseTest(event, data);
@@ -6778,6 +7050,7 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
   // has, so it is stored as no grant and accepted on any release.
   const requestedAutonomyMode =
     data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
+  if (requestedAutonomyMode && role !== 'owner') throw stageForbidden();
   // A null id follows the stable channel; if pinning is off, the legacy path
   // remains unchanged and no registry lookup occurs.
   const releaseSelection = await resolveIntentRelease({
@@ -7470,6 +7743,8 @@ export const handler = async (event, context) => {
       );
     }
 
+    if (event.action === 'realtime-permissions' && !event.requestContext && !event.httpMethod)
+      return await stageDocumentPermissions(g, event);
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
     // Token issuance is a read capability; every other non-GET route mutates
@@ -7589,27 +7864,62 @@ export const handler = async (event, context) => {
     }
 
     if (intentId && editId && httpMethod === 'POST' && path?.endsWith('/decision')) {
-      return await handleQuorumEditDecision({ event, body, projectId, intentId, editId, response });
+      return await handleQuorumEditDecision({
+        event,
+        body,
+        projectId,
+        intentId,
+        editId,
+        g,
+        response,
+      });
     }
 
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
-      return await handleGateAnswer({ event, body, projectId, intentId, humanTaskId, g, response });
+      return await handleGateAnswer({
+        event,
+        body,
+        projectId,
+        intentId,
+        humanTaskId,
+        g,
+        role: auth.role,
+        response,
+      });
     }
 
     if (intentId && !humanTaskId && httpMethod === 'POST' && path?.endsWith('/resume')) {
-      return await handleResumeIntent({ event, projectId, intentId, response });
+      return await handleResumeIntent({ event, projectId, intentId, response, role: auth.role });
     }
 
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/revise')) {
-      return await handleGateRevise({ event, body, projectId, intentId, humanTaskId, g, response });
+      return await handleGateRevise({
+        event,
+        body,
+        projectId,
+        intentId,
+        humanTaskId,
+        role: auth.role,
+        g,
+        response,
+      });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/start')) {
-      return await handleStartIntent({ event, body, projectId, intentId, sub, g, response });
+      return await handleStartIntent({
+        event,
+        body,
+        projectId,
+        intentId,
+        sub,
+        g,
+        response,
+        role: auth.role,
+      });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/cancel')) {
-      return await handleCancelIntent({ event, projectId, intentId, response });
+      return await handleCancelIntent({ event, projectId, intentId, response, role: auth.role });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/compose-report-upload')) {
@@ -7676,11 +7986,27 @@ export const handler = async (event, context) => {
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/rewind')) {
-      return await handleRewindIntent({ event, body, projectId, intentId, g, response });
+      return await handleRewindIntent({
+        event,
+        body,
+        projectId,
+        intentId,
+        g,
+        response,
+        role: auth.role,
+      });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/recompose')) {
-      return await handleRecomposeIntent({ event, body, projectId, intentId, g, response });
+      return await handleRecomposeIntent({
+        event,
+        body,
+        projectId,
+        intentId,
+        g,
+        response,
+        role: auth.role,
+      });
     }
 
     if (intentId && httpMethod === 'GET') {
@@ -7711,11 +8037,21 @@ export const handler = async (event, context) => {
     }
 
     if (httpMethod === 'POST') {
-      return await handleCreateIntent({ event, body, projectId, sub, g, response });
+      return await handleCreateIntent({
+        event,
+        body,
+        projectId,
+        sub,
+        g,
+        response,
+        role: auth.role,
+      });
     }
 
     return response(405, { error: 'Method not allowed' });
   } catch (error) {
+    if (error?.code === 'STAGE_PERMISSION_DENIED')
+      return response(403, { error: error.message, code: error.code });
     if (error?.code === 'YJS_CLEANUP_PENDING')
       return response(409, {
         error: 'Collaboration cleanup is in progress. Retry deletion shortly.',

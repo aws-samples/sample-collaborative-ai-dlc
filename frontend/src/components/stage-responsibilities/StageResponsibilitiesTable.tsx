@@ -52,6 +52,16 @@ function MissingRoles({ roles, group, empty }: { roles: string[]; group: string;
   );
 }
 
+export function StageRoleEnforcementOffNotice() {
+  return (
+    <p className="text-sm text-muted-foreground">
+      <strong>Business role enforcement is off.</strong> Space Owners and Members can answer and
+      approve stage questions regardless of their assigned business roles. A Space Owner can turn
+      enforcement on in Space Settings → Members.
+    </p>
+  );
+}
+
 export function StageResponsibilitiesTable({
   projectId,
   intentId,
@@ -124,16 +134,13 @@ export function StageResponsibilitiesTable({
   );
   return (
     <div className="space-y-3">
-      {responsibilities && (
+      {intentId && responsibilities && (
         <p className="text-sm text-muted-foreground">
           {responsibilities.workflowId} · Version {responsibilities.workflowVersion}
         </p>
       )}
-      {responsibilities?.previewOnly && (
-        <p className="text-sm text-muted-foreground">
-          Stage restrictions are not yet enabled. Existing Viewer access and workflow gates still
-          apply.
-        </p>
+      {intentId && responsibilities?.enforceStageRoles === false && (
+        <StageRoleEnforcementOffNotice />
       )}
       {error && responsibilities && (
         <p role="alert" className="text-sm text-destructive">

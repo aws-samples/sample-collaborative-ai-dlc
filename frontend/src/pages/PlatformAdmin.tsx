@@ -20,7 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { DeploymentInfoCard } from '@/components/admin/DeploymentInfoCard';
 import { UserManagementCard } from '@/components/admin/UserManagementCard';
-import { SsoRoleMappingsCard } from '@/components/admin/SsoRoleMappingsCard';
+import { BusinessRolesCard } from '@/components/admin/BusinessRolesCard';
 import { AgentCredentialsCard } from '@/components/admin/AgentCredentialsCard';
 import { AgentClisCard } from '@/components/admin/AgentClisCard';
 import { AgentSandboxingCard } from '@/components/admin/AgentSandboxingCard';
@@ -104,7 +104,7 @@ export default function PlatformAdmin() {
 
           <TabsContent value="users" className="mt-5 space-y-6">
             <UserManagementCard />
-            <SsoRoleMappingsCard />
+            <BusinessRolesCard />
           </TabsContent>
 
           <TabsContent value="agents" className="mt-5">

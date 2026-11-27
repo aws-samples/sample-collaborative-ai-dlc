@@ -60,7 +60,7 @@ both platform and business-role mappings use those values.
 
 Business roles (Developer, Architect, QA / Tester, …) describe delivery
 responsibilities in spaces. Platform Admins map IdP values to business roles in
-**Platform Admin → Users → Business role mappings**. You can also define a
+**Platform Admin → Users → Business roles → SSO mappings**. You can also define a
 baseline in each provider's Terraform `role_mappings`:
 
 ```hcl
@@ -102,7 +102,9 @@ Changing or removing a provider's source attribute (`claims.roles`) invalidates
 the recorded values until each member signs in again; mapping changes for the
 same attribute apply immediately.
 
-Business roles grant no sign-in, membership, administration, or editing rights.
+Business roles apply within an existing space membership. When stage role enforcement is on in a space,
+these roles determine who can edit and decide on a stage. Each space follows the platform default
+until a Space Owner changes **Enforce business roles** in **Space Settings → Members**.
 The `platform-admin` mapping and `requiredClaimValues` access gate remain in the
 provider file.
 

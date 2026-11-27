@@ -46,6 +46,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     focusOutput,
     openArtifactPreview,
     rewindIntent,
+    mayControlStage,
   } = useIntent();
   useTick(row.state === 'RUNNING' || row.state === 'WAITING_FOR_HUMAN');
 
@@ -57,6 +58,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   const [rewinding, setRewinding] = useState(false);
   const [rewindError, setRewindError] = useState<string | null>(null);
   const canRewind =
+    mayControlStage(row.stageId) &&
     row.planned &&
     REWINDABLE_STATUSES.has(detail?.intent.status ?? '') &&
     row.state !== 'PENDING' &&

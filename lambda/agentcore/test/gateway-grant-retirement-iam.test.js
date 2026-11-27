@@ -161,7 +161,12 @@ describe('gateway grant retirement IAM', () => {
     // The writers get the table under the same flag that creates it.
     for (const fn of ['intents_lambda', 'projects_lambda']) {
       const moduleBody = lambdas.match(new RegExp(`^module "${fn}" \\{([\\s\\S]*?)^\\}`, 'm'))?.[1];
-      expect(moduleBody).toMatch(
+      // An environment kept in a local (to check its size) is read from there.
+      const local = moduleBody?.match(/environment_variables = local\.(\w+)/)?.[1];
+      const environment = local
+        ? lambdas.match(new RegExp(`^locals \\{\\s*${local} = ([\\s\\S]*?)^\\}`, 'm'))?.[1]
+        : moduleBody;
+      expect(environment).toMatch(
         new RegExp(
           `var\\.enable_mcp_gateway \\? \\{\\s*${env}\\s*= var\\.gateway_grant_retirement_table_name`,
         ),

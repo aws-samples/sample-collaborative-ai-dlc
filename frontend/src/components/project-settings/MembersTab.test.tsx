@@ -11,6 +11,8 @@ const listBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberBusinessRoles = vi.hoisted(() => vi.fn());
 const updateMemberExcludedRoles = vi.hoisted(() => vi.fn());
 const getResponsibilities = vi.hoisted(() => vi.fn());
+const getEnforcement = vi.hoisted(() => vi.fn());
+const setEnforcement = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/stageResponsibilities', () => ({
   stageResponsibilitiesService: { get: getResponsibilities },
@@ -18,6 +20,8 @@ vi.mock('@/services/stageResponsibilities', () => ({
 
 vi.mock('@/services/projects', () => ({
   projectsService: {
+    getStageRoleEnforcement: getEnforcement,
+    setStageRoleEnforcement: setEnforcement,
     listMembers: (...args: unknown[]) => listMembers(...args),
     listAssignableUsers: (...args: unknown[]) => listAssignableUsers(...args),
     addMember: (...args: unknown[]) => addMember(...args),
@@ -32,6 +36,10 @@ vi.mock('@/services/projects', () => ({
 import { MembersTab } from './MembersTab';
 
 beforeEach(() => {
+  getEnforcement
+    .mockReset()
+    .mockResolvedValue({ platformDefault: true, override: null, enforceStageRoles: true });
+  setEnforcement.mockReset();
   getResponsibilities.mockReset().mockResolvedValue({
     previewOnly: true,
     workflowId: 'flow',
@@ -246,7 +254,7 @@ describe('space business roles', () => {
       screen.queryByRole('button', { name: 'Stage responsibilities' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByText('flow · Version 3')).toBeInTheDocument();
+    expect(screen.queryByText('flow · Version 3')).not.toBeInTheDocument();
   });
 
   it('lets an Owner add multiple roles, save chips, and clear assignments', async () => {
@@ -313,6 +321,32 @@ describe('space business roles', () => {
     expect(screen.getByText('Architect')).toBeInTheDocument();
   });
 
+  it('lets an Owner turn off the platform default for this space and restore inheritance', async () => {
+    setEnforcement
+      .mockResolvedValueOnce({ platformDefault: true, override: false, enforceStageRoles: false })
+      .mockResolvedValueOnce({ platformDefault: true, override: null, enforceStageRoles: true });
+    const user = userEvent.setup();
+    render(<MembersTab projectId="project-1" userRole="owner" />);
+    const toggle = await screen.findByRole('switch', { name: 'Enforce business roles' });
+    expect(toggle).toBeChecked();
+    expect(toggle).toHaveAccessibleDescription(
+      'Stage responsibilities determine who can edit and decide in this space',
+    );
+    await user.click(toggle);
+    expect(setEnforcement).toHaveBeenCalledWith('project-1', false);
+    await waitFor(() =>
+      expect(toggle).toHaveAccessibleDescription(
+        'Space Owners and Members can answer and approve stage questions',
+      ),
+    );
+    expect(screen.queryByText(/Space Settings → Members/)).not.toBeInTheDocument();
+    expect(toggle).not.toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Use platform default' }));
+    expect(setEnforcement).toHaveBeenCalledWith('project-1', null);
+    expect(toggle).toBeChecked();
+    expect(screen.queryByRole('button', { name: 'Use platform default' })).not.toBeInTheDocument();
+  });
+
   it('shows business-role chips to Members without edit controls or management rights', async () => {
     listMembers.mockResolvedValue([
       {
@@ -324,13 +358,14 @@ describe('space business roles', () => {
     render(<MembersTab projectId="project-1" userRole="member" />);
     expect(await screen.findByText('Product Owner / Product Manager')).toBeInTheDocument();
     expect(screen.getByText('Developer')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Enforce business roles' })).toBeDisabled();
     const icon = (text: string) => screen.getByText(text).querySelector('svg[aria-hidden="true"]');
     expect(icon('Product Owner / Product Manager')).toHaveClass('lucide-lightbulb');
     expect(icon('Developer')).toHaveClass('lucide-code-xml');
     expect(screen.queryByRole('button', { name: /Edit business roles/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add Member' })).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Business roles describe responsibilities for now/),
+      screen.getByText('Space Owners can manage business role assignments here.'),
     ).toBeInTheDocument();
   });
 

@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { requiredScopeForYjsDoc } from './realtime-token.js';
+import { requiredScopeForYjsDoc } from '../shared/realtime-token.js';
 
 export const isTransientTransactionCancellation = (error) => {
   if (error.name !== 'TransactionCanceledException') return false;

@@ -1,7 +1,7 @@
 output "agents_orchestrator_role_arn" {
   description = "ARN of the IAM role for the agents Lambda (most privileged: Neptune + DDB + SSM + AgentCore invoke). Consumed by the api module to wire the agents_lambda created in api/agents.tf."
   value       = aws_iam_role.agents_orchestrator.arn
-  depends_on  = [aws_iam_role_policy.agents_orchestrator]
+  depends_on  = [aws_iam_role_policy.agents_orchestrator, aws_iam_role_policy.stage_role_setting]
 }
 
 output "lambda_security_group_id" {
@@ -300,6 +300,10 @@ output "discussions_lambda_invoke_arn" {
 output "discussions_lambda_name" {
   description = "Name of the discussions Lambda"
   value       = module.discussions_lambda.lambda_function_name
+}
+
+output "intents_lambda_arn" {
+  value = module.intents_lambda.lambda_function_arn
 }
 
 output "intents_lambda_invoke_arn" {

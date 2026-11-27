@@ -502,7 +502,7 @@ test('deployment scripts enforce locked dependencies without install hooks', () 
   assert.match(frontendDeployment, /npm ci --ignore-scripts/);
 });
 
-test('Yjs image ships the canonical membership store and Cedar policy for its non-root runtime', () => {
+test('Yjs image ships its shared authorization modules and Cedar policy for its non-root runtime', () => {
   const dockerfile = readFileSync(yjsDockerfile, 'utf8');
   assert.match(
     dockerfile,
@@ -533,6 +533,7 @@ test('Yjs image ships the canonical membership store and Cedar policy for its no
   );
   assert.ok(files.has('shared/space-permissions.js'));
   assert.ok(files.has('shared/space-membership.js'));
+  assert.ok(files.has('shared/realtime-token.js'));
   assert.ok(dockerfile.indexOf('--chmod=0644 yjs-server/*.js') < dockerfile.indexOf('USER node'));
 });
 

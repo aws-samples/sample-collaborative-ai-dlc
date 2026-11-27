@@ -1,17 +1,44 @@
 import { createMembershipStore } from '../shared/space-membership.js';
+import { parseStageDocument } from '../shared/realtime-token.js';
 import { spacePermissions } from '../shared/space-permissions.js';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+
+const STAGE_PERMISSION_TTL_MS = 30_000;
+
+// Reuse this socket's stage decision from the start of the lookup, including room load time.
+export const createConnectionPermissionCheck = (lookup, target, permissions, checkedAt) => {
+  if (!parseStageDocument(target.docName)) return () => lookup(target);
+  let expiresAt = checkedAt + STAGE_PERMISSION_TTL_MS;
+  return async () => {
+    const now = Date.now();
+    if (!permissions || now >= expiresAt) {
+      permissions = await lookup(target);
+      expiresAt = now + STAGE_PERMISSION_TTL_MS;
+    }
+    return permissions;
+  };
+};
 
 export const createPermissionLookup = ({
   client = new LambdaClient({}),
   functionName = process.env.SPACE_PERMISSIONS_FUNCTION,
+  stageFunction = process.env.STAGE_PERMISSIONS_FUNCTION,
 } = {}) => {
   if (!functionName) throw new Error('SPACE_PERMISSIONS_FUNCTION is required');
-  return async ({ sub, scope }) => {
+  return async ({ sub, scope, docName }) => {
+    const stageDocument = parseStageDocument(docName);
+    if (stageDocument && !stageFunction) throw new Error('STAGE_PERMISSIONS_FUNCTION is required');
     const result = await client.send(
       new InvokeCommand({
-        FunctionName: functionName,
-        Payload: Buffer.from(JSON.stringify({ action: 'realtime-permissions', sub, scope })),
+        FunctionName: stageDocument ? stageFunction : functionName,
+        Payload: Buffer.from(
+          JSON.stringify({
+            action: 'realtime-permissions',
+            sub,
+            scope,
+            ...(stageDocument && { docName }),
+          }),
+        ),
       }),
       { abortSignal: AbortSignal.timeout(5000) },
     );
@@ -28,8 +55,7 @@ export const createPermissionLookup = ({
   };
 };
 
-// Resource existence and the immutable document-to-space binding were verified
-// at upgrade. Open documents need only the canonical, consistent membership read.
+// Non-stage documents need only the consistent membership read after upgrade.
 export const createMembershipLookup = ({
   accessTable = process.env.ACCESS_TABLE,
   store = createMembershipStore({ accessTable }),

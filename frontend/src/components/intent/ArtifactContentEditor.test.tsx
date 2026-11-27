@@ -6,7 +6,12 @@ const initContent = vi.fn();
 const reload = vi.fn();
 
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: () => ({ projectId: 'p1', intentId: 'i1', reload }),
+  useIntent: () => ({
+    projectId: 'p1',
+    intentId: 'i1',
+    reload,
+    stageAccess: () => ({ edit: true, decide: true }),
+  }),
 }));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'Ada' } }),

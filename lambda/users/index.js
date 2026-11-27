@@ -88,6 +88,7 @@ export const handler = async (event, context) => {
       return response(
         200,
         await getStageResponsibilities({
+          actorRole,
           event,
           g,
           ddb,

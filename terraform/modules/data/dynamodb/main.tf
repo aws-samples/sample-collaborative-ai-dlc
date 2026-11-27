@@ -1,4 +1,5 @@
 locals {
+  sessions_table_name = "${var.project_name}-sessions-${var.environment}"
   # Keep billing independent from the environment name. Capacity attributes set to
   # null are omitted by Terraform when PAY_PER_REQUEST is active.
   billing_mode   = "PAY_PER_REQUEST"
@@ -7,7 +8,8 @@ locals {
 }
 
 resource "aws_dynamodb_table" "sessions" {
-  name                        = "${var.project_name}-sessions-${var.environment}"
+  depends_on                  = [aws_dynamodb_table_item.stage_role_enforcement]
+  name                        = local.sessions_table_name
   billing_mode                = local.billing_mode
   hash_key                    = "sessionId"
   read_capacity               = local.read_capacity
@@ -440,6 +442,24 @@ resource "aws_dynamodb_table" "discussion_read_state" {
   }
 
   tags = var.tags
+}
+
+# Sessions exist on every supported release, including v1. Read their table name
+# before creating it so a new instance is recognizable even on a split plan/apply.
+data "aws_dynamodb_tables" "before_deployment" {}
+
+resource "aws_dynamodb_table_item" "stage_role_enforcement" {
+  table_name = aws_dynamodb_table.access.name
+  hash_key   = "pk"
+  range_key  = "sk"
+  item = jsonencode({
+    pk      = { S = "SETTINGS#STAGE_ROLES" }
+    sk      = { S = "CURRENT" }
+    enabled = { BOOL = !contains(data.aws_dynamodb_tables.before_deployment.names, local.sessions_table_name) }
+  })
+
+  # After initialization the platform admin owns the value.
+  lifecycle { ignore_changes = [item] }
 }
 
 # Current access and append-only permission history. Neither uses TTL.

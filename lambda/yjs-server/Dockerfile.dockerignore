@@ -8,5 +8,6 @@
 !shared/space-membership.js
 !shared/business-roles.js
 !shared/business-role-catalog.json
+!shared/realtime-token.js
 !shared/policies/
 !shared/policies/space.cedar

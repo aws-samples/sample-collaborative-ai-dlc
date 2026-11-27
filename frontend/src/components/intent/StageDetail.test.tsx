@@ -7,6 +7,7 @@ vi.mock('@/contexts/IntentContext', () => ({
     row.stageInstanceId ?? row.stageId,
   useIntent: () => ({
     detail: null,
+    mayControlStage: () => true,
     stageEdges: [],
     stageRows: [],
     gates: [],

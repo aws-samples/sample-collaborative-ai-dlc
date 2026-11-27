@@ -13,7 +13,16 @@ let detail: IntentDetail;
 
 vi.mock('@/contexts/IntentContext', () => ({
   useIntent: () => ({
-    detail,
+    stageAccess: (id: string | null) => ({ decide: id === 'si-1' }),
+    detail: {
+      ...detail,
+      artifacts: [
+        'target.md',
+        ...(detail.quorumEdits ?? []).flatMap(
+          (edit) => edit.plan?.items.map((item) => item.artifactId) ?? [],
+        ),
+      ].map((id) => ({ id, createdByStageInstanceId: 'si-1' })),
+    },
     projectId: 'project-1',
     intentId: 'intent-1',
     openArtifactPreview: mocks.openArtifactPreview,

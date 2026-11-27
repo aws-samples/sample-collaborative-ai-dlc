@@ -12,7 +12,7 @@ locals {
     source_control      = aws_iam_role.source_control.id
     intent_pin_lookup   = aws_iam_role.intent_pin_lookup.id
   }
-  sso_claim_readers = ["users"]
+  sso_claim_readers = ["users", "intents"]
   membership_writers = {
     projects = aws_iam_role.neptune_artifacts.id
     users    = aws_iam_role.users.id
@@ -43,6 +43,20 @@ resource "aws_iam_role_policy" "membership_read" {
         }
       }]
     )
+  })
+}
+
+resource "aws_iam_role_policy" "stage_role_setting" {
+  name = "update-stage-role-enforcement"
+  role = aws_iam_role.agents_orchestrator.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = ["dynamodb:PutItem"]
+      Resource  = var.access_table_arn
+      Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["SETTINGS#STAGE_ROLES"] } }
+    }]
   })
 }
 
@@ -86,6 +100,7 @@ locals {
   # SSO token trigger carries a subset of these variables and of the role config.
   sso_role_config_environments = {
     users               = local.users_environment
+    intents             = local.intents_environment
     cognito-users       = local.cognito_users_environment
     migrate-memberships = local.membership_migration_environment
   }
@@ -99,7 +114,7 @@ resource "terraform_data" "sso_role_config_size" {
       condition = alltrue([
         for environment in values(local.sso_role_config_environments) : length(jsonencode(environment)) <= 4096
       ])
-      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of the users, cognito-users, or migrate-memberships Lambda. Reduce provider mappings."
+      error_message = "The SSO role mappings exceed the 4 KB Lambda environment limit of the users, intents, cognito-users, or migrate-memberships Lambda. Reduce provider mappings."
     }
   }
 }

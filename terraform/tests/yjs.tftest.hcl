@@ -30,6 +30,7 @@ mock_provider "docker" {}
 variables {
   access_table_name              = "test-access"
   access_table_arn               = "arn:aws:dynamodb:us-east-1:123456789012:table/test-access"
+  stage_permissions_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:intents"
   space_permissions_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:projects"
   aws_sdk_ua_app_id              = "Collaborative_AI-DLC-test"
   project_name                   = "test"

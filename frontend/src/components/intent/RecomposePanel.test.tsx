@@ -46,6 +46,7 @@ const stageRow = (stageId: string, state: string): IntentStage =>
 const renderPanel = (over: Partial<Parameters<typeof RecomposePanel>[0]> = {}) =>
   render(
     <RecomposePanel
+      mayControlStage={() => true}
       open
       onOpenChange={vi.fn()}
       projectId="p1"
@@ -135,6 +136,7 @@ describe('RecomposePanel', () => {
     expect(compiled).not.toHaveBeenCalled();
     view.rerender(
       <RecomposePanel
+        mayControlStage={() => true}
         open
         onOpenChange={onOpenChange}
         projectId="p1"

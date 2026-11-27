@@ -7,6 +7,7 @@ import {
   PutParameterCommand,
 } from '@aws-sdk/client-ssm';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 const ssmMock = mockClient(SSMClient);
 const lambdaMock = mockClient(LambdaClient);
@@ -49,6 +50,46 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.unstubAllEnvs());
+
+describe('stage role enforcement', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  const get = (role) =>
+    handler({ ...event('GET', undefined, role), queryStringParameters: { section: 'stageRoles' } });
+  const put = (enabled, role) => handler(event('PUT', { enforceStageRoles: enabled }, role));
+  beforeEach(() => {
+    vi.stubEnv('ACCESS_TABLE', 'access-test');
+    ddb.reset();
+  });
+
+  it('allows only platform admins to read or change the switch', async () => {
+    expect((await get()).statusCode).toBe(403);
+    expect((await put(false)).statusCode).toBe(403);
+    expect((await put('false', 'platform-admin')).statusCode).toBe(400);
+    expect(ddb.calls()).toHaveLength(0);
+  });
+
+  it('reads back the saved value and requires an explicit false to relax permissions', async () => {
+    const key = { pk: 'SETTINGS#STAGE_ROLES', sk: 'CURRENT' };
+    let item;
+    ddb
+      .on(GetCommand, { TableName: 'access-test', Key: key, ConsistentRead: true })
+      .callsFake(() => ({ Item: item }));
+    ddb.on(PutCommand, { TableName: 'access-test' }).callsFake(({ Item }) => {
+      item = Item;
+      return {};
+    });
+    expect(JSON.parse((await get('platform-admin')).body)).toEqual({ enforceStageRoles: true });
+    for (const enabled of [false, true]) {
+      expect((await put(enabled, 'platform-admin')).statusCode).toBe(200);
+      expect(item).toEqual({ ...key, enabled });
+      expect(JSON.parse((await get('platform-admin')).body)).toEqual({
+        enforceStageRoles: enabled,
+      });
+    }
+    ddb.on(GetCommand).rejects('read failed');
+    expect((await get('platform-admin')).statusCode).toBe(500);
+  });
+});
 
 describe('Bedrock inference region', () => {
   it.each([

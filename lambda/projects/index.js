@@ -1,6 +1,10 @@
 import { spacePermissions, VIEWER_DENIED } from '../shared/space-permissions.js';
 import { realtimePermissions } from '../shared/realtime-permissions.js';
 import { fetchMembershipRole, membershipStore } from '../shared/space-membership.js';
+import {
+  readSpaceStageRoleEnforcement,
+  writeSpaceStageRoleOverride,
+} from '../shared/stage-role-enforcement.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { randomUUID } from 'node:crypto';
@@ -1453,6 +1457,8 @@ export const handler = async (event, context) => {
 
           const role = await fetchMembershipRole(g, projectId, userId);
           if (!role) return response(403, { error: 'Access denied' });
+          if (event.queryStringParameters?.section === 'stageRoles')
+            return response(200, await readSpaceStageRoleEnforcement(ddb, projectId));
           const single = await g
             .V()
             .has('Project', 'id', projectId)
@@ -1810,6 +1816,21 @@ export const handler = async (event, context) => {
           return response(403, { error: 'Only project owners can update settings' });
         }
 
+        if (event.queryStringParameters?.section === 'stageRoles') {
+          let override;
+          try {
+            override = JSON.parse(body)?.override;
+          } catch {
+            return response(400, { error: 'Invalid JSON body' });
+          }
+          if (typeof override !== 'boolean' && override !== null)
+            return response(400, {
+              error: 'override must be true, false, or null to follow the platform default.',
+            });
+          await writeSpaceStageRoleOverride(ddb, projectId, override);
+          return response(200, await readSpaceStageRoleEnforcement(ddb, projectId));
+        }
+
         const data = JSON.parse(body);
         if (data.name) {
           await g
@@ -2055,6 +2076,7 @@ export const handler = async (event, context) => {
         // If graph teardown succeeded but the final membership transaction failed,
         // the same owner can finish cleanup on retry without granting content access.
         if (!(await g.V().has('Project', 'id', projectId).hasNext())) {
+          await writeSpaceStageRoleOverride(ddb, projectId, null);
           await membershipStore.deleteSpaceMembers(projectId, userId, { beforeRemove });
           return response(204, {});
         }
@@ -2177,6 +2199,7 @@ export const handler = async (event, context) => {
             beforeRemove,
           });
           await g.V().has('Project', 'id', projectId).drop().next();
+          await writeSpaceStageRoleOverride(ddb, projectId, null);
           await membershipStore.deleteSpaceMembers(projectId, userId, { beforeRemove });
           logger.info('Project deleted', {
             projectId,

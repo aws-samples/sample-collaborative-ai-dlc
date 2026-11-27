@@ -33,6 +33,7 @@ interface Props {
   intentId: string;
   intent: Intent;
   stageRows: IntentStage[];
+  mayControlStage: (id?: string) => boolean;
   workflowVersion?: number;
   /** Reload the intent detail after a successful relaunch. */
   onRelaunched: () => Promise<void> | void;
@@ -48,6 +49,7 @@ export function RecomposePanel({
   intentId,
   intent,
   stageRows,
+  mayControlStage,
   workflowVersion,
   onRelaunched,
 }: Props) {
@@ -230,6 +232,17 @@ export function RecomposePanel({
     }
   };
 
+  const canRelaunch = (candidate: Record<string, 'EXECUTE' | 'SKIP'>) => {
+    const selected = preserveLockedStages(candidate);
+    const next = orderedNodes.find(({ stageId }) => {
+      if (selected[stageId] !== 'EXECUTE') return false;
+      const rows = stageRows.filter((row) => row.stageId === stageId);
+      return (
+        !rows.length || rows.some((row) => row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED')
+      );
+    });
+    return !!next && mayControlStage(next.stageId);
+  };
   const applyAndRelaunch = async (
     applyGrid: Record<string, 'EXECUTE' | 'SKIP'>,
     scopeLabel: string,
@@ -332,7 +345,7 @@ export function RecomposePanel({
                 onClick={() =>
                   applyAndRelaunch(latestInflight.proposal!.grid!, latestInflight.proposal!.scope)
                 }
-                disabled={applying}
+                disabled={applying || !canRelaunch(latestInflight.proposal.grid!)}
                 data-testid="recompose-apply-proposal"
               >
                 {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
@@ -357,7 +370,7 @@ export function RecomposePanel({
                     type="button"
                     size="sm"
                     onClick={() => applyAndRelaunch(grid!, gridScope ?? intent.scope ?? 'composed')}
-                    disabled={applying}
+                    disabled={applying || !canRelaunch(effectiveGrid)}
                     data-testid="recompose-apply-manual"
                   >
                     {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}

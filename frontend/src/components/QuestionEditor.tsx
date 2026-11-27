@@ -1,5 +1,5 @@
 import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -37,6 +37,8 @@ export interface QuestionReferences {
 }
 
 interface Props {
+  canEdit?: boolean;
+  canSubmit?: boolean;
   question: Question;
   references?: QuestionReferences;
   scope: CollabScope;
@@ -54,11 +56,14 @@ export default function QuestionEditor({
   userName,
   onAnswer,
   onAutoSave,
+  canEdit = true,
+  canSubmit = true,
   onFocus,
   onBlur,
 }: Props) {
   const { readOnly } = useSpacePermissions();
   const {
+    doc,
     selections,
     freeTexts,
     setSelection,
@@ -68,6 +73,7 @@ export default function QuestionEditor({
     synced,
     awareness,
     remoteUsers,
+    documentReadOnly,
     initFromDraft,
     toStructuredAnswer,
   } = useCollaborativeStructuredAnswer(
@@ -75,23 +81,22 @@ export default function QuestionEditor({
     question.id,
     question.questions.length,
     userName,
-    readOnly ? undefined : onAutoSave,
+    readOnly || !canEdit ? undefined : onAutoSave,
   );
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Seed from the saved draft ONCE, when the editor syncs — not when the draft
-  // prop changes, which would clobber the user's in-progress answer.
+  const seededDoc = useRef<typeof doc | null>(null);
   useEffect(() => {
-    if (synced && question.draftAnswer) {
-      initFromDraft(question.draftAnswer);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [synced]);
+    if (!synced || !canEdit || readOnly || documentReadOnly) return;
+    if (!question.draftAnswer || seededDoc.current === doc) return;
+    initFromDraft(question.draftAnswer);
+    seededDoc.current = doc;
+  }, [synced, canEdit, readOnly, documentReadOnly, question.draftAnswer, doc, initFromDraft]);
 
   const handleSubmit = async () => {
-    if (readOnly || submitting) return;
+    if (documentReadOnly || readOnly || !canSubmit || submitting) return;
     const answer = toStructuredAnswer();
     const allAnswered = answer.answers.every(
       (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.trim().length > 0),
@@ -153,7 +158,7 @@ export default function QuestionEditor({
             awareness={awareness}
             onSelectionChange={(indices) => setSelection(qIdx, indices)}
             onFreeTextChange={(text, cursor) => setFreeText(qIdx, text, cursor)}
-            disabled={readOnly || submitting || !synced}
+            disabled={documentReadOnly || readOnly || !canEdit || submitting || !synced}
             onFocus={() => {
               addContributor();
               onFocus?.();
@@ -175,7 +180,7 @@ export default function QuestionEditor({
       <Button
         size="sm"
         onClick={handleSubmit}
-        disabled={readOnly || !allAnswered || submitting}
+        disabled={documentReadOnly || readOnly || !canSubmit || !allAnswered || submitting}
         className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
       >
         {submitting && <Loader2 className="h-3 w-3 animate-spin" />}

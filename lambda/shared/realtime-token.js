@@ -14,12 +14,6 @@
 //   - `scopes` — e.g. ["sprint:<sprintId>", "project:<projectId>"].
 //   - `exp`    — epoch SECONDS; default TTL 10 minutes. Established sockets
 //                are closed / filtered out at expiry.
-//
-// IMPORTANT: `lambda/yjs-server/realtime-token.js` is a standalone ESM copy of
-// this module (the Yjs Docker build context cannot reach lambda/shared). The
-// two are pinned in sync by `lambda/yjs-server/test/realtime-token.test.js`,
-// which runs the same vector table against both implementations. If you change
-// anything here, mirror it there.
 
 import crypto from 'node:crypto';
 
@@ -161,10 +155,18 @@ const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
 // use intent-specific prefixes (`intent-sq-…`, `intent-discussion-…`) so the
 // extractor is unambiguous — sprintIds and intentIds are both bare UUIDs, so the
 // shared v1 prefixes (`sq-`, `discussion-`) can't be reused without collision.
-const INTENT_DOC_RE = new RegExp(
-  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID_PATTERN})(?:-.+)?$`,
+const STAGE_DOC_RE = new RegExp(`^intent-(sq|review|artifact)-(${UUID_PATTERN})(?:-(.+))?$`);
+const SPACE_INTENT_DOC_RE = new RegExp(
+  `^intent-(?:discussion|presence|draft)-(${UUID_PATTERN})(?:-.+)?$`,
 );
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
+
+const parseStageDocument = (docName) => {
+  const match = typeof docName === 'string' && STAGE_DOC_RE.exec(docName);
+  if (!match) return null;
+  const [, kind, intentId, target] = match;
+  return { kind, intentId, target };
+};
 
 /**
  * Yjs doc name → required scope, or null for unknown formats (deny).
@@ -173,7 +175,9 @@ const requiredScopeForYjsDoc = (docName) => {
   if (typeof docName !== 'string') return null;
   // Intent docs first — their `intent-` prefix is more specific than the v1
   // `sq-`/`discussion-` shapes and must win.
-  const intent = INTENT_DOC_RE.exec(docName);
+  const stage = parseStageDocument(docName);
+  if (stage) return `intent:${stage.intentId.toLowerCase()}`;
+  const intent = SPACE_INTENT_DOC_RE.exec(docName);
   if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_DOC_RE.exec(docName);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
@@ -213,6 +217,7 @@ const isTokenLive = (tokenExp, now = Date.now()) => {
 };
 
 export {
+  parseStageDocument,
   TOKEN_TTL_SECONDS,
   signRealtimeToken,
   verifyRealtimeToken,
@@ -222,6 +227,7 @@ export {
   isTokenLive,
 };
 export default {
+  parseStageDocument,
   TOKEN_TTL_SECONDS,
   signRealtimeToken,
   verifyRealtimeToken,

@@ -40,6 +40,7 @@ vi.mock('gremlin', async (original) => {
 vi.mock('../../shared/space-membership.js', async (original) => ({
   ...(await original()),
   fetchMembershipRole: async () => 'member',
+  membershipStore: { get: async () => ({ membershipRole: 'member' }) },
 }));
 vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToIntentChannel: async () => {} }));
 
@@ -82,7 +83,10 @@ describe('answer/bind interleaving', () => {
       };
       const order = [];
       ddb.on(GetCommand).callsFake(async ({ Key }) => {
-        if (Key.sk === 'META') return { Item: { projectId: 'p1', status: 'WAITING' } };
+        if (Key.sk === 'META')
+          return {
+            Item: { workflowId: 'flow', workflowVersion: 1, projectId: 'p1', status: 'WAITING' },
+          };
         const snapshot = { ...gate };
         if (order.length === 0) {
           order.push('endpoint-read-unbound');
@@ -102,7 +106,9 @@ describe('answer/bind interleaving', () => {
         }
         return { Item: snapshot };
       });
-      ddb.on(QueryCommand).resolves({ Items: [] });
+      ddb.on(QueryCommand).callsFake(({ ExpressionAttributeValues: values }) => ({
+        Items: values[':pk'] === 'WF#default#flow' ? [{ sk: 'V#1#META' }] : [],
+      }));
       const applyUpdate = ({ ExpressionAttributeValues: values }) => {
         if (values[':cb'] && values[':ts']) {
           gate = { ...gate, callbackConsumedAt: values[':ts'] };
@@ -160,12 +166,14 @@ describe('answer/bind interleaving', () => {
     ddb.on(GetCommand).callsFake(({ Key }) => ({
       Item:
         Key.sk === 'META'
-          ? { projectId: 'p1', status: 'WAITING' }
+          ? { workflowId: 'flow', workflowVersion: 1, projectId: 'p1', status: 'WAITING' }
           : reads++ === 0
             ? { ...gate, status: 'pending', callbackId: null }
             : gate,
     }));
-    ddb.on(QueryCommand).resolves({ Items: [] });
+    ddb.on(QueryCommand).callsFake(({ ExpressionAttributeValues: values }) => ({
+      Items: values[':pk'] === 'WF#default#flow' ? [{ sk: 'V#1#META' }] : [],
+    }));
     ddb.on(UpdateCommand).resolves({ Attributes: gate });
     lambda
       .on(SendDurableExecutionCallbackSuccessCommand)
@@ -203,10 +211,18 @@ describe('answer/bind interleaving', () => {
       ddb.on(GetCommand).callsFake(({ Key }) => ({
         Item:
           Key.sk === 'META'
-            ? { projectId: 'p1', orchestratorRunId: 'new-run', status: 'WAITING' }
+            ? {
+                workflowId: 'flow',
+                workflowVersion: 1,
+                projectId: 'p1',
+                orchestratorRunId: 'new-run',
+                status: 'WAITING',
+              }
             : gate,
       }));
-      ddb.on(QueryCommand).resolves({ Items: [] });
+      ddb.on(QueryCommand).callsFake(({ ExpressionAttributeValues: values }) => ({
+        Items: values[':pk'] === 'WF#default#flow' ? [{ sk: 'V#1#META' }] : [],
+      }));
       ddb.on(TransactWriteCommand).rejects(
         Object.assign(new Error('rewound'), {
           name: 'TransactionCanceledException',
@@ -236,10 +252,18 @@ describe('answer/bind interleaving', () => {
     ddb.on(GetCommand).callsFake(({ Key }) => ({
       Item:
         Key.sk === 'META'
-          ? { projectId: 'p1', orchestratorRunId: 'run1', status: 'WAITING' }
+          ? {
+              workflowId: 'flow',
+              workflowVersion: 1,
+              projectId: 'p1',
+              orchestratorRunId: 'run1',
+              status: 'WAITING',
+            }
           : gate,
     }));
-    ddb.on(QueryCommand).resolves({ Items: [] });
+    ddb.on(QueryCommand).callsFake(({ ExpressionAttributeValues: values }) => ({
+      Items: values[':pk'] === 'WF#default#flow' ? [{ sk: 'V#1#META' }] : [],
+    }));
     let attempts = 0;
     ddb.on(TransactWriteCommand).callsFake(() => {
       attempts++;
