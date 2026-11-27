@@ -152,6 +152,59 @@ describe('IntentStageDependencies', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  it('asks which unit to open when one stage ran for several units, the failed one first and focused', async () => {
+    const setSelectedStageId = vi.fn();
+    g.setSelectedStageId = setSelectedStageId;
+    g.depRows = [
+      {
+        stageId: 'code-generation',
+        stageInstanceId: 'si-cg-a',
+        unitSlug: 'payments',
+        state: 'SUCCEEDED',
+        planned: true,
+        phase: '02',
+      },
+      {
+        stageId: 'code-generation',
+        stageInstanceId: 'si-cg-b',
+        unitSlug: 'search',
+        state: 'FAILED',
+        planned: true,
+        phase: '02',
+      },
+      {
+        stageId: 'code-generation',
+        stageInstanceId: 'si-cg-c',
+        unitSlug: 'cart',
+        state: 'RUNNING',
+        planned: true,
+        phase: '02',
+      },
+    ];
+
+    render(<IntentStageDependencies />);
+    await userEvent.click(screen.getByRole('button', { name: 'View stage dependencies' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Stage dependencies' });
+    await userEvent.click(await within(sheet).findByRole('button', { name: 'Code Generation' }));
+
+    // Nothing is opened on the unit's behalf.
+    expect(setSelectedStageId).not.toHaveBeenCalled();
+    const chooser = within(sheet).getByRole('group', { name: 'Choose a unit for Code Generation' });
+    expect(chooser).toHaveTextContent('Code Generation ran for 3 units.');
+    const options = within(chooser).getAllByRole('button');
+    // The failed unit comes first, before a running one; it takes the focus.
+    expect(options.map((o) => o.textContent)).toEqual([
+      'SearchFailed',
+      'CartRunning',
+      'PaymentsCompleted',
+    ]);
+    expect(options[0]).toHaveFocus();
+
+    await userEvent.click(options[0]);
+    expect(setSelectedStageId).toHaveBeenCalledWith('si-cg-b');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   it('says there is no graph data yet when the workflow has not compiled', async () => {
     g.depCompiled = null;
     render(<IntentStageDependencies />);

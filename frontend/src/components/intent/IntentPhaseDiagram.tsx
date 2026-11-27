@@ -1,5 +1,15 @@
-import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { Button } from '@/components/ui/button';
+import { StatusPill } from '@/components/ui/status-pill';
 import {
   Sheet,
   SheetContent,
@@ -25,6 +35,17 @@ const STAGE_STATE_ORDER: StageState[] = [
   'RUNNING',
   'WAITING_FOR_HUMAN',
   'FAILED',
+  'SUCCEEDED',
+  'SKIPPED',
+  'PENDING',
+];
+
+// The unit chooser lists the units that need attention first: failed, then
+// waiting, then running, then finished.
+const CHOOSER_ORDER: StageState[] = [
+  'FAILED',
+  'WAITING_FOR_HUMAN',
+  'RUNNING',
   'SUCCEEDED',
   'SKIPPED',
   'PENDING',
@@ -196,6 +217,13 @@ export function IntentStageDependencies({ className }: { className?: string }) {
     setSelectedStageId,
   } = useIntent();
   const [open, setOpen] = useState(false);
+  // A fan-out stage is one node for every unit lane: clicking it asks which
+  // unit to open instead of guessing, since the lanes can differ (one failed).
+  const [choice, setChoice] = useState<{ stageId: string; rows: IntentStageRow[] } | null>(null);
+  const changeOpen = useCallback((next: boolean) => {
+    setOpen(next);
+    if (!next) setChoice(null);
+  }, []);
 
   const initStageIds = useMemo(
     () =>
@@ -238,18 +266,66 @@ export function IntentStageDependencies({ className }: { className?: string }) {
     return meta;
   }, [scoped, phaseNameOf]);
 
-  const handleStageClick = useCallback(
-    (stageId: string) => {
-      const row = stageRows.find((r) => r.stageId === stageId);
-      if (!row) return;
+  const openRow = useCallback(
+    (row: IntentStageRow) => {
       setSelectedStageId(stageRowKey(row));
-      setOpen(false);
+      changeOpen(false);
     },
-    [stageRows, setSelectedStageId],
+    [setSelectedStageId, changeOpen],
   );
 
+  const handleStageClick = useCallback(
+    (stageId: string) => {
+      const rows = stageRows.filter((r) => r.stageId === stageId);
+      if (rows.length === 0) return;
+      if (rows.length === 1) return openRow(rows[0]);
+      setChoice({
+        stageId,
+        rows: rows.toSorted(
+          (a, b) => CHOOSER_ORDER.indexOf(a.state) - CHOOSER_ORDER.indexOf(b.state),
+        ),
+      });
+    },
+    [stageRows, openRow],
+  );
+
+  // The chooser opens above a possibly tall graph: move focus to its first
+  // option so the click visibly did something (and a screen reader hears it).
+  const chooserRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (choice) chooserRef.current?.querySelector('button')?.focus();
+  }, [choice]);
+
   return (
-    <StageDependenciesSheet key={intentId} open={open} onOpenChange={setOpen} className={className}>
+    <StageDependenciesSheet
+      key={intentId}
+      open={open}
+      onOpenChange={changeOpen}
+      className={className}
+    >
+      {choice && (
+        <div
+          ref={chooserRef}
+          role="group"
+          aria-label={`Choose a unit for ${displayStageName(choice.stageId)}`}
+          className="mb-3 rounded-md border bg-muted/30 p-3"
+        >
+          <p className="text-sm">
+            {displayStageName(choice.stageId)} ran for {plural(choice.rows.length, 'unit')}. Choose
+            the one to open.
+          </p>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {choice.rows.map((row, index) => (
+              <li key={stageRowKey(row)}>
+                <Button type="button" variant="outline" size="sm" onClick={() => openRow(row)}>
+                  {row.unitSlug ? displayStageName(row.unitSlug) : `Run ${index + 1}`}
+                  <StatusPill kind="stage" status={row.state} size="xs" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {scoped && scoped.graph.nodes.length > 0 ? (
         <Suspense
           fallback={
