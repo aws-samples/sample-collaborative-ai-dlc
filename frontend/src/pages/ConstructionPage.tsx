@@ -110,17 +110,22 @@ export default function ConstructionPage() {
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-6">
-          <div>
-            <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
-            <p className="text-sm text-muted-foreground">
-              Construction Phase -- Build and implement
-              {storedBranch && (
-                <span className="ml-2 inline-flex items-center gap-1 text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
-                  <GitBranch className="h-3 w-3" />
-                  {storedBranch}
-                </span>
-              )}
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
+              <p className="text-sm text-muted-foreground">
+                Construction Phase -- Build and implement
+                {storedBranch && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
+                    <GitBranch className="h-3 w-3" />
+                    {storedBranch}
+                  </span>
+                )}
+              </p>
+            </div>
+            {agentStatus.status?.status === 'RUNNING' && (
+              <AgentStatusBadge status="running" agentType="construction" />
+            )}
           </div>
 
           <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
@@ -221,10 +226,6 @@ export default function ConstructionPage() {
 
           {/* Read-only controls */}
           <div className="flex items-center gap-3 flex-wrap">
-            {agentStatus.status?.status === 'RUNNING' && (
-              <AgentStatusBadge status="running" agentType="construction" />
-            )}
-
             <Button
               variant="outline"
               size="sm"

@@ -8,8 +8,8 @@
 //     (the `bg-agent-x/15 text-agent-x-fg` pill pattern), in both themes;
 //   - `--warning` / `--warning-fg` are a distinct family from waiting;
 //   - `--muted-foreground-on-tint` reads at >= 4.5:1 on `primary/10` over card;
-//   - phase tokens are low-chroma and never equal a status token (phase and
-//     status must not be confusable);
+//   - phase tokens never equal a status token (phase and status must not be
+//     confusable) and differ from one another (the Okabe-Ito palette);
 //   - the type scale has no token below 11 px.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -324,15 +324,20 @@ describe('phase tokens', () => {
       ];
 
       for (const phase of PHASES) {
-        it(`--phase-${phase} is low-chroma and distinct from every status colour`, () => {
+        it(`--phase-${phase} is distinct from every status colour and every other phase`, () => {
           const raw = resolve(`var(--phase-${phase})`, vars);
-          const m = raw.match(/^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/);
-          expect(m, `phase tokens must be literal oklch(): ${raw}`).not.toBeNull();
-          expect(parseFloat(m![2]), `chroma of ${raw}`).toBeLessThanOrEqual(0.1);
+          expect(raw, `phase tokens must be literal oklch(): ${raw}`).toMatch(
+            /^oklch\(\s*[\d.]+\s+[\d.]+\s+[\d.]+\s*\)$/,
+          );
 
           const fill = parseColor(raw, vars);
           for (const status of statusColors()) {
             expect(deltaEok(fill, status)).toBeGreaterThan(0.05);
+          }
+          for (const other of PHASES) {
+            if (other === phase) continue;
+            const otherFill = parseColor(`var(--phase-${other})`, vars);
+            expect(deltaEok(fill, otherFill), `${phase} vs ${other}`).toBeGreaterThan(0.1);
           }
         });
 

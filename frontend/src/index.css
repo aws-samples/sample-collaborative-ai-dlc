@@ -126,19 +126,21 @@
   --sidebar-border: oklch(0.915 0.006 286);
   --sidebar-ring: oklch(0.553 0.013 286);
 
-  /* Phase colors: low-chroma, never equal to a status color */
+  /* Phase colors: Okabe-Ito (colour-blind safe), never equal to a status color.
+     initialization = neutral grey, ideation = sky blue, inception = blue,
+     construction = orange, operation = bluish green, review = reddish purple. */
   --phase-initialization: oklch(0.47 0.04 250);
   --phase-initialization-foreground: oklch(0.985 0 0);
-  --phase-ideation: oklch(0.5 0.08 277);
-  --phase-ideation-foreground: oklch(0.985 0 0);
-  --phase-inception: oklch(0.5 0.08 300);
+  --phase-ideation: oklch(0.735 0.117 236);
+  --phase-ideation-foreground: oklch(0.145 0 0);
+  --phase-inception: oklch(0.532 0.131 244);
   --phase-inception-foreground: oklch(0.985 0 0);
-  --phase-construction: oklch(0.52 0.08 80);
-  --phase-construction-foreground: oklch(0.985 0 0);
-  --phase-operation: oklch(0.52 0.08 350);
+  --phase-construction: oklch(0.72 0.165 72);
+  --phase-construction-foreground: oklch(0.145 0 0);
+  --phase-operation: oklch(0.53 0.115 172);
   --phase-operation-foreground: oklch(0.985 0 0);
-  --phase-review: oklch(0.5 0.07 175);
-  --phase-review-foreground: oklch(0.985 0 0);
+  --phase-review: oklch(0.679 0.118 346);
+  --phase-review-foreground: oklch(0.145 0 0);
 
   /* Agent status */
   --agent-idle: oklch(0.55 0.014 286);
@@ -199,18 +201,18 @@
   --sidebar-border: oklch(0.28 0.014 286);
   --sidebar-ring: oklch(0.553 0.013 286);
 
-  /* Phase colors (lighter fills with dark text for dark mode) */
-  --phase-initialization: oklch(0.78 0.04 250);
+  /* Phase colors: the same Okabe-Ito fills; only the neutral grey is lifted for dark mode */
+  --phase-initialization: oklch(0.82 0.03 250);
   --phase-initialization-foreground: oklch(0.145 0 0);
-  --phase-ideation: oklch(0.8 0.08 277);
+  --phase-ideation: oklch(0.735 0.117 236);
   --phase-ideation-foreground: oklch(0.145 0 0);
-  --phase-inception: oklch(0.8 0.08 300);
-  --phase-inception-foreground: oklch(0.145 0 0);
-  --phase-construction: oklch(0.82 0.08 80);
+  --phase-inception: oklch(0.532 0.131 244);
+  --phase-inception-foreground: oklch(0.985 0 0);
+  --phase-construction: oklch(0.72 0.165 72);
   --phase-construction-foreground: oklch(0.145 0 0);
-  --phase-operation: oklch(0.8 0.08 350);
-  --phase-operation-foreground: oklch(0.145 0 0);
-  --phase-review: oklch(0.8 0.07 175);
+  --phase-operation: oklch(0.53 0.115 172);
+  --phase-operation-foreground: oklch(0.985 0 0);
+  --phase-review: oklch(0.679 0.118 346);
   --phase-review-foreground: oklch(0.145 0 0);
 
   /* Agent status (brighter for dark mode) */

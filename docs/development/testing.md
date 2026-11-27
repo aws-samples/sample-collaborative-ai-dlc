@@ -759,8 +759,9 @@ converts the colors to sRGB, and checks WCAG contrast ratios:
   `--warning-fg` meets the same three ratios.
 - `--muted-foreground-on-tint` reads at 4.5:1 or better on the card and on a
   10 % primary tint over the card.
-- Phase tokens are low-chroma, differ from every status color, and their
-  foreground reads at 4.5:1 or better on its fill.
+- Phase tokens (the colour-blind-safe Okabe-Ito palette) differ from every
+  status color and from one another, and their foreground reads at 4.5:1 or
+  better on its fill.
 - `text-2xs` is 11 px on a 16 px line, and no font-size token is smaller than
   11 px.
 - The animation plugin is registered and a global `prefers-reduced-motion`
