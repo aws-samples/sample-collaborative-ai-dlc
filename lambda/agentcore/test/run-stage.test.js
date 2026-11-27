@@ -6936,6 +6936,111 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       expect(spawn).not.toHaveBeenCalled();
     });
 
+    const failedWrite = (deps) =>
+      deps.store.calls.find((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED')?.[1];
+    const discardApi = async () => ({
+      results: [{ repo: 'acme/api', discarded: true, shas: ['a'.repeat(40)] }],
+    });
+
+    it.each([
+      {
+        name: 'keeps only the refs the partial undo did not discard',
+        carried: [
+          { repo: 'acme/api', sha: 'a'.repeat(40) },
+          { repo: 'acme/web', sha: 'c'.repeat(40) },
+        ],
+        expected: [{ repo: 'acme/web', sha: 'c'.repeat(40) }],
+      },
+      {
+        name: 'clears the refs when the partial undo discarded every carried ref',
+        carried: [{ repo: 'acme/api', sha: 'a'.repeat(40) }],
+        expected: null,
+      },
+    ])('a partial undo $name', async ({ carried, expected }) => {
+      const spawn = vi.fn(okSpawn);
+      const { deps } = retryDeps(
+        async () => ({
+          results: [
+            { repo: 'acme/api', discarded: true, shas: ['a'.repeat(40)] },
+            { repo: 'acme/web', discarded: false, reason: 'diverged', detail: 'b' },
+          ],
+        }),
+        {
+          spawnFn: spawn,
+          store: spyStore({
+            unitPlan: UNIT_PLAN,
+            stage: { state: 'FAILED', pendingCodeCommitRefs: carried },
+          }),
+        },
+      );
+      const res = await runStage(
+        { ...laneArgs, repos: ['acme/api', 'acme/web'], retry: pushRetry },
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'discard_unpushed_failed' });
+      expect(spawn).not.toHaveBeenCalled();
+      // The undone commit must not survive into the next retry.
+      expect(failedWrite(deps).pendingCodeCommitRefs).toEqual(expected);
+    });
+
+    it('clears undone refs when a later preflight fails after a full undo', async () => {
+      const { deps } = retryDeps(discardApi, {
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          stage: {
+            state: 'FAILED',
+            aidlcRepoRef: 'd'.repeat(40),
+            pendingCodeCommitRefs: [{ repo: 'acme/api', sha: 'a'.repeat(40) }],
+          },
+        }),
+      });
+      const res = await runStage(
+        { ...laneArgs, aidlcRepoRef: 'e'.repeat(40), retry: pushRetry },
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'aidlc_ref_mismatch' });
+      expect(failedWrite(deps).pendingCodeCommitRefs).toBeNull();
+    });
+
+    it('drops undone refs when the stage fails before it reads its prior row', async () => {
+      const { deps } = retryDeps(discardApi, {
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          stage: {
+            state: 'FAILED',
+            pendingCodeCommitRefs: [
+              { repo: 'acme/api', sha: 'a'.repeat(40) },
+              { repo: 'acme/api', sha: 'b'.repeat(40) },
+            ],
+          },
+        }),
+      });
+      const res = await runStage({ ...laneArgs, resumeFrom: 'q-missing', retry: pushRetry }, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'gate_not_found' });
+      expect(failedWrite(deps).pendingCodeCommitRefs).toEqual([
+        { repo: 'acme/api', sha: 'b'.repeat(40) },
+      ]);
+    });
+
+    it('leaves carried refs untouched on a failure when nothing was undone', async () => {
+      const carried = [{ repo: 'acme/api', sha: 'a'.repeat(40) }];
+      const { deps } = retryDeps(vi.fn(), {
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          stage: { state: 'FAILED', aidlcRepoRef: 'd'.repeat(40), pendingCodeCommitRefs: carried },
+        }),
+      });
+      await runStage(
+        {
+          ...laneArgs,
+          aidlcRepoRef: 'e'.repeat(40),
+          retry: { reason: 'sensor_blocked', discardUnpushed: false },
+        },
+        deps,
+      );
+      expect(failedWrite(deps).pendingCodeCommitRefs).toEqual(carried);
+    });
+
     it('leaves the commits alone on a retry of any other failure', async () => {
       const discard = vi.fn();
       const { deps, sink } = retryDeps(discard);

@@ -2048,6 +2048,18 @@ const runStageAttempt = async (
   let retainedCodeCommitRefs = null;
   // Commits a retry undid (retry.discardUnpushed); their refs are not carried.
   let discardedCommitShas = new Set();
+  // Set once retainedCodeCommitRefs has been filtered against an undo: a
+  // failure then persists the filtered refs, writing null when none are left,
+  // so an undone commit's ref never survives into the next retry.
+  let carriedRefsFiltered = false;
+  const carryCommitRefs = (row) => {
+    const carried = Array.isArray(row?.pendingCodeCommitRefs)
+      ? row.pendingCodeCommitRefs.filter((ref) => !discardedCommitShas.has(ref?.sha))
+      : [];
+    retainedCodeCommitRefs = carried.length ? carried : null;
+    carriedRefsFiltered = discardedCommitShas.size > 0;
+    return carried;
+  };
 
   const emitLifecycleEvent = async ({
     type,
@@ -2103,7 +2115,7 @@ const runStageAttempt = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
-          ...(retainedCodeCommitRefs?.length
+          ...(retainedCodeCommitRefs?.length || carriedRefsFiltered
             ? { pendingCodeCommitRefs: retainedCodeCommitRefs }
             : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
@@ -2463,6 +2475,14 @@ const runStageAttempt = async (
       results: [{ repo: '*', discarded: false, reason: 'engine_crashed', detail: error?.message }],
     }));
     const failed = discard.results.filter((r) => r.discarded === false);
+    // Record what was undone before judging the repos that were not: a partial
+    // undo still rewrote those branches, so their refs must not be carried.
+    discardedCommitShas = new Set(
+      discard.results.filter((r) => r.discarded !== false).flatMap((r) => r.shas ?? []),
+    );
+    if (discardedCommitShas.size > 0) {
+      carryCommitRefs(await store.getStage(executionId, stageInstanceId).catch(() => null));
+    }
     if (failed.length > 0) {
       return fail(
         stageInstanceId,
@@ -2472,7 +2492,6 @@ const runStageAttempt = async (
           .join('; '),
       );
     }
-    discardedCommitShas = new Set(discard.results.flatMap((r) => r.shas ?? []));
     if (discardedCommitShas.size > 0) {
       await emitLifecycleEvent({
         type: 'v2.git.unpushed_discarded',
@@ -2860,10 +2879,7 @@ const runStageAttempt = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
-  const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
-    ? priorStageRow.pendingCodeCommitRefs.filter((ref) => !discardedCommitShas.has(ref?.sha))
-    : [];
-  retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
+  const carriedCodeCommitRefs = carryCommitRefs(priorStageRow);
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
     return fail(
       stageInstanceId,
