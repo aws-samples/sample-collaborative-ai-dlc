@@ -30,6 +30,18 @@ All official profiles use the same source trust tier. Trust establishes whether
 the imported source may run; it does not certify that the platform reproduces
 every semantic in that source.
 
+From 2.8.2, AI-DLC no longer commits its native harness distributions
+(`dist/<harness>/`); each release ships them in its
+`aidlc-runtime-<version>.tar.gz` asset under `runtime/<harness>/`, with
+`version.json` and `checksums.txt`. Each profile for such a release names that
+release's tag (`runtimeReleaseTag`) so that a
+[native export](../using-the-platform/exporting-workspaces.md#where-the-native-distribution-comes-from)
+can find the asset. The tag is reviewed with the profile and only locates the
+asset: the commit stays the identity, and the export refuses a release whose
+`version.json` names another commit. The 2.11.3 profile names
+`v2.11.3-preview.20261103.1`, the release built from its commit; the later
+`v2.11.3` tag is a different commit.
+
 A custom fork names the official profile whose frontmatter dialect it uses (for
 example `v2.9.0`); that base grants no trust. It is recorded `T0` and
 import-only, and it may author its own stages, scopes, agents and sensors. It

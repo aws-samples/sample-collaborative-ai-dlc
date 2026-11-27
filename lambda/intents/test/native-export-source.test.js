@@ -39,6 +39,7 @@ describe('native export source', () => {
       warnings: [],
       omitStagesNotInDistribution: false,
       preloadedDistribution: null,
+      frontmatterProfile: null,
     });
     expect(readManifest).not.toHaveBeenCalled();
   });
@@ -56,7 +57,7 @@ describe('native export source', () => {
   });
 
   it('exports a custom release with its own distribution when it ships one', async () => {
-    const readManifest = vi.fn();
+    const readManifest = vi.fn(async () => ({ baseProfileId: 'v2.11.0' }));
     const loadReleaseDistribution = vi.fn(async () => ownDistribution);
     const source = await resolveNativeExportSource({
       meta: customMeta,
@@ -79,8 +80,50 @@ describe('native export source', () => {
       warnings: [],
       omitStagesNotInDistribution: false,
       preloadedDistribution: ownDistribution,
+      // The release's own stage files are in its base profile's dialect.
+      frontmatterProfile: BASE,
     });
-    expect(readManifest).not.toHaveBeenCalled();
+  });
+
+  it('exports its own distribution with no dialect when the manifest is missing', async () => {
+    const source = await resolveNativeExportSource({
+      meta: customMeta,
+      harness: 'kiro',
+      deploymentRef: async () => DEPLOYMENT_REF,
+      readManifest: async () => null,
+      loadReleaseDistribution: async () => ownDistribution,
+    });
+    expect(source.preloadedDistribution).toBe(ownDistribution);
+    expect(source.frontmatterProfile).toBeNull();
+  });
+
+  it('exports its own distribution with no dialect when the manifest read fails', async () => {
+    const source = await resolveNativeExportSource({
+      meta: customMeta,
+      harness: 'kiro',
+      deploymentRef: async () => DEPLOYMENT_REF,
+      readManifest: async () => {
+        throw Object.assign(new Error('SlowDown'), { $metadata: { httpStatusCode: 503 } });
+      },
+      loadReleaseDistribution: async () => ownDistribution,
+    });
+    expect(source.upstreamRef).toBe(FORK_SHA);
+    expect(source.preloadedDistribution).toBe(ownDistribution);
+    expect(source.frontmatterProfile).toBeNull();
+  });
+
+  it('still fails a base-profile export when its manifest read fails', async () => {
+    await expect(
+      resolveNativeExportSource({
+        meta: customMeta,
+        harness: 'kiro-ide',
+        deploymentRef: async () => DEPLOYMENT_REF,
+        readManifest: async () => {
+          throw new Error('SlowDown');
+        },
+        loadReleaseDistribution: noOwn,
+      }),
+    ).rejects.toThrow('SlowDown');
   });
 
   it("exports a custom release onto its base profile's official distribution", async () => {
@@ -107,6 +150,7 @@ describe('native export source', () => {
     expect(source.warnings[0]).toContain(BASE.label);
     expect(source.warnings[0]).toContain('ships no kiro-ide distribution');
     expect(source.preloadedDistribution).toBeNull();
+    expect(source.frontmatterProfile).toBe(BASE);
   });
 
   it('returns null when the custom release manifest is missing', async () => {

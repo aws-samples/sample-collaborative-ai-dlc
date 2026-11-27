@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { buildDistributionArchive } from '../../shared/distribution-archive.js';
-import { fetchRepoFiles } from '../../shared/repo-fetch.js';
+import { fetchReleaseRuntimeFiles, fetchRepoFiles } from '../../shared/repo-fetch.js';
 import {
   alignProjectionToDistribution,
   buildZip,
@@ -20,7 +21,9 @@ import {
 } from '../native-export.js';
 
 import { publishReleaseDistributions } from '../../shared/release-distributions.js';
+import { AIDLC_COMPATIBILITY_PROFILES } from '../../shared/aidlc-compatibility-profiles.js';
 vi.mock('../../shared/repo-fetch.js', () => ({
+  fetchReleaseRuntimeFiles: vi.fn(),
   fetchRepoFiles: vi.fn(),
 }));
 
@@ -440,6 +443,310 @@ describe('native workflow export', () => {
     const rejection = await loadRejection(cacheMissS3());
     expect(rejection).toBeInstanceOf(Error);
     expect(rejection.code).toBeUndefined();
+  });
+
+  // Releases from 2.8.2 ship their harnesses only in a release runtime asset.
+  describe('a release that ships its harnesses as a runtime asset', () => {
+    // 2.11.3's runtime is in the preview release built from its commit; the
+    // v2.11.3 tag names a later commit.
+    const PROFILE = AIDLC_COMPATIBILITY_PROFILES['v2.11.3'];
+    const TAG = 'v2.11.3-preview.20261103.1';
+    const RUNTIME_REF = PROFILE.upstreamRef;
+    const noDist = (ref) =>
+      new Error(`repo-fetch: no files found for prefixes dist/codex/ in tarball for ref ${ref}`);
+    const loadRuntime = (s3) =>
+      loadDistribution({ s3, bucket: 'artifacts', upstreamRef: RUNTIME_REF, harness: 'codex' });
+    const rejectionOf = (promise) =>
+      promise.then(
+        () => null,
+        (error) => error,
+      );
+
+    it("loads the profile's release runtime when the commit has no dist/, then reuses the cache", async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      const { body, distributionFiles } = await distribution();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockResolvedValueOnce(
+        new Map([...distributionFiles].map(([path, value]) => [`runtime/codex/${path}`, value])),
+      );
+      const s3 = memoryS3();
+
+      const result = await loadRuntime(s3);
+
+      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledWith(TAG, {
+        commit: RUNTIME_REF,
+        prefixes: ['runtime/codex/'],
+        maxFiles: 1_000,
+        maxRetainedBytes: 20 * 1024 * 1024,
+      });
+      expect(result.files.get('AGENTS.md')).toEqual(body);
+      expect(result.workspaceLayout).toBe('spaces');
+      const manifest = JSON.parse(
+        s3.objects.get(`aidlc-distributions/${RUNTIME_REF}/codex.manifest.json`).toString('utf8'),
+      );
+      expect(manifest).toMatchObject({
+        ref: RUNTIME_REF,
+        harness: 'codex',
+        source: { releaseTag: TAG, path: 'runtime/codex/' },
+      });
+      expect(manifest.files.map((file) => file.path)).toContain('AGENTS.md');
+
+      const cached = await loadRuntime(s3);
+      expect(cached.files.get('AGENTS.md')).toEqual(body);
+      expect(fetchRepoFiles).toHaveBeenCalledOnce();
+      expect(fetchReleaseRuntimeFiles).toHaveBeenCalledOnce();
+    });
+
+    it('keeps reading dist/ when the commit has it', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      const { distributionFiles } = await distribution();
+      fetchRepoFiles.mockResolvedValueOnce(
+        new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+      );
+      const s3 = memoryS3();
+
+      await loadRuntime(s3);
+
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+      expect(
+        JSON.parse(
+          s3.objects.get(`aidlc-distributions/${RUNTIME_REF}/codex.manifest.json`).toString(),
+        ).source,
+      ).toEqual({ path: 'dist/codex/' });
+    });
+
+    it('refuses a commit with no dist/ and no known release runtime (409)', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(REF));
+
+      const rejection = await loadRejection(cacheMissS3());
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toMatch(/^native-export: codex distribution could not be loaded/);
+      expect(rejection.message).toContain('no AI-DLC release runtime is known for this commit');
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an identity mismatch', `repo-fetch: release v2.11.4 was built from ${REF}, not x`],
+      [
+        'a checksum mismatch',
+        'repo-fetch: aidlc-runtime-2.11.4.tar.gz does not match its checksum',
+      ],
+      ['a missing release', 'repo-fetch: https://github.com/x/version.json returned 404 Not Found'],
+      ['a missing harness', 'repo-fetch: no files found for prefixes runtime/codex/ in x'],
+    ])('refuses a release runtime with %s as deterministic (409)', async (_label, message) => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockRejectedValueOnce(new Error(message));
+      const s3 = memoryS3();
+
+      const rejection = await rejectionOf(loadRuntime(s3));
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toBe(
+        `native-export: codex distribution could not be loaded for ${RUNTIME_REF}: ${message}`,
+      );
+      expect(s3.objects.size).toBe(0);
+    });
+
+    it.each([
+      ['a 5xx', 'repo-fetch: https://github.com/x/aidlc-runtime-2.11.4.tar.gz returned 502 Bad'],
+      ['a 429', 'repo-fetch: https://github.com/x/version.json returned 429 Too Many Requests'],
+      ['a network failure', 'fetch failed'],
+    ])('tags %s fetching the release runtime as retryable (502)', async (_label, message) => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(noDist(RUNTIME_REF));
+      fetchReleaseRuntimeFiles.mockRejectedValueOnce(new Error(message));
+
+      await expect(rejectionOf(loadRuntime(memoryS3()))).resolves.toMatchObject({
+        code: 'export_source_unavailable',
+      });
+    });
+
+    it('does not fall back to the release runtime when dist/ is only temporarily unavailable', async () => {
+      fetchRepoFiles.mockReset();
+      fetchReleaseRuntimeFiles.mockReset();
+      fetchRepoFiles.mockRejectedValueOnce(
+        new Error('repo-fetch: https://codeload.github.com/x returned 503 Service Unavailable'),
+      );
+
+      await expect(rejectionOf(loadRuntime(memoryS3()))).resolves.toMatchObject({
+        code: 'export_source_unavailable',
+      });
+      expect(fetchReleaseRuntimeFiles).not.toHaveBeenCalled();
+    });
+
+    // 2.11.3 and 2.11.4 ship requirements-analysis with an `outputs` value whose
+    // embedded `Step 10: ` is not valid YAML. Exporting a scope the distribution
+    // lacks rewrites that stage's scopes, so its frontmatter must be parsed with
+    // the import's normalization.
+    const RA_OUTPUTS =
+      "outputs: requirements.md, requirements-analysis-questions.md, traceability.json (Step 10: an `ids` list with one entry per FR and NFR ID, spelled exactly as requirements.md spells it, each with `kind` functional or non-functional and, for a sub-requirement, `of` its requirement) (under this stage's record dir, engine-resolved)";
+    const RA_PATH = '.codex/aidlc-common/stages/inception/requirements-analysis.md';
+    const withRequirementsAnalysis = (distributionFiles) => {
+      const files = new Map(distributionFiles);
+      files.set(
+        RA_PATH,
+        Buffer.from(`---
+slug: requirements-analysis
+number: "2.2"
+name: Requirements Analysis
+phase: inception
+execution: ALWAYS
+lead_agent: aidlc-product-agent
+produces:
+  - requirements
+scopes:
+  - feature
+inputs: intent-statement.md
+${RA_OUTPUTS}
+---
+
+# Requirements Analysis
+`),
+      );
+      const graph = JSON.parse(files.get('.codex/tools/data/stage-graph.json').toString());
+      graph.push({
+        slug: 'requirements-analysis',
+        number: '2.2',
+        phase: 'inception',
+        lead_agent: 'aidlc-product-agent',
+        produces: ['requirements'],
+        scopes: ['feature'],
+      });
+      files.set('.codex/tools/data/stage-graph.json', Buffer.from(JSON.stringify(graph)));
+      const grid = JSON.parse(files.get('.codex/tools/data/scope-grid.json').toString());
+      grid.feature.stages['requirements-analysis'] = 'EXECUTE';
+      grid.mvp.stages['requirements-analysis'] = 'SKIP';
+      files.set('.codex/tools/data/scope-grid.json', Buffer.from(JSON.stringify(grid)));
+      return files;
+    };
+    const customScopeExport = (overrides) =>
+      createNativeExport({
+        bucket: 'artifacts',
+        harness: 'codex',
+        now: '2026-08-11T12:00:00.000Z',
+        presign: vi.fn().mockResolvedValue('https://download.example/export.zip'),
+        projection: {
+          intent: {
+            projectId: 'project-1',
+            intentId: 'intent-1',
+            title: 'Payment service',
+            prompt: 'Add payments',
+            scope: 'feature-custom',
+            workflowId: 'aidlc-v2',
+            workflowVersion: 4,
+            createdAt: '2026-08-11T10:00:00.000Z',
+          },
+          stages: [
+            { stageId: 'intent-capture', phase: 'ideation' },
+            { stageId: 'requirements-analysis', phase: 'inception' },
+          ],
+          stageRows: [],
+          artifacts: [],
+          humanTasks: [],
+          repositories: [],
+        },
+        ...overrides,
+      });
+    // Reads the export ZIP through its central directory.
+    const unzip = (zip) => {
+      const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+      const entries = new Map();
+      let offset = zip.readUInt32LE(eocd + 16);
+      for (let count = zip.readUInt16LE(eocd + 10); count > 0; count -= 1) {
+        const method = zip.readUInt16LE(offset + 10);
+        const size = zip.readUInt32LE(offset + 20);
+        const nameLength = zip.readUInt16LE(offset + 28);
+        const local = zip.readUInt32LE(offset + 42);
+        const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+        const data = zip.subarray(start, start + size);
+        entries.set(
+          zip.toString('utf8', offset + 46, offset + 46 + nameLength),
+          method === 8 ? inflateRawSync(data) : data,
+        );
+        offset += 46 + nameLength + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+      }
+      return entries;
+    };
+    const exportedFiles = (s3) =>
+      unzip(
+        [...s3.objects].find(([key]) => key.startsWith('workflow-exports/'))?.[1] ??
+          Buffer.alloc(0),
+      );
+
+    it.each(['v2.11.3', 'v2.11.4'])(
+      'exports a custom scope from the %s release runtime',
+      async (profileId) => {
+        fetchRepoFiles.mockReset();
+        fetchReleaseRuntimeFiles.mockReset();
+        const profile = AIDLC_COMPATIBILITY_PROFILES[profileId];
+        const { distributionFiles } = await distribution();
+        fetchRepoFiles.mockRejectedValueOnce(noDist(profile.upstreamRef));
+        fetchReleaseRuntimeFiles.mockResolvedValueOnce(
+          new Map(
+            [...withRequirementsAnalysis(distributionFiles)].map(([path, value]) => [
+              `runtime/codex/${path}`,
+              value,
+            ]),
+          ),
+        );
+        const s3 = memoryS3();
+
+        const result = await customScopeExport({ s3, upstreamRef: profile.upstreamRef });
+
+        expect(result.downloadUrl).toBe('https://download.example/export.zip');
+        const stage = exportedFiles(s3).get(RA_PATH).toString();
+        expect(stage).toContain('scopes:\n  - feature\n  - feature-custom\n');
+        // Only the scopes block changes: the file keeps upstream's own text.
+        expect(stage).toContain(`\n${RA_OUTPUTS}\n`);
+      },
+    );
+
+    it("exports a custom scope from a custom release's own distribution in its base dialect", async () => {
+      fetchRepoFiles.mockReset();
+      const { distributionFiles } = await distribution();
+      const s3 = memoryS3();
+
+      await customScopeExport({
+        s3,
+        upstreamRef: '3333333333333333333333333333333333333333',
+        preloadedDistribution: {
+          files: withRequirementsAnalysis(distributionFiles),
+          workspaceLayout: 'spaces',
+        },
+        frontmatterProfile: AIDLC_COMPATIBILITY_PROFILES['v2.11.4'],
+      });
+
+      expect(exportedFiles(s3).get(RA_PATH).toString()).toContain('  - feature-custom\n');
+      expect(fetchRepoFiles).not.toHaveBeenCalled();
+    });
+
+    it('refuses frontmatter no known dialect parses as deterministic (409), not a crash', async () => {
+      const { distributionFiles } = await distribution();
+
+      const rejection = await rejectionOf(
+        customScopeExport({
+          s3: memoryS3(),
+          upstreamRef: '3333333333333333333333333333333333333333',
+          preloadedDistribution: {
+            files: withRequirementsAnalysis(distributionFiles),
+            workspaceLayout: 'spaces',
+          },
+        }),
+      );
+
+      expect(rejection.code).toBeUndefined();
+      expect(rejection.message).toBe(
+        `native-export: stage file has invalid frontmatter: ${RA_PATH}`,
+      );
+    });
   });
 
   it('creates a zip buffer', async () => {

@@ -11,6 +11,7 @@
 // error — a partial or stale seed is worse than a clear failure the operator
 // retries.
 
+import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
 import { assertGithubOwner, assertGithubRepo, isGitlabProjectPath } from './aidlc-custom-source.js';
@@ -109,6 +110,8 @@ const stripTopLevel = (name) => {
 
 // Streams the gzipped tarball through the extractor, collecting file entries
 // whose repo-relative path starts with one of `prefixes`. Returns Map<path, Buffer>.
+// `wrapped: false` is for an archive whose entries are not nested under one
+// top-level directory (a release asset); its entry names are used as they are.
 const extractFiles = (
   gzBuffer,
   prefixes,
@@ -116,6 +119,7 @@ const extractFiles = (
     maxFiles = MAX_REPO_FILES,
     maxRetainedBytes = MAX_REPO_RETAINED_BYTES,
     maxUncompressedBytes = MAX_REPO_UNCOMPRESSED_BYTES,
+    wrapped = true,
   } = {},
 ) =>
   new Promise((resolve, reject) => {
@@ -131,7 +135,7 @@ const extractFiles = (
     const extract = tar.extract();
 
     extract.on('entry', (header, stream, next) => {
-      const rel = stripTopLevel(header.name);
+      const rel = wrapped ? stripTopLevel(header.name) : header.name;
       const keep =
         header.type === 'file' && rel && prefixes.some((prefix) => rel.startsWith(prefix));
       if (!keep) {
@@ -326,6 +330,100 @@ const fetchCoreFiles = async (ref, source = {}) => {
   return new Map([...files].map(([path, body]) => [path, body.toString('utf8')]));
 };
 
+// Official releases since 2.8.2 no longer commit their harness distributions
+// (`dist/`); each release ships them in one asset, `aidlc-runtime-<version>.tar.gz`,
+// beside `version.json` (the version and the commit it was built from) and
+// `checksums.txt`. Release downloads need no API call: github.com redirects
+// them to its asset storage, and nothing is sent with the request.
+const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
+
+const releaseAssetUrl = (tag, name) =>
+  `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${name}`;
+
+const fetchReleaseAsset = async (tag, name, maxBytes) => {
+  const url = releaseAssetUrl(tag, name);
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'collaborative-ai-dlc' },
+    redirect: 'follow',
+  });
+  if (!res.ok) {
+    throw new Error(`repo-fetch: ${url} returned ${res.status} ${res.statusText}`.trimEnd());
+  }
+  return responseToBuffer(res, maxBytes);
+};
+
+// The files under `prefixes` in the runtime asset of the official release
+// `tag`. The tag only locates the release: it must have been built from
+// `commit` (its version.json `sourceDigest`), and the asset must match its
+// checksums.txt entry, or nothing is returned. The asset has no top-level
+// directory: its entries start `runtime/<harness>/` (and `plugins/`).
+const fetchReleaseRuntimeFiles = async (
+  tag,
+  {
+    commit,
+    prefixes,
+    maxTarballBytes = MAX_REPO_TARBALL_BYTES,
+    maxFiles = MAX_REPO_FILES,
+    maxRetainedBytes = MAX_REPO_RETAINED_BYTES,
+    maxUncompressedBytes = MAX_REPO_UNCOMPRESSED_BYTES,
+  },
+) => {
+  if (!RELEASE_TAG_RE.test(String(tag ?? ''))) {
+    throw new Error(`repo-fetch: "${String(tag)}" is not an AI-DLC release tag`);
+  }
+  if (!isCommitSha(commit)) {
+    throw new Error('repo-fetch: a release runtime needs the full commit SHA it was built from');
+  }
+  if (!Array.isArray(prefixes) || prefixes.length === 0) {
+    throw new Error('repo-fetch: at least one path prefix is required');
+  }
+  const versionBody = await fetchReleaseAsset(tag, 'version.json', MAX_RELEASE_METADATA_BYTES);
+  let release;
+  try {
+    release = JSON.parse(versionBody.toString('utf8'));
+  } catch {
+    throw new Error(`repo-fetch: release ${tag} version.json is not valid JSON`);
+  }
+  if (String(release?.sourceDigest ?? '').toLowerCase() !== commit.toLowerCase()) {
+    throw new Error(
+      `repo-fetch: release ${tag} was built from ${String(release?.sourceDigest)}, not ${commit}`,
+    );
+  }
+  const version = String(release.version ?? '');
+  if (!RELEASE_VERSION_RE.test(version)) {
+    throw new Error(`repo-fetch: release ${tag} version.json has no valid version`);
+  }
+  const asset = `aidlc-runtime-${version}.tar.gz`;
+  const checksums = await fetchReleaseAsset(tag, 'checksums.txt', MAX_RELEASE_METADATA_BYTES);
+  // `<sha256>  <name>`, as sha256sum writes it (` *<name>` in binary mode).
+  const expected = checksums
+    .toString('utf8')
+    .split('\n')
+    .map((line) => line.trim().match(/^([0-9a-f]{64}) [ *](.+)$/i))
+    .find((match) => match?.[2] === asset)?.[1];
+  if (!expected) {
+    throw new Error(`repo-fetch: release ${tag} checksums.txt lists no ${asset}`);
+  }
+  const archive = await fetchReleaseAsset(tag, asset, maxTarballBytes);
+  if (createHash('sha256').update(archive).digest('hex') !== expected.toLowerCase()) {
+    throw new Error(`repo-fetch: ${asset} does not match its checksum in release ${tag}`);
+  }
+  const files = await extractFiles(archive, prefixes, {
+    maxFiles,
+    maxRetainedBytes,
+    maxUncompressedBytes,
+    wrapped: false,
+  });
+  if (files.size === 0) {
+    throw new Error(
+      `repo-fetch: no files found for prefixes ${prefixes.join(', ')} in ${asset} of release ${tag}`,
+    );
+  }
+  return files;
+};
+
 export {
   DEFAULT_GITLAB_URL,
   gitlabBaseUrl,
@@ -335,8 +433,10 @@ export {
   MAX_REPO_TARBALL_BYTES,
   MAX_REPO_UNCOMPRESSED_BYTES,
   fetchCoreFiles,
+  fetchReleaseRuntimeFiles,
   fetchRepoFiles,
   extractFiles,
+  releaseAssetUrl,
   responseToBuffer,
   tarballUrl,
   REPO_OWNER,
@@ -344,6 +444,7 @@ export {
 };
 export default {
   fetchCoreFiles,
+  fetchReleaseRuntimeFiles,
   fetchRepoFiles,
   extractFiles,
   isOfficialSource,
