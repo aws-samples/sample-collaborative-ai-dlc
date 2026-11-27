@@ -7,6 +7,9 @@ import {
   unitBranchFor,
   laneSessionIdFor,
   feedbackChangedFileReport,
+  laneFailureReason,
+  laneRetryPrompt,
+  laneRetryGuidance,
 } from '../section.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -205,5 +208,54 @@ describe('feedback changed-file provenance consumer', () => {
       changedFiles: files,
       changedFilesSummary: 'services/api/index.js, packages/ui/Button.tsx',
     });
+  });
+});
+
+describe('lane retry gate text', () => {
+  it('names the failure with its detail, or falls back to failed', () => {
+    expect(laneFailureReason({ reason: 'push_failed', detail: 'rejected' })).toBe(
+      'push_failed (rejected)',
+    );
+    expect(laneFailureReason({ reason: 'sensor_blocked' })).toBe('sensor_blocked');
+    expect(laneFailureReason({})).toBe('failed');
+  });
+
+  it('builds the prompt for a first failure', () => {
+    const prompt = laneRetryPrompt({
+      slug: 'billing',
+      stageId: 'cg',
+      attempt: 0,
+      outcome: { reason: 'sensor_blocked' },
+    });
+    expect(prompt.split('\n')[0]).toBe('Unit billing failed at cg: sensor_blocked');
+    expect(prompt).toContain('- leave-failed: end this unit');
+    expect(prompt).not.toContain('undo the unpushed commits');
+    expect(prompt).not.toContain('Please choose one');
+  });
+
+  it('marks a retry, explains the undo of a rejected push, and re-asks', () => {
+    const prompt = laneRetryPrompt({
+      slug: 'billing',
+      stageId: 'cg',
+      attempt: 2,
+      outcome: { reason: 'push_failed', detail: 'rejected' },
+      reask: true,
+    });
+    expect(prompt.split('\n')[0]).toBe(
+      'Unit billing failed at cg (retry 2): push_failed (rejected)',
+    );
+    expect(prompt).toContain('undo the unpushed commits');
+    expect(prompt).toContain('was not retry, request-changes or leave-failed. Please choose one.');
+  });
+
+  it.each([
+    ['request-changes', { feedback: 'Use the helper' }, 'Use the helper'],
+    ['request-changes', { feedback: '   ' }, null],
+    ['request-changes', { feedback: 7 }, null],
+    ['request-changes', 'request-changes', null],
+    ['request-changes', null, null],
+    ['retry', { feedback: 'ignored on a plain retry' }, null],
+  ])('reads guidance for %s from %o', (choice, answer, expected) => {
+    expect(laneRetryGuidance(choice, answer)).toBe(expected);
   });
 });

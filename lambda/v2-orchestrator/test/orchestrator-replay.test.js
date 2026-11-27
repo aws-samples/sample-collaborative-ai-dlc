@@ -1329,6 +1329,17 @@ describe('WP5 sections on the real durable runner', () => {
       expect(world.events.filter((t) => t === 'v2.unit.retry')).toHaveLength(1);
       expect(world.events).not.toContain('v2.units.halt_decision');
       expect(world.statusWrites).toContain('SUCCEEDED');
+      // Durable identities of the retry gate, in order: the retry path's
+      // session release lives inside lane-retry-wait, adding no operation.
+      const names = execution
+        .getOperations()
+        .map((op) => op.getOperationData()?.Name)
+        .filter((name) => /^lane-retry-.*billing/.test(name ?? ''));
+      expect(names).toEqual([
+        'lane-retry-wait-s1-billing-cg-a0',
+        'lane-retry-decided-s1-billing-cg-a0',
+        'lane-retry-event-s1-billing-cg-a0',
+      ]);
     },
   );
 });
