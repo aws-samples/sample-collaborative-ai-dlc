@@ -76,6 +76,7 @@ Settled when a PR started, on the date given. "Plan owner" means the plan owner 
 | D29 | 1   | Terraform does not create the flag's parameter. A deployment that never set it has native off.                                                                                                                                                                                              | Proposed   |
 | D30 | 1   | A space without a repository cannot hold a native intent (400 `native_repository_required`), because the primary repository holds AI-DLC's records (D10).                                                                                                                                   | Proposed   |
 | D31 | 1   | The space detail response keeps the flag for one minute per warm Lambda container, because every open space page polls that response. A switch of the flag reaches the browser within that minute. Intent creation reads the flag uncached. A failed read is logged and counts as disabled. | Proposed   |
+| D32 | 1   | A native draft stores the space's PR strategy as the space resolves it. The check a platform create makes, that the space's providers can honour the strategy, is skipped: native delivery does not use the value (D9).                                                                     | Proposed   |
 
 ## Workspace layout
 
@@ -184,6 +185,7 @@ Backend only. Nothing visible in the UI.
 
 - **Scope:** one shared reader for the flag in `lambda/shared/`, modelled on `fetchPlatformStageSkipping` in `lambda/intents/index.js`. `engine` accepted on intent creation and stored on the execution row. `nativeExecution` on the project detail response so the browser can learn the flag. Read permission for the parameter on the Lambdas that read it. This document is committed with this PR.
 - **Built:** the reader and the engine helpers are in `lambda/shared/native-execution.js`. The intents and projects Lambdas read the flag; the orchestrator does not need it yet. An independent review of the change led to D31.
+- **Reviewed again** on 2026-11-27, after the rebase onto `main` at d3a4e4f6. No defect was found and no code changed. The review recorded D32, T15, T16, the addition to T13 and the note on PR 2, and added the `shared` project to the Verify line.
 
 Acceptance criteria:
 
@@ -201,11 +203,12 @@ Acceptance criteria:
 - [x] Terraform changes are limited to the read permission. No variable, no environment wiring.
 - [x] Dev check: with the parameter set to `enabled`, the create request stores a native draft; with the parameter removed, it returns 409. Done by the plan owner on 2026-11-27 with this branch deployed to dev, before the merge. The parameter was removed again afterwards.
 
-Verify: `npx vitest run --project=intents --project=projects --project=v2-orchestrator`. In dev, set the parameter with `aws ssm put-parameter` and repeat the create request.
+Verify: `npx vitest run --project=shared --project=intents --project=projects --project=v2-orchestrator`. In dev, set the parameter with `aws ssm put-parameter` and repeat the create request.
 
 ### PR 2: New Intent choice and the native draft
 
 - **Scope:** `NewIntentPage.tsx` offers the engine choice when the project reports the flag as enabled. `IntentComposePage.tsx` shows a native draft as CLI, model and Start.
+- **Note from PR 1:** the draft's auto-save (`useCollaborativeIntentDraft.ts`) sends `composedGrid` and `skipStageIds` with every save. A native draft refuses both, even as `null` (D25), so its auto-save must send title, prompt and conversation language only.
 
 Acceptance criteria:
 
@@ -560,22 +563,24 @@ The plan owner signs off:
 
 Work that is postponed, so it can be followed. Whoever works on a PR, person or agent, adds a row here in that PR whenever something is left out, found missing or put off.
 
-| #   | Topic                                                                                     | When                              |
-| --- | ----------------------------------------------------------------------------------------- | --------------------------------- |
-| T1  | Output and token usage per stage; a pipeline bar that moves during a turn                 | After release                     |
-| T2  | Codex, OpenCode and Kiro, one PR each                                                     | After release                     |
-| T3  | Stage actions for native: rewind, revise, repair, recompose, compose                      | After release                     |
-| T4  | Quorum edit, artifact verification, unit feedback and workspace export for native         | After release                     |
-| T5  | Units as separate lanes, and a pull request per unit. Native shows one row per stage.     | After release                     |
-| T6  | Messages to the agent outside a question                                                  | After release                     |
-| T7  | Sensor results and stage review views. AI-DLC runs its own checks; the views stay empty.  | After release                     |
-| T8  | Exact stage start and end times, from AI-DLC's `runtime-graph.json`                       | After release                     |
-| T9  | A check of AI-DLC release signatures. The recorded commit identifies the version instead. | Not planned                       |
-| T10 | Further parity gaps                                                                       | Found by the parity review, PR 22 |
-| T11 | Sparse checkout for native intents. Refused with 400 since PR 1 (D25).                    | Parity review, PR 22              |
-| T12 | `compose` on a native draft still runs the composer when called through the API directly. | PR 14                             |
-| T13 | Changing the primary repository of a native draft. It is set at creation only.            | PR 18                             |
-| T14 | Several repositories reach PRs 7 to 17 before PR 18 has checked AI-DLC's layout (D21).    | Checked in PR 7 and PR 18         |
+| #   | Topic                                                                                                                                                                              | When                              |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| T1  | Output and token usage per stage; a pipeline bar that moves during a turn                                                                                                          | After release                     |
+| T2  | Codex, OpenCode and Kiro, one PR each                                                                                                                                              | After release                     |
+| T3  | Stage actions for native: rewind, revise, repair, recompose, compose                                                                                                               | After release                     |
+| T4  | Quorum edit, artifact verification, unit feedback and workspace export for native                                                                                                  | After release                     |
+| T5  | Units as separate lanes, and a pull request per unit. Native shows one row per stage.                                                                                              | After release                     |
+| T6  | Messages to the agent outside a question                                                                                                                                           | After release                     |
+| T7  | Sensor results and stage review views. AI-DLC runs its own checks; the views stay empty.                                                                                           | After release                     |
+| T8  | Exact stage start and end times, from AI-DLC's `runtime-graph.json`                                                                                                                | After release                     |
+| T9  | A check of AI-DLC release signatures. The recorded commit identifies the version instead.                                                                                          | Not planned                       |
+| T10 | Further parity gaps                                                                                                                                                                | Found by the parity review, PR 22 |
+| T11 | Sparse checkout for native intents. Refused with 400 since PR 1 (D25).                                                                                                             | Parity review, PR 22              |
+| T12 | `compose` on a native draft still runs the composer when called through the API directly.                                                                                          | PR 14                             |
+| T13 | Changing the primary repository of a native draft. It is set at creation only. A PATCH that carries `primaryRepo` is ignored, not refused.                                         | PR 18                             |
+| T14 | Several repositories reach PRs 7 to 17 before PR 18 has checked AI-DLC's layout (D21).                                                                                             | Checked in PR 7 and PR 18         |
+| T15 | The orchestrator's `quorum-edit`, `cleanup-branches` and `retry-delivery` events return before the native check (D27). No native intent can reach them while it stays a draft.     | PR 11                             |
+| T16 | `POST /delivery` and `POST /derive` are not in PR 14's list. On a native draft, `delivery` is refused only because no workflow resolves, and `derive` runs as on a platform draft. | PR 14; delivery retry in PR 17    |
 
 Criteria kept for T1:
 
