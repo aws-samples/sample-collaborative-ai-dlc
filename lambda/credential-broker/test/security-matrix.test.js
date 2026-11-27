@@ -315,6 +315,21 @@ describe('broker parked-stage push window', () => {
     },
   );
 
+  // An answer can land after the park polling grace but before the CLI exits:
+  // the gate is answered while META is still WAITING on it, and the stage-exit
+  // commit and push still belong to the parked attempt.
+  it.each(['answered', 'approved', 'rejected'])(
+    'serves the owning stage grant when the parked gate was %s before the CLI exited',
+    async (status) => {
+      await expect(
+        authorizeCredentialRequest(
+          { ...request, requiredAccess: 'write', gatewayGrant: await stageGrant() },
+          parkedDeps({ gate: { ...parkedGate, status } }),
+        ),
+      ).resolves.toBeDefined();
+    },
+  );
+
   it("denies another attempt's stage grant while parked", async () => {
     await expect(
       authorizeCredentialRequest(
@@ -327,8 +342,11 @@ describe('broker parked-stage push window', () => {
   it.each([
     ['the gate row is missing', { gate: undefined }],
     ['the parked gate carries no attempt (engine gate)', { gate: { status: 'pending' } }],
-    ['the parked gate was answered', { gate: { ...parkedGate, status: 'answered' } }],
     ['the parked gate was superseded', { gate: { ...parkedGate, status: 'superseded' } }],
+    [
+      "another attempt's gate was answered",
+      { gate: { ...parkedGate, stageCallbackId: 'cb-other', status: 'answered' } },
+    ],
     [
       'META no longer points at a gate',
       { gate: parkedGate, execution: { pendingHumanTaskId: null } },
@@ -438,13 +456,29 @@ describe.each([
     },
   );
 
+  it.each(['answered', 'approved', 'rejected'])(
+    'serves the declared owning attempt when the parked gate was %s before the CLI exited',
+    async (status) => {
+      await expect(
+        authorizeCredentialRequest(
+          { ...legacyRequest, requiredAccess: 'write', stageCallbackId: 'cb-1' },
+          parked({ ...parkedGate, status }),
+        ),
+      ).resolves.toBeDefined();
+    },
+  );
+
   it.each([
     ['no attempt is declared', {}, parkedGate],
     ['another attempt is declared', { stageCallbackId: 'cb-other' }, parkedGate],
     ['the declaration is not a string', { stageCallbackId: { $ne: null } }, parkedGate],
     ['read access is asked', { stageCallbackId: 'cb-1', requiredAccess: 'read' }, parkedGate],
     ['the gate has no attempt', { stageCallbackId: 'cb-1' }, { status: 'pending' }],
-    ['the gate was answered', { stageCallbackId: 'cb-1' }, { ...parkedGate, status: 'answered' }],
+    [
+      'the gate was superseded',
+      { stageCallbackId: 'cb-1' },
+      { ...parkedGate, status: 'superseded' },
+    ],
     ['the gate row is missing', { stageCallbackId: 'cb-1' }, undefined],
   ])('denies while WAITING when %s', async (_name, fields, gate) => {
     await expect(

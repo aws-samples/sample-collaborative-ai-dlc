@@ -14,7 +14,11 @@ import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
-import { executionMetaKey, humanTaskKey } from '../shared/v2-process-keys.js';
+import {
+  executionMetaKey,
+  humanTaskKey,
+  isHumanTaskAnswerStatus,
+} from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
   getBinding,
@@ -55,9 +59,13 @@ const AUTHORITY_ERROR_CODES = new Set([
 // push (and its committer-identity resolve) arrives while the execution is
 // already parked. Serve exactly that window: identity or write access for the
 // attempt that owns the very gate the execution is parked on, while that gate
-// is still pending. Anything else — another attempt, an engine gate, an
-// answered or superseded gate, a cleared pointer, a read, or any non-WAITING
-// status — keeps the strict rule.
+// is pending or already answered. An answer can land after the park polling
+// grace but before the CLI exits; META stays WAITING and keeps pointing at the
+// gate until the orchestrator unparks it after the stage callback, and the
+// stage-exit path still treats that answered gate as its own park
+// (run-stage `ownedGateAtExit`), so its commit and push must be served too.
+// Anything else — another attempt, an engine gate, a superseded gate, a
+// cleared pointer, a read, or any non-WAITING status — keeps the strict rule.
 const PARK_EXIT_ACCESS = new Set(['identity', 'write']);
 
 // Which attempt is asking. A verified grant names it, and only a stage grant
@@ -89,7 +97,11 @@ const parkedStageWindowAllows = async ({
       ConsistentRead: true,
     }),
   );
-  return Boolean(gate) && gate.status === 'pending' && gate.stageCallbackId === attempt;
+  return (
+    Boolean(gate) &&
+    (gate.status === 'pending' || isHumanTaskAnswerStatus(gate.status)) &&
+    gate.stageCallbackId === attempt
+  );
 };
 
 const authorizeCredentialRequest = async (
