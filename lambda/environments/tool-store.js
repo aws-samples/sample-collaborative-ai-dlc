@@ -277,7 +277,12 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
-  const updateVersion = async (toolId, versionId, patch, { fromStatus = null } = {}) => {
+  const updateVersion = async (
+    toolId,
+    versionId,
+    patch,
+    { fromStatus = null, imageDigest = null } = {},
+  ) => {
     const existing = await getVersion(toolId, versionId);
     if (!existing) throw Object.assign(new Error('Tool version not found'), { statusCode: 404 });
     if (patch.definition && !['DRAFT', 'FAILED'].includes(existing.status)) {
@@ -348,16 +353,53 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       ExpressionAttributeValues: values,
       ReturnValues: 'ALL_NEW',
     };
+    const conditions = [];
     if (fromStatus) {
       names['#status'] = 'status';
-      input.ConditionExpression = '#status = :fromStatus';
+      conditions.push('#status = :fromStatus');
       values[':fromStatus'] = fromStatus;
     }
+    // The record still describes this image: a rebuild in the meantime wins.
+    if (imageDigest) {
+      names['#expectedImageDigest'] = 'imageDigest';
+      conditions.push('#expectedImageDigest = :expectedImageDigest');
+      values[':expectedImageDigest'] = imageDigest;
+    }
+    if (conditions.length) input.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(input));
     if (patch.buildId) await putLookup('BUILD', patch.buildId, toolId, versionId);
     if (patch.buildArn) await putLookup('BUILD', patch.buildArn, toolId, versionId);
     if (patch.imageDigest) await putLookup('IMAGE', patch.imageDigest, toolId, versionId);
     return Attributes;
+  };
+
+  // Takes the next scan check of a version under review. Only the caller whose
+  // previous value still matches wins, so overlapping polls check a version
+  // once, and a failed check waits for the next interval like any other. The
+  // status index is left alone: the check is not a change of the version.
+  const claimScanRecheck = async (toolId, versionId, { previous = null, at = now() } = {}) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: toolVersionKey(toolId, versionId),
+          UpdateExpression: 'SET #recheckedAt = :at',
+          ConditionExpression: previous
+            ? '#status = :review AND #recheckedAt = :previous'
+            : '#status = :review AND attribute_not_exists(#recheckedAt)',
+          ExpressionAttributeNames: { '#status': 'status', '#recheckedAt': 'scanRecheckedAt' },
+          ExpressionAttributeValues: {
+            ':at': at,
+            ':review': 'SECURITY_REVIEW',
+            ...(previous ? { ':previous': previous } : {}),
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   const publishVersion = async ({ tool, version, actor }) => {
@@ -544,6 +586,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     listVersions,
     listAllVersions,
     listVersionsByStatus,
+    claimScanRecheck,
     createTool,
     createVersion,
     updateTool,
