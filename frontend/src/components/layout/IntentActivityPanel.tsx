@@ -520,8 +520,6 @@ function TimelineTab({
     );
   }
 
-  const filterCount = (value: TimelineFilter) => (value === 'all' ? totals.all : totals[value]);
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 border-b px-3 py-2">
@@ -541,7 +539,10 @@ function TimelineTab({
               className="h-6 gap-1 px-2 text-2xs font-medium data-[state=on]:border-primary"
             >
               {label}
-              <span className="font-normal tabular-nums opacity-70">{filterCount(value)}</span>
+              {/* Only errors carry a count: the one number that asks for a look. */}
+              {value === 'errors' && totals.errors > 0 && (
+                <span className="font-normal tabular-nums opacity-70">{totals.errors}</span>
+              )}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>

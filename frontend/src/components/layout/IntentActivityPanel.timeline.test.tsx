@@ -200,6 +200,13 @@ describe('IntentActivityPanel Timeline tab', () => {
     const user = userEvent.setup();
     render(<IntentActivityPanel onClose={() => {}} />);
 
+    // The chips are plain labels; only Errors carries a count, the one number
+    // that asks for a look.
+    for (const name of ['All', 'Questions', 'Documents']) {
+      expect(screen.getByRole('radio', { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole('radio', { name: /^Errors\s*\d+$/ })).toBeInTheDocument();
+
     await user.click(screen.getByRole('radio', { name: /Questions/ }));
     expect(screen.queryByRole('button', { name: /Requirements Analysis/ })).not.toBeInTheDocument();
     expect(screen.getByText('Agent asked 1 question')).toBeInTheDocument();
