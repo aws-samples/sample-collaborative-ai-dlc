@@ -33,6 +33,12 @@ variable "powertools_log_event" {
   default     = false
 }
 
+variable "api_access_log_identity" {
+  description = "Record the caller's Cognito subject (sub, a pseudonymous personal identifier) and the access-token client_id in the REST API access log. Defaults to true when environment is \"prod\" and false otherwise."
+  type        = bool
+  default     = null
+}
+
 variable "kms_key_arn" {
   description = "Optional existing customer-managed KMS key ARN. Leave empty to use service-owned encryption."
   type        = string

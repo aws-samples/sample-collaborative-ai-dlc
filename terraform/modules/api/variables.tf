@@ -44,6 +44,12 @@ variable "web_acl_arn" {
   default     = ""
 }
 
+variable "access_log_identity" {
+  description = "Record the caller's Cognito subject (sub) and access-token client_id in the REST API access log; null enables it only in prod"
+  type        = bool
+  default     = null
+}
+
 variable "waf_enabled" {
   description = "Whether to associate the API stage with AWS WAF"
   type        = bool

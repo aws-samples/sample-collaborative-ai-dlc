@@ -32,6 +32,10 @@ vpc_block_public_access_exclusion = false
 # Optional AWS WAF protection for CloudFront, API Gateway, and Cognito.
 enable_waf = false
 
+# Record the caller's Cognito user ID (sub) in the REST API access log.
+# Unset = enabled only when environment = "prod".
+# api_access_log_identity = true
+
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 

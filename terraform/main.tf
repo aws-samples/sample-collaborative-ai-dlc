@@ -687,6 +687,7 @@ module "api" {
   powertools_log_event                     = var.powertools_log_event
   cognito_user_pool_arn                    = module.auth.user_pool_arn
   waf_enabled                              = var.enable_waf
+  access_log_identity                      = var.api_access_log_identity
   web_acl_arn                              = module.waf.regional_web_acl_arn
   projects_lambda_invoke_arn               = module.lambda.projects_lambda_invoke_arn
   projects_lambda_name                     = module.lambda.projects_lambda_name
