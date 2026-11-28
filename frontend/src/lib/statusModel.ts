@@ -34,7 +34,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useCallback, useRef, useSyncExternalStore } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { notifyManager, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { useQueryData } from '@/hooks/useQueryData';
 import { qk } from '@/lib/queryKeys';
 import type { ConnectionStatus } from '@/services/realtime';
@@ -729,11 +729,15 @@ export function useIntentStatusReader(): <T extends IntentSummaryLike>(
   const version = useRef(0);
   const subscribe = useCallback(
     (notify: () => void) =>
-      client.getQueryCache().subscribe(({ query }) => {
-        if (!isIntentDetailKey(query.queryKey)) return;
-        version.current += 1;
-        notify();
-      }),
+      client.getQueryCache().subscribe(
+        // The cache notifies synchronously, also while another component
+        // renders; batchCalls defers the update like TanStack's own hooks.
+        notifyManager.batchCalls(({ query }: { query: { queryKey: QueryKey } }): void => {
+          if (!isIntentDetailKey(query.queryKey)) return;
+          version.current += 1;
+          notify();
+        }),
+      ),
     [client],
   );
   const current = useSyncExternalStore(subscribe, () => version.current);
