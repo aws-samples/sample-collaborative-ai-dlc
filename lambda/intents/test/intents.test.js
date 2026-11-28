@@ -16095,6 +16095,139 @@ describe('native engine', () => {
         expect(metaOf(id)).toMatchObject({ engine: 'native', title: 'Renamed', prompt: 'Build Y' });
       });
 
+      it('saves the model of a native draft, CLI by CLI, and records who changed it', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const created = JSON.parse((await createNative(sub, projectId)).body);
+        const { id } = created;
+        // The draft starts with the models it snapshotted from the space.
+        expect(created.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+
+        const set = await patchDraft(sub, projectId, id, {
+          cliModels: { claude: ' us.anthropic.claude-sonnet-4-6 ' },
+        });
+        expect(set.statusCode).toBe(200);
+        expect(JSON.parse(set.body).cliModels).toEqual({
+          claude: 'us.anthropic.claude-sonnet-4-6',
+        });
+
+        // A CLI the body does not name keeps its model.
+        const other = await patchDraft(sub, projectId, id, {
+          cliModels: { codex: 'openai.gpt-5.5' },
+        });
+        expect(other.statusCode).toBe(200);
+        expect(metaOf(id).cliModels).toEqual({
+          claude: 'us.anthropic.claude-sonnet-4-6',
+          codex: 'openai.gpt-5.5',
+        });
+
+        // The value the draft already has is no change: nothing to write.
+        const same = await patchDraft(sub, projectId, id, {
+          cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        });
+        expect(same.statusCode).toBe(400);
+        expect(JSON.parse(same.body).error).toBe('Nothing to update');
+
+        // null and '' remove a model. A draft left without any stores null,
+        // as a create in a space without models does.
+        const cleared = await patchDraft(sub, projectId, id, {
+          title: 'Renamed',
+          cliModels: { claude: null, codex: '' },
+        });
+        expect(cleared.statusCode).toBe(200);
+        expect(JSON.parse(cleared.body)).toMatchObject({ title: 'Renamed', cliModels: null });
+        expect(metaOf(id).cliModels).toBeNull();
+
+        const events = [...procStore.values()].filter(
+          (row) => row.pk === `EXEC#${id}` && row.eventType === 'v2.intent.settings.changed',
+        );
+        expect(events.map((row) => row.summary)).toEqual([
+          'Model for claude set to us.anthropic.claude-sonnet-4-6 for this intent',
+          'Model for codex set to openai.gpt-5.5 for this intent',
+          'Model for claude removed for this intent (was us.anthropic.claude-sonnet-4-6)',
+          'Model for codex removed for this intent (was openai.gpt-5.5)',
+        ]);
+        // The actor is the member's display name, which the test claims derive
+        // from the email.
+        expect(new Set(events.map((row) => row.actor))).toEqual(new Set([`${sub}@x`]));
+      });
+
+      // A replica that has not seen the last save must not be what a model
+      // change is merged into, or compared with: the draft revision the save
+      // is checked against is read consistently, so it would not catch the
+      // stale models.
+      it('merges a model change into the current models, not into a lagging read', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+        const metaKey = keyOf(`EXEC#${id}`, 'META');
+        const lagging = structuredClone(metaOf(id));
+        const saved = await patchDraft(sub, projectId, id, {
+          cliModels: { claude: 'us.anthropic.claude-sonnet-4-6', codex: 'openai.gpt-5.5' },
+        });
+        expect(saved.statusCode).toBe(200);
+        ddbMock.on(GetCommand, { Key: { pk: `EXEC#${id}`, sk: 'META' } }).callsFake((input) => {
+          const current = procStore.get(metaKey);
+          if (input.ConsistentRead) return { Item: { ...current } };
+          // The replica still shows the first Claude Code model and no Codex one.
+          return { Item: { ...lagging, draftRevision: current.draftRevision } };
+        });
+
+        const res = await patchDraft(sub, projectId, id, {
+          cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
+        });
+
+        // Not "nothing to update", and the Codex model is still there.
+        expect(res.statusCode).toBe(200);
+        expect(metaOf(id).cliModels).toEqual({
+          claude: 'us.anthropic.claude-opus-4-8',
+          codex: 'openai.gpt-5.5',
+        });
+      });
+
+      it.each([
+        ["a model id in another CLI's format", { claude: 'amazon-bedrock/us.anthropic.claude' }],
+        ['a CLI that does not exist', { cursor: 'gpt' }],
+        ['a model that is not a string', { claude: 7 }],
+        ['a list', ['us.anthropic.claude-sonnet-4-6']],
+        ['null', null],
+        ['a string', '{"claude":"us.anthropic.claude-sonnet-4-6"}'],
+      ])('refuses %s as the model of a native draft and writes nothing', async (_label, value) => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+        const before = structuredClone(metaOf(id));
+
+        const res = await patchDraft(sub, projectId, id, { title: 'Renamed', cliModels: value });
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body)).toMatchObject({
+          error: 'Invalid cliModels configuration',
+          issues: [expect.objectContaining({ message: expect.any(String) })],
+        });
+        expect(metaOf(id)).toEqual(before);
+      });
+
+      it('leaves the models of a platform draft alone, as before', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createIntent(sub, projectId)).body);
+        const models = structuredClone(metaOf(id).cliModels);
+
+        const res = await patchDraft(sub, projectId, id, {
+          title: 'Renamed',
+          cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(metaOf(id)).toMatchObject({ title: 'Renamed', cliModels: models });
+        // The field alone is still an empty request for a platform draft.
+        const alone = await patchDraft(sub, projectId, id, { cliModels: { claude: null } });
+        expect(alone.statusCode).toBe(400);
+        expect(JSON.parse(alone.body).error).toBe('Nothing to update');
+        expect(metaOf(id).cliModels).toEqual(models);
+      });
+
       it.each(PLAN_INPUTS)(
         'refuses to save the plan input %s on a native draft',
         async (field, value) => {
@@ -16190,6 +16323,23 @@ describe('native engine', () => {
         expect(JSON.parse(res.body).code).toBe('SPACE_WRITE_FORBIDDEN');
       });
 
+      it('refuses a viewer who changes the model of a native draft', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+        const viewer = `viewer-${randomUUID()}`;
+        await seedMembership(projectId, viewer, 'viewer');
+        const before = structuredClone(metaOf(id));
+
+        const res = await patchDraft(viewer, projectId, id, {
+          cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        });
+
+        expect(res.statusCode).toBe(403);
+        expect(JSON.parse(res.body).code).toBe('SPACE_WRITE_FORBIDDEN');
+        expect(metaOf(id)).toEqual(before);
+      });
+
       it('hides a native draft from a non-member and from another space', async () => {
         const sub = `u-${randomUUID()}`;
         const projectId = await seedV2Project(sub);
@@ -16200,6 +16350,9 @@ describe('native engine', () => {
 
         expect((await request(stranger, projectId, id, 'GET')).statusCode).toBe(403);
         expect((await patchDraft(stranger, projectId, id, { title: 'X' })).statusCode).toBe(403);
+        expect(
+          (await patchDraft(stranger, projectId, id, { cliModels: { claude: null } })).statusCode,
+        ).toBe(403);
         expect((await request(stranger, projectId, id, 'POST', '/start')).statusCode).toBe(403);
         expect((await request(sub, otherProjectId, id, 'GET')).statusCode).toBe(404);
         expect((await patchDraft(sub, otherProjectId, id, { title: 'X' })).statusCode).toBe(404);

@@ -79,6 +79,18 @@ Settled when a PR started, on the date given. "Plan owner" means the plan owner 
 | D32 | 1   | A native create makes the PR-strategy check of a platform create: `pr-per-unit` in a space with a provider that has no draft pull requests is 409 `PR_STRATEGY_UNSUPPORTED`. Changed with D33. Before, the check was skipped, because native delivery did not use the value.                     | Proposed   |
 | D33 | 1   | Native intents honour the space's PR strategy. With `pr-per-unit`, a unit that AI-DLC has finished is committed and pushed and gets its pull request, without waiting for the end of the intent. There is still no push per turn. This changes D9 and takes the pull request per unit out of T5. | Plan owner |
 | D34 | 1   | The delivery per unit is built as PR 18, right after the delivery at the end. The former PRs 18 to 22 are now 19 to 23. Their branch names stay.                                                                                                                                                 | Proposed   |
+| D35 | 2   | The native draft page has a model picker, and the model is saved on the draft: PATCH of a native draft accepts `cliModels`. A platform draft does not read the field, as before. PR 2 becomes backend and frontend. This adds to D26.                                                            | Plan owner |
+| D36 | 2   | The native draft page shows the output-language field of a platform draft. Whether a native turn honours the language is still decided by PR 9 or the parity review (D22).                                                                                                                       | Plan owner |
+| D37 | 2   | The picker for the primary repository starts with the repository the space marks as primary, otherwise with the first. The member can change it before creating.                                                                                                                                 | Plan owner |
+| D38 | 2   | For PR 2: commits as validated slices land, a force-push with lease of the rebased PR 1 branch, a push of PR 2's branch, and its pull request against PR 1's branch. Asked again when the next PR starts.                                                                                        | Plan owner |
+| D39 | 2   | The browser learns the flag from the space detail response that `SpacePermissionsContext` polls every 15 seconds. The New Intent page reads the space from the list, which does not report the flag (D28), and makes no request of its own.                                                      | Proposed   |
+| D40 | 2   | The engine choice has two options, "Platform workflow" (preselected) and "Native AI-DLC". It is not offered on a New Intent page that asks for a release (`?release`), tests one (`?testRelease`) or starts from another intent (`?fromIntent`).                                                 | Proposed   |
+| D41 | 2   | In a space without a repository, the native choice shows a note and the create button is disabled. The backend would answer 400 `native_repository_required` (D30).                                                                                                                              | Proposed   |
+| D42 | 2   | The native draft page offers Claude Code only and selects it as soon as the runtime reports it available. A platform draft still needs an explicit pick.                                                                                                                                         | Proposed   |
+| D43 | 2   | The model is shared state of the collaborative draft, like the output language, and the draft's auto-save sends it. The picker lists the Claude Code models the runtime reports and "Default — runtime", which removes the model. There is no free-text entry (T19).                             | Proposed   |
+| D44 | 2   | `cliModels` on PATCH: a model id sets the model of that CLI, `null` removes it, and a CLI left out keeps its model. The rules of the space setting apply, for every CLI it knows, so T2 needs no change here. A change is recorded on the timeline.                                              | Proposed   |
+| D45 | 2   | The flag decides whether the engine choice is offered. It does not change a choice the member has made: a chosen native form stays when the flag reads disabled, and the server refuses the create with 409 `native_execution_disabled`. The browser's flag can lag (D31).                       | Proposed   |
+| D46 | 2   | Any member who may edit the draft may change its model. The space's model setting stays with the owner. The model id is held to the format rules of the space setting, not to the list the runtime reports. Confirmed by the plan owner on 2026-11-28.                                           | Plan owner |
 
 ## Workspace layout
 
@@ -149,7 +161,7 @@ One PR is worked on at a time, in the order of the sequence table. The checkout 
 | --- | ---------------------------------------- | ---------------------------------- | ------------------ | ---------- |
 |     | **A. Hidden foundations**                |                                    |                    |            |
 | 1   | Flag and `engine` on intents             | `feat/native-flag-and-engine`      | backend            |            |
-| 2   | New Intent choice and the native draft   | `feat/native-new-intent-choice`    | frontend           | 1          |
+| 2   | New Intent choice and the native draft   | `feat/native-new-intent-choice`    | backend, frontend  | 1          |
 | 3   | Workspace storage and runtime capability | `feat/native-workspace-storage`    | Terraform, runtime |            |
 | 4   | AI-DLC source per space                  | `feat/native-aidlc-source`         | backend, frontend  | 1          |
 |     | **B. Runtime building blocks**           |                                    |                    |            |
@@ -190,6 +202,7 @@ Backend only. Nothing visible in the UI.
 - **Built:** the reader and the engine helpers are in `lambda/shared/native-execution.js`. The intents and projects Lambdas read the flag; the orchestrator does not need it yet. An independent review of the change led to D31.
 - **Reviewed again** on 2026-11-27, after the rebase onto `main` at d3a4e4f6. No defect was found and no code changed. The review recorded the first version of D32, T15, T16, the addition to T13 and the note on PR 2, and added the `shared` project to the Verify line.
 - **Changed by D33** on 2026-11-27: a native create makes the PR-strategy check again (D32). Both create paths share one helper in `lambda/intents/index.js`.
+- **Rebased** on 2026-11-27 onto `main` at 6da09a64, together with PR 2. #838 had added `role` to `handleCreateIntent` at the place where PR 1 put its create helpers. Both are kept; no other commit conflicted.
 
 Acceptance criteria:
 
@@ -212,21 +225,28 @@ Verify: `npx vitest run --project=shared --project=intents --project=projects --
 
 ### PR 2: New Intent choice and the native draft
 
-- **Scope:** `NewIntentPage.tsx` offers the engine choice when the project reports the flag as enabled. `IntentComposePage.tsx` shows a native draft as CLI, model and Start.
-- **Note from PR 1:** the draft's auto-save (`useCollaborativeIntentDraft.ts`) sends `composedGrid` and `skipStageIds` with every save. A native draft refuses both, even as `null` (D25), so its auto-save must send title, prompt and conversation language only.
+- **Scope:** `NewIntentPage.tsx` offers the engine choice when the project reports the flag as enabled. `IntentComposePage.tsx` shows a native draft as CLI, model and Start. Since D35, the model is a picker and PATCH of a native draft accepts it.
+- **Note from PR 1:** the draft's auto-save (`useCollaborativeIntentDraft.ts`) sends `composedGrid` and `skipStageIds` with every save. A native draft refuses both, even as `null` (D25), so its auto-save must send title, prompt and conversation language only. Since D35 it also sends the models.
+- **Built:** the flag reaches the pages through `SpacePermissionsContext` (D39). The collaborative draft hook knows a native draft from the intent it is seeded with and sends title, prompt, models and conversation language for it. The model change is `patchCliModels` in `lambda/shared/cli-models.js`, routed by `handleUpdateIntent`, and `updateExecution` gained `cliModels`. The details settled in this PR are D35 to D46.
+- **Reviewed** independently on 2026-11-27. No defect in the platform paths was found. The review led to D45 and D46, to `cliModels` moving the draft revision in `updateExecution`, and to tests for a lagging read of the draft row, for a member who joins a draft a peer already filled, and for a save that outlives its document.
+- **Known limit:** a native draft whose shared document was filled before this PR has no model in that document. Its page shows "Default — runtime" while the draft still holds the space's model, until a member picks a model. Only drafts created through the API and opened in the browser before this PR are affected.
+- **Tests:** the existing tests of the New Intent page are unmodified. In `IntentComposePage.test.tsx`, the stand-in for the draft hook gained `cliModels` and `setCliModel`; the existing tests themselves are unmodified. The engine choice has its own file, `NewIntentPage.native.test.tsx`.
 
 Acceptance criteria:
 
-- [ ] Flag disabled: the New Intent page renders exactly as today, with no engine control in the DOM. Existing tests pass unmodified.
-- [ ] Flag enabled: the member can choose "Native AI-DLC". Workflow, scope, release and stage selection disappear for that choice.
-- [ ] Attachments and tracker-issue import work for a native intent exactly as for a platform intent.
-- [ ] In a space with several repositories, the member picks the primary repository for a native intent. Moved here from PR 19 by D21: the backend requires `primaryRepo` in such a space.
-- [ ] Creating sends `engine: "native"`, and `primaryRepo` when the space has several repositories, and opens the draft. Sparse checkout is not offered for a native intent (T11).
-- [ ] The native draft page shows CLI (Claude Code only), model and Start. It shows no stage grid, no compose actions and no permanent loading skeleton.
-- [ ] Pressing Start shows the backend's message while Start is unavailable.
-- [ ] The compose page of a platform draft is unchanged.
+- [x] Flag disabled: the New Intent page renders exactly as today, with no engine control in the DOM. Existing tests pass unmodified.
+- [x] Flag enabled: the member can choose "Native AI-DLC". Workflow, scope, release and stage selection disappear for that choice.
+- [x] Attachments and tracker-issue import work for a native intent exactly as for a platform intent.
+- [x] In a space with several repositories, the member picks the primary repository for a native intent. Moved here from PR 19 by D21: the backend requires `primaryRepo` in such a space.
+- [x] Creating sends `engine: "native"`, and `primaryRepo` when the space has several repositories, and opens the draft. Sparse checkout is not offered for a native intent (T11).
+- [x] The native draft page shows CLI (Claude Code only), model and Start. It shows no stage grid, no compose actions and no permanent loading skeleton.
+- [x] Pressing Start shows the backend's message while Start is unavailable.
+- [x] The compose page of a platform draft is unchanged.
+- [x] The model picker lists the Claude Code models the runtime reports. A pick reaches every member on the draft and is saved with the draft. Added by D35.
+- [x] PATCH of a native draft sets or removes a model per CLI, under the rules of the space setting. An invalid value is 400 and writes nothing. A viewer and a non-member get 403. A platform draft keeps its models. Added by D35.
+- [x] Dev check: with the flag enabled, the New Intent page offers the choice, a native draft opens with CLI, model and Start, and Start shows the backend's message. With the flag removed, the choice is gone. Done by the plan owner on 2026-11-28 with this branch deployed to dev. The screenshots in pull request #921 show the New Intent page with the flag off and on, a native draft open in two browsers, and the refused Start.
 
-Verify: `npm --prefix frontend test`, `npm --prefix frontend run build`. In dev, flip the flag and reload.
+Verify: `npm --prefix frontend test`, `npm --prefix frontend run build`, `npx vitest run --project=shared --project=intents`. In dev, flip the flag and reload.
 
 ### PR 3: Workspace storage and runtime capability
 
@@ -335,6 +355,7 @@ The largest uncertainty in the plan.
 
 - **Scope:** runtime command `native-turn-start`. It reuses the CLI driver, spawn, usage recorder and credential chain, runs inside the workspace scope from the primary repository, and returns `waiting`, `done` or `failed`. Output goes to the existing intent-level output stream.
 - **Check first:** how AI-DLC asks its questions when Claude Code runs without a terminal. This decides how reliably `waiting` can be detected.
+- **Note from PR 2:** the member's model is `cliModels[cli]` on the draft (D35). A stage run prefers the model of the agent's tier (`tierModels`) in `lambda/agentcore/model-resolver.js`. A native turn has no agent tier, and the snapshotted tier models must not replace the member's pick.
 - **Reference:** `native/turn-interaction.js`, `native/transport-instructions.js`, `native/harness-output.js` and `native/method-output.js` on the branch show what version 2.11.1 needed. Read them; do not copy the version-specific parts.
 
 Acceptance criteria:
@@ -647,6 +668,11 @@ Work that is postponed, so it can be followed. Whoever works on a PR, person or 
 | T16 | `POST /delivery` and `POST /derive` are not in PR 14's list. On a native draft, `delivery` is refused only because no workflow resolves, and `derive` runs as on a platform draft.                                                                                   | PR 14; delivery retry in PR 17    |
 | T17 | Unit branches and open unit pull requests of a native intent that is cancelled, failed or deleted.                                                                                                                                                                   | Parity review, PR 23              |
 | T18 | AI-DLC plugins in native workspaces ([#916](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/916)): plugin sources per space, composed by prepare and pinned on the intent. Whether it is in the first release is open. Notes below.                | Decided when PR 4 starts          |
+| T19 | A free-text model on the native draft. The picker offers only the models the runtime reports (D43); the space settings fall back to a text field when the runtime reports none.                                                                                      | Parity review, PR 23              |
+| T20 | The frontend type `Intent` declares `workflowId` as a string. A native intent has `null`. `RecomposePanel.tsx` (two calls) and `IntentContext.tsx` (one) pass it on as a string.                                                                                     | PR 10                             |
+| T21 | The models of the other CLIs on the native draft page. PATCH already accepts them (D44); the page shows Claude Code only.                                                                                                                                            | T2                                |
+| T22 | The intents list, the sidebar and the dashboard do not mark a native intent.                                                                                                                                                                                         | PR 10                             |
+| T23 | One shared model picker. The native draft has the fourth copy of the select, after the space settings, the Admin defaults and the tier table. The free-text fallback of T19 would go there.                                                                          | After release                     |
 
 Criteria kept for T1:
 

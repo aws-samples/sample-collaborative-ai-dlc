@@ -12,9 +12,14 @@ import {
   type IntentAttachment,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
-import { agentsService, type AgentCapabilities } from '@/services/agents';
+import { agentsService, type AgentCapabilities, type AgentModel } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
-import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
+import {
+  AGENT_CLIS,
+  AGENT_CLI_METADATA,
+  AGENT_CREDENTIAL_SOURCE_LABELS,
+  modelListSources,
+} from '@/lib/agentCli';
 import { BEDROCK_GATEWAY_UNAVAILABLE } from '@/lib/bedrockGateway';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
@@ -29,6 +34,8 @@ import {
 } from '@/lib/aidlcSettings';
 import { TrackerAttachmentImport } from '@/components/intent/TrackerAttachmentImport';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
+import { CachedModelListNote } from '@/components/settings/CachedModelListNote';
+import { UnpricedModelNote } from '@/components/settings/UnpricedModelNote';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -87,10 +94,25 @@ const formatBytes = (bytes: number) =>
 const ATTACHMENT_INGEST_POLL_MS = 500;
 const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 
+// A native draft runs the AI-DLC methodology itself, with Claude Code only for
+// now (docs/development/native-execution-plan.md, D8).
+const NATIVE_CLI: AgentCli = 'claude';
+const NATIVE_CLIS: readonly AgentCli[] = [NATIVE_CLI];
+const MODEL_DEFAULT_SENTINEL = '__default__';
+
+const cliAvailableIn = (capabilities: AgentCapabilities | null, cli: AgentCli) =>
+  capabilities?.runtimeClis?.find((status) => status.cli === cli)?.available ??
+  capabilities?.available.includes(cli) ??
+  false;
+
 // The compose step of a DRAFT intent: the shared prompt, the projection
 // (scope or composed grid) and the per-intent stage deselection are edited
 // COLLABORATIVELY (Yjs doc `intent-draft-{intentId}`; debounced PATCH persists
 // to the intent row, which is what Start launches from).
+//
+// A NATIVE draft has no workflow, scope or stage plan. Its page is the shared
+// title and prompt, the attachments, the CLI, the model, the output language
+// and Start; nothing of the stage plan is loaded or shown.
 function IntentComposePageContent() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -103,6 +125,7 @@ function IntentComposePageContent() {
   const { readOnly } = useSpacePermissions();
 
   const [intent, setIntent] = useState<Intent | null>(null);
+  const native = intent?.engine === 'native';
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -157,6 +180,14 @@ function IntentComposePageContent() {
       cancelled = true;
     };
   }, [projectId]);
+
+  // A native draft has one CLI, so there is nothing to choose: it is selected
+  // as soon as the runtime reports it available.
+  useEffect(() => {
+    if (native && !selectedCli && cliAvailableIn(agentCapabilities, NATIVE_CLI)) {
+      setSelectedCli(NATIVE_CLI);
+    }
+  }, [native, selectedCli, agentCapabilities]);
 
   // Load the intent; non-DRAFT intents have left the compose step — show them
   // in the regular intent view instead.
@@ -303,7 +334,11 @@ function IntentComposePageContent() {
     if (intent && draft.synced) initFromIntent(intent);
   }, [intent, draft.synced, initFromIntent]);
 
-  const workflowId = intent?.workflowId ?? (project ? (project.workflowId ?? 'aidlc-v2') : null);
+  // A native intent has no workflow. Without an id, none of the compiled views
+  // below is requested.
+  const workflowId = native
+    ? null
+    : (intent?.workflowId ?? (project ? (project.workflowId ?? 'aidlc-v2') : null));
   const workflowVersion = intent
     ? (intent.workflowVersion ?? undefined)
     : (project?.workflowVersion ?? undefined);
@@ -714,10 +749,19 @@ function IntentComposePageContent() {
   const runtimeCliStatus = new Map(
     (agentCapabilities?.runtimeClis ?? []).map((status) => [status.cli, status]),
   );
-  const cliAvailable = (cli: AgentCli) =>
-    runtimeCliStatus.get(cli)?.available ?? agentCapabilities?.available.includes(cli) ?? false;
-  const availableCliCount = AGENT_CLIS.filter(cliAvailable).length;
-  const hasEffectiveCredential = AGENT_CLIS.some((cli) => {
+  const cliAvailable = (cli: AgentCli) => cliAvailableIn(agentCapabilities, cli);
+  const offeredClis = native ? NATIVE_CLIS : AGENT_CLIS;
+  const availableCliCount = offeredClis.filter(cliAvailable).length;
+  // The model of a native draft: the shared draft's own value, picked from the
+  // list the runtime reports. A model the list does not hold (a custom id set
+  // on the space) stays selectable, so opening the page never changes it.
+  const nativeModel = draft.cliModels[NATIVE_CLI] ?? '';
+  const nativeModelOptions: AgentModel[] = agentCapabilities?.models?.[NATIVE_CLI] ?? [];
+  const nativeModelChoices: AgentModel[] =
+    nativeModel && !nativeModelOptions.some((option) => option.id === nativeModel)
+      ? [{ id: nativeModel, name: `${nativeModel} (custom)` }, ...nativeModelOptions]
+      : nativeModelOptions;
+  const hasEffectiveCredential = offeredClis.some((cli) => {
     const status = runtimeCliStatus.get(cli);
     return Boolean(
       status?.credentialSource ??
@@ -739,7 +783,9 @@ function IntentComposePageContent() {
             Back
           </Button>
           <div className="h-5 w-px bg-border" />
-          <h1 className="text-xl font-semibold tracking-tight">Compose Intent</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {native ? 'Native AI-DLC Intent' : 'Compose Intent'}
+          </h1>
           {remoteCount > 0 && (
             <span
               className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -971,13 +1017,13 @@ function IntentComposePageContent() {
                 className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
                 data-testid="agent-cli-placeholders"
               >
-                {AGENT_CLIS.map((cli) => (
+                {offeredClis.map((cli) => (
                   <Skeleton key={cli} className="min-h-20 rounded-md" />
                 ))}
               </div>
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                {AGENT_CLIS.map((cli) => {
+                {offeredClis.map((cli) => {
                   const status = runtimeCliStatus.get(cli);
                   const available = cliAvailable(cli);
                   const selected = selectedCli === cli;
@@ -1063,57 +1109,107 @@ function IntentComposePageContent() {
             )}
           </div>
 
-          <div className="space-y-2">
-            <Label className="text-sm font-medium">Scope</Label>
-            <div className="grid gap-3 lg:grid-cols-3">
-              {/* Predefined — pick a built-in scope (1/3) */}
-              <div className="lg:col-span-1 border rounded-md p-3 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <MousePointerClick className="h-4 w-4 text-muted-foreground" />
-                  <Label htmlFor="draft-scope" className="text-sm font-medium">
-                    Predefined
-                  </Label>
-                </div>
-                <p className="text-xs text-muted-foreground">Built-in stage sets for common work</p>
-                <Select
-                  value={draft.composedGrid ? '' : (scope ?? '')}
-                  onValueChange={(v) => {
-                    // Picking a stock scope leaves any composed grid behind.
-                    if (v) resetGridToScope(v);
-                  }}
-                  disabled={readOnly || !draftReady || scopeOptions.length === 0}
-                >
-                  <SelectTrigger id="draft-scope">
-                    <SelectValue
-                      placeholder={
-                        draft.composedGrid ? `composed grid (${scope})` : 'Select a scope'
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {scopeOptions.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Compose with AI — propose a scope/grid from the prompt (2/3) */}
-              {projectId && intentId && (
-                <div className="lg:col-span-2">
-                  <ComposePanel
-                    projectId={projectId}
-                    intentId={intentId}
-                    agentCli={selectedCli}
-                    disabled={readOnly || starting || !draftReady}
-                    onApply={applyProposal}
-                  />
-                </div>
-              )}
+          {native && (
+            <div className="space-y-1.5" data-testid="native-model">
+              <Label htmlFor="draft-model" className="text-sm font-medium">
+                Model
+              </Label>
+              <Select
+                value={nativeModel || MODEL_DEFAULT_SENTINEL}
+                onValueChange={(value) =>
+                  draft.setCliModel(NATIVE_CLI, value === MODEL_DEFAULT_SENTINEL ? null : value)
+                }
+                disabled={
+                  readOnly ||
+                  !draftReady ||
+                  starting ||
+                  capabilitiesLoading ||
+                  agentCapabilities?.runtimeModelOverride?.[NATIVE_CLI] === false
+                }
+              >
+                <SelectTrigger id="draft-model">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={MODEL_DEFAULT_SENTINEL}>Default — runtime</SelectItem>
+                  {nativeModelChoices.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      <span className="font-mono text-xs">{model.name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                The model {AGENT_CLI_METADATA[NATIVE_CLI].label} runs this intent with. It starts as
+                the model of this space.
+              </p>
+              <UnpricedModelNote
+                options={nativeModelOptions}
+                selected={nativeModel}
+                data-testid="native-model-unpriced"
+              />
+              <CachedModelListNote
+                source={modelListSources(agentCapabilities?.models)[NATIVE_CLI]}
+                data-testid="native-model-source"
+              />
             </div>
-          </div>
+          )}
+
+          {!native && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Scope</Label>
+              <div className="grid gap-3 lg:grid-cols-3">
+                {/* Predefined — pick a built-in scope (1/3) */}
+                <div className="lg:col-span-1 border rounded-md p-3 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <MousePointerClick className="h-4 w-4 text-muted-foreground" />
+                    <Label htmlFor="draft-scope" className="text-sm font-medium">
+                      Predefined
+                    </Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Built-in stage sets for common work
+                  </p>
+                  <Select
+                    value={draft.composedGrid ? '' : (scope ?? '')}
+                    onValueChange={(v) => {
+                      // Picking a stock scope leaves any composed grid behind.
+                      if (v) resetGridToScope(v);
+                    }}
+                    disabled={readOnly || !draftReady || scopeOptions.length === 0}
+                  >
+                    <SelectTrigger id="draft-scope">
+                      <SelectValue
+                        placeholder={
+                          draft.composedGrid ? `composed grid (${scope})` : 'Select a scope'
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {scopeOptions.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Compose with AI — propose a scope/grid from the prompt (2/3) */}
+                {projectId && intentId && (
+                  <div className="lg:col-span-2">
+                    <ComposePanel
+                      projectId={projectId}
+                      intentId={intentId}
+                      agentCli={selectedCli}
+                      disabled={readOnly || starting || !draftReady}
+                      onApply={applyProposal}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <AidlcSettingsPanel
             authored={authoredSettings}
@@ -1142,7 +1238,7 @@ function IntentComposePageContent() {
             </p>
           )}
 
-          {compiledLoading && gridStages.length === 0 && (
+          {!native && compiledLoading && gridStages.length === 0 && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <Label className="text-sm font-medium">Stages</Label>
@@ -1270,7 +1366,7 @@ function IntentComposePageContent() {
                 uploadProgress !== null ||
                 trackerImportBusy ||
                 !draft.prompt.trim() ||
-                !scope ||
+                (!native && !scope) ||
                 !selectedCli ||
                 previewErrors.length > 0 ||
                 Boolean(draft.conversationLanguageRejection)
@@ -1283,10 +1379,10 @@ function IntentComposePageContent() {
             {!starting && !draft.prompt.trim() && (
               <span className="text-xs text-muted-foreground">Write a prompt to continue</span>
             )}
-            {!starting && draft.prompt.trim() && !scope && (
+            {!starting && draft.prompt.trim() && !native && !scope && (
               <span className="text-xs text-muted-foreground">Pick a scope to continue</span>
             )}
-            {!starting && draft.prompt.trim() && scope && !selectedCli && (
+            {!starting && draft.prompt.trim() && !native && scope && !selectedCli && (
               <span className="text-xs text-muted-foreground">Select an agent CLI to continue</span>
             )}
             {!draftReady && (

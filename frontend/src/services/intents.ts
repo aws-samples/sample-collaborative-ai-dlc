@@ -81,6 +81,12 @@ export interface Intent {
   id: string;
   executionId: string;
   projectId: string;
+  // Present on a native intent only: it runs the AI-DLC methodology itself
+  // instead of the platform's stage engine, so it has no workflow, scope,
+  // release or stage plan. A platform intent carries neither field.
+  engine?: 'native';
+  // The repository that holds AI-DLC's framework files and records.
+  primaryRepo?: string;
   title: string | null;
   prompt: string | null;
   status: IntentStatus;
@@ -977,6 +983,15 @@ export interface IntentRepairResult {
 }
 
 export interface CreateIntentInput {
+  // 'native' creates a native intent, which the backend accepts only while the
+  // platform's native-execution flag is enabled. It refuses the plan inputs
+  // below for it: scope, skipStageIds, composedGrid, aidlcSettings, the release
+  // fields, constructionGateAutonomy and sparseCheckout. Omit for a platform
+  // intent.
+  engine?: 'native';
+  // The primary repository of a native intent, one of the space's repository
+  // URLs. Required when the space has several.
+  primaryRepo?: string;
   title?: string;
   prompt?: string;
   branch?: string;
@@ -1301,6 +1316,10 @@ export const intentsService = {
       // A raw BCP 47 tag; the server re-resolves the display names. `null`
       // clears the intent's language (no instruction), DRAFT only.
       conversationLanguage?: string | null;
+      // Native drafts only: the model per CLI. A model id sets it, `null`
+      // removes it, and a CLI left out keeps its model. A platform draft
+      // ignores the field.
+      cliModels?: Partial<Record<AgentCli, string | null>>;
     },
   ) => api.patch<Intent>(`/projects/${projectId}/intents/${intentId}`, patch),
   // ── Composer (Adaptive Workflows) ──

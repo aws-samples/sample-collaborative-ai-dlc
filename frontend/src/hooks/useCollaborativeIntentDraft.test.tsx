@@ -810,3 +810,248 @@ describe('useCollaborativeIntentDraft — applying a composed plan', () => {
     expect(a.result.current.aidlcSettings).toBeNull();
   });
 });
+
+// A native intent runs AI-DLC itself and has no stage plan. The API refuses
+// every plan input on a native draft by name, even as null, so one of them in
+// the save body would fail the autosave of every member on the draft.
+describe('useCollaborativeIntentDraft — a native draft', () => {
+  const native = (extra = {}) => ({
+    engine: 'native',
+    scope: null,
+    cliModels: { claude: 'model-a', kiro: 'auto' },
+    ...extra,
+  });
+  const lastBody = () => api.update.mock.calls.at(-1)![2];
+
+  it('saves the title and the prompt and none of the plan inputs', async () => {
+    const { a } = bothSeeded(native({ cliModels: null }));
+    act(() => {
+      a.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(lastBody()).toEqual({ title: 'Renamed', prompt: 'Build X', ifDraftRevision: 7 });
+  });
+
+  it('seeds the snapshotted models and sends them with the language', async () => {
+    const { a, b } = bothSeeded(
+      native({ conversationLanguage: { tag: 'ko', englishName: 'Korean', nativeName: '한국어' } }),
+    );
+    expect(a.result.current.cliModels).toEqual({ claude: 'model-a', kiro: 'auto' });
+    expect(b.result.current.cliModels).toEqual({ claude: 'model-a', kiro: 'auto' });
+
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(lastBody()).toEqual({
+      title: 'An intent',
+      prompt: 'Build X',
+      cliModels: { claude: 'model-a', kiro: 'auto' },
+      conversationLanguage: 'ko',
+      ifDraftRevision: 7,
+    });
+  });
+
+  it('shows a model change to both members and saves it', async () => {
+    const { a, b } = bothSeeded(native());
+    act(() => {
+      a.result.current.setCliModel('claude', 'model-b');
+      sync(a.doc, b.doc);
+    });
+    expect(b.result.current.cliModels.claude).toBe('model-b');
+    await act(async () => {
+      await b.result.current.flushDraft();
+    });
+    expect(lastBody().cliModels).toEqual({ claude: 'model-b', kiro: 'auto' });
+  });
+
+  it('keeps both members’ choices when they change different CLIs', () => {
+    const { a, b } = bothSeeded(native());
+    act(() => {
+      a.result.current.setCliModel('claude', 'model-b');
+      b.result.current.setCliModel('codex', 'openai.model');
+      sync(a.doc, b.doc);
+    });
+    const expected = { claude: 'model-b', kiro: 'auto', codex: 'openai.model' };
+    expect(a.result.current.cliModels).toEqual(expected);
+    expect(b.result.current.cliModels).toEqual(expected);
+  });
+
+  it('sends null once a model is removed, and keeps sending it', async () => {
+    const { a } = bothSeeded(native());
+    act(() => {
+      a.result.current.setCliModel('claude', null);
+    });
+    expect(a.result.current.cliModels).toEqual({ kiro: 'auto' });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(lastBody().cliModels).toEqual({ claude: null, kiro: 'auto' });
+
+    // A later save still says so: leaving the CLI out would keep its model.
+    act(() => {
+      a.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(lastBody()).toMatchObject({
+      title: 'Renamed',
+      cliModels: { claude: null, kiro: 'auto' },
+    });
+  });
+
+  // The second member's document is not empty, so it is not seeded again. The
+  // draft is native all the same.
+  it('saves a native body for a member who joins a draft a peer already filled', async () => {
+    const a = member('Alice');
+    const b = member('Bob');
+    act(() => {
+      a.result.current.initFromIntent(intent(native()));
+      a.result.current.setCliModel('claude', 'model-b');
+      sync(a.doc, b.doc);
+    });
+    act(() => {
+      b.result.current.initFromIntent(intent(native()));
+    });
+    expect(b.result.current.cliModels).toEqual({ claude: 'model-b', kiro: 'auto' });
+    expect(b.result.current.title).toBe('An intent');
+
+    await act(async () => {
+      await b.result.current.flushDraft();
+    });
+    expect(lastBody()).toEqual({
+      title: 'An intent',
+      prompt: 'Build X',
+      cliModels: { claude: 'model-b', kiro: 'auto' },
+      ifDraftRevision: 7,
+    });
+  });
+
+  it('removing a model the draft never had writes nothing', async () => {
+    const { a } = bothSeeded(native({ cliModels: null }));
+    const before = Y.encodeStateAsUpdate(a.doc);
+    act(() => {
+      a.result.current.setCliModel('claude', null);
+    });
+    expect(Y.encodeStateAsUpdate(a.doc)).toEqual(before);
+  });
+
+  it('leaves the document and the save of a platform draft as they were', async () => {
+    const { a } = bothSeeded({ cliModels: { claude: 'model-a' } });
+    expect(a.result.current.cliModels).toEqual({});
+    expect([...a.doc.getMap('config').keys()]).toEqual(['scope']);
+    act(() => {
+      a.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await a.result.current.flushDraft();
+    });
+    expect(lastBody()).toEqual({
+      title: 'Renamed',
+      prompt: 'Build X',
+      scope: 'classic',
+      composedGrid: null,
+      skipStageIds: null,
+      ifDraftRevision: 7,
+    });
+  });
+});
+
+// Whether a draft is native belongs to its document, like the settings above:
+// a save outlives the document, so a retiring draft's save must still take its
+// own shape after the page has moved on to a draft of the other engine.
+describe('useCollaborativeIntentDraft — a native save that outlives its document', () => {
+  const navigating = () => {
+    const docs = new Map<string, Y.Doc>();
+    for (const id of ['A', 'B']) {
+      const peer = { doc: new Y.Doc(), flushDocument: vi.fn().mockResolvedValue(undefined) };
+      transport.peers.set(`Alice/intent-draft-${id}`, peer);
+      docs.set(id, peer.doc);
+    }
+    return renderHook(
+      ({ intentId }: { intentId: string }) => useCollaborativeIntentDraft('p1', intentId, 'Alice'),
+      { initialProps: { intentId: 'A' } },
+    );
+  };
+  // A's revision read is held back until the page shows B.
+  const holdRevisionOfA = () => {
+    let release!: () => void;
+    const held = new Promise<{ draftRevision: number }>((resolve) => {
+      release = () => resolve({ draftRevision: 7 });
+    });
+    api.draftEditState.mockImplementation((_projectId: string, intentId: string) =>
+      intentId === 'A' ? held : Promise.resolve({ draftRevision: 3 }),
+    );
+    return release;
+  };
+  const bodyFor = (intentId: string) =>
+    api.update.mock.calls.filter((call) => call[1] === intentId).at(-1)?.[2];
+  const nativeIntent = (id: string) =>
+    intent({ id, engine: 'native', scope: null, cliModels: { claude: 'model-a' } });
+
+  it('keeps the native body of the retiring draft after the page moved to a platform draft', async () => {
+    const release = holdRevisionOfA();
+    const page = navigating();
+    act(() => {
+      page.result.current.initFromIntent(nativeIntent('A'));
+    });
+    act(() => {
+      page.result.current.setCliModel('claude', 'model-b');
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    page.rerender({ intentId: 'B' });
+    act(() => {
+      page.result.current.initFromIntent(intent({ id: 'B', scope: 'bugfix' }));
+    });
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(bodyFor('A')).toEqual({
+      title: 'An intent',
+      prompt: 'Build X',
+      cliModels: { claude: 'model-b' },
+      ifDraftRevision: 7,
+    });
+    expect(page.result.current.cliModels).toEqual({});
+  });
+
+  it('keeps the platform body of the retiring draft after the page moved to a native draft', async () => {
+    const release = holdRevisionOfA();
+    const page = navigating();
+    act(() => {
+      page.result.current.initFromIntent(intent({ id: 'A' }));
+    });
+    act(() => {
+      page.result.current.setTitle('Renamed');
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    page.rerender({ intentId: 'B' });
+    act(() => {
+      page.result.current.initFromIntent(nativeIntent('B'));
+    });
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    expect(bodyFor('A')).toEqual({
+      title: 'Renamed',
+      prompt: 'Build X',
+      scope: 'classic',
+      composedGrid: null,
+      skipStageIds: null,
+      ifDraftRevision: 7,
+    });
+    expect(page.result.current.cliModels).toEqual({ claude: 'model-a' });
+  });
+});

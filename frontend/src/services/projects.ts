@@ -101,6 +101,11 @@ export interface Project {
   // Conversation language for agent prose (#784). Omitted when unset (agents
   // keep the default behaviour: no language instruction).
   conversationLanguage?: ConversationLanguage | null;
+  // The platform's native-execution flag. Only the single-space response
+  // (`projectsService.get`) reports it, and only for a v2 space; the space list
+  // omits it. It tells the browser what to offer; the backend checks the flag
+  // itself when a native intent is created.
+  nativeExecution?: 'enabled' | 'disabled';
 }
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';

@@ -85,7 +85,12 @@ import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { fetchMembershipRole } from '../shared/space-membership.js';
 import { parseStageDocument, signRealtimeToken } from '../shared/realtime-token.js';
-import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
+import {
+  parseCliModels,
+  mergeCliModels,
+  patchCliModels,
+  describeCliModelsChange,
+} from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
 import { validateMcpServers, validateMcpServersJson } from '../shared/mcp-validator.js';
 import {
@@ -4604,10 +4609,15 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
   // language. A stale row that already shows the requested tag would otherwise
   // drop a real change: the draft revision is read consistently elsewhere, so
   // the CAS below does not catch a stale language value.
+  //
+  // A native draft's model change is merged into the stored per-CLI map and
+  // diffed against it, so it needs that pre-image for the same reason.
+  const cliModelsRequested = isNativeExecution(meta) && data.cliModels !== undefined;
   if (
     data.aidlcSettings !== undefined ||
     meta.aidlcSettings ||
-    data.conversationLanguage !== undefined
+    data.conversationLanguage !== undefined ||
+    cliModelsRequested
   ) {
     meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
   }
@@ -4710,6 +4720,21 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
         (meta.conversationLanguage?.tag ?? null) !== (normalized.value?.tag ?? null);
       if (conversationLanguageChanged) patch.conversationLanguage = normalized.value; // null clears
     }
+  }
+  // The model a native draft runs a CLI with. A native intent has no stage plan
+  // whose agents could name a model, so the member picks it on the draft. The
+  // change lands on the per-CLI snapshot the draft took from the space, which
+  // is where a run reads its model from: a model id sets that CLI's model, null
+  // removes it, and a CLI the body does not name keeps its value. A platform
+  // draft does not read the field, as before.
+  let cliModelsChanged = false;
+  if (cliModelsRequested) {
+    const next = patchCliModels(meta.cliModels, data.cliModels);
+    if (!next.valid) {
+      return response(400, { error: 'Invalid cliModels configuration', issues: next.issues });
+    }
+    cliModelsChanged = next.changed;
+    if (cliModelsChanged) patch.cliModels = next.value;
   }
   // Per-intent AI-DLC settings travel with the selection they belong to, in
   // this one body, under this one CAS — which is what makes them
@@ -4933,6 +4958,22 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
           summary,
         })
         .catch((err) => logger.error('Conversation language event append failed', err));
+    }
+  }
+  if (cliModelsChanged) {
+    const editor = getResponder(event);
+    for (const summary of describeCliModelsChange({
+      previous: meta.cliModels ?? null,
+      next: patch.cliModels,
+    })) {
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.intent.settings.changed',
+          actor: editor.displayName || editor.sub,
+          summary,
+        })
+        .catch((err) => logger.error('CLI model event append failed', err));
     }
   }
   return response(200, {

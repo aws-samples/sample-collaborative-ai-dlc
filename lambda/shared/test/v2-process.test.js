@@ -893,6 +893,34 @@ describe('createProcessStore', () => {
     expect(input.UpdateExpression).toContain('projectType = :pt');
   });
 
+  it('persists the per-CLI models of a draft and stores an empty map as null', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateExecution({ executionId: 'e1', cliModels: { claude: 'model-a' } });
+    await store.updateExecution({ executionId: 'e1', cliModels: {} });
+    await store.updateExecution({ executionId: 'e1', cliModels: null });
+    const inputs = ddb.commandCalls(UpdateCommand).map((call) => call.args[0].input);
+    expect(inputs.map((input) => input.ExpressionAttributeValues[':clm'])).toEqual([
+      { claude: 'model-a' },
+      null,
+      null,
+    ]);
+    for (const input of inputs) {
+      expect(input.UpdateExpression).toContain('cliModels = :clm');
+      // A change of the models is a draft edit: it moves the revision a
+      // browser's save is checked against, with or without a precondition.
+      expect(input.UpdateExpression).toContain(
+        'draftRevision = if_not_exists(draftRevision, :draftZero) + :draftOne',
+      );
+    }
+    await store.updateExecution({ executionId: 'e1', cliModels: null, ifDraftRevision: 4 });
+    const guarded = ddb.commandCalls(UpdateCommand).at(-1).args[0].input;
+    expect(guarded.UpdateExpression).toContain('draftRevision = :nextDraftRevision');
+    expect(guarded.ExpressionAttributeValues[':nextDraftRevision']).toBe(5);
+    await expect(
+      store.updateExecution({ executionId: 'e1', cliModels: ['model-a'] }),
+    ).rejects.toThrow('cliModels must be a {cli: model} object or null');
+  });
+
   it('removes the sparse active projection on a terminal execution state', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'FAILED' } });
     await store.updateExecution({
