@@ -110,6 +110,8 @@ jobs:
         run: terraform test -filter=tests/mcp-gateway-custom-targets.tftest.hcl
       - name: AgentCore runtime role per engine-data rollout mode (mock providers)
         run: terraform test -filter=tests/agentcore-runtime-role.tftest.hcl
+      - name: Existing VPC networking and AgentCore subnets (mock providers)
+        run: terraform test -filter=tests/existing-vpc.tftest.hcl
 
       - name: Lambda packaging on clean runners (mock AWS)
         run: terraform test -filter=tests/lambda-packaging.tftest.hcl -parallelism=2

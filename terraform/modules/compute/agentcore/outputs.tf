@@ -75,7 +75,7 @@ output "network_mode" {
 
 output "runtime_subnet_ids" {
   description = "Subnets inherited by managed environment runtimes"
-  value       = aws_subnet.agentcore[*].id
+  value       = local.runtime_subnet_ids
 }
 
 output "runtime_security_group_ids" {

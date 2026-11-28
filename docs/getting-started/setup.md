@@ -380,6 +380,36 @@ step also runs with `--skip-seed`; a failure fails deployment. If you apply
 Terraform directly, follow the [inventory initialization instructions](../development/agent-authentication-foundation.md#scoped-reviews)
 before saving personal or space credentials.
 
+### Deploy into an existing VPC
+
+By default the platform creates its own VPC, with public and private subnets, an internet gateway, NAT gateways and route tables. To deploy into a VPC you already manage instead, for example one provisioned by an account vending process whose policies deny creating VPCs or gateways, set:
+
+```hcl
+# terraform/environments/dev.tfvars
+existing_vpc_id             = "vpc-0123456789abcdef0"
+existing_private_subnet_ids = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+
+# Only if the VPC already has S3 and DynamoDB gateway endpoints on these
+# subnets' route tables; a second one on the same route table fails.
+enable_vpc_gateway_endpoints = false
+```
+
+The platform then creates no VPC, subnets, gateways or route tables. It creates its security groups in the given VPC and places Neptune, the Yjs service and its internal load balancer, and VPC-attached Lambdas in the given private subnets. The AgentCore runtime uses up to two of them in AgentCore-supported Availability Zones instead of carving subnets of its own (`agentcore_supported_az_ids` overrides the supported list).
+
+The VPC must have an internet gateway attached. CloudFront serves the Yjs service through a [VPC origin](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-vpc-origins.html#vpc-origin-prerequisites), which requires one to mark the VPC as able to receive internet traffic. Nothing routes through it, so the private subnets' route tables need no route to it. Planning fails if no internet gateway is attached to the VPC (the lookup reports `no matching EC2 Internet Gateway found`).
+
+The private subnets must:
+
+- be in at least two Availability Zones, with at least one in an [AgentCore-supported Availability Zone](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html);
+- each have an explicit route table association, with a route to the internet through a NAT gateway or equivalent, so the platform can reach AWS APIs, model providers and your Git and tracker providers;
+- have room for the ENIs of the VPC-attached Lambdas, the Yjs tasks and the AgentCore runtime.
+
+The subnets can be in the VPC's primary IPv4 CIDR or any associated secondary one: Neptune's security group admits all of the VPC's associated CIDRs.
+
+The deployment summary's NAT addresses are those of the existing VPC's available NAT gateways. With `vpc_block_public_access_exclusion = true`, exclusions are created for the given private subnets only; exclusions for the subnets holding the VPC's NAT gateways are the VPC owner's to manage.
+
+Moving an existing deployment from its own VPC to an existing VPC replaces every VPC-attached resource, including the Neptune cluster. Plan it as a new deployment with a data migration, not an in-place change.
+
 ### Public ECR base-image authentication
 
 Container builds use the existing digest-pinned Public ECR Node images.

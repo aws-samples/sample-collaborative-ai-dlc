@@ -1,26 +1,31 @@
 output "vpc_id" {
   description = "ID of the VPC"
-  value       = aws_vpc.main.id
+  value       = local.vpc_id
 }
 
 output "vpc_cidr_block" {
   description = "CIDR block of the VPC"
-  value       = aws_vpc.main.cidr_block
+  value       = local.vpc_cidr_block
+}
+
+output "vpc_cidr_blocks" {
+  description = "IPv4 CIDR blocks of the VPC: the primary one, plus any associated secondary ones of an existing VPC"
+  value       = local.vpc_cidr_blocks
 }
 
 output "public_subnet_ids" {
-  description = "IDs of the public subnets"
+  description = "IDs of the public subnets (empty when existing_vpc_id is set)"
   value       = aws_subnet.public[*].id
 }
 
 output "private_subnet_ids" {
   description = "IDs of the private subnets"
-  value       = aws_subnet.private[*].id
+  value       = local.private_subnet_ids
 }
 
 output "vpc_origin_subnet_ids" {
   description = "IDs of the private subnets, available once any VPC Block Public Access exclusions exist"
-  value       = aws_subnet.private[*].id
+  value       = local.private_subnet_ids
   depends_on = [
     aws_vpc_block_public_access_exclusion.private,
     aws_vpc_block_public_access_exclusion.nat,
@@ -28,18 +33,18 @@ output "vpc_origin_subnet_ids" {
 }
 
 output "internet_gateway_id" {
-  description = "ID of the Internet Gateway"
-  value       = aws_internet_gateway.main.id
+  description = "ID of the Internet Gateway (null when existing_vpc_id is set)"
+  value       = one(aws_internet_gateway.main[*].id)
 }
 
 output "nat_gateway_ids" {
   description = "IDs of the NAT Gateways"
-  value       = aws_nat_gateway.main[*].id
+  value       = local.nat_gateway_ids
 }
 
 output "nat_public_ips" {
   description = "Static public IPv4 addresses used for private-subnet egress"
-  value       = aws_eip.nat[*].public_ip
+  value       = local.nat_public_ips
 }
 
 output "default_security_group_id" {
@@ -49,5 +54,5 @@ output "default_security_group_id" {
 
 output "private_route_table_ids" {
   description = "IDs of the private route tables"
-  value       = aws_route_table.private[*].id
+  value       = local.private_route_table_ids
 }

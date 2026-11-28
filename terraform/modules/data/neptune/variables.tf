@@ -13,6 +13,12 @@ variable "vpc_cidr" {
   type        = string
 }
 
+variable "vpc_cidr_blocks" {
+  description = "All VPC CIDR blocks for security group rules, including secondary ones. Empty = vpc_cidr only."
+  type        = list(string)
+  default     = []
+}
+
 variable "private_subnet_ids" {
   description = "List of private subnet IDs for Neptune subnet group"
   type        = list(string)

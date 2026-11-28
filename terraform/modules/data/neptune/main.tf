@@ -1,3 +1,7 @@
+locals {
+  security_cidr_blocks = length(var.vpc_cidr_blocks) > 0 ? var.vpc_cidr_blocks : [var.vpc_cidr]
+}
+
 resource "aws_neptune_subnet_group" "main" {
   name       = "${var.name_prefix}-neptune-subnet-group"
   subnet_ids = var.private_subnet_ids
@@ -15,7 +19,7 @@ resource "aws_security_group" "neptune" {
     from_port   = 8182
     to_port     = 8182
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
+    cidr_blocks = local.security_cidr_blocks
   }
 
   egress {

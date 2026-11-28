@@ -365,6 +365,8 @@ module "networking" {
   project_name                      = var.project_name
   environment                       = var.environment
   vpc_block_public_access_exclusion = var.vpc_block_public_access_exclusion
+  existing_vpc_id                   = var.existing_vpc_id
+  existing_private_subnet_ids       = var.existing_private_subnet_ids
 }
 
 # Optional AWS WAF web ACLs
@@ -498,6 +500,7 @@ resource "terraform_data" "auth_parent_dns" {
 # VPC Endpoints
 module "vpc_endpoints" {
   source = "./modules/networking/vpc-endpoints"
+  count  = var.enable_vpc_gateway_endpoints ? 1 : 0
 
   name_prefix     = "${var.project_name}-${var.environment}"
   vpc_id          = module.networking.vpc_id
@@ -508,6 +511,11 @@ module "vpc_endpoints" {
     Environment = var.environment
     Project     = var.project_name
   }
+}
+
+moved {
+  from = module.vpc_endpoints
+  to   = module.vpc_endpoints[0]
 }
 
 # S3 Data Storage
@@ -545,6 +553,7 @@ module "neptune" {
   name_prefix             = "${var.project_name}-${var.environment}"
   vpc_id                  = module.networking.vpc_id
   vpc_cidr                = module.networking.vpc_cidr_block
+  vpc_cidr_blocks         = module.networking.vpc_cidr_blocks
   private_subnet_ids      = module.networking.private_subnet_ids
   instance_class          = var.neptune_instance_class
   apply_immediately       = var.neptune_apply_immediately
@@ -877,10 +886,13 @@ module "agentcore" {
   runtime_mcp_credentials    = var.runtime_mcp_credentials
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
-  # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
+  # carved in this VPC in AgentCore-supported AZs, or taken from an existing
+  # VPC's private subnets; egress via the private NAT route.
   vpc_id                  = module.networking.vpc_id
   vpc_cidr                = module.networking.vpc_cidr_block
+  vpc_cidr_blocks         = module.networking.vpc_cidr_blocks
   private_route_table_ids = module.networking.private_route_table_ids
+  subnet_ids              = var.existing_private_subnet_ids
 
   tags = {
     Environment = var.environment
