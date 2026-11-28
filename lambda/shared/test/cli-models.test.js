@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeCliModels, parseCliModels, mergeCliModels } from '../cli-models.js';
+import {
+  normalizeCliModels,
+  parseCliModels,
+  mergeCliModels,
+  patchCliModels,
+  describeCliModelsChange,
+} from '../cli-models.js';
 
 describe('normalizeCliModels', () => {
   it('trims supported model keys and omits empty values', () => {
@@ -141,5 +147,89 @@ describe('mergeCliModels — project over global', () => {
     expect(
       mergeCliModels('{"kiro":"claude-sonnet-4.6"}', '{"kiro":"auto","cursor":"nope"}'),
     ).toEqual({ kiro: 'claude-sonnet-4.6' });
+  });
+});
+
+describe('patchCliModels — a per-CLI change to a stored map', () => {
+  const stored = { claude: 'us.anthropic.claude-opus-4-8', kiro: 'auto' };
+
+  it('sets the named CLI and keeps the others', () => {
+    expect(patchCliModels(stored, { claude: ' us.anthropic.claude-sonnet-4-6 ' })).toEqual({
+      valid: true,
+      issues: [],
+      value: { claude: 'us.anthropic.claude-sonnet-4-6', kiro: 'auto' },
+      changed: true,
+    });
+  });
+
+  it('removes a CLI on null and on an empty string', () => {
+    expect(patchCliModels(stored, { claude: null, kiro: '  ' })).toMatchObject({
+      valid: true,
+      value: {},
+      changed: true,
+    });
+  });
+
+  it('reports no change for the stored value, an absent CLI removed, and an empty change', () => {
+    for (const change of [{ claude: 'us.anthropic.claude-opus-4-8' }, { codex: null }, {}]) {
+      expect(patchCliModels(stored, change)).toMatchObject({
+        valid: true,
+        value: stored,
+        changed: false,
+      });
+    }
+  });
+
+  it('starts from an empty map when nothing is stored', () => {
+    expect(patchCliModels(null, { codex: 'openai.gpt-5.5' })).toMatchObject({
+      value: { codex: 'openai.gpt-5.5' },
+      changed: true,
+    });
+  });
+
+  it('does not touch the stored map', () => {
+    const before = structuredClone(stored);
+    patchCliModels(stored, { claude: null });
+    expect(stored).toEqual(before);
+  });
+
+  it('holds the values to the rules of the space setting', () => {
+    const result = patchCliModels(stored, { claude: 'amazon-bedrock/us.anthropic.claude', x: 'y' });
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.path)).toEqual(['claude', 'x']);
+    expect(result.value).toBeUndefined();
+  });
+
+  it.each([[null], ['{"claude":"us.anthropic.claude-sonnet-4-6"}'], [['claude']], [7]])(
+    'refuses %j: a change is an object',
+    (change) => {
+      expect(patchCliModels(stored, change)).toMatchObject({
+        valid: false,
+        issues: [{ path: '' }],
+      });
+    },
+  );
+});
+
+describe('describeCliModelsChange', () => {
+  it('names each CLI whose model was set or removed', () => {
+    expect(
+      describeCliModelsChange({
+        previous: { claude: 'a', kiro: 'auto', codex: 'openai.gpt-5.5' },
+        next: { claude: 'b', kiro: 'auto', opencode: 'amazon-bedrock/c' },
+      }),
+    ).toEqual([
+      'Model for claude set to b for this intent',
+      'Model for opencode set to amazon-bedrock/c for this intent',
+      'Model for codex removed for this intent (was openai.gpt-5.5)',
+    ]);
+  });
+
+  it('says nothing when no model changed, whether the map is null or empty', () => {
+    expect(describeCliModelsChange({ previous: null, next: {} })).toEqual([]);
+    expect(describeCliModelsChange({ previous: { claude: 'a' }, next: { claude: 'a' } })).toEqual(
+      [],
+    );
+    expect(describeCliModelsChange()).toEqual([]);
   });
 });

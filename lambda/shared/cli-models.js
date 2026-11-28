@@ -118,5 +118,57 @@ function mergeCliModels(project, global) {
   return merged;
 }
 
-export { normalizeCliModels, parseCliModels, mergeCliModels };
-export default { normalizeCliModels, parseCliModels, mergeCliModels };
+// Apply a per-CLI change to a stored model map: a model id sets that CLI's
+// model, null or an empty string removes it, and a CLI the change does not name
+// keeps its value. The values are held to `normalizeCliModels`' own rules.
+// Returns the next map and whether it differs from the stored one.
+function patchCliModels(stored, change) {
+  if (change === null || typeof change !== 'object' || Array.isArray(change)) {
+    return {
+      valid: false,
+      issues: [{ path: '', message: `Expected an object; got ${describe(change)}.` }],
+    };
+  }
+  const validation = normalizeCliModels(change);
+  if (!validation.valid) return { valid: false, issues: validation.issues };
+  const current = parseCliModels(stored);
+  const value = { ...current };
+  for (const cli of Object.keys(change)) {
+    if (validation.value[cli]) value[cli] = validation.value[cli];
+    else delete value[cli];
+  }
+  const changed = [...ALLOWED_CLI_MODEL_KEYS].some(
+    (cli) => (current[cli] ?? null) !== (value[cli] ?? null),
+  );
+  return { valid: true, issues: [], value, changed };
+}
+
+// One plain-language timeline line per CLI whose model a per-intent change set
+// or removed, mirroring `describeConversationLanguageChange`. The actor is
+// supplied by the caller.
+function describeCliModelsChange({ previous = null, next = null } = {}) {
+  const before = parseCliModels(previous);
+  const after = parseCliModels(next);
+  return [...ALLOWED_CLI_MODEL_KEYS]
+    .filter((cli) => (before[cli] ?? null) !== (after[cli] ?? null))
+    .map((cli) =>
+      after[cli]
+        ? `Model for ${cli} set to ${after[cli]} for this intent`
+        : `Model for ${cli} removed for this intent (was ${before[cli]})`,
+    );
+}
+
+export {
+  normalizeCliModels,
+  parseCliModels,
+  mergeCliModels,
+  patchCliModels,
+  describeCliModelsChange,
+};
+export default {
+  normalizeCliModels,
+  parseCliModels,
+  mergeCliModels,
+  patchCliModels,
+  describeCliModelsChange,
+};

@@ -734,6 +734,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     // nativeName }. DRAFT-only, routed by the intents API, which normalises
     // the value; the store validates shape. null REMOVEs it.
     conversationLanguage,
+    // The per-CLI model snapshot (shared/cli-models.js). DRAFT-only, routed by
+    // the intents API for a native draft, which validates the values; the store
+    // validates shape. An empty map is stored as null, as create stores it.
+    cliModels,
     // DRAFT-phase editable header fields (the collaborative draft page's
     // auto-save writes these). The intents API only routes them while the
     // intent is DRAFT; the store validates shape, not lifecycle.
@@ -1030,6 +1034,13 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         removes.push('conversationLanguage');
       }
     }
+    if (cliModels !== undefined) {
+      if (cliModels !== null && (typeof cliModels !== 'object' || Array.isArray(cliModels))) {
+        throw new Error('cliModels must be a {cli: model} object or null');
+      }
+      sets.push('cliModels = :clm');
+      values[':clm'] = cliModels && Object.keys(cliModels).length ? cliModels : null;
+    }
     if (title !== undefined) {
       if (title !== null && typeof title !== 'string') {
         throw new Error('title must be a string or null');
@@ -1097,6 +1108,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         skipStageIds,
         aidlcSettings,
         conversationLanguage,
+        cliModels,
       ].some((value) => value !== undefined)
     ) {
       // Composer/orchestrator changes invalidate a browser's preflight too.
