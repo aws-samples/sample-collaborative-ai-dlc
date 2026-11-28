@@ -16,6 +16,7 @@ import { Settings2, SlidersHorizontal } from 'lucide-react';
 import {
   projectsService,
   type Project,
+  type LaneSyncPolicyOverride,
   type PrStrategy,
   type StageSkippingOverride,
 } from '@/services/projects';
@@ -61,6 +62,9 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
     project.stageSkipping ?? 'default',
   );
   const [prStrategy, setPrStrategy] = useState<PrStrategy>(project.prStrategy ?? 'intent-pr');
+  const [laneSyncPolicy, setLaneSyncPolicy] = useState<LaneSyncPolicyOverride>(
+    project.laneSyncPolicy ?? 'default',
+  );
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [runtimeResult, setRuntimeResult] = useState<SaveResult>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -69,7 +73,8 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
     parkReleaseSeconds !== (project.parkReleaseSeconds ?? 300) ||
     maxParallelUnits !== (project.maxParallelUnits ?? 0) ||
     stageSkipping !== (project.stageSkipping ?? 'default') ||
-    prStrategy !== (project.prStrategy ?? 'intent-pr');
+    prStrategy !== (project.prStrategy ?? 'intent-pr') ||
+    laneSyncPolicy !== (project.laneSyncPolicy ?? 'default');
 
   const saveRuntime = async () => {
     setSavingRuntime(true);
@@ -80,20 +85,24 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
         maxParallelUnits,
         prStrategy,
         stageSkipping,
+        laneSyncPolicy,
       });
       const next = saved.parkReleaseSeconds ?? parkReleaseSeconds;
       const nextParallel = saved.maxParallelUnits ?? maxParallelUnits;
       const nextSkipping = saved.stageSkipping ?? stageSkipping;
       const nextPrStrategy = saved.prStrategy ?? prStrategy;
+      const nextLaneSync = saved.laneSyncPolicy ?? laneSyncPolicy;
       setParkReleaseSeconds(next);
       setMaxParallelUnits(nextParallel);
       setStageSkipping(nextSkipping);
       setPrStrategy(nextPrStrategy);
+      setLaneSyncPolicy(nextLaneSync);
       onProjectUpdated({
         parkReleaseSeconds: next,
         maxParallelUnits: nextParallel,
         prStrategy: nextPrStrategy,
         stageSkipping: nextSkipping,
+        laneSyncPolicy: nextLaneSync,
       });
       setRuntimeResult('saved');
     } catch (err) {
@@ -226,6 +235,29 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               </Select>
               <p className="text-[11px] text-muted-foreground">
                 Applies to new intents. Unit PRs merge into the intent branch before its final PR.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="lane-sync" className="text-xs">
+                Lane sync
+              </Label>
+              <Select
+                value={laneSyncPolicy}
+                onValueChange={(v) => setLaneSyncPolicy(v as LaneSyncPolicyOverride)}
+                disabled={!canEdit || savingRuntime}
+              >
+                <SelectTrigger id="lane-sync" className="h-9 text-sm disabled:cursor-default">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Platform default</SelectItem>
+                  <SelectItem value="none">At merge-back only</SelectItem>
+                  <SelectItem value="before-stage">Before each stage</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                When a unit lane takes the latest changes on the intent branch. A conflict leaves
+                the lane as it was until merge-back. Applies to new intents.
               </p>
             </div>
           </div>

@@ -117,4 +117,9 @@ describe('projectsService v2 create/update payloads', () => {
     ]);
     expect(get).toHaveBeenCalledTimes(2);
   });
+
+  it('update can set laneSyncPolicy', async () => {
+    await projectsService.update('p1', { laneSyncPolicy: 'before-stage' });
+    expect(put).toHaveBeenCalledWith('/projects/p1', { laneSyncPolicy: 'before-stage' });
+  });
 });

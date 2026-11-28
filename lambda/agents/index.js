@@ -102,6 +102,7 @@ import {
   authorizeLegacySprintRead,
   fetchProjectIdForExecution,
 } from '../shared/legacy-authz.js';
+import { LANE_SYNC_POLICIES, normalizePlatformLaneSyncPolicy } from '../shared/lane-sync-policy.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // Owner of the release of every one-shot probe session on an Instances
@@ -839,6 +840,7 @@ export const handler = async (event, context) => {
       const stageSkippingPath = `${prefix}/stage-skipping`;
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
+      const laneSyncPolicyPath = `${prefix}/lane-sync-policy`;
       const disabledClisPath = disabledClisParameterName(prefix);
       try {
         const [result, platformCredentialStatus] = await Promise.all([
@@ -852,6 +854,7 @@ export const handler = async (event, context) => {
                 stageSkippingPath,
                 composeLlmBypassPath,
                 prStrategyPath,
+                laneSyncPolicyPath,
                 disabledClisPath,
               ],
               WithDecryption: true,
@@ -875,6 +878,7 @@ export const handler = async (event, context) => {
         const composeLlmBypass =
           byName[composeLlmBypassPath] === 'disabled' ? 'disabled' : 'enabled';
         const prStrategy = byName[prStrategyPath] === 'pr-per-unit' ? 'pr-per-unit' : 'intent-pr';
+        const laneSyncPolicy = normalizePlatformLaneSyncPolicy(byName[laneSyncPolicyPath]);
         // Agent CLIs the platform admin switched off (shared/agent-cli-availability.js).
         // A missing parameter means every CLI is enabled.
         const disabledClis = parseDisabledClis(byName[disabledClisPath]);
@@ -945,6 +949,7 @@ export const handler = async (event, context) => {
           stageSkipping,
           composeLlmBypass,
           prStrategy,
+          laneSyncPolicy,
           disabledClis,
           customMcpServers,
           customMcpServerNames,
@@ -1231,6 +1236,30 @@ export const handler = async (event, context) => {
         } catch (err) {
           logger.error('[settings] Failed to write PR strategy', err);
           errors.push('prStrategy: ' + err.message);
+        }
+      }
+
+      if (input.laneSyncPolicy !== undefined) {
+        // Platform lane sync policy (shared/lane-sync-policy.js); spaces may
+        // override it. Snapshotted per intent at create.
+        if (!LANE_SYNC_POLICIES.includes(input.laneSyncPolicy)) {
+          return response(400, {
+            error: 'Invalid laneSyncPolicy value',
+            issues: [`laneSyncPolicy must be one of: ${LANE_SYNC_POLICIES.join(', ')}`],
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/lane-sync-policy`,
+              Value: input.laneSyncPolicy,
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          logger.error('[settings] Failed to write lane sync policy', err);
+          errors.push('laneSyncPolicy: ' + err.message);
         }
       }
 

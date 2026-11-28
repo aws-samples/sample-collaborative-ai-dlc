@@ -522,6 +522,10 @@ const buildExecutionMeta = ({
   // PR strategy at fan-in (docs/v2-parallel.md WP6), snapshotted from the
   // project at create. Only 'intent-pr' is enabled until WP6b.
   prStrategy = null,
+  // Effective lane sync policy ('none'|'before-stage') snapshotted at create
+  // (project override over the platform SSM setting, shared/lane-sync-policy.js);
+  // the orchestrator forwards it to run-stage. null = none.
+  laneSyncPolicy = null,
   // The human's autonomy-ladder decision for construction (docs/v2-parallel.md
   // A2 rule 9): 'autonomous' (remaining lanes run without approval gates) or
   // 'gated' (one approval gate per parallel batch). null until the ladder
@@ -662,6 +666,7 @@ const buildExecutionMeta = ({
   parkReleaseSeconds,
   maxParallelUnits,
   prStrategy,
+  ...(laneSyncPolicy ? { laneSyncPolicy } : {}),
   constructionAutonomyMode,
   // Only a granted intent carries the grant, so every other row keeps exactly
   // the attributes it always had.
