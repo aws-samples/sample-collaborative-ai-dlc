@@ -1846,6 +1846,39 @@ export function ToolsRegistry() {
     });
   };
 
+  // Publishing cannot be undone, and the decision rests on the scan stored
+  // when the version was checked: say what it found and when.
+  const publishScanSummary = (version: ManagedToolVersion) => {
+    const scan = version.scanFindings;
+    if (!scan) return 'No stored package scan result is available for this version.';
+    const accepted = version.securityFindingsAcceptedAt ? ', which an administrator accepted' : '';
+    if (isScanUnavailable(version)) {
+      return `${scanUnavailableReason(version)} No package finding was checked${version.securityFindingsAcceptedAt ? '; an administrator continued without a scan' : ''}.`;
+    }
+    const counts = scan.severityCounts ?? {};
+    const checkedAt = Date.parse(scan.evaluatedAt ?? '');
+    const checkedOn = Number.isNaN(checkedAt) ? '' : ` on ${new Date(checkedAt).toLocaleString()}`;
+    return `The package scan${checkedOn} found ${scan.incomplete ? 'at least ' : ''}${Number(counts.CRITICAL ?? 0)} Critical and ${Number(counts.HIGH ?? 0)} High findings${accepted}.`;
+  };
+
+  const requestPublish = (tool: ManagedTool, version: ManagedToolVersion) =>
+    setConfirmation({
+      title: `Publish ${tool.name} ${version.definition.version}?`,
+      description: `${publishScanSummary(version)} The scan is not checked again before publishing, and a published version cannot be unpublished.`,
+      actionLabel: 'Publish',
+      onConfirm: () =>
+        void run('publish', () => toolsService.publish(tool.toolId, version.versionId)),
+    });
+
+  const requestRebuild = (tool: ManagedTool, version: ManagedToolVersion) =>
+    setConfirmation({
+      title: `Rebuild ${tool.name} ${version.definition.version}?`,
+      description:
+        'The version is built and scanned again from the same definition, and the current acceptance is discarded. If the new scan finds Critical or High findings, can only be partly read, or ECR cannot scan the new image, the version waits for review again; otherwise it returns to Ready.',
+      actionLabel: 'Rebuild and re-check',
+      onConfirm: () => void run('retry', () => toolsService.retry(tool.toolId, version.versionId)),
+    });
+
   const requestRecommendation = (tool: ManagedTool, version: ManagedToolVersion) => {
     const architecture = toolVersionArchitecture(version);
     const current = tool.versions.find(
@@ -2216,15 +2249,19 @@ export function ToolsRegistry() {
                           {selectedVersion?.status === 'READY' && (
                             <Button
                               size="sm"
+                              variant="outline"
+                              disabled={Boolean(busy) || missingDependencies.length > 0}
+                              onClick={() => requestRebuild(selectedTool, selectedVersion)}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                              Rebuild and re-check
+                            </Button>
+                          )}
+                          {selectedVersion?.status === 'READY' && (
+                            <Button
+                              size="sm"
                               disabled={Boolean(busy)}
-                              onClick={() =>
-                                void run('publish', () =>
-                                  toolsService.publish(
-                                    selectedTool.toolId,
-                                    selectedVersion.versionId,
-                                  ),
-                                )
-                              }
+                              onClick={() => requestPublish(selectedTool, selectedVersion)}
                             >
                               <Rocket className="h-3.5 w-3.5" />
                               Publish
@@ -2251,7 +2288,7 @@ export function ToolsRegistry() {
                       </div>
                       {missingDependencies.length > 0 &&
                         selectedVersion &&
-                        ['DRAFT', 'FAILED'].includes(selectedVersion.status) && (
+                        ['DRAFT', 'FAILED', 'READY'].includes(selectedVersion.status) && (
                           <div className="border-l-2 border-amber-500/60 pl-3 text-xs text-amber-700 dark:text-amber-300">
                             Publish and recommend{' '}
                             {missingDependencies
