@@ -361,7 +361,7 @@ const RELEASE_EVENT_FAMILIES = [
 ];
 const RELEASE_OUTCOME_FAILED = /(failed|blocked|halt|invalid|expired)$/;
 const RELEASE_OUTCOME_ATTENTION =
-  /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|dissent|warnings|override)$/;
+  /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|dissent|warnings|override|cross_unit)$/;
 
 // Persona events get a readable role label in addition to their outcome color.
 const PERSONA_EVENT_LABELS: Record<string, string> = {
@@ -394,6 +394,10 @@ const SENSOR_EVENT_LABELS: Record<string, string> = {
   // The advisory reviewer's summary is its whole Markdown report; it reads as a
   // headline plus a bounded, markup-free excerpt instead of a raw dump.
   'v2.review.advisory': 'Advisory review',
+  // A lane reviewer's findings for other units or a shared contract: work for
+  // the human to route, not counted towards the verdict, so it reads as an
+  // attention item. The full report is on the stage review; this is an excerpt.
+  'v2.review.cross_unit': 'Findings for other units',
 };
 
 function sensorEventLabel(event: IntentActivityEvent): string | null {

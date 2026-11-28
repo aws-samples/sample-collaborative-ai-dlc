@@ -429,6 +429,33 @@ describe('MCP tools gateway target', () => {
     expect(createProcessBridge).not.toHaveBeenCalled();
   });
 
+  it('passes crossUnitFindings to the bridge only for a reviewer in a unit lane', async () => {
+    const reviewerSession = {
+      role: 'reviewer',
+      stageInstanceId: 'si-1',
+      stageAttempt: 0,
+      reviewerAgent: 'aidlc-reviewer-agent',
+    };
+    const submitted = async (grantScope) => {
+      const { handler, bridge } = setup();
+      bridge.submitReview = vi.fn(async (input) => ({ recorded: input }));
+      const result = await call(handler, {
+        tool: 'submit_review',
+        args: {
+          reviewer: 'aidlc-reviewer-agent',
+          verdict: 'READY',
+          findings: '**Reviewer:** aidlc-reviewer-agent',
+          crossUnitFindings: 'The billing unit owns the shared invoice schema.',
+        },
+        headers: contextHeaders(grantScope, reviewerSession),
+      });
+      expect(result.isError).toBeUndefined();
+      return bridge.submitReview.mock.calls[0][0].crossUnitFindings;
+    };
+    expect(await submitted(lane)).toBe('The billing unit owns the shared invoice schema.');
+    expect(await submitted(stage)).toBe('');
+  });
+
   it('records the injected scope on denials after the context is accepted', async () => {
     const { handler, audit } = setup();
     await call(handler, {

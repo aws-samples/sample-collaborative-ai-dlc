@@ -120,6 +120,17 @@ export function reviewerRunVerdict(run: IntentSensorRun): string {
   return run.detail?.verdict != null ? String(run.detail.verdict) : run.result;
 }
 
+// A unit-lane reviewer's findings owned by other units or a shared contract,
+// trimmed; null when the run recorded none. The sensor run holds the full report
+// (the timeline event carries only a bounded excerpt), so this is what the
+// review renders.
+export function reviewerRunCrossUnitFindings(run: IntentSensorRun): string | null {
+  const value = run.detail?.crossUnitFindings;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function ReviewStat({
   label,
   value,
@@ -214,11 +225,21 @@ export function StageReviewPanel({
     latestReviewerRun !== null &&
     latestReviewerRun.result !== 'PASS' &&
     latestReviewerRun.detail?.verdict !== 'READY';
-  // Open "At a glance" always, and "Reviewer Agent findings" too when the
-  // latest reviewer run flagged issues — surface the decision-relevant evidence.
-  const [openSections, setOpenSections] = useState<string[]>(() =>
-    latestReviewerNeedsAttention ? ['summary', 'reviewer-findings'] : ['summary'],
-  );
+  // Findings the lane's reviewer recorded for other units or a shared contract,
+  // newest first. Advisory: not part of the verdict and not sent to the author,
+  // but work only the human can route, so the section opens by default.
+  const crossUnitRuns = orderedReviewerRuns.flatMap((run) => {
+    const findings = reviewerRunCrossUnitFindings(run);
+    return findings ? [{ run, findings }] : [];
+  });
+  // Open "At a glance" always, "Findings for other units" whenever recorded, and
+  // "Reviewer Agent findings" too when the latest reviewer run flagged issues —
+  // surface the decision-relevant evidence.
+  const [openSections, setOpenSections] = useState<string[]>(() => [
+    'summary',
+    ...(latestReviewerNeedsAttention ? ['reviewer-findings'] : []),
+    ...(crossUnitRuns.length > 0 ? ['cross-unit-findings'] : []),
+  ]);
   const revealSection = (value: string) => {
     setOpenSections((prev) => (prev.includes(value) ? prev : [...prev, value]));
     scrollAndFlash(`review-section-${value}`);
@@ -504,6 +525,56 @@ export function StageReviewPanel({
                           )}
                         </CollapsibleContent>
                       </Collapsible>
+                    );
+                  })}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          {crossUnitRuns.length > 0 && (
+            <AccordionItem
+              value="cross-unit-findings"
+              id="review-section-cross-unit-findings"
+              className="rounded-lg border border-agent-waiting/30 px-4"
+            >
+              <AccordionTrigger className="py-3 hover:no-underline">
+                <div className="flex items-center gap-2">
+                  <TriangleAlert className="h-4 w-4 text-agent-waiting" />
+                  <span>Findings for other units</span>
+                  <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                    Advisory
+                  </Badge>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  The reviewer judged this unit only on what its author may change. These findings
+                  belong to other units or a shared contract: they are not counted towards the
+                  verdict and were not sent to the author.
+                </p>
+                <div className="space-y-2 text-sm">
+                  {crossUnitRuns.map(({ run, findings }) => {
+                    const parsedTime = Date.parse(run.timestamp);
+                    const timeLabel = Number.isFinite(parsedTime)
+                      ? formatTimelineTimestamp(run.timestamp)
+                      : null;
+                    return (
+                      <div
+                        key={run.sensorRunId}
+                        className="rounded-md border p-2"
+                        data-testid={`cross-unit-run-${run.sensorRunId}`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 pb-2">
+                          {timeLabel && (
+                            <span className="text-xs text-muted-foreground">{timeLabel}</span>
+                          )}
+                          <span className="text-xs text-muted-foreground">{run.sensorId}</span>
+                        </div>
+                        <div className="prose prose-sm max-w-none dark:prose-invert">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{findings}</ReactMarkdown>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>

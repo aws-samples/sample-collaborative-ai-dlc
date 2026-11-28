@@ -466,6 +466,30 @@ const renderReviewerReadScope = ({ unit, contracts }) => {
   ].join('\n');
 };
 
+// PURE — a unit lane's reviewer records findings owned by other units apart, so
+// they reach the human without failing a lane whose author may not act on them
+// (its unit scope forbids modifying other units). '' outside a unit lane.
+const renderCrossUnitFindings = ({ unit }) => {
+  if (!unit?.slug) return '';
+  const deps = Array.isArray(unit.dependsOn) && unit.dependsOn.length ? unit.dependsOn : null;
+  return [
+    '## Findings for other units',
+    '',
+    `The author of this stage may change only the unit **${unit.slug}**. Other units, including`,
+    `the ones it depends on${deps ? ` (${deps.join(', ')})` : ''}, and the shared contracts are read-only to it.`,
+    'Judge it on what it can change here:',
+    '',
+    `- Put in \`findings\` only what the author can fix within **${unit.slug}**, including`,
+    '  how the unit records, works around or depends on a gap elsewhere.',
+    '- Put a finding whose required action is a change to another unit or to a shared',
+    '  contract in `crossUnitFindings` instead, naming the owner (unit or contract) of each.',
+    '  These go to the human. They do not count towards your verdict and are not sent to',
+    '  the author.',
+    '- Decide READY or NOT-READY on `findings` alone. When every finding is for another',
+    '  unit, the verdict is READY.',
+  ].join('\n');
+};
+
 // Everything the reviewer prompt says EXCEPT the persona/knowledge tail —
 // that tail is generic across persona roles and lives in
 // composePersonaPrompt (persona-dispatch.js). Split out from
@@ -489,6 +513,7 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
     unit,
     contracts: contracts.length ? contracts : inputs,
   });
+  const crossUnitBlock = renderCrossUnitFindings({ unit });
   return [
     `# Clean-room review: ${stage.stageId}`,
     '',
@@ -529,6 +554,7 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
         ]
       : []),
     ...(readScope ? ['', readScope] : []),
+    ...(crossUnitBlock ? ['', crossUnitBlock] : []),
   ].join('\n');
 };
 

@@ -13953,7 +13953,15 @@ describe('GET intent — sensor run detail', () => {
       files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
     });
     sensorRow('s3', 'reviewer:arch', { verdict: 'NOT_READY', findings: 'fix it', round: 1 });
-
+    // A lane reviewer's findings for other units: the timeline event carries a
+    // bounded excerpt, so the review renders this field and it must arrive whole.
+    const crossUnitFindings = `The billing unit owns the invoice schema. ${'x'.repeat(5000)}`;
+    sensorRow('s4', 'reviewer:unit', {
+      verdict: 'READY',
+      findings: 'ok',
+      round: 0,
+      crossUnitFindings,
+    });
     const res = await handler({
       httpMethod: 'GET',
       path: `/projects/${projectId}/intents/${intent.id}`,
@@ -13970,6 +13978,7 @@ describe('GET intent — sensor run detail', () => {
       files: [{ file: 'a.js', result: 'FAIL', detail: { reason: 'bad' } }],
     });
     expect(byId.get('s3')).toEqual({ verdict: 'NOT_READY', findings: 'fix it', round: 1 });
+    expect(byId.get('s4').crossUnitFindings).toBe(crossUnitFindings);
   });
 });
 

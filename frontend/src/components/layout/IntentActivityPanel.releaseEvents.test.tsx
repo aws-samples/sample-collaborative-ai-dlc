@@ -49,6 +49,13 @@ const EVENTS = [
     summary: 'Withdrew an orphaned persona question',
   },
   { eventId: 'e25', type: 'v2.stage.note', summary: '' },
+  {
+    eventId: 'e26',
+    type: 'v2.review.cross_unit',
+    actor: 'unit-reviewer',
+    summary:
+      'Reviewer unit-reviewer recorded findings for other units (not counted towards READY): The billing unit owns the shared invoice schema.',
+  },
 ].map((event, index) => ({
   ...event,
   timestamp: `2026-08-11T10:${String(index).padStart(2, '0')}:00Z`,
@@ -142,6 +149,15 @@ describe('IntentActivityPanel release-semantics event colours', () => {
     expect(screen.getAllByText('Advisory review').length).toBeGreaterThan(0);
     const excerpt = screen.getByText(/Verdict: READY/);
     expect(excerpt.textContent).not.toMatch(/##|\*\*|\|---/);
+  });
+
+  it('headlines findings for other units as an attention item, not a success', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+    const headline = screen.getByText('Findings for other units');
+    const item = headline.closest('.flex.gap-3.py-2');
+    expect(item?.querySelector('.bg-agent-waiting')).not.toBeNull();
+    expect(item?.querySelector('.bg-agent-success')).toBeNull();
+    expect(item?.textContent).toContain('The billing unit owns the shared invoice schema.');
   });
 });
 

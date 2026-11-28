@@ -558,6 +558,10 @@ export interface SensorDetail {
   files?: SensorFileDiagnostic[];
   filesOmitted?: number;
   omissionReason?: string;
+  // A unit-lane reviewer's findings owned by other units or a shared contract.
+  // Recorded in full here (the timeline event carries only a bounded excerpt);
+  // not counted towards the verdict and never sent to the author.
+  crossUnitFindings?: string;
   [key: string]: unknown;
 }
 
