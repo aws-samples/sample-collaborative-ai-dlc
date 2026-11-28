@@ -18,6 +18,9 @@ const SpacePermissionsContext = createContext({
   documentEpoch: 0,
   canManage: undefined as boolean | undefined,
   role: null as ProjectRole | null,
+  // Whether the platform offers native execution, from the same space response
+  // as the permissions. False until that response has loaded.
+  nativeExecution: false,
   refresh: () => {},
   denyWrites: () => {},
 });
@@ -54,21 +57,32 @@ function ScopedPermissions({ projectId, children }: { projectId: string; childre
   const [access, setAccess] = useState<{
     permissions: SpacePermissions;
     role: ProjectRole | null;
+    nativeExecution: boolean;
     loading: boolean;
     documentEpoch: number;
-  }>({ permissions: denied, role: null, loading: true, documentEpoch: 0 });
+  }>({
+    permissions: denied,
+    role: null,
+    nativeExecution: false,
+    loading: true,
+    documentEpoch: 0,
+  });
   const hasLoaded = useRef(false);
-  const applyAccess = useCallback((permissions: SpacePermissions, role: ProjectRole | null) => {
-    hasLoaded.current = true;
-    setAccess((current) => ({
-      permissions,
-      role,
-      loading: false,
-      // Only a confirmed revocation retires a document that could contain writes.
-      documentEpoch:
-        current.documentEpoch + Number(current.permissions.write && !permissions.write),
-    }));
-  }, []);
+  const applyAccess = useCallback(
+    (permissions: SpacePermissions, role: ProjectRole | null, nativeExecution = false) => {
+      hasLoaded.current = true;
+      setAccess((current) => ({
+        permissions,
+        role,
+        nativeExecution,
+        loading: false,
+        // Only a confirmed revocation retires a document that could contain writes.
+        documentEpoch:
+          current.documentEpoch + Number(current.permissions.write && !permissions.write),
+      }));
+    },
+    [],
+  );
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
@@ -78,6 +92,7 @@ function ScopedPermissions({ projectId, children }: { projectId: string; childre
     setAccess((current) => ({
       permissions: { ...current.permissions, write: false, manage: false },
       role: 'viewer',
+      nativeExecution: current.nativeExecution,
       loading: false,
       documentEpoch: current.documentEpoch + Number(current.permissions.write),
     }));
@@ -96,7 +111,11 @@ function ScopedPermissions({ projectId, children }: { projectId: string; childre
       try {
         const project = await projectsService.get(projectId);
         if (active && generation.current === startedAt)
-          applyAccess(project.permissions ?? denied, project.userRole ?? null);
+          applyAccess(
+            project.permissions ?? denied,
+            project.userRole ?? null,
+            project.nativeExecution === 'enabled',
+          );
       } catch (error) {
         // A transport/server failure says nothing about membership. Keep the last
         // grant (and unsent edits); the backend still authorizes every write.
@@ -135,6 +154,7 @@ function ScopedPermissions({ projectId, children }: { projectId: string; childre
         documentEpoch: access.documentEpoch,
         canManage: access.permissions.manage,
         role: access.role,
+        nativeExecution: access.nativeExecution,
         refresh,
         denyWrites,
       }}

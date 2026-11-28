@@ -174,3 +174,71 @@ it.each([403, 404])('revokes the last known grant on confirmed HTTP %s', async (
   fireEvent.focus(window);
   await waitFor(() => expect(screen.getByText('Change content')).toBeDisabled());
 });
+
+// The platform's native-execution flag rides on the space response this
+// provider already polls, so a page learns it without a request of its own.
+describe('the native-execution flag of the current space', () => {
+  function Flag() {
+    const { nativeExecution } = useSpacePermissions();
+    return <p>native: {String(nativeExecution)}</p>;
+  }
+  const space = (flag?: string) =>
+    ({ ...member, ...(flag ? { nativeExecution: flag } : {}) }) as Awaited<
+      ReturnType<typeof projectsService.get>
+    >;
+  const renderFlag = () =>
+    render(
+      <SpacePermissionsProvider projectId="s">
+        <Flag />
+      </SpacePermissionsProvider>,
+    );
+  const refocus = () =>
+    act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+  beforeEach(() => {
+    get.mockReset();
+  });
+
+  it('is off outside a space and until the space has loaded', () => {
+    get.mockReturnValue(new Promise(() => {}));
+    render(<Flag />);
+    expect(screen.getByText('native: false')).toBeInTheDocument();
+    renderFlag();
+    expect(screen.getAllByText('native: false')).toHaveLength(2);
+  });
+
+  it.each([
+    ['enabled', true],
+    ['disabled', false],
+    ['Enabled', false],
+    [undefined, false],
+  ])('reads %s as %s', async (flag, expected) => {
+    get.mockResolvedValue(space(flag));
+    renderFlag();
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(await screen.findByText(`native: ${expected}`)).toBeInTheDocument();
+  });
+
+  it('follows a switch of the flag on the next poll', async () => {
+    get.mockResolvedValue(space('enabled'));
+    renderFlag();
+    expect(await screen.findByText('native: true')).toBeInTheDocument();
+    get.mockResolvedValue(space('disabled'));
+    await refocus();
+    expect(await screen.findByText('native: false')).toBeInTheDocument();
+  });
+
+  it('keeps the last answer through a transport failure and drops it with the access', async () => {
+    get.mockResolvedValue(space('enabled'));
+    renderFlag();
+    expect(await screen.findByText('native: true')).toBeInTheDocument();
+    get.mockRejectedValue(new TypeError('Offline'));
+    await refocus();
+    expect(screen.getByText('native: true')).toBeInTheDocument();
+    get.mockRejectedValue(new ApiError(403, 'No access'));
+    await refocus();
+    expect(await screen.findByText('native: false')).toBeInTheDocument();
+  });
+});

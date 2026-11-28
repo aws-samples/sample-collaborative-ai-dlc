@@ -34,6 +34,22 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } f
 // Non-admins receive the reduced release projection (no sourceSha), so the
 // label falls back to the raw release id rather than crashing.
 
+// The engines an intent can run on. 'native' is offered only while the platform
+// reports native execution as enabled (docs/development/native-execution-plan.md).
+const ENGINE_OPTIONS = [
+  {
+    value: 'platform',
+    label: 'Platform workflow',
+    description: 'The platform runs the workflow of this space, stage by stage.',
+  },
+  {
+    value: 'native',
+    label: 'Native AI-DLC',
+    description: 'AI-DLC runs in the repository and decides the stages itself.',
+  },
+] as const;
+type Engine = (typeof ENGINE_OPTIONS)[number]['value'];
+
 // Step one of intent creation: capture the seed (title/prompt/tracker import/
 // base branch) and create the intent as a DRAFT immediately. Everything else —
 // the shared prompt refinement, the scope / composed-grid selection, stage
@@ -41,7 +57,7 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } f
 // lands on next (IntentComposePage), so teammates can join the draft live.
 export default function NewIntentPage() {
   const navigate = useNavigate();
-  const { readOnly, role } = useSpacePermissions();
+  const { readOnly, role, nativeExecution } = useSpacePermissions();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const requestedReleaseId = searchParams.get('release');
@@ -92,6 +108,31 @@ export default function NewIntentPage() {
 
   const hasTrackers = (project?.trackers.length ?? 0) > 0;
   const repos = project?.repos ?? [];
+
+  // The engine is chosen only on a plain New Intent page. A page that asks for
+  // a release, tests one, or starts from another intent is about a platform
+  // release, which a native intent does not have.
+  //
+  // The flag decides whether the choice is OFFERED. It never changes a choice
+  // the member has made: the flag the browser sees can read `disabled` for a
+  // minute after a failed read, and a form that quietly went back to the
+  // platform engine would then create the wrong kind of intent. A chosen
+  // native form stays, and the server, which reads the flag itself, refuses
+  // the create by name when native execution really is off.
+  const [engine, setEngine] = useState<Engine>('platform');
+  const plainPage = !requestedReleaseId && !testReleaseMode && !fromIntentId;
+  const native = plainPage && engine === 'native';
+  const engineChoiceOffered = plainPage && (nativeExecution || native);
+  // The primary repository of a native intent holds AI-DLC's files and records.
+  // It starts as the repository the space marks as primary, and the member can
+  // change it. A space with one repository has nothing to pick.
+  const [pickedPrimaryRepo, setPickedPrimaryRepo] = useState<string | null>(null);
+  const primaryRepo =
+    repos.find((repo) => repo.url === pickedPrimaryRepo)?.url ??
+    repos.find((repo) => repo.role === 'primary')?.url ??
+    repos[0]?.url ??
+    null;
+  const nativeRepositoryMissing = native && repos.length === 0;
 
   // AI-DLC version: offerable releases + the stable
   // channel's default. Hidden entirely (and the field omitted) when the
@@ -269,9 +310,12 @@ export default function NewIntentPage() {
   const requestedReleaseBlocked =
     !releasesSettled || Boolean(requestedReleaseId && releaseRequestError);
 
+  // A native intent has no release, so it does not wait for the release lookup.
+  const submitBlocked = native ? nativeRepositoryMissing : requestedReleaseBlocked;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!title.trim() && !prompt.trim()) || !projectId || requestedReleaseBlocked) return;
+    if ((!title.trim() && !prompt.trim()) || !projectId || submitBlocked) return;
     setCreating(true);
     setError(null);
     let releaseSelectionFallback = false;
@@ -293,9 +337,28 @@ export default function NewIntentPage() {
           )
           .filter(([, directories]) => directories.length),
       );
+      const sourceInput = source
+        ? {
+            bindingId: source.binding.id,
+            resourceType: source.issue.resourceType,
+            resourceId: source.issue.resourceId,
+            resourceUrl: source.issue.resourceUrl,
+          }
+        : undefined;
+      // A native intent has no workflow, scope, release or stage plan, and the
+      // server refuses those inputs for it. Sparse checkout is not offered
+      // either. The primary repository is sent only where there is a choice.
+      const nativeInput: CreateIntentInput = {
+        engine: 'native',
+        title: title.trim(),
+        prompt: prompt.trim(),
+        baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
+        primaryRepo: repos.length > 1 && primaryRepo ? primaryRepo : undefined,
+        source: sourceInput,
+      };
       // Scope is deliberately omitted — the server defaults it and the compose
       // page is where the projection is actually chosen (collaboratively).
-      const input: CreateIntentInput = {
+      const platformInput: CreateIntentInput = {
         ...(testReleaseMode ? { methodologyReleaseTest: true } : {}),
         title: title.trim(),
         prompt: prompt.trim(),
@@ -314,15 +377,9 @@ export default function NewIntentPage() {
         constructionGateAutonomy:
           showAutonomyOptIn && autonomousConstruction ? 'autonomous' : undefined,
         sparseCheckout: Object.keys(sparseCheckout).length ? sparseCheckout : undefined,
-        source: source
-          ? {
-              bindingId: source.binding.id,
-              resourceType: source.issue.resourceType,
-              resourceId: source.issue.resourceId,
-              resourceUrl: source.issue.resourceUrl,
-            }
-          : undefined,
+        source: sourceInput,
       };
+      const input = native ? nativeInput : platformInput;
       let intent;
       try {
         intent = await intentsService.create(projectId, input);
@@ -514,6 +571,40 @@ export default function NewIntentPage() {
               </Badge>
             )}
 
+            {engineChoiceOffered && (
+              <fieldset data-testid="engine-choice">
+                <legend className="text-sm font-medium">Engine</legend>
+                <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                  {ENGINE_OPTIONS.map((option) => (
+                    <label
+                      key={option.value}
+                      className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2.5 text-sm ${
+                        engine === option.value
+                          ? 'border-primary bg-primary/[0.04] ring-1 ring-primary'
+                          : 'hover:border-primary/40 hover:bg-muted/30'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="intent-engine"
+                        className="mt-0.5"
+                        value={option.value}
+                        checked={engine === option.value}
+                        disabled={readOnly || creating}
+                        onChange={() => setEngine(option.value)}
+                      />
+                      <span>
+                        <span className="font-medium">{option.label}</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {option.description}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
             <div>
               <Label htmlFor="intent-title">Title</Label>
               <Input
@@ -545,7 +636,7 @@ export default function NewIntentPage() {
               />
             </div>
 
-            {showReleaseSelector && (
+            {!native && showReleaseSelector && (
               <div>
                 <Label htmlFor="intent-methodology-release">AI-DLC version</Label>
                 <Select
@@ -582,7 +673,7 @@ export default function NewIntentPage() {
               </div>
             )}
 
-            {showAutonomyOptIn && (
+            {!native && showAutonomyOptIn && (
               <div>
                 <label className="inline-flex items-center gap-2 text-sm">
                   <input
@@ -598,6 +689,38 @@ export default function NewIntentPage() {
                   The grant holds for the rest of the intent, rewinds included, until the intent is
                   cancelled. An intent can be cancelled once its run stops at a gate, a question or
                   a failure.
+                </p>
+              </div>
+            )}
+
+            {nativeRepositoryMissing && (
+              <p role="status" className="rounded-md border bg-muted p-3 text-sm">
+                A native intent needs a repository. Add one to this space first.
+              </p>
+            )}
+
+            {native && repos.length > 1 && primaryRepo && (
+              <div>
+                <Label htmlFor="intent-primary-repo">Primary repository</Label>
+                <Select
+                  value={primaryRepo}
+                  onValueChange={setPickedPrimaryRepo}
+                  disabled={readOnly || creating}
+                >
+                  <SelectTrigger id="intent-primary-repo" className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {repos.map((repo) => (
+                      <SelectItem key={repo.url} value={repo.url}>
+                        {repo.url}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  AI-DLC runs from this repository and keeps its files and records in it. It cannot
+                  be changed after the intent is created.
                 </p>
               </div>
             )}
@@ -669,7 +792,7 @@ export default function NewIntentPage() {
               </div>
             )}
 
-            {repos.length > 0 && (
+            {!native && repos.length > 0 && (
               <details className="border rounded-md px-3 py-2">
                 <summary className="cursor-pointer text-sm font-medium">
                   Repository directories (optional)
@@ -714,14 +837,11 @@ export default function NewIntentPage() {
               <Button
                 type="submit"
                 disabled={
-                  readOnly ||
-                  creating ||
-                  (!title.trim() && !prompt.trim()) ||
-                  requestedReleaseBlocked
+                  readOnly || creating || (!title.trim() && !prompt.trim()) || submitBlocked
                 }
               >
                 {creating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
-                {creating ? 'Creating…' : 'Continue to Compose'}
+                {creating ? 'Creating…' : native ? 'Create draft' : 'Continue to Compose'}
               </Button>
             </div>
           </form>
