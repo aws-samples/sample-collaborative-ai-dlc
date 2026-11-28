@@ -276,6 +276,574 @@ describe('runStage — happy path', () => {
   });
 });
 
+describe('runStage — code generation requires repository changes (#668)', () => {
+  const codeLibrary = () => {
+    const lib = library();
+    lib.stagesById = {
+      'code-generation': {
+        ...lib.stagesById['requirements-analysis'],
+        id: 'code-generation',
+        phase: 'construction',
+        produces: ['code-generation-plan', 'code-summary'],
+        reviewer: 'aidlc-reviewer-agent',
+        reviewerMaxIterations: 2,
+      },
+    };
+    lib.agentsById['aidlc-reviewer-agent'] = {
+      id: 'aidlc-reviewer-agent',
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+    lib.artifactsById = {
+      'code-generation-plan': { id: 'code-generation-plan', terminal: true },
+      'code-summary': { id: 'code-summary', terminal: true },
+    };
+    lib.scopesById = { feature: { id: 'feature', reviewCap: 'adversarial' } };
+    return lib;
+  };
+  const codeWorkflow = () => ({
+    ...workflow(),
+    placements: [
+      {
+        stageId: 'code-generation',
+        order: 0,
+        scopeMembership: { feature: 'EXECUTE' },
+      },
+    ],
+  });
+  const codeArgs = { ...baseArgs, stageId: 'code-generation' };
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+  const codeDeps = (overrides = {}) => {
+    const store = overrides.store ?? spyStore();
+    store.listSensorRuns = async () => [
+      {
+        sensorId: 'reviewer:aidlc-reviewer-agent',
+        kind: 'reviewer',
+        result: 'PASS',
+        detail: { verdict: 'READY' },
+      },
+    ];
+    return baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: codeWorkflow(),
+        library: codeLibrary(),
+      }),
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [] }),
+      redirectHeavyDirs: async () => ({ links: [] }),
+      commitAndPushAll: async ({ repos }) => ({
+        ok: true,
+        committed: false,
+        results: repos.map((repo) => ({
+          repo,
+          committed: false,
+          pushed: 'up_to_date',
+          provenance: { state: 'known', files: [] },
+        })),
+      }),
+      ...overrides,
+    });
+  };
+
+  it.each([
+    [false, 'required'],
+    [false, 'none'],
+    [true, 'required'],
+    [true, 'none'],
+  ])('routes zero changes with release=%s and human validation=%s', async (release, validation) => {
+    const lib = codeLibrary();
+    lib.fromRelease = release;
+    lib.stagesById['code-generation'].humanValidation = validation;
+    const result = await runStage(
+      {
+        ...codeArgs,
+        repos: ['acme/api'],
+        ...(release ? { methodologyRelease: {} } : {}),
+      },
+      codeDeps({
+        loadLibrary: async () => ({ workflow: codeWorkflow(), library: lib }),
+      }),
+    );
+    expect(result).toMatchObject(
+      release && validation === 'required'
+        ? {
+            ok: true,
+            state: 'SUCCEEDED',
+            changedFileProvenance: { state: 'known', files: [] },
+          }
+        : { ok: false, reason: 'code_generation_no_changes' },
+    );
+  });
+
+  it('identifies a renamed code-generation stage from its authored outputs', async () => {
+    const lib = codeLibrary();
+    lib.stagesById = {
+      implement: { ...lib.stagesById['code-generation'], id: 'implement' },
+    };
+    const wf = codeWorkflow();
+    wf.placements[0].stageId = 'implement';
+    const result = await runStage(
+      { ...codeArgs, stageId: 'implement', repos: ['acme/api'] },
+      codeDeps({ loadLibrary: async () => ({ workflow: wf, library: lib }) }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'code_generation_no_changes',
+    });
+  });
+
+  it('does not require repository changes from an artifact-producing design stage', async () => {
+    const deps = codeDeps({
+      loadLibrary: async () => ({ workflow: workflow(), library: library() }),
+    });
+    const result = await runStage({ ...baseArgs, repos: ['acme/api'] }, deps);
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFileProvenance: { state: 'known', files: [] },
+    });
+  });
+
+  it('does not interpret failed file enumeration as a known empty change list', async () => {
+    const provenance = {
+      state: 'unknown',
+      reason: 'git_committed_files_failed',
+    };
+    const result = await runStage(
+      { ...codeArgs, repos: ['acme/api'] },
+      codeDeps({
+        commitAndPushAll: async () => ({
+          ok: true,
+          committed: true,
+          results: [{ repo: 'acme/api', committed: true, pushed: true, provenance }],
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      changedFileProvenance: { state: 'unknown' },
+    });
+  });
+
+  it.each([false, true])(
+    'checks the final reviewer repair (repair changes files=%s)',
+    async (changed) => {
+      const lib = codeLibrary();
+      lib.fromRelease = true;
+      const deps = codeDeps({
+        loadLibrary: async () => ({ workflow: codeWorkflow(), library: lib }),
+      });
+      let reviews = 0;
+      deps.store.listSensorRuns = async () => [
+        {
+          sensorId: 'reviewer:aidlc-reviewer-agent',
+          kind: 'reviewer',
+          result: ++reviews === 1 ? 'FAIL' : 'PASS',
+          detail: { verdict: reviews === 1 ? 'NOT-READY' : 'READY' },
+        },
+      ];
+      const repairResult = {
+        ok: true,
+        committed: changed,
+        results: [
+          {
+            repo: 'acme/api',
+            committed: changed,
+            pushed: true,
+            ...(changed ? { sha: 'a'.repeat(40) } : {}),
+            provenance: {
+              state: 'known',
+              files: changed ? ['src/api.ts'] : [],
+            },
+          },
+        ],
+      };
+      const cleanCommit = deps.commitAndPushAll;
+      deps.commitAndPushAll = vi
+        .fn()
+        .mockImplementationOnce(cleanCommit)
+        .mockResolvedValueOnce(repairResult);
+      deps.gitResultForCommitRefs = vi.fn(async () => repairResult);
+      const result = await runStage(
+        { ...codeArgs, repos: ['acme/api'], methodologyRelease: {} },
+        deps,
+      );
+      expect(reviews).toBe(2);
+      expect(deps.commitAndPushAll).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        ok: true,
+        state: 'SUCCEEDED',
+        changedFileProvenance: {
+          state: 'known',
+          files: changed ? ['src/api.ts'] : [],
+        },
+      });
+    },
+  );
+
+  it('reaches the human gate after a loop-back or guided rewind cleared earlier commit refs', async () => {
+    const lib = codeLibrary();
+    lib.fromRelease = true;
+    const deps = codeDeps({
+      store: spyStore({
+        stage: {
+          stageInstanceId: planStageInstanceId('aidlc-v2@1', codeArgs.stageId),
+          state: 'PENDING',
+          attempt: 1,
+          pendingCodeCommitRefs: null,
+        },
+      }),
+      loadLibrary: async () => ({ workflow: codeWorkflow(), library: lib }),
+      gitResultForCommitRefs: vi.fn(),
+    });
+    // The earlier implementation remains on the branch, but this attempt makes
+    // no edits: the build failure was environmental (npm run lint ENOENT).
+    const result = await runStage(
+      { ...codeArgs, repos: ['acme/api'], methodologyRelease: {} },
+      deps,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFileProvenance: { state: 'known', files: [] },
+    });
+    expect(deps.gitResultForCommitRefs).not.toHaveBeenCalled();
+  });
+
+  it('accepts changes from one repository while the other repositories remain clean', async () => {
+    const result = await runStage(
+      { ...codeArgs, repos: ['acme/api', 'acme/web'] },
+      codeDeps({
+        commitAndPushAll: async () => ({
+          ok: true,
+          committed: true,
+          results: [
+            {
+              repo: 'acme/api',
+              committed: true,
+              pushed: true,
+              provenance: { state: 'known', files: ['acme/api/src/api.ts'] },
+            },
+            {
+              repo: 'acme/web',
+              committed: false,
+              pushed: 'up_to_date',
+              provenance: { state: 'known', files: [] },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      changedFiles: ['acme/api/src/api.ts'],
+    });
+  });
+
+  it('accepts a clean resume when the same stage committed work before parking', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', codeArgs.stageId);
+    const pendingCodeCommitRefs = [{ repo: 'acme/api', sha: 'a'.repeat(40) }];
+    const deps = codeDeps({
+      store: spyStore({
+        stage: {
+          stageInstanceId,
+          cli: 'claude',
+          cliSessionId: 's1',
+          pendingCodeCommitRefs,
+        },
+        humanTask: {
+          humanTaskId: 'q1',
+          stageInstanceId,
+          status: 'answered',
+          answer: { freeText: 'continue' },
+        },
+      }),
+      gitResultForCommitRefs: vi.fn(async () => ({
+        ok: true,
+        committed: true,
+        results: [
+          {
+            ...pendingCodeCommitRefs[0],
+            committed: true,
+            pushed: true,
+            provenance: { state: 'known', files: ['src/api.ts'] },
+          },
+        ],
+      })),
+    });
+    const result = await runStage({ ...codeArgs, repos: ['acme/api'], resumeFrom: 'q1' }, deps);
+    expect(deps.gitResultForCommitRefs).toHaveBeenCalledWith(
+      expect.objectContaining({ commitRefs: pendingCodeCommitRefs }),
+    );
+    expect(result).toMatchObject({ ok: true, changedFiles: ['src/api.ts'] });
+  });
+
+  it.each(['pipeline', 'mob', 'subagent'])(
+    'counts a %s ensemble lead-draft commit when the final tree is clean',
+    async (mode) => {
+      const lib = codeLibrary();
+      lib.fromRelease = true;
+      Object.assign(lib.stagesById['code-generation'], {
+        mode,
+        supportAgents: ['aidlc-architect-agent'],
+        humanValidation: 'none',
+      });
+      lib.agentsById['aidlc-architect-agent'] = {
+        id: 'aidlc-architect-agent',
+        bodyRef: { s3Key: 'blocks/bodies/sha256/architect' },
+      };
+      const leadDraft = {
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: 'acme/api',
+            committed: true,
+            pushed: true,
+            sha: 'a'.repeat(40),
+            provenance: { state: 'known', files: ['src/api.ts'] },
+          },
+        ],
+      };
+      const deps = codeDeps({
+        loadLibrary: async () => ({ workflow: codeWorkflow(), library: lib }),
+        gitResultForCommitRefs: vi.fn(async () => leadDraft),
+      });
+      const cleanCommit = deps.commitAndPushAll;
+      deps.commitAndPushAll = vi
+        .fn()
+        .mockResolvedValueOnce(leadDraft)
+        .mockImplementationOnce(cleanCommit);
+      const result = await runStage(
+        { ...codeArgs, repos: ['acme/api'], methodologyRelease: {} },
+        deps,
+      );
+      expect(deps.commitAndPushAll).toHaveBeenCalledTimes(2);
+      expect(deps.commitAndPushAll.mock.calls[0][0].message).toContain('lead draft');
+      expect(await deps.commitAndPushAll.mock.results[1].value).toMatchObject({
+        committed: false,
+        results: [{ provenance: { state: 'known', files: [] } }],
+      });
+      expect(deps.gitResultForCommitRefs).toHaveBeenCalledWith(
+        expect.objectContaining({ commitRefs: [{ repo: 'acme/api', sha: 'a'.repeat(40) }] }),
+      );
+      expect(result.ensembleEvidence).toMatchObject({ mode });
+      expect(result).toMatchObject({
+        ok: true,
+        state: 'SUCCEEDED',
+        changedFileProvenance: { state: 'known', files: ['src/api.ts'] },
+      });
+    },
+  );
+
+  it('allows a question to park before requiring implementation work', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', codeArgs.stageId);
+    const deps = codeDeps({
+      store: spyStore({
+        stage: { stageInstanceId, pendingHumanTaskId: 'q1' },
+        humanTask: { humanTaskId: 'q1', stageInstanceId, status: 'pending' },
+      }),
+    });
+    const result = await runStage({ ...codeArgs, repos: ['acme/api'] }, deps);
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'q1',
+    });
+  });
+
+  it.each(['none', 'required'])(
+    'fails a release unit lane with no changes even with human validation=%s',
+    async (humanValidation) => {
+      const lib = unitLibrary();
+      lib.fromRelease = true;
+      const code = codeLibrary();
+      lib.stagesById['code-generation'] = {
+        ...code.stagesById['code-generation'],
+        forEach: 'unit-of-work',
+        requires: ['units-generation'],
+        humanValidation,
+      };
+      Object.assign(lib.agentsById, code.agentsById);
+      Object.assign(lib.artifactsById, code.artifactsById);
+      const deps = codeDeps({
+        store: spyStore({
+          unitPlan: { units: [{ slug: 'billing', kind: 'backend' }] },
+        }),
+        loadLibrary: async () => ({ workflow: unitWorkflow(), library: lib }),
+      });
+      const result = await runStage(
+        {
+          ...codeArgs,
+          repos: ['acme/api'],
+          unitSlug: 'billing',
+          sectionIndex: 2,
+          methodologyRelease: {},
+        },
+        deps,
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'code_generation_no_changes',
+      });
+      expect(
+        deps.store.calls.find(
+          ([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.failed',
+        )[1],
+      ).toMatchObject({ unitSlug: 'billing', sectionIndex: 2 });
+    },
+  );
+
+  it.each(['none', 'required'])(
+    'rejects an artifact-only release run after reviewer repair against three clean repositories (human validation=%s)',
+    async (humanValidation) => {
+      // Hooks export Git paths for the caller's repository; fixtures must use their own.
+      const gitEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+      );
+      const root = await mkdtemp(nodePath.join(tmpdir(), 'issue-668-'));
+      const workspaceDir = nodePath.join(root, 'work');
+      const repos = ['acme/api', 'acme/web', 'acme/shared'];
+      const remotes = {};
+      const lib = codeLibrary();
+      lib.fromRelease = true;
+      lib.stagesById['code-generation'].humanValidation = humanValidation;
+      const wf = codeWorkflow();
+      const deps = codeDeps({
+        loadLibrary: async () => ({ workflow: wf, library: lib }),
+      });
+      const steps = [];
+      let reviews = 0;
+      deps.store.listSensorRuns = async () => {
+        steps.push(`review:${++reviews}`);
+        return [
+          {
+            sensorId: 'reviewer:aidlc-reviewer-agent',
+            kind: 'reviewer',
+            result: reviews === 1 ? 'FAIL' : 'PASS',
+            detail: { verdict: reviews === 1 ? 'NOT-READY' : 'READY' },
+          },
+        ];
+      };
+      deps.spawnFn = vi.fn(() => {
+        const child = new EventEmitter();
+        child.stdin = {
+          end(prompt) {
+            if (String(prompt).includes('REVIEW ROUND 1')) steps.push('repair');
+          },
+        };
+        child.stdout = new EventEmitter();
+        setImmediate(() => {
+          child.stdout.emit(
+            'data',
+            Buffer.from('No code was generated, and this stage must stay open.\n'),
+          );
+          child.emit('close', 0);
+        });
+        return child;
+      });
+      const commitAndPushAll = vi.fn((args) => {
+        steps.push('git');
+        return realCommitAndPushAll({
+          ...args,
+          urlsFor: (repo) => ({ auth: remotes[repo], clean: remotes[repo] }),
+        });
+      });
+      try {
+        for (const repo of repos) {
+          const dir = nodePath.join(workspaceDir, repoCheckoutPath(repo));
+          const remote = nodePath.join(root, `${repo.split('/').at(-1)}.git`);
+          remotes[repo] = remote;
+          await mkdir(dir, { recursive: true });
+          const git = (args) => execFileSync('git', args, { cwd: dir, env: gitEnv, stdio: 'pipe' });
+          git(['init', '--bare', '-b', 'main', remote]);
+          git(['init', '-b', 'main']);
+          await writeFile(nodePath.join(dir, 'README.md'), '# Existing repository\n');
+          git(['add', '-A']);
+          git([
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.com',
+            'commit',
+            '-m',
+            'seed',
+          ]);
+          git(['remote', 'add', 'origin', remote]);
+          git(['push', '-u', 'origin', 'main']);
+          git(['checkout', '-b', 'intent/i1']);
+          git(['push', '-u', 'origin', 'intent/i1']);
+        }
+        const result = await runStage(
+          {
+            ...codeArgs,
+            workspaceDir,
+            repos,
+            branch: 'intent/i1',
+            baseBranch: 'main',
+            methodologyRelease: {},
+          },
+          { ...deps, commitAndPushAll },
+        );
+        expect(commitAndPushAll).toHaveBeenCalledTimes(2);
+        for (const call of commitAndPushAll.mock.results) {
+          const gitResult = await call.value;
+          expect(gitResult.results).toHaveLength(3);
+          expect(gitResult.results.every((entry) => entry.provenance.files.length === 0)).toBe(
+            true,
+          );
+        }
+        expect(reviews).toBe(2);
+        expect(steps).toEqual(['git', 'review:1', 'repair', 'git', 'review:2']);
+        if (humanValidation === 'required') {
+          expect(result).toMatchObject({
+            ok: true,
+            state: 'SUCCEEDED',
+            changedFileProvenance: { state: 'known', files: [] },
+          });
+          const { plan } = buildExecutionPlan({ workflow: wf, library: lib, scope: 'feature' });
+          const stage = plan.stages[0];
+          const gate = evaluateGatePreconditions({
+            stage,
+            policy: stage.policy,
+            changedFileProvenance: result.changedFileProvenance,
+          });
+          expect(gate.ok).toBe(false);
+          expect(gate.findings).toContainEqual(
+            expect.objectContaining({
+              code: 'code_generation_no_changes',
+              severity: 'blocking',
+              overridable: true,
+            }),
+          );
+        } else {
+          expect(result).toMatchObject({
+            ok: false,
+            reason: 'code_generation_no_changes',
+          });
+          expect(
+            deps.store.calls.filter(([op]) => op === 'updateStageState').at(-1)[1],
+          ).toMatchObject({
+            state: 'FAILED',
+            runtimeError: 'code_generation_no_changes',
+          });
+          expect(
+            deps.store.calls.some(
+              ([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.succeeded',
+            ),
+          ).toBe(false);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+});
+
 describe('runStage — CodeFile traceability projection', () => {
   const okSpawn = () => ({
     on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),

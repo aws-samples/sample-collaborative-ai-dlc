@@ -85,6 +85,27 @@ repairs and inspect all existing matching deliverables, even when the attempt's
 change list is empty.
 An incomplete workspace scan cannot prove that a blocking sensor is inapplicable.
 
+For a code-generation stage with configured repositories, a known empty change
+list raises `code_generation_no_changes`, even if the CLI exits successfully and
+the reviewer returns READY. A release-pinned stage with its own human validation
+gate presents a blocking finding: the human can request changes or choose
+**override-and-approve** with a recorded reason. Plain approval and automatic
+approval are withheld. This allows an intentional no-op after a loop-back or
+guided rewind, where earlier implementation remains on the branch but the reset
+cleared its commit references. Accepting the finding lets build-and-test run again.
+Unpinned runs, stages without a human validation gate, and unit lanes fail instead;
+they cannot present this override. Retrying or rewinding them without new repository
+changes will fail again.
+
+The engine identifies code generation
+from the stage's declared `code-generation-plan` output, as it does for construction
+loop-back targets. It checks after reviewer repairs and includes commits retained
+from parked legs and ensemble drafts. Changes in one repository are sufficient;
+every repository need not change. Graph artifacts, metrics and approval alone are
+not repository changes. Pending questions still park normally. Unknown Git
+provenance retains the sensor handling described above and is not classified as
+zero changes.
+
 ## Parallel construction
 
 Construction stages that are marked to run **per unit of work** form a parallel section. At the fan-out point, the methodology's own unit-of-work dependency DAG — produced by an inception stage whose review gate doubles as the fan-out approval (the approve answer may re-pick the walking skeleton or adjust the per-unit skip matrix) — becomes the schedule:
