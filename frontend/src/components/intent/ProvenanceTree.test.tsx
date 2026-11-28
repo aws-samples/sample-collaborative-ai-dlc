@@ -11,9 +11,6 @@ vi.mock('@/components/discussion/DiscussButton', () => ({
 vi.mock('@/components/intent/IntentGraphPopover', () => ({
   IntentGraphPopover: () => <span data-testid="graph-popover" />,
 }));
-vi.mock('@/components/intent/DerivedItemCountChip', () => ({
-  DerivedItemCountChip: () => <span data-testid="derived-chip" />,
-}));
 vi.mock('@/components/intent/ArtifactHistoryDrawer', () => ({
   ArtifactHistoryDrawer: ({ artifact }: { artifact: IntentArtifact }) =>
     (artifact.versionCount ?? 0) > 0 ? (
@@ -298,6 +295,34 @@ describe('ProvenanceTree — item type legend', () => {
       derivedItems: items(['Requirement']),
     });
     expect(screen.queryByText('Requirement')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProvenanceTree — document rows', () => {
+  it('show no derived-item count; the chevron still opens the items', () => {
+    const items: IntentGraphNode[] = ['One', 'Two'].map((label) => ({
+      id: `item-${label}`,
+      type: 'Requirement',
+      label: `Requirement ${label}`,
+      graphLayer: 'derived',
+      artifactId: 'd1',
+    }));
+    renderTree({
+      detail: { artifacts: [doc({ id: 'd1', title: 'Doc A' })] } as IntentDetail,
+      stageRows: [row()],
+      itemsByArtifact: new Map([['d1', items]]),
+      derivedItems: items,
+    });
+
+    const docRow = document.getElementById('artifact-d1')!;
+    expect(docRow).toHaveTextContent(/^Doc A$/);
+    expect(
+      screen.queryByRole('button', { name: /derived from this document/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand items for Doc A' }));
+    expect(screen.getByText('Requirement One')).toBeInTheDocument();
+    expect(screen.getByText('Requirement Two')).toBeInTheDocument();
   });
 });
 

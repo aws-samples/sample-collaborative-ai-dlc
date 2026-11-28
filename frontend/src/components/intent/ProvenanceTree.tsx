@@ -18,7 +18,6 @@ import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
-import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import { type CodeItem, type UnitBranchItem } from '@/components/intent/CodeSection';
 import { GitProviderIcon } from '@/components/icons/git-providers';
 import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
@@ -492,7 +491,6 @@ function StageBranch({
                 doc={doc}
                 commonSuffix={commonSuffix}
                 getNeighbors={getNeighbors}
-                itemCount={visibleItems.length}
                 hasItems={hasItems}
                 expanded={isExpanded}
                 onToggle={() => toggleDoc(doc.id)}
@@ -525,7 +523,6 @@ function DocumentRow({
   doc,
   commonSuffix,
   getNeighbors,
-  itemCount,
   hasItems,
   expanded,
   onToggle,
@@ -534,7 +531,6 @@ function DocumentRow({
   doc: IntentArtifact;
   commonSuffix: string | null;
   getNeighbors: (id: string) => GraphNeighbor[];
-  itemCount: number;
   hasItems: boolean;
   expanded: boolean;
   onToggle: () => void;
@@ -577,7 +573,6 @@ function DocumentRow({
           className="h-3 w-3 shrink-0 text-agent-waiting-fg"
         />
       )}
-      <DerivedItemCountChip artifactId={doc.id} count={itemCount} />
       <ArtifactHistoryDrawer artifact={doc} />
       <IntentGraphPopover neighbors={getNeighbors(doc.id)} className="shrink-0" />
       <DiscussButton entityType="artifact" entityId={doc.id} entityTitle={label} />

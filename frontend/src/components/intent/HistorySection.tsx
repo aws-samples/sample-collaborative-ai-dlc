@@ -43,7 +43,6 @@ export function HistorySection({
             Past questions & corrections
           </span>
         }
-        count={historicalGates.length + steering.length}
         className="block"
         contentClassName="space-y-2"
       >
@@ -116,12 +115,7 @@ function QuestionHistoryCompact({
       {groupedByStage.map((group) => (
         <div key={group.key} className="space-y-0.5">
           {groupedByStage.length > 1 && (
-            <div className="flex items-center gap-1.5 px-2 pt-1">
-              <span className="text-xs font-medium text-muted-foreground">{group.label}</span>
-              <Badge variant="secondary" size="sm">
-                {group.gates.length}
-              </Badge>
-            </div>
+            <p className="px-2 pt-1 text-xs font-medium text-muted-foreground">{group.label}</p>
           )}
           {group.gates.map((gate) => (
             <CompactQuestionRow
@@ -349,9 +343,6 @@ function SteeringCompact({ steering }: { steering: IntentSteering[] }) {
         )}
         <Compass className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium text-muted-foreground">Course corrections</span>
-        <Badge variant="secondary" size="sm">
-          {steering.length}
-        </Badge>
       </button>
       {expanded && (
         <div className="ml-7 space-y-1.5">
