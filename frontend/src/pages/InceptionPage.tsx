@@ -75,19 +75,20 @@ export default function InceptionPage() {
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-6">
-          <div>
-            <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
-            <p className="text-sm text-muted-foreground">
-              Inception Phase -- Define what you want to build
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
+              <p className="text-sm text-muted-foreground">
+                Inception Phase -- Define what you want to build
+              </p>
+            </div>
+            {badgeStatus && <AgentStatusBadge status={badgeStatus} agentType="inception" />}
           </div>
 
           <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
             This v1 space is read-only — agents can no longer be started and content can no longer
             be edited.
           </div>
-
-          {badgeStatus && <AgentStatusBadge status={badgeStatus} agentType="inception" />}
 
           {/* Pending questions (static — answers can no longer be submitted) */}
           {pendingQuestions.map((pq) => (
