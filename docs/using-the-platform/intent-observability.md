@@ -97,7 +97,7 @@ The stage that needs you (waiting, failed, or running) is open by default; finis
 - One duration; the split into **active** vs. **waiting** (parked on humans) is under **Details**
 - Dependencies on other stages, derived from the compiled workflow
 - **Sensor runs** with verdict (PASS / FAIL / INCONCLUSIVE), severity, and whether a blocking sensor held the stage
-- Per-stage token usage and cost
+- Per-stage model, token usage and cost, under **Details**
 - Artifacts produced, and an open question or review as one line with its action; earlier ones are a count under **Details**
 - **Restart from this stage** — the rewind entry point (below)
 

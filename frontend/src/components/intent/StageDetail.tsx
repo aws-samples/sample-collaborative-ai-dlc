@@ -404,9 +404,12 @@ export function StageDetail({
     ? `${durations.total} in total: ${durations.active} active, ${durations.waiting} waiting on answers`
     : null;
   const hasPlan = groupedDeps.size > 0 || produces.length > 0;
+  // Model, tokens and cost are history, not what the stage needs now.
+  const hasUsage = runtimeSamples.length > 0 || usedModels.length > 0;
   const hasDetails =
     !!timeSplit ||
     closedGates.length > 0 ||
+    hasUsage ||
     hasPlan ||
     sensors.length > 0 ||
     !!row.cli ||
@@ -415,6 +418,7 @@ export function StageDetail({
   const detailsSummary = [
     timeSplit ? 'Timing' : null,
     closedGates.length > 0 ? `Earlier ${gateNoun(closedGates)}s` : null,
+    hasUsage ? 'Usage' : null,
     row.cli ? 'Runtime' : null,
     hasPlan ? 'Planned inputs and outputs' : null,
     sensors.length > 0 ? 'Check history' : null,
@@ -494,13 +498,6 @@ export function StageDetail({
                 : `Show ${hiddenArtifactCount} more ${hiddenArtifactCount === 1 ? 'document' : 'documents'}`}
             </Button>
           )}
-        </section>
-      )}
-
-      {(runtimeSamples.length > 0 || usedModels.length > 0) && (
-        <section aria-label="Recorded execution" className="space-y-2">
-          <p className="text-xs font-medium text-muted-foreground">Recorded execution</p>
-          <StageUsage models={usedModels} metrics={stageMetrics} cost={stageCost} />
         </section>
       )}
 
@@ -593,6 +590,13 @@ export function StageDetail({
               </p>
               <p className="text-xs">{closedGateLine(closedGates)}</p>
             </div>
+          )}
+
+          {hasUsage && (
+            <section aria-label="Recorded execution" className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Recorded execution</p>
+              <StageUsage models={usedModels} metrics={stageMetrics} cost={stageCost} />
+            </section>
           )}
 
           {row.cli && (

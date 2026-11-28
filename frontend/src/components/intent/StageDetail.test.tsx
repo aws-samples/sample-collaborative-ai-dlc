@@ -170,7 +170,8 @@ describe('StageDetail', () => {
   });
 
   // O4: readable model, labelled token parts, a Total that adds information.
-  it('shows this stage instance model, token usage and cost before diagnostics', () => {
+  // D6: model, tokens and cost are history; the stage shows them on demand.
+  it('keeps this stage instance model, token usage and cost under Details', async () => {
     g.intentDetail = {
       intent: { status: 'FAILED' },
       metrics: [
@@ -193,6 +194,11 @@ describe('StageDetail', () => {
 
     render(<StageDetail row={{ ...row, cli: 'claude', resolvedModel: 'planned-model' }} />);
 
+    expect(screen.queryByRole('region', { name: 'Recorded execution' })).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.42')).not.toBeInTheDocument();
+    expect(detailsButton()).toHaveAccessibleDescription(/Usage/);
+    await userEvent.click(detailsButton());
+
     const execution = screen.getByRole('region', { name: 'Recorded execution' });
     expect(within(execution).getByText('Claude Sonnet 4.6')).toBeInTheDocument();
     expect(execution).not.toHaveTextContent('us.anthropic');
@@ -206,11 +212,10 @@ describe('StageDetail', () => {
     expect(within(execution).getByText('1.5K')).toBeInTheDocument();
     expect(within(execution).getByText('$0.42')).toBeInTheDocument();
     expect(screen.queryByText('88K')).not.toBeInTheDocument();
-    expect(detailsButton()).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Assembled prompts')).not.toBeInTheDocument();
   });
 
-  it('never shows a Total that reads the same as one of its parts', () => {
+  it('never shows a Total that reads the same as one of its parts', async () => {
     g.intentDetail = {
       intent: { status: 'FAILED' },
       metrics: [
@@ -224,6 +229,7 @@ describe('StageDetail', () => {
     };
 
     render(<StageDetail row={row} />);
+    await userEvent.click(detailsButton());
 
     const execution = screen.getByRole('region', { name: 'Recorded execution' });
     expect(within(execution).getByText('27')).toBeInTheDocument();
@@ -231,7 +237,7 @@ describe('StageDetail', () => {
     expect(within(execution).queryByText('Total')).not.toBeInTheDocument();
   });
 
-  it('labels input as uncached and counts cache reads when the sample has them', () => {
+  it('labels input as uncached and counts cache reads when the sample has them', async () => {
     g.intentDetail = {
       intent: { status: 'FAILED' },
       metrics: [
@@ -245,6 +251,7 @@ describe('StageDetail', () => {
     };
 
     render(<StageDetail row={row} />);
+    await userEvent.click(detailsButton());
 
     const execution = screen.getByRole('region', { name: 'Recorded execution' });
     expect(within(execution).getByText('Uncached input')).toBeInTheDocument();
@@ -307,7 +314,7 @@ describe('StageDetail', () => {
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
   });
 
-  it('shows absent usage fields as not available rather than zero', () => {
+  it('shows absent usage fields as not available rather than zero', async () => {
     g.intentDetail = {
       intent: { status: 'FAILED' },
       metrics: [
@@ -321,6 +328,7 @@ describe('StageDetail', () => {
     };
 
     render(<StageDetail row={row} />);
+    await userEvent.click(detailsButton());
 
     const execution = screen.getByRole('region', { name: 'Recorded execution' });
     expect(within(execution).getByText('1.2K')).toBeInTheDocument();

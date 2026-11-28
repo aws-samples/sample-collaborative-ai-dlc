@@ -441,7 +441,9 @@ describe('IntentStageList', () => {
     await userEvent.click(screen.getByRole('button', { name: /^Initialization/ }));
     const scaffold = screen.getByRole('button', { name: /^Workspace Scaffold/ });
     expect(scaffold).not.toHaveTextContent('Attempt');
-    expect(within(scaffold).getByText('Not started')).toBeInTheDocument();
+    // D6: a stage that has not started carries no pill; assistive tech still reads it.
+    expect(within(scaffold).getByText('Not started')).toHaveClass('sr-only');
+    expect(scaffold.querySelector('[data-tone]')).toBeNull();
 
     const stalled = screen.getByRole('button', { name: /^Intent Capture/ });
     expect(stalled).not.toHaveTextContent('Attempt');

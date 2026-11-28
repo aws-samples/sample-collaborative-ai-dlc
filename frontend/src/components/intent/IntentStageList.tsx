@@ -25,7 +25,7 @@ import { Progress } from '@/components/ui/progress';
 import { displayStageName, humanizeSlug } from '@/lib/displayNames';
 import { describeFailure } from '@/lib/failureReasons';
 import { SETTLED_STATES, withInferredFailure } from '@/components/intent/inferredFailure';
-import { TONE_CLASSES, ageLabel, deriveIntentStatus } from '@/lib/statusModel';
+import { TONE_CLASSES, ageLabel, deriveIntentStatus, getStatus } from '@/lib/statusModel';
 import { formatAbsolute } from '@/lib/timeAgo';
 import { IntentStageDependencies } from '@/components/intent/IntentPhaseDiagram';
 import { getIntentStageSelection } from '@/lib/intentStageSelection';
@@ -521,6 +521,9 @@ function StageRow({
             )}
             {stalledSince ? (
               <StalledStagePill since={stalledSince} />
+            ) : row.state === 'PENDING' ? (
+              // A stage that has not started has no outcome to show yet.
+              <span className="sr-only">{getStatus('stage', 'PENDING').label}</span>
             ) : (
               <StatusPill kind="stage" status={row.state} />
             )}
