@@ -713,6 +713,48 @@ test('Terraform plan inspection destroys protected resources only when the opera
   assert.equal(preparation.status, 1);
 });
 
+test('the v1 installer deploy honors the destruction override like the v2 inspector', () => {
+  // deploy_v1 carries its own inline copy of the plan inspection; run that
+  // exact script so the documented AIDLC_ALLOW_DESTROY contract covers
+  // explicit v1 installs, downgrades, and reapplies too.
+  const inline = readFileSync(installer, 'utf8').match(
+    /deploy_v1\(\)[\s\S]*?node -e '([\s\S]+?)'\s+"\$plan_json"/,
+  );
+  assert.ok(inline, 'deploy_v1 inline plan inspector not found in scripts/install.sh');
+
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-v1-plan-'));
+  const plan = join(dir, 'plan.json');
+  writeJson(plan, {
+    resource_changes: [
+      {
+        address: 'module.auth.aws_cognito_user_pool.main',
+        type: 'aws_cognito_user_pool',
+        change: { actions: ['delete'] },
+      },
+      {
+        address: 'module.dynamodb.aws_dynamodb_table.agent_pool',
+        type: 'aws_dynamodb_table',
+        change: { actions: ['delete'] },
+      },
+    ],
+  });
+
+  for (const value of ['', '0', 'true']) {
+    const rejected = run('node', ['-e', inline[1], plan], { env: { AIDLC_ALLOW_DESTROY: value } });
+    assert.equal(rejected.status, 1, `AIDLC_ALLOW_DESTROY=${value}`);
+    assert.match(rejected.stderr, /protected persistent resources would be destroyed/);
+    assert.match(rejected.stderr, /set AIDLC_ALLOW_DESTROY=1/);
+    assert.match(rejected.stderr, /module\.auth\.aws_cognito_user_pool\.main \(delete\)/);
+  }
+
+  const allowed = run('node', ['-e', inline[1], plan], { env: { AIDLC_ALLOW_DESTROY: '1' } });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /AIDLC_ALLOW_DESTROY=1 is set/);
+  assert.match(allowed.stdout, /module\.auth\.aws_cognito_user_pool\.main \(delete\)/);
+  // The retired-pool exemption stays independent of the override.
+  assert.doesNotMatch(allowed.stdout, /agent_pool/);
+});
+
 test('Terraform plan inspection allows deleting the Gateway grant retirement table, not replacing it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
   const address = 'module.agentcore.aws_dynamodb_table.gateway_grant_retirements[0]';

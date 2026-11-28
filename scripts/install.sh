@@ -918,9 +918,16 @@ deploy_v1() {
         !(item.type === "aws_dynamodb_table" && /agent[_-]?pool/i.test(item.address))
       );
       if (rejected.length) {
-        console.error("Refusing Terraform plan: protected persistent resources would be destroyed:");
-        for (const item of rejected) console.error(`  - ${item.address}`);
-        process.exit(1);
+        const allowed = process.env.AIDLC_ALLOW_DESTROY === "1";
+        const log = allowed ? console.log : console.error;
+        log(allowed
+          ? "AIDLC_ALLOW_DESTROY=1 is set: these protected persistent resources will be destroyed:"
+          : "Refusing Terraform plan: protected persistent resources would be destroyed:");
+        for (const item of rejected) log(`  - ${item.address} (${item.change.actions.join(", ")})`);
+        if (!allowed) {
+          console.error("To destroy them on purpose, set AIDLC_ALLOW_DESTROY=1 for this run.");
+          process.exit(1);
+        }
       }
     ' "$plan_json"
     rm -f "$plan_json"
