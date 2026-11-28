@@ -641,27 +641,16 @@ function TimelineStageGroup({
   group: TimelineGroup;
   defaultOpen: boolean;
 }) {
-  const status = (
-    <>
-      {group.counts.errors > 0 && (
-        <Badge
-          size="sm"
-          variant="outline"
-          className="border-agent-error/30 bg-agent-error/10 text-agent-error-fg"
-        >
-          {group.counts.errors} failed
-        </Badge>
-      )}
-      {group.counts.asked > 0 && (
-        <Badge
-          size="sm"
-          variant="outline"
-          className="border-agent-waiting/30 bg-agent-waiting/10 text-agent-waiting-fg"
-        >
-          {group.counts.asked} {group.counts.asked === 1 ? 'question' : 'questions'}
-        </Badge>
-      )}
-    </>
+  // The one number a folded stage carries: failures, since they ask for a look.
+  // How many events or questions it holds shows on opening it.
+  const status = group.counts.errors > 0 && (
+    <Badge
+      size="sm"
+      variant="outline"
+      className="border-agent-error/30 bg-agent-error/10 text-agent-error-fg"
+    >
+      {group.counts.errors} failed
+    </Badge>
   );
   return (
     <Disclosure
@@ -672,13 +661,14 @@ function TimelineStageGroup({
           {group.attempt > 1 && <span className="sr-only">{` · attempt ${group.attempt}`}</span>}
         </span>
       }
-      description={[
-        group.attempt > 1 ? `Attempt ${group.attempt}` : null,
-        group.unitName ? `Unit ${group.unitName}` : null,
-        `${group.entries.length} ${group.entries.length === 1 ? 'event' : 'events'}`,
-      ]
-        .filter(Boolean)
-        .join(' · ')}
+      description={
+        [
+          group.attempt > 1 ? `Attempt ${group.attempt}` : null,
+          group.unitName ? `Unit ${group.unitName}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || undefined
+      }
       summary={
         <time
           dateTime={group.latestTimestamp}
@@ -688,7 +678,7 @@ function TimelineStageGroup({
           {formatEntryTime(group.latestTimestamp)}
         </time>
       }
-      status={group.counts.errors > 0 || group.counts.asked > 0 ? status : undefined}
+      status={status || undefined}
       defaultOpen={defaultOpen}
       headingLevel={3}
       className="py-1"

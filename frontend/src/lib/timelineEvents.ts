@@ -72,8 +72,6 @@ export interface TimelineGroup {
     questions: number;
     documents: number;
     errors: number;
-    /** Questions the agent asked in this group (one event may ask several). */
-    asked: number;
   };
 }
 
@@ -1045,20 +1043,11 @@ function matchesFilter(entry: TimelineEntry, filter: TimelineFilter): boolean {
   return entry.category === 'error';
 }
 
-function questionsAskedBy(event: IntentActivityEvent): number {
-  if (event.type !== 'v2.question.asked') return 0;
-  return Number(/(\d+) question/.exec(event.summary ?? '')?.[1] ?? 1);
-}
-
 function countEntries(entries: TimelineEntry[]): TimelineGroup['counts'] {
   return {
     questions: entries.filter((e) => matchesFilter(e, 'questions')).length,
     documents: entries.filter((e) => matchesFilter(e, 'documents')).length,
     errors: entries.filter((e) => matchesFilter(e, 'errors')).length,
-    asked: entries.reduce(
-      (sum, entry) => sum + entry.events.reduce((n, event) => n + questionsAskedBy(event), 0),
-      0,
-    ),
   };
 }
 
@@ -1367,8 +1356,7 @@ export function countTimeline(groups: TimelineGroup[]): TimelineGroup['counts'] 
       questions: acc.questions + g.counts.questions,
       documents: acc.documents + g.counts.documents,
       errors: acc.errors + g.counts.errors,
-      asked: acc.asked + g.counts.asked,
     }),
-    { all, questions: 0, documents: 0, errors: 0, asked: 0 },
+    { all, questions: 0, documents: 0, errors: 0 },
   );
 }

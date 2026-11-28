@@ -148,8 +148,7 @@ describe('IntentActivityPanel Timeline tab', () => {
     view.rerender(<IntentActivityPanel onClose={() => {}} />);
     expect(screen.getByRole('tab', { name: /Timeline/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Requirements Analysis');
-    expect(screen.getByRole('tabpanel')).toHaveTextContent('2 events');
-    expect(screen.getByRole('tabpanel')).not.toHaveTextContent('(2)');
+    expect(screen.getByRole('tabpanel')).not.toHaveTextContent(/2 events|\(2\)/);
 
     // The same tab requested again (new seq) still wins over a manual switch.
     await user.click(screen.getByRole('tab', { name: /^Agent/ }));
@@ -169,9 +168,10 @@ describe('IntentActivityPanel Timeline tab', () => {
 
     const earlier = screen.getByRole('button', { name: 'Intent Capture' });
     expect(earlier).toHaveAttribute('aria-expanded', 'false');
-    // N17: the count is spelled out under the title, never "(7)" beside it,
-    // where it reads like an attempt number.
-    expect(screen.getByText('7 events')).toBeInTheDocument();
+    // D6: a folded stage carries no event or question count, under its title
+    // or beside it; opening it shows what it holds.
+    expect(screen.queryByText(/\d+ events?$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^\d+ questions?$/)).not.toBeInTheDocument();
     expect(earlier).not.toHaveTextContent('(7)');
     expect(screen.queryByText('Stage Intent Capture approved')).not.toBeInTheDocument();
 
@@ -222,7 +222,6 @@ describe('IntentActivityPanel Timeline tab', () => {
 
     await user.click(screen.getByRole('radio', { name: /All/ }));
     expect(screen.getByRole('button', { name: 'Intent Capture' })).toBeInTheDocument();
-    expect(screen.getByText('7 events')).toBeInTheDocument();
   });
 
   it('announces new events without moving a reader who scrolled down', async () => {
@@ -347,7 +346,7 @@ describe('IntentActivityPanel Timeline tab', () => {
       }),
     ];
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Unit Cart Badge Template · 1 event')).toBeInTheDocument();
+    expect(screen.getByText('Unit Cart Badge Template')).toBeInTheDocument();
     expect(screen.queryByText(/cart-badge-template/)).not.toBeInTheDocument();
 
     const item = screen.getByText('Stage Intent Capture started').closest('.flex.gap-3.py-2')!;
@@ -367,7 +366,7 @@ describe('IntentActivityPanel Timeline tab', () => {
     expect(
       screen.getByRole('button', { name: /^Intent Capture\s*· attempt 2$/ }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Attempt 2 · 1 event')).toBeInTheDocument();
+    expect(screen.getByText('Attempt 2')).toBeInTheDocument();
     expect(screen.queryByText(/\(\d+\)/)).not.toBeInTheDocument();
   });
 });

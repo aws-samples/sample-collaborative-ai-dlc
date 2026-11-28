@@ -484,7 +484,7 @@ describe('buildTimeline', () => {
     expect(docs.excerpt).toBe('Intent Capture Questions, Intent Statement, Stakeholder Map');
     // `questions` counts entries (asked + answered + parked); `asked` counts
     // the questions themselves — the group pill reads the latter.
-    expect(capture.counts).toEqual({ questions: 3, documents: 1, errors: 0, asked: 3 });
+    expect(capture.counts).toEqual({ questions: 3, documents: 1, errors: 0 });
 
     const run = groups[2];
     expect(run.entries.map((e) => e.label)).toEqual(['Workspace ready']);
@@ -620,7 +620,6 @@ describe('buildTimeline', () => {
       'Stage Intent Capture started',
     ]);
     expect(capture[0].counts.questions).toBe(1);
-    expect(capture[0].counts.asked).toBe(1);
   });
 
   it('puts events of a stage it cannot name in the run, not under a "Stage" group', () => {

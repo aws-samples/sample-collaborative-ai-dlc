@@ -94,8 +94,8 @@ describe('IntentActivityPanel Timeline tab while the intent loads (R3-2)', () =>
   });
 });
 
-describe('IntentActivityPanel Timeline group pill (R3-7)', () => {
-  it('counts the questions the agent asked, not the question events', async () => {
+describe('IntentActivityPanel Timeline stage group', () => {
+  it('leaves the number of questions to the event, not a pill on the stage', async () => {
     intentState.loading = false;
     intentState.stageRows = [{ stageId: 'feasibility', stageInstanceId: 'si-1', state: 'RUNNING' }];
     intentState.detail = {
@@ -126,8 +126,8 @@ describe('IntentActivityPanel Timeline group pill (R3-7)', () => {
     };
     await openTimeline();
     expect(screen.getByRole('heading', { level: 3, name: /Feasibility/ })).toBeInTheDocument();
-    expect(screen.getByText('4 questions')).toBeInTheDocument();
-    expect(screen.queryByText('2 questions')).not.toBeInTheDocument();
+    // The stage heading carries no question count; the event says how many.
+    expect(screen.queryByText(/^\d+ questions?$/)).not.toBeInTheDocument();
     expect(screen.getByText('Agent asked 4 questions')).toBeInTheDocument();
   });
 });
