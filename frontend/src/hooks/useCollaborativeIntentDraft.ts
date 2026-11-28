@@ -7,6 +7,8 @@ import { saveCollaborativeProjection } from '../lib/collaborativeSave';
 import { generateColor } from '../utils/colors';
 import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import { intentsService, type Intent } from '../services/intents';
+import type { AgentCli, CliModels } from '../services/projects';
+import { AGENT_CLIS } from '../lib/agentCli';
 import {
   AIDLC_SETTING_KEYS,
   normalizeAidlcSettings,
@@ -22,6 +24,7 @@ import {
 //     scope: string                — scope name or composed-grid label
 //     composedGrid: JSON string    — {stageId: EXECUTE|SKIP} or absent
 //     skipStageIds: JSON string    — string[] or absent
+//     cliModel.<cli>: string       — native drafts only: the model of that CLI
 //   Y.Map  'aidlcSettings'         — LWW per SETTING KEY: settingKey -> scalar
 //     override. An absent entry follows the pinned scope's own default. Per-key
 //     rather than one atomic blob so two members changing DIFFERENT settings
@@ -46,15 +49,30 @@ export interface IntentDraftState {
   // `scope`. '' in the document means explicitly cleared (the save sends null);
   // an ABSENT key means the draft never had one and the save omits the field.
   conversationLanguage: string | null;
+  // The model per CLI of a NATIVE draft, LWW per CLI in `config`. Like the
+  // language: '' in the document means explicitly removed (the save sends
+  // null for that CLI), and an absent key means the draft never had one. Always
+  // empty for a platform draft, whose document never gets these keys.
+  cliModels: CliModels;
 }
 
 const AIDLC_SETTINGS_MAP = 'aidlcSettings';
+const cliModelKey = (cli: AgentCli) => `cliModel.${cli}`;
 
 const readAidlcSettings = (doc: Y.Doc): Record<string, AidlcSettingValue> | null => {
   const entries = [...doc.getMap<AidlcSettingValue>(AIDLC_SETTINGS_MAP).entries()].filter(
     ([, value]) => value !== undefined && value !== null,
   );
   return entries.length ? Object.fromEntries(entries) : null;
+};
+
+const readCliModels = (config: Y.Map<unknown>): CliModels => {
+  const models: CliModels = {};
+  for (const cli of AGENT_CLIS) {
+    const model = config.get(cliModelKey(cli));
+    if (typeof model === 'string' && model) models[cli] = model;
+  }
+  return models;
 };
 
 const parseJson = <T>(raw: unknown): T | null => {
@@ -81,6 +99,7 @@ const readConfig = (
       typeof conversationLanguage === 'string' && conversationLanguage
         ? conversationLanguage
         : null,
+    cliModels: readCliModels(config),
   };
 };
 
@@ -113,8 +132,15 @@ export function useCollaborativeIntentDraft(
     skipStageIds: null,
     aidlcSettings: null,
     conversationLanguage: null,
+    cliModels: {},
   });
   const seededRef = useRef(false);
+  // The documents of NATIVE drafts. A native intent has no stage plan, so its
+  // save carries none of the plan inputs: the API refuses each of them by name
+  // on a native draft, even as null. Recorded when the document is seeded from
+  // the intent, which is also what first allows a save. Keyed by the document
+  // for the reason `hadSettingsRef` below is.
+  const nativeDocsRef = useRef(new WeakSet<Y.Doc>());
   // A conversation language the server refused to store (#784): the API saves
   // the rest of the draft and names the tag it dropped. Kept until a member
   // picks the language again, so nobody starts the run on a language the page
@@ -185,6 +211,8 @@ export function useCollaborativeIntentDraft(
     (intent: Intent) => {
       if (!doc || !synced || seededRef.current) return;
       seededRef.current = true;
+      const native = intent.engine === 'native';
+      if (native) nativeDocsRef.current.add(doc);
       seedYjsDocumentIfEmpty(doc, (seed) => {
         if (intent.title) seed.getText('title').insert(0, intent.title);
         if (intent.prompt) seed.getText('prompt').insert(0, intent.prompt);
@@ -201,6 +229,14 @@ export function useCollaborativeIntentDraft(
         // intent has none, so the save keeps omitting the field.
         if (intent.conversationLanguage?.tag) {
           config.set('conversationLanguage', intent.conversationLanguage.tag);
+        }
+        // Seeded the same way, for a native draft only: the models the intent
+        // snapshotted. A platform draft keeps the document it always had.
+        if (native) {
+          for (const cli of AGENT_CLIS) {
+            const model = intent.cliModels?.[cli];
+            if (model) config.set(cliModelKey(cli), model);
+          }
         }
         // Seeded INSIDE the empty-document seed, exactly like `scope`. Hydrating
         // out of band would make a mount a local edit: the observer would bump
@@ -416,6 +452,22 @@ export function useCollaborativeIntentDraft(
     [doc, setConversationLanguageRejection],
   );
 
+  // Choose the model a native draft runs a CLI with, or the CLI's default with
+  // null. '' marks an explicit removal so the save sends null for that CLI
+  // instead of leaving it out, exactly like the language above.
+  const setCliModel = useCallback(
+    (cli: AgentCli, model: string | null) => {
+      if (!doc) return;
+      const config = doc.getMap('config');
+      const key = cliModelKey(cli);
+      const next = model ?? '';
+      if (config.get(key) === next) return;
+      if (!model && !config.has(key)) return;
+      config.set(key, next);
+    },
+    [doc],
+  );
+
   const setSkipStageIds = useCallback(
     (ids: string[] | null) => {
       if (!doc) return;
@@ -432,9 +484,32 @@ export function useCollaborativeIntentDraft(
     if (!doc || !synced || !intentId || !seededRef.current) return null;
     const config = doc.getMap('config');
     const cfg = readConfig(config);
+    const title = doc.getText('title').toString().trim() || null;
+    const prompt = doc.getText('prompt').toString().trim() || null;
+    // OMITTED while the key has never existed, so older drafts keep sending
+    // the body they always sent; '' (explicit clear) is sent as null.
+    const conversationLanguage = config.has('conversationLanguage')
+      ? { conversationLanguage: cfg.conversationLanguage }
+      : {};
+    if (nativeDocsRef.current.has(doc)) {
+      // Only the CLIs whose model this draft has ever held, so a draft nobody
+      // gave a model sends no `cliModels` at all.
+      const cliModels = Object.fromEntries(
+        AGENT_CLIS.filter((cli) => config.has(cliModelKey(cli))).map((cli) => [
+          cli,
+          cfg.cliModels[cli] ?? null,
+        ]),
+      );
+      return {
+        title,
+        prompt,
+        ...(Object.keys(cliModels).length ? { cliModels } : {}),
+        ...conversationLanguage,
+      };
+    }
     return {
-      title: doc.getText('title').toString().trim() || null,
-      prompt: doc.getText('prompt').toString().trim() || null,
+      title,
+      prompt,
       ...(cfg.scope ? { scope: cfg.scope } : {}),
       composedGrid: cfg.composedGrid,
       // Only ever sent WITH a grid, and only when the selection actually has
@@ -450,11 +525,7 @@ export function useCollaborativeIntentDraft(
       // setting, so an unpinned, 2.3.3, 2.8.2 or 2.9.0 draft keeps sending
       // exactly the body it sent before these settings existed.
       ...(hadSettingsRef.current.get(doc) ? { aidlcSettings: readAidlcSettings(doc) } : {}),
-      // OMITTED while the key has never existed, so older drafts keep sending
-      // the body they always sent; '' (explicit clear) is sent as null.
-      ...(config.has('conversationLanguage')
-        ? { conversationLanguage: cfg.conversationLanguage }
-        : {}),
+      ...conversationLanguage,
     };
   }, [doc, synced, intentId]);
 
@@ -516,6 +587,7 @@ export function useCollaborativeIntentDraft(
     setComposedGrid,
     setSkipStageIds,
     setConversationLanguage,
+    setCliModel,
     setAidlcSetting,
     setAidlcSettings,
     pruneAidlcSettings,

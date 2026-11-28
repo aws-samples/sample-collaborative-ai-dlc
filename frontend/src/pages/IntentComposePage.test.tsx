@@ -86,6 +86,8 @@ const setSkipStageIds = vi.fn();
 const setScope = vi.fn();
 const setComposedGrid = vi.fn();
 const setAidlcSetting = vi.fn();
+const setCliModel = vi.fn();
+const initFromIntent = vi.fn();
 const applyComposedSelection = vi.fn();
 const pruneAidlcSettings = vi.fn((..._a: unknown[]) => [] as string[]);
 const flushDraft = vi.fn();
@@ -98,17 +100,19 @@ vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
     policyScope: (draftState.policyScope as string) ?? null,
     skipStageIds: (draftState.skipStageIds as string[]) ?? null,
     aidlcSettings: (draftState.aidlcSettings as Record<string, string | boolean>) ?? null,
+    cliModels: (draftState.cliModels as Record<string, string>) ?? {},
     synced: true,
     hydrated: (draftState.hydrated as boolean) ?? true,
     remoteUsers: new Map(),
     setCursor: vi.fn(),
-    initFromIntent: vi.fn(),
+    initFromIntent: (...a: unknown[]) => initFromIntent(...a),
     setTitle: vi.fn(),
     setPrompt: vi.fn(),
     setScope: (...a: unknown[]) => setScope(...a),
     setComposedGrid: (...a: unknown[]) => setComposedGrid(...a),
     setSkipStageIds: (...a: unknown[]) => setSkipStageIds(...a),
     setAidlcSetting: (...a: unknown[]) => setAidlcSetting(...a),
+    setCliModel: (...a: unknown[]) => setCliModel(...a),
     setAidlcSettings: vi.fn(),
     pruneAidlcSettings: (...a: unknown[]) => pruneAidlcSettings(...a),
     applyComposedSelection: (...a: unknown[]) => applyComposedSelection(...a),
@@ -1672,5 +1676,347 @@ describe('IntentComposePage — a pinned release that no longer resolves', () =>
     // The unpinned failure keeps its existing generic error banner.
     await screen.findByText('release not found');
     expect(screen.queryByTestId('release-view-unavailable')).not.toBeInTheDocument();
+  });
+});
+
+// A native draft runs AI-DLC itself: no workflow, no scope, no stage plan. Its
+// page is the shared title and prompt, the attachments, Claude Code, the model,
+// the output language and Start.
+describe('IntentComposePage — a native draft', () => {
+  const nativeIntent = (over: Record<string, unknown> = {}) =>
+    draftIntent({
+      engine: 'native',
+      primaryRepo: 'owner/repo',
+      workflowId: null,
+      workflowVersion: null,
+      scope: null,
+      cliModels: { claude: 'model-a' },
+      ...over,
+    });
+  const cli = (name: string, available: boolean, over: Record<string, unknown> = {}) => ({
+    cli: name,
+    installed: true,
+    authed: available,
+    available,
+    ...(available ? { credentialSource: 'space' } : {}),
+    ...over,
+  });
+  const capabilities = (over: Record<string, unknown> = {}) => ({
+    available: ['kiro', 'claude'],
+    runtimeClis: [cli('kiro', true), cli('claude', true), cli('opencode', false)],
+    models: {
+      claude: [
+        { id: 'model-a', name: 'Model A' },
+        { id: 'model-b', name: 'Model B', priced: false },
+      ],
+      kiro: [{ id: 'auto', name: 'Auto' }],
+    },
+    ...over,
+  });
+
+  beforeEach(() => {
+    for (const k of Object.keys(draftState)) delete draftState[k];
+    draftState.prompt = 'Build X';
+    draftState.cliModels = { claude: 'model-a' };
+    get.mockReset().mockResolvedValue(nativeIntent());
+    start.mockReset().mockResolvedValue({});
+    update.mockReset();
+    compose.mockReset();
+    listComposes.mockReset().mockResolvedValue({ composes: [] });
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    trackerAttachments.mockReset().mockResolvedValue({ attachments: [] });
+    getProjectCapabilities.mockReset().mockResolvedValue(capabilities());
+    flushDraft.mockReset().mockResolvedValue(undefined);
+    reloadIntent.mockReset().mockResolvedValue(undefined);
+    setAssistAgentCli.mockReset();
+    setCliModel.mockReset();
+    initFromIntent.mockReset();
+    compiled.mockReset();
+    getWorkflow.mockReset();
+    executionPreview.mockReset();
+    validateGrid.mockReset();
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  const ready = async () => {
+    const startBtn = await screen.findByTestId('start-intent');
+    await waitFor(() => expect(startBtn).toBeEnabled());
+    return startBtn;
+  };
+
+  it('shows the CLI, the model and Start, and nothing of the stage plan', async () => {
+    renderPage();
+    await ready();
+
+    expect(screen.getByRole('heading', { name: 'Native AI-DLC Intent' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Title')).toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /attach files/i })).toBeEnabled();
+    expect(screen.getByLabelText('Model')).toBeInTheDocument();
+    expect(screen.getByTestId('conversation-language-field')).toBeInTheDocument();
+
+    // No scope, no compose actions, no stage grid.
+    expect(screen.queryByLabelText('Predefined')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('compose-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('grid-editor-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('scope-summary')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pick a scope to continue')).not.toBeInTheDocument();
+    // Nothing is left loading, because nothing of the plan was requested.
+    expect(screen.queryByTestId('stages-loader')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stages-placeholders')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-cli-placeholders')).not.toBeInTheDocument();
+    expect(compiled).not.toHaveBeenCalled();
+    expect(getWorkflow).not.toHaveBeenCalled();
+    expect(executionPreview).not.toHaveBeenCalled();
+    expect(validateGrid).not.toHaveBeenCalled();
+    expect(listComposes).not.toHaveBeenCalled();
+  });
+
+  // The page starts with its stage views marked as loading and clears that in
+  // an effect. A native draft must not show the loader in between. The loader
+  // would be gone again before any query could see it, so the test records
+  // every node that enters or leaves the document: a node that was shown for
+  // one frame is reported when it is removed.
+  it('never puts the Stages loader into the document, not even for one frame', async () => {
+    const seen: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of [...record.addedNodes, ...record.removedNodes]) {
+          if (!(node instanceof HTMLElement)) continue;
+          for (const testId of ['stages-loader', 'stages-placeholders']) {
+            const selector = `[data-testid="${testId}"]`;
+            if (node.matches(selector) || node.querySelector(selector)) seen.push(testId);
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    renderPage();
+    await ready();
+    observer.disconnect();
+
+    expect(seen).toEqual([]);
+  });
+
+  it('shows one placeholder while the agent CLIs load', async () => {
+    getProjectCapabilities.mockReturnValue(new Promise(() => {}));
+    renderPage();
+    await screen.findByLabelText('Prompt');
+    expect(screen.getByTestId('agent-cli-placeholders').children).toHaveLength(1);
+  });
+
+  it('seeds the shared draft with the native intent, which is how the draft knows its engine', async () => {
+    renderPage();
+    await ready();
+    expect(initFromIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'i1', engine: 'native', cliModels: { claude: 'model-a' } }),
+    );
+  });
+
+  it('offers Claude Code only and selects it', async () => {
+    renderPage();
+    await ready();
+
+    expect(screen.getByTestId('agent-cli-claude')).toHaveAttribute('aria-pressed', 'true');
+    for (const other of ['kiro', 'opencode', 'codex']) {
+      expect(screen.queryByTestId(`agent-cli-${other}`)).not.toBeInTheDocument();
+    }
+    expect(setAssistAgentCli).toHaveBeenLastCalledWith('claude');
+  });
+
+  it('holds Start while Claude Code is unavailable, whatever other CLI is', async () => {
+    getProjectCapabilities.mockResolvedValue(
+      capabilities({
+        available: ['kiro'],
+        runtimeClis: [cli('kiro', true), cli('claude', false)],
+      }),
+    );
+    renderPage();
+    const card = await screen.findByTestId('agent-cli-claude');
+
+    expect(card).toBeDisabled();
+    expect(card).toHaveAttribute('aria-pressed', 'false');
+    expect(card).toHaveTextContent('no credential');
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+    expect(
+      screen.getByText(
+        'No agent credential is currently available. Add one before starting this draft.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the model of the draft and writes a pick into the shared draft', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await ready();
+    const model = screen.getByLabelText('Model');
+    expect(model).toHaveTextContent('Model A');
+
+    await user.click(model);
+    // Only the models of Claude Code are offered.
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Default — runtime',
+      'Model A',
+      'Model B',
+    ]);
+    await user.click(screen.getByRole('option', { name: 'Model B' }));
+
+    expect(setCliModel).toHaveBeenCalledExactlyOnceWith('claude', 'model-b');
+    // The page itself sends nothing: the shared draft's save carries the model.
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('removes the model when the member picks the default', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await ready();
+    await user.click(screen.getByLabelText('Model'));
+    await user.click(screen.getByRole('option', { name: 'Default — runtime' }));
+
+    expect(setCliModel).toHaveBeenCalledExactlyOnceWith('claude', null);
+  });
+
+  it('shows the default for a draft without a model', async () => {
+    draftState.cliModels = {};
+    renderPage();
+    await ready();
+    expect(screen.getByLabelText('Model')).toHaveTextContent('Default — runtime');
+  });
+
+  it('keeps a model the list does not hold, and notes one without a price', async () => {
+    draftState.cliModels = { claude: 'custom-model' };
+    const user = userEvent.setup();
+    const view = renderPage();
+    await ready();
+    expect(screen.getByLabelText('Model')).toHaveTextContent('custom-model (custom)');
+    expect(screen.queryByTestId('native-model-unpriced')).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('Model'));
+    expect(screen.getAllByRole('option')).toHaveLength(4);
+    view.unmount();
+
+    draftState.cliModels = { claude: 'model-b' };
+    renderPage();
+    await ready();
+    expect(screen.getByTestId('native-model-unpriced')).toBeInTheDocument();
+  });
+
+  it('says when the model list is not the current one', async () => {
+    getProjectCapabilities.mockResolvedValue(
+      capabilities({
+        models: { claude: [{ id: 'model-a', name: 'Model A' }], sources: { claude: 'cached' } },
+      }),
+    );
+    renderPage();
+    await ready();
+    expect(screen.getByTestId('native-model-source')).toBeInTheDocument();
+  });
+
+  it('keeps the model as it is when the runtime cannot override it', async () => {
+    getProjectCapabilities.mockResolvedValue(
+      capabilities({ runtimeModelOverride: { claude: false } }),
+    );
+    renderPage();
+    await ready();
+    expect(screen.getByLabelText('Model')).toBeDisabled();
+  });
+
+  it('shows the answer of the server while Start is unavailable', async () => {
+    start.mockRejectedValue(new Error('Starting a native intent is not available yet'));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await ready());
+
+    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1', { agentCli: 'claude' }));
+    expect(flushDraft.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
+    expect(
+      await screen.findByText('Starting a native intent is not available yet'),
+    ).toBeInTheDocument();
+    // The draft stays open and can be started again.
+    expect(screen.queryByTestId('intent-view')).not.toBeInTheDocument();
+    expect(reloadIntent).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('start-intent')).toBeEnabled());
+  });
+
+  it('needs a prompt before Start', async () => {
+    draftState.prompt = '';
+    renderPage();
+    expect(await screen.findByText('Write a prompt to continue')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('agent-cli-claude')).toHaveAttribute('aria-pressed', 'true'),
+    );
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+  });
+
+  it('lists the attachments and imports those of the source issue', async () => {
+    const source = { bindingId: 'b1', resourceId: '42', provider: 'github-issues' };
+    const attachment = { attachmentId: 'a1', filename: 'spec.pdf', size: 10 };
+    get.mockResolvedValue(nativeIntent({ source, attachments: [attachment] }));
+    // The page reloads the durable list after an import.
+    attachments.mockResolvedValue({ attachments: [attachment], attachmentRevision: 1 });
+    trackerAttachments.mockResolvedValue({
+      attachments: [{ id: 'asset-1', filename: 'notes.md', url: 'https://tracker.example/n' }],
+    });
+    importTrackerAttachment.mockReset().mockResolvedValue({
+      status: 'imported',
+      attachment: { attachmentId: 'a2', filename: 'notes.md', size: 5 },
+    });
+    renderPage(undefined, { importTrackerAttachments: true });
+    await ready();
+
+    await waitFor(() => expect(importTrackerAttachment).toHaveBeenCalledTimes(1));
+    expect(trackerAttachments).toHaveBeenCalledWith('p1', 'i1');
+    expect(await screen.findByTestId('attachment-list')).toHaveTextContent('spec.pdf');
+    await waitFor(() => expect(screen.getByTestId('attachment-picker')).toBeEnabled());
+  });
+
+  it('is read-only until the shared draft is hydrated', async () => {
+    draftState.hydrated = false;
+    renderPage();
+    const model = await screen.findByLabelText('Model');
+    await waitFor(() =>
+      expect(screen.getByTestId('agent-cli-claude')).toHaveAttribute('aria-pressed', 'true'),
+    );
+    expect(model).toBeDisabled();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+  });
+});
+
+describe('IntentComposePage — a platform draft next to native execution', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(draftState)) delete draftState[k];
+    draftState.prompt = 'Build X';
+    draftState.scope = 'feature';
+    get.mockReset().mockResolvedValue(draftIntent({ cliModels: { claude: 'model-a' } }));
+    listComposes.mockReset().mockResolvedValue({ composes: [] });
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    getProjectCapabilities.mockReset().mockResolvedValue({
+      available: ['kiro', 'claude'],
+      models: { claude: [{ id: 'model-a', name: 'Model A' }] },
+    });
+    compiled.mockReset().mockResolvedValue({
+      scopeGrid: { feature: { init: 'EXECUTE' } },
+      graph: { nodes: [{ stageId: 'init', phasePath: '01', order: 0 }], edges: [] },
+    });
+    getWorkflow.mockReset().mockResolvedValue({ phases: [] });
+    executionPreview.mockReset().mockResolvedValue(summaryPlan({ executedStages: 1 }));
+    setCliModel.mockReset();
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  it('keeps every CLI, no preselection and no model picker', async () => {
+    renderPage();
+    await screen.findByTestId('compose-panel');
+    await screen.findByTestId('grid-editor-toggle');
+
+    expect(screen.getByRole('heading', { name: 'Compose Intent' })).toBeInTheDocument();
+    for (const name of ['kiro', 'claude', 'opencode', 'codex']) {
+      expect(screen.getByTestId(`agent-cli-${name}`)).toHaveAttribute('aria-pressed', 'false');
+    }
+    expect(screen.queryByTestId('native-model')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Predefined')).toBeInTheDocument();
+    expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
+    expect(setCliModel).not.toHaveBeenCalled();
   });
 });
