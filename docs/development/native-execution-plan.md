@@ -244,7 +244,7 @@ Acceptance criteria:
 - [x] The compose page of a platform draft is unchanged.
 - [x] The model picker lists the Claude Code models the runtime reports. A pick reaches every member on the draft and is saved with the draft. Added by D35.
 - [x] PATCH of a native draft sets or removes a model per CLI, under the rules of the space setting. An invalid value is 400 and writes nothing. A viewer and a non-member get 403. A platform draft keeps its models. Added by D35.
-- [ ] Dev check: with the flag enabled, the New Intent page offers the choice, a native draft opens with CLI, model and Start, and Start shows the backend's message. With the flag removed, the choice is gone. Not done yet; it needs this branch deployed to dev.
+- [x] Dev check: with the flag enabled, the New Intent page offers the choice, a native draft opens with CLI, model and Start, and Start shows the backend's message. With the flag removed, the choice is gone. Done by the plan owner on 2026-11-28 with this branch deployed to dev. The screenshots in pull request #921 show the New Intent page with the flag off and on, a native draft open in two browsers, and the refused Start.
 
 Verify: `npm --prefix frontend test`, `npm --prefix frontend run build`, `npx vitest run --project=shared --project=intents`. In dev, flip the flag and reload.
 
