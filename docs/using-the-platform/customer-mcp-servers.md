@@ -151,7 +151,7 @@ node -e '
 A variable set in both files takes its value from the JSON file, so declare every customer target in the same file. Terraform reads JSON strings literally: descriptions may contain `${...}` or `%{...}`.
 
 - The Gateway invokes the function with its own role: Terraform grants that role `lambda:InvokeFunction` on exactly the listed functions, and no AgentCore Identity permission. `private_endpoint` does not apply.
-- `tool_schema` is the function's tool list, a JSON array of `{ "name", "description", "inputSchema" }`, which Terraform publishes in the artifacts bucket for the Gateway. The Gateway does not list tools from a function, so update the schema and apply when the tools change.
+- `tool_schema` is the function's tool list, a JSON array of `{ "name", "description", "inputSchema" }`; every tool needs a description, and `inputSchema.type` is `array`, `boolean`, `integer`, `number`, `object` or `string`, which Terraform publishes in the artifacts bucket for the Gateway. The Gateway does not list tools from a function, so update the schema and apply when the tools change.
 - The function receives the tool's arguments as the event. The Lambda context's `clientContext.custom` carries `bedrockAgentCoreToolName` (`<target>___<tool>`) and `bedrockAgentCorePropagatedHeaders`, which holds `x-aidlc-caller` as described in the [contract](#contract-for-the-customer-mcp-server). Return an MCP tool result, `{ "content": [{ "type": "text", "text": "..." }], "isError": false }`.
 - Grant nothing else invoke on the function. The caller envelope is trustworthy only because the Gateway role is the one principal that can call it.
 - The function's own permissions, network access and credentials for the systems it calls are yours to manage.

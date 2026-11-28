@@ -836,7 +836,7 @@ run "lambda_only_targets_need_no_credential_policy" {
       codekb = {
         lambda = {
           function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
-          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
         }
         allow = { project_ids = ["p-1"] }
       }
@@ -860,7 +860,7 @@ run "rejects_lambda_with_endpoint" {
         endpoint = "https://mcp.example.com/mcp"
         lambda = {
           function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
-          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
         }
         allow = { project_ids = ["p-1"] }
       }
@@ -879,7 +879,7 @@ run "rejects_lambda_with_auth" {
       codekb = {
         lambda = {
           function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
-          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
         }
         auth = {
           type                    = "oauth"
@@ -919,7 +919,45 @@ run "rejects_invalid_lambda_tool_schema" {
       codekb = {
         lambda = {
           function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
-          tool_schema  = "[{\"name\":\"bad___name\",\"inputSchema\":{\"type\":\"object\"}}]"
+          tool_schema  = "[{\"name\":\"bad___name\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_lambda_tool_without_description" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_lambda_tool_with_unsupported_input_type" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"map\"}}]"
         }
         allow = { project_ids = ["p-1"] }
       }
@@ -938,7 +976,7 @@ run "rejects_non_lambda_function_arn" {
       codekb = {
         lambda = {
           function_arn = "arn:aws:iam::123456789012:role/codekb"
-          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
         }
         allow = { project_ids = ["p-1"] }
       }

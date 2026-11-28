@@ -334,11 +334,13 @@ variable "mcp_gateway_custom_targets" {
       can(regex("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,64}(:[A-Za-z0-9_$-]+)?$", t.lambda.function_arn)) &&
       try(length(jsondecode(t.lambda.tool_schema)) > 0 && alltrue([
         for tool in jsondecode(t.lambda.tool_schema) :
-        can(regex("^[A-Za-z0-9_-]{1,64}$", tool.name)) && !strcontains(tool.name, "___") && can(tool.inputSchema.type)
+        can(regex("^[A-Za-z0-9_-]{1,64}$", tool.name)) && !strcontains(tool.name, "___") &&
+        try(trimspace(tool.description) != "", false) &&
+        try(contains(["array", "boolean", "integer", "number", "object", "string"], tool.inputSchema.type), false)
       ]), false)
       if t.lambda != null
     ])
-    error_message = "mcp_gateway_custom_targets lambda.function_arn must be a Lambda function ARN (optionally qualified), and lambda.tool_schema a non-empty JSON array of tools with a name (letters, digits, _ and -, no ___) and an inputSchema."
+    error_message = "mcp_gateway_custom_targets lambda.function_arn must be a Lambda function ARN (optionally qualified), and lambda.tool_schema a non-empty JSON array of tools, each with a name (letters, digits, _ and -, no ___), a description and an inputSchema whose type is array, boolean, integer, number, object or string."
   }
   validation {
     # The ARN as returned by Create*CredentialProvider (`bedrock-agentcore`). It
