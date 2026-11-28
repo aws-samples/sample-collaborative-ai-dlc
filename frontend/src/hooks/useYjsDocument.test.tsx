@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@/test/query';
 import { StrictMode, type ReactNode } from 'react';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
@@ -39,7 +39,7 @@ vi.mock('../services/projects', () => ({ projectsService: { get: mocks.getProjec
 import { SpacePermissionsProvider } from '../contexts/SpacePermissionsContext';
 import { ApiError } from '../services/api';
 
-import { useYjsDocument } from './useYjsDocument';
+import { UNAVAILABLE_AFTER_MS, useYjsDocument } from './useYjsDocument';
 
 class MockWebSocket {
   static readonly CONNECTING = 0;
@@ -429,6 +429,273 @@ describe('useYjsDocument', () => {
     await act(async () => finishSave());
     await waitFor(() => expect(oldDoc.isDestroyed).toBe(true));
     unmount();
+  });
+
+  describe('connection state', () => {
+    let random: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Reconnect backoff is jittered; pin it to its lower bound (500 ms first).
+      random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    });
+
+    afterEach(() => {
+      random.mockRestore();
+    });
+
+    // Lets connect() resolve its mocked session and scope token.
+    const flush = () => act(() => vi.advanceTimersByTimeAsync(0));
+    const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+    const mount = async (
+      documentId: string | null = 'inception-project-1',
+      wrapper?: ({ children }: { children: ReactNode }) => ReactNode,
+    ) => {
+      const hook = renderHook(({ id }: { id: string | null }) => useYjsDocument(id, 'Alice'), {
+        initialProps: { id: documentId },
+        wrapper,
+      });
+      await flush();
+      return hook;
+    };
+
+    it.each(['never opens', 'opens but never answers'] as const)(
+      'reports unavailable when the socket %s within the deadline',
+      async (silence) => {
+        const { result, unmount } = await mount();
+        expect(instances).toHaveLength(1);
+        if (silence === 'opens but never answers') act(() => instances[0].open());
+        expect(result.current.connection).toBe('connecting');
+
+        await advance(UNAVAILABLE_AFTER_MS - 1);
+        expect(result.current.connection).toBe('connecting');
+        await advance(1);
+        expect(result.current.connection).toBe('unavailable');
+        expect(result.current.synced).toBe(false);
+        unmount();
+      },
+    );
+
+    it('reports synced once the initial sync completes and stays synced past the deadline', async () => {
+      const { result, unmount } = await mount();
+      act(() => {
+        instances[0].open();
+        completeSync(instances[0], new Y.Doc());
+      });
+      expect(result.current.connection).toBe('synced');
+      expect(result.current.synced).toBe(true);
+
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('synced');
+      unmount();
+    });
+
+    it.each(['closes', 'errors'] as const)(
+      'reports unavailable as soon as the socket %s before syncing',
+      async (failure) => {
+        const { result, unmount } = await mount();
+        act(() => {
+          if (failure === 'closes') instances[0].close(1006);
+          else instances[0].onerror?.(new Event('error'));
+        });
+        expect(result.current.connection).toBe('unavailable');
+        unmount();
+      },
+    );
+
+    it('stays unavailable across background retries until one of them syncs', async () => {
+      const { result, unmount } = await mount();
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('unavailable');
+
+      // The 15 s handshake guard abandons the silent socket; backoff opens another.
+      await advance(10_000 + 500);
+      expect(instances).toHaveLength(2);
+      expect(result.current.connection).toBe('unavailable');
+
+      act(() => {
+        instances[1].open();
+        completeSync(instances[1], new Y.Doc());
+      });
+      expect(result.current.connection).toBe('synced');
+      unmount();
+    });
+
+    it('gives a dropped connection a fresh deadline before reporting unavailable', async () => {
+      const { result, unmount } = await mount();
+      act(() => {
+        instances[0].open();
+        completeSync(instances[0], new Y.Doc());
+      });
+
+      act(() => instances[0].close(1012, 'owner transfer'));
+      expect(result.current.connection).toBe('connecting');
+
+      await advance(UNAVAILABLE_AFTER_MS - 1);
+      expect(instances).toHaveLength(2);
+      expect(result.current.connection).toBe('connecting');
+      await advance(1);
+      expect(result.current.connection).toBe('unavailable');
+      unmount();
+    });
+
+    it('retryNow reconnects immediately and restarts the deadline', async () => {
+      const { result, unmount } = await mount();
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('unavailable');
+
+      act(() => result.current.retryNow());
+      expect(result.current.connection).toBe('connecting');
+      expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+      await flush();
+      expect(instances).toHaveLength(2);
+
+      await advance(UNAVAILABLE_AFTER_MS - 1);
+      expect(result.current.connection).toBe('connecting');
+      await advance(1);
+      expect(result.current.connection).toBe('unavailable');
+      // The abandoned socket must not have queued a reconnect of its own.
+      expect(instances).toHaveLength(2);
+
+      act(() => {
+        instances[1].open();
+        completeSync(instances[1], new Y.Doc());
+      });
+      expect(result.current.connection).toBe('synced');
+      unmount();
+    });
+
+    it('retryNow replaces a pending backoff attempt instead of adding a socket', async () => {
+      const { result, unmount } = await mount();
+      act(() => instances[0].close(1006));
+      expect(result.current.connection).toBe('unavailable');
+
+      act(() => result.current.retryNow());
+      await flush();
+      expect(instances).toHaveLength(2);
+      await advance(600);
+      expect(instances).toHaveLength(2);
+      unmount();
+    });
+
+    it('retryNow overtaking a connect that is still authorizing opens a single socket', async () => {
+      let releaseToken!: (token: { token: string; exp: number }) => void;
+      mocks.getRealtimeToken.mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseToken = resolve;
+        }),
+      );
+      const { result, unmount } = await mount();
+      expect(instances).toHaveLength(0);
+
+      act(() => result.current.retryNow());
+      await flush();
+      expect(instances).toHaveLength(1);
+
+      releaseToken({ token: 'late-token', exp: Math.floor(Date.now() / 1000) + 600 });
+      await flush();
+      expect(instances).toHaveLength(1);
+      unmount();
+    });
+
+    it('retryNow leaves a synchronized connection alone', async () => {
+      const { result, unmount } = await mount();
+      act(() => {
+        instances[0].open();
+        completeSync(instances[0], new Y.Doc());
+      });
+
+      act(() => result.current.retryNow());
+      await flush();
+      expect(result.current.connection).toBe('synced');
+      expect(instances).toHaveLength(1);
+      expect(instances[0].readyState).toBe(MockWebSocket.OPEN);
+      unmount();
+    });
+
+    it('leaves no timer behind once the document is released', async () => {
+      const idle = vi.getTimerCount();
+      const { unmount } = await mount();
+      expect(vi.getTimerCount()).toBeGreaterThan(idle);
+
+      unmount();
+      await flush();
+      await flush();
+      expect(vi.getTimerCount()).toBe(idle);
+    });
+
+    it('stops retrying after unmount', async () => {
+      const { result, unmount } = await mount();
+      act(() => instances[0].close(1006));
+      const retryNow = result.current.retryNow;
+      unmount();
+
+      act(() => retryNow());
+      await advance(60_000);
+      expect(instances).toHaveLength(1);
+    });
+
+    it('resets to connecting with a full deadline when the document changes', async () => {
+      const { result, rerender, unmount } = await mount();
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('unavailable');
+
+      rerender({ id: 'inception-project-2' });
+      expect(result.current.connection).toBe('connecting');
+      await flush();
+      expect(instances).toHaveLength(2);
+
+      await advance(UNAVAILABLE_AFTER_MS - 1);
+      expect(result.current.connection).toBe('connecting');
+      await advance(1);
+      expect(result.current.connection).toBe('unavailable');
+      unmount();
+    });
+
+    it('does not let the previous document deadline or socket affect the new document', async () => {
+      const { result, rerender, unmount } = await mount();
+      await advance(UNAVAILABLE_AFTER_MS - 1000);
+
+      rerender({ id: 'inception-project-2' });
+      await flush();
+      // The previous document would have hit its deadline here.
+      await advance(1000);
+      expect(result.current.connection).toBe('connecting');
+
+      act(() => {
+        instances[1].open();
+        completeSync(instances[1], result.current.doc);
+      });
+      expect(result.current.connection).toBe('synced');
+      // The retired socket closes once its (empty) final save settles.
+      expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('synced');
+      unmount();
+    });
+
+    it('never reports unavailable when there is no document to connect', async () => {
+      const { result, unmount } = await mount(null);
+      await advance(UNAVAILABLE_AFTER_MS * 2);
+      expect(result.current.connection).toBe('connecting');
+      expect(instances).toHaveLength(0);
+      unmount();
+    });
+
+    it('tracks one connection through the Strict Mode effect replay', async () => {
+      const { result, unmount } = await mount('inception-project-1', ({ children }) => (
+        <StrictMode>{children}</StrictMode>
+      ));
+      expect(instances).toHaveLength(1);
+      await advance(UNAVAILABLE_AFTER_MS);
+      expect(result.current.connection).toBe('unavailable');
+
+      act(() => result.current.retryNow());
+      expect(result.current.connection).toBe('connecting');
+      await flush();
+      expect(instances).toHaveLength(2);
+      unmount();
+    });
   });
 });
 

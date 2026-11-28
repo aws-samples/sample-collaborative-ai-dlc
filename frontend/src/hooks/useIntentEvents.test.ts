@@ -1,15 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook } from '@/test/query';
 
 // Fake realtimeService: a tiny event bus we can emit into. connect() records the
 // channel + explicit scope target the hook passes.
 const handlers = new Map<string, ((d: unknown) => void)[]>();
-const connect = vi.fn();
+const acquireConnection = vi.fn();
 const emit = (action: string, data: unknown) =>
   (handlers.get(action) ?? []).forEach((h) => h(data));
 vi.mock('../services/realtime', () => ({
   realtimeService: {
-    connect: (...a: unknown[]) => connect(...a),
+    acquireConnection: (...a: unknown[]) => acquireConnection(...a),
     on: (action: string, handler: (d: unknown) => void) => {
       const list = handlers.get(action) ?? [];
       list.push(handler);
@@ -28,12 +28,18 @@ import { useIntentEvents, type IntentEvent } from './useIntentEvents';
 describe('useIntentEvents', () => {
   beforeEach(() => {
     handlers.clear();
-    connect.mockReset().mockResolvedValue(undefined);
+    acquireConnection.mockReset().mockImplementation(() => ({
+      ready: Promise.resolve(),
+      release: vi.fn(),
+    }));
   });
 
   it('connects to the intent channel with an explicit {intentId,projectId} scope target', () => {
     renderHook(() => useIntentEvents('p1', 'i1', () => {}));
-    expect(connect).toHaveBeenCalledWith('intent:i1', { intentId: 'i1', projectId: 'p1' });
+    expect(acquireConnection).toHaveBeenCalledWith('intent:i1', {
+      intentId: 'i1',
+      projectId: 'p1',
+    });
   });
 
   it('forwards each agent.* event to the callback (consumer accumulates, D3)', () => {
@@ -64,6 +70,23 @@ describe('useIntentEvents', () => {
 
   it('does nothing without ids', () => {
     renderHook(() => useIntentEvents('', '', () => {}));
-    expect(connect).not.toHaveBeenCalled();
+    expect(acquireConnection).not.toHaveBeenCalled();
+  });
+
+  it('keeps the same lease when the event callback changes', () => {
+    const firstEvents: IntentEvent[] = [];
+    const secondEvents: IntentEvent[] = [];
+    const { rerender } = renderHook(
+      ({ onEvent }: { onEvent: (event: IntentEvent) => void }) =>
+        useIntentEvents('p1', 'i1', onEvent),
+      { initialProps: { onEvent: (event: IntentEvent) => firstEvents.push(event) } },
+    );
+
+    rerender({ onEvent: (event: IntentEvent) => secondEvents.push(event) });
+    emit('agent.stage', { intentId: 'i1', state: 'RUNNING' });
+
+    expect(acquireConnection).toHaveBeenCalledTimes(1);
+    expect(firstEvents).toHaveLength(0);
+    expect(secondEvents).toHaveLength(1);
   });
 });

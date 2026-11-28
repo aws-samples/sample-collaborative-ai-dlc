@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook } from '@/test/query';
 import * as Y from 'yjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useCollaborativeInception } from './useCollaborativeInception';

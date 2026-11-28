@@ -1,5 +1,4 @@
-import { useEffect } from 'react';
-import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
+import { INTENT_OUTPUT_KEY, useIntent, useVisibleOutputPanes } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { WaitingCard } from '@/components/intent/WaitingCard';
 import { Badge } from '@/components/ui/badge';
@@ -19,7 +18,6 @@ export function AgentProgressCard() {
     gates,
     outputBuffers,
     outputVersion,
-    ensureOutputs,
     focusOutput,
     rewindIntent,
     mayControlStage,
@@ -56,9 +54,7 @@ export function AgentProgressCard() {
 
   useTick(isRunning ?? false);
 
-  useEffect(() => {
-    if (isRunning) ensureOutputs(bufferKey);
-  }, [isRunning, bufferKey, ensureOutputs]);
+  useVisibleOutputPanes(isRunning ? [bufferKey] : []);
 
   void outputVersion;
 

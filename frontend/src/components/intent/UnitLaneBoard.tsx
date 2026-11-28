@@ -15,7 +15,7 @@ import {
 import { completionExplanation } from '@/lib/completionExplanation';
 import { cn } from '@/lib/utils';
 import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
-import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
+import { useIntent, useVisibleOutputPanes, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import type { PhaseNode } from '@/services/workflows';
 import {
@@ -697,7 +697,6 @@ export function UnitLaneBoard({
     stageRows,
     gates,
     outputBuffers,
-    ensureOutputs,
     outputVersion,
     currentPhasePath,
     workflowPhases,
@@ -730,12 +729,8 @@ export function UnitLaneBoard({
     return out;
   }, [units, stageRows]);
 
-  // Lazily seed the transcript pane for each running unit.
-  useEffect(() => {
-    for (const id of Object.values(runningStageBySlug)) {
-      if (id) ensureOutputs(id);
-    }
-  }, [runningStageBySlug, ensureOutputs]);
+  // Lazily seed the transcript pane for each running unit, kept visible while shown.
+  useVisibleOutputPanes(Object.values(runningStageBySlug));
 
   // Subscribe to buffer mutations: outputBuffers is a mutated Map, so without
   // depending on outputVersion the cards won't re-render as chunks stream in.

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { realtimeService } from '../services/realtime';
 import type { GateFinding } from '../services/intents';
 
@@ -112,20 +112,30 @@ export function useIntentEvents(
   intentId: string,
   onEvent: (event: IntentEvent) => void,
 ) {
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+
   useEffect(() => {
     if (!projectId || !intentId) return;
 
-    realtimeService
-      .connect(`intent:${intentId}`, { intentId, projectId })
-      .catch((error) => console.error('[WebSocket] Initial intent connection failed:', error));
+    const connection = realtimeService.acquireConnection(`intent:${intentId}`, {
+      intentId,
+      projectId,
+    });
+    connection.ready.catch((error) =>
+      console.error('[WebSocket] Initial intent connection failed:', error),
+    );
 
     const unsubs = INTENT_EVENTS.map((action) =>
       realtimeService.on(action, (data: IntentEvent) => {
         // Some events may omit intentId; fire for those, else match.
-        if (!data.intentId || data.intentId === intentId) onEvent({ ...data, action });
+        if (!data.intentId || data.intentId === intentId) onEventRef.current({ ...data, action });
       }),
     );
 
-    return () => unsubs.forEach((unsub) => unsub());
-  }, [projectId, intentId, onEvent]);
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+      connection.release();
+    };
+  }, [projectId, intentId]);
 }

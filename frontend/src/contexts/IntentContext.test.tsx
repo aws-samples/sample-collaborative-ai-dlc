@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, act, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, act, waitFor } from '@/test/query';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router';
 import { ArtifactEditControls } from '@/components/intent/ArtifactEditControls';
+import { queryClient } from '@/lib/queryClient';
+import { renderHook } from '@/test/query';
 
 // Capture the realtime callback so tests can push events into the provider.
 let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
@@ -41,14 +43,52 @@ vi.mock('@/services/intents', () => ({
     artifactContents: (...a: unknown[]) => artifactContents(...a),
   },
 }));
-vi.mock('@/services/workflows', () => ({
-  workflowsService: {
-    compiled: (...a: unknown[]) => compiled(...a),
-    get: (...a: unknown[]) => workflowGet(...a),
-  },
+const apiPut = vi.fn();
+vi.mock('@/services/api', () => ({
+  api: { put: (...a: unknown[]) => apiPut(...a) },
 }));
+// The real workflow writes (and their cache invalidation); only reads are stubbed.
+vi.mock('@/services/workflows', async (importActual) => {
+  const actual = await importActual<typeof import('@/services/workflows')>();
+  return {
+    workflowsService: {
+      ...actual.workflowsService,
+      compiled: (...a: unknown[]) => compiled(...a),
+      get: (...a: unknown[]) => workflowGet(...a),
+    },
+  };
+});
 
-import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
+import {
+  IntentProvider,
+  useIntent,
+  useVisibleOutputPanes,
+  clearIntentCache,
+} from './IntentContext';
+import { workflowsService } from '@/services/workflows';
+import { intentCompiledQuery } from '@/lib/intentEntry';
+import { qk } from '@/lib/queryKeys';
+import type { IntentDetail } from '@/services/intents';
+
+const flush = () =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+// One debounced lifecycle reload (fake timers).
+const lifecycleEvent = () =>
+  act(async () => {
+    capturedOnEvent?.({ action: 'agent.note' });
+    await vi.advanceTimersByTimeAsync(300);
+  });
+
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => (hidden ? 'hidden' : 'visible'),
+  });
+  document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+}
 
 function Probe() {
   const {
@@ -161,6 +201,94 @@ const renderCompiledProbe = () =>
     </MemoryRouter>,
   );
 
+function LiveProbe() {
+  const {
+    detail: current,
+    reload,
+    ensureOutputs,
+    setPaneVisible,
+    hasEarlierOutput,
+    loadEarlierOutput,
+    outputPaneStatus,
+    outputBuffers,
+    outputRows,
+    outputVersion,
+    lastActivityAt,
+    openGates,
+  } = useIntent();
+  const navigate = useNavigate();
+  const paneRows = outputRows.get('si-1') ?? [];
+  return (
+    <div>
+      <div data-testid="title">{current?.intent.title ?? 'none'}</div>
+      <div data-testid="activity">{lastActivityAt ?? 'null'}</div>
+      <div data-testid="open-gates">{openGates.map((g) => g.humanTaskId).join(',')}</div>
+      <div data-testid="buf-len" data-version={outputVersion}>
+        {(outputBuffers.get('si-1') ?? '').length}
+      </div>
+      <div data-testid="buf-head">{(outputBuffers.get('si-1') ?? '').slice(0, 1)}</div>
+      <div data-testid="status-si-1">{outputPaneStatus('si-1')}</div>
+      <div data-testid="earlier">{String(hasEarlierOutput('si-1'))}</div>
+      <div data-testid="row-heads">
+        {paneRows.map((r) => (r.kind === 'system' ? '…' : r.content.slice(0, 1))).join('')}
+      </div>
+      <div data-testid="pane-status">
+        {['si-a', 'si-b', 'si-c', 'si-d', 'si-e'].map((k) => outputPaneStatus(k)).join(',')}
+      </div>
+      <button data-testid="reload" onClick={() => void reload()} />
+      <button data-testid="go-i2" onClick={() => navigate('/space/p1/intent/i2')} />
+      <button data-testid="earlier-btn" onClick={() => loadEarlierOutput('si-1')} />
+      {['si-1', 'si-2', 'si-a', 'si-b', 'si-c', 'si-d', 'si-e'].map((k) => (
+        <span key={k}>
+          <button data-testid={`ensure-${k}`} onClick={() => ensureOutputs(k)} />
+          <button data-testid={`hide-${k}`} onClick={() => setPaneVisible(k, false)} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// A transcript-rendering component: shows one pane for as long as it is mounted.
+function PaneViewer({ paneKey }: { paneKey: string }) {
+  useVisibleOutputPanes([paneKey]);
+  return null;
+}
+
+const renderLiveProbe = () =>
+  render(
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+      <Routes>
+        <Route
+          path="/space/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <LiveProbe />
+            </IntentProvider>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+const click = (testId: string) =>
+  act(async () => {
+    screen.getByTestId(testId).click();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+const deferred = <T,>() => {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
+
+const catchUpKeys = () =>
+  outputs.mock.calls
+    .filter(([, , params]) => (params as { afterSeq?: number }).afterSeq !== undefined)
+    .map(([, , params]) => (params as { stageInstanceId: string }).stageInstanceId);
+
 const detail = (over: Record<string, unknown> = {}) => ({
   intent: {
     id: 'i1',
@@ -188,6 +316,9 @@ const detail = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
+// The compiled read is cancellable: the cache's signal reaches the service.
+const compileRequest = { signal: expect.any(AbortSignal) };
+
 const pinnedDetail = (
   releaseId = 'aidlc:release-a',
   importerRevision = 3,
@@ -207,6 +338,7 @@ describe('IntentContext', () => {
   beforeEach(() => {
     capturedOnEvent = null;
     capturedStatus = null;
+    queryClient.clear();
     clearIntentCache();
     get.mockReset();
     answerGate.mockReset();
@@ -215,6 +347,10 @@ describe('IntentContext', () => {
     getResponsibilities.mockReset().mockResolvedValue({ stages: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, 'visibilityState');
   });
 
   it.each(['role granted', 'enforcement disabled'])(
@@ -372,10 +508,15 @@ describe('IntentContext', () => {
     renderProvider();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('wf', 7, 'aidlc:release-a', 3, {
-        projectId: 'p1',
-        intentId: 'i1',
-      }),
+      expect(compiled).toHaveBeenCalledWith(
+        'wf',
+        7,
+        'aidlc:release-a',
+        3,
+        { projectId: 'p1', intentId: 'i1' },
+        null,
+        compileRequest,
+      ),
     );
     await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('release-02'));
     expect(workflowGet).not.toHaveBeenCalled();
@@ -408,10 +549,15 @@ describe('IntentContext', () => {
     });
     await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
 
-    expect(compiled).toHaveBeenLastCalledWith('wf', 1, 'aidlc:release-b', 4, {
-      projectId: 'p1',
-      intentId: 'i1',
-    });
+    expect(compiled).toHaveBeenLastCalledWith(
+      'wf',
+      1,
+      'aidlc:release-b',
+      4,
+      { projectId: 'p1', intentId: 'i1' },
+      null,
+      compileRequest,
+    );
   });
 
   it('recompiles a pinned intent when only its releaseId changes', async () => {
@@ -426,10 +572,15 @@ describe('IntentContext', () => {
     });
     await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
 
-    expect(compiled).toHaveBeenLastCalledWith('wf', 1, 'aidlc:release-b', 3, {
-      projectId: 'p1',
-      intentId: 'i1',
-    });
+    expect(compiled).toHaveBeenLastCalledWith(
+      'wf',
+      1,
+      'aidlc:release-b',
+      3,
+      { projectId: 'p1', intentId: 'i1' },
+      null,
+      compileRequest,
+    );
   });
 
   it('discards a late compiled response after the release identity changed', async () => {
@@ -459,6 +610,64 @@ describe('IntentContext', () => {
     expect(screen.getByTestId('compiled')).toHaveTextContent('release-b');
   });
 
+  it('reuses a prefetched pinned compile: mounting issues no compiled request', async () => {
+    const pinned = pinnedDetail('aidlc:release-a', 3, { currentPhase: 'ideation' });
+    get.mockResolvedValue(pinned);
+    compiled.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'ideation',
+          name: 'Warm',
+          kind: 'phase',
+          path: 'warm',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+      graph: { nodes: [], edges: [] },
+    });
+    const query = intentCompiledQuery(pinned as unknown as IntentDetail);
+    void queryClient.prefetchQuery(query);
+    await waitFor(() => expect(queryClient.getQueryState(query.queryKey)?.data).toBeDefined());
+    expect(compiled).toHaveBeenCalledTimes(1);
+
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('warm'));
+    expect(compiled).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads compiled views under the shared intentCompiledQuery keys', async () => {
+    const pinned = pinnedDetail();
+    get.mockResolvedValue(pinned);
+    const value = { id: 'pinned', graph: { nodes: [], edges: [] } };
+    compiled.mockResolvedValue(value);
+    renderCompiledProbe();
+    await waitFor(() => expect(screen.getByTestId('compiled')).toHaveTextContent('pinned'));
+    const key = intentCompiledQuery(pinned as unknown as IntentDetail).queryKey;
+    expect(key).toEqual(
+      qk.compiled('wf', {
+        version: 1,
+        releaseId: 'aidlc:release-a',
+        importerRevision: 3,
+        intent: { projectId: 'p1', intentId: 'i1' },
+      }),
+    );
+    expect(queryClient.getQueryState(key)?.data).toBe(value);
+  });
+
+  it('reuses a prefetched unpinned compile under the provider key', async () => {
+    const unpinned = detail();
+    get.mockResolvedValue(unpinned);
+    const query = intentCompiledQuery(unpinned as unknown as IntentDetail);
+    expect(query.queryKey).toEqual(qk.compiled('wf', { version: 1 }));
+    void queryClient.prefetchQuery(query);
+    await waitFor(() => expect(queryClient.getQueryState(query.queryKey)?.data).toBeDefined());
+    renderProvider();
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('rows')).toBeInTheDocument());
+    expect(compiled).toHaveBeenCalledTimes(1);
+  });
+
   it('evicts a failed pinned compilation so a realtime reload can retry', async () => {
     get.mockResolvedValue(pinnedDetail());
     compiled
@@ -474,42 +683,69 @@ describe('IntentContext', () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
-  it('refreshes compilation on realtime reload for an unpinned intent', async () => {
-    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
-    renderProvider();
+  it('serves unpinned compilation from cache within its stale time, then refreshes it', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockImplementation(async () => detail({ updatedAt: `t${get.mock.calls.length}` }));
+      renderProvider();
+      await flush();
+      expect(compiled).toHaveBeenCalledTimes(1);
 
-    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
-    act(() => {
-      capturedOnEvent?.({ action: 'agent.note' });
-    });
-    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
-    expect(compiled).toHaveBeenLastCalledWith('wf', 1, undefined, undefined);
+      // Three more loads inside the 60 s window share the cached compile.
+      for (let i = 0; i < 3; i++) await lifecycleEvent();
+      expect(get.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(compiled).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await lifecycleEvent();
+      expect(compiled).toHaveBeenCalledTimes(2);
+      expect(compiled).toHaveBeenLastCalledWith(
+        'wf',
+        1,
+        undefined,
+        undefined,
+        undefined,
+        null,
+        compileRequest,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps the previous compiled workflow while an unpinned reload recompiles', async () => {
-    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
-    let resolveSecond: (value: unknown) => void = () => {};
-    compiled
-      .mockResolvedValueOnce({ id: 'first', graph: { nodes: [], edges: [] } })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSecond = resolve;
-          }),
-      );
-    renderCompiledProbe();
+    vi.useFakeTimers();
+    try {
+      get.mockImplementation(async () => detail({ updatedAt: `t${get.mock.calls.length}` }));
+      let resolveSecond: (value: unknown) => void = () => {};
+      compiled
+        .mockResolvedValueOnce({ id: 'first', graph: { nodes: [], edges: [] } })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSecond = resolve;
+            }),
+        );
+      renderCompiledProbe();
+      await flush();
+      expect(screen.getByTestId('compiled')).toHaveTextContent('first');
 
-    await waitFor(() => expect(screen.getByTestId('compiled')).toHaveTextContent('first'));
-    act(() => {
-      capturedOnEvent?.({ action: 'agent.note' });
-    });
-    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
-    expect(screen.getByTestId('compiled')).toHaveTextContent('first');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await lifecycleEvent();
+      expect(compiled).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('compiled')).toHaveTextContent('first');
 
-    await act(async () => {
-      resolveSecond({ id: 'second', graph: { nodes: [], edges: [] } });
-    });
-    expect(screen.getByTestId('compiled')).toHaveTextContent('second');
+      await act(async () => {
+        resolveSecond({ id: 'second', graph: { nodes: [], edges: [] } });
+      });
+      expect(screen.getByTestId('compiled')).toHaveTextContent('second');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
@@ -877,6 +1113,25 @@ describe('IntentContext', () => {
     await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('01'));
   });
 
+  it('re-reads unpinned workflow phases after a workflow write', async () => {
+    get.mockResolvedValue(detail({ currentPhase: 'ideation' }));
+    workflowGet.mockResolvedValue({
+      phases: [{ phaseId: 'ideation', path: '01', name: 'Ideation' }],
+    });
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('01'));
+
+    workflowGet.mockResolvedValue({
+      phases: [{ phaseId: 'ideation', path: '07', name: 'Ideation' }],
+    });
+    apiPut.mockResolvedValue({ phases: [] });
+    await act(async () => {
+      await workflowsService.putPhases('wf', []);
+    });
+
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('07'));
+  });
+
   it('currentPhasePath falls back to raw value when workflowPhases lacks the id', async () => {
     get.mockResolvedValue(detail({ currentPhase: 'unknown-phase' }));
     workflowGet.mockResolvedValue({ phases: [] });
@@ -1013,5 +1268,485 @@ describe('IntentContext', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  describe('request discipline', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    it('joins a burst of lifecycle events into one load in flight plus one trailing load', async () => {
+      get.mockResolvedValue(detail());
+      renderLiveProbe();
+      await flush();
+      const base = get.mock.calls.length;
+      const first = deferred<unknown>();
+      const second = deferred<unknown>();
+      get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+      await lifecycleEvent();
+      expect(get.mock.calls.length).toBe(base + 1);
+      // Ten more events (and an explicit reload) while that load is in flight.
+      await act(async () => {
+        for (let i = 0; i < 10; i++) {
+          capturedOnEvent?.({ action: 'agent.stage', stageId: `s${i}` });
+          await vi.advanceTimersByTimeAsync(20);
+        }
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      await click('reload');
+      expect(get.mock.calls.length).toBe(base + 1);
+
+      await act(async () => {
+        first.resolve(detail());
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(get.mock.calls.length).toBe(base + 2);
+      await act(async () => {
+        second.resolve(detail());
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(get.mock.calls.length).toBe(base + 2);
+    });
+
+    it('polls a RUNNING intent every 8 s', async () => {
+      get.mockResolvedValue(detail());
+      renderLiveProbe();
+      await flush();
+      const base = get.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(get.mock.calls.length).toBe(base + 1);
+    });
+
+    it.each([403, 404, 410, 500])(
+      'publishes automatic poll errors (%i) and clears only denied detail',
+      async (status) => {
+        get.mockResolvedValue(detail());
+        const { result } = renderHook(() => useIntent(), {
+          wrapper: ({ children }) => (
+            <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+              <Routes>
+                <Route
+                  path="/space/:projectId/intent/:intentId"
+                  element={<IntentProvider>{children}</IntentProvider>}
+                />
+              </Routes>
+            </MemoryRouter>
+          ),
+        });
+        await flush();
+        expect(result.current.detail).not.toBeNull();
+        get.mockRejectedValueOnce(Object.assign(new Error('poll failed'), { status }));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(8_100);
+        });
+        expect(result.current.error).toBe('poll failed');
+        expect(result.current.errorStatus).toBe(status);
+        if (status === 500) expect(result.current.detail).not.toBeNull();
+        else {
+          expect(result.current.detail).toBeNull();
+          expect(result.current.compiled).toBeNull();
+          expect(result.current.pendingGates).toHaveLength(0);
+          expect(result.current.outputBuffers.size).toBe(0);
+        }
+      },
+    );
+
+    it('polls a WAITING intent at 30 s, not 8 s', async () => {
+      get.mockResolvedValue(detail({ status: 'WAITING' }));
+      renderLiveProbe();
+      await flush();
+      const base = get.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_500);
+      });
+      expect(get.mock.calls.length).toBe(base);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(14_000);
+      });
+      expect(get.mock.calls.length).toBe(base + 1);
+    });
+
+    it('does not poll a terminal intent', async () => {
+      get.mockResolvedValue(detail({ status: 'FAILED' }));
+      renderLiveProbe();
+      await flush();
+      const base = get.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+      expect(get.mock.calls.length).toBe(base);
+    });
+
+    it('pauses polling while hidden and loads once when visible again', async () => {
+      get.mockResolvedValue(detail());
+      renderLiveProbe();
+      await flush();
+      const base = get.mock.calls.length;
+      act(() => setHidden(true));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(get.mock.calls.length).toBe(base);
+      await act(async () => {
+        setHidden(false);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(get.mock.calls.length).toBe(base + 1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(get.mock.calls.length).toBe(base + 1);
+    });
+
+    it('reuses a fresh detail already in the shared cache instead of refetching on mount', async () => {
+      get.mockResolvedValue(detail({ title: 'Warm' }));
+      const { intentDetailQuery } = await import('@/lib/intentEntry');
+      await act(async () => {
+        await queryClient.fetchQuery(intentDetailQuery('p1', 'i1'));
+      });
+      expect(get).toHaveBeenCalledTimes(1);
+      renderLiveProbe();
+      await flush();
+      expect(screen.getByTestId('title')).toHaveTextContent('Warm');
+      expect(get).toHaveBeenCalledTimes(1);
+    });
+
+    it('discards the old intent response after a route switch', async () => {
+      const slow = deferred<unknown>();
+      get.mockImplementation((_p: string, iid: string) =>
+        iid === 'i1' ? slow.promise : Promise.resolve(detail({ id: 'i2', title: 'Two' })),
+      );
+      renderLiveProbe();
+      await flush();
+      await click('go-i2');
+      expect(screen.getByTestId('title')).toHaveTextContent('Two');
+      await act(async () => {
+        slow.resolve(detail({ title: 'One' }));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTestId('title')).toHaveTextContent('Two');
+    });
+
+    it('catches up output only for visible panes, and only while RUNNING', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockResolvedValue({ outputs: [], cursor: 0 });
+      renderLiveProbe();
+      await flush();
+      await click('ensure-si-1');
+      await click('ensure-si-2');
+      await click('hide-si-2');
+      outputs.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys()).toEqual(['si-1']);
+
+      // Without an explicit visibility signal a pane counts as visible for 60 s
+      // after its last ensureOutputs.
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(70_000);
+      });
+      const late = outputs.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_000);
+      });
+      expect(outputs.mock.calls.length).toBe(late);
+    });
+
+    it('does not run output catch-up for a WAITING intent', async () => {
+      get.mockResolvedValue(detail({ status: 'WAITING' }));
+      outputs.mockResolvedValue({ outputs: [], cursor: 0 });
+      renderLiveProbe();
+      await flush();
+      await click('ensure-si-1');
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_500);
+      });
+      expect(outputs).not.toHaveBeenCalled();
+    });
+
+    it('caps a pane at 512 KiB by dropping the oldest output and offers earlier output', async () => {
+      get.mockResolvedValue(detail());
+      const big = (seq: number) => ({
+        seq,
+        stageInstanceId: 'si-1',
+        kind: 'text',
+        content: String(seq).repeat(200 * 1024),
+      });
+      outputs.mockResolvedValue({ outputs: [big(1), big(2), big(3)], cursor: 3 });
+      renderLiveProbe();
+      await flush();
+      expect(screen.getByTestId('earlier')).toHaveTextContent('false');
+      await click('ensure-si-1');
+      expect(Number(screen.getByTestId('buf-len').textContent)).toBeLessThanOrEqual(512 * 1024);
+      expect(Number(screen.getByTestId('buf-len').textContent)).toBe(400 * 1024);
+      expect(screen.getByTestId('earlier')).toHaveTextContent('true');
+
+      outputs.mockClear();
+      await click('earlier-btn');
+      expect(outputs).toHaveBeenCalledWith('p1', 'i1', { stageInstanceId: 'si-1' });
+    });
+
+    it('recovers the beginning of a transcript larger than the 2 MiB pane cap on demand', async () => {
+      get.mockResolvedValue(detail());
+      // 12 rows of 200 KiB (2.4 MiB): row n is the letter A+n-1 repeated.
+      const row = (seq: number) => ({
+        seq,
+        stageInstanceId: 'si-1',
+        kind: 'text',
+        content: String.fromCharCode(64 + seq).repeat(200 * 1024),
+      });
+      const range = (from: number, to: number) =>
+        Array.from({ length: to - from + 1 }, (_, i) => row(from + i));
+      outputs.mockImplementation(async (_p: string, _i: string, params: { afterSeq?: number }) => {
+        // Pages of up to 6 rows after the requested seq.
+        const from = (params.afterSeq ?? 0) + 1;
+        if (from > 12) return { outputs: [], cursor: 12 };
+        const to = Math.min(from + 5, 12);
+        return { outputs: range(from, to), cursor: to, more: to < 12 };
+      });
+      renderLiveProbe();
+      await flush();
+      await click('ensure-si-1');
+      expect(screen.getByTestId('earlier')).toHaveTextContent('true');
+      // Raising the cap (512 KiB → 1 MiB → 2 MiB) still cannot reach row 1.
+      await click('earlier-btn');
+      await click('earlier-btn');
+      expect(screen.getByTestId('earlier')).toHaveTextContent('true');
+      expect(screen.getByTestId('buf-head')).not.toHaveTextContent('A');
+
+      // At the max cap, the next request fetches the beginning into an
+      // on-demand view in front of the retained tail.
+      await click('earlier-btn');
+      expect(screen.getByTestId('buf-head')).toHaveTextContent('A');
+      // The beginning (A, B) fills one request's budget; C and D are still a
+      // gap in front of the retained tail, so the control stays.
+      expect(screen.getByTestId('row-heads')).toHaveTextContent(/^AB…EFGHIJKL$/);
+      expect(screen.getByTestId('earlier')).toHaveTextContent('true');
+
+      // Loading more continues from where the beginning stopped.
+      outputs.mockClear();
+      await click('earlier-btn');
+      expect(outputs).toHaveBeenCalledWith('p1', 'i1', { stageInstanceId: 'si-1', afterSeq: 2 });
+      expect(screen.getByTestId('row-heads')).toHaveTextContent(/^ABCDEFGHIJKL$/);
+      expect(screen.getByTestId('earlier')).toHaveTextContent('false');
+
+      // The view is dropped when the pane closes.
+      await click('hide-si-1');
+      expect(screen.getByTestId('buf-head')).not.toHaveTextContent('A');
+      expect(screen.getByTestId('earlier')).toHaveTextContent('true');
+    });
+
+    it('marks a pane whose first transcript fetch failed as error and retries it on reconnect', async () => {
+      get.mockResolvedValue(detail({ status: 'WAITING' }));
+      outputs.mockRejectedValueOnce(new Error('boom')).mockResolvedValue({
+        outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'back' }],
+        cursor: 1,
+      });
+      renderLiveProbe();
+      await flush();
+      await click('ensure-si-1');
+      expect(screen.getByTestId('status-si-1')).toHaveTextContent('error');
+
+      await act(async () => {
+        capturedStatus?.('connected');
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTestId('status-si-1')).toHaveTextContent('seeded');
+      expect(screen.getByTestId('buf-len')).toHaveTextContent('4');
+    });
+
+    it('retries a visible pane whose first fetch failed on the periodic catch-up', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockRejectedValueOnce(new Error('boom')).mockResolvedValue({
+        outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'back' }],
+        cursor: 1,
+      });
+      renderLiveProbe();
+      await flush();
+      await click('ensure-si-1');
+      expect(screen.getByTestId('status-si-1')).toHaveTextContent('error');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(screen.getByTestId('status-si-1')).toHaveTextContent('seeded');
+    });
+
+    it('keeps four long-lived running lane panes seeded and catching up', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockImplementation(
+        async (_p: string, _i: string, params: { stageInstanceId: string }) => ({
+          outputs: [
+            { seq: 1, stageInstanceId: params.stageInstanceId, kind: 'text', content: 'x' },
+          ],
+          cursor: 1,
+        }),
+      );
+      const lanes = ['si-a', 'si-b', 'si-c', 'si-d'];
+      const view = (shown: string[]) => (
+        <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+          <Routes>
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <IntentProvider>
+                  <LiveProbe />
+                  {shown.map((key) => (
+                    <PaneViewer key={key} paneKey={key} />
+                  ))}
+                </IntentProvider>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(lanes));
+      await flush();
+      expect(screen.getByTestId('pane-status')).toHaveTextContent(
+        'seeded,seeded,seeded,seeded,unseeded',
+      );
+
+      // Long past the 60 s fallback window, with a fifth pane opened and closed.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(70_000);
+      });
+      await click('ensure-si-e');
+      await click('hide-si-e');
+      expect(screen.getByTestId('pane-status')).toHaveTextContent(
+        'seeded,seeded,seeded,seeded,seeded',
+      );
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys().toSorted()).toEqual(lanes);
+
+      // A lane that leaves the screen goes back to the hidden-pane retention.
+      rerender(view(['si-b', 'si-c', 'si-d']));
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys().toSorted()).toEqual(['si-b', 'si-c', 'si-d']);
+    });
+
+    it('keeps a pane visible while another component still shows it', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockResolvedValue({ outputs: [], cursor: 0 });
+      const view = (viewers: number) => (
+        <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+          <Routes>
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <IntentProvider>
+                  <LiveProbe />
+                  {Array.from({ length: viewers }, (_, i) => (
+                    <PaneViewer key={i} paneKey="si-1" />
+                  ))}
+                </IntentProvider>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(2));
+      await flush();
+      rerender(view(1));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(70_000);
+      });
+      outputs.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_100);
+      });
+      expect(catchUpKeys()).toEqual(['si-1']);
+    });
+
+    it('retains at most 3 hidden transcript panes', async () => {
+      get.mockResolvedValue(detail());
+      outputs.mockImplementation(
+        async (_p: string, _i: string, params: { stageInstanceId: string }) => ({
+          outputs: [
+            { seq: 1, stageInstanceId: params.stageInstanceId, kind: 'text', content: 'x' },
+          ],
+          cursor: 1,
+        }),
+      );
+      renderLiveProbe();
+      await flush();
+      for (const key of ['si-a', 'si-b', 'si-c', 'si-d', 'si-e']) {
+        await click(`ensure-${key}`);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+        await click(`hide-${key}`);
+      }
+      expect(screen.getByTestId('pane-status')).toHaveTextContent(
+        'unseeded,unseeded,seeded,seeded,seeded',
+      );
+    });
+
+    it('exposes lastActivityAt and openGates', async () => {
+      get.mockResolvedValue({
+        ...detail({ updatedAt: '2026-07-01T10:00:00Z' }),
+        events: [
+          {
+            eventId: 'e1',
+            type: 'x',
+            stageInstanceId: null,
+            actor: null,
+            summary: null,
+            timestamp: '2026-07-01T12:00:00Z',
+          },
+        ],
+        stages: [
+          {
+            stageInstanceId: 'si-1',
+            stageId: 's',
+            state: 'SUCCEEDED',
+            startedAt: '2026-07-01T09:00:00Z',
+            completedAt: '2026-07-01T11:00:00Z',
+          },
+        ],
+        gates: [
+          { humanTaskId: 'h-open', status: 'pending' },
+          { humanTaskId: 'h-done', status: 'answered' },
+        ],
+      });
+      renderLiveProbe();
+      await flush();
+      expect(screen.getByTestId('activity')).toHaveTextContent('2026-07-01T12:00:00Z');
+      expect(screen.getByTestId('open-gates')).toHaveTextContent('h-open');
+      expect(screen.getByTestId('open-gates')).not.toHaveTextContent('h-done');
+
+      await act(async () => {
+        capturedOnEvent?.({
+          action: 'agent.output',
+          stageInstanceId: 'si-1',
+          seq: 9,
+          content: 'later',
+          timestamp: '2026-07-01T13:00:00Z',
+        });
+      });
+      expect(screen.getByTestId('activity')).toHaveTextContent('2026-07-01T13:00:00Z');
+    });
+
+    it('clearIntentCache resets the shared detail', async () => {
+      get.mockResolvedValue(detail());
+      const { intentDetailQuery } = await import('@/lib/intentEntry');
+      await act(async () => {
+        await queryClient.fetchQuery(intentDetailQuery('p1', 'i1'));
+      });
+      clearIntentCache();
+      expect(
+        queryClient.getQueryState(intentDetailQuery('p1', 'i1').queryKey)?.data,
+      ).toBeUndefined();
+    });
   });
 });

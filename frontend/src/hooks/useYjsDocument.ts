@@ -22,6 +22,20 @@ const useDocumentRef = <T>(document: Y.Doc, initial: T) =>
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useMemo(() => ({ current: initial }), [document]);
 
+/** How long a (re)connect may stay unsynchronized before it is reported as unavailable. */
+export const UNAVAILABLE_AFTER_MS = 5000;
+
+/**
+ * Live-collaboration state of the current document.
+ * - `connecting`: an attempt is in flight and still within `UNAVAILABLE_AFTER_MS`.
+ *   Also the resting value when there is no document to connect.
+ * - `synced`: the initial sync completed.
+ * - `unavailable`: the attempt failed or outlived the deadline. Background
+ *   retries continue, but the state only leaves `unavailable` when one of them
+ *   syncs or `retryNow()` starts a fresh attempt, so the UI does not flicker.
+ */
+export type YjsConnection = 'connecting' | 'synced' | 'unavailable';
+
 export interface AwarenessUser {
   name: string;
   color: string;
@@ -71,8 +85,20 @@ export function useYjsDocument(
       ),
     [doc],
   );
+  const [unavailableState, setUnavailableState] = useState({ doc, unavailable: false });
+  const unavailable = unavailableState.doc === doc && unavailableState.unavailable;
+  const setUnavailable = useCallback(
+    (value: boolean) =>
+      setUnavailableState((previous) =>
+        currentDocRef.current !== doc || (previous.doc === doc && previous.unavailable === value)
+          ? previous
+          : { doc, unavailable: value },
+      ),
+    [doc],
+  );
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
   const [localChange, setLocalChange] = useState({ doc, revision: 0 });
+  const retryRef = useDocumentRef<(() => void) | null>(doc, null);
   const wsRef = useDocumentRef<WebSocket | null>(doc, null);
   const readySocketRef = useDocumentRef<WebSocket | null>(doc, null);
   const reconnectTimeoutRef = useDocumentRef<number | null>(doc, null);
@@ -130,6 +156,7 @@ export function useYjsDocument(
   useEffect(() => {
     if (!documentId || loading) {
       setSynced(false);
+      setUnavailable(false);
       setRemoteUsers(new Map());
       return;
     }
@@ -138,7 +165,9 @@ export function useYjsDocument(
     let retiring = false;
     lifetime.closing = false;
     let reconnectAttempts = 0;
+    let connectAttempt = 0;
     let awarenessTimer: ReturnType<typeof setTimeout> | null = null;
+    let syncDeadline: ReturnType<typeof setTimeout> | null = null;
     const awarenessProt = awareness;
     setSynced(false);
     setRemoteUsers(new Map());
@@ -150,8 +179,37 @@ export function useYjsDocument(
     const target = scopeTarget ?? scopeTargetForYjsDoc(documentId);
     if (!target) {
       console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
+      setUnavailable(true);
       return;
     }
+
+    const clearSyncDeadline = () => {
+      if (syncDeadline === null) return;
+      clearTimeout(syncDeadline);
+      syncDeadline = null;
+    };
+    // Reports 'connecting' and gives the attempt UNAVAILABLE_AFTER_MS to finish
+    // its initial sync before the document is reported as unavailable.
+    const startSyncDeadline = () => {
+      clearSyncDeadline();
+      setUnavailable(false);
+      syncDeadline = setTimeout(() => {
+        syncDeadline = null;
+        if (!cancelled && !retiring) setUnavailable(true);
+      }, UNAVAILABLE_AFTER_MS);
+    };
+    const reportUnavailable = () => {
+      clearSyncDeadline();
+      setUnavailable(true);
+    };
+    const forgetRemotePresence = (origin: WebSocket) => {
+      const remoteClientIds = [...awarenessProt.getStates().keys()].filter(
+        (clientId) => clientId !== doc.clientID,
+      );
+      if (remoteClientIds.length) {
+        awarenessProtocol.removeAwarenessStates(awarenessProt, remoteClientIds, origin);
+      }
+    };
 
     let connect: () => Promise<void>;
     const scheduleReconnect = () => {
@@ -172,6 +230,10 @@ export function useYjsDocument(
 
     connect = async () => {
       if (cancelled || retiring) return;
+      // retryNow() can start an attempt while an older one still awaits its
+      // session or token. Only the newest may open a socket or schedule a retry.
+      const attempt = ++connectAttempt;
+      const superseded = () => cancelled || retiring || attempt !== connectAttempt;
 
       // Fetch a fresh Cognito ID token on every (re)connect. Cognito ID
       // tokens expire after 1 hour, so reusing a captured token across
@@ -185,10 +247,10 @@ export function useYjsDocument(
         if (resolution.expired) notifySessionExpired(epoch);
       } catch (error) {
         console.error('Yjs: failed to refresh Cognito session:', error);
-        scheduleReconnect();
+        if (!superseded()) scheduleReconnect();
         return;
       }
-      if (cancelled || retiring) return;
+      if (superseded()) return;
       if (!session?.idToken) {
         console.error('Yjs: no Cognito session, cannot connect');
         scheduleReconnect();
@@ -200,10 +262,10 @@ export function useYjsDocument(
         docToken = await getRealtimeToken(target);
       } catch (e) {
         console.error('Yjs: failed to fetch realtime token:', e);
-        scheduleReconnect();
+        if (!superseded()) scheduleReconnect();
         return;
       }
-      if (cancelled || retiring) return;
+      if (superseded()) return;
 
       const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken, docToken.token);
       let ws;
@@ -309,6 +371,8 @@ export function useYjsDocument(
               initialSyncDone = true;
               reconnectAttempts = 0;
               readySocketRef.current = ws;
+              clearSyncDeadline();
+              setUnavailable(false);
               setSynced(true);
             }
           } else if (messageType === 1) {
@@ -351,12 +415,7 @@ export function useYjsDocument(
         if (import.meta.env.DEV) console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
         readySocketRef.current = null;
-        const remoteClientIds = [...awarenessProt.getStates().keys()].filter(
-          (clientId) => clientId !== doc.clientID,
-        );
-        if (remoteClientIds.length) {
-          awarenessProtocol.removeAwarenessStates(awarenessProt, remoteClientIds, ws);
-        }
+        forgetRemotePresence(ws);
         if (handshakeTimerRef.current) {
           clearTimeout(handshakeTimerRef.current);
           handshakeTimerRef.current = null;
@@ -376,10 +435,63 @@ export function useYjsDocument(
         // fresh token instead of replaying the cached one.
         if (event.code === 4401) invalidateRealtimeToken(target);
 
+        // A connection that had synchronized gets a fresh deadline for its
+        // replacement (token refresh, server restart); one that never did is a
+        // failed attempt already.
+        if (!retiring) {
+          if (initialSyncDone) startSyncDeadline();
+          else reportUnavailable();
+        }
+
         scheduleReconnect();
       };
 
-      ws.onerror = (event) => console.error('Yjs WebSocket error:', event);
+      ws.onerror = (event) => {
+        console.error('Yjs WebSocket error:', event);
+        if (!cancelled && !retiring && wsRef.current === ws && !initialSyncDone) {
+          reportUnavailable();
+        }
+      };
+    };
+
+    // "Retry now": abandon the attempt in flight (a silent socket, or a pending
+    // backoff delay) and start a fresh one with a full deadline.
+    const retry = () => {
+      if (cancelled || retiring) return;
+      const stale = wsRef.current;
+      // Cycling a synchronized connection would only lock the editors again.
+      if (stale && readySocketRef.current === stale && stale.readyState === WebSocket.OPEN) return;
+      if (reconnectTimeoutRef.current !== null) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (handshakeTimerRef.current) {
+        clearTimeout(handshakeTimerRef.current);
+        handshakeTimerRef.current = null;
+      }
+      if (tokenRefreshRef.current) {
+        clearTimeout(tokenRefreshRef.current);
+        tokenRefreshRef.current = null;
+      }
+      tokenExpRef.current = null;
+      wsRef.current = null;
+      readySocketRef.current = null;
+      if (stale) {
+        // Detached before closing: the abandoned socket must neither schedule
+        // a second reconnect nor report the fresh attempt as unavailable.
+        stale.onopen = null;
+        stale.onmessage = null;
+        stale.onclose = null;
+        stale.onerror = null;
+        forgetRemotePresence(stale);
+        stale.close();
+      }
+      reconnectAttempts = 0;
+      startSyncDeadline();
+      connect().catch((error) => {
+        console.error('Yjs reconnect failed:', error);
+        scheduleReconnect();
+      });
     };
 
     const updateHandler = (
@@ -471,11 +583,15 @@ export function useYjsDocument(
     awarenessProt.on('update', awarenessUpdateHandler);
     window.addEventListener('focus', refreshIfStale);
     document.addEventListener('visibilitychange', refreshIfStale);
+    retryRef.current = retry;
+    startSyncDeadline();
     connect().catch((e) => console.error('Yjs initial connect failed:', e));
 
     return () => {
       retiring = true;
       lifetime.closing = true;
+      clearSyncDeadline();
+      if (retryRef.current === retry) retryRef.current = null;
       const retiringSocket = wsRef.current;
       // Start registered saves while this connection can still acknowledge them.
       // Keeping their entire REST promise alive also keeps the source Y.Doc alive.
@@ -530,7 +646,7 @@ export function useYjsDocument(
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, awareness, setSynced, loading]);
+  }, [documentId, doc, awareness, setSynced, setUnavailable, loading]);
 
   // Registered after the connection effect so its cleanup runs only after the
   // socket listeners have released the old document and awareness instance.
@@ -614,10 +730,17 @@ export function useYjsDocument(
     stageDocument,
   ]);
 
+  const retryNow = useCallback(() => {
+    retryRef.current?.();
+  }, [retryRef]);
+
+  const connection: YjsConnection = synced ? 'synced' : unavailable ? 'unavailable' : 'connecting';
   const localRevision = localChange.doc === doc ? localChange.revision : 0;
   return {
     doc,
     synced,
+    connection,
+    retryNow,
     awareness,
     remoteUsers,
     setCursor,
