@@ -167,6 +167,7 @@ export default function IntentView() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [pinningEnabled, setPinningEnabled] = useState(false);
+  const [revealValidationSignal, setRevealValidationSignal] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -483,11 +484,13 @@ export default function IntentView() {
               type="button"
               data-testid="waiting-for-review-badge"
               className="shrink-0 rounded-full border border-primary/50 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
-              onClick={() =>
+              onClick={() => {
+                // Select a validation gate first: with parallel lanes the open tab may be a question.
+                setRevealValidationSignal((n) => n + 1);
                 document
                   .getElementById(PENDING_GATES_ANCHOR_ID)
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              }
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
             >
               Waiting for review
             </button>
@@ -860,6 +863,7 @@ export default function IntentView() {
             <PendingQuestionsTabs
               gates={pendingGates}
               activeGateId={intent.pendingHumanTaskId}
+              revealValidationSignal={revealValidationSignal}
               gateContext={(gate) => {
                 // stageNameOf falls back to the raw instance id when the stage
                 // row is unknown — no prefix beats an opaque id on the tab.

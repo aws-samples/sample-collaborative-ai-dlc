@@ -1163,6 +1163,39 @@ describe('IntentView', () => {
     expect(screen.queryByTestId('waiting-for-review-badge')).not.toBeInTheDocument();
   });
 
+  it('selects the validation gate when the badge is clicked while a question tab is open', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const gate = (kind: string, humanTaskId: string, unitSlug: string) => ({
+      humanTaskId,
+      stageInstanceId: 'si-a',
+      unitSlug,
+      kind,
+      status: 'pending',
+      prompt: kind === 'validation' ? 'Review stage stage-a.' : 'Which DB?',
+      options: kind === 'validation' ? ['approve', 'request-changes'] : [],
+      questions: null,
+      answer: null,
+      answeredBy: null,
+      answeredAt: null,
+      createdAt: null,
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h-q' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [gate('validation', 'h-v', 'unit-b'), gate('question', 'h-q', 'unit-a')],
+    });
+    renderAt();
+    const badge = await screen.findByTestId('waiting-for-review-badge');
+    expect(screen.getByText('Questions for you')).toBeInTheDocument();
+    expect(screen.queryByTestId('validation-gate-card')).not.toBeInTheDocument();
+    await userEvent.click(badge);
+    expect(screen.getByText('Review required')).toBeInTheDocument();
+    expect(screen.getByTestId('validation-gate-card')).toBeInTheDocument();
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
   it('opens a validation gate review page and approves the stage', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),

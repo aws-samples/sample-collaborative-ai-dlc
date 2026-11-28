@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileQuestion, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { IntentGate } from '@/services/intents';
@@ -35,6 +35,11 @@ interface PendingQuestionsTabsProps {
   renderGateCard: (gate: IntentGate) => React.ReactNode;
   /** Short scan context per tab (stage name, unit lane) — null hides the prefix. */
   gateContext?: (gate: IntentGate) => string | null;
+  /**
+   * Bump to bring a validation gate into view: keeps the selected tab when it
+   * already is a validation gate, otherwise selects the first one. 0 = never asked.
+   */
+  revealValidationSignal?: number;
 }
 
 /** DOM id of the pending-gates region, so the intent header can scroll to it. */
@@ -47,6 +52,7 @@ export function PendingQuestionsTabs({
   activeGateId,
   renderGateCard,
   gateContext,
+  revealValidationSignal = 0,
 }: PendingQuestionsTabsProps) {
   const [selectedId, setSelectedId] = useState<string>(
     () => activeGateId ?? gates[0]?.humanTaskId ?? '',
@@ -64,6 +70,19 @@ export function PendingQuestionsTabs({
       return ids[0] ?? '';
     });
   }, [activeGateId, gateIdSig]);
+
+  // A new reveal request re-selects once; later gate changes never undo a manual tab pick,
+  // so the gate list is read through a ref instead of being an effect dependency.
+  const gatesRef = useRef(gates);
+  gatesRef.current = gates;
+  useEffect(() => {
+    if (revealValidationSignal === 0) return;
+    setSelectedId((current) => {
+      const all = gatesRef.current;
+      if (all.find((g) => g.humanTaskId === current)?.kind === 'validation') return current;
+      return all.find((g) => g.kind === 'validation')?.humanTaskId ?? current;
+    });
+  }, [revealValidationSignal]);
 
   const selectedGate = gates.find((g) => g.humanTaskId === selectedId) ?? gates[0] ?? null;
 
