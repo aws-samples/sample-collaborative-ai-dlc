@@ -209,8 +209,33 @@ describe('capabilities authentication and advertisement', () => {
         agentAuthVerification: [],
         invocationAccounting: true,
         sandboxEnforcement: true,
+        nativeWorkspace: false,
       }),
     );
+  });
+
+  it('reports the native workspace storage as the runtime finds it', async () => {
+    const probe = (nativeWorkspaceAvailable) =>
+      capabilities(
+        {},
+        { discoverInstalledClis: async () => [], env: {}, nativeWorkspaceAvailable },
+      );
+    expect((await probe(async () => true)).nativeWorkspace).toBe(true);
+    expect((await probe(async () => false)).nativeWorkspace).toBe(false);
+  });
+
+  it('asks for the native workspace storage at every call, not once', async () => {
+    // AgentCore attaches the mount with the invocation, so an answer from an
+    // earlier call (or from boot) says nothing about this one.
+    const answers = [false, true];
+    const nativeWorkspaceAvailable = async () => answers.shift();
+    const probe = () =>
+      capabilities(
+        {},
+        { discoverInstalledClis: async () => [], env: {}, nativeWorkspaceAvailable },
+      );
+    expect((await probe()).nativeWorkspace).toBe(false);
+    expect((await probe()).nativeWorkspace).toBe(true);
   });
 
   it('advertises the composed runtime modes, keys included', async () => {

@@ -11,6 +11,10 @@
 // control-plane lambda via ListInferenceProfiles, NOT here. A runtime auth
 // provider whose material this invocation adapted may add its own fields.
 //
+// `nativeWorkspace` reports whether the workspace storage of native intents is
+// mounted in this runtime (../native-workspace.js). It is read from the mount
+// itself, so a runtime that was created without the storage reports false.
+//
 // Pure of process spawning: the CLI discovery + the Kiro model spawn are injected
 // so the command is unit-tested without a real kiro-cli.
 
@@ -18,6 +22,7 @@ import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/dri
 import { blockedByBedrockGateway } from '../cli/backend-adapters.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
+import { nativeWorkspaceAvailable as defaultNativeWorkspaceAvailable } from '../native-workspace.js';
 import {
   AGENT_AUTH_PROTOCOL_VERSION,
   AGENT_CREDENTIAL_PROVIDERS,
@@ -54,6 +59,7 @@ export const capabilities = async (_payload, deps = {}) => {
     agentAuthModes = RUNTIME_AGENT_AUTH_MODES,
     agentAuthVerification = RUNTIME_VERIFICATION_MODES,
     capabilityContributions = runtimeCapabilityContributions,
+    nativeWorkspaceAvailable = defaultNativeWorkspaceAvailable,
   } = deps;
 
   let installed = [];
@@ -105,6 +111,7 @@ export const capabilities = async (_payload, deps = {}) => {
   }
 
   const contributions = await capabilityContributions({ env, materialTypes });
+  const nativeWorkspace = await nativeWorkspaceAvailable();
   return {
     ok: true,
     ...contributions,
@@ -115,5 +122,6 @@ export const capabilities = async (_payload, deps = {}) => {
     agentAuthVerification: [...agentAuthVerification],
     invocationAccounting: true,
     sandboxEnforcement: true,
+    nativeWorkspace,
   };
 };
