@@ -1,13 +1,29 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { Link, MemoryRouter, Routes, Route } from 'react-router';
 
 import { shouldDefaultOpen } from './AppShell';
 
 const shellTestState = vi.hoisted(() => ({
   panelsInline: true,
   onAgentFocus: null as null | (() => void),
+  installNavIntent: vi.fn(),
+  uninstallNavIntent: vi.fn(),
+  notifyNavigation: vi.fn(),
+}));
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ user: 'test-user', isPlatformAdmin: true }),
+}));
+vi.mock('@/lib/navIntent', () => ({
+  installNavIntent: (...args: unknown[]) => {
+    shellTestState.installNavIntent(...args);
+    return shellTestState.uninstallNavIntent;
+  },
+}));
+vi.mock('@/lib/routePrefetch', () => ({
+  notifyNavigation: (...args: unknown[]) => shellTestState.notifyNavigation(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -137,9 +153,14 @@ function renderAtRoute(path: string) {
           <Route
             path="/space/:projectId/intent/:intentId"
             element={
-              <button data-testid="open-preview" onClick={() => shellTestState.onAgentFocus?.()}>
-                preview
-              </button>
+              <>
+                <button data-testid="open-preview" onClick={() => shellTestState.onAgentFocus?.()}>
+                  preview
+                </button>
+                <Link data-testid="navigate-dashboard" to="/dashboard">
+                  Dashboard
+                </Link>
+              </>
             }
           />
           <Route
@@ -161,6 +182,25 @@ function renderAtRoute(path: string) {
     </MemoryRouter>,
   );
 }
+
+it('installs the delegated listener once, updates its location, and uninstalls on unmount', async () => {
+  shellTestState.installNavIntent.mockClear();
+  shellTestState.uninstallNavIntent.mockClear();
+  const view = renderAtRoute('/space/p1/intent/i1');
+  expect(shellTestState.installNavIntent).toHaveBeenCalledTimes(1);
+  const getContext = shellTestState.installNavIntent.mock.calls[0][0] as () => {
+    currentHref: string;
+  };
+  expect(getContext().currentHref).toBe('/space/p1/intent/i1');
+  await userEvent.click(screen.getByTestId('navigate-dashboard'));
+  expect(getContext().currentHref).toBe('/dashboard');
+  expect(shellTestState.notifyNavigation).toHaveBeenLastCalledWith('/dashboard', {
+    isPlatformAdmin: true,
+  });
+  expect(shellTestState.installNavIntent).toHaveBeenCalledTimes(1);
+  view.unmount();
+  expect(shellTestState.uninstallNavIntent).toHaveBeenCalledTimes(1);
+});
 
 beforeEach(() => {
   shellTestState.panelsInline = true;

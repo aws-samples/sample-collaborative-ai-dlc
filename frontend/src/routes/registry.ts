@@ -1,12 +1,28 @@
 // The single route table of the authenticated shell. App.tsx renders its
-// <Route>s from APP_ROUTES, so a route cannot exist without its page chunk
-// entry. Login, the auth and OAuth callbacks, and redirects are deliberately
-// not registered: callbacks have side effects and a redirect resolves to its
-// target.
+// <Route>s from APP_ROUTES and the prefetch resolver reads the same array, so
+// a route cannot exist without its page chunk entry. Login, the auth and
+// OAuth callbacks, and redirects are deliberately not registered: callbacks
+// have side effects and a redirect resolves to its target.
+//
+// Query descriptors here must come from the factories the pages read with
+// (lib/intentEntry.ts, …), never from literal keys.
 
 import type { ComponentType, LazyExoticComponent } from 'react';
 import { matchPath } from 'react-router';
+import type { QueryKey, FetchQueryOptions as QueryOptions } from '@tanstack/react-query';
+import { knownQueryBytes, queryClient } from '@/lib/queryClient';
+import { intentDetailQuery, intentCompiledQuery } from '@/lib/intentEntry';
+import type { IntentDetail } from '@/services/intents';
+import { qk } from '@/lib/queryKeys';
 import * as pages from './pages';
+
+export interface RouteCtx {
+  params: Readonly<Record<string, string | undefined>>;
+  search: URLSearchParams;
+  /** Cache-only reads (never fetch) for deciding what to warm. */
+  peek: <T>(key: QueryKey) => T | undefined;
+  user: { isPlatformAdmin: boolean };
+}
 
 export type RoutePage = LazyExoticComponent<ComponentType<object>> & {
   preload: () => Promise<unknown>;
@@ -16,16 +32,40 @@ export interface RouteEntry {
   /** React Router pattern. Listed specific first: the resolver takes the first match. */
   path: string;
   page: RoutePage;
-  /** Rendered behind ProtectedRoute. */
+  /** No chunk and no data warming for other users; rendered behind ProtectedRoute. */
   requires?: 'platformAdmin';
+  /** Cheap reads needed for first paint, from the page's own factories. */
+  critical?: (ctx: RouteCtx) => QueryOptions<any, any, any, any>[];
+  /** Reads that need a critical result (e.g. a block body needs the block's hasBody). */
+  dependent?: (ctx: RouteCtx, criticalData: unknown[]) => QueryOptions<any, any, any, any>[];
+  /** true / predicate: chunk on hover, data only when navigation is imminent. */
+  heavy?: boolean | ((ctx: RouteCtx) => boolean);
   /** Pages rendered in this page's Outlet; `path` relative, '' for the index. Chunk only. */
   children?: readonly { path: string; page: RoutePage }[];
 }
+
+const param = (ctx: RouteCtx, name: string): string => ctx.params[name] ?? '';
+
+// The intent detail backs every intent page header, so it is critical for all.
+const intentCritical = (ctx: RouteCtx): QueryOptions<any, any, any, any>[] => [
+  intentDetailQuery(param(ctx, 'projectId'), param(ctx, 'intentId')),
+];
+
+// Also warmed by the detail query itself once a page reads it.
+const intentDependent = (_ctx: RouteCtx, [detail]: unknown[]) =>
+  (detail as IntentDetail | undefined)?.intent.workflowId
+    ? [intentCompiledQuery(detail as IntentDetail)]
+    : [];
+
+const heavyIntent = (ctx: RouteCtx) =>
+  knownQueryBytes(queryClient, qk.intentDetail(param(ctx, 'projectId'), param(ctx, 'intentId'))) >
+  512 * 1024;
 
 export const APP_ROUTES: readonly RouteEntry[] = [
   {
     path: '/dashboard',
     page: pages.Dashboard,
+    // Portfolio lists are shell-owned and always warm.
   },
   {
     path: '/account/settings',
@@ -85,26 +125,43 @@ export const APP_ROUTES: readonly RouteEntry[] = [
   {
     path: '/space/:projectId/intent/:intentId/compose',
     page: pages.IntentComposePage,
+    critical: intentCritical,
+    dependent: intentDependent,
+    heavy: heavyIntent,
   },
   {
     path: '/space/:projectId/intent/:intentId/graph',
     page: pages.IntentGraphPage,
+    // The graph decodes to up to ~380 KB.
+    heavy: true,
+    critical: intentCritical,
   },
   {
     path: '/space/:projectId/intent/:intentId/observability',
     page: pages.IntentObservabilityPage,
+    critical: intentCritical,
+    dependent: intentDependent,
+    heavy: heavyIntent,
   },
   {
     path: '/space/:projectId/intent/:intentId/audit',
     page: pages.IntentAuditPage,
+    critical: intentCritical,
+    heavy: heavyIntent,
   },
   {
     path: '/space/:projectId/intent/:intentId/review/:humanTaskId',
     page: pages.IntentView,
+    critical: intentCritical,
+    dependent: intentDependent,
+    heavy: heavyIntent,
   },
   {
     path: '/space/:projectId/intent/:intentId',
     page: pages.IntentView,
+    critical: intentCritical,
+    dependent: intentDependent,
+    heavy: heavyIntent,
   },
   {
     // Retired v1 sprint pages: rendered for history, warmed as chunks only.
@@ -136,7 +193,8 @@ interface FlatRoute {
   preload: () => Promise<unknown>;
 }
 
-// A child resolves to an entry of its own; preloading it loads the layout too.
+// A child is a chunk-only entry of its own; its parent's descriptors describe
+// the layout's index, not every child.
 const FLAT_ROUTES: readonly FlatRoute[] = APP_ROUTES.flatMap((entry): FlatRoute[] => {
   if (!entry.children) return [{ pattern: entry.path, entry, preload: entry.page.preload }];
   return entry.children.map((child) => {
@@ -152,6 +210,26 @@ const FLAT_ROUTES: readonly FlatRoute[] = APP_ROUTES.flatMap((entry): FlatRoute[
 // Only pathname matches are memoized: settings search params stay request-local.
 const matches = new Map<string, Omit<ResolvedRoute, 'search'> | undefined>();
 
+// Route params are interpolated by the existing services. Never let encoded
+// separators/traversal turn an entity GET into a different (possibly mutating)
+// endpoint. A real intent cannot use the reserved project-metrics endpoint.
+function safeParams(params: Readonly<Record<string, string | undefined>>): boolean {
+  try {
+    return Object.entries(params).every(([name, value]) => {
+      if (value === undefined) return true;
+      const decoded = decodeURIComponent(value);
+      return (
+        !/[\\/?#%]/.test(decoded) &&
+        decoded !== '.' &&
+        decoded !== '..' &&
+        !(name === 'intentId' && decoded === 'metrics')
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
 /** Matches an app href (query and hash ignored for matching) to its registry entry. */
 export function resolveRoute(href: string): ResolvedRoute | undefined {
   if (!href.startsWith('/') || href.startsWith('//') || href.includes('\\')) return undefined;
@@ -164,7 +242,7 @@ export function resolveRoute(href: string): ResolvedRoute | undefined {
   if (!matches.has(pathname)) {
     for (const route of FLAT_ROUTES) {
       const match = matchPath(route.pattern, pathname);
-      if (match) {
+      if (match && safeParams(match.params)) {
         resolved = {
           pattern: route.pattern,
           entry: route.entry,

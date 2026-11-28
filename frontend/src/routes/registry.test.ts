@@ -35,10 +35,27 @@ const pages = vi.hoisted(() => {
 });
 vi.mock('./pages', () => pages);
 
-import { APP_ROUTES, preloadRoute, resolveRoute } from './registry';
+import { APP_ROUTES, preloadRoute, resolveRoute, type RouteCtx } from './registry';
+import { intentDetailQuery } from '@/lib/intentEntry';
+import type { QueryKey } from '@/lib/queryClient';
 
 const pageName = (href: string) =>
   (resolveRoute(href)?.entry.page as unknown as { displayName: string } | undefined)?.displayName;
+
+const ctxFor = (href: string, cached: Record<string, unknown> = {}): RouteCtx => {
+  const route = resolveRoute(href)!;
+  return {
+    params: route.params,
+    search: route.search,
+    peek: <T>(key: QueryKey) => cached[JSON.stringify(key)] as T | undefined,
+    user: { isPlatformAdmin: true },
+  };
+};
+
+const criticalKeys = (href: string, cached?: Record<string, unknown>) =>
+  resolveRoute(href)!
+    .entry.critical?.(ctxFor(href, cached))
+    .map((query) => query.queryKey) ?? [];
 
 beforeEach(() => {
   for (const page of Object.values(pages)) {
@@ -92,6 +109,25 @@ describe('APP_ROUTES', () => {
       ],
     ]);
   });
+
+  it('keeps every critical list within 3 descriptors', () => {
+    const samples = [
+      '/dashboard',
+      '/blocks',
+      '/blocks/stage',
+      '/blocks/stage/new',
+      '/blocks/stage/s1',
+      '/workflows',
+      '/workflows/w1',
+      '/space/p1',
+      '/space/p1/intent/i1',
+      '/space/p1/intent/i1/graph',
+      '/space/p1/intent/i1/observability',
+      '/space/p1/intent/i1/audit',
+      '/space/p1/intent/i1/compose',
+    ];
+    for (const href of samples) expect(criticalKeys(href).length).toBeLessThanOrEqual(3);
+  });
 });
 
 describe('resolveRoute', () => {
@@ -135,6 +171,8 @@ describe('resolveRoute', () => {
   ])('resolves the v1 sprint path %s to a chunk-only entry', async (href, page) => {
     const route = resolveRoute(href)!;
     expect(pageName(href)).toBe(page);
+    expect(route.entry.critical).toBeUndefined();
+    expect(route.entry.dependent).toBeUndefined();
     await route.preload();
     expect(pages.SprintLayout.preload).toHaveBeenCalledTimes(1);
     expect(pages[page as keyof typeof pages].preload).toHaveBeenCalledTimes(1);
@@ -155,5 +193,22 @@ describe('preloadRoute', () => {
 
   it('returns undefined for an unmapped path', () => {
     expect(preloadRoute('/nowhere')).toBeUndefined();
+  });
+});
+
+describe('route descriptors use the page factories', () => {
+  it.each([
+    ['/space/p1/intent/i1', [intentDetailQuery('p1', 'i1').queryKey]],
+    ['/space/p1/intent/i1/review/h1', [intentDetailQuery('p1', 'i1').queryKey]],
+    ['/space/p1/intent/i1/observability', [intentDetailQuery('p1', 'i1').queryKey]],
+    ['/space/p1/intent/i1/audit', [intentDetailQuery('p1', 'i1').queryKey]],
+    ['/space/p1/intent/i1/compose', [intentDetailQuery('p1', 'i1').queryKey]],
+    ['/space/p1/intent/i1/graph', [intentDetailQuery('p1', 'i1').queryKey]],
+  ])('%s critical keys', (href, keys) => {
+    expect(criticalKeys(href)).toEqual(keys);
+  });
+
+  it('marks the graph page heavy', () => {
+    expect(resolveRoute('/space/p1/intent/i1/graph')?.entry.heavy).toBe(true);
   });
 });

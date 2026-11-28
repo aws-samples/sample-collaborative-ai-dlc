@@ -39,8 +39,10 @@ beforeEach(() => {
   unbind = boundQueryMemory(state.client);
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  const scheduler = await vi.importActual<typeof import('@/lib/prefetch')>('@/lib/prefetch');
+  scheduler.foregroundNavigation(undefined, 0);
   unbind?.();
   state.client?.clear();
 });

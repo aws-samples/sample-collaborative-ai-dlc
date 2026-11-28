@@ -15,6 +15,8 @@ import { TRACKER_PROVIDERS } from './lib/trackerProviders';
 import { RouteFallback } from './components/RouteFallback';
 import { APP_ROUTES, type RouteEntry } from './routes/registry';
 import { AppShell, GitOAuthCallback, JiraCallback, NotFound } from './routes/pages';
+// Side effect: starts the bounded prefetch scheduler.
+import './lib/prefetch';
 
 // Login stays static so the auth entry point renders without a second fetch;
 // every other page is a lazy chunk declared in routes/pages.ts.
