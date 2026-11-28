@@ -833,7 +833,16 @@ locals {
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
-  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway, aws_iam_role_policy.agentcore_invoke_engine_data]
+  depends_on = [
+    aws_iam_role_policy.agentcore,
+    aws_iam_role_policy.agentcore_invoke_mcp_gateway,
+    aws_iam_role_policy.agentcore_invoke_engine_data,
+    # The native workspace storage has to be mountable before the runtime
+    # carries its entry: a mount that fails makes every invocation fail.
+    aws_iam_role_policy.agentcore_native_workspace,
+    aws_efs_file_system_policy.native_workspace,
+    aws_efs_mount_target.native_workspace,
+  ]
 
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
@@ -872,7 +881,19 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   # image + mount) until stopped/idle-reaped, and the mount is re-attached by
   # session id afterwards. Rewind/cancel therefore stop the session explicitly
   # (lambda/intents) so relaunches pick up the current image.
-  filesystem_configurations = [{ session_storage = { mount_path = "/mnt/workspace" } }]
+  #
+  # With enable_native_workspace_storage, the runtime also mounts the native
+  # workspace file system (native-workspace-storage.tf). Unlike the session
+  # storage, that mount is the same for every session of the runtime.
+  filesystem_configurations = concat(
+    [{ session_storage = { mount_path = "/mnt/workspace" } }],
+    local.native_workspace_storage_enabled ? [{
+      efs_access_point = {
+        access_point_arn = aws_efs_access_point.native_workspace[0].arn
+        mount_path       = local.native_workspace_mount_path
+      }
+    }] : [],
+  )
 
   # idle 900s: with park/resume a parked question lets the session idle and free
   # compute after 15 min (the resume lambda may also StopRuntimeSession sooner).

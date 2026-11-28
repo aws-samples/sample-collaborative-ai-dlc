@@ -32,6 +32,21 @@ vpc_block_public_access_exclusion = false
 # Optional AWS WAF protection for CloudFront, API Gateway, and Cognito.
 enable_waf = false
 
+# Workspace storage for native intents: an encrypted EFS file system (using
+# kms_key_arn when it is set) that the core AgentCore runtime mounts at
+# /mnt/aidlc. Native intents are not released yet, so leave it off unless you
+# are testing them.
+# - Every session of the core runtime sees the mount.
+# - A mount that fails makes every invocation of that runtime fail.
+# - A permissions boundary (iam_permissions_boundary_arn) has to allow the
+#   runtime role elasticfilesystem:ClientMount, ClientWrite,
+#   DescribeAccessPoints and DescribeMountTargets.
+# - Setting it back to false deletes the file system and every workspace on it.
+#   New sessions of the core runtime fail while that apply runs, because the
+#   storage goes before the runtime stops asking for it. If the apply stops
+#   halfway, run it again.
+# enable_native_workspace_storage = true
+
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 
